@@ -36,8 +36,8 @@ Chain strategy: stacked-to-main
 
 ## PR1: HF row independent (config-menu "HF row independent")
 
-- [ ] 1.1 RED: `src/core/ai/picker.rs` tests: row visible when NotInstalled; no note when installed; row hidden without curl; llamacpp listed on Engines when NotInstalled.
-- [ ] 1.2 GREEN: `picker.rs` (l.195-228, 252-267) list llamacpp always, ungate HF row, add note (~60). Done when `cargo test` green.
+- [x] 1.1 RED: `src/core/ai/picker.rs` tests: row visible when NotInstalled; no note when installed; row hidden without curl; llamacpp listed on Engines when NotInstalled. ("row hidden without curl" not testable here: the pure picker has no curl signal and the hub already handles missing curl; no behavior change.)
+- [x] 1.2 GREEN: `picker.rs` (l.195-228, 252-267) list llamacpp always, ungate HF row, add note (~60). Done when `cargo test` green.
 - [ ] 1.3 [manual] Download works without llama-server (spec "Download works without llama-server").
 
 ## PR2: Pure logic + binary field

@@ -97,7 +97,13 @@ fn an_undetected_assigned_engine_is_selectable_and_reopens() {
     let draft = m.ai_draft();
     open(&mut m, "code");
     let rows = m.rows(&Config::default());
-    assert_eq!(rows[2], pick("codex", status("(not detected)"), true, true));
+    // llama-server is listed too while it is not installed, before the
+    // undetected engines.
+    assert_eq!(
+        rows[2],
+        pick("llamacpp", status("not installed"), false, false)
+    );
+    assert_eq!(rows[3], pick("codex", status("(not detected)"), true, true));
     enter(&mut m);
     assert_eq!(title(&m), "Model for code (codex)");
     assert_eq!(m.ai_draft(), draft);

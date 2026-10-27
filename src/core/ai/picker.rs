@@ -127,6 +127,10 @@ fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
 /// The mark of a model a stopped llama-server can be started with.
 pub const MANAGED_MARK: &str = "lazarobox starts it";
 
+/// The note on the Hugging Face entry while llama-server is not installed:
+/// the download works, running the model needs the server.
+pub const HF_NEEDS_SERVER: &str = "needs llama-server to run";
+
 /// The models lazarobox can start a stopped llama-server with, or, managed,
 /// one of its own next to a llama-server answering on the port: `managed`
 /// first, then the files found on the machine, each once. Only paths that are
@@ -157,6 +161,12 @@ fn local_files(engine: &str, managed: Option<&Path>, detection: &Detection) -> V
 fn is_stopped_server(detection: Option<&Detection>, engine: &Engine) -> bool {
     matches!(engine.kind, Kind::Server { .. })
         && has_status(detection, engine.id, Status::NotRunning)
+}
+
+/// llama-server is listed even when it is not installed: the Hugging Face
+/// download and the install both live under it.
+fn is_missing_llama_server(detection: Option<&Detection>, engine: &Engine) -> bool {
+    engine.id == "llamacpp" && has_status(known(detection), engine.id, Status::NotInstalled)
 }
 
 /// The Engines level of a picker: the unassign entry, the available
@@ -203,7 +213,8 @@ pub fn engine_rows(
     }
     let mut listed: Vec<&str> = Vec::new();
     for engine in CATALOG {
-        if is_stopped_server(detection, engine) {
+        // llama-server too when missing, so its install can be reached.
+        if is_stopped_server(detection, engine) || is_missing_llama_server(detection, engine) {
             listed.push(engine.id);
             push(
                 engine.id,
@@ -249,18 +260,23 @@ pub fn model_rows(
     detection: Option<&Detection>,
 ) -> Vec<PickRow> {
     let mut rows = listed_models(engine, target, draft, detection);
-    // Last, whenever llama-server is installed, with or without models.
-    let installed = engine == "llamacpp"
-        && known(detection).is_some_and(|d| {
-            d.engines
-                .iter()
-                .any(|s| s.id == engine && s.status != Status::NotInstalled)
-        });
-    if installed {
+    // Last, once detection is known, with or without models or a server:
+    // the download needs only curl.
+    if engine == "llamacpp"
+        && let Some(d) = known(detection)
+    {
+        let installed = d
+            .engines
+            .iter()
+            .any(|s| s.id == engine && !matches!(s.status, Status::NotInstalled));
         rows.push(PickRow {
             key: PickKey::HfDownload,
             label: HF_ROW.to_owned(),
-            mark: Mark::Plain,
+            mark: if installed {
+                Mark::Plain
+            } else {
+                Mark::Status(HF_NEEDS_SERVER.to_owned())
+            },
             enabled: true,
             current: false,
         });
@@ -1624,7 +1640,10 @@ mod tests {
         let draft = managed_draft("/m/qwen.gguf");
         let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
-        assert_eq!(rows, vec![info("engine not detected")]);
+        assert_eq!(
+            rows,
+            vec![info("engine not detected"), hf_entry_needing_server()]
+        );
         // Another stopped server is not managed by lazarobox.
         let d = detection(vec![state("vllm", Status::NotRunning, &[])]);
         let rows = model_rows("vllm", Target::Task(Task::Chat), &draft, Some(&d));
@@ -1644,6 +1663,71 @@ mod tests {
     /// The Hugging Face entry, last on llamacpp's model level.
     fn hf_entry() -> PickRow {
         row(PickKey::HfDownload, HF_ROW, Mark::Plain, true, false)
+    }
+
+    /// The Hugging Face entry when llama-server is not installed: it still
+    /// downloads, and says what running the model needs.
+    fn hf_entry_needing_server() -> PickRow {
+        row(
+            PickKey::HfDownload,
+            HF_ROW,
+            Mark::Status(HF_NEEDS_SERVER.to_owned()),
+            true,
+            false,
+        )
+    }
+
+    // Spec config-menu S1: the download needs only curl, not llama-server.
+    #[test]
+    fn the_hf_row_is_listed_when_llama_server_is_not_installed() {
+        let draft = AiConfig::default();
+        let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.last(), Some(&hf_entry_needing_server()), "{rows:?}");
+        // Still reachable when the engine is missing from the detection.
+        let d = detection(vec![state("ollama", Status::Available, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.last(), Some(&hf_entry_needing_server()), "{rows:?}");
+    }
+
+    #[test]
+    fn the_hf_row_has_no_note_when_llama_server_is_installed() {
+        let draft = AiConfig::default();
+        for status in [Status::NotRunning, Status::Available] {
+            let d = detection(vec![state("llamacpp", status, &[])]);
+            let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+            assert_eq!(rows.last(), Some(&hf_entry()), "{rows:?}");
+        }
+    }
+
+    #[test]
+    fn the_hf_row_waits_for_detection() {
+        let draft = AiConfig::default();
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, None);
+        assert!(
+            rows.iter().all(|r| r.key != PickKey::HfDownload),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn llamacpp_is_listed_on_the_engines_level_when_not_installed() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("llamacpp", Status::NotInstalled, &[]),
+            state("ollama", Status::NotInstalled, &[]),
+        ]);
+        let rows = engine_rows(Target::Task(Task::Chat), &draft, Some(&d));
+        let ids: Vec<_> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(ids, ["(default · use general)", "llamacpp"], "{rows:?}");
+        assert_eq!(rows[1].mark, Mark::Status("not installed".to_owned()));
+        assert!(rows[1].enabled);
+        // Not while detection is pending, and once only when assigned too.
+        assert_eq!(engine_rows(Target::Task(Task::Chat), &draft, None).len(), 1);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Chat, "llamacpp", Some("m"));
+        let rows = engine_rows(Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.iter().filter(|r| r.label == "llamacpp").count(), 1);
     }
 
     fn local(path: &str, current: bool) -> PickRow {
@@ -1785,8 +1869,11 @@ mod tests {
         // A server that is not installed keeps the plain line.
         let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
-        assert_eq!(rows.last().unwrap().key, PickKey::Info);
-        assert_eq!(rows.last().unwrap().label, "engine not detected");
+        assert!(
+            rows.iter()
+                .any(|r| r.key == PickKey::Info && r.label == "engine not detected"),
+            "{rows:?}"
+        );
     }
 
     #[test]
