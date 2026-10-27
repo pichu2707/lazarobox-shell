@@ -28,6 +28,8 @@ baseline.
   `huggingface_hub` reads it, instead of being ignored.
 - Esc while a pasted Hugging Face token is being checked stops the check, so
   the token is not saved.
+- `d` on the Hugging Face row disconnects a saved token even when its check
+  fails (offline, or a token the Hub no longer accepts).
 
 ### Security
 

@@ -215,6 +215,35 @@ fn a_known_account_offers_to_disconnect_and_only_y_does() {
     assert!(m.edits(&Config::default()).is_empty(), "no config edit");
 }
 
+// A saved token can be disconnected without a check that works (the Hub
+// is offline, or the token no longer works): `d` asks first.
+#[test]
+fn d_disconnects_a_saved_token_whose_account_is_unknown() {
+    let mut m = on_row(SAVED, None);
+    assert_eq!(
+        hint(&m),
+        "Enter check · d disconnect · j/k move · s save · Esc cancel"
+    );
+    assert_eq!(press(&mut m, 'd'), MenuCommand::None);
+    assert_eq!(hint(&m), "disconnect the saved token? (y/n)");
+    assert_eq!(press(&mut m, 'n'), MenuCommand::None);
+    assert_eq!(row_value(&m), "token saved", "n keeps the token");
+    press(&mut m, 'd');
+    assert_eq!(
+        press(&mut m, 'y'),
+        MenuCommand::HfAccount(AccountAsk::Disconnect)
+    );
+    m.account_reply(AccountReply::Disconnected(Ok(())));
+    assert_eq!(row_value(&m), "not connected");
+    // With no saved token, `d` does nothing.
+    assert_eq!(press(&mut m, 'd'), MenuCommand::None);
+    assert_eq!(hint(&m), HINT_CONNECT);
+    // A known account: `d` asks as Enter does.
+    let mut known = on_row(SAVED, Some("ana"));
+    press(&mut known, 'd');
+    assert_eq!(hint(&known), "disconnect ana? (y/n)");
+}
+
 // Spec (config-menu): the account of a saved token comes from a whoami
 // check made when the row is opened.
 #[test]

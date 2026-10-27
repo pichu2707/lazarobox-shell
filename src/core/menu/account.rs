@@ -20,7 +20,7 @@ pub const TOKEN_URL: &str = "https://huggingface.co/settings/tokens/new?tokenTyp
 pub const HINT_TOKEN: &str = "Enter connect · Ctrl+U clear · Esc back";
 /// The footer of the row, by what Enter does there.
 pub const HINT_CONNECT: &str = "Enter connect · j/k move · s save · Esc cancel";
-pub const HINT_CHECK: &str = "Enter check · j/k move · s save · Esc cancel";
+pub const HINT_CHECK: &str = "Enter check · d disconnect · j/k move · s save · Esc cancel";
 pub const HINT_DISCONNECT: &str = "Enter disconnect · j/k move · s save · Esc cancel";
 
 /// Longest token taken, in characters.
@@ -84,8 +84,13 @@ impl Account {
 
     /// The disconnect prompt, while it waits for `y` or `n`.
     pub fn prompt(&self) -> Option<String> {
-        let name = self.name.as_deref().filter(|_| self.prompt)?;
-        Some(format!("disconnect {}? (y/n)", shown(name)))
+        if !self.prompt {
+            return None;
+        }
+        Some(match &self.name {
+            Some(name) => format!("disconnect {}? (y/n)", shown(name)),
+            None => "disconnect the saved token? (y/n)".to_owned(),
+        })
     }
 
     /// The footer of the row (the field and the prompt have their own).
@@ -114,6 +119,14 @@ impl Account {
         } else {
             self.field = Some(Secret::default());
             None
+        }
+    }
+
+    /// `d` on the row: the disconnect prompt for a saved token, also when
+    /// its account is unknown (the Hub is offline, or refuses it).
+    pub fn forget(&mut self) {
+        if self.facts.saved && self.asking.is_none() {
+            self.prompt = true;
         }
     }
 

@@ -72,7 +72,7 @@ The AI tab MUST end with a static row `Hugging Face`, after the row that was las
 - `<name>` once an account is known, from a connect or a check in this session;
 - `token set (HF_TOKEN)` while `HF_TOKEN` is set.
 
-Enter on the row opens a field with the hint `paste a Hugging Face token`, followed by `create a read token at:` and, on a line of its own, `https://huggingface.co/settings/tokens/new?tokenType=read`. The field draws one `•` per character. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back; Esc during the check stops it, and the token is not saved unless the save had already happened. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. The row writes no config edit.
+Enter on the row opens a field with the hint `paste a Hugging Face token`, followed by `create a read token at:` and, on a line of its own, `https://huggingface.co/settings/tokens/new?tokenType=read`. The field draws one `•` per character. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back; Esc during the check stops it, and the token is not saved unless the save had already happened. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. With a saved token, `d` offers the same prompt, also when its account is unknown (`disconnect the saved token? (y/n)`), and the footer of such a row is `Enter check · d disconnect · j/k move · s save · Esc cancel`. The row writes no config edit.
 
 #### Scenario: Account row [auto]
 - GIVEN the AI tab

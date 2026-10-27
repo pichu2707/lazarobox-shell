@@ -1233,6 +1233,10 @@ impl MenuState {
                 }
             }
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Char('d') if !repeat && self.on_account_row() => {
+                self.account.forget();
+                MenuCommand::None
+            }
             KeyCode::Enter if self.on_account_row() => match self.account.enter() {
                 Some(ask) if !repeat => MenuCommand::HfAccount(ask),
                 _ => MenuCommand::None,
