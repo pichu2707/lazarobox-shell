@@ -7,6 +7,7 @@ mod audit;
 pub mod fs;
 pub mod host;
 pub mod open;
+pub mod orchestra;
 pub mod pending;
 
 use std::{
@@ -21,6 +22,7 @@ use crate::core::ai::tools::{Call, label};
 pub use approver::Waits;
 pub use fs::{Failure, Limits, ToolEnv};
 pub use host::{Approver, ToolHost, TurnScope, Unwired};
+pub use orchestra::{OrchHandle, Orchestra, WorkerScope};
 pub use pending::Pending;
 
 /// A random nonce for one result, `None` when the system gives no randomness

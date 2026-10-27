@@ -12,6 +12,9 @@
 //! user (see [`ask_for`]) goes to the turn's [`Approver`] first; nothing
 //! about it runs until the answer is `Sent`. Which calls need the user is D17:
 //! the pure [`ask_for`] decides, from the call and the engine's locality.
+//! A call the turn does not offer (its role's toolset, D7) is refused first,
+//! as an unknown tool, and an orchestration call goes to the turn's run
+//! manager (D3).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -29,16 +32,19 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, ToolEnv, run};
+use super::{Limits, OrchHandle, ToolEnv, WorkerScope, run};
 use crate::{
     core::ai::{
         chat::{
             approval::{ApprovalAsk, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
+        orchestra::tools::OrchCall,
         tools::{
-            Call, Locality, command, label,
+            Call, Locality, ToolError, command, label,
+            mcp::refusal_text,
             paths::display_target,
+            registry::FamilySet,
             report::{self, RunReport},
             summary::clip,
         },
@@ -90,10 +96,21 @@ pub struct TurnScope {
     /// The user's MCP servers this turn may call. Empty until the turn has
     /// started them: a server tool is then refused even after `y`.
     pub external: Slot,
+    /// The built-in families this turn offers, and so may call: the same set
+    /// as its tool list (D7). A chat's is its request's; a worker's or the
+    /// orchestrator's is its `Toolset`'s.
+    pub toolset: FamilySet,
+    /// The run manager of an orchestrator turn. Without it an orchestration
+    /// call is an unknown tool (D3).
+    pub orchestra: Option<OrchHandle>,
+    /// Set for a worker turn only: the run whose read scope its reads are
+    /// judged against, and the label of its asks.
+    pub read_scope: Option<WorkerScope>,
 }
 
 impl TurnScope {
-    /// A scope whose calls that need the user are denied.
+    /// A chat scope whose calls that need the user are denied: the 0.18.0
+    /// tools, no run manager and no read scope.
     pub fn new(events: mpsc::Sender<StreamEvent>, locality: Locality, origin: PathBuf) -> Self {
         Self {
             events,
@@ -101,6 +118,21 @@ impl TurnScope {
             origin,
             approver: Arc::new(Unwired),
             external: Slot::default(),
+            toolset: FamilySet::LEGACY,
+            orchestra: None,
+            read_scope: None,
+        }
+    }
+
+    /// Whether this turn may call `call` (D7, the filter's second place after
+    /// the tool list): its family is in the toolset, an orchestration call
+    /// has a run manager to go to (D3), and a user server tool is only ever a
+    /// chat's: a worker or the orchestrator is offered none.
+    fn offers(&self, call: &Call) -> bool {
+        match (call, call.family()) {
+            (Call::Orchestra(_), _) if self.orchestra.is_none() => false,
+            (_, Some(family)) => self.toolset.contains(family),
+            (_, None) => self.orchestra.is_none() && self.read_scope.is_none(),
         }
     }
 }
@@ -271,10 +303,24 @@ async fn call_external(
     )
 }
 
+/// Runs an orchestration call on the run manager: its text for the model,
+/// and the row.
+async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatus, String) {
+    let outcome = handle.call(call).await;
+    let (status, summary) = if outcome.is_error {
+        (ToolStatus::Error, clip(&outcome.text))
+    } else {
+        (ToolStatus::Ok, format!("{} bytes", outcome.text.len()))
+    };
+    (outcome, status, summary)
+}
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
     let mut checked = match &call {
+        // What the turn does not offer is refused as the parse refuses it.
+        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool)),
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
@@ -404,6 +450,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
+                // `offers` let it through only with a run manager to go to.
+                (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
+                    Some(handle) => orchestrate(handle, call).await,
+                    None => {
+                        let reason = refusal_text(ToolError::UnknownTool);
+                        ended(ToolStatus::Error, reason.to_owned(), reason)
+                    }
+                },
                 (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {
                         home: host.home.clone(),
@@ -431,5 +485,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod orchestra_tests;
 #[cfg(test)]
 mod tests;

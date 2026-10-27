@@ -717,6 +717,10 @@ impl Chats {
             approver: self.waits.approver(pane, turn, pending.clone()),
             // Filled by the turn's task once its servers run.
             external: slot.clone(),
+            // What the session lists is what the host accepts (D7).
+            toolset: request.families,
+            orchestra: None,
+            read_scope: None,
         };
         let dispatch = tooling.host.dispatch(scope);
         if adapter_for(&request.engine) == Some(Adapter::Ollama) {
