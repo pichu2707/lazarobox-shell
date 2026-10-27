@@ -283,11 +283,7 @@ pub async fn run_jailed(
 /// line. Called after the run ended, so every writer is gone and the read ends
 /// at once; it never waits.
 fn said(reader: io::PipeReader) -> Option<String> {
-    // SAFETY: the descriptor is owned by `reader`, which outlives the call.
-    unsafe {
-        let flags = libc::fcntl(reader.as_raw_fd(), libc::F_GETFL);
-        libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
-    }
+    crate::runtime::proc::nonblocking(&reader);
     let mut text = Vec::new();
     // At most a line is read; an error or "would block" is "nothing said".
     let _ = reader.take(4096).read_to_end(&mut text);
@@ -340,23 +336,7 @@ async fn spawn_with(run: Run, status: Option<io::PipeWriter>) -> io::Result<Done
         .process_group(0);
     if let Some(status) = &status {
         command.env(STATUS_FD_VAR, STATUS_FD.to_string());
-        let fd = status.as_raw_fd();
-        // SAFETY: between fork and exec only `dup2` and `fcntl` run (both
-        // async-signal-safe), on a descriptor the parent keeps open.
-        unsafe {
-            command.pre_exec(move || {
-                // `dup2` onto itself keeps the close-on-exec flag: clear it.
-                if fd == STATUS_FD {
-                    let flags = libc::fcntl(fd, libc::F_GETFD);
-                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                } else if libc::dup2(fd, STATUS_FD) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        crate::runtime::proc::hand_over(&mut command, status.as_raw_fd(), STATUS_FD);
     }
     let mut child = spawn(&mut command).await?;
     // The command holds the write ends: until it is gone the pipe never ends.
