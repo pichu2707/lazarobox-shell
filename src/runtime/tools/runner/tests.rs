@@ -263,6 +263,7 @@ impl Fixture {
             cwd: self.root.clone(),
             scratch: Scratch::unique(&self.tmp_parent, "run").unwrap(),
             timeout: Duration::from_secs(30),
+            unreported: Unreported::default(),
         }
     }
 }
@@ -438,14 +439,132 @@ async fn a_hook_written_by_the_run_is_reported_and_nothing_else_is() {
 #[tokio::test]
 async fn a_failing_run_is_still_checked_and_a_timeout_too() {
     let fx = fixture();
+    let ready = fx.root.join("ready");
     let mut job = fx.job(
         Program::Cargo,
-        "echo '[core]' >> .git/config; sleep 300 & wait",
+        "echo '[core]' >> .git/config; touch ready; sleep 300 & echo $$; wait",
     );
-    job.timeout = Duration::from_millis(400);
+    // Generous: the script's first lines run in milliseconds; the deadline is
+    // what ends it. The marker tells a slow start from a missed check.
+    job.timeout = Duration::from_secs(5);
     let ran = run_jailed(job, &parent).await.unwrap();
+    assert!(ready.exists(), "the script never got to run");
     assert!(ran.done.ended.timed_out);
     assert_eq!(ran.changes.len(), 1);
     assert_eq!(ran.changes[0].kind, Kind::Changed);
+    // The leader was reaped, not left a zombie.
+    let leader: libc::pid_t = lines(&ran.done).last().unwrap().trim().parse().unwrap();
+    assert_eq!(crate::runtime::proc::process_state(leader), None);
     let _ = &fx.dir;
+}
+
+/// Starts `job`, waits until the file `marker` exists and drops the run.
+async fn dropped_after(job: Job, marker: &std::path::Path) {
+    let ready = async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::select! {
+        _ = run_jailed(job, &parent) => panic!("it ends only when killed"),
+        _ = ready => {}
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_run_still_takes_its_after_snapshot_and_hands_it_over() {
+    let fx = fixture();
+    let job = fx.job(
+        Program::Cargo,
+        "echo '#!/bin/sh' > .git/hooks/pre-commit; touch ready; sleep 300 & wait",
+    );
+    let unreported = job.unreported.clone();
+    dropped_after(job, &fx.root.join("ready")).await;
+    let found = unreported.drain();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::Added);
+    assert_eq!(found[0].path, PathBuf::from(".git/hooks/pre-commit"));
+    // Handed over once.
+    assert_eq!(unreported.drain(), []);
+}
+
+#[tokio::test]
+async fn a_run_that_finished_reports_in_ran_and_not_in_the_unreported_sink() {
+    let fx = fixture();
+    let job = fx.job(Program::Cargo, "echo x > .git/hooks/late");
+    let unreported = job.unreported.clone();
+    let ran = run_jailed(job, &parent).await.unwrap();
+    assert_eq!(ran.changes.len(), 1);
+    assert_eq!(unreported.drain(), []);
+}
+
+#[tokio::test]
+async fn a_dropped_go_run_removes_its_gotmpdir_and_kills_the_group() {
+    let fx = fixture();
+    let job = fx.job(
+        Program::Go,
+        "echo \"$GOTMPDIR\" > \"$TMPDIR/info.tmp\"; touch \"$GOTMPDIR/built\"; \
+         sleep 300 & echo $! >> \"$TMPDIR/info.tmp\"; echo $$ >> \"$TMPDIR/info.tmp\"; \
+         mv \"$TMPDIR/info.tmp\" \"$TMPDIR/info\"; wait",
+    );
+    let info = job.scratch.path().join("info");
+    dropped_after_reading(job, &info).await;
+}
+
+/// [`dropped_after`] for a Go run: reads what the script told, then checks it.
+async fn dropped_after_reading(job: Job, info: &std::path::Path) {
+    let told = std::cell::RefCell::new(String::new());
+    let ready = async {
+        while !info.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        *told.borrow_mut() = std::fs::read_to_string(info).unwrap();
+    };
+    tokio::select! {
+        _ = run_jailed(job, &parent) => panic!("it ends only when killed"),
+        _ = ready => {}
+    }
+    let told = told.into_inner();
+    let mut lines = told.lines();
+    let gotmp = PathBuf::from(lines.next().unwrap());
+    assert!(!gotmp.exists(), "the Go folder outlived the run");
+    let pids: Vec<libc::pid_t> = lines.map(|l| l.parse().unwrap()).collect();
+    for pid in &pids {
+        assert!(wait_gone(*pid).await, "{pid} lives");
+    }
+    // The leader is a child of this process: it must be reaped, not a zombie.
+    let leader = *pids.last().unwrap();
+    for _ in 0..2000 {
+        if crate::runtime::proc::process_state(leader).is_none() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{leader} is still a zombie");
+}
+
+#[tokio::test]
+async fn what_the_program_left_unremovable_is_listed_and_a_read_only_folder_is_not() {
+    let fx = fixture();
+    let script = "mkdir -p $TMPDIR/mod/deep; echo x > $TMPDIR/mod/deep/f; \
+                  chmod 500 $TMPDIR/mod/deep $TMPDIR/mod";
+    let job = fx.job(Program::Cargo, script);
+    let tmp = job.scratch.path().to_path_buf();
+    let ran = run_jailed(job, &parent).await.unwrap();
+    assert_eq!(ran.leftovers, Vec::<PathBuf>::new());
+    assert!(!tmp.exists());
+}
+
+#[tokio::test]
+async fn the_final_reap_is_bounded_and_says_so() {
+    // A process stuck where SIGKILL does not reach it: the wait never ends.
+    let started = std::time::Instant::now();
+    let stuck = std::future::pending::<io::Result<()>>();
+    let err = bounded(stuck, Duration::from_millis(50)).await.unwrap_err();
+    assert!(err.to_string().contains("did not end"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // A wait that ends in time is passed through, errors included.
+    assert_eq!(bounded(async { Ok(7) }, REAP).await.unwrap(), 7);
+    let failed = bounded(async { Err::<(), _>(io::Error::other("x")) }, REAP).await;
+    assert_eq!(failed.unwrap_err().to_string(), "x");
 }

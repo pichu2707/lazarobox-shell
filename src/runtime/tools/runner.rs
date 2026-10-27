@@ -9,11 +9,13 @@
 
 use std::ffi::OsString;
 use std::fs::File;
+use std::future::Future;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncReadExt;
@@ -57,6 +59,62 @@ pub struct Job {
     /// The private `TMPDIR`, already in `spec.rw`. Removed when the run ends.
     pub scratch: Scratch,
     pub timeout: Duration,
+    /// Where the changes of a run that is dropped (cancelled) before it ends
+    /// go. Keep a clone and [`Unreported::drain`] it after each call.
+    pub unreported: Unreported,
+}
+
+/// The watched-place changes of runs that were dropped before they could
+/// return a [`Ran`]. A cancelled `run_jailed` takes its after-snapshot as it
+/// is dropped and pushes the diff here; X-d1 drains it (it is a shared handle:
+/// clone it into the [`Job`], keep the clone) and treats what it finds like
+/// the `changes` of a run that finished. A run that finishes never pushes.
+#[derive(Clone, Debug, Default)]
+pub struct Unreported(Arc<Mutex<Vec<Change>>>);
+
+impl Unreported {
+    /// Takes every change handed over so far, oldest first.
+    pub fn drain(&self) -> Vec<Change> {
+        std::mem::take(&mut *self.lock())
+    }
+
+    fn push(&self, changes: Vec<Change>) {
+        self.lock().extend(changes);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Change>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Holds the "before" of a run. If the run is dropped (or fails) before it
+/// took its own "after", this does it, synchronously, as it drops: the group
+/// is already signalled by then (the spawn future drops first), so what a
+/// program wrote before it died is seen; a write in the instant between the
+/// signal and the death can still be missed (a documented limit).
+struct AfterOnDrop {
+    root: PathBuf,
+    before: Option<integrity::Snapshot>,
+    unreported: Unreported,
+}
+
+impl AfterOnDrop {
+    /// The "before", for a run that takes its own "after".
+    fn disarm(&mut self) -> integrity::Snapshot {
+        self.before.take().unwrap_or_default()
+    }
+}
+
+impl Drop for AfterOnDrop {
+    fn drop(&mut self) {
+        let Some(before) = self.before.take() else {
+            return;
+        };
+        let changes = integrity::compare(&before, &integrity::snapshot(&self.root));
+        if !changes.is_empty() {
+            self.unreported.push(changes);
+        }
+    }
 }
 
 /// A finished jailed run: how it went and which watched places in the root it
@@ -65,6 +123,9 @@ pub struct Job {
 pub struct Ran {
     pub done: Done,
     pub changes: Vec<Change>,
+    /// What of the private folders could not be removed (their paths): say
+    /// so, do not assume they are gone.
+    pub leftovers: Vec<PathBuf>,
 }
 
 /// The two settings every toolchain run gets, whatever the spec says: TCP
@@ -85,11 +146,10 @@ pub async fn run_jailed(
     job: Job,
     read: &(dyn Fn(&str) -> Option<OsString> + Sync),
 ) -> io::Result<Ran> {
-    // Held to the end: the folder goes with the run.
     let mut env = scrub(read, &job.root, job.scratch.path());
     // `go run` and `go test` execute what they build, and the private TMPDIR
     // never executes: they get a folder under the `rwx` root.
-    let _gotmp = match job.tool {
+    let gotmp = match job.tool {
         Program::Go => {
             let gotmp = Scratch::unique(&job.root, ".lbx-gotmp")?;
             env.push((OsString::from("GOTMPDIR"), gotmp.path().into()));
@@ -106,7 +166,11 @@ pub async fn run_jailed(
         program: job.program,
         argv: job.argv,
     };
-    let before = watched(&job.root).await;
+    let mut guard = AfterOnDrop {
+        before: Some(watched(&job.root).await),
+        root: job.root.clone(),
+        unreported: job.unreported,
+    };
     let done = spawn_core(Run {
         program: job.helper,
         argv: args.render(),
@@ -116,14 +180,18 @@ pub async fn run_jailed(
     })
     .await?;
     let after = watched(&job.root).await;
+    let changes = integrity::compare(&guard.disarm(), &after);
+    let mut leftovers = job.scratch.finish();
+    leftovers.extend(gotmp.into_iter().flat_map(Scratch::finish));
     Ok(Ran {
         done,
-        changes: integrity::compare(&before, &after),
+        changes,
+        leftovers,
     })
 }
 
 /// [`integrity::snapshot`] off the event loop.
-async fn watched(root: &std::path::Path) -> integrity::Snapshot {
+async fn watched(root: &Path) -> integrity::Snapshot {
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || integrity::snapshot(&root))
         .await
@@ -190,7 +258,7 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
     }
     // The leader is still unreaped, so its group is still ours to kill: on a
     // timeout, and on a normal exit too, for what the leader left behind.
-    let status = group.kill_and_reap(&mut child).await?;
+    let status = bounded(group.kill_and_reap(&mut child), REAP).await?;
     if open {
         drain(&mut pipe, &mut capture, &mut buf).await;
     }
@@ -204,6 +272,20 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
         capture,
         duration: started.elapsed(),
     })
+}
+
+/// How long the final kill-and-reap may take. After SIGKILL it is immediate;
+/// a process stuck in the kernel is not, and must not hold the caller.
+const REAP: Duration = Duration::from_secs(5);
+
+/// `wait`, or an error when it takes more than `limit`.
+async fn bounded<T>(wait: impl Future<Output = io::Result<T>>, limit: Duration) -> io::Result<T> {
+    match tokio::time::timeout(limit, wait).await {
+        Ok(done) => done,
+        Err(_) => Err(io::Error::other(
+            "the program did not end after it was killed",
+        )),
+    }
 }
 
 /// How long the pipe is read after the group is killed. What the program wrote
