@@ -338,6 +338,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             enabled: true,
             acknowledged: true,
             port: self.port,
+            save_summaries: false,
         };
         let reason = self.probe.as_ref().and_then(|p| p.reason.clone());
         let facts = Facts {

@@ -138,6 +138,9 @@ pub struct PendingSave {
     editor: u64,
     /// When it was sent: the answer is awaited for `MEMORY_WAIT`.
     since: Instant,
+    /// Sent by the app, not by the user (the rolling summary): its answer
+    /// adds no transcript line and a failure says nothing.
+    pub quiet: bool,
 }
 
 /// The waits that ran out (see `ChatState::expire_waits`).
@@ -537,7 +540,19 @@ impl ChatState {
             project: project.to_owned(),
             editor: self.memory.editors,
             since: now,
+            quiet: false,
         });
+        id
+    }
+
+    /// `save_sent_at` for a save the app sends on its own. It belongs to no
+    /// note editor, so its answer never closes or fails one.
+    pub fn quiet_save_sent_at(&mut self, project: &str, now: Instant) -> SaveId {
+        let id = self.save_sent_at(project, now);
+        if let Some(save) = self.memory.pending_saves.last_mut() {
+            save.editor = 0;
+            save.quiet = true;
+        }
         id
     }
 

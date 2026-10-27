@@ -257,3 +257,224 @@ fn a_summarize_model_that_is_missing_sends_no_run() {
         assert_eq!(compaction_of(&end), None);
     }
 }
+
+// chat-memory T2 (S5, S6): the summary goes to engram only on opt-in --------
+
+use crate::core::ai::{
+    chat::store::StoreReply,
+    memory::{
+        kind::MemKind,
+        port::{MemCmd, Reason},
+    },
+};
+
+const CONVERSATION: i64 = 42;
+
+fn opted_in(save: bool) -> AiConfig {
+    let mut config = ai(true);
+    config.memory.save_summaries = save;
+    config
+}
+
+fn known_conversation(a: &mut App) {
+    a.update(AppEvent::Store(StoreReply::Created {
+        pane: chat_id(),
+        conversation: CONVERSATION,
+        evicted: false,
+        evicted_notes: 0,
+    }));
+}
+
+/// Runs one compaction to its end with `summary` as the model's text and
+/// returns the effects of the final `Done`.
+fn summarized(a: &mut App, summary: &str) -> Vec<Effect> {
+    let (turn, _) = until_compaction(a);
+    finish(a, turn, summary)
+}
+
+fn finish(a: &mut App, turn: u64, summary: &str) -> Vec<Effect> {
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Delta(summary.into()),
+    ));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ))
+}
+
+fn saves(effects: &[Effect]) -> Vec<&MemCmd> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Memory(cmd @ MemCmd::Save { .. }) => Some(cmd),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_opted_in_summary_is_saved_once_under_its_conversation_key() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- we chose Axum");
+    let [
+        MemCmd::Save {
+            pane,
+            session,
+            project,
+            note,
+            topic_key,
+            ..
+        },
+    ] = saves(&effects).as_slice()
+    else {
+        panic!("expected one save, got {effects:?}");
+    };
+    assert_eq!(
+        (*pane, session, project.as_str()),
+        (chat_id(), &None, PROJECT)
+    );
+    assert_eq!(topic_key.as_deref(), Some("chat/42/summary"));
+    assert_eq!(note.kind, MemKind::Discovery);
+    assert_eq!(note.content, "- we chose Axum");
+}
+
+#[test]
+fn the_saved_summary_never_carries_a_secret() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- the login uses password=hunter2 here");
+    let [MemCmd::Save { note, .. }] = saves(&effects).as_slice() else {
+        panic!("expected one save, got {effects:?}");
+    };
+    assert!(!note.content.contains("hunter2"), "{}", note.content);
+}
+
+#[test]
+fn a_later_summary_saves_again_under_the_same_key() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let first = summarized(&mut a, "- one");
+    let second = summarized(&mut a, "- one\n- two");
+    let keys: Vec<_> = [&first, &second]
+        .iter()
+        .flat_map(|e| saves(e))
+        .map(|cmd| match cmd {
+            MemCmd::Save { topic_key, .. } => topic_key.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(keys, vec![Some("chat/42/summary".to_owned()); 2]);
+}
+
+#[test]
+fn without_the_flag_nothing_is_saved_and_the_notice_comes_once() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(false));
+    known_conversation(&mut a);
+    let first = summarized(&mut a, "- one");
+    assert!(saves(&first).is_empty(), "{first:?}");
+    let notice = a.notice.take().expect("the privacy notice");
+    assert!(notice.contains("save_summaries"), "{notice}");
+    let second = summarized(&mut a, "- one\n- two");
+    assert!(saves(&second).is_empty(), "{second:?}");
+    assert_eq!(a.notice, None, "the notice is shown once");
+}
+
+#[test]
+fn memory_off_or_unavailable_writes_nothing_and_says_nothing() {
+    // Memory off (S8), even with the flag set.
+    let mut off = ai(false);
+    off.memory.save_summaries = true;
+    let mut a = app(false, Some("tiny")).with_ai(off);
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- one");
+    assert!(saves(&effects).is_empty(), "{effects:?}");
+    assert_eq!(a.notice, None);
+
+    // Memory on but engram not answering.
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    a.panes
+        .get_mut(&chat_id())
+        .and_then(PaneState::chat_mut)
+        .expect("a chat")
+        .set_unavailable(&Reason::NotRunning.text());
+    a.notice = None;
+    let effects = summarized(&mut a, "- one");
+    assert!(saves(&effects).is_empty(), "{effects:?}");
+    assert_eq!(a.notice, None);
+}
+
+#[test]
+fn a_conversation_the_store_never_created_is_not_saved() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    let effects = summarized(&mut a, "- one");
+    assert!(saves(&effects).is_empty(), "{effects:?}");
+    assert_eq!(a.notice, None);
+}
+
+#[test]
+fn a_failed_or_empty_run_saves_nothing() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let (turn, _) = until_compaction(&mut a);
+    let failed = a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("down".into())),
+    ));
+    assert!(saves(&failed).is_empty());
+    let empty = summarized(&mut a, "   ");
+    assert!(saves(&empty).is_empty(), "{empty:?}");
+}
+
+#[test]
+fn the_answer_to_a_summary_save_adds_no_transcript_line_and_a_failure_none() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- one");
+    let [MemCmd::Save { id, .. }] = saves(&effects).as_slice() else {
+        panic!("expected one save, got {effects:?}");
+    };
+    let before = chat_of(&a).entries().len();
+    a.update(AppEvent::Memory(MemReply::SaveFailed {
+        pane: chat_id(),
+        id: *id,
+        reason: "boom".into(),
+    }));
+    assert_eq!(chat_of(&a).entries().len(), before, "a failure is silent");
+    assert_eq!(a.notice, None);
+
+    let effects = summarized(&mut a, "- one\n- two");
+    let [MemCmd::Save { id, .. }] = saves(&effects).as_slice() else {
+        panic!("expected one save, got {effects:?}");
+    };
+    let before = chat_of(&a).entries().len();
+    // The worker could not even try (engram went away): silent too.
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: *id,
+        reason: Reason::NotRunning,
+    }));
+    assert_eq!(chat_of(&a).entries().len(), before);
+    assert_eq!(a.notice, None);
+
+    let effects = summarized(&mut a, "- one\n- two\n- three");
+    let [MemCmd::Save { id, .. }] = saves(&effects).as_slice() else {
+        panic!("expected one save, got {effects:?}");
+    };
+    let before = chat_of(&a).entries().len();
+    a.update(AppEvent::Memory(MemReply::Saved {
+        pane: chat_id(),
+        id: *id,
+        project: PROJECT.into(),
+        session: "lazarobox-0123456789abcdef0123456789abcdef".into(),
+        observation_id: 9,
+        topic_key: "chat/42/summary".into(),
+        title: "Conversation summary".into(),
+    }));
+    assert_eq!(chat_of(&a).entries().len(), before, "a save is silent");
+}

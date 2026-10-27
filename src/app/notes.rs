@@ -247,8 +247,10 @@ impl App {
                 // The editor that sent this save closes; one the user opened
                 // since stays.
                 chat.close_saved_editor(save.as_ref());
-                let kind = topic_key.split('/').nth(1).unwrap_or("note");
-                chat.push_system(format!("saved note {kind}: {title}"));
+                if !save.as_ref().is_some_and(|s| s.quiet) {
+                    let kind = topic_key.split('/').nth(1).unwrap_or("note");
+                    chat.push_system(format!("saved note {kind}: {title}"));
+                }
                 let links = self.link_effects(id);
                 return self.with_waiting_sends(links);
             }
@@ -459,6 +461,10 @@ impl App {
 /// when that editor is gone (Esc, or another one is open) the transcript says
 /// so instead.
 pub(super) fn save_not_done(chat: &mut ChatState, save: Option<&PendingSave>, reason: &str) {
+    // A save the app sent on its own (the rolling summary) fails silently.
+    if save.is_some_and(|s| s.quiet) {
+        return;
+    }
     if !chat.fail_save(save, reason) {
         chat.push_system(format!("note not saved: {reason}"));
     }

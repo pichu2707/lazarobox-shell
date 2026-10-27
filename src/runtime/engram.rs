@@ -173,6 +173,7 @@ mod tests {
             enabled,
             acknowledged,
             port,
+            save_summaries: false,
         }
     }
 
