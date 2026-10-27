@@ -31,6 +31,15 @@ pub const NOT_ENFORCED_EXIT: i32 = 125;
 /// can exit 125 on its own, so the status alone is not proof of a jail error.
 pub const NOT_ENFORCED_MARKER: &str = "lazarobox-jail: jail not enforced";
 
+/// The variable that names the descriptor the helper reports "jail not
+/// enforced" on, for a parent that cannot trust the program's own output (a
+/// program can print the marker and exit 125 itself). The descriptor is
+/// closed by the `exec` of the program, so only the helper can write to it.
+pub const STATUS_FD_VAR: &str = "LAZAROBOX_JAIL_STATUS_FD";
+
+/// The descriptor number the parent hands the status pipe on.
+pub const STATUS_FD: i32 = 3;
+
 /// First argument of the re-exec'd binary that selects the helper.
 pub const SUBCOMMAND: &str = "__jail-exec";
 
@@ -89,6 +98,20 @@ impl SeatbeltFault {
 pub enum JailSupport {
     Available { backend: Backend, abi: u32 },
     Unavailable(JailOff),
+}
+
+impl JailSupport {
+    /// Whether `run_command` may run here: only the Landlock jail confines a
+    /// toolchain run (design D18), not the macOS one.
+    pub fn runs_commands(self) -> bool {
+        matches!(
+            self,
+            Self::Available {
+                backend: Backend::Landlock,
+                ..
+            }
+        )
+    }
 }
 
 /// Why this system cannot jail a CLI at all.

@@ -254,13 +254,13 @@ Spec: command-runner "Process rules".
 
 ### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".
-- [ ] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
-- [ ] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
-- [ ] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
+- [x] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
+- [x] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
+- [x] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
 ### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
-- [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
-- [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
+- [x] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
+- [x] Xd2.2 (no-jail reason done; the live global-wait row is deferred, see apply-progress X-d2) RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
 ## Phase M4: git (0.22)
 
@@ -269,11 +269,11 @@ Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
 - [x] Ga.1 RED: argv templates for status/diff/log/add/commit with the fixed `-c` hardening, `:(exclude,glob)` pathspecs from SECRET_FILES, `:(literal)` for add. GREEN: `tools/git.rs`. ~200.
 - [x] Ga.2 RED: porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50. ~150.
 - [x] Ga.3 review fixes: parse/render split into `tools/git/parse.rs`; identity = repo's effective identity (G-b reads it); log keeps history simplification (no `--full-history`); hooks pinned to `<common-dir>/hooks` via `GitDir::new(git_dir, common_dir)`; status `--untracked-files=normal --renames`; `parse_log` validates hash/date; `check` refuses control/format chars; `add .` temp-repo test. G-b gets a checklist in design.md (see apply-progress).
-- [ ] Gb.3 (G-b, from the G-a review): the preflight reads `git config user.name/user.email` in the repo and `--absolute-git-dir` + `--git-common-dir`; assert cleared env and git >= 2.32; never pass `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT`/`KEY_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`; treat truncated status output as truncated.
+- [x] Gb.3 (G-b, from the G-a review): the preflight reads `git config user.name/user.email` in the repo and `--absolute-git-dir` + `--git-common-dir`; assert cleared env and git >= 2.32; never pass `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT`/`KEY_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`; treat truncated status output as truncated.
 
 ### G-b: git runtime (PR 21, ~350)
-- [ ] Gb.1 RED: git `JailSpec` (run spec without caches, ro XDG git ignore/attributes (identity travels as `-c`), rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
-- [ ] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
+- [x] Gb.1 RED: git `JailSpec` (run spec without caches, ro XDG git ignore/attributes (identity travels as `-c`), rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
+- [x] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
 
 ### G-c: host git read verbs (PR 28, ~300, host.rs slice: spike a seam first)
 - [ ] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.

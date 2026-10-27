@@ -501,6 +501,7 @@ fn the_drop_does_not_wait_for_the_snapshot_and_the_sink_fills_after() {
     std::fs::write(fx.root.join(".git/hooks/pre-commit"), "x").unwrap();
     let guard = AfterOnDrop {
         root: fx.root.clone(),
+        extra: Vec::new(),
         before: Some(before),
         unreported: unreported.clone(),
     };
@@ -635,4 +636,68 @@ async fn the_final_reap_is_bounded_and_says_so() {
     assert_eq!(bounded(async { Ok(7) }, REAP).await.unwrap(), 7);
     let failed = bounded(async { Err::<(), _>(io::Error::other("x")) }, REAP).await;
     assert_eq!(failed.unwrap_err().to_string(), "x");
+}
+
+// --- the helper's own channel for "the jail was not applied" ---
+
+use crate::core::ai::jail::NOT_ENFORCED_MARKER;
+
+/// A helper that cannot apply the rules: it says so on the status descriptor.
+const REFUSING: &str = "#!/bin/sh\n\
+    eval \"echo 'lazarobox-jail: jail not enforced: a rule failed' >&$LAZAROBOX_JAIL_STATUS_FD\"\n\
+    exit 125\n";
+
+fn with_helper(fx: &mut Fixture, text: &str) {
+    std::fs::write(&fx.helper, text).unwrap();
+}
+
+#[tokio::test]
+async fn a_helper_that_reports_on_the_status_channel_is_not_enforced() {
+    let mut fx = fixture();
+    with_helper(&mut fx, REFUSING);
+    let ran = run_jailed(fx.job(Program::Cargo, "true"), &parent)
+        .await
+        .unwrap();
+    let said = ran.not_enforced.expect("the helper reported");
+    assert!(said.starts_with(NOT_ENFORCED_MARKER), "{said}");
+    assert_eq!(ran.done.ended.exit, Some(125));
+}
+
+// A program can print the marker and exit 125 itself: that is its own output.
+#[tokio::test]
+async fn a_program_that_prints_the_marker_and_exits_125_is_not_believed() {
+    let fx = fixture();
+    let script = format!("echo '{NOT_ENFORCED_MARKER}: x'; exit 125");
+    let ran = run_jailed(fx.job(Program::Cargo, &script), &parent)
+        .await
+        .unwrap();
+    assert_eq!(ran.not_enforced, None);
+    assert_eq!(ran.done.ended.exit, Some(125));
+}
+
+// A run that fails after it started (the group could not be owned, the reap
+// timed out) hands its changes over before it returns the error: the caller
+// drains the sink right away, and a detached drop-time snapshot would not be
+// there yet.
+#[tokio::test]
+async fn a_run_that_failed_after_it_started_hands_its_changes_over_at_once() {
+    let fx = fixture();
+    let unreported = Unreported::default();
+    let before = watched(&fx.root, &[]).await;
+    std::fs::write(fx.root.join(".git/hooks/pre-commit"), "x").unwrap();
+    let guard = AfterOnDrop::new(fx.root.clone(), Vec::new(), before, unreported.clone());
+    after_failure(guard).await;
+    let found = unreported.drain();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::Added);
+}
+
+#[tokio::test]
+async fn a_failed_run_that_changed_nothing_hands_nothing_over() {
+    let fx = fixture();
+    let unreported = Unreported::default();
+    let before = watched(&fx.root, &[]).await;
+    let guard = AfterOnDrop::new(fx.root.clone(), Vec::new(), before, unreported.clone());
+    after_failure(guard).await;
+    assert_eq!(unreported.drain(), []);
 }

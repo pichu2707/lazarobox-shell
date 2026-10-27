@@ -849,3 +849,102 @@ Notes:
 - Hooks: `GitDir::new(git_dir, common_dir)` pins `core.hooksPath=<common-dir>/hooks` (a linked worktree's git dir has no hooks); test for the linked-worktree case; `hooks_notice` says "lazarobox runs only the repo hooks folder".
 - Hardening: status adds `--untracked-files=normal --renames`; `parse_log` drops records whose hash is not 40/64 hex or whose date is not strict ISO 8601 (a `\x1f` in the author shifts the fields); `check` refuses control and format characters in paths; temp-repo test for `add .` (stages all but secrets).
 - G-b checklist recorded in design.md (cleared env, git >= 2.32, env vars never passed, truncated status stays truncated). Not implemented here.
+
+### G-b: git runtime (feat/coding-tools-gb)
+- Done: Gb.1, Gb.2, Gb.3. `runtime/tools/git.rs` (about 300 non-comment lines) + `git/tests.rs` (15 tests, 8 of them on a temp repo under `$HOME`, skipped without git or HOME).
+- API: `Ctx{helper, git, home, root, scratch_parent, timeout}`; `open(&ctx, read) -> Repo{dir: GitDir, dirs, identity: Result<Identity, GitError>, configured_hooks}`; `run(&ctx, &repo, argv, read_verb, read) -> Ran{done, leftovers}`; `status_output(&Done) -> Output::{Text, Truncated, Failed}` (parse only `Text`); pure pieces `jail_spec`, `git_env`, `check_env`, `version_ok`, `pointer_dirs`.
+- Design choices: no edit to `runner.rs`/`integrity.rs`/`scratch.rs`. Git is not a `Program` (that is the run_command allow-list), so it goes through `spawn_core` + `JailArgs` directly, and `toolchain_spec` is called with a placeholder `Program::Cargo` and `/usr/bin/git`; then caches are dropped (`rw` = the private TMPDIR + git dirs), net closed, toolchain rlimits.
+- A git dir under the root gets no rule (R29: `rw` under the `rwx` root would be `WritableExec`; confirmed with the real helper). Dirs outside the root (linked worktree: `.git/worktrees/<n>` and the common dir) are `rw`, refused when broad (`broad_place`) or when `check_exec` fails.
+- Preflight chicken-and-egg: in a linked worktree the git dir is outside the root, so even `rev-parse` cannot read it. `pointer_dirs` reads the worktree's `.git` file (`gitdir:`) and `commondir` and grants them `ro` for the preflight only; the real run then gets `rw` on what `rev-parse` reported. Verified by hand with the real `__jail-exec` (plain repo, linked worktree with ro and rw common dir).
+- Identity and `core.hooksPath` are read by `git config -z --get-regexp` run OUTSIDE the jail (user decision: global config in scope), through `spawn_core` with a tiny env (PATH, HOME, XDG_CONFIG_HOME, `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`). It only reads values. An unset or invalid identity is `Err(GitError::Identity)` in `Repo.identity` (the commit is refused then).
+- Env: scrub output filtered to PATH/HOME/USER/LANG/LC_ALL/TMPDIR/TERM (+ `XDG_CONFIG_HOME` when set) plus `core::git::env`. `check_env` fails closed if any `GIT_*` name beyond the fixed set is present or a fixed value is missing (covers `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT/KEY_*/VALUE_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`).
+- Version: `git --version` in the jail, must be >= 2.32 (`Fault::Version`).
+- Gb.2 test has a control: a plain git run first proves the planted `core.fsmonitor`/`diff.external`/`core.pager` do create the marker; the hardened run through `run()` does not. The unit tests use a stand-in helper (no Landlock), so the real-jail evidence is the manual run above.
+- Limits for G-c/G-d: (1) hooks live in `<common>/hooks`; for a worktree whose common dir is outside the root that dir is `rw` not `rwx`, so a hook cannot be executed in the jail (git ignores a non-executable hook). (2) A commit's hooks run in the jail and can write `.git/hooks` and `.git/config` (rw): the X-c3 integrity compare is NOT wired around git runs; G-c/X-d1 should decide. (3) tests need a root outside `/tmp` (broad place), so they use `tempdir_in($HOME)`.
+
+### G-b review fixes (feat/coding-tools-gb)
+- 1 (HIGH) planted `.git` file: `pointer_dirs` now returns `Result<Vec<PathBuf>, Fault>`. A git dir (or common dir) outside the root is accepted only as a genuine linked worktree: directly under `<common>/worktrees/`, `commondir` resolves to the common dir, and the `gitdir` back-link canonicalizes to `<root>/.git`; otherwise `Fault::Dir`. A non-worktree `.git` pointing outside the root (`--separate-git-dir`) is refused by design. `open` also refuses a rev-parse answer outside the root and the vouched dirs.
+- 2 (HIGH) integrity around git runs: `jailed` takes the X-c3 snapshot before and after (same `AfterOnDrop` guard as the runner, now `pub(crate)`), `Ran.changes` added, `Ctx.unreported` sink added. `integrity::snapshot_with_git_dirs(root, extra)` also watches `config`, `config.worktree`, `hooks/*` and modules of the rw git dirs outside the root (keyed by absolute path), each through a beneath-open. The read-only preflight calls are not watched.
+- 3 (MEDIUM) pointer reads: `read_small` opens beneath (no link followed), checks type and size on the opened file (regular, <= 4 KiB), `take()`s; `open` runs `pointer_dirs` in `spawn_blocking`.
+- 4 (MEDIUM) unjailed `git config`: exit other than 0/1, timeout or truncated capture is `Fault::Preflight`; PATH goes through `scrub` (`safe_path`).
+- 5 (LOW) temp-repo tests print a skip line; real-helper Landlock test `a_git_commit_in_the_real_jail_cannot_write_outside_its_grants` in `tests/jail.rs` (commit works, hook writes inside the root, a write outside the grants is denied).
+- 6 (LOW) `Fault::Spec(PathBuf)` names the git path; comment on the `Program::Cargo` placeholder: git outside the toolchain's system rx places is refused by design.
+- API changes: `pointer_dirs -> Result<Vec<PathBuf>, Fault>`; `Ctx.unreported: Unreported`; `Ran.changes: Vec<Change>`; `Fault::Spec(PathBuf)`; `integrity::snapshot_with_git_dirs`; `runner::{AfterOnDrop, watched}` now `pub(crate)` (`watched` takes extra dirs).
+- TDD: tests first (RED = compile errors on the new API), then code; audit test forced `open_beneath` instead of `OpenOptions` for the pointer reads.
+## Batch: slice X-d1 (host `run_command`, PR 26, branch feat/coding-tools-xd1, base feat/coding-tools-ga2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xd1 core: `Call::RunCommand`, `run_command` ToolDef (Exec family), `ApprovalAsk::Exec`, minimal app prompt arm | done | feat(tools): offer run_command in the Exec family and always ask for it |
+| Xd1.1 refusals before the ask (no jail, root policy, cwd, allow-list with `package.json` scripts, staged batch, busy chat) + Xd1.2 `RunGate` | done | feat(tools): refuse a command before it asks and gate one run per chat |
+| Xd1.3 run after `y`: gate, job, `run_jailed`, `RunOutcome`, changes note | done | feat(tools): run an approved command in the sandbox and report what it changed |
+
+Seam: all logic lives in the new `runtime/tools/host/{exec,gate}.rs` (children of `host`). `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 18 lines): field `exec: exec::Exec` + its init in `ToolHost::new`; one arm in the pre-ask `match (valid, locality)` (`Call::RunCommand` -> `exec::plan`, refusal sets `checked = Err`, success asks with `ask_for`); one arm in the decision match (`(Decision::Sent, Call::RunCommand)` -> `exec::run`); `mod exec; mod gate;` and the test modules. `files::gate` also refuses an Exec call when the family is off (unknown tool). No seam avoids host.rs: the refusals need an async step before the ask, and the run is a new decision arm.
+
+Design points:
+- `Call::RunCommand { args: Value }` keeps the model's object (shape already checked by `RUN_ARGS`); the allow-list needs `package.json` so `exec::inspect` calls `parse_run(args, &scripts)` before the ask and again after `y`. Scripts come from the `package.json` of the resolved cwd (plain file, <= 256 KiB, not a link).
+- Refusal order: family, jail (Landlock only), root policy (origin canonical, not HOME, `judge_real`), cwd (`plain_relative` + canonical inside the root), allow-list, text that would not show as it is (`clean(arg) != arg`), staged batch (`Staging` = "propose them first", `Proposed` = waiting for review), busy chat. All before any prompt.
+- `ask_for(RunCommand)` always returns `ApprovalAsk::Exec{program,args,cwd}` (any locality, any mode; the app never routes it). The host refuses text the prompt could not show exactly, so `y` approves what runs.
+- `RunGate`: `claimed: HashSet<StageKey>` + `Semaphore(2)`, 60 s wait cap, `Permit` frees both on drop (also a call cancelled while it waits). Taken after `y`, before spawn. `is_busy` is also checked before the ask.
+- Result: `RunOutcome::render` (facts line, then the output wrapped as data); non-zero exit is an ok result; exit 125 plus the helper marker is an error ("the Linux sandbox could not be applied"). `changes_note` appends the watched-git-place changes (names inside the data wrapper, "not reverted"); an unchecked change adds "could not verify git hooks and config after this run". It is the ONE function that reads an integrity `Kind` (`Added|Changed|Removed` explicit, `_` = unchecked), so the `Crowded` -> `Unchecked` rename needs no edit. `Exec.sink(key)` is the per-chat `Unreported`; every result drains it. X-d2 can drain it for a notice.
+- Private temp folder: `$XDG_RUNTIME_DIR/lazarobox-run`, else `<data>/lazarobox/run` (`Scratch::unique`, removed after the run).
+- Program: first executable on the scrubbed PATH (pytest: `<root>/.venv/bin/pytest` first), canonical, passed as `Layout.program`; arg0 comes from the runner.
+
+TDD evidence: core tests RED = `E0599 no variant RunCommand / Exec, no method is_exec` (4 errors); gate tests RED = `E0583 file not found for module gate`; host tests RED = `E0609 no field helper/read on Exec` (3 errors). The app prompt test and the host refusal tests passed on first run (written before the code, compile-RED). Real jail smoke (throwaway test, removed): `go test` through `target/debug/lazarobox-shell __jail-exec` started in Landlock and was refused by the jail on a GOCACHE outside the grants, as it should.
+
+Known gaps / notes:
+- The unchecked-kind case has no test here (the variant is `Crowded` on this branch and `Unchecked` after the rebase): add one `changes_note` test after the rebase.
+- PATH is the process PATH, not the login-shell extended one the CLI engines use: a GUI launch may not find `~/.cargo/bin`. X-d2 or a follow-up can pass `CliEnv.path`.
+- macOS: `jailed()` accepts only the Landlock backend.
+- Tests that need a project outside `/tmp` (the toolchain spec refuses scratch folders) build their world under `target/`.
+
+### X-d1 review fixes (feat/coding-tools-xd1)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | HIGH: a program printing the marker and exiting 125 returned before `ran.changes` was read | The helper reports "jail not enforced" on a status pipe (descriptor 3, number in `LAZAROBOX_JAIL_STATUS_FD`), closed by the `exec` of the program, so the program cannot write it. `Ran.not_enforced` carries it. `go` reads `ran.changes` and drains the sink FIRST and `failed()` appends the changes note on every error path. Exit 125 plus a forged marker is now a normal result. Descriptor plumbing lives in `runtime/proc.rs` (the audit forbids `libc::fcntl/dup2` in tool files). |
+| 2 | MEDIUM: `.venv/bin/pytest -> /bin/sh` | A venv candidate counts only when its real path starts with the root; otherwise the search falls through to the PATH. |
+| 3 | MEDIUM: npm/yarn/pnpm script bodies | `npm run <x>` is checked against the declared scripts. `ApprovalAsk::Exec` gained `script: Option<String>` (sanitized `name: body` lines, 200 chars each, with `pre`/`post`). The host keeps the whole `scripts` object at ask time (not a hash: nothing to collide) and refuses after `y` with "package.json changed after the question; ask again". |
+| 4 | MEDIUM: output to a cloud model | `exec::plan` refuses `Locality::Cloud` ("commands run only with a local model for now"). Marked `REMOVED BY X-d2`: delete the check and the `CLOUD` const. |
+| 5 | LOW-MEDIUM: prompt rendering | Args that are empty or have whitespace, quotes, `\`, `$` or a backtick show shell-quoted; args with control characters are refused; the folder moved from the clipped head row to a command row (`in <cwd>`), so `fits` checks it. Script lines show as `script ...` rows. |
+| 6 | Test for `Kind::Unchecked` in `changes_note` | Added (`an_unchecked_place_says_the_project_may_be_tainted`). |
+
+TDD evidence: RED seen for 1 (runner test `a_helper_that_reports_on_the_status_channel_is_not_enforced`, jail integration tests, 3 host tests), 2 (3 venv tests), 3 (2 host tests, 1 allow test), 5 (5 app tests, 1 host test). 4, 6 and the `script_line` test were written together with the code (they passed at first run).
+
+API notes for X-d2: `Plan` has `pin: Option<Pin>`; `exec::run` takes the ask-time `Option<Pin>`; `ApprovalAsk::Exec` has `script`; `ask_for` leaves it `None` and the host fills it. The prompt command is now `cmd\nin cwd[\nscript ...]` and the target is the fixed "run a command in the sandbox": the X-d2 notice goes in `why`, not the head. Remove the cloud check in `exec::plan`. `runner::spawn_with` is private; `Ran` gained `not_enforced`; `spawn_core`/`Run`/`Done` unchanged (git.rs untouched).
+
+## Batch: slice X-d2 (Exec ask and notice, branch feat/coding-tools-xd2, base feat/coding-tools-xd1)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Audit 3: a run that fails after it started reports its git changes (`after_failure` takes the after-snapshot before returning the error) | done | fix(tools): report git changes of a run that failed after it started |
+| Audit 1+2: install/ci show the lifecycle scripts (pinned like other scripts); npm/yarn/pnpm `test`/`run` refused without a `package.json` in the cwd | done | fix(tools): show install scripts and run npm scripts only beside package.json |
+| Xd2.1 notice, timeout, tier-B, cloud flag, earlier-run note; cloud refusal removed | done | feat(tools): ask for every command with the env, network and output notice |
+| Xd2.2 Exec menu row reason | done (no-jail); global-wait row DEFERRED | feat(menu): say on the Exec row that commands need the Linux sandbox |
+
+Decisions / deviations:
+- The notice is NOT in `ApprovalPrompt.why`: `why` is advice that is dropped when the pane is short, and the spec says the notice MUST be visible. `ApprovalPrompt` gained `notice: Option<String>`, drawn as `Part::Notice` rows after the command and counted by `fits` (own budget on top of `MAX_COMMAND_ROWS`), so a pane too small for it does not let `y` through.
+- `ApprovalAsk::Exec` gained `timeout_secs` (host fills the clamped value), `cloud` (`ask_for` sets it from the locality) and `earlier` (host fills from `Unreported::peek`, the sink stays intact for the model). `exec::fill` replaces the inline script fill in `host.rs` (net fewer lines there).
+- Tier-B: static per-program line of the project files the program runs (`allow::runs_files`), plus the install line (`allow::installs`). It does not look at which files the chat wrote.
+- Audit 2 chose the refusal: "run it from the folder that has package.json". The old yarn test now expects that text.
+- `JailSupport::runs_commands` is the single Landlock-only check (host `jailed()` and the menu share it). `MenuState::with_sandbox` default is "fine" so existing menu snapshots are untouched; the app passes its probe.
+- DEFERRED: the live "waiting for a slot" state of the global cap. The wait happens in `RunGate::acquire` after `y`; showing it needs a new stream event (the transcript row has no update channel). The refusal after 60 s already reads "too many commands are running; try again later".
+- README has no Exec/coding-tools section on this branch, so it was not touched; CHANGELOG `[Unreleased]` was written.
+- Optional LOW done: `display_word` quotes `; | & < > ( ) * ? # ~ { } !`.
+
+TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2 host tests failing (install script not shown, no refusal outside the package folder); Xd2.1 RED = compile errors on the new `Exec` fields, `exec_notice`, `Part::Notice`, `ApprovalPrompt.notice`, `peek`; Xd2.2 RED = `E0599 no method with_sandbox`.
+
+### X-d2 review fixes (feat/coding-tools-xd2)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | MEDIUM: `npm/yarn/pnpm install\|ci` outside a `package.json` folder ran unseen parent scripts | `runs_scripts` is now any package-manager call: with no `package.json` in the cwd it is refused ("run it from the folder that has package.json"). Test loops test, run, install and ci. |
+| 2 | MEDIUM: unbounded paths in `earlier_note` could push the notice past the row cap and disable `y` for the chat | Each path is cut at 60 columns, the line at 240: "N places under .git were touched by a cancelled run (not reverted): a, b, c, …". `exec_notice` no longer prefixes it. Tests: very long paths stay within 240 columns and the prompt fits at 80 and 100 columns. |
+| 3 | LOW: `--ignore-scripts` | `allow::skips_scripts` (flag present and not turned off by `=...` or `--no-ignore...`): the notice says "install scripts are skipped" and the pin shows no bodies; otherwise "and, depending on the package manager, its dependencies" plus "`--ignore-scripts` skips them". |
+| 4 | LOW: `pin()` hooks | Install also shows `preprepare`/`postprepare` (npm) and `prepublish` (yarn). |
+| 5 | LOW: tier-B | `.npmrc` for npm/pnpm, `.yarnrc.yml` for yarn (`allow::runs_files`). |
+| 6 | LOW: `wanted` cap by width | When the text would fit the row cap at a wide pane, the marker says "widen the pane" (`TOO_WIDE_TEXT`); otherwise the old marker. Still fail-closed: `fits` unchanged. |
+| 7 | LOW: `display_word` | Also quotes `[`, `]`, `^`. |
+| 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
+
+TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.

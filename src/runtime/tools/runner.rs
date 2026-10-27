@@ -11,7 +11,8 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::io::Read;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,7 +23,9 @@ use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 use tokio::process::Command;
 
-use crate::core::ai::jail::{JailArgs, JailSpec, NetBind, Rlimits};
+use crate::core::ai::jail::{
+    JailArgs, JailSpec, NOT_ENFORCED_MARKER, NetBind, Rlimits, STATUS_FD, STATUS_FD_VAR,
+};
 use crate::core::ai::toolchain::env::scrub;
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::run::{Capture, Ended};
@@ -84,7 +87,13 @@ impl Unreported {
         std::mem::take(&mut *self.lock())
     }
 
-    fn push(&self, changes: Vec<Change>) {
+    /// A copy of what is held, left in place: the user is told of it, and the
+    /// next result still carries it for the model.
+    pub fn peek(&self) -> Vec<Change> {
+        self.lock().clone()
+    }
+
+    pub(crate) fn push(&self, changes: Vec<Change>) {
         self.lock().extend(changes);
     }
 
@@ -101,15 +110,31 @@ impl Unreported {
 /// instant between the signal and the death can still be missed (a
 /// documented limit). The result reaches [`Job::unreported`] when the thread
 /// is done.
-struct AfterOnDrop {
+pub(crate) struct AfterOnDrop {
     root: PathBuf,
+    /// Git dirs outside the root that are watched too (a linked worktree's).
+    extra: Vec<PathBuf>,
     before: Option<integrity::Snapshot>,
     unreported: Unreported,
 }
 
 impl AfterOnDrop {
+    pub(crate) fn new(
+        root: PathBuf,
+        extra: Vec<PathBuf>,
+        before: integrity::Snapshot,
+        unreported: Unreported,
+    ) -> Self {
+        Self {
+            root,
+            extra,
+            before: Some(before),
+            unreported,
+        }
+    }
+
     /// The "before", for a run that takes its own "after".
-    fn disarm(&mut self) -> integrity::Snapshot {
+    pub(crate) fn disarm(&mut self) -> integrity::Snapshot {
         self.before.take().unwrap_or_default()
     }
 }
@@ -119,12 +144,13 @@ impl Drop for AfterOnDrop {
         let Some(before) = self.before.take() else {
             return;
         };
-        let root = self.root.clone();
+        let (root, extra) = (self.root.clone(), self.extra.clone());
         let sink = self.unreported.clone();
         let spawned = std::thread::Builder::new()
             .name("lbx-after-snapshot".to_owned())
             .spawn(move || {
-                let changes = integrity::compare(&before, &integrity::snapshot(&root));
+                let changes =
+                    integrity::compare(&before, &integrity::snapshot_with_git_dirs(&root, &extra));
                 if !changes.is_empty() {
                     sink.push(changes);
                 }
@@ -177,6 +203,10 @@ pub struct Ran {
     /// What of the private folders could not be removed (their paths): say
     /// so, do not assume they are gone.
     pub leftovers: Vec<PathBuf>,
+    /// What the helper said on its status channel when it could not apply the
+    /// rules. The program cannot write there, so unlike its output this can
+    /// be believed.
+    pub not_enforced: Option<String>,
 }
 
 /// The two settings every toolchain run gets, whatever the spec says: TCP
@@ -216,20 +246,35 @@ pub async fn run_jailed(
         program: job.program,
         argv: job.argv,
     };
-    let mut guard = AfterOnDrop {
-        before: Some(watched(&job.root).await),
-        root: job.root.clone(),
-        unreported: job.unreported,
+    let mut guard = AfterOnDrop::new(
+        job.root.clone(),
+        Vec::new(),
+        watched(&job.root, &[]).await,
+        job.unreported,
+    );
+    // The helper's own channel: the program is started with it closed.
+    let (status, report) = io::pipe()?;
+    let started = spawn_with(
+        Run {
+            program: job.helper,
+            argv: args.render(),
+            cwd: job.cwd,
+            env,
+            timeout: job.timeout,
+        },
+        Some(report),
+    )
+    .await;
+    let done = match started {
+        Ok(done) => done,
+        Err(error) => {
+            // The program may have run before the error: say what it changed.
+            after_failure(guard).await;
+            return Err(error);
+        }
     };
-    let done = spawn_core(Run {
-        program: job.helper,
-        argv: args.render(),
-        cwd: job.cwd,
-        env,
-        timeout: job.timeout,
-    })
-    .await?;
-    let after = watched(&job.root).await;
+    let not_enforced = said(status);
+    let after = watched(&job.root, &[]).await;
     let changes = integrity::compare(&guard.disarm(), &after);
     let folders = cleanup.take();
     let leftovers = tokio::task::spawn_blocking(move || {
@@ -244,13 +289,40 @@ pub async fn run_jailed(
         done,
         changes,
         leftovers,
+        not_enforced,
     })
 }
 
-/// [`integrity::snapshot`] off the event loop.
-async fn watched(root: &Path) -> integrity::Snapshot {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || integrity::snapshot(&root))
+/// Takes the "after" of a run that failed once it had started and hands the
+/// changes to the sink before the error is returned. The drop of the guard
+/// would do it on a detached thread, which the caller cannot wait for: it
+/// drains the sink right after the error.
+async fn after_failure(mut guard: AfterOnDrop) {
+    let after = watched(&guard.root, &guard.extra).await;
+    let changes = integrity::compare(&guard.disarm(), &after);
+    if !changes.is_empty() {
+        guard.unreported.push(changes);
+    }
+}
+
+/// What the helper wrote on its status pipe, when it is the "not enforced"
+/// line. Called after the run ended, so every writer is gone and the read ends
+/// at once; it never waits.
+fn said(reader: io::PipeReader) -> Option<String> {
+    crate::runtime::proc::nonblocking(&reader);
+    let mut text = Vec::new();
+    // At most a line is read; an error or "would block" is "nothing said".
+    let _ = reader.take(4096).read_to_end(&mut text);
+    String::from_utf8_lossy(&text)
+        .lines()
+        .find(|line| line.starts_with(NOT_ENFORCED_MARKER))
+        .map(str::to_owned)
+}
+
+/// [`integrity::snapshot_with_git_dirs`] off the event loop.
+pub(crate) async fn watched(root: &Path, extra: &[PathBuf]) -> integrity::Snapshot {
+    let (root, extra) = (root.to_path_buf(), extra.to_vec());
+    tokio::task::spawn_blocking(move || integrity::snapshot_with_git_dirs(&root, &extra))
         .await
         .unwrap_or_default()
 }
@@ -269,6 +341,12 @@ const CHUNK: usize = 16 * 1024;
 /// Starts `run`, reads its output until it ends and reaps it. Dropping the
 /// future kills the whole process group.
 pub async fn spawn_core(run: Run) -> io::Result<Done> {
+    spawn_with(run, None).await
+}
+
+/// [`spawn_core`], handing the program `status` as descriptor [`STATUS_FD`]
+/// (its number in [`STATUS_FD_VAR`]) for the jail helper to report on.
+async fn spawn_with(run: Run, status: Option<io::PipeWriter>) -> io::Result<Done> {
     let started = Instant::now();
     let (reader, writer) = io::pipe()?;
     let mut command = Command::new(&run.program);
@@ -282,9 +360,14 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
         .stderr(writer)
         .kill_on_drop(true)
         .process_group(0);
+    if let Some(status) = &status {
+        command.env(STATUS_FD_VAR, STATUS_FD.to_string());
+        crate::runtime::proc::hand_over(&mut command, status.as_raw_fd(), STATUS_FD);
+    }
     let mut child = spawn(&mut command).await?;
     // The command holds the write ends: until it is gone the pipe never ends.
     drop(command);
+    drop(status);
     let pid = child.id().and_then(|id| libc::pid_t::try_from(id).ok());
     // Declared after `child`, so it drops first and kills the group.
     let Some(mut group) = pid.and_then(GroupKill::new) else {

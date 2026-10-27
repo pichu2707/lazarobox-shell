@@ -30,6 +30,7 @@ impl ChatView<'_> {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Part::Command(t) => (t, base.fg(self.theme.success_green)),
+                Part::Notice(t) => (t, base.fg(self.theme.warning_orange)),
                 Part::Why(t) | Part::Marker(t) | Part::Keys(t) => {
                     (t, base.fg(self.theme.text_muted))
                 }
