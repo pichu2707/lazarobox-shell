@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/context_tests.rs
+expression: "draw(Some(63), None, None, 70).trim_end()"
+---
+ ◐ CHAT  /srv/app                    llamacpp › qwen · context 63%

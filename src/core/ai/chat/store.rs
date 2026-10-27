@@ -157,6 +157,10 @@ pub enum StoreReply {
         /// Note rows of the conversations retention removed. Their notes stay
         /// in engram; only the link is gone.
         evicted_notes: u32,
+        /// When the conversation was created, in seconds since the Unix
+        /// epoch: with the id it names this conversation for its whole life
+        /// (ids are reused after a delete).
+        created_at: i64,
     },
     /// The store cannot be used at all; `reason` is already bounded.
     Unavailable {

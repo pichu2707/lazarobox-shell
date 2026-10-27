@@ -6,7 +6,7 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use super::*;
 use crate::{
-    app::AppEvent,
+    app::{AppEvent, Effect},
     core::ai::{
         Detection, EngineState, Status,
         chat::engine::{Finish, StreamEvent},
@@ -87,7 +87,7 @@ fn send(app: &mut App, text: &str) -> u64 {
         KeyModifiers::NONE,
     )));
     match effects.as_slice() {
-        [crate::app::Effect::ChatSend { turn, .. }] => *turn,
+        [Effect::ChatSend { turn, .. }] => *turn,
         other => panic!("expected one ChatSend, got {other:?}"),
     }
 }
@@ -321,4 +321,206 @@ fn memory_off_and_a_shell_pane_show_no_memory_text() {
         line.contains("zsh") && !line.contains("mem:"),
         "shell: {line}"
     );
+}
+
+// chat-memory S1 / S2: the context fill ----------------------------------------
+
+/// A chat whose engine reports a context window of `window` tokens.
+fn windowed_app(window: Option<usize>) -> App {
+    let mut app = App::new(COLS, ROWS)
+        .with_env(Some("/bin/zsh"), None, "/srv/app".into())
+        .with_ai(ollama());
+    app.update(AppEvent::EnginesDetected(Detection {
+        windows: window.map(|w| ("ollama", w)).into_iter().collect(),
+        ..ready_detection()
+    }));
+    prefixed(&mut app, "c");
+    app.update(AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
+    app
+}
+
+#[test]
+fn a_chat_shows_no_fill_before_its_first_send() {
+    assert!(!status(&windowed_app(Some(10_000))).contains("context"));
+}
+
+#[test]
+fn the_fill_is_the_share_of_the_engines_window_after_a_send() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    // 1 history + 2 system + 1500 tools reserve = 1503 of 10000.
+    let line = status(&app);
+    assert!(line.contains("ollama › llama3:8b · context 15%"), "{line}");
+}
+
+#[test]
+fn without_a_window_there_is_no_fill_to_show() {
+    let mut app = windowed_app(None);
+    send(&mut app, "hi");
+    let line = status(&app);
+    assert!(!line.contains("context"), "{line}");
+}
+
+#[test]
+fn a_smaller_window_fills_faster() {
+    let mut app = windowed_app(Some(3_000));
+    send(&mut app, "hi");
+    let line = status(&app);
+    // 1503 of 3000.
+    assert!(line.contains("context 50%"), "{line}");
+}
+
+#[test]
+fn a_shell_pane_shows_no_fill() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    prefixed(&mut app, "h");
+    assert!(!status(&app).contains("context"));
+}
+
+#[test]
+fn snapshot_a_chat_status_with_the_context_fill() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    insta::assert_snapshot!("chat_status_context_fill", status(&app).trim_end());
+}
+
+// chat-memory review fixes: the window reaches the turn through `send_text`,
+// and a failing llama-server asks for a fresh probe ----------------------------
+
+/// Types `text`, presses Enter and returns what the app asked for.
+fn submit(app: &mut App, text: &str) -> Vec<Effect> {
+    keys(app, text);
+    app.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )))
+}
+
+fn sent_messages(effects: &[Effect]) -> usize {
+    match effects {
+        [Effect::ChatSend { request, .. }] => request.messages.len(),
+        other => panic!("expected one ChatSend, got {other:?}"),
+    }
+}
+
+fn answer(app: &mut App, turn: u64) {
+    app.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Delta("a".repeat(400)),
+    ));
+    app.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+}
+
+/// The messages the second request of a chat carries after a long first
+/// exchange, with `window` as the engine's reported window.
+fn second_request_messages(window: Option<usize>) -> usize {
+    let mut app = windowed_app(window);
+    let first = submit(&mut app, &"q".repeat(400));
+    let [Effect::ChatSend { turn, .. }] = first.as_slice() else {
+        panic!("one ChatSend: {first:?}");
+    };
+    answer(&mut app, *turn);
+    sent_messages(&submit(&mut app, &"w".repeat(400)))
+}
+
+#[test]
+fn the_detected_window_sizes_the_turn_sent_by_the_app() {
+    // Unknown: the character cap keeps the whole exchange (3 messages).
+    assert_eq!(second_request_messages(None), 3);
+    // 1000 * 75% = 750 tokens, less the 1500 tools reserve: no room, so only
+    // the newest message goes.
+    assert_eq!(second_request_messages(Some(1_000)), 1);
+    // A roomy window keeps everything.
+    assert_eq!(second_request_messages(Some(100_000)), 3);
+}
+
+/// An app whose chat is on llama-server, with its window detected.
+fn llamacpp_app() -> App {
+    let mut ai = AiConfig::default();
+    ai.set(
+        Task::Chat,
+        Assignment {
+            engine: Some("llamacpp".into()),
+            model: Some("qwen".into()),
+        },
+    );
+    let mut detection = ready_detection();
+    detection.engines[0].id = "llamacpp";
+    detection.engines[0].models = vec!["qwen".into()];
+    detection.windows = vec![("llamacpp", 16_384)];
+    let mut app = App::new(COLS, ROWS)
+        .with_env(Some("/bin/zsh"), None, "/srv/app".into())
+        .with_ai(ai);
+    app.update(AppEvent::EnginesDetected(detection.clone()));
+    prefixed(&mut app, "c");
+    app.update(AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
+    // Opening the chat started a detection: let it end, so a new one can.
+    app.update(AppEvent::EnginesDetected(detection));
+    app
+}
+
+#[test]
+fn a_llama_server_error_asks_to_detect_the_window_again() {
+    let mut app = llamacpp_app();
+    let effects = submit(&mut app, "hi");
+    let [Effect::ChatSend { turn, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    let effects = app.update(AppEvent::Chat(
+        chat_id(),
+        *turn,
+        StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(
+            "connection refused".into(),
+        )),
+    ));
+    assert!(effects.contains(&Effect::DetectEngines), "{effects:?}");
+}
+
+#[test]
+fn another_engines_error_or_a_clean_end_detects_nothing() {
+    let mut app = llamacpp_app();
+    let effects = submit(&mut app, "hi");
+    let [Effect::ChatSend { turn, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    let effects = app.update(AppEvent::Chat(
+        chat_id(),
+        *turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    assert!(!effects.contains(&Effect::DetectEngines), "{effects:?}");
+
+    let mut app = windowed_app(Some(10_000));
+    // No detection in flight, so only the engine keeps a new one away.
+    app.update(AppEvent::EnginesDetected(ready_detection()));
+    let effects = submit(&mut app, "hi");
+    let [Effect::ChatSend { turn, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    let effects = app.update(AppEvent::Chat(
+        chat_id(),
+        *turn,
+        StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(
+            "boom".into(),
+        )),
+    ));
+    assert!(!effects.contains(&Effect::DetectEngines), "{effects:?}");
 }

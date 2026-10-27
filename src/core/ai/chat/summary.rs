@@ -264,6 +264,7 @@ impl ChatState {
             role: Role::User,
             content: INSTRUCTION.to_owned(),
         });
+        self.compaction.cancel();
         self.turn += 1;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);

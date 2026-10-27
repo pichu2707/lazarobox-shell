@@ -442,3 +442,49 @@ fn an_unmanaged_llamacpp_that_is_not_running_is_undetected() {
         Availability::Undetected { .. }
     ));
 }
+
+#[test]
+fn another_task_resolves_its_own_engine_and_chat_is_unchanged() {
+    let mut c = cfg(Task::Chat, Some("ollama"), Some("llama3:8b"));
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("tiny".into()),
+        },
+    );
+    let d = detected(vec![state(
+        "ollama",
+        Status::Available,
+        &["llama3:8b", "tiny"],
+    )]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("tiny"))
+    );
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+}
+
+#[test]
+fn an_unassigned_task_inherits_general_and_a_missing_model_is_not_ready() {
+    let mut c = cfg(Task::General, Some("ollama"), Some("llama3:8b"));
+    let d = detected(vec![state("ollama", Status::Available, &["llama3:8b"])]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("gone".into()),
+        },
+    );
+    assert!(matches!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        Availability::ModelMissing { .. }
+    ));
+}
