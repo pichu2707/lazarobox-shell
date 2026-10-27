@@ -35,6 +35,7 @@ pub mod gh;
 pub mod hf;
 pub mod jail;
 pub mod jobs;
+pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;

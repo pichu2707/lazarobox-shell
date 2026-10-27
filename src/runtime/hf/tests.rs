@@ -9,7 +9,7 @@ use crate::core::ai::hf::{Choice, HubFile, Job, License};
 
 const COMMIT: &str = "9217f5db79a29953eb74d5343926648285ec7e67";
 
-fn curl_available() -> bool {
+pub(in crate::runtime) fn curl_available() -> bool {
     Command::new("curl")
         .arg("--version")
         .stdout(Stdio::null())
@@ -28,11 +28,11 @@ macro_rules! need_curl {
     };
 }
 
-type Handler = dyn Fn(&str) -> Vec<u8> + Send + Sync;
+pub(in crate::runtime) type Handler = dyn Fn(&str) -> Vec<u8> + Send + Sync;
 
 /// A local HTTP server answering every request with `handler(request)`,
 /// recording each request's head.
-fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(in crate::runtime) fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -61,7 +61,7 @@ fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
     (base, seen)
 }
 
-fn reply(status: &str, body: &[u8]) -> Vec<u8> {
+pub(in crate::runtime) fn reply(status: &str, body: &[u8]) -> Vec<u8> {
     let mut out = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -71,7 +71,7 @@ fn reply(status: &str, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn ok(body: &str) -> Vec<u8> {
+pub(in crate::runtime) fn ok(body: &str) -> Vec<u8> {
     reply("200 OK", body.as_bytes())
 }
 
@@ -90,7 +90,7 @@ fn curl(base: &str, token: Option<&str>) -> Curl {
 }
 
 /// The sha256 of `bytes` in hex: the object id the Hub gives an LFS file.
-fn sha(bytes: &[u8]) -> String {
+pub(in crate::runtime) fn sha(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
@@ -123,7 +123,7 @@ fn job(files: &[(&str, u64, u8)]) -> Job {
     }
 }
 
-fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+pub(in crate::runtime) fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
     request.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
         key.eq_ignore_ascii_case(name).then(|| value.trim())
@@ -267,7 +267,7 @@ async fn failures_name_the_repo_and_the_status() {
 
 /// A server for the files of `o/r` at COMMIT: `a.gguf` holds `body`; a
 /// Range request gets the rest from that offset.
-fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(in crate::runtime) fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
     serve(Box::new(move |request| {
         let from = header(request, "range")
             .and_then(|r| r.strip_prefix("bytes="))
@@ -290,7 +290,7 @@ fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
     }))
 }
 
-fn no_cancel() -> oneshot::Receiver<()> {
+pub(in crate::runtime) fn no_cancel() -> oneshot::Receiver<()> {
     let (tx, rx) = oneshot::channel();
     std::mem::forget(tx);
     rx

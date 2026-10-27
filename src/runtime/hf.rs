@@ -892,7 +892,7 @@ impl Hub {
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::runtime) mod tests;
 
 #[cfg(test)]
 mod hub_tests {
