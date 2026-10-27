@@ -272,3 +272,121 @@ async fn the_cancel_is_cleared_when_the_download_ends() {
     assert_eq!(reply_of(&mut rx).await.1, 1);
     assert!(installer.cancel.lock().unwrap().is_none());
 }
+
+/// An owned install of `tag` under a fresh data home: `current` -> `<tag>`.
+fn owned_home(tag: &str) -> (tempfile::TempDir, PathBuf) {
+    let home = tempfile::tempdir().unwrap();
+    let root = install::owned_root(home.path());
+    std::fs::create_dir_all(root.join(tag)).unwrap();
+    std::fs::write(root.join(tag).join("llama-server"), b"#!/bin/sh\n").unwrap();
+    std::os::unix::fs::symlink(tag, root.join("current")).unwrap();
+    let binary = root.join("current").join("llama-server");
+    (home, binary)
+}
+
+// Spec (Remove llama-server): the owned folder goes, the reply keeps the id.
+#[tokio::test]
+async fn remove_deletes_the_owned_install_and_replies_under_the_same_id() {
+    let (home, binary) = owned_home("b9000");
+    let (mut installer, mut rx) = installer("http://127.0.0.1:1", Some(home.path()));
+    installer.ask(InstallAsk::Remove(9, binary));
+    let (_, id, answer) = reply_of(&mut rx).await;
+    assert_eq!((id, answer), (9, Ok(Reply::Removed)));
+    assert!(!install::owned_root(home.path()).exists());
+}
+
+// Spec (Remove deletes owned only): a system binary is never touched.
+#[tokio::test]
+async fn remove_refuses_a_binary_outside_the_owned_folder() {
+    let (home, _) = owned_home("b9000");
+    let system = tempfile::tempdir().unwrap();
+    let binary = system.path().join("llama-server");
+    std::fs::write(&binary, b"x").unwrap();
+    let (mut installer, mut rx) = installer("http://127.0.0.1:1", Some(home.path()));
+    installer.ask(InstallAsk::Remove(2, binary.clone()));
+    let (_, id, answer) = reply_of(&mut rx).await;
+    assert_eq!(id, 2);
+    assert!(answer.is_err(), "{answer:?}");
+    assert!(binary.exists());
+    assert!(install::owned_root(home.path()).exists());
+}
+
+#[tokio::test]
+async fn remove_without_a_data_home_says_so() {
+    let (mut installer, mut rx) = installer("http://127.0.0.1:1", None);
+    installer.ask(InstallAsk::Remove(3, "/x/llama-server".into()));
+    let (_, _, answer) = reply_of(&mut rx).await;
+    assert_eq!(answer, Err(NO_HOME.to_owned()));
+}
+
+fn releases_of(tag: &str) -> String {
+    let asset = asset_name(tag, Platform::CURRENT, Variant::Cpu).expect("a build here");
+    format!(
+        r#"[{{"tag_name":"{tag}","assets":[{{"name":"{asset}","size":1234,"digest":"sha256:{}"}}]}}]"#,
+        "a".repeat(64)
+    )
+}
+
+/// Whether an event arrives within a short while.
+async fn quiet(rx: &mut mpsc::Receiver<AppEvent>) -> bool {
+    tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .is_err()
+}
+
+// Spec (Newer tag notice): a notice names the new tag; nothing is downloaded.
+#[tokio::test]
+async fn a_newer_build_becomes_a_notice() {
+    need_curl!();
+    let body = releases_of("b9100");
+    let (base, seen) = serve(Box::new(move |_| ok(&body)));
+    let (home, _) = owned_home("b9000");
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    let AppEvent::InstallWarning(notice) = next(&mut rx).await else {
+        panic!("expected a notice");
+    };
+    assert!(
+        notice.contains("b9100") && notice.contains("b9000"),
+        "{notice}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1, "only the releases lookup");
+}
+
+// Spec (Offline check silent) and (Pinned tag): nothing to say, nothing shown.
+#[tokio::test]
+async fn the_newer_check_is_silent_when_there_is_nothing_newer_or_it_fails() {
+    need_curl!();
+    let same = releases_of("b9000");
+    let (base, _) = serve(Box::new(move |_| ok(&same)));
+    let (home, _) = owned_home("b9000");
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await, "same tag");
+
+    let (base, _) = serve(Box::new(|_| {
+        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    }));
+    let (mut installer, mut rx) = self::installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await, "rate limited");
+
+    let (mut installer, mut rx) = self::installer("http://127.0.0.1:1", Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await, "offline");
+}
+
+#[tokio::test]
+async fn the_newer_check_asks_nothing_without_an_owned_install() {
+    need_curl!();
+    let body = releases_of("b9100");
+    let (base, seen) = serve(Box::new(move |_| ok(&body)));
+    let home = tempfile::tempdir().unwrap();
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await);
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "no request without an install"
+    );
+}

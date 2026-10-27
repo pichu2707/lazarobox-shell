@@ -137,6 +137,8 @@ impl Installer {
             }
             InstallAsk::Download(id, release) => self.download(id, release),
             InstallAsk::Install(id, release) => self.install(id, release),
+            InstallAsk::Remove(id, binary) => self.remove(id, binary),
+            InstallAsk::CheckNewer => self.check_newer(),
             InstallAsk::Cancel => {
                 let stop = self.cancel.lock().ok().and_then(|mut cancel| cancel.take());
                 if let Some(stop) = stop {
@@ -178,6 +180,46 @@ impl Installer {
     fn root(&self) -> Result<PathBuf, String> {
         let home = self.data_home.as_deref().ok_or(NO_HOME)?;
         Ok(install::owned_root(home))
+    }
+
+    /// Deletes the owned install `binary` belongs to; the runtime refuses a
+    /// system binary.
+    fn remove(&mut self, id: u64, binary: PathBuf) {
+        let Some(slot) = self.slot(id) else { return };
+        let home = self.data_home.clone().ok_or(NO_HOME);
+        self.spawn(id, Some(slot), async move {
+            activate::remove(&binary, &home?)
+                .await
+                .map(|()| Reply::Removed)
+        });
+    }
+
+    /// One lookup of the newest release; a newer tag than the installed one
+    /// goes out as a notice. Every failure (offline, rate limit, no install)
+    /// is silent, and nothing is downloaded. No slot: it changes no disk.
+    fn check_newer(&self) {
+        let Some(root) = self.data_home.as_deref().map(install::owned_root) else {
+            return;
+        };
+        let Some(installed) = activate::current_tag(&root) else {
+            return;
+        };
+        let curl = (self.make)(true);
+        let events = self.events.clone();
+        let Some(variant) = install::variants(Platform::CURRENT, false).first().copied() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Ok(release) = resolve(&curl, Platform::CURRENT, variant).await
+                && install::is_newer(&installed, &release.tag)
+            {
+                let notice = format!(
+                    "llama.cpp {} is available (installed {installed}): open llamacpp in the AI tab to install it",
+                    release.tag
+                );
+                let _ = events.send(AppEvent::InstallWarning(notice)).await;
+            }
+        });
     }
 
     fn download(&mut self, id: u64, release: Release) {

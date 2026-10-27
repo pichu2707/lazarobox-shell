@@ -1710,6 +1710,8 @@ impl MenuState {
                 Outcome::Copy(text) => return MenuCommand::Copy(text),
                 // The Hugging Face entry row asks for the popular models.
                 Outcome::Ask(ask) => return MenuCommand::HubAsk(ask),
+                // An owned install asks for the newer build check.
+                Outcome::Install(ask) => return MenuCommand::Install(ask),
                 _ => {}
             },
             KeyCode::Char('y') if !repeat => {

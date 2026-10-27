@@ -129,8 +129,8 @@ fn servers_have_no_custom_row() {
     }
 }
 
-// Without llama-server the Models level says so, and the Hugging Face row
-// stays reachable without touching the draft.
+// Without llama-server the Models level says so, offers to install it and
+// keeps the Hugging Face row reachable without touching the draft.
 #[test]
 fn a_not_installed_llamacpp_explains_itself_and_leaves_the_draft_alone() {
     let mut m = menu(None, None, only(&[]));
@@ -145,7 +145,14 @@ fn a_not_installed_llamacpp_explains_itself_and_leaves_the_draft_alone() {
         )),
         "{rows:?}"
     );
-    assert_eq!(cursor_label(&m), crate::core::ai::picker::HF_ROW);
+    assert_eq!(cursor_label(&m), crate::core::ai::picker::INSTALL_ROW);
+    assert!(
+        rows.iter().any(|r| matches!(
+            r,
+            Row::Pick { label, enabled: true, .. } if label == crate::core::ai::picker::HF_ROW
+        )),
+        "{rows:?}"
+    );
     send(&mut m, ch('s'));
     assert_eq!(m.ai_draft(), draft);
     assert_eq!(send(&mut m, key(KeyCode::Esc)), MenuCommand::None);

@@ -27,8 +27,11 @@ fn pending(a: &App) -> u64 {
         .install_asking()
         .expect("a request in flight")
     {
-        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
-        InstallAsk::Cancel => unreachable!("cancel has no id"),
+        InstallAsk::Resolve(id, _)
+        | InstallAsk::Download(id, _)
+        | InstallAsk::Install(id, _)
+        | InstallAsk::Remove(id, _) => id,
+        InstallAsk::Cancel | InstallAsk::CheckNewer => unreachable!("no id"),
     }
 }
 

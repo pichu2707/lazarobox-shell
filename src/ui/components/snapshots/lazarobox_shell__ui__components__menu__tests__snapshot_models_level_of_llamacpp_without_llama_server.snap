@@ -6,6 +6,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
 │ Settings │ AI        │
 │ Model for code (llam…│
 │ llama-server not ins…│
+│ install llama-server…│
 │  needs llama-server …│
 │                      │
 │                      │
@@ -21,6 +22,5 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
 │                      │
 │                      │
 │                      │
-│                      │
-│ llama-server not ins…│
+│ j/k move · Enter cho…│
 └──────────────────────┘

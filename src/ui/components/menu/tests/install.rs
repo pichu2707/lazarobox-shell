@@ -35,8 +35,11 @@ fn wizard() -> MenuState {
 /// The id of the request the wizard waits on.
 fn pending(menu: &MenuState) -> u64 {
     match menu.install_asking().expect("a request in flight") {
-        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
-        InstallAsk::Cancel => unreachable!("cancel has no id"),
+        InstallAsk::Resolve(id, _)
+        | InstallAsk::Download(id, _)
+        | InstallAsk::Install(id, _)
+        | InstallAsk::Remove(id, _) => id,
+        InstallAsk::Cancel | InstallAsk::CheckNewer => unreachable!("no id"),
     }
 }
 

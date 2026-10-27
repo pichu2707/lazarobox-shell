@@ -180,7 +180,7 @@ fn prune(root: &Path, keep: &str, previous: Option<&str>) {
 }
 
 /// The tag `current` points at, when it is one.
-fn current_tag(root: &Path) -> Option<String> {
+pub fn current_tag(root: &Path) -> Option<String> {
     let target = fs::read_link(root.join(CURRENT)).ok()?;
     let name = target.to_str()?.to_owned();
     install::tag_number(&name).map(|_| name)
