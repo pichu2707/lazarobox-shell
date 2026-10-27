@@ -29,8 +29,11 @@ pub mod chat_store;
 mod config_write;
 pub mod desktop;
 pub mod engram;
+pub mod feedback;
 pub mod gguf;
+pub mod hf;
 pub mod jail;
+pub mod jobs;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
@@ -42,6 +45,7 @@ pub(crate) mod refused_port;
 mod run_check;
 pub mod tools;
 pub mod update;
+pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
@@ -101,6 +105,8 @@ const PTY_CHANNEL: usize = 256;
 const EVENT_BUDGET: usize = 256;
 /// Time between reads of the child's working directory.
 const CWD_POLL: Duration = Duration::from_secs(1);
+/// How often the managed llama-server is checked for its idle stop.
+const IDLE_CHECK: Duration = Duration::from_secs(30);
 /// Longest a quit waits for the children to die: HUP grace (300 ms) plus the
 /// reap wait (2 s) plus margin.
 const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
@@ -118,6 +124,10 @@ const STORE_CHANNEL: usize = 64;
 const PREPARE_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the prompt jobs to the event loop.
 const PROMPT_CHANNEL: usize = 16;
+
+/// Capacity of the Hugging Face channel: the replies, and a download's
+/// progress about every 250 ms (dropped while the loop is behind).
+const HUB_CHANNEL: usize = 16;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -199,6 +209,9 @@ impl Drop for QuitGuard {
 
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
+    // First, before any child or pane exists: from here on every process
+    // group lazarobox starts is stopped once it ends, however it ends.
+    watch::start();
     // Probed off the async threads: macOS spawns `sandbox-exec` for it.
     let jail_probe = tokio::task::spawn_blocking(jail::probe);
     // Asked first so the shell runs while the rest of the start-up goes on.
@@ -232,6 +245,8 @@ pub async fn run() -> io::Result<()> {
         ))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
+        .with_hf_tokens(hf::token_facts)
+        .with_host(feedback::host_facts())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
@@ -274,6 +289,8 @@ pub async fn run() -> io::Result<()> {
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
     let (managed_tx, managed_rx) = mpsc::channel(4);
+    let (shared_tx, shared_rx) = mpsc::channel(1);
+    let (hub_tx, hub_rx) = mpsc::channel(HUB_CHANNEL);
     let update_cache = update::cache_path(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
@@ -333,17 +350,35 @@ pub async fn run() -> io::Result<()> {
         .map(|dir| dir.join("llama-server.log"));
     // The llama-server lazarobox starts itself, when `managed = true`: only a
     // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
+    // Its extra arguments, read at startup like the ports: the menu does not
+    // write them.
+    let managed_args = app.ai().managed_options().args.clone();
     let managed = app.ai().managed().map(|server| {
-        Arc::new(chat::Managed::new(
-            cli_env.path.clone(),
-            server.model.clone(),
-            server_ports
-                .port("llamacpp")
-                .expect("llamacpp is a catalog server"),
-            managed_log.clone(),
-        ))
+        Arc::new(
+            chat::Managed::new(
+                cli_env.path.clone(),
+                server.model.clone(),
+                server_ports
+                    .port("llamacpp")
+                    .expect("llamacpp is a catalog server"),
+                managed_log.clone(),
+            )
+            .with_args(managed_args.clone()),
+        )
     });
     let live = chat::LiveServers::new(server_ports, managed);
+    // The idle stop: checked now and then, with the time the menu set last.
+    live.set_idle(app.ai().managed_options().idle());
+    tokio::spawn({
+        let live = live.clone();
+        async move {
+            let mut check = tokio::time::interval(IDLE_CHECK);
+            loop {
+                check.tick().await;
+                live.stop_if_idle(Instant::now()).await;
+            }
+        }
+    });
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -368,18 +403,35 @@ pub async fn run() -> io::Result<()> {
                 );
             }
         }))
+        .with_idle(Box::new({
+            let live = live.clone();
+            move |idle| live.set_idle(idle)
+        }))
+        // The quit prompt names the llama-server when quitting would cut a
+        // reply to another lazarobox that uses it.
+        .with_shared_check(Box::new({
+            let live = live.clone();
+            move || {
+                let (live, tx) = (live.clone(), shared_tx.clone());
+                tokio::spawn(async move {
+                    if let Some(managed) = live.managed()
+                        && managed.answering_others().await
+                    {
+                        let _ = tx.send(()).await;
+                    }
+                });
+            }
+        }))
         // A save that turns the managed llama-server on: the next turns and
         // detections use it at once; the one it replaces stops for good.
         .with_manager(Box::new({
             let live = live.clone();
             let path = cli_env.path.clone();
             move |model, port| {
-                let server = Arc::new(chat::Managed::new(
-                    path.clone(),
-                    model,
-                    port,
-                    managed_log.clone(),
-                ));
+                let server = Arc::new(
+                    chat::Managed::new(path.clone(), model, port, managed_log.clone())
+                        .with_args(managed_args.clone()),
+                );
                 let old = live.manage(Arc::clone(&server));
                 let tx = managed_tx.clone();
                 tokio::spawn(async move {
@@ -465,7 +517,15 @@ pub async fn run() -> io::Result<()> {
                 chat::wires_for(cli_env.clone()),
             ),
         )
-        .with_store(chat_store::spawn_at(store_path, store_tx));
+        .with_store(chat_store::spawn_at(store_path, store_tx))
+        // The picker's Hugging Face screens: curl from the same PATH as the
+        // update check, into the Hugging Face cache.
+        .with_hub(hf::Hub::new(
+            cli_env.path.clone(),
+            hub_dir(),
+            hf::token_env,
+            hub_tx,
+        ));
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,
@@ -477,6 +537,8 @@ pub async fn run() -> io::Result<()> {
         run: run_rx,
         notified: notified_rx,
         managed: managed_rx,
+        shared: shared_rx,
+        hub: hub_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -493,26 +555,49 @@ pub async fn run() -> io::Result<()> {
         Err(error) => Err(error),
     };
 
-    // The user gets the prompt back first; the children are killed after.
+    // The user gets the prompt back first; the children are stopped after.
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
     if let Some(notice) = panes.quit_notice() {
         let _ = writeln!(io::stderr(), "{notice}");
     }
     // Quit order, and why:
-    // 1. The loop already returned, so the final Cancel and Append effects of
+    // 1. Everything lazarobox started (turns, MCP servers, the managed
+    //    llama-server) is asked to end with SIGHUP and SIGTERM at once, on a
+    //    blocking thread; only what still runs after QUIT_GRACE gets SIGKILL.
+    //    The steps below run meanwhile. If lazarobox is killed now (a terminal
+    //    closed in a hurry), the watcher repeats the same polite stop.
+    // 2. The loop already returned, so the final Cancel and Append effects of
     //    every open turn were applied (they must be emitted before the store
     //    is shut down, or the last messages are lost).
-    // 2. The store thread drains what is queued, inside STORE_JOIN_BOUND.
-    // 3. Memory flush and chat shutdown run together (network vs local
-    //    processes), each inside its own bound.
-    // 4. The PTY children are killed with whatever is left of the one bound.
+    // 3. The store thread drains what is queued, inside STORE_JOIN_BOUND.
+    // 4. Memory flush and chat shutdown run together (network vs local
+    //    processes), each inside its own bound; the chats only once step 1
+    //    is over, so nothing is killed before its grace.
+    // 5. The PTY children are stopped with whatever is left of the one bound.
+    // 6. The jobs the panes leave running (a pane is a terminal: lazarobox
+    //    never stops them) are named on stderr.
+    let polite = tokio::task::spawn_blocking(|| watch::stop_listed(watch::QUIT_GRACE));
     panes.shutdown_store(STORE_JOIN_BOUND);
     let started = Instant::now();
     panes
-        .shutdown_engines(MEMORY_QUIT_BOUND, QUIT_KILL_BOUND)
+        .shutdown_engines_after(
+            async {
+                let _ = polite.await;
+            },
+            MEMORY_QUIT_BOUND,
+            QUIT_KILL_BOUND,
+        )
         .await;
+    let sessions = std::mem::take(&mut panes.sessions);
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
+    let left =
+        tokio::task::spawn_blocking(move || jobs::left_running(&sessions, jobs::HANGUP_SETTLE))
+            .await
+            .unwrap_or_default();
+    if let Some(report) = jobs::report(&left) {
+        eprint!("{report}");
+    }
     result
 }
 
@@ -530,6 +615,21 @@ fn model_dirs() -> Arc<[PathBuf]> {
         macos: cfg!(target_os = "macos"),
     });
     found.into()
+}
+
+/// The Hugging Face cache folder downloads go to, from this process's
+/// environment, as the model scan looks for it.
+fn hub_dir() -> Option<PathBuf> {
+    let var = |name: &str| env::var_os(name).map(PathBuf::from);
+    crate::core::ai::gguf::hub_dir(&crate::core::ai::gguf::DirsEnv {
+        home: var("HOME"),
+        xdg_data_home: var("XDG_DATA_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        llama_cache: var("LLAMA_CACHE"),
+        hf_hub_cache: var("HF_HUB_CACHE"),
+        hf_home: var("HF_HOME"),
+        macos: cfg!(target_os = "macos"),
+    })
 }
 
 /// Whether `ENGRAM_HTTP_TOKEN` is set and not empty: all the app learns of
@@ -620,6 +720,10 @@ struct Inbox {
     notified: mpsc::Receiver<String>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
+    /// The llama-server lazarobox started is answering another lazarobox.
+    shared: mpsc::Receiver<()>,
+    /// The Hub's replies and the progress and end of a download.
+    hub: mpsc::Receiver<AppEvent>,
 }
 
 async fn event_loop(
@@ -665,6 +769,8 @@ async fn run_loop(
         run: mut run_rx,
         notified: mut notified_rx,
         managed: mut managed_rx,
+        shared: mut shared_rx,
+        hub: mut hub_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -772,6 +878,17 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(()) = shared_rx.recv() => {
+                if step(&mut app, AppEvent::ServerAnswersOthers, panes) {
+                    return Ok(());
+                }
+            }
+            // `panes` keeps the worker, and so a sender, for the whole loop.
+            Some(event) = hub_rx.recv() => {
+                if step(&mut app, event, panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -836,6 +953,7 @@ type TestSendFn = dyn FnMut(NotifyMode, bool, Option<Arc<AtomicBool>>);
 
 /// Starts the managed llama-server with a model on a port.
 type ManageFn = dyn FnMut(PathBuf, u16);
+type IdleFn = dyn FnMut(Option<Duration>);
 
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
@@ -900,6 +1018,7 @@ fn spawn_prepare_with(
 
 /// Builds the child of a pane; the production one is `spawn_portable`.
 type SpawnFn = Box<dyn FnMut(&SpawnSpec, PtySink) -> io::Result<Box<dyn PtyHandle>>>;
+type ListFn = dyn Fn(&[jobs::Session]) -> Vec<jobs::Job>;
 
 /// Whether the loop keeps running after a batch of effects.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -942,6 +1061,13 @@ struct Panes {
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
+    /// Sets how long the managed llama-server may sit unused. A no-op unless
+    /// `with_idle` installs one.
+    set_idle: Box<IdleFn>,
+    /// Asks, in the background, whether the llama-server lazarobox started is
+    /// answering another lazarobox; a yes comes back on its channel. A no-op
+    /// unless `with_shared_check` installs one.
+    check_shared: Box<dyn FnMut()>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -961,6 +1087,15 @@ struct Panes {
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
     store: Option<StoreHandle>,
+    /// The session of every pane spawned, closed ones included: their jobs
+    /// are what the quit prompt names.
+    sessions: Vec<jobs::Session>,
+    /// Names the jobs of `sessions`; [`jobs::running`] unless a test
+    /// installs another one with `with_lister`.
+    list_running: Box<ListFn>,
+    /// The Hugging Face requests and download. `None` ignores the hub
+    /// effects (unit tests).
+    hub: Option<hf::Hub>,
 }
 
 impl Panes {
@@ -979,6 +1114,8 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             manage: Box::new(|_, _| {}),
+            set_idle: Box::new(|_| {}),
+            check_shared: Box::new(|| {}),
             detect: Box::new(|_| {}),
             check_update: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
@@ -986,7 +1123,17 @@ impl Panes {
             run_checks: None,
             memory: Memory::off(),
             store: None,
+            sessions: Vec::new(),
+            list_running: Box::new(jobs::running),
+            hub: None,
         }
+    }
+
+    /// Sets what names the jobs still running in the panes.
+    #[cfg(test)]
+    fn with_lister(mut self, list: impl Fn(&[jobs::Session]) -> Vec<jobs::Job> + 'static) -> Self {
+        self.list_running = Box::new(list);
+        self
     }
 
     /// Moves a pending bell into the host bytes, after whatever is already
@@ -1007,13 +1154,32 @@ impl Panes {
         self
     }
 
+    /// [`Self::shutdown_engines_after`] with nothing to wait for first.
+    #[cfg(test)]
+    async fn shutdown_engines(&mut self, memory_bound: Duration, chats_bound: Duration) {
+        self.shutdown_engines_after(async {}, memory_bound, chats_bound)
+            .await;
+    }
+
     /// Flushes the memory and stops the chat turns at the same time: the flush
     /// waits on the network, the chat shutdown on local processes, and neither
-    /// needs the other. Each keeps its own bound.
-    async fn shutdown_engines(&mut self, memory_bound: Duration, chats_bound: Duration) {
+    /// needs the other. Each keeps its own bound. The chats are stopped only
+    /// once `polite` is over (the SIGHUP and SIGTERM of everything lazarobox
+    /// started, then its grace), inside `chats_bound` all the same.
+    async fn shutdown_engines_after(
+        &mut self,
+        polite: impl std::future::Future<Output = ()>,
+        memory_bound: Duration,
+        chats_bound: Duration,
+    ) {
         let chats = async {
+            // The tokio clock, so a paused test sees the polite stop's time.
+            let started = tokio::time::Instant::now();
+            let _ = timeout(chats_bound, polite).await;
             if let Some(chats) = self.chats.as_mut() {
-                chats.shutdown(chats_bound).await;
+                chats
+                    .shutdown(chats_bound.saturating_sub(started.elapsed()))
+                    .await;
             }
         };
         tokio::join!(self.memory.shutdown(memory_bound), chats);
@@ -1070,9 +1236,28 @@ impl Panes {
         self
     }
 
+    /// Sets what changes the idle time of the managed llama-server.
+    fn with_idle(mut self, set_idle: Box<IdleFn>) -> Self {
+        self.set_idle = set_idle;
+        self
+    }
+
+    /// Sets what asks whether the managed llama-server answers another
+    /// lazarobox.
+    fn with_shared_check(mut self, check_shared: Box<dyn FnMut()>) -> Self {
+        self.check_shared = check_shared;
+        self
+    }
+
     /// Sets what `Effect::DetectEngines` runs.
     fn with_detector(mut self, detect: Box<dyn FnMut(bool)>) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Sets what runs the Hugging Face effects.
+    fn with_hub(mut self, hub: hf::Hub) -> Self {
+        self.hub = Some(hub);
         self
     }
 
@@ -1097,6 +1282,13 @@ impl Panes {
     /// Starts the child of pane `id`, tagging everything it emits with `id`.
     fn spawn_pane(&mut self, id: PaneId, spec: &SpawnSpec) -> io::Result<()> {
         let handle = (self.spawn)(spec, tagged_sink(id, self.tx.clone()))?;
+        // The shell leads its own session; its start time tells it from a
+        // later process given the same pid.
+        if let Some(sid) = handle.pid().and_then(|pid| libc::pid_t::try_from(pid).ok())
+            && let Some(start) = proc::start_time(sid)
+        {
+            self.sessions.push(jobs::Session { sid, start });
+        }
         self.handles.insert(id, handle);
         Ok(())
     }
@@ -1336,6 +1528,27 @@ impl Panes {
                 // has one), the rest in the background with a report.
                 // Returns at once: the start runs on its own task.
                 Effect::StartManaged { model, port } => (self.manage)(model, port),
+                Effect::ManagedIdle(idle) => (self.set_idle)(idle),
+                Effect::HubAsk(ask) => {
+                    if let Some(hub) = &self.hub {
+                        hub.ask(ask);
+                    }
+                }
+                Effect::Download(job) => {
+                    if let Some(hub) = self.hub.as_mut() {
+                        hub.start(*job);
+                    }
+                }
+                Effect::CancelDownload => {
+                    if let Some(hub) = self.hub.as_mut() {
+                        hub.cancel();
+                    }
+                }
+                Effect::HfAccount(ask) => {
+                    if let Some(hub) = self.hub.as_mut() {
+                        hub.account(ask);
+                    }
+                }
                 Effect::NotifyTest { mode, sound } => {
                     self.bell |= rings_at_once(mode);
                     let fallback =
@@ -1347,6 +1560,13 @@ impl Panes {
                 Effect::MouseCapture(on) => {
                     self.host_out
                         .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
+                }
+                Effect::ListRunning => {
+                    (self.check_shared)();
+                    let jobs = (self.list_running)(&self.sessions);
+                    feedback.push(AppEvent::StillRunning(
+                        jobs.into_iter().map(|job| job.command).collect(),
+                    ));
                 }
                 Effect::Quit => outcome = Outcome::Quit,
             }
@@ -2362,10 +2582,105 @@ mod tests {
         assert_eq!((out.bytes, out.writes, out.flushes), (vec![], 0, 0));
     }
 
+    // Spec S8: a menu save hands the new idle time to the runtime.
+    #[test]
+    fn a_new_idle_time_reaches_the_runtime() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let set = Arc::new(Mutex::new(Vec::new()));
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_idle(Box::new({
+                let set = Arc::clone(&set);
+                move |idle| set.lock().unwrap().push(idle)
+            }));
+        let thirty = Some(Duration::from_secs(30 * 60));
+        let (outcome, feedback) =
+            panes.apply(vec![Effect::ManagedIdle(thirty), Effect::ManagedIdle(None)]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, vec![]));
+        assert_eq!(*set.lock().unwrap(), [thirty, None]);
+    }
+
+    // Spec S13 (managed-llama-server-followups): asking to quit also asks
+    // whether the managed llama-server answers another lazarobox.
+    #[test]
+    fn listing_what_runs_also_asks_about_the_shared_llama_server() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_lister(|_: &[jobs::Session]| Vec::new())
+            .with_shared_check(Box::new({
+                let asked = Arc::clone(&asked);
+                move || {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        let (outcome, feedback) = panes.apply(vec![Effect::ListRunning]);
+        assert_eq!(
+            (outcome, feedback),
+            (Outcome::Continue, vec![AppEvent::StillRunning(Vec::new())])
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn quit_effect_is_reported() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         assert_eq!(panes.apply(vec![Effect::Quit]).0, Outcome::Quit);
+    }
+
+    // Spec S7: the quit prompt names the jobs of every pane's session.
+    #[test]
+    fn listing_what_runs_names_the_jobs_of_the_spawned_panes() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                pid: Some(std::process::id()),
+                ..FakePty::default()
+            }))
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut panes = Panes::new(tx, spawn).with_lister({
+            let seen = Arc::clone(&seen);
+            move |sessions: &[jobs::Session]| {
+                seen.lock().unwrap().extend_from_slice(sessions);
+                vec![jobs::Job {
+                    pgid: 77,
+                    command: "sleep 77".into(),
+                }]
+            }
+        });
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let (outcome, feedback) = panes.apply(vec![Effect::ListRunning]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::StillRunning(vec!["sleep 77".into()])]
+        );
+        let me = std::process::id() as libc::pid_t;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [jobs::Session {
+                sid: me,
+                start: proc::start_time(me).unwrap(),
+            }]
+        );
+    }
+
+    // A pane closed before the quit still had a session: its jobs count.
+    #[test]
+    fn a_closed_pane_keeps_its_session_listed() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                pid: Some(std::process::id()),
+                ..FakePty::default()
+            }))
+        });
+        let mut panes = Panes::new(tx, spawn);
+        panes.apply(vec![
+            Effect::SpawnPane(id(1), spec()),
+            Effect::ClosePane(id(1)),
+        ]);
+        assert_eq!(panes.sessions.len(), 1);
     }
 
     // Spec: spawn failure is fed back, not fatal.
@@ -4392,6 +4707,101 @@ mod tests {
         );
         let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
         assert_eq!(dropped, start, "the chat stopped at once, not after memory");
+    }
+
+    // Spec S6: the turns are stopped only once the polite stop (SIGHUP and
+    // SIGTERM, then the grace) is over, and the memory flushes meanwhile.
+    #[tokio::test(start_paused = true)]
+    async fn quit_stops_the_chats_only_after_the_polite_stop() {
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                let (_guard, _tx) = (guard, tx);
+                std::future::pending::<()>().await;
+            })
+        });
+        let (mut panes, _chat_rx) = panes_with_chats(runner);
+        panes.apply(vec![chat_send(id(1), 1)]);
+        tokio::task::yield_now().await;
+
+        let polite = Duration::from_millis(500);
+        let start = Clock::now();
+        panes
+            .shutdown_engines_after(
+                tokio::time::sleep(polite),
+                MEMORY_QUIT_BOUND,
+                QUIT_KILL_BOUND,
+            )
+            .await;
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(
+            dropped,
+            start + polite,
+            "the turn was killed before the grace"
+        );
+    }
+
+    // Spec S6 (verifier B1): a turn still streaming when the app stops
+    // listening is not dropped (its group killed) before the polite stop.
+    #[tokio::test(start_paused = true)]
+    async fn quit_lets_a_streaming_turn_run_until_the_polite_stop_is_over() {
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                let _guard = guard;
+                loop {
+                    if tx.send(StreamEvent::Slow).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        });
+        let (mut panes, mut chat_rx) = panes_with_chats(runner);
+        panes.apply(vec![chat_send(id(1), 1)]);
+        recv(&mut chat_rx).await.unwrap();
+        // The loop is gone: nobody reads the turn's events any more.
+        drop(chat_rx);
+
+        let polite = Duration::from_millis(500);
+        let start = Clock::now();
+        panes
+            .shutdown_engines_after(
+                tokio::time::sleep(polite),
+                MEMORY_QUIT_BOUND,
+                QUIT_KILL_BOUND,
+            )
+            .await;
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(
+            dropped,
+            start + polite,
+            "the turn was killed before the grace"
+        );
     }
 
     // Memory turned on in the menu during a run has no worker: the pane that

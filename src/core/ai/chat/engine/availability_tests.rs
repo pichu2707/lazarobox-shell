@@ -422,6 +422,16 @@ fn a_managed_llamacpp_that_is_not_installed_is_still_undetected() {
     ));
 }
 
+// Verifier A8: the managed shortcut returns before the jail and gated-off
+// checks. That is right only while neither applies to llamacpp; adding it to
+// either list must move the shortcut after those checks.
+#[test]
+fn the_managed_shortcut_skips_no_check_that_applies_to_llamacpp() {
+    let skipped = "the managed shortcut in availability_with would skip this check";
+    assert!(!JAIL_REQUIRED.contains(&"llamacpp"), "{skipped}");
+    assert!(!GATED_OFF.contains(&"llamacpp"), "{skipped}");
+}
+
 // Spec: A managed llama-server is opt-in (chat gate unchanged without it).
 #[test]
 fn an_unmanaged_llamacpp_that_is_not_running_is_undetected() {

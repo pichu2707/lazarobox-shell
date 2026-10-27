@@ -6,16 +6,18 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 6] = [
+const SETTINGS: [&str; 8] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
+    "Feedback",
 ];
 
-const AI: [&str; 16] = [
+const AI: [&str; 17] = [
     "Set all tasks",
     "general",
     "code",
@@ -32,6 +34,7 @@ const AI: [&str; 16] = [
     "Git",
     "Git write",
     "Approval",
+    "Hugging Face",
 ];
 
 fn with_mods(m: &mut MenuState, code: KeyCode, mods: KeyModifiers, repeat: bool) -> MenuCommand {
@@ -183,13 +186,13 @@ fn j_and_k_wrap_inside_the_settings_tab() {
     );
     assert_eq!(m.active_tab(), 0);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Updates", "wraps back");
+    assert_eq!(selected_label(&m), "Feedback", "wraps back");
     let up = KeyCode::Up;
     let down = KeyCode::Down;
     send(&mut m, key(down));
     assert_eq!(selected_label(&m), "Statusline position");
     send(&mut m, key(up));
-    assert_eq!(selected_label(&m), "Updates");
+    assert_eq!(selected_label(&m), "Feedback");
 }
 
 #[test]
@@ -206,7 +209,7 @@ fn j_and_k_wrap_inside_the_ai_tab() {
     assert_eq!(selected_label(&m), "Set all tasks", "wraps, no crossing");
     assert_eq!(m.active_tab(), 1);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Approval");
+    assert_eq!(selected_label(&m), "Hugging Face");
     assert_eq!(m.active_tab(), 1);
 }
 
@@ -442,7 +445,7 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 18);
+    assert_eq!(MENU_BODY, 19);
 }
 
 #[test]
@@ -452,13 +455,13 @@ fn the_warning_has_warning_rows_lines() {
 }
 
 #[test]
-fn the_warning_fits_from_24_by_21() {
+fn the_warning_fits_from_24_by_22() {
     let mut m = warned();
-    m.set_term(MIN_WIDTH, 21);
+    m.set_term(MIN_WIDTH, 22);
     assert!(m.fits_warning());
-    m.set_term(MIN_WIDTH, 20);
+    m.set_term(MIN_WIDTH, 21);
     assert!(!m.fits_warning());
-    m.set_term(MIN_WIDTH - 1, 21);
+    m.set_term(MIN_WIDTH - 1, 22);
     assert!(!m.fits_warning());
 }
 
@@ -471,7 +474,7 @@ fn the_no_ai_menu_keeps_its_single_tab_layout() {
         Row::Title("Settings".into()),
         "titles stay with one tab"
     );
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
 }
 
 #[test]

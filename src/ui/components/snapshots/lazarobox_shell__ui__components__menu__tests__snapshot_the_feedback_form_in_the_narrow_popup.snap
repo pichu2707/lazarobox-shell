@@ -1,0 +1,23 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+                                                   
+                                                   
+                                                   
+                                                   
+┌ Menu ───────────────────────────────────────────┐
+│ Feedback                                        │
+│   Kind: Bug report                              │
+│   Title                                         │
+│   Scroll jumps to the top                       │
+│ › Description                                   │
+│   When a long answer streams, the view jumps bac│
+│   k to the first line.▏                         │
+│   [x] Attach the environment                    │
+│       lazarobox 0.25.1 · linux (WSL) · zsh      │
+│       WezTerm                                   │
+│       engines: ollama 0.12.3 available          │
+│                                                 │
+│ Tab next · Ctrl+S link · Esc back               │
+└─────────────────────────────────────────────────┘

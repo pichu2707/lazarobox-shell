@@ -18,6 +18,11 @@ fn main() -> std::io::Result<()> {
         let rest: Vec<OsString> = args.collect();
         std::process::exit(lazarobox_shell::runtime::mcp::shim::main(&rest));
     }
+    // The watcher lazarobox starts for itself (see `runtime::watch`).
+    if first.as_deref() == Some(OsStr::new(lazarobox_shell::runtime::watch::SUBCOMMAND)) {
+        let rest: Vec<OsString> = args.collect();
+        std::process::exit(lazarobox_shell::runtime::watch::main(&rest));
+    }
     if first.as_deref() == Some(OsStr::new(lazarobox_shell::core::desktop::SUBCOMMAND)) {
         let rest: Vec<OsString> = args.collect();
         std::process::exit(lazarobox_shell::runtime::desktop::main(&rest));
