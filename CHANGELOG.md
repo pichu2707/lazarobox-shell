@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-28
+
 ### Added
 
 - `llama-server` can be installed from lazarobox, the one documented exception
@@ -42,12 +44,26 @@ baseline.
   in the prompt.
 - A cancelled run that touched git hooks or config is told in the next
   command prompt of that chat, and still reaches the model.
+- Chat memory: the history sent to the model is now sized in tokens against
+  the engine's context window (llama.cpp reports it through `/props`), and the
+  status line shows `context N%` once the window is known.
+- When a long chat overflows the window, the messages that drop out are folded
+  into a rolling summary sent as an inert block, instead of being lost. The
+  summary uses the `summarize` task only when you set it in
+  `[ai.tasks.summarize]`, otherwise the chat's own engine and model (never the
+  general one). `[ai.chat] compaction = "off"` turns it off (default `"auto"`).
+- `[ai.memory] save_summaries = true` (off by default) also saves that summary
+  to engram, as one note per conversation. The first time it would have saved
+  one, a line in the chat explains what would be saved and how to enable it.
+- llama.cpp gets the tool loop on an OpenAI-style wire profile. It stays off
+  (`llamacpp` is not in the verified set) until it is checked against a real
+  server.
 
 ### Fixed
 
-- `npm`, `yarn` and `pnpm` `test` and `run` are refused outside the folder that
-  has the `package.json` (a manager would read a parent one that nothing
-  showed).
+- `npm`, `yarn` and `pnpm` commands (`test`, `run`, `install`, `ci`) are
+  refused outside the folder that has the `package.json` (a manager would read
+  a parent one that nothing showed).
 - A run that fails after it started now reports the git hooks and config it
   changed instead of dropping them.
 
@@ -1262,7 +1278,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...v0.25.1
