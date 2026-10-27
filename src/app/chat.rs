@@ -86,6 +86,13 @@ impl App {
         self.focused_state().chat_state().map(ChatState::mem_badge)
     }
 
+    /// How full the focused chat's context was at its last send, in percent.
+    pub fn status_context(&self) -> Option<u8> {
+        self.focused_state()
+            .chat_state()
+            .and_then(ChatState::context_percent)
+    }
+
     /// The animation frame the indicator is drawn at.
     pub fn anim_frame(&self) -> usize {
         self.anim_frame
@@ -312,6 +319,17 @@ impl App {
         let Some(system) = chat.prompt().map(str::to_owned) else {
             return Vec::new();
         };
+        // The engine's own window sizes the turn; unknown keeps the char caps.
+        let window = match availability {
+            Availability::Ready { engine, .. } => {
+                self.engines.as_ref().and_then(|d| d.window(engine))
+            }
+            _ => None,
+        };
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        chat.set_window(window);
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 chat.composer_mut().clear();

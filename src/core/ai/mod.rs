@@ -17,6 +17,7 @@ pub mod parse;
 pub mod picker;
 pub mod sanitize;
 pub mod tools;
+pub mod window;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -217,6 +218,18 @@ pub struct Detection {
     /// The llama.cpp model files found on this machine, sorted by file name;
     /// looked for only when `llama-server` is installed.
     pub local_models: Vec<std::path::PathBuf>,
+    /// The context window in tokens of the engines that report one (a
+    /// running llama-server), by engine id.
+    pub windows: Vec<(&'static str, usize)>,
+}
+
+impl Detection {
+    /// The context window of engine `id` in tokens, when it reported one.
+    pub fn window(&self, id: &str) -> Option<usize> {
+        self.windows
+            .iter()
+            .find_map(|(other, window)| (*other == id).then_some(*window))
+    }
 }
 
 /// Raw facts gathered by the runtime for one engine.

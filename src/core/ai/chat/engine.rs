@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use super::{
     adapters::{self, adapter_for},
     approval::ApprovalAsk,
+    budget,
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -396,16 +397,26 @@ pub struct Context {
 /// starts on a user message, because chat APIs reject a leading assistant one;
 /// any assistant messages that would lead it count as omitted.
 pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
+    fit(history, max_chars, |m| m.content.chars().count())
+}
+
+/// [`build_context`] counting estimated tokens instead of characters.
+pub fn build_context_tokens(history: &[ChatMessage], max_tokens: usize) -> Context {
+    fit(history, max_tokens, |m| budget::estimate_tokens(&m.content))
+}
+
+/// The window of [`build_context`], with each message weighed by `cost`.
+fn fit(history: &[ChatMessage], max: usize, cost: impl Fn(&ChatMessage) -> usize) -> Context {
     let mut used = 0;
     let mut start = history.len();
     for (i, message) in history.iter().enumerate().rev() {
-        let chars = message.content.chars().count();
+        let size = cost(message);
         let newest = i + 1 == history.len();
-        let fits = history.len() - i <= MAX_HISTORY_MESSAGES && used + chars <= max_chars;
+        let fits = history.len() - i <= MAX_HISTORY_MESSAGES && used + size <= max;
         if !newest && !fits {
             break;
         }
-        used += chars;
+        used += size;
         start = i;
     }
     while start + 1 < history.len() && history[start].role == Role::Assistant {

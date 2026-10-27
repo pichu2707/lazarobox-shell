@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+Server: llama.cpp
+Access-Control-Allow-Origin: 
+Content-Type: application/json; charset=utf-8
+Connection: close
+Content-Length: 596
+
+{"default_generation_settings":{"id":0,"id_task":-1,"n_ctx":8192,"speculative":false,"is_processing":false,"params":{"n_predict":-1,"seed":4294967295,"temperature":0.800000011920929,"top_k":40,"top_p":0.949999988079071,"stream":true},"prompt":"","next_token":{"has_next_token":true,"has_new_line":false,"n_remain":-1,"n_decoded":0,"stopping_word":""}},"total_slots":1,"model_path":"/home/user/models/qwen2.5-7b-instruct-q4_k_m.gguf","chat_template":"{% for message in messages %}{{ message.content }}{% endfor %}","bos_token":"<|endoftext|>","eos_token":"<|im_end|>","build_info":"b4567-a1b2c3d"}

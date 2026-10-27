@@ -8,6 +8,7 @@ pub mod approval;
 #[cfg(test)]
 mod approval_batch_tests;
 pub mod approval_rows;
+pub mod budget;
 pub mod claude;
 pub mod cli;
 pub mod codex;
@@ -51,7 +52,7 @@ use crate::core::{
 use composer::Composer;
 use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
-    history_chars,
+    build_context_tokens,
 };
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
@@ -295,6 +296,10 @@ pub struct ChatState {
     store: store::PaneStore,
     /// Messages to save, in order, until the app takes them.
     outbox: Vec<store::StoredMessage>,
+    /// The engine's context window in tokens, when the runtime knows it.
+    window: Option<usize>,
+    /// How full the context of the last request was.
+    fill: Option<budget::Fill>,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// `close_stream` already queued the answer in progress.
@@ -361,6 +366,8 @@ impl ChatState {
             profile: Profile::default(),
             store: store::PaneStore::new(),
             outbox: Vec::new(),
+            window: None,
+            fill: None,
             request_engine: String::new(),
             closing: false,
             reprepare_prompt: false,
@@ -377,6 +384,17 @@ impl ChatState {
             batch_badge: None,
             orphan: None,
         }
+    }
+
+    /// The context window of the engine the next turns go to, in tokens.
+    pub fn set_window(&mut self, window: Option<usize>) {
+        self.window = window;
+    }
+
+    /// How full the context of the last request was, in percent; `None`
+    /// before the first send.
+    pub fn context_percent(&self) -> Option<u8> {
+        self.fill.map(budget::Fill::percent)
     }
 
     /// What a model's `run_in_pane` does in this chat.
@@ -777,15 +795,31 @@ impl ChatState {
                 content: all[i].text.clone(),
             })
             .collect();
-        // The memory block shares the history budget: its characters come off
-        // the cap, and the newest message is kept whole whatever is left.
-        // Only an adapter that carries it gets the block, and only then does it
-        // take budget.
+        // The memory block shares the history budget: its size comes off what
+        // the history may take, and the newest message is kept whole whatever
+        // is left. Only an adapter that carries it gets the block, and only
+        // then does it take budget.
         let memory = adapters::carries_memory(engine)
             .then(|| self.memory.injected().map(|block| block.text.clone()))
             .flatten();
-        let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
-        let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
+        let told = std::mem::take(&mut self.told);
+        let system = std::iter::once(system)
+            .chain(told.iter().map(String::as_str))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let memory_text = memory.as_deref().unwrap_or_default();
+        let context = match budget::budget(engine, self.window, &system, memory_text) {
+            budget::Budget::Chars(max) => build_context(&history, max),
+            budget::Budget::Tokens { room, .. } => build_context_tokens(&history, room),
+        };
+        self.fill = Some(budget::fill(
+            engine,
+            self.window,
+            &system,
+            memory_text,
+            &context.messages,
+        ));
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
@@ -797,13 +831,7 @@ impl ChatState {
         self.request_engine = engine.clone();
         self.generation += 1;
         self.scroll = Scroll::Follow;
-        let told = std::mem::take(&mut self.told);
         self.told_sent.clone_from(&told);
-        let system = std::iter::once(system)
-            .chain(told.iter().map(String::as_str))
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
@@ -1113,3 +1141,5 @@ mod tag_editor_tests;
 mod tool_tests;
 #[cfg(test)]
 mod wait_tests;
+#[cfg(test)]
+mod window_tests;
