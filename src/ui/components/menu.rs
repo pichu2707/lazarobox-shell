@@ -664,6 +664,27 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_models_level_of_llamacpp_without_llama_server() {
+        let mut menu = picker_of("code", 0);
+        let on = |menu: &MenuState, name: &str| {
+            menu.rows(&Config::default())
+                .iter()
+                .any(|r| matches!(r, Row::Pick { label, selected: true, .. } if label == name))
+        };
+        for _ in 0..10 {
+            if on(&menu, "llamacpp") {
+                break;
+            }
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        assert!(on(&menu, "llamacpp"));
+        press(&mut menu, &[KeyCode::Enter]);
+        // Down to the Hugging Face row, so its mark is drawn selected.
+        press(&mut menu, &[KeyCode::Char('j')]);
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu)));
+    }
+
+    #[test]
     fn snapshot_level_one_lists_the_engines() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &picker_of("code", 0))));
     }

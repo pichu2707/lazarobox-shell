@@ -51,6 +51,7 @@ fn the_cursor_is_clamped_when_its_row_is_gone() {
     m.set_engines(ollama(&["llama3:8b"]));
     assert_eq!(title(&m), "Engine for code");
     assert_eq!(cursor_label(&m), "llamacpp", "the last row left");
+    assert_eq!(m.rows(&Config::default()).len(), 4, "rows left");
     assert_eq!(m.ai_draft(), AiConfig::default());
 }
 

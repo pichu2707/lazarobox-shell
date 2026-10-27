@@ -128,3 +128,27 @@ fn servers_have_no_custom_row() {
         assert!(labels.contains(&"m".to_owned()), "{id}");
     }
 }
+
+// Without llama-server the Models level says so, and the Hugging Face row
+// stays reachable without touching the draft.
+#[test]
+fn a_not_installed_llamacpp_explains_itself_and_leaves_the_draft_alone() {
+    let mut m = menu(None, None, only(&[]));
+    let draft = m.ai_draft();
+    engine_at_level_two(&mut m, "llamacpp");
+    let rows = m.rows(&Config::default());
+    assert!(
+        rows.iter().any(|r| matches!(
+            r,
+            Row::Pick { label, enabled: false, .. }
+                if label == "llama-server not installed: install it to use these models"
+        )),
+        "{rows:?}"
+    );
+    assert_eq!(cursor_label(&m), crate::core::ai::picker::HF_ROW);
+    send(&mut m, ch('s'));
+    assert_eq!(m.ai_draft(), draft);
+    assert_eq!(send(&mut m, key(KeyCode::Esc)), MenuCommand::None);
+    assert_eq!(title(&m), "Engine for code");
+    assert_eq!(m.ai_draft(), draft);
+}

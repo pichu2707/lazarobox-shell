@@ -1,0 +1,26 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
+---
+┌ Menu ────────────────┐
+│ Settings │ AI        │
+│ Model for code (llam…│
+│ llama-server not ins…│
+│  needs llama-server …│
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│ llama-server not ins…│
+└──────────────────────┘
