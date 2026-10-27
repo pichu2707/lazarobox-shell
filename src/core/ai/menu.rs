@@ -10,7 +10,7 @@ use super::{
         cycled_idle,
     },
     hf::{Answer, Ask},
-    picker::{Outcome, PickRow, Picker, Running, Target, task_label},
+    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -290,6 +290,36 @@ impl AiMenu {
 
     pub fn picker(&self) -> Option<&Picker> {
         self.picker.as_ref()
+    }
+
+    /// The result of install request `id`, for the open wizard.
+    pub fn install_reply(&mut self, id: u64, answer: Result<InstallReply, String>) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_reply(id, answer);
+        }
+    }
+
+    /// The bytes on disk of the install download that runs.
+    pub fn install_progress(&mut self, done: u64, total: u64) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_progress(done, total);
+        }
+    }
+
+    /// The wizard screen was drawn: its prompts now accept `y`/`n`.
+    pub fn install_arm(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_arm();
+        }
+    }
+
+    /// Opens the install wizard over the open picker. Tests only: the entry
+    /// row that opens it comes later.
+    #[cfg(test)]
+    pub fn open_install(&mut self, variants: Vec<crate::core::ai::install::Variant>) {
+        if let Some(picker) = &mut self.picker {
+            picker.open_install(variants);
+        }
     }
 
     /// The rows of the open picker; none when it is closed.

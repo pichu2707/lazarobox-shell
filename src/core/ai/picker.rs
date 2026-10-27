@@ -19,7 +19,7 @@ use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, s
 mod hub;
 mod install;
 pub use hub::{Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
-pub use install::{InstallAsk, Reply as InstallReply, Wizard};
+pub use install::{COPY_ROW, InstallAsk, Reply as InstallReply, Wizard};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -28,6 +28,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -53,6 +54,7 @@ mod chat_copy;
 mod context;
 mod history;
 mod hub;
+mod install;
 mod notes;
 mod offer;
 mod review;
@@ -216,6 +218,16 @@ pub enum AppEvent {
     },
     /// The running Hugging Face download ended.
     DownloadEnd(End),
+    /// The bytes on disk of the llama-server archive that downloads.
+    InstallProgress {
+        done: u64,
+        total: u64,
+    },
+    /// The result of the install step the wizard asked for; it names the
+    /// request it answers.
+    InstallReply(u64, Result<InstallReply, String>),
+    /// Why the archive's attestation was not verified: shown, not swallowed.
+    InstallWarning(String),
     /// What the runtime found for `Effect::HfAccount`.
     HfAccount(AccountReply),
     /// What became of `Effect::SendIssue`.
@@ -402,6 +414,10 @@ pub enum Effect {
     Download(Box<Job>),
     /// Stop the running Hugging Face download; its partial file stays.
     CancelDownload,
+    /// Run one step of the llama-server install wizard; the runtime answers
+    /// with `AppEvent::InstallReply` (and `InstallProgress` while it
+    /// downloads).
+    Install(InstallAsk),
     /// Connect, check or disconnect the Hugging Face account of the menu's
     /// `Hugging Face` row; the runtime answers with one
     /// `AppEvent::HfAccount`.
@@ -1681,6 +1697,9 @@ impl App {
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::InstallProgress { done, total } => self.on_install_progress(done, total),
+            AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
+            AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -1922,6 +1941,7 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::Install(ask) => vec![Effect::Install(ask)],
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
                 if let Some(menu) = self.menu.as_mut() {
@@ -7913,6 +7933,10 @@ mod app_tests {
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;
+
+    /// The llama-server install wizard of the llamacpp picker
+    /// (llama-server-install).
+    mod install;
 
     /// The Feedback row of the Settings tab (config-menu).
     mod feedback;
