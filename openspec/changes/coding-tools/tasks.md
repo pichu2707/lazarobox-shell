@@ -231,6 +231,7 @@ Spec: command-runner "Argv input and allow-list", "Refusals before start".
 Spec: command-runner "Output capture and RunOutcome".
 - [x] Xb.1 RED: 4 KiB head + 28 KiB tail ring with `[... N bytes omitted ...]`. GREEN: `tools/run.rs`. ~170.
 - [x] Xb.2 RED: `RunOutcome` (exit, signal, timed_out, cancelled, truncated, total_bytes, duration, digest <= 2 KiB tail); lossy UTF-8, `clean`, `redact`, `label::wrap`. GREEN. ~180.
+- [x] Xb.3 review fixes: head and tail decoded apart (an open OSC in the head cannot swallow the marker or tail); the 32 KiB budget is applied after decode + redaction, trimming the tail's leading side.
 
 ### X-c1: toolchain JailSpec (pure) (PR 17, ~450)
 Spec: command-runner "Jail profile".

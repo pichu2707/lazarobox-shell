@@ -79,9 +79,44 @@ impl Capture {
 
     /// The kept bytes as text for a model: lossy UTF-8 (a character the ring
     /// cut becomes U+FFFD), cleaned of control sequences, secrets redacted.
+    /// A cut output is decoded as head and tail apart and joined with the
+    /// marker, so an escape the head leaves open cannot swallow either. The
+    /// size budget is applied to the decoded text (a U+FFFD is 3 bytes for 1),
+    /// from the leading side of the tail, so `label::wrap` never drops the end.
     pub fn text(&self) -> String {
-        redact(&clean(&String::from_utf8_lossy(&self.bytes()))).text
+        let tail: Vec<u8> = self.tail.iter().copied().collect();
+        // Uncut, the output is one stream: a secret may straddle the head.
+        let (head, mut tail) = if self.truncated() {
+            (decode(&self.head), decode(&tail))
+        } else {
+            let mut all = self.head.clone();
+            all.extend(tail);
+            (String::new(), decode(&all))
+        };
+        let mut gap = if self.truncated() {
+            format!("\n[... {} bytes omitted ...]\n", self.omitted())
+        } else {
+            String::new()
+        };
+        let used = head.len() + gap.len() + tail.len();
+        if used > label::OUTPUT_CAP {
+            gap.push_str(SHORTENED);
+            let room = label::OUTPUT_CAP.saturating_sub(head.len() + gap.len());
+            let mut cut = tail.len().saturating_sub(room);
+            while !tail.is_char_boundary(cut) {
+                cut += 1;
+            }
+            tail.drain(..cut);
+        }
+        format!("{head}{gap}{tail}")
     }
+}
+
+/// Added when the decoded text had to be cut again to fit the wrapper.
+const SHORTENED: &str = "[... output shortened ...]\n";
+
+fn decode(bytes: &[u8]) -> String {
+    redact(&clean(&String::from_utf8_lossy(bytes))).text
 }
 
 /// How the child ended, as the runner saw it.
@@ -522,5 +557,63 @@ mod tests {
         let result = outcome.render(NONCE, &capture);
         assert!(result.contains("THE TAIL"));
         assert!(!result.contains(super::super::label::CAP_MARKER));
+    }
+
+    #[test]
+    fn an_unterminated_escape_in_the_head_cannot_swallow_the_marker_or_the_tail() {
+        // The head ends inside an OSC that never closes.
+        let mut data = vec![b'a'; HEAD - 5];
+        data.extend(b"\x1b]0;t");
+        data.extend(vec![b'X'; 100]);
+        data.extend(vec![b'b'; TAIL]);
+        data.extend(b"END\n");
+        let text = fed(&[&data]).text();
+        assert!(
+            text.contains("bytes omitted"),
+            "{}",
+            &text[text.len() - 80..]
+        );
+        assert!(text.ends_with("END\n"));
+        assert!(!text.contains('\x1b'));
+    }
+
+    #[test]
+    fn a_secret_across_the_head_boundary_of_an_uncut_output_is_still_redacted() {
+        let mut data = vec![b'a'; HEAD - 10];
+        data.extend(b" ghp_abcdefghijklmnopqrstuvwxyz0123456789\n");
+        let capture = fed(&[&data]);
+        assert!(!capture.truncated());
+        let text = capture.text();
+        assert!(
+            !text.contains("ghp_") && !text.contains("abcdefghij"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn replacement_heavy_output_keeps_its_tail_inside_the_wrapper_cap() {
+        // Every 0xFF becomes a 3-byte U+FFFD: 28 KiB of ring is ~84 KiB of text.
+        let mut data = vec![0xFF; 50_000];
+        data.extend(b"THE TAIL\n");
+        let capture = fed(&[&data]);
+        let text = capture.text();
+        assert!(
+            text.len() <= super::super::label::OUTPUT_CAP,
+            "{}",
+            text.len()
+        );
+        assert!(text.ends_with("THE TAIL\n"));
+        let outcome = RunOutcome::new(vec![], ended(), &capture, Duration::ZERO);
+        let result = outcome.render(NONCE, &capture);
+        assert!(result.contains("THE TAIL"));
+        assert!(!result.contains(super::super::label::CAP_MARKER));
+        // A cut head stays and the marker stays between it and the tail.
+        let mut cut = vec![b'h'; HEAD];
+        cut.extend(vec![0xFF; 50_000]);
+        cut.extend(b"THE TAIL\n");
+        let text = fed(&[&cut]).text();
+        assert!(text.starts_with("hhhh") && text.contains("bytes omitted"));
+        assert!(text.len() <= super::super::label::OUTPUT_CAP);
+        assert!(text.ends_with("THE TAIL\n"));
     }
 }
