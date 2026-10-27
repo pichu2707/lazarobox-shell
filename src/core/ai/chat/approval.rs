@@ -84,6 +84,15 @@ pub enum ApprovalAsk {
         tool: String,
         args: String,
     },
+    /// Run `program` with `args` in the sandbox, in `cwd` (relative to the
+    /// root, `.` for the root). All three are exactly what will run: the host
+    /// refuses a call whose text would not show as it is. Never routed by the
+    /// approval mode: every mode asks.
+    Exec {
+        program: String,
+        args: Vec<String>,
+        cwd: String,
+    },
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
@@ -122,6 +131,15 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         // engine it asks like a read of that file (and routes like one).
         Call::EditFile { path, .. } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
+        }
+        // A command always asks, on any engine and in any approval mode.
+        Call::RunCommand { .. } => {
+            let (program, args, cwd) = call.command()?;
+            Some(ApprovalAsk::Exec {
+                program: program.to_owned(),
+                args: args.into_iter().map(str::to_owned).collect(),
+                cwd: cwd.unwrap_or(".").to_owned(),
+            })
         }
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
@@ -1310,6 +1328,31 @@ mod tests {
                     args: r#"path: "~/x""#.into(),
                 })
             );
+        }
+    }
+
+    // Spec (command-runner, Approval on every command): a run always asks, on
+    // either locality, and shows the program, the arguments and the folder.
+    #[test]
+    fn a_run_command_call_always_asks_with_program_arguments_and_folder() {
+        let call = |cwd: Option<&str>| {
+            let mut args = serde_json::json!({"program": "cargo", "args": ["test", "-p", "x y"]});
+            if let Some(cwd) = cwd {
+                args["cwd"] = cwd.into();
+            }
+            Call::RunCommand { args }
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            for (cwd, shown) in [(None, "."), (Some("crates/x"), "crates/x")] {
+                assert_eq!(
+                    ask_for(&call(cwd), locality),
+                    Some(ApprovalAsk::Exec {
+                        program: "cargo".into(),
+                        args: vec!["test".into(), "-p".into(), "x y".into()],
+                        cwd: shown.into(),
+                    })
+                );
+            }
         }
     }
 

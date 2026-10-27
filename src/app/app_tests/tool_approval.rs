@@ -935,3 +935,32 @@ mod guard {
         );
     }
 }
+
+fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
+    ApprovalAsk::Exec {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        cwd: cwd.into(),
+    }
+}
+
+// Spec (command-runner, Approval on every command): a command asks for `y` in
+// every mode, shows what will run and where, and nothing is typed.
+#[test]
+fn a_command_asks_for_y_in_auto_mode_and_shows_the_program_the_arguments_and_the_folder() {
+    let (mut a, turn) = live();
+    super::tool_run::chat_mut(&mut a)
+        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    let ask = exec("cargo", &["test", "-p", "x"], "crates/x");
+    assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+    assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "cargo test -p x");
+    assert!(prompt.target.contains("crates/x"), "{prompt:?}");
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    announce(&mut a, turn, 2, exec("go", &["test"], "."));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}

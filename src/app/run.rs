@@ -462,6 +462,19 @@ impl App {
                 armed,
                 why: None,
             }),
+            // The program, arguments and folder are what will run, and the host
+            // refused text that would not show as it is. X-d2 adds the network
+            // and `.env` notice.
+            ApprovalAsk::Exec { program, args, cwd } => Some(ApprovalPrompt {
+                target: format!("run a command in the sandbox, in {cwd}"),
+                command: std::iter::once(program.as_str())
+                    .chain(args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                keys: EXTERNAL_KEYS,
+                armed,
+                why: None,
+            }),
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
