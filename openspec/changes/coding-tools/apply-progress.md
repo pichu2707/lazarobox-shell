@@ -897,3 +897,18 @@ Known gaps / notes:
 - PATH is the process PATH, not the login-shell extended one the CLI engines use: a GUI launch may not find `~/.cargo/bin`. X-d2 or a follow-up can pass `CliEnv.path`.
 - macOS: `jailed()` accepts only the Landlock backend.
 - Tests that need a project outside `/tmp` (the toolchain spec refuses scratch folders) build their world under `target/`.
+
+### X-d1 review fixes (feat/coding-tools-xd1)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | HIGH: a program printing the marker and exiting 125 returned before `ran.changes` was read | The helper reports "jail not enforced" on a status pipe (descriptor 3, number in `LAZAROBOX_JAIL_STATUS_FD`), closed by the `exec` of the program, so the program cannot write it. `Ran.not_enforced` carries it. `go` reads `ran.changes` and drains the sink FIRST and `failed()` appends the changes note on every error path. Exit 125 plus a forged marker is now a normal result. Descriptor plumbing lives in `runtime/proc.rs` (the audit forbids `libc::fcntl/dup2` in tool files). |
+| 2 | MEDIUM: `.venv/bin/pytest -> /bin/sh` | A venv candidate counts only when its real path starts with the root; otherwise the search falls through to the PATH. |
+| 3 | MEDIUM: npm/yarn/pnpm script bodies | `npm run <x>` is checked against the declared scripts. `ApprovalAsk::Exec` gained `script: Option<String>` (sanitized `name: body` lines, 200 chars each, with `pre`/`post`). The host keeps the whole `scripts` object at ask time (not a hash: nothing to collide) and refuses after `y` with "package.json changed after the question; ask again". |
+| 4 | MEDIUM: output to a cloud model | `exec::plan` refuses `Locality::Cloud` ("commands run only with a local model for now"). Marked `REMOVED BY X-d2`: delete the check and the `CLOUD` const. |
+| 5 | LOW-MEDIUM: prompt rendering | Args that are empty or have whitespace, quotes, `\`, `$` or a backtick show shell-quoted; args with control characters are refused; the folder moved from the clipped head row to a command row (`in <cwd>`), so `fits` checks it. Script lines show as `script ...` rows. |
+| 6 | Test for `Kind::Unchecked` in `changes_note` | Added (`an_unchecked_place_says_the_project_may_be_tainted`). |
+
+TDD evidence: RED seen for 1 (runner test `a_helper_that_reports_on_the_status_channel_is_not_enforced`, jail integration tests, 3 host tests), 2 (3 venv tests), 3 (2 host tests, 1 allow test), 5 (5 app tests, 1 host test). 4, 6 and the `script_line` test were written together with the code (they passed at first run).
+
+API notes for X-d2: `Plan` has `pin: Option<Pin>`; `exec::run` takes the ask-time `Option<Pin>`; `ApprovalAsk::Exec` has `script`; `ask_for` leaves it `None` and the host fills it. The prompt command is now `cmd\nin cwd[\nscript ...]` and the target is the fixed "run a command in the sandbox": the X-d2 notice goes in `why`, not the head. Remove the cloud check in `exec::plan`. `runner::spawn_with` is private; `Ran` gained `not_enforced`; `spawn_core`/`Run`/`Done` unchanged (git.rs untouched).
