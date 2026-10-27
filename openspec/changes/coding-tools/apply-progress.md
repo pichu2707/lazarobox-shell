@@ -665,3 +665,9 @@ Notes:
 - DECISIONS: flags are judged only before `--` (for go also before `-args`): what follows belongs to the program run. Paths are judged in every arg, in the word, the `--flag=value` value and the value glued to a short flag (`-c/etc/x`); `/`, `\` and `C:\` starts are absolute; `..` is a path part, so `a..b` passes. Timeout is CLAMPED (1..=600, 0 and negatives become 1, huge values 600). `cwd` is judged by text only (`plain_relative`); the real-disk root check stays in X-d1. `install`/`ci` refuse any non-dash arg (package args), `run` needs a script word. `cargo fmt` needs `--check` anywhere. Extra denied flags beyond the design table: cargo `--allow-staged`, `--allow-no-vcs`; node `--userconfig`, `--globalconfig`, `--cwd`, `--dir`, `-C`; go `-overlay`, `-vettool`, `-C`.
 - `RUN_ARGS` is not yet a `ToolDef` in the registry and `Call::RunCommand` does not exist: X-d1 wires them. Nothing in runtime/, host.rs or audit.rs touched.
 - Size: ~290 production lines (267 non-blank), ~330 test lines. Checks: fmt, clippy -D warnings, cargo test --lib (5829), +1.88 check --all-targets.
+
+Review fixes (slice X-a):
+- USER DECISION: `yarn run <x>` / `pnpm run <x>` only start a script declared in `package.json` `scripts`; allow.rs stays pure, so `check`/`parse_run` take `scripts: &[String]`. TODO(X-d): read `package.json` at the call site and pass the names. npm `run` is not gated (npm refuses an unknown script itself).
+- Node flags: also deny `--location`, `--registry`, `--config`/`--config.*`, `--store-dir`, `--global-folder` and any short bundle containing `g` (`-gD`).
+- `path_like` judges every `=`-separated tail, and the glued short-flag value of each tail (`-ldflags=-extld=/bin/sh`, `a=b=../c`).
+- pytest: any word starting with `@` is refused (argparse expands argsfiles also after `--`).

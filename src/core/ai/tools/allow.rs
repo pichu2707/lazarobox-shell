@@ -91,24 +91,37 @@ const CARGO_ATTACHED: &[&str] = &["-Z"];
 const NODE_DENIED: &[&str] = &[
     "-g",
     "--global",
+    "--location",
     "--prefix",
     "--userconfig",
     "--globalconfig",
+    "--config",
+    "--registry",
+    "--store-dir",
+    "--global-folder",
     "--cwd",
     "--dir",
     "-C",
 ];
-const NODE_ATTACHED: &[&str] = &["-C"];
+/// `-C<dir>` and pnpm's `--config.<key>` carry their value in the same word.
+const NODE_ATTACHED: &[&str] = &["-C", "--config."];
 
 const GO_VERBS: &[&str] = &["test", "vet", "build", "run"];
 /// Go flags by their bare name: `-x` and `--x` are the same flag to Go.
 const GO_DENIED: &[&str] = &["modfile", "toolexec", "exec", "overlay", "vettool", "C"];
 
 /// Checks `program` and `args` against the table. Order: program, verb,
-/// flags, paths.
-pub fn check(program: &str, args: &[String]) -> Result<Program, Refusal> {
+/// flags, paths. `scripts` are the keys of the project's `package.json`
+/// `scripts` object: `yarn run` and `pnpm run` accept only those.
+// TODO(X-d): the call site reads `package.json` from the root and passes the
+// script names here and to `parse_run`; until then pass an empty slice.
+pub fn check(program: &str, args: &[String], scripts: &[String]) -> Result<Program, Refusal> {
     let program = Program::parse(program).ok_or(Refusal::Program)?;
-    verb(program, args)?;
+    verb(program, args, scripts)?;
+    // argparse expands `@file` in every word, also after `--`.
+    if program == Program::Pytest && args.iter().any(|arg| arg.starts_with('@')) {
+        return Err(Refusal::Flag);
+    }
     flags(program, args)?;
     if args.iter().any(|arg| path_like(arg)) {
         return Err(Refusal::Path);
@@ -116,7 +129,7 @@ pub fn check(program: &str, args: &[String]) -> Result<Program, Refusal> {
     Ok(program)
 }
 
-fn verb(program: Program, args: &[String]) -> Result<(), Refusal> {
+fn verb(program: Program, args: &[String], scripts: &[String]) -> Result<(), Refusal> {
     let first = args.first().map(String::as_str);
     let ok = match program {
         Program::Cargo => match first {
@@ -128,6 +141,11 @@ fn verb(program: Program, args: &[String]) -> Result<(), Refusal> {
         Program::Pytest => true,
         Program::Npm | Program::Pnpm | Program::Yarn => match first {
             Some("test") => true,
+            // yarn and pnpm fall back to running a binary of that name
+            // (`yarn run bash -c x`); only a declared script is a script.
+            Some("run") if program != Program::Npm => args
+                .get(1)
+                .is_some_and(|script| scripts.iter().any(|known| known == script)),
             Some("run") => args.get(1).is_some_and(|script| !script.starts_with('-')),
             Some("install" | "ci") => args[1..].iter().all(|arg| arg.starts_with('-')),
             _ => false,
@@ -151,7 +169,7 @@ fn flags(program: Program, args: &[String]) -> Result<(), Refusal> {
         Program::Cargo => named(arg, CARGO_DENIED, CARGO_ATTACHED),
         Program::Go => go_flag(arg).is_some_and(|flag| GO_DENIED.contains(&flag)),
         Program::Pytest => false,
-        _ => named(arg, NODE_DENIED, NODE_ATTACHED),
+        _ => named(arg, NODE_DENIED, NODE_ATTACHED) || global_bundle(arg),
     });
     if denied { Err(Refusal::Flag) } else { Ok(()) }
 }
@@ -167,25 +185,34 @@ fn named(arg: &str, denied: &[&str], attached: &[&str]) -> bool {
     }) || attached.iter().any(|flag| arg.starts_with(flag))
 }
 
+/// A bundle of short flags that includes `g` (`-gD`): a global install.
+fn global_bundle(arg: &str) -> bool {
+    arg.strip_prefix('-')
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_alphabetic()) && rest.contains('g'))
+}
+
 /// The bare name of a Go flag word: `-modfile=x` and `--modfile` give `modfile`.
 fn go_flag(arg: &str) -> Option<&str> {
     let bare = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-'))?;
     Some(bare.split('=').next().unwrap_or(bare))
 }
 
-/// An absolute path or a `..` part in the word, in the word itself, in the
-/// value of `--flag=value` or in the value glued to a short flag (`-c/etc/x`).
+/// An absolute path or a `..` part in the word, in every `=`-separated tail
+/// (`--flag=value`, `-ldflags=-extld=/bin/sh`) or in the value glued to a
+/// short flag (`-c/etc/x`), of the word and of each tail.
 fn path_like(arg: &str) -> bool {
-    let glued = if arg.starts_with('-') && !arg.starts_with("--") {
-        arg.get(2..)
-    } else {
-        None
-    };
-    let value = arg.split_once('=').map(|(_, value)| value);
-    [Some(arg), value, glued]
-        .into_iter()
-        .flatten()
-        .any(|word| absolute(word) || word.split(['/', '\\']).any(|part| part == ".."))
+    let tails = arg.match_indices('=').map(|(at, _)| &arg[at + 1..]);
+    std::iter::once(arg).chain(tails).any(|word| {
+        let glued = if word.starts_with('-') && !word.starts_with("--") {
+            word.get(2..)
+        } else {
+            None
+        };
+        [Some(word), glued]
+            .into_iter()
+            .flatten()
+            .any(|word| absolute(word) || word.split(['/', '\\']).any(|part| part == ".."))
+    })
 }
 
 fn absolute(word: &str) -> bool {
@@ -262,7 +289,7 @@ pub enum RunError {
 
 /// Reads and checks the arguments of a `run_command` call. `timeout_secs`
 /// defaults to 120 and is clamped into 1..=600, never refused for its size.
-pub fn parse_run(args: &Value) -> Result<RunRequest, RunError> {
+pub fn parse_run(args: &Value, scripts: &[String]) -> Result<RunRequest, RunError> {
     let parsed = parse_args(RUN_ARGS, args, FamilySet::LEGACY).map_err(RunError::Shape)?;
     let text = |name| match parsed.get(name) {
         Some(ArgValue::Str(text)) => Some(text.as_str()),
@@ -272,7 +299,8 @@ pub fn parse_run(args: &Value) -> Result<RunRequest, RunError> {
         Some(ArgValue::List(list)) => list.clone(),
         _ => Vec::new(),
     };
-    let program = check(text("program").unwrap_or_default(), &list).map_err(RunError::Refused)?;
+    let program =
+        check(text("program").unwrap_or_default(), &list, scripts).map_err(RunError::Refused)?;
     let cwd = match text("cwd") {
         Some(cwd) => plain_relative(cwd).ok_or(RunError::Refused(Refusal::Path))?,
         None => PathBuf::new(),
@@ -297,15 +325,20 @@ mod tests {
         args.iter().map(|a| (*a).to_owned()).collect()
     }
 
+    /// The `scripts` of the project's `package.json` the tests run against.
+    fn scripts() -> Vec<String> {
+        argv(&["build", "lint", "b", "test"])
+    }
+
     fn pass(program: &str, args: &[&str]) {
         assert!(
-            check(program, &argv(args)).is_ok(),
+            check(program, &argv(args), &scripts()).is_ok(),
             "{program} {args:?} should pass"
         );
     }
 
     fn refused(program: &str, args: &[&str]) -> Refusal {
-        match check(program, &argv(args)) {
+        match check(program, &argv(args), &scripts()) {
             Err(why) => why,
             Ok(p) => panic!("{program} {args:?} passed as {p:?}"),
         }
@@ -339,7 +372,10 @@ mod tests {
         ] {
             assert_eq!(refused(program, &["test"]), Refusal::Program, "{program:?}");
         }
-        assert_eq!(check("pnpm", &argv(&["test"])), Ok(Program::Pnpm));
+        assert_eq!(
+            check("pnpm", &argv(&["test"]), &scripts()),
+            Ok(Program::Pnpm)
+        );
         assert_eq!(Program::Go.name(), "go");
     }
 
@@ -482,6 +518,93 @@ mod tests {
         assert_eq!(refused("pytest", &["-c/etc/pytest.ini"]), Refusal::Path);
     }
 
+    // User decision: `yarn run <x>` / `pnpm run <x>` start only a script the
+    // project's package.json declares; the bin fallback of those managers
+    // (`yarn run bash -c x`) is never reachable.
+    #[test]
+    fn yarn_and_pnpm_run_only_a_declared_script() {
+        for manager in ["yarn", "pnpm"] {
+            assert_eq!(
+                refused(manager, &["run", "bash", "-c", "x"]),
+                Refusal::Verb,
+                "{manager}"
+            );
+            assert_eq!(refused(manager, &["run", "missing"]), Refusal::Verb);
+            pass(manager, &["run", "test"]);
+            // Without that script in the project, `test` is refused too.
+            let none: Vec<String> = Vec::new();
+            assert_eq!(
+                check(manager, &argv(&["run", "test"]), &none),
+                Err(Refusal::Verb)
+            );
+            let only_lint = argv(&["lint"]);
+            assert_eq!(
+                check(manager, &argv(&["run", "test"]), &only_lint),
+                Err(Refusal::Verb)
+            );
+            assert!(check(manager, &argv(&["run", "lint"]), &only_lint).is_ok());
+        }
+        // npm refuses an unknown script itself; the table does not gate it.
+        pass("npm", &["run", "anything"]);
+    }
+
+    #[test]
+    fn node_config_location_and_store_flags_are_denied() {
+        for flag in [
+            "--location=global",
+            "--location",
+            "--registry=http://x",
+            "--registry",
+            "--config.registry=x",
+            "--config.foo",
+            "--config",
+            "--store-dir=s",
+            "--store-dir",
+            "--global-folder=g",
+            "--global-folder",
+        ] {
+            for manager in ["npm", "pnpm", "yarn"] {
+                assert_eq!(refused(manager, &["test", flag]), Refusal::Flag, "{flag}");
+            }
+        }
+        // Short bundles with `g` are global installs in disguise.
+        for flag in ["-gD", "-Dg", "-gw", "-rg"] {
+            assert_eq!(refused("npm", &["install", flag]), Refusal::Flag, "{flag}");
+            assert_eq!(refused("pnpm", &["test", flag]), Refusal::Flag, "{flag}");
+        }
+        // Near misses and what follows `--` stay fine.
+        pass("npm", &["install", "-D"]);
+        pass("npm", &["test", "-j4"]);
+        pass("npm", &["test", "--legacy-peer-deps"]);
+        pass("npm", &["test", "--", "--location=x", "-gD"]);
+    }
+
+    #[test]
+    fn every_equals_tail_is_judged_as_a_path() {
+        for bad in [
+            "-ldflags=-extld=/bin/sh",
+            "--foo=-o=/etc/x",
+            "a=b=../c",
+            "a=b=c=/x",
+            "--out=-o/etc/x",
+        ] {
+            assert_eq!(refused("cargo", &["test", bad]), Refusal::Path, "{bad}");
+            assert_eq!(refused("go", &["build", bad]), Refusal::Path, "{bad}");
+        }
+        pass("cargo", &["test", "a=b=c"]);
+        pass("cargo", &["test", "--features=a=b"]);
+    }
+
+    #[test]
+    fn pytest_refuses_an_argsfile() {
+        assert_eq!(refused("pytest", &["@args.txt"]), Refusal::Flag);
+        assert_eq!(refused("pytest", &["-x", "@args.txt"]), Refusal::Flag);
+        // argparse expands `@file` after `--` too.
+        assert_eq!(refused("pytest", &["--", "@args.txt"]), Refusal::Flag);
+        pass("pytest", &["tests/test_a.py::test[a@b]"]);
+        pass("pytest", &["-k", "a@b"]);
+    }
+
     #[test]
     fn go_takes_four_verbs() {
         for verb in ["test", "vet", "build", "run"] {
@@ -595,7 +718,7 @@ mod tests {
     }
 
     fn req(json: serde_json::Value) -> Result<RunRequest, RunError> {
-        parse_run(&json)
+        parse_run(&json, &scripts())
     }
 
     // Spec (Process rules): `timeout_secs` defaults to 120 and is clamped at

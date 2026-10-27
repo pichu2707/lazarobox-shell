@@ -73,8 +73,8 @@ The program is resolved through the scrubbed PATH only. A binary under the root 
 | Program | Verbs | Denied flags or forms |
 |---|---|---|
 | cargo | build, check, test, clippy, fmt (only with `--check`), run, doc | `--config`, `-Z`, `--manifest-path`, `--target-dir`, `--fix`, `--allow-dirty`, `install`, `add` |
-| npm, pnpm, yarn | test, `run <script>`, install, ci (no package args) | `-g`/`--global`, `--prefix`, `exec`, `dlx`, `x` |
-| pytest | (any args) | `--rootdir` or `-c` pointing outside the root |
+| npm, pnpm, yarn | test, `run <script>`, install, ci (no package args). yarn/pnpm `run` only for a script declared in the project's `package.json` (no bin fallback) | `-g`/`--global` (also in a short bundle, `-gD`), `--location`, `--prefix`, `--registry`, `--config`/`--config.*`, `--store-dir`, `--global-folder`, `exec`, `dlx`, `x` |
+| pytest | (any args) | `--rootdir` or `-c` pointing outside the root, any `@argsfile` word |
 | go | test, vet, build, run | `-modfile`, `-toolexec`, `-exec`, `mod`, `install`, `get` |
 
 For every program, an argument that is an absolute path or contains `..` is refused, and so is a `cwd` outside the root. The allow-list bounds the VERB, not the behaviour: the real controls are the per-command `y`, the jail and the tier-B warnings.

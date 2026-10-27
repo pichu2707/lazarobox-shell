@@ -225,6 +225,7 @@ Go/no-go checkpoint on review UX after W-h (design rollout).
 Spec: command-runner "Argv input and allow-list", "Refusals before start".
 - [x] Xa.1 RED: table tests per program/verb: cargo, npm/pnpm/yarn, pytest, go; denied flags (`--config`, `-Z`, `--manifest-path`, `--target-dir`, `-g`, `-modfile`, ...). GREEN: `tools/allow.rs`. ~220.
 - [x] Xa.2 RED: absolute path or `..` in any arg refused; `cwd` outside root refused; `run_command` args parse (`timeout_secs` clamp 120 default/600 max). GREEN. ~130.
+- [x] Xa.3 review fixes: yarn/pnpm `run` only for scripts of `package.json` (`check`/`parse_run` take them; X-d must pass them), node `--location/--registry/--config.*/--store-dir/--global-folder` and `-g` bundles denied, every `=` tail judged as a path, pytest `@argsfile` refused.
 
 ### X-b: Capture and RunOutcome (PR 16, ~350)
 Spec: command-runner "Output capture and RunOutcome".
