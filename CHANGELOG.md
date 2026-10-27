@@ -14,7 +14,9 @@ baseline.
 
 - Ctrl+O opens the link of the Hugging Face token field, and the prefilled
   issue of the Feedback form, in the browser (`xdg-open`; on WSL `wslview`,
-  then `explorer.exe`; on macOS `open`). With no opener the link is copied, and
+  then `rundll32.exe url.dll,FileProtocolHandler`, since `explorer.exe` opens
+  some links in the file manager; on macOS `open`). With no opener the link is
+  copied, and
   when the opener fails the link is copied and the footer says so.
   With `Mouse` on, a left click on the token link line opens it too.
 

@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::core::opener::{candidates, is_web_url};
+use crate::core::opener::{candidates, is_web_url, leading_args};
 use crate::runtime::desktop::which;
 
 /// How long after its start an opener's error still means the link did
@@ -47,8 +47,8 @@ impl Opener {
     /// handed over. `failed` runs, on the reaping thread, when the opener
     /// exits with an error within [`LAUNCH`]: it found no browser (an SSH
     /// session, a desktop with no default). A later exit is the browser's.
-    /// `explorer.exe` exits 1 even when it opened the link, so its exit says
-    /// nothing.
+    /// The exit of a Windows program (`rundll32.exe`) says nothing about the
+    /// browser, so it is not read.
     pub fn open(&self, url: &str, failed: impl FnOnce() + Send + 'static) -> io::Result<()> {
         if !is_web_url(url) {
             return Err(io::Error::new(
@@ -56,13 +56,19 @@ impl Opener {
                 "not a web link",
             ));
         }
+        let name = self
+            .program
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default();
         let mut child = Command::new(&self.program)
+            .args(leading_args(name))
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        let trust_exit = self.program.file_name() != Some(OsStr::new("explorer.exe"));
+        let trust_exit = !name.ends_with(".exe");
         let started = Instant::now();
         let launch = self.launch;
         thread::spawn(move || {
@@ -97,9 +103,9 @@ mod tests {
 
     #[test]
     fn the_first_installed_candidate_is_the_opener() {
-        let names = ["explorer.exe", "xdg-open"];
+        let names = ["rundll32.exe", "xdg-open"];
         let opener = Opener::find_in("linux", true, &found(&names)).expect("opener");
-        assert_eq!(opener.program, Path::new("/usr/bin/explorer.exe"));
+        assert_eq!(opener.program, Path::new("/usr/bin/rundll32.exe"));
         let opener = Opener::find_in("linux", false, &found(&names)).expect("opener");
         assert_eq!(opener.program, Path::new("/usr/bin/xdg-open"));
         assert_eq!(Opener::find_in("macos", false, &found(&names)), None);
@@ -107,7 +113,12 @@ mod tests {
 
     /// A fake opener that writes its arguments, one per line, to `out`.
     fn fake(dir: &Path, out: &Path) -> Opener {
-        let program = dir.join("fake-open");
+        fake_named(dir, "fake-open", out)
+    }
+
+    /// [`fake`] under the program name `name`.
+    fn fake_named(dir: &Path, name: &str, out: &Path) -> Opener {
+        let program = dir.join(name);
         fs::write(
             &program,
             format!(
@@ -141,6 +152,22 @@ mod tests {
         let url = "https://github.com/o/r/issues/new?title=a%20b&body=$(id)`x`;y";
         fake(dir.path(), &out).open(url, || {}).unwrap();
         assert_eq!(wait_for(&out), format!("{url}\n"));
+    }
+
+    // Bug (WSL): `rundll32.exe` opens the link through `url.dll`, given
+    // before the link, still with no shell.
+    #[test]
+    fn rundll32_gets_the_url_handler_then_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("args");
+        let url = "https://huggingface.co/settings/tokens/new?tokenType=read";
+        fake_named(dir.path(), "rundll32.exe", &out)
+            .open(url, || {})
+            .unwrap();
+        assert_eq!(
+            wait_for(&out),
+            format!("url.dll,FileProtocolHandler\n{url}\n")
+        );
     }
 
     #[test]
@@ -191,12 +218,12 @@ mod tests {
     }
 
     // Review finding (opener failure): an opener that exits with an error
-    // is reported; `explorer.exe`, which exits 1 even when it opened the
-    // link, is not.
+    // is reported; a Windows program (`rundll32.exe`), whose exit says
+    // nothing about the browser, is not.
     #[test]
     fn an_opener_that_fails_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         assert!(failed_after(&exiting(dir.path(), "xdg-open", 3)));
-        assert!(!failed_after(&exiting(dir.path(), "explorer.exe", 1)));
+        assert!(!failed_after(&exiting(dir.path(), "rundll32.exe", 1)));
     }
 }
