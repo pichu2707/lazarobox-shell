@@ -41,6 +41,7 @@ const BANNED_IN_PATH: &[&str] = &["process", "net"];
 /// Identifiers that create, write, resize or remove (`FS_WRITE`).
 const FS_WRITE: &[&str] = &[
     "OpenOptions",
+    "DirBuilder",
     "O_TRUNC",
     "O_CREAT",
     "O_WRONLY",
@@ -64,7 +65,17 @@ const FS_WRITE: &[&str] = &[
 const BANNED_FS: &[&str] = &["write", "copy", "rename", "symlink", "truncate"];
 
 /// The files (relative to `src/runtime/tools/`) that may use `FS_WRITE` names.
-const MAY_WRITE: &[&str] = &["write.rs", "scratch.rs"];
+const MAY_WRITE: &[&str] = &["write.rs"];
+
+/// The private-folder file: it makes a folder, removes its own tree and sets
+/// a mode so the removal can go through. Nothing else of `FS_WRITE`.
+const MAY_SCRATCH: &[&str] = &["scratch.rs"];
+
+/// The only `FS_WRITE` names (and `fs::` calls) `scratch.rs` may use.
+const SCRATCH_WRITE: &[&str] = &["DirBuilder", "remove_dir_all", "set_permissions"];
+
+/// The only `libc::` names `scratch.rs` may use.
+const SCRATCH_LIBC_ALLOWED: &[&str] = &["getpid"];
 
 /// The files that may start a process: the spawn core of `run_command`. The
 /// socket bans, the write bans and the `libc` list still hold for them.
@@ -156,6 +167,8 @@ const SPAWN_LIBC_ALLOWED: &[&str] = &["pid_t", "ETXTBSY"];
 pub struct Allow {
     /// Whether `FS_WRITE` names are allowed.
     fs_write: bool,
+    /// When set, only these of the `FS_WRITE` names (and `fs::` calls).
+    only: Option<&'static [&'static str]>,
     /// Whether a process may be started.
     spawn: bool,
     /// The `libc::` names.
@@ -164,10 +177,24 @@ pub struct Allow {
     syscall: &'static str,
 }
 
+impl Allow {
+    /// Whether every write name is allowed (a narrowed file also bans an
+    /// aliased `fs`, which would hide the names).
+    fn writes_all(&self) -> bool {
+        self.fs_write && self.only.is_none()
+    }
+
+    /// Whether the write name `name` is allowed.
+    fn writes(&self, name: &str) -> bool {
+        self.fs_write && self.only.is_none_or(|names| names.contains(&name))
+    }
+}
+
 /// The read side: no write, `openat2` only.
 pub const READ_SIDE: Allow = Allow {
     spawn: false,
     fs_write: false,
+    only: None,
     libc: LIBC_ALLOWED,
     syscall: "SYS_openat2",
 };
@@ -176,14 +203,25 @@ pub const READ_SIDE: Allow = Allow {
 pub const WRITE_SIDE: Allow = Allow {
     spawn: false,
     fs_write: true,
+    only: None,
     libc: WRITE_LIBC_ALLOWED,
     syscall: "SYS_renameat2",
+};
+
+/// The private folders: may write only what `SCRATCH_WRITE` names.
+pub const SCRATCH_SIDE: Allow = Allow {
+    spawn: false,
+    fs_write: true,
+    only: Some(SCRATCH_WRITE),
+    libc: SCRATCH_LIBC_ALLOWED,
+    syscall: "",
 };
 
 /// The spawn core: may start a process, nothing else.
 pub const SPAWN_SIDE: Allow = Allow {
     spawn: true,
     fs_write: false,
+    only: None,
     libc: SPAWN_LIBC_ALLOWED,
     syscall: "",
 };
@@ -423,7 +461,7 @@ pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
         // Starting a process is the one thing a spawn file earns.
         let spawning = allow.spawn && name == "Command";
         if (PROCESS_NET.contains(&name) && !spawning)
-            || (!allow.fs_write && FS_WRITE.contains(&name))
+            || (FS_WRITE.contains(&name) && !allow.writes(name))
         {
             found.push(format!("`{name}`"));
         }
@@ -442,26 +480,29 @@ pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
         {
             found.push(format!("path segment `{name}`"));
         }
-        if let (true, true, Some(next), false) =
-            (name == "fs", before_path, ident(k + 2), allow.fs_write)
+        if let (true, true, Some(next)) = (name == "fs", before_path, ident(k + 2))
             && (BANNED_FS.contains(&next) || next.starts_with("remove_"))
+            && !allow.writes(next)
         {
             found.push(format!("`fs::{next}`"));
         }
         // `File::create`, `File::create_new`, `File::options`.
         if name == "File"
-            && !allow.fs_write
+            && !allow.writes("File")
             && before_path
             && matches!(ident(k + 2), Some("create" | "create_new" | "options"))
         {
             found.push(format!("`File::{}`", ident(k + 2).unwrap_or_default()));
         }
         // `use std::fs as x` hides every later `x::write`.
-        if name == "fs" && !allow.fs_write && ident(k + 1) == Some("as") {
+        if name == "fs" && !allow.writes_all() && ident(k + 1) == Some("as") {
             found.push("`fs` aliased".to_string());
         }
         // `use std::fs::{write, self as x}`: look inside the group.
-        if name == "fs" && !allow.fs_write && before_path && t.get(k + 2) == Some(&Tok::Punct('{'))
+        if name == "fs"
+            && !allow.writes_all()
+            && before_path
+            && t.get(k + 2) == Some(&Tok::Punct('{'))
         {
             let group = t[k + 3..].iter().take_while(|x| **x != Tok::Punct('}'));
             let mut prev_as = false;
@@ -469,7 +510,9 @@ pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
                 if let Tok::Ident(n) = tok {
                     if prev_as {
                         found.push("`fs` aliased in a group".to_string());
-                    } else if BANNED_FS.contains(&n.as_str()) || n.starts_with("remove_") {
+                    } else if (BANNED_FS.contains(&n.as_str()) || n.starts_with("remove_"))
+                        && !allow.writes(n)
+                    {
                         found.push(format!("`fs::{{{n}}}`"));
                     }
                     prev_as = n == "as";
@@ -558,6 +601,8 @@ fn module_refs(src: &str, module: &str) -> Vec<String> {
 pub fn file_problems(rel: &str, src: &str) -> Vec<String> {
     let allow = if MAY_WRITE.contains(&rel) {
         &WRITE_SIDE
+    } else if MAY_SCRATCH.contains(&rel) {
+        &SCRATCH_SIDE
     } else if MAY_SPAWN.contains(&rel) {
         &SPAWN_SIDE
     } else {
@@ -768,6 +813,25 @@ mod tests {
         // The same text, one folder down, earns nothing.
         assert!(!planted(&[("host/write.rs", writes)]).is_empty());
         assert!(!planted(&[("host/mod.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn the_scratch_file_may_only_make_and_remove_folders_and_set_their_mode() {
+        let good = "fn f() { DirBuilder::new(); std::fs::remove_dir_all(p); \
+                    std::fs::set_permissions(p, m); libc::getpid(); }";
+        assert_eq!(planted(&[("scratch.rs", good)]), Vec::<String>::new());
+        for bad in [
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { std::fs::remove_file(p) }",
+            "fn f() { std::fs::create_dir(p) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+            "fn f() { libc::unlinkat(a, p, 0) }",
+            "fn f() { libc::getrandom(a, 1, 0) }",
+        ] {
+            assert!(!file_problems("scratch.rs", bad).is_empty(), "{bad}");
+        }
+        // A folder maker is a write in every other file.
+        assert!(!file_problems("search.rs", "fn f() { DirBuilder::new(); }").is_empty());
     }
 
     #[test]
