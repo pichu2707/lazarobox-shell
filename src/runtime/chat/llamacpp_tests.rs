@@ -50,21 +50,20 @@ fn sse_call(name: &str, arguments: &str, id: Option<&str>) -> Step {
 /// Runs one turn on `profile` and returns every event.
 async fn turn(lab: &Lab, port: u16, profile: Profile, tools: bool) -> Vec<StreamEvent> {
     let (tx, mut rx, dispatch) = direct(lab);
-    tool_turn_with(
-        profile,
-        &ask(lab, tools),
-        port,
-        dispatch,
-        &Timeouts::SERVER,
-        &tx,
-    )
-    .await;
-    drop(tx);
-    let mut events = Vec::new();
-    while let Some(event) = rx.recv().await {
-        events.push(event);
-    }
-    events
+    let request = ask(lab, tools);
+    // Drained while the turn runs: a long reply fills the channel.
+    let run = async {
+        tool_turn_with(profile, &request, port, dispatch, &Timeouts::SERVER, &tx).await;
+        drop(tx);
+    };
+    let drain = async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    };
+    tokio::join!(run, drain).1
 }
 
 // Wires are not mixed ---------------------------------------------------------
@@ -541,4 +540,72 @@ async fn cancel_while_the_follow_up_waits_closes_the_socket_and_runs_nothing_mor
         .expect("the socket closed");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(fake.connections.load(Ordering::SeqCst), 2);
+}
+
+// Recorded b11935 replies -----------------------------------------------------
+
+/// A recorded SSE body served as a 200 reply.
+fn recorded(sse: &[u8]) -> Step {
+    let mut bytes = OK_HEAD.as_bytes().to_vec();
+    bytes.extend_from_slice(sse);
+    Step::Reply(bytes)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_recorded_call_and_result_replies_drive_one_full_round() {
+    const ID: &str = "JEDIAQavkL8v8oW7odZMfLsZ7CM6ZgAq";
+    let fake = fake(vec![
+        recorded(include_bytes!(
+            "../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-call.sse"
+        )),
+        recorded(include_bytes!(
+            "../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-result.sse"
+        )),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let calls: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolCall { name, .. } if name == "find_dir"))
+        .collect();
+    let results = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolResult { .. }))
+        .count();
+    assert_eq!((calls.len(), results), (1, 1), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Delta(t) if !t.is_empty()))
+    );
+    assert_eq!(events.last(), Some(&done()));
+
+    let messages = fake.bodies()[1]["messages"].as_array().unwrap().clone();
+    let n = messages.len();
+    let call = &messages[n - 2]["tool_calls"][0];
+    assert_eq!(call["id"], ID);
+    assert_eq!(
+        call["function"]["arguments"], "{\"query\":\"src\"}",
+        "a JSON string"
+    );
+    assert_eq!(messages[n - 1]["tool_call_id"], ID);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_call_without_an_id_gets_one_synthesized_for_both_messages() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", None),
+        sse_text("ok"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(events.last(), Some(&done()));
+    let messages = fake.bodies()[1]["messages"].as_array().unwrap().clone();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["tool_calls"][0]["id"], "call_0_0");
+    assert_eq!(messages[n - 1]["tool_call_id"], "call_0_0");
 }
