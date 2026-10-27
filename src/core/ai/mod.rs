@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod chat;
 pub mod config;
 pub mod gguf;
+pub mod hf;
 pub mod http;
 pub mod jail;
 pub mod memory;

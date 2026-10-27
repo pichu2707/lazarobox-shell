@@ -129,3 +129,32 @@ fn a_failed_start_after_ready_does_not_redetect() {
     )));
     assert_eq!(effects, vec![]);
 }
+
+fn idles(effects: &[Effect]) -> Vec<&Effect> {
+    effects
+        .iter()
+        .filter(|e| matches!(e, Effect::ManagedIdle(_)))
+        .collect()
+}
+
+// Spec S8: a save that changes the idle time hands it to the runtime at once.
+#[test]
+fn a_save_that_changes_the_idle_time_hands_it_to_the_runtime() {
+    let mut a = launched(80, 25);
+    let mut draft = a.ai.clone();
+    draft.set_idle_minutes(30);
+    let effects = save(&mut a, draft);
+    assert_eq!(
+        idles(&effects),
+        [&Effect::ManagedIdle(Some(std::time::Duration::from_secs(
+            30 * 60
+        )))]
+    );
+    assert_eq!(a.ai.managed_options().idle_minutes, 30);
+    let mut never = a.ai.clone();
+    never.set_idle_minutes(0);
+    assert_eq!(idles(&save(&mut a, never)), [&Effect::ManagedIdle(None)]);
+    // Unchanged: nothing for the runtime.
+    let same = a.ai.clone();
+    assert_eq!(idles(&save(&mut a, same)), Vec::<&Effect>::new());
+}

@@ -40,6 +40,7 @@ pub struct StatusLine<'a> {
     thinking: Option<ThinkingView>,
     memory: Option<MemBadge>,
     update: Option<&'a str>,
+    download: Option<&'a str>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -56,6 +57,7 @@ impl<'a> StatusLine<'a> {
             thinking: None,
             memory: None,
             update: None,
+            download: None,
         }
     }
 
@@ -78,6 +80,7 @@ impl<'a> StatusLine<'a> {
             thinking: None,
             memory: None,
             update: None,
+            download: None,
         }
     }
 
@@ -98,6 +101,22 @@ impl<'a> StatusLine<'a> {
     pub fn marker(mut self, kind: Option<SelectionKind>) -> Self {
         self.marker = kind;
         self
+    }
+
+    /// A label that says more than the mode's own (the quit prompt naming
+    /// what still runs), when there is one.
+    pub fn label(mut self, label: Option<&'a str>) -> Self {
+        if let Some(label) = label {
+            self.label = label;
+        }
+        self
+    }
+
+    /// Columns a label can take in a statusline `width` columns wide: the
+    /// width less the rest of the mode block.
+    pub fn label_room(&self, width: u16) -> usize {
+        let rest = self.mode_block_width() - Line::from(self.label).width();
+        usize::from(width).saturating_sub(rest)
     }
 
     /// Over a focused chat pane the TERMINAL label reads `CHAT` (same color);
@@ -125,6 +144,14 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// The mark of a running Hugging Face download (`↓ 42%`), after the
+    /// other marks. It outranks them when the line is narrow and is dropped
+    /// when even it does not fit.
+    pub fn download(mut self, download: Option<&'a str>) -> Self {
+        self.download = download;
+        self
+    }
+
     /// The thinking indicator of the stream being shown, if any.
     pub fn thinking(mut self, view: Option<ThinkingView>) -> Self {
         self.thinking = view;
@@ -146,24 +173,26 @@ impl<'a> StatusLine<'a> {
 
     /// The right segment for a statusline `width` columns wide and the columns
     /// it takes (0 when it does not fit next to the mode block, which has
-    /// priority). The update mark and the memory state are part of it only if
-    /// they fit and showing them costs the thinking indicator nothing; the
-    /// memory state goes first.
+    /// priority). The marks are part of it only if they fit and showing them
+    /// costs the thinking indicator nothing; the memory state goes first, then
+    /// the update mark, then the download mark.
     fn fit_right(&self, width: u16) -> (Line<'a>, usize) {
         let fits = |line: &Line| line.width() + self.mode_block_width() <= usize::from(width);
-        let plain = self.right_line(false, false);
+        let plain = self.right_line(Marks::default());
         let plain_width = if fits(&plain) { plain.width() } else { 0 };
         let indicator = |right: usize| Line::from(self.indicator(width, right)).width();
-        let wanted = [
-            (self.memory.is_some(), self.update.is_some()),
-            (false, self.update.is_some()),
-            (self.memory.is_some(), false),
-        ];
-        for (memory, update) in wanted {
-            if !(memory || update) {
+        // Every set of the marks there are, the most kept first: the download
+        // mark weighs most, the memory state least.
+        let wanted = (1..8u8).rev().map(|set| Marks {
+            download: set & 4 != 0 && self.download.is_some(),
+            update: set & 2 != 0 && self.update.is_some(),
+            memory: set & 1 != 0 && self.memory.is_some(),
+        });
+        for marks in wanted {
+            if marks == Marks::default() {
                 continue;
             }
-            let line = self.right_line(memory, update);
+            let line = self.right_line(marks);
             if fits(&line) && indicator(line.width()) == indicator(plain_width) {
                 let columns = line.width();
                 return (line, columns);
@@ -219,9 +248,9 @@ impl<'a> StatusLine<'a> {
         ])
     }
 
-    /// The right segment: the engine (or shell) text, then the update mark
-    /// when `with_update`, then the memory state when `with_memory`.
-    fn right_line(&self, with_memory: bool, with_update: bool) -> Line<'a> {
+    /// The right segment: the engine (or shell) text, then the `marks` asked
+    /// for: the update mark, the memory state and the download mark.
+    fn right_line(&self, marks: Marks) -> Line<'a> {
         let t = self.theme;
         let mut spans = vec![
             Span::styled(SLANT_LEFT, Style::new().fg(t.bg_panel).bg(t.bg_base)),
@@ -230,31 +259,43 @@ impl<'a> StatusLine<'a> {
                 Style::new().fg(t.primary_cyan).bg(t.bg_panel),
             ),
         ];
-        if let Some(version) = self.update.filter(|_| with_update) {
+        if let Some(version) = self.update.filter(|_| marks.update) {
             spans.push(Span::styled(
                 format!(" \u{b7} {}", update::status_mark(version)),
                 Style::new().fg(t.warning_orange).bg(t.bg_panel),
             ));
         }
-        match self.memory.filter(|_| with_memory) {
-            Some(badge) => {
-                let (text, color) = match badge {
-                    MemBadge::Ready => ("ready", t.text_muted),
-                    MemBadge::Checking => ("checking", t.text_muted),
-                    MemBadge::Unavailable => ("unavailable", t.warning_orange),
-                };
-                spans.push(Span::styled(
-                    format!(" \u{b7} mem: {text} "),
-                    Style::new().fg(color).bg(t.bg_panel),
-                ));
-            }
-            None => spans.push(Span::styled(
-                " ",
-                Style::new().fg(t.primary_cyan).bg(t.bg_panel),
-            )),
+        if let Some(badge) = self.memory.filter(|_| marks.memory) {
+            let (text, color) = match badge {
+                MemBadge::Ready => ("ready", t.text_muted),
+                MemBadge::Checking => ("checking", t.text_muted),
+                MemBadge::Unavailable => ("unavailable", t.warning_orange),
+            };
+            spans.push(Span::styled(
+                format!(" \u{b7} mem: {text}"),
+                Style::new().fg(color).bg(t.bg_panel),
+            ));
         }
+        if let Some(download) = self.download.filter(|_| marks.download) {
+            spans.push(Span::styled(
+                format!(" \u{b7} {download}"),
+                Style::new().fg(t.primary_cyan).bg(t.bg_panel),
+            ));
+        }
+        spans.push(Span::styled(
+            " ",
+            Style::new().fg(t.primary_cyan).bg(t.bg_panel),
+        ));
         Line::from(spans)
     }
+}
+
+/// Which marks a right segment shows.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct Marks {
+    memory: bool,
+    update: bool,
+    download: bool,
 }
 
 impl Widget for StatusLine<'_> {
@@ -284,6 +325,8 @@ impl Widget for StatusLine<'_> {
 
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod download_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

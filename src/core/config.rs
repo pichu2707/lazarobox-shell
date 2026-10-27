@@ -111,6 +111,12 @@ impl ConfigEdit {
         }
     }
 
+    /// Whether the key is a TOML integer (written as a number, not as a
+    /// string): `ai.servers.llamacpp.idle_minutes`.
+    pub fn is_integer(&self) -> bool {
+        self.table == LLAMACPP_TABLE && self.key == "idle_minutes"
+    }
+
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
     /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches and `ai.servers.llamacpp.managed`.

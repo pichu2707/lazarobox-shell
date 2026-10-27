@@ -15,6 +15,7 @@ fn spec(rx: &[&str], ro: &[&str], rw: &[&str], rof: &[&str], rwf: &[&str]) -> Ja
         rw: list(rw),
         ro_files: list(rof),
         rw_files: list(rwf),
+        rw_except: Vec::new(),
     }
 }
 
@@ -408,4 +409,146 @@ fn a_file_under_homebrew_etc_still_gets_its_own_literal_rule() {
     // The fixed block never names the file or an openssl folder.
     assert!(!profile.text.contains("openssl"));
     assert!(!profile.text.contains("ca-certificates"));
+}
+
+#[test]
+fn a_write_exception_is_denied_after_every_allow_that_could_grant_it() {
+    let mut s = one_each();
+    s.rw = vec![p("/Users/u/.codex")];
+    s.rw_except = vec![p("/Users/u/.codex/packages")];
+    let profile = render(&s).unwrap();
+    let deny = "(deny file-write* (subpath (param \"WX_0\")))\n";
+    assert_eq!(profile.text.matches(deny).count(), 1);
+    // SBPL: the last matching rule wins, so the deny follows every file allow.
+    let at = profile.text.find(deny).unwrap();
+    assert!(profile.text.rfind("(allow file-read* file-write*").unwrap() < at);
+    // Only the pins of the folders above it come later.
+    assert!(profile.text[at..].matches("file-write*").count() == 2);
+    assert!(
+        profile
+            .params
+            .contains(&("WX_0".to_owned(), p("/Users/u/.codex/packages")))
+    );
+}
+
+#[test]
+fn a_write_exception_travels_as_a_param_like_any_other_path() {
+    let mut s = one_each();
+    s.rw_except = vec![p("/Users/u/it's \"a\")(\nfolder")];
+    let profile = render(&s).unwrap();
+    assert!(!profile.text.contains("it's"));
+    assert!(!profile.text.contains("folder"));
+    let args = sandbox_args(&profile);
+    assert!(args.contains(&OsString::from("WX_0=/Users/u/it's \"a\")(\nfolder")));
+}
+
+#[test]
+fn a_bad_write_exception_is_rejected_like_any_other_path() {
+    for bad in ["relative", "/a/../b", "/"] {
+        let mut s = one_each();
+        s.rw_except = vec![p(bad)];
+        assert!(render(&s).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn write_exceptions_count_toward_the_param_limit() {
+    let mut s = one_each();
+    s.rw_except = vec![p("/x"); MAX_PARAMS];
+    assert!(matches!(render(&s), Err(SbplError::TooMany(_))));
+}
+
+#[test]
+fn without_an_exception_the_profile_has_no_deny_rule() {
+    assert!(
+        !render(&one_each())
+            .unwrap()
+            .text
+            .contains("(deny file-write")
+    );
+}
+
+fn excepted(rw: &[&str], except: &[&str]) -> JailSpec {
+    let mut s = spec(&[], &[], rw, &[], &[]);
+    s.rw_except = except.iter().map(|e| p(e)).collect();
+    s
+}
+
+fn param<'a>(profile: &'a Profile, key: &str) -> Option<&'a PathBuf> {
+    profile
+        .params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+}
+
+#[test]
+fn the_folder_that_holds_an_exception_cannot_be_renamed_or_replaced() {
+    // Seatbelt checks a rename by name only: moving `~/.codex` away and a
+    // planted folder in its place would skip the deny on `packages`.
+    let profile = render(&excepted(
+        &["/Users/u/.codex"],
+        &["/Users/u/.codex/packages"],
+    ))
+    .unwrap();
+    let deny = "(deny file-write* (literal (param \"WXP_0\")))\n";
+    assert_eq!(profile.text.matches(deny).count(), 1);
+    assert_eq!(param(&profile, "WXP_0"), Some(&p("/Users/u/.codex")));
+    // After every allow and after the subpath deny of the exception.
+    let at = profile.text.find(deny).unwrap();
+    assert!(at > profile.text.find("(deny file-write* (subpath").unwrap());
+    assert!(at > profile.text.rfind("(allow file-read* file-write*").unwrap());
+}
+
+#[test]
+fn every_folder_between_the_rw_folder_and_the_exception_is_pinned() {
+    let profile = render(&excepted(&["/Users/u/h"], &["/Users/u/h/a/b/packages"])).unwrap();
+    let got: Vec<(&str, &str)> = profile
+        .params
+        .iter()
+        .filter(|(k, _)| k.starts_with("WXP_"))
+        .map(|(k, v)| (k.as_str(), v.to_str().unwrap()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("WXP_0", "/Users/u/h/a/b"),
+            ("WXP_1", "/Users/u/h/a"),
+            ("WXP_2", "/Users/u/h"),
+        ]
+    );
+}
+
+#[test]
+fn pinned_folders_are_listed_once_and_only_for_rw_folders_that_hold_the_exception() {
+    let s = excepted(
+        &["/Users/u/h", "/Users/u/h/a", "/Users/u/elsewhere"],
+        &["/Users/u/h/a/packages", "/Users/u/h/a/other"],
+    );
+    let profile = render(&s).unwrap();
+    let pinned: Vec<&PathBuf> = profile
+        .params
+        .iter()
+        .filter(|(k, _)| k.starts_with("WXP_"))
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(pinned, [&p("/Users/u/h/a"), &p("/Users/u/h")]);
+}
+
+#[test]
+fn pinned_folders_count_toward_the_param_limit_and_are_checked() {
+    let mut s = excepted(&["/h"], &["/h/p"]);
+    s.rx = vec![p("/x"); MAX_PARAMS - 3];
+    assert!(render(&s).is_ok()); // rx + rw + except + 1 pinned = limit
+    s.rx.push(p("/x"));
+    assert!(matches!(render(&s), Err(SbplError::TooMany(_))));
+    let mut s = excepted(&["/a/.."], &["/a/../p"]);
+    s.rw = vec![p("/a/..")];
+    assert!(render(&s).is_err());
+}
+
+#[test]
+fn an_exception_outside_every_rw_folder_pins_nothing() {
+    let profile = render(&excepted(&["/Users/u/h"], &["/Users/u/other/p"])).unwrap();
+    assert!(!profile.text.contains("WXP_"));
 }

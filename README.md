@@ -93,6 +93,19 @@ Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando l
 
 Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
 
+### Al cerrar lazarobox
+
+Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso pequeño en su propia sesión; en Linux `ps` lo muestra como `/proc/self/exe __watch`) que le sobrevive. Cada grupo de procesos que lazarobox arranca (los turnos de claude, codex y gemini, tus servidores MCP, el `llama-server` gestionado y las comprobaciones cortas, como `--version`) se apunta en él, y se borra cuando lazarobox lo recoge. Cuando lazarobox termina, sea como sea (al salir, si se cae, con `kill -9` o al cerrar la pestaña de la terminal; en Linux y en macOS), el vigilante manda `SIGHUP` y `SIGTERM` a los grupos que quedan apuntados, les da 3 s, manda `SIGKILL` a lo que siga vivo y sale.
+
+- **Al salir, lazarobox hace lo mismo él mismo, con suavidad:** en cuanto te devuelve la pantalla manda `SIGHUP` y `SIGTERM` a todo lo que lanzó y solo manda `SIGKILL` a lo que siga en marcha 2 s después, mientras guarda el historial y la memoria. Un programa que termina al recibir la señal no espera nada más; lo que dejó detrás (sus hijos) recibe entonces `SIGKILL`. Un turno que sigue escribiendo su respuesta no se corta antes de esos 2 s. Si cierras la pestaña o matan a lazarobox a mitad de la salida, el vigilante repite la misma secuencia, y ahí también los hijos que dejó un programa tienen esos segundos para terminar.
+- Solo toca un grupo si su proceso líder sigue siendo el que se apuntó (misma hora de arranque) o ya no tiene líder: un pid reutilizado por otro programa nunca recibe la señal.
+- `engram serve` no se apunta nunca: es tu servidor de memoria, lo comparten otras herramientas y sigue en marcha a propósito.
+- Los shells de los paneles no pasan por el vigilante: al cerrarse la terminal de lazarobox reciben `SIGHUP`, como en cualquier terminal. Lo que lanzaste en un panel (`npm run dev &`, `nohup`, `disown`) sigue su curso como en cualquier terminal, pero lazarobox te avisa:
+  - la pregunta de salida lo nombra: `Quit? still running: sleep 77, npm run dev (y/n)` (como mucho tres, y `+N more` para el resto; si la barra es estrecha, solo cuántos). También nombra `llama-server (shared)` si el llama-server gestionado que arrancó está respondiendo a otro lazarobox (ver «llama.cpp gestionado»);
+  - al salir, con la pregunta o con `exit` en el último panel, lo escribe en tu terminal en cuanto te la devuelve, con su grupo de procesos para que puedas pararlo (`kill -- -<grupo>`).
+  - Cuenta también lo de un panel que ya cerraste. Un programa que salió de la sesión del panel (`setsid`) no se nombra.
+- Si el vigilante no puede arrancar, lazarobox funciona igual que antes: al salir para lo que lanzó, pero una caída puede dejarlo en marcha.
+
 ---
 
 ## 📋 Modo COPY
@@ -124,9 +137,23 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Mouse` | Captura del ratón | `mouse` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
+| `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
+| `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
+
+### Feedback: fallos e ideas desde el terminal
+
+`Enter` sobre **Feedback** abre un formulario corto:
+
+- **Kind**: `Bug report` o `Idea or goal` (`←`/`→`).
+- **Title** y **Description** (`Tab` pasa al siguiente campo; en la descripción, `Enter` añade una línea).
+- **Attach the environment** (`Espacio` lo activa o desactiva): la versión de lazarobox, el sistema (y si es WSL), la shell, la terminal (`TERM_PROGRAM`) y los motores de IA detectados con su versión. Se ve entero antes de copiar; nunca incluye rutas, nombres de usuario ni claves.
+
+`Ctrl+S` copia al portapapeles (OSC 52, como el resto de copias del menú) un enlace a GitHub que abre el formulario de issue ya relleno: el de fallos (`bug`) o el de ideas (`idea`, que llegan al tablero de Goals del proyecto). Ábrelo en el navegador, revísalo y envíalo desde allí. **lazarobox no envía nada por red.** Antes de crear el enlace, el título y la descripción pasan por el mismo filtro de secretos que las notas de memoria; si enmascara algo, el formulario lo muestra (`Secrets were masked; review and press Ctrl+S again`) para que lo revises. Un enlace de más de 8000 caracteres se rechaza (`Too long for a link: shorten the description`).
+
+Desde la web, los formularios de issue de GitHub piden los mismos datos.
 
 ---
 
@@ -165,11 +192,11 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools** y **Approval** (la última). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
-El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: **no se descarga nada**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`.
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. La única descarga que hace lazarobox es la de modelos GGUF de Hugging Face, y solo cuando tú la confirmas (ver «Descargar modelos de Hugging Face»).
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
 
@@ -192,9 +219,11 @@ Un servidor instalado (su binario está en el `PATH`) que no responde aparece en
 [ai.servers.llamacpp]
 managed = true
 model = "/ruta/al/modelo.gguf"
+args = ["-ngl", "99", "-c", "16384"]   # opcional
+idle_minutes = 15                       # opcional: 0 = no pararlo nunca
 ```
 
-**Desde el menú, sin editar nada.** Con `llama-server` instalado pero sin responder, el selector de modelos de llamacpp lista, marcados `lazarobox starts it`, los `.gguf` que encuentra en:
+**Desde el menú, sin editar nada.** Con `llama-server` instalado pero sin responder (o, si ya está gestionado, aunque responda otro `llama-server` en el puerto), el selector de modelos de llamacpp lista, marcados `lazarobox starts it`, los `.gguf` que encuentra en:
 
 - `~/.local/share/llama.cpp/models` (o `$XDG_DATA_HOME/llama.cpp/models`);
 - la caché de llama.cpp: `$LLAMA_CACHE`, o `~/.cache/llama.cpp` (en macOS también `~/Library/Caches/llama.cpp`);
@@ -204,11 +233,17 @@ Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazar
 
 - En el selector de modelos, el `model` configurado aparece como `lazarobox starts it` aunque el servidor no esté en marcha, y se puede elegir.
 - Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp (o guardar el menú tras elegir un modelo, arriba) arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
-- Usa el puerto 39281, poco habitual a propósito; `port` lo cambia.
-- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. En Linux, además, muere con lazarobox si este se cae; en macOS un cierre forzado puede dejarlo en marcha.
-- Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.
+- Usa el puerto 39281, poco habitual a propósito; `port` lo cambia. Cada modelo tiene su propio servidor: si en ese puerto ya hay otro, lazarobox prueba los siete siguientes (39282-39288).
+- `args` añade argumentos a `llama-server` detrás de los que pone lazarobox, por ejemplo `-ngl 99` (capas en la GPU), `-c 16384` (contexto) o `--jinja`. Cada elemento de la lista es un argumento tal cual, sin pasar por ninguna shell (`"--alias", "mi modelo"` son dos). Solo se configura en el archivo; el menú no lo toca. Si la lista incluye algo que fija lazarobox (`--host`, `--port`, `-m` o `--model`, también como `--port=8080`) o no es una lista de textos, se ignora entera con un aviso al arrancar.
+- Se para solo tras `idle_minutes` minutos sin usarlo (15 por defecto), para liberar la memoria de la GPU; el siguiente mensaje lo arranca otra vez y espera a que cargue el modelo. Un mensaje que aún se está respondiendo nunca se corta: el tiempo cuenta desde que termina. `0` no lo para nunca. En el menú, la fila `llama-server idle` de Settings pasa por `5 min`, `15 min`, `30 min` y `never` (`h`/`l`) y se guarda con `s`; el cambio vale al momento, sin reiniciar. Un valor del archivo fuera de esos pasos (por ejemplo `45`) se muestra tal cual. Un valor incorrecto se cambia por 15 con un aviso al arrancar.
+- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. Si lazarobox se cae o se fuerza su cierre, lo para el vigilante (ver «Al cerrar lazarobox»), también en macOS; en Linux, además, el núcleo lo mata con lazarobox.
+- Si en esos puertos ya hay un `llama-server` listo con el mismo archivo de modelo (otro lazarobox abierto, o uno que arrancaste tú en una terminal), lazarobox lo usa tal cual y no arranca nada. Ese servidor no es suyo: no lo para al salir, por inactividad ni al cambiar de modelo; si desaparece, el siguiente mensaje arranca el propio. Solo usa uno cuyo socket sea de tu usuario, para que otro usuario de la máquina no pueda hacerse pasar por él y leer tus mensajes (en Linux lo mira en `/proc/net/tcp`; en macOS, con `lsof`).
+- Si en un puerto responde otra cosa (otro modelo, un servidor que aún carga, otro programa), lazarobox no lo toca y arranca el suyo en el primer puerto libre: usar otro modelo, más o menos potente, nunca queda bloqueado por el que ya corre. Si los ocho puertos están ocupados, no arranca nada y el chat dice `llama-server not started: no free port on 127.0.0.1 from 39281 to 39288`.
+- Quien arranca un servidor es quien lo para. Mientras responde a otro lazarobox, la parada por inactividad espera y vuelve a contar desde entonces. Al salir, la pregunta lo nombra, `Quit? still running: llama-server (shared) (y/n)`, porque salir corta esa respuesta; el siguiente mensaje del otro arranca un servidor propio. Si en ese momento no responde a nadie, salir no corta nada y no se nombra.
+- Las pestañas y los paneles de un mismo lazarobox comparten su servidor: esto solo pasa entre lazarobox distintos, en otra ventana o en otra pestaña de tu terminal con su propio lazarobox.
 - Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
 - `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.
+- Antes de cada arranque se comprueba que el archivo de `model` existe. Si falta, no se arranca nada y el chat dice `llama-server not started: model file not found: <ruta>`. No se comprueba al cargar la configuración: si el modelo está en un disco que montas más tarde, el siguiente mensaje ya funciona.
 - `llama-server` se busca en el `PATH` de login que ya usa lazarobox (nunca en el directorio actual), así que funciona también si abres lazarobox desde el lanzador del escritorio. El nombre del modelo en la tarea del chat da igual (llama-server lo ignora); sin modelo asignado se envía la ruta.
 - Un valor incorrecto de `managed` o `model` se ignora con un aviso al arrancar, y el servidor no se gestiona.
 
@@ -217,6 +252,34 @@ Límites de esta fase:
 - No se admiten endpoints personalizados: el host es siempre `127.0.0.1`.
 - Los alias de shell no se detectan: el binario debe estar en el `PATH`.
 - Al arrancar desde un lanzador de escritorio o rofi, el `PATH` suele ser mínimo. lazarobox pregunta una vez a tu shell de login (`$SHELL -l -i -c`; `/bin/sh` si `$SHELL` no está definido) y pone sus carpetas al principio del `PATH`, seguidas de las del proceso que falten, tanto para detectar los CLIs como para lanzarlos en el chat: así se elige el mismo ejecutable que en tu terminal, y una copia antigua en `/usr/local/bin` no tapa la tuya. La shell arranca con el `PATH` del proceso más `/usr/local/bin:/usr/bin:/bin`, para que tus archivos rc (`brew shellenv`, nvm) encuentren `tr`, `readlink` y demás. Si `$SHELL` falla, se prueba una vez `/bin/bash -l -c` (salvo que `$SHELL` ya sea bash; lee los archivos de login pero no `~/.bashrc`); entre las dos consultas comparten un límite total de unos 3 s. Si ambas fallan o tardan demasiado, se usa el `PATH` del proceso tal cual. El entorno del proceso no se modifica. La consulta ejecuta tus archivos rc interactivos al arrancar, así que cualquier demonio que lancen (por ejemplo `ssh-agent`, o un autoarranque de tmux o zellij) también se inicia en ese momento.
+
+### Descargar modelos de Hugging Face
+
+Con `llama-server` instalado, la lista de modelos de llamacpp termina en la fila `download from Hugging Face…`. Desde ahí:
+
+1. **Busca o pega un repo.** Escribe un texto para buscar repos con modelos GGUF (los más descargados primero) o pega su id, `owner/repo` (por ejemplo `Qwen/Qwen2.5-0.5B-Instruct-GGUF`).
+2. **Elige el archivo.** Se listan solo los `.gguf` con su cuantización y su tamaño (`Q4_K_M  1.1 GB  …`). Un modelo dividido en partes cuenta como uno, con el tamaño de todas. La primera fila dice la licencia.
+3. **Confirma.** Antes de bajar nada se muestra qué archivo es, su tamaño, el repo, la **licencia y un enlace para leerla**, la carpeta de destino y el espacio libre. Nada se descarga hasta que pulsas `y`; `n` o `Esc` vuelve atrás. Si no hay espacio, lo dice y `y` no hace nada.
+4. **Descarga.** Va en segundo plano, una a la vez. La fila muestra `↓ 42% <archivo> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; lo ya bajado se conserva y, si vuelves a elegir el mismo archivo, sigue donde se quedó. Al terminar se comprueban el tamaño y el sha256 que publica el Hub; un archivo que no coincide se borra.
+5. **Úsalo.** Al terminar, el modelo aparece en la misma lista y, al elegirlo, lo arranca el `llama-server` gestionado (ver «llama.cpp gestionado»).
+
+**Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, borra su carpeta `models--<owner>--<repo>` (o usa `hf cache delete`).
+
+**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
+
+- `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada. `Esc` mientras se comprueba la cancela y tampoco guarda el token.
+- El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
+- Con una cuenta conectada, `Enter` ofrece desconectarla (`y/n`), que borra ese archivo. `d` hace lo mismo con cualquier token guardado, aunque no se haya podido comprobar (sin red, o un token que el Hub ya no acepta).
+- Si la variable `HF_TOKEN` está definida, manda sobre el archivo, y la fila lo indica: `token set (HF_TOKEN)`.
+
+**Qué se envía.** Solo cuando estás en este flujo (nunca al arrancar ni en segundo plano), con el `curl` del sistema, solo por HTTPS a `huggingface.co` (las descargas siguen sus redirecciones a su CDN, también solo HTTPS):
+
+- la búsqueda (`/api/models?search=…&filter=gguf`);
+- los datos del repo y su lista de archivos;
+- los archivos que confirmas;
+- con una cuenta, la comprobación `/api/whoami-v2`.
+
+El token va en la cabecera `Authorization` y solo a `huggingface.co`; `curl` no lo reenvía al CDN. Como en la comprobación de versiones, `curl` respeta tu proxy y tus certificados y se ignora `~/.curlrc`. Sin `curl` en el `PATH`, el flujo dice `Hugging Face needs curl on the PATH`.
 
 ---
 
@@ -330,7 +393,7 @@ By default every command a model asks to run needs your `y` (`approval = "ask"`)
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
 - `approval = "ask"`, `"auto"` or `"run"` in `[ai.tools]` sets the mode a chat starts with; anything else falls back to `ask` with a notice at startup. The mode of a chat lasts for its conversation: opening another conversation from the list, or starting a new one, goes back to the configured value. The toggle never writes the file, and a changed `config.toml` only reaches panes and conversations opened afterwards.
-- The **Approval** row of the AI menu (the last row of the AI tab, after **Tools**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
+- The **Approval** row of the AI menu (after **Tools**, before **Hugging Face**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
 - The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
 - The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
 - It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.

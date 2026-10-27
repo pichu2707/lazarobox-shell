@@ -56,7 +56,7 @@ pub fn encode_key(key: KeyEvent, modes: TermModes) -> Option<Vec<u8>> {
         KeyCode::PageUp => return Some(csi("5", '~')),
         KeyCode::PageDown => return Some(csi("6", '~')),
         KeyCode::F(n @ 1..=4) => {
-            let final_byte = [b'P', b'Q', b'R', b'S'][usize::from(n) - 1] as char;
+            let final_byte = b"PQRS"[usize::from(n) - 1] as char;
             return Some(if modified {
                 csi("1", final_byte)
             } else {

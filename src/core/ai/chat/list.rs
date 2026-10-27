@@ -369,7 +369,7 @@ pub fn row_text(row: &ConvRow, width: usize) -> String {
 }
 
 /// `text` cut to `width` display columns, the last one an `…` when it was cut.
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     if text_width(text) <= width {
         return text.to_owned();
     }

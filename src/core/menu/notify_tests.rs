@@ -58,7 +58,9 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Mouse",
             "Notify",
             "Sound",
-            "Updates"
+            "llama-server idle",
+            "Updates",
+            "Feedback"
         ]
     );
     assert!(matches!(items[3].kind, ItemKind::Notify));
@@ -72,9 +74,9 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_tabs_hold_six_settings_rows_and_sixteen_ai_rows() {
-    assert_eq!(AI_SECTION.items.len(), 16);
-    assert_eq!(SECTIONS[0].items.len(), 6);
+fn the_tabs_hold_eight_settings_rows_and_seventeen_ai_rows() {
+    assert_eq!(AI_SECTION.items.len(), 17);
+    assert_eq!(SECTIONS[0].items.len(), 8);
 }
 
 #[test]
