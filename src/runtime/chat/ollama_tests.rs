@@ -556,6 +556,27 @@ async fn the_retry_is_made_once_and_only_for_a_400() {
     );
 }
 
+// The fallback of Ollama stays a plain 400, with no notice: a 5xx that names
+// tools or jinja is an ordinary error there.
+#[tokio::test]
+async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice() {
+    let server_error = fake(vec![status(500, "tools param requires --jinja flag")]).await;
+    let mut lab_a = lab(server_error.port);
+    lab_a.chats.send(pane(1), 1, ask(&lab_a, true));
+    let events = finish(&mut lab_a.rx).await;
+    assert_eq!(server_error.bodies().len(), 1, "no retry");
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 500"))
+    );
+    assert!(!events.iter().any(|e| matches!(e, StreamEvent::Notice(_))));
+
+    let rejected = fake(vec![status(400, "no tools"), text("plain")]).await;
+    let mut lab_b = lab(rejected.port);
+    lab_b.chats.send(pane(1), 1, ask(&lab_b, true));
+    let events = finish(&mut lab_b.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("plain".into()), done()]);
+}
+
 // Approvals --------------------------------------------------------------------
 
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
