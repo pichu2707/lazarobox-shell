@@ -79,35 +79,48 @@ fn clean_line(text: &str) -> bool {
     !text.chars().any(|c| c.is_control() || is_format(c))
 }
 
-/// The absolute git dir of the repository (`rev-parse --absolute-git-dir`,
-/// resolved by the runtime preflight). Hooks are pinned to its `hooks` folder:
-/// that is the repo's own `.git/hooks`, which the write tools refuse to touch,
-/// so a hooks folder the model could write (husky, a worktree dir) never runs.
+/// The git dirs of the repository, resolved by the runtime preflight
+/// (`rev-parse --absolute-git-dir` and `--git-common-dir`). Hooks are pinned
+/// to the `hooks` folder of the COMMON dir: that is the repo's own
+/// `.git/hooks`, which the write tools refuse to touch, so a hooks folder the
+/// model could write (husky) never runs. In a linked worktree the git dir is
+/// `.git/worktrees/<name>`, which holds no hooks; the common dir does.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct GitDir(String);
+pub struct GitDir {
+    git: String,
+    common: String,
+}
 
 impl GitDir {
-    /// Accepts an absolute path with no control or format character and no
-    /// `..`, other than `/`.
-    pub fn new(path: &str) -> Result<Self, GitError> {
-        let ok = path.starts_with('/')
-            && path.len() > 1
-            && clean_line(path)
-            && !path.split('/').any(|part| part == "..");
-        if ok {
-            Ok(Self(path.trim_end_matches('/').to_owned()))
+    /// Both are absolute paths with no control or format character and no
+    /// `..`, other than `/`. They are equal outside a linked worktree.
+    pub fn new(git_dir: &str, common_dir: &str) -> Result<Self, GitError> {
+        let clean = |path: &str| {
+            path.starts_with('/')
+                && path.len() > 1
+                && clean_line(path)
+                && !path.split('/').any(|part| part == "..")
+        };
+        if clean(git_dir) && clean(common_dir) {
+            Ok(Self {
+                git: git_dir.trim_end_matches('/').to_owned(),
+                common: common_dir.trim_end_matches('/').to_owned(),
+            })
         } else {
             Err(GitError::GitDir)
         }
     }
 
     fn hooks(&self) -> String {
-        format!("{}/hooks", self.0)
+        format!("{}/hooks", self.common)
     }
 }
 
-/// The commit author, read by the runtime from the user's global git config
-/// (the config itself is never loaded in the jail).
+/// The commit author: the repo's effective identity, that is `git config
+/// user.name` and `user.email` as the repo sees them (its `.git/config` with
+/// the global config in scope). The runtime reads them in the preflight,
+/// outside the jail, and passes them in; the config itself is never loaded
+/// in the jail.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Identity {
     name: String,
@@ -144,7 +157,7 @@ pub fn hooks_notice(dir: &GitDir, configured: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "this repo sets core.hooksPath to {}; lazarobox runs only .git/hooks",
+        "this repo sets core.hooksPath to {}; lazarobox runs only the repo hooks folder",
         tidy(configured)
     ))
 }
@@ -199,7 +212,7 @@ pub fn excludes() -> Vec<String> {
 /// Checks a path given to a verb: relative, below the root, outside `.git`
 /// and not a secret name. Pure: the runtime still resolves it.
 fn check(path: &str) -> Result<(), GitError> {
-    if path.is_empty() || path.contains('\0') {
+    if path.is_empty() || !clean_line(path) {
         return Err(GitError::Path);
     }
     let mut names = Vec::new();
@@ -252,6 +265,8 @@ pub fn status_argv(dir: &GitDir) -> Vec<String> {
             "-z",
             "--branch",
             "--ignore-submodules=all",
+            "--untracked-files=normal",
+            "--renames",
             "--",
             ".",
         ]
@@ -373,7 +388,7 @@ mod tests {
     use super::*;
 
     fn gd() -> GitDir {
-        GitDir::new("/home/u/repo/.git").unwrap()
+        GitDir::new("/home/u/repo/.git", "/home/u/repo/.git").unwrap()
     }
 
     fn who() -> Identity {
@@ -412,13 +427,15 @@ mod tests {
         let argv = status_argv(&gd());
         let at = argv.iter().position(|a| a == "status").unwrap();
         assert_eq!(
-            argv[at..at + 7],
+            argv[at..at + 9],
             [
                 "status",
                 "--porcelain=v2",
                 "-z",
                 "--branch",
                 "--ignore-submodules=all",
+                "--untracked-files=normal",
+                "--renames",
                 "--",
                 "."
             ]
@@ -634,8 +651,12 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
 
     #[test]
     fn log_keeps_unit_separator_in_subject_and_skips_bad_lines() {
-        let raw = "h\u{1f}a\u{1f}d\u{1f}one\u{1f}two\nbroken line\n\nh2\u{1f}a\u{1f}d\u{1f}s\n";
-        let commits = parse_log(raw);
+        let (h1, h2) = ("a".repeat(40), "B".repeat(64));
+        let d = "2026-01-01T00:00:00+00:00";
+        let raw = format!(
+            "{h1}\u{1f}a\u{1f}{d}\u{1f}one\u{1f}two\nbroken line\n\n{h2}\u{1f}a\u{1f}{d}\u{1f}s\n"
+        );
+        let commits = parse_log(&raw);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "one\u{1f}two");
         assert_eq!(parse_log(""), []);
@@ -743,7 +764,10 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
         let out = render_status(&parse_status(raw));
         assert_eq!(out.lines().count(), 3, "{out:?}");
         assert!(!out.contains(['\r', '\x1b', '\u{202e}']));
-        let commits = parse_log("h\u{1f}An\na\u{1f}d\u{1f}sub\x1b[2Jject\u{202e}\n");
+        let commits = parse_log(&format!(
+            "{:040}\u{1f}An\na\u{1f}2026-01-01T00:00:00Z\u{1f}sub\x1b[2Jject\u{202e}\n",
+            1
+        ));
         let out = render_log(&commits);
         assert_eq!(out.lines().count(), 1);
         assert!(!out.contains(['\x1b', '\u{202e}']));
@@ -800,9 +824,18 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
             );
         }
         for bad in ["", "rel/.git", "/a\0b", "/a\n/.git", "/a/\u{202e}"] {
-            assert_eq!(GitDir::new(bad), Err(GitError::GitDir), "{bad:?}");
+            assert_eq!(
+                GitDir::new(bad, "/a/.git"),
+                Err(GitError::GitDir),
+                "{bad:?}"
+            );
+            assert_eq!(
+                GitDir::new("/a/.git", bad),
+                Err(GitError::GitDir),
+                "{bad:?}"
+            );
         }
-        assert!(GitDir::new("/").is_err());
+        assert!(GitDir::new("/", "/").is_err());
     }
 
     #[test]
@@ -813,7 +846,7 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
         let text = hooks_notice(&dir, ".husky/_\nforged").unwrap();
         assert_eq!(
             text,
-            "this repo sets core.hooksPath to .husky/_?forged; lazarobox runs only .git/hooks"
+            "this repo sets core.hooksPath to .husky/_?forged; lazarobox runs only the repo hooks folder"
         );
     }
 
@@ -852,5 +885,92 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
                 "{name:?} {email:?}"
             );
         }
+    }
+
+    #[test]
+    fn log_skips_records_with_a_bad_hash_or_date() {
+        let ok = format!("{:040}", 7);
+        let d = "2026-01-01T00:00:00+02:00";
+        // A unit separator inside the author shifts the fields: the date
+        // slot then holds text, and the record is dropped.
+        let shifted = format!("{ok}\u{1f}An\u{1f}a\u{1f}{d}\u{1f}subject\n");
+        let bad_hash = format!("{}\u{1f}A\u{1f}{d}\u{1f}s\n", "z".repeat(40));
+        let short_hash = format!("abc\u{1f}A\u{1f}{d}\u{1f}s\n");
+        let bad_date = format!("{ok}\u{1f}A\u{1f}yesterday\u{1f}s\n");
+        let good = format!("{ok}\u{1f}A\u{1f}{d}\u{1f}s\n");
+        for bad in [&shifted, &bad_hash, &short_hash, &bad_date] {
+            assert_eq!(parse_log(bad), [], "{bad:?}");
+        }
+        assert_eq!(parse_log(&good).len(), 1);
+        assert_eq!(
+            parse_log(&format!("{ok}\u{1f}A\u{1f}2026-01-01T00:00:00Z\u{1f}s")).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn log_keeps_history_simplification() {
+        // Commits that touch only secret files stay hidden: the excludes
+        // narrow the history. `--full-history` would show them.
+        let argv = log_argv(&gd(), None, Some("src")).unwrap();
+        assert!(!argv.iter().any(|a| a.starts_with("--full-history")));
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a == "--simplify-merges" || a == "--sparse")
+        );
+    }
+
+    #[test]
+    fn paths_with_control_or_format_characters_are_refused() {
+        for bad in [
+            "a\nb",
+            "a\x1b[2Jb",
+            "a\u{202e}b",
+            "a\rb",
+            "a\tb",
+            "a\u{200b}b",
+        ] {
+            assert_eq!(add_argv(&gd(), &[bad]), Err(GitError::Path), "{bad:?}");
+            assert_eq!(diff_argv(&gd(), false, Some(bad)), Err(GitError::Path));
+            assert_eq!(log_argv(&gd(), None, Some(bad)), Err(GitError::Path));
+        }
+    }
+
+    #[test]
+    fn hooks_follow_the_common_dir_in_a_linked_worktree() {
+        let linked = GitDir::new("/home/u/repo/.git/worktrees/w1", "/home/u/repo/.git/").unwrap();
+        for argv in [
+            status_argv(&linked),
+            add_argv(&linked, &["a"]).unwrap(),
+            commit_argv(&linked, &who(), "m").unwrap(),
+        ] {
+            assert!(pair(&argv, "core.hooksPath=/home/u/repo/.git/hooks"));
+            assert!(!argv.iter().any(|a| a.contains("worktrees")));
+        }
+        assert_eq!(hooks_notice(&linked, "/home/u/repo/.git/hooks"), None);
+        assert!(hooks_notice(&linked, "/home/u/repo/.git/worktrees/w1/hooks").is_some());
+        assert_eq!(GitDir::new("/a/.git", "rel/.git"), Err(GitError::GitDir));
+    }
+
+    #[test]
+    fn add_dot_stages_everything_but_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        if git(dir.path(), &args(&["init", "-q"])).is_none() {
+            return;
+        }
+        for file in ["a.txt", "d/b.txt", ".hidden", "d/.env", "e/.ssh/k"] {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        let add = add_argv(&gd(), &["."]).unwrap();
+        assert!(has(&add, ":(literal)."));
+        git(dir.path(), &add);
+        let staged = git(dir.path(), &args(&["diff", "--cached", "--name-only"])).unwrap();
+        let mut names: Vec<_> = staged.lines().collect();
+        names.sort();
+        assert_eq!(names, [".hidden", "a.txt", "d/b.txt"]);
     }
 }

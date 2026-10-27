@@ -175,15 +175,54 @@ pub fn parse_log(raw: &str) -> Vec<Commit> {
     raw.lines()
         .filter_map(|line| {
             let mut parts = line.splitn(4, FIELD);
-            Some(Commit {
+            let commit = Commit {
                 hash: parts.next()?.to_owned(),
                 author: parts.next()?.to_owned(),
                 date: parts.next()?.to_owned(),
                 subject: parts.next()?.to_owned(),
-            })
+            };
+            // A field that holds the separator shifts the rest: drop it.
+            (hex_hash(&commit.hash) && iso_date(&commit.date)).then_some(commit)
         })
         .take(MAX_LOG_COUNT)
         .collect()
+}
+
+/// Whether text is a full object name: 40 or 64 hex digits.
+fn hex_hash(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether text is a strict ISO 8601 date (`%aI`): `YYYY-MM-DDTHH:MM:SS`
+/// then `Z` or `+HH:MM` / `-HH:MM`.
+fn iso_date(text: &str) -> bool {
+    let b = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        b.get(range)
+            .is_some_and(|d| d.iter().all(u8::is_ascii_digit))
+    };
+    let shape = digits(0..4)
+        && b.get(4) == Some(&b'-')
+        && digits(5..7)
+        && b.get(7) == Some(&b'-')
+        && digits(8..10)
+        && b.get(10) == Some(&b'T')
+        && digits(11..13)
+        && b.get(13) == Some(&b':')
+        && digits(14..16)
+        && b.get(16) == Some(&b':')
+        && digits(17..19);
+    shape
+        && match &b[19..] {
+            b"Z" => true,
+            zone => {
+                zone.len() == 6
+                    && matches!(zone[0], b'+' | b'-')
+                    && zone[1..3].iter().all(u8::is_ascii_digit)
+                    && zone[3] == b':'
+                    && zone[4..].iter().all(u8::is_ascii_digit)
+            }
+        }
 }
 
 /// The text of a log for the model: `short-hash date author subject`.

@@ -841,3 +841,11 @@ Notes:
 - Parse/render: rename orig record always consumed (no forged entry); entries with a secret path/old path/secret folder dropped; `tidy` replaces control/format chars with `?` in rendered text. Secret folders (SECRET_DIRS, CREDENTIAL_DIRS) excluded as `**/<dir>/**` and refused by `check`. `.claude/` is in CREDENTIAL_DIRS, so a repo's own `.claude/` is excluded from add/diff/status.
 - TDD: tests first for the review items (7 RED), then the identity/hooks tests (RED = compile errors), then code. Spec and design updated.
 - Production lines now about 567 (with docs and blanks) vs 390 before: over 500.
+
+### G-a review fixes (feat/coding-tools-ga, round 2)
+- Split: `tools/git/parse.rs` now holds the status/log parse and render (pure move, commit "refactor(tools): move git parse and render into a submodule"). Non-comment lines: `git.rs` 291 + `git/parse.rs` 203, each under 400.
+- Identity (user decision 2026-10-27): the repo's effective identity (`git config user.name/user.email` in the repo, global in scope); G-b preflight reads it outside the jail and passes it to `Identity::new`. Replaces "global only" in design and spec.
+- Log (user decision 2026-10-27): history simplification kept with the secret excludes (secret-only commits stay hidden); test pins no `--full-history`.
+- Hooks: `GitDir::new(git_dir, common_dir)` pins `core.hooksPath=<common-dir>/hooks` (a linked worktree's git dir has no hooks); test for the linked-worktree case; `hooks_notice` says "lazarobox runs only the repo hooks folder".
+- Hardening: status adds `--untracked-files=normal --renames`; `parse_log` drops records whose hash is not 40/64 hex or whose date is not strict ISO 8601 (a `\x1f` in the author shifts the fields); `check` refuses control and format characters in paths; temp-repo test for `add .` (stages all but secrets).
+- G-b checklist recorded in design.md (cleared env, git >= 2.32, env vars never passed, truncated status stays truncated). Not implemented here.
