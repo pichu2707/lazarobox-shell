@@ -871,3 +871,29 @@ Notes:
 - 6 (LOW) `Fault::Spec(PathBuf)` names the git path; comment on the `Program::Cargo` placeholder: git outside the toolchain's system rx places is refused by design.
 - API changes: `pointer_dirs -> Result<Vec<PathBuf>, Fault>`; `Ctx.unreported: Unreported`; `Ran.changes: Vec<Change>`; `Fault::Spec(PathBuf)`; `integrity::snapshot_with_git_dirs`; `runner::{AfterOnDrop, watched}` now `pub(crate)` (`watched` takes extra dirs).
 - TDD: tests first (RED = compile errors on the new API), then code; audit test forced `open_beneath` instead of `OpenOptions` for the pointer reads.
+## Batch: slice X-d1 (host `run_command`, PR 26, branch feat/coding-tools-xd1, base feat/coding-tools-ga2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xd1 core: `Call::RunCommand`, `run_command` ToolDef (Exec family), `ApprovalAsk::Exec`, minimal app prompt arm | done | feat(tools): offer run_command in the Exec family and always ask for it |
+| Xd1.1 refusals before the ask (no jail, root policy, cwd, allow-list with `package.json` scripts, staged batch, busy chat) + Xd1.2 `RunGate` | done | feat(tools): refuse a command before it asks and gate one run per chat |
+| Xd1.3 run after `y`: gate, job, `run_jailed`, `RunOutcome`, changes note | done | feat(tools): run an approved command in the sandbox and report what it changed |
+
+Seam: all logic lives in the new `runtime/tools/host/{exec,gate}.rs` (children of `host`). `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 18 lines): field `exec: exec::Exec` + its init in `ToolHost::new`; one arm in the pre-ask `match (valid, locality)` (`Call::RunCommand` -> `exec::plan`, refusal sets `checked = Err`, success asks with `ask_for`); one arm in the decision match (`(Decision::Sent, Call::RunCommand)` -> `exec::run`); `mod exec; mod gate;` and the test modules. `files::gate` also refuses an Exec call when the family is off (unknown tool). No seam avoids host.rs: the refusals need an async step before the ask, and the run is a new decision arm.
+
+Design points:
+- `Call::RunCommand { args: Value }` keeps the model's object (shape already checked by `RUN_ARGS`); the allow-list needs `package.json` so `exec::inspect` calls `parse_run(args, &scripts)` before the ask and again after `y`. Scripts come from the `package.json` of the resolved cwd (plain file, <= 256 KiB, not a link).
+- Refusal order: family, jail (Landlock only), root policy (origin canonical, not HOME, `judge_real`), cwd (`plain_relative` + canonical inside the root), allow-list, text that would not show as it is (`clean(arg) != arg`), staged batch (`Staging` = "propose them first", `Proposed` = waiting for review), busy chat. All before any prompt.
+- `ask_for(RunCommand)` always returns `ApprovalAsk::Exec{program,args,cwd}` (any locality, any mode; the app never routes it). The host refuses text the prompt could not show exactly, so `y` approves what runs.
+- `RunGate`: `claimed: HashSet<StageKey>` + `Semaphore(2)`, 60 s wait cap, `Permit` frees both on drop (also a call cancelled while it waits). Taken after `y`, before spawn. `is_busy` is also checked before the ask.
+- Result: `RunOutcome::render` (facts line, then the output wrapped as data); non-zero exit is an ok result; exit 125 plus the helper marker is an error ("the Linux sandbox could not be applied"). `changes_note` appends the watched-git-place changes (names inside the data wrapper, "not reverted"); an unchecked change adds "could not verify git hooks and config after this run". It is the ONE function that reads an integrity `Kind` (`Added|Changed|Removed` explicit, `_` = unchecked), so the `Crowded` -> `Unchecked` rename needs no edit. `Exec.sink(key)` is the per-chat `Unreported`; every result drains it. X-d2 can drain it for a notice.
+- Private temp folder: `$XDG_RUNTIME_DIR/lazarobox-run`, else `<data>/lazarobox/run` (`Scratch::unique`, removed after the run).
+- Program: first executable on the scrubbed PATH (pytest: `<root>/.venv/bin/pytest` first), canonical, passed as `Layout.program`; arg0 comes from the runner.
+
+TDD evidence: core tests RED = `E0599 no variant RunCommand / Exec, no method is_exec` (4 errors); gate tests RED = `E0583 file not found for module gate`; host tests RED = `E0609 no field helper/read on Exec` (3 errors). The app prompt test and the host refusal tests passed on first run (written before the code, compile-RED). Real jail smoke (throwaway test, removed): `go test` through `target/debug/lazarobox-shell __jail-exec` started in Landlock and was refused by the jail on a GOCACHE outside the grants, as it should.
+
+Known gaps / notes:
+- The unchecked-kind case has no test here (the variant is `Crowded` on this branch and `Unchecked` after the rebase): add one `changes_note` test after the rebase.
+- PATH is the process PATH, not the login-shell extended one the CLI engines use: a GUI launch may not find `~/.cargo/bin`. X-d2 or a follow-up can pass `CliEnv.path`.
+- macOS: `jailed()` accepts only the Landlock backend.
+- Tests that need a project outside `/tmp` (the toolchain spec refuses scratch folders) build their world under `target/`.
