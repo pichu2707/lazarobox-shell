@@ -686,6 +686,8 @@ mod tests {
         insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu)));
     }
 
+    mod install;
+
     #[test]
     fn snapshot_level_one_lists_the_engines() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &picker_of("code", 0))));

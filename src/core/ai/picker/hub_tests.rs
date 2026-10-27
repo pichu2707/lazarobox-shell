@@ -11,6 +11,7 @@ fn llamacpp(status: Status, models: &[&str]) -> Detection {
         engines: vec![state("llamacpp", status, &[])],
         local_models: models.iter().map(PathBuf::from).collect(),
         data_home: None,
+        vulkan_icd: false,
     }
 }
 

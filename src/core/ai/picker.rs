@@ -17,7 +17,11 @@ use super::sanitize::is_format;
 use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, status_text};
 
 mod hub;
+mod install;
+mod manage;
 pub use hub::{Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
+pub use install::{COPY_ROW, InstallAsk, Reply as InstallReply, Wizard};
+pub use manage::{INSTALL_ROW, REMOVE_ROW};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -63,6 +67,10 @@ pub enum PickKey {
     },
     /// The `download from Hugging Face…` entry of llamacpp.
     HfDownload,
+    /// The `install llama-server…` entry of llamacpp.
+    InstallLlama,
+    /// The `remove the llama.cpp install` entry of llamacpp.
+    RemoveLlama,
     /// A repo or a choice of the Hugging Face screens, by its index in the
     /// reply.
     Hub(usize),
@@ -265,10 +273,12 @@ pub fn model_rows(
 ) -> Vec<PickRow> {
     let mut rows = listed_models(engine, target, draft, detection);
     // Last, once detection is known, with or without models or a server:
-    // the download needs only curl.
+    // the download needs only curl. The manage row (install or remove) sits
+    // right before it.
     if engine == "llamacpp"
         && let Some(d) = known(detection)
     {
+        rows.extend(manage::manage_row(d));
         let installed = d
             .engines
             .iter()
@@ -653,6 +663,8 @@ pub enum Level {
     },
     /// The Hugging Face screens, over llamacpp's model rows.
     Hub(Hub),
+    /// The llama-server install wizard, over llamacpp's model rows.
+    Install(Wizard),
 }
 
 /// What a picker action asks of the caller.
@@ -676,6 +688,8 @@ pub enum Outcome {
     Download(Box<hf::Job>),
     /// Stop the download that runs.
     CancelDownload,
+    /// Run this install step; the picker waits for its reply.
+    Install(InstallAsk),
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -729,6 +743,7 @@ impl Picker {
                 rows
             }
             Level::Hub(hub) => hub.rows(),
+            Level::Install(wizard) => wizard.rows(),
         }
     }
 
@@ -784,7 +799,7 @@ impl Picker {
                         self.offset = 0;
                         self.cursor = self.entry_cursor(draft, detection);
                         self.follow();
-                        Outcome::Stay
+                        Self::newer_check(id, detection)
                     }
                     _ => Outcome::Stay,
                 }
@@ -806,10 +821,15 @@ impl Picker {
                         Outcome::Stay
                     }
                     PickKey::HfDownload => self.open_hub(),
+                    key @ (PickKey::InstallLlama | PickKey::RemoveLlama) => {
+                        self.open_manage(key, detection);
+                        Outcome::Stay
+                    }
                     _ => Outcome::Stay,
                 }
             }
             Level::Hub(_) => self.hub_enter(),
+            Level::Install(_) => self.install_enter(draft, detection),
             Level::Custom { engine, text } => match validate_custom(&text) {
                 Some(model) => Outcome::Commit(Assignment {
                     engine: Some(engine),
@@ -824,7 +844,10 @@ impl Picker {
     /// whole text; an engine row gives its no-jail reason, if it has one.
     /// Anything else, and the custom field, copies nothing.
     pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
-        if matches!(self.level, Level::Custom { .. } | Level::Hub(_)) {
+        if matches!(
+            self.level,
+            Level::Custom { .. } | Level::Hub(_) | Level::Install(_)
+        ) {
             return Outcome::Stay;
         }
         let rows = self.rows(draft, detection);
@@ -864,6 +887,7 @@ impl Picker {
                 Outcome::Stay
             }
             Level::Hub(_) => self.hub_back(draft, detection),
+            Level::Install(_) => self.install_back(draft, detection),
         }
     }
 
@@ -962,7 +986,7 @@ impl Picker {
     /// `r`: ask for a new detection, except where `r` is typed.
     pub fn refresh(&self) -> Outcome {
         match self.level {
-            Level::Custom { .. } | Level::Hub(_) => Outcome::Stay,
+            Level::Custom { .. } | Level::Hub(_) | Level::Install(_) => Outcome::Stay,
             _ => Outcome::Refresh,
         }
     }
@@ -975,7 +999,11 @@ mod custom_tests;
 #[cfg(test)]
 mod hub_tests;
 #[cfg(test)]
+mod install_tests;
+#[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+mod manage_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]
@@ -1659,6 +1687,7 @@ mod tests {
             rows,
             vec![
                 info("llama-server not installed: install it to use these models"),
+                row(PickKey::InstallLlama, INSTALL_ROW, Mark::Plain, true, false),
                 hf_entry_needing_server()
             ]
         );
@@ -1676,6 +1705,7 @@ mod tests {
             engines: vec![state("llamacpp", Status::NotRunning, &[])],
             local_models: models.iter().map(std::path::PathBuf::from).collect(),
             data_home: None,
+            vulkan_icd: false,
         }
     }
 
@@ -1807,6 +1837,7 @@ mod tests {
             engines: vec![state("llamacpp", Status::Available, &["/m/x.gguf"])],
             local_models: vec!["/m/a.gguf".into(), "/m/b.gguf".into()],
             data_home: None,
+            vulkan_icd: false,
         };
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
@@ -1842,6 +1873,7 @@ mod tests {
             engines: vec![state("llamacpp", Status::Available, &["served"])],
             local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
             data_home: None,
+            vulkan_icd: false,
         };
         let rows = model_rows(
             "llamacpp",

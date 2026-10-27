@@ -141,7 +141,7 @@ Installs MUST live under `<XDG_DATA_HOME>/lazarobox/llama.cpp/<tag>/` (falling b
 #### Scenario: Layout after install [auto]
 - GIVEN a successful install of `b9000`
 - WHEN it finishes
-- THEN `<data>/lazarobox/llama.cpp/b9000/llama-b9000/llama-server` exists and `current` resolves to `b9000`
+- THEN `<data>/lazarobox/llama.cpp/b9000/llama-server` exists (the archive top folder is renamed to the tag, design D5) and `current` resolves to `b9000`
 
 #### Scenario: XDG fallback [auto]
 - GIVEN `XDG_DATA_HOME` unset

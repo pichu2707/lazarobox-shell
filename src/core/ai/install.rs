@@ -4,6 +4,7 @@
 //! the install needs and when a newer build is worth a notice. Everything
 //! here is pure; the runtime downloads, verifies, extracts and activates.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -239,10 +240,16 @@ pub fn is_newer(installed: &str, candidate: &str) -> bool {
     }
 }
 
-/// Whether the newer-build check may ask GitHub: only with an owned install
-/// of a known tag, and never when `[updates] check = false`.
-pub fn should_check_newer(update_check: bool, installed_tag: Option<&str>) -> bool {
-    update_check && installed_tag.is_some_and(|tag| tag_number(tag).is_some())
+/// Whether the newer-build check may ask GitHub: once per run, and never
+/// when `[updates] check = false`. (That there is an owned install is
+/// decided where the ask is made and where it runs.)
+pub fn should_check_newer(update_check: bool, already_checked: bool) -> bool {
+    update_check && !already_checked
+}
+
+/// Whether `asset` is a Vulkan build (the name upstream gives it).
+pub fn is_vulkan_asset(asset: &str) -> bool {
+    asset.contains("-vulkan-")
 }
 
 /// `<data_home>/lazarobox/llama.cpp`: everything the install owns.
@@ -258,6 +265,34 @@ pub fn is_owned(binary: &Path, data_home: &Path) -> bool {
         .components()
         .all(|c| !matches!(c, Component::ParentDir | Component::CurDir));
     plain && binary.starts_with(owned_root(data_home)) && binary != owned_root(data_home)
+}
+
+/// `<owned root>/current`: the symlink to the active tag, whose
+/// `llama-server` is found when this folder is on the `PATH`.
+pub fn current_dir(data_home: &Path) -> PathBuf {
+    owned_root(data_home).join("current")
+}
+
+/// `path` with the owned `current/` folder appended as the LAST entry, once,
+/// so a system `llama-server` found earlier wins. Without a data home, or
+/// when the entry is already there, `path` comes back unchanged. The lookup
+/// happens when a binary is searched for, so the folder's content appearing
+/// or vanishing after an install or a remove needs no refresh of the `PATH`.
+pub fn with_owned_path(path: &OsStr, data_home: Option<&Path>) -> OsString {
+    let Some(data_home) = data_home else {
+        return path.to_owned();
+    };
+    let current = current_dir(data_home);
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if entries.contains(&current) {
+        return path.to_owned();
+    }
+    // An empty `PATH` splits into one empty entry; it is not an entry the
+    // user wrote, so only then is it dropped. In a longer `PATH` an empty or
+    // `.` entry stays as it was and the owned folder is only appended.
+    entries.retain(|entry| !entry.as_os_str().is_empty() || !path.is_empty());
+    entries.push(current);
+    std::env::join_paths(entries).unwrap_or_else(|_| path.to_owned())
 }
 
 #[cfg(test)]
@@ -479,10 +514,9 @@ mod tests {
 
     #[test]
     fn the_newer_check_respects_the_update_opt_out() {
-        assert!(should_check_newer(true, Some("b9000")));
-        assert!(!should_check_newer(false, Some("b9000")));
-        assert!(!should_check_newer(true, None));
-        assert!(!should_check_newer(true, Some("weird")));
+        assert!(should_check_newer(true, false));
+        assert!(!should_check_newer(false, false), "updates are off");
+        assert!(!should_check_newer(true, true), "once per run");
     }
 
     #[test]
@@ -638,5 +672,50 @@ mod tests {
         ] {
             assert!(check_member(name, top).is_err(), "{name:?}");
         }
+    }
+
+    fn entries(path: &std::ffi::OsStr) -> Vec<PathBuf> {
+        std::env::split_paths(path).collect()
+    }
+
+    // Spec (chat-engines, System binary preferred): the owned folder is the
+    // LAST entry, so a system `llama-server` found earlier wins.
+    #[test]
+    fn the_owned_folder_is_appended_as_the_last_path_entry() {
+        let path = std::ffi::OsString::from("/usr/bin:/opt/bin");
+        let out = with_owned_path(&path, Some(Path::new("/data")));
+        assert_eq!(
+            entries(&out),
+            [
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/opt/bin"),
+                PathBuf::from("/data/lazarobox/llama.cpp/current"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_owned_folder_is_added_once_and_only_with_a_data_home() {
+        let path = std::ffi::OsString::from("/usr/bin");
+        assert_eq!(with_owned_path(&path, None), path);
+        let once = with_owned_path(&path, Some(Path::new("/data")));
+        assert_eq!(with_owned_path(&once, Some(Path::new("/data"))), once);
+        let empty = with_owned_path(std::ffi::OsStr::new(""), Some(Path::new("/data")));
+        assert_eq!(
+            entries(&empty),
+            [PathBuf::from("/data/lazarobox/llama.cpp/current")]
+        );
+    }
+
+    // Empty and `.` entries were the user's: only the owned folder is added.
+    #[test]
+    fn empty_and_dot_entries_are_kept_as_they_were() {
+        let path = std::ffi::OsString::from("/usr/bin::.:/opt/bin:");
+        let out = with_owned_path(&path, Some(Path::new("/data")));
+        let mut expected = std::env::split_paths(&path).collect::<Vec<_>>();
+        expected.push(PathBuf::from("/data/lazarobox/llama.cpp/current"));
+        assert_eq!(entries(&out), expected);
+        assert!(entries(&out).contains(&PathBuf::new()));
+        assert!(entries(&out).contains(&PathBuf::from(".")));
     }
 }
