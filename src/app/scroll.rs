@@ -4,7 +4,7 @@
 use super::*;
 use crate::core::ai::chat::review_view::Move;
 use crate::core::mouse::{PaneFacts, WHEEL_STEP, WheelAction, WheelDir, route_wheel};
-use ratatui::crossterm::event::MouseEventKind;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
 /// The COPY key hint of a shell pane.
 const SHELL_COPY_HINT: [&str; 4] = ["j/k scroll", "v select", "y copy", "Esc exit"];
@@ -59,8 +59,12 @@ impl App {
         }
     }
 
-    /// A mouse event: only a vertical wheel tick over a pane does anything.
+    /// A mouse event: a vertical wheel tick over a pane, or a left click on
+    /// a link line of the open menu.
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            return self.on_click(mouse);
+        }
         let dir = match mouse.kind {
             MouseEventKind::ScrollUp => WheelDir::Up,
             MouseEventKind::ScrollDown => WheelDir::Down,
@@ -116,6 +120,24 @@ impl App {
             }
             WheelAction::Ignore => Vec::new(),
         }
+    }
+
+    /// A left click: only the open menu takes it (open-links S2), and acts
+    /// only on a link line. Elsewhere a click is not the app's.
+    fn on_click(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if !self.config.mouse || self.input != InputMode::Menu {
+            return Vec::new();
+        }
+        let Some(menu) = self.menu.as_mut() else {
+            return Vec::new();
+        };
+        menu.set_term(self.term.0, self.term.1);
+        let command = menu.on_click(&self.config, mouse.column, mouse.row);
+        if command == MenuCommand::None {
+            return Vec::new();
+        }
+        self.dirty = true;
+        self.on_menu_command(command)
     }
 
     /// What routing needs to know about pane `id`; `None` for a chat that

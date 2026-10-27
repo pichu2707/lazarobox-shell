@@ -12,35 +12,10 @@ use crate::{
     core::{
         ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
-        menu::{
-            CAUTION_ROWS, CHROME, Footer, MENU_BODY, MenuState, NOTE_ROWS, Row, TAB_BAR, fits_size,
-        },
+        menu::{CAUTION_ROWS, Footer, MenuState, NOTE_ROWS, Row, popup_layout},
     },
     ui::theme::LazaroboxTheme,
 };
-
-/// Widest popup wanted without an AI section.
-pub const WANT_WIDTH: u16 = 51;
-/// With the AI section the `r refresh` hint needs eleven more columns.
-pub const WANT_WIDTH_AI: u16 = 62;
-
-/// `want_w` x `want_h` centred in `area`, clamped to the area.
-pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
-    let width = want_w.min(area.width);
-    let height = want_h.min(area.height);
-    Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    )
-}
-
-/// Whether `area` is big enough for the full popup of `rows` body rows (the
-/// blank row is the first thing dropped, so the height may lose one).
-pub fn fits(area: Rect, rows: usize) -> bool {
-    fits_size(area.width, area.height, rows)
-}
 
 /// Draws `MenuState::rows` in a bordered box, or a one-line fallback.
 pub struct MenuPopup<'a> {
@@ -259,32 +234,21 @@ impl Widget for MenuPopup<'_> {
         let rows = self.menu.rows(self.config);
         let labels = self.menu.tab_labels();
         let tabbed = labels.len() > 1;
-        // Tabbed, the body is fixed (the bar and the tallest view); with a
-        // single tab it is just the rows, as before tabs existed.
-        let body = if tabbed {
-            MENU_BODY.max(TAB_BAR + rows.len())
-        } else {
-            rows.len()
-        };
-        if !fits(area, body) {
+        let note = self.menu.update_note();
+        let note_rows = note.as_ref().map_or(0, |lines| lines.len());
+        // The same layout the click hit-test reads (`MenuState::on_click`).
+        let Some(layout) = popup_layout(
+            area.into(),
+            rows.len(),
+            tabbed,
+            self.menu.has_ai(),
+            note_rows,
+        ) else {
             self.render_fallback(area, buf);
             return;
-        }
-        let want_width = if self.menu.has_ai() {
-            WANT_WIDTH_AI
-        } else {
-            WANT_WIDTH
         };
-        // Tabbed, the update note lives inside the fixed body. Single tab,
-        // it is extra rows: it never makes the popup fall back.
-        let note = self.menu.update_note();
-        let extra = if tabbed {
-            0
-        } else {
-            note.as_ref().map_or(0, |lines| lines.len())
-        };
-        let want_height = (body + extra) as u16 + CHROME;
-        let popup = popup_area(area, want_width, want_height);
+        let (body, extra) = (layout.body, layout.extra);
+        let popup = Rect::from(layout.popup);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
         let block = Block::default()
@@ -293,7 +257,7 @@ impl Widget for MenuPopup<'_> {
             .title(" Menu ")
             .title_style(accent)
             .style(Style::default().bg(self.theme.bg_panel));
-        let inner = block.inner(popup);
+        let inner = Rect::from(layout.inner);
         block.render(popup, buf);
 
         // The bar (tabbed), the body rows, the update note when all of it
@@ -307,7 +271,7 @@ impl Widget for MenuPopup<'_> {
         let used = body + extra.min(note.as_ref().map_or(0, |lines| lines.len()));
         let blank = usize::from(inner.height) > used + 1;
         let width = usize::from(inner.width);
-        let bar = if tabbed {
+        if tabbed {
             let names: Vec<&str> = labels.iter().map(String::as_str).collect();
             let hint = (!self.menu.in_sub_level()).then_some(TAB_HINT);
             let segments = tab_line(&names, self.menu.active_tab(), width, hint, self.theme);
@@ -317,13 +281,10 @@ impl Widget for MenuPopup<'_> {
                 buf.set_stringn(x, inner.y, text, room, *style);
                 x += cells(text) as u16;
             }
-            TAB_BAR
-        } else {
-            0
-        };
+        }
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
-            let y = inner.y + (bar + offset) as u16;
+            let y = layout.first_row + offset as u16;
             if y >= inner.bottom() {
                 break;
             }
@@ -367,7 +328,17 @@ impl Widget for MenuPopup<'_> {
 mod tests {
     use super::*;
 
-    use crate::core::menu::MIN_WIDTH;
+    use crate::core::menu::{self, CHROME, MENU_BODY, MIN_WIDTH, fits_size};
+
+    /// The popup box the layout centres in `area` (`menu::popup_area`).
+    fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
+        menu::popup_area(area.into(), want_w, want_h).into()
+    }
+
+    /// Whether the full popup of `rows` body rows fits `area`.
+    fn fits(area: Rect, rows: usize) -> bool {
+        fits_size(area.width, area.height, rows)
+    }
 
     /// The AI popup's height: its fixed body plus the chrome.
     const POPUP_H: u16 = MENU_BODY as u16 + CHROME;
@@ -809,6 +780,59 @@ mod tests {
             assert_eq!(border.len(), 2);
             assert_eq!(border[1] - border[0] + 1, usize::from(POPUP_H));
             assert_eq!(l[border[0]].trim().chars().count(), 62);
+        }
+    }
+
+    // Spec (open-links S2): a click finds a row where it is drawn, because
+    // the hit-test reads the same layout as the renderer.
+    #[test]
+    fn the_layout_puts_every_row_where_it_is_drawn() {
+        let mut field = with_ai("llama3:8b").with_hf(Default::default(), None);
+        goto(&mut field, "Hugging Face");
+        press(&mut field, &[KeyCode::Enter]);
+        let config = Config::default();
+        for menu in [fresh(), mixed(), field] {
+            for (w, h) in [
+                (80, 24),
+                (40, MIN_HEIGHT),
+                (MIN_WIDTH, MIN_HEIGHT),
+                (120, 40),
+            ] {
+                let screen = crate::core::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                };
+                let Some(layout) = menu.popup_layout(&config, screen) else {
+                    assert!(text(&draw(w, h, &menu)).contains("MENU"), "{w}x{h}");
+                    continue;
+                };
+                let buf = draw(w, h, &menu);
+                let inner = layout.inner;
+                for (index, row) in menu.rows(&config).iter().enumerate() {
+                    let y = layout.first_row + index as u16;
+                    if y >= inner.y + inner.height {
+                        break;
+                    }
+                    let start = match row {
+                        Row::Title(t) | Row::Text(t) => format!(" {t}"),
+                        Row::Field(t) => format!(" {t}"),
+                        Row::Item { label, .. } => format!(" {label}"),
+                        Row::Pick { label, .. } => format!(" {label}"),
+                    };
+                    let drawn: String = (inner.x..inner.x + inner.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect();
+                    // The first cells, before any clipping.
+                    let head: String = start.chars().take(8).collect();
+                    let head = head.trim_end();
+                    assert!(
+                        drawn.starts_with(head),
+                        "{w}x{h} row {index}: {drawn:?} vs {head:?}"
+                    );
+                }
+            }
         }
     }
 

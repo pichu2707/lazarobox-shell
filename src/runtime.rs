@@ -62,7 +62,7 @@ use ratatui::{
         cursor::SetCursorStyle,
         event::{
             DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-            Event, EventStream, MouseEventKind,
+            Event, EventStream, MouseButton, MouseEventKind,
         },
         execute, terminal,
     },
@@ -1704,12 +1704,15 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         // then keeps the window as focused.
         Event::FocusGained => Some(AppEvent::WindowFocus(true)),
         Event::FocusLost => Some(AppEvent::WindowFocus(false)),
-        // Only the vertical wheel: clicks, drags, motion and the horizontal
-        // wheel are not the app's.
+        // The vertical wheel and the left press (a link line of the menu);
+        // other buttons, releases, drags, motion and the horizontal wheel
+        // are not the app's.
         Event::Mouse(mouse)
             if matches!(
                 mouse.kind,
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::Down(MouseButton::Left)
             ) =>
         {
             Some(AppEvent::Mouse(mouse))
@@ -2119,12 +2122,25 @@ mod tests {
         }
     }
 
-    // Spec (mouse-input): clicks, drags, motion and the horizontal wheel are dropped.
+    // Spec (mouse-input, open-links S2): a left press reaches the app, which
+    // opens a link line of the menu with it.
+    #[test]
+    fn a_left_press_is_forwarded_whole() {
+        let event = mouse(MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(
+            to_app_event(Event::Mouse(event)),
+            Some(AppEvent::Mouse(event))
+        );
+    }
+
+    // Spec (mouse-input): other buttons, releases, drags, motion and the
+    // horizontal wheel are dropped.
     #[test]
     fn other_mouse_events_are_dropped() {
         for kind in [
-            MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Down(MouseButton::Middle),
+            MouseEventKind::Up(MouseButton::Right),
             MouseEventKind::Up(MouseButton::Left),
             MouseEventKind::Drag(MouseButton::Left),
             MouseEventKind::Moved,

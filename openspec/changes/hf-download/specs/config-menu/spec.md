@@ -72,7 +72,7 @@ The AI tab MUST end with a static row `Hugging Face`, after the row that was las
 - `<name>` once an account is known, from a connect or a check in this session;
 - `token set (HF_TOKEN)` while `HF_TOKEN` is set.
 
-Enter on the row opens a field with the hint `paste a Hugging Face token`, followed by `create a read token at:` and, on a line of its own, `https://huggingface.co/settings/tokens/new?tokenType=read`. The field draws one `•` per character. Ctrl+O opens that link in the browser through the host's opener (`xdg-open`; on WSL `wslview`, then `explorer.exe`; on macOS `open`), and the footer says `Opened in your browser`; on a host with no opener Ctrl+O copies the link instead. The field's footer is `Enter connect · Ctrl+O open link · Ctrl+U clear · Esc back`, or `… Ctrl+O copy link …` with no opener. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back; Esc during the check stops it, and the token is not saved unless the save had already happened. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. With a saved token, `d` offers the same prompt, also when its account is unknown (`disconnect the saved token? (y/n)`), and the footer of such a row is `Enter check · d disconnect · j/k move · s save · Esc cancel`. The row writes no config edit.
+Enter on the row opens a field with the hint `paste a Hugging Face token`, followed by `create a read token at:` and, on a line of its own, `https://huggingface.co/settings/tokens/new?tokenType=read`. The field draws one `•` per character. Ctrl+O opens that link in the browser through the host's opener (`xdg-open`; on WSL `wslview`, then `explorer.exe`; on macOS `open`), and the footer says `Opened in your browser`; on a host with no opener Ctrl+O copies the link instead. With `Mouse` on, a left click on the link line does the same as Ctrl+O; any other click in the menu does nothing. With `Mouse` off the host terminal handles clicks itself. The field's footer is `Enter connect · Ctrl+O open link · Ctrl+U clear · Esc back`, or `… Ctrl+O copy link …` with no opener. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back; Esc during the check stops it, and the token is not saved unless the save had already happened. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. With a saved token, `d` offers the same prompt, also when its account is unknown (`disconnect the saved token? (y/n)`), and the footer of such a row is `Enter check · d disconnect · j/k move · s save · Esc cancel`. The row writes no config edit.
 
 #### Scenario: Account row [auto]
 - GIVEN the AI tab
@@ -84,6 +84,12 @@ Enter on the row opens a field with the hint `paste a Hugging Face token`, follo
 - WHEN Ctrl+O is pressed
 - THEN `https://huggingface.co/settings/tokens/new?tokenType=read` is opened in the browser, the field stays open and the footer reads `Opened in your browser`
 - AND with no opener the link is copied instead
+
+#### Scenario: A click opens the token link [auto]
+- GIVEN the token field with `Mouse` on, on a host with an opener
+- WHEN the line that shows `https://huggingface.co/settings/tokens/new?tokenType=read` is clicked with the left button
+- THEN the link is opened in the browser, the field stays open and the footer reads `Opened in your browser`
+- AND a click on any other row of the field or of the menu does nothing
 
 #### Scenario: The field hides the token [auto]
 - GIVEN the token field

@@ -15,6 +15,7 @@ baseline.
 - Ctrl+O opens the link of the Hugging Face token field, and the prefilled
   issue of the Feedback form, in the browser (`xdg-open`; on WSL `wslview`,
   then `explorer.exe`; on macOS `open`). With no opener the link is copied.
+  With `Mouse` on, a left click on the token link line opens it too.
 
 - With `[ai.tools] write = true`, chats get four tools to change files in the
   project: `create_dir`, `write_file`, `edit_file` and `propose_batch`.

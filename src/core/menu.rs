@@ -21,6 +21,7 @@ use super::{
         },
     },
     config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
+    layout::Rect,
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -388,6 +389,79 @@ pub const MIN_WIDTH: u16 = 24;
 /// may lose one). Below it the popup is a one-line fallback.
 pub fn fits_size(width: u16, height: u16, rows: usize) -> bool {
     width >= MIN_WIDTH && usize::from(height) >= rows + usize::from(CHROME) - 1
+}
+
+/// Widest popup wanted without an AI section.
+pub const WANT_WIDTH: u16 = 51;
+/// With the AI section the `r refresh` hint needs eleven more columns.
+pub const WANT_WIDTH_AI: u16 = 62;
+
+/// `want_w` x `want_h` centred in `area`, clamped to the area.
+pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
+    let width = want_w.min(area.width);
+    let height = want_h.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+/// Where the full popup is drawn. The renderer and the click hit-test both
+/// read it, so a click finds the row drawn under it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PopupLayout {
+    /// The box, borders included.
+    pub popup: Rect,
+    /// Inside the borders: the tab bar, the body, the blank row, the footer.
+    pub inner: Rect,
+    /// Body rows: the bar and the tallest view when tabbed, else the rows.
+    pub body: usize,
+    /// Rows of the update note added under a single-tab body.
+    pub extra: usize,
+    /// The screen row of body row 0 (under the tab bar when tabbed).
+    pub first_row: u16,
+}
+
+/// The layout of a popup of `rows` rows on `screen`, or `None` when only
+/// the one-line fallback is drawn. `note` is the update note's line count.
+pub fn popup_layout(
+    screen: Rect,
+    rows: usize,
+    tabbed: bool,
+    ai: bool,
+    note: usize,
+) -> Option<PopupLayout> {
+    // Tabbed, the body is fixed (the bar and the tallest view); with a
+    // single tab it is just the rows, as before tabs existed.
+    let body = if tabbed {
+        MENU_BODY.max(TAB_BAR + rows)
+    } else {
+        rows
+    };
+    if !fits_size(screen.width, screen.height, body) {
+        return None;
+    }
+    let want_width = if ai { WANT_WIDTH_AI } else { WANT_WIDTH };
+    // Tabbed, the update note lives inside the fixed body. Single tab, it
+    // is extra rows: it never makes the popup fall back.
+    let extra = if tabbed { 0 } else { note };
+    let popup = popup_area(screen, want_width, (body + extra) as u16 + CHROME);
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let bar = if tabbed { TAB_BAR as u16 } else { 0 };
+    Some(PopupLayout {
+        popup,
+        inner,
+        body,
+        extra,
+        first_row: inner.y + bar,
+    })
 }
 
 /// What a key did, for the app to act on.
@@ -824,6 +898,54 @@ impl MenuState {
     /// whether the popup (or only its one-line fallback) is on screen.
     pub fn set_term(&mut self, cols: u16, rows: u16) {
         self.term = Some((cols, rows));
+    }
+
+    /// Where the popup of the current view is drawn on `screen`, or `None`
+    /// on the one-line fallback.
+    pub fn popup_layout(&self, config: &Config, screen: Rect) -> Option<PopupLayout> {
+        let tabbed = self.tab_labels().len() > 1;
+        let note = self.update_note().map_or(0, |lines| lines.len());
+        popup_layout(screen, self.rows(config).len(), tabbed, self.has_ai(), note)
+    }
+
+    /// A left click on the screen cell `(column, row)` of the size given by
+    /// [`Self::set_term`]: on the link line of the token field it does what
+    /// Ctrl+O does; anywhere else, or on the one-line fallback, nothing.
+    pub fn on_click(&self, config: &Config, column: u16, row: u16) -> MenuCommand {
+        let Some((width, height)) = self.term else {
+            return MenuCommand::None;
+        };
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let Some(layout) = self.popup_layout(config, screen) else {
+            return MenuCommand::None;
+        };
+        let inner = layout.inner;
+        let inside = (inner.x..inner.x + inner.width).contains(&column)
+            && (layout.first_row..inner.y + inner.height).contains(&row);
+        if !inside {
+            return MenuCommand::None;
+        }
+        let index = usize::from(row - layout.first_row);
+        match self.link_at(config, index) {
+            Some(url) => self.open_or_copy(url.to_owned()),
+            None => MenuCommand::None,
+        }
+    }
+
+    /// The link drawn on body row `index`, if that row is one: only the
+    /// token field's link to create a token.
+    fn link_at(&self, config: &Config, index: usize) -> Option<&'static str> {
+        let on_link = self.account.field().is_some()
+            && matches!(
+                self.rows(config).get(index),
+                Some(Row::Text(text)) if text == account::TOKEN_URL
+            );
+        on_link.then_some(account::TOKEN_URL)
     }
 
     /// Whether the privacy warning is readable in full: the popup fits the

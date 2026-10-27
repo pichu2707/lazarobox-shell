@@ -1883,7 +1883,13 @@ impl App {
             return Vec::new();
         };
         menu.set_term(self.term.0, self.term.1);
-        match menu.on_key(key, repeat, &mut self.config) {
+        let command = menu.on_key(key, repeat, &mut self.config);
+        self.on_menu_command(command)
+    }
+
+    /// What the app does for a menu key or click.
+    fn on_menu_command(&mut self, command: MenuCommand) -> Vec<Effect> {
+        match command {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
@@ -1901,7 +1907,9 @@ impl App {
             MenuCommand::CancelDownload => self.cancel_download(),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
-                menu.set_copied("Opened in your browser".to_owned());
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_copied("Opened in your browser".to_owned());
+                }
                 vec![Effect::OpenUrl(url)]
             }
             MenuCommand::None => Vec::new(),
@@ -7869,6 +7877,9 @@ mod app_tests {
 
     /// The Feedback row of the Settings tab (config-menu).
     mod feedback;
+
+    /// A left click on a link line of the open menu (open-links S2).
+    mod menu_click;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

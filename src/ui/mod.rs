@@ -25,6 +25,17 @@ impl From<Rect> for ratatui::layout::Rect {
     }
 }
 
+impl From<ratatui::layout::Rect> for Rect {
+    fn from(rect: ratatui::layout::Rect) -> Self {
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }
+    }
+}
+
 /// Draws the tab bar (with several tabs), every pane in its tile, the
 /// separators between them, the statusline and, in MENU, the popup. Only the focused pane places the real cursor.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
