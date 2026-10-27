@@ -384,8 +384,25 @@ mod tests {
     #[test]
     fn an_invalid_caller_key_is_dropped_for_the_derived_one() {
         let secret = "chat/sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789/summary";
-        let long = "k".repeat(201);
-        let bad = ["", "   ", "a\nb", "k\u{1b}[0m", "a\u{200b}b", &long, secret];
+        let long = format!("chat/{}", "k".repeat(196));
+        let outside = ["decision/use-axum", "orchestrator/plan", "chat/", "chat/  "];
+        let bad = [
+            "",
+            "   ",
+            "chat/a\nb",
+            "chat/k\u{1b}[0m",
+            "chat/a\u{200b}b",
+            &long,
+            secret,
+        ];
+        for key in outside {
+            let call = save(SID, "p", &note("Use Axum", "c"), Some(key));
+            assert_eq!(
+                json_body(&call)["topic_key"],
+                "chat/decision/use-axum",
+                "outside the chat/ namespace: {key:?}"
+            );
+        }
         for key in bad {
             let call = save(SID, "p", &note("Use Axum", "c"), Some(key));
             let raw = String::from_utf8(call.body.clone().expect("body")).expect("utf8");
@@ -400,7 +417,7 @@ mod tests {
 
     #[test]
     fn a_caller_key_at_the_cap_is_kept() {
-        let key = "k".repeat(200);
+        let key = format!("chat/{}", "k".repeat(195));
         let call = save(SID, "p", &note("t", "c"), Some(&key));
         assert_eq!(json_body(&call)["topic_key"], key.as_str());
     }

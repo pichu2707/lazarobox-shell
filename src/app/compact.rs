@@ -64,7 +64,8 @@ impl App {
     /// A run kept `summary` for chat `id` (chat-memory S5, S6). It goes to
     /// engram only when memory is on and ready, the conversation has a stable
     /// id and the user opted in (`[ai.memory] save_summaries`); the save
-    /// upserts under `chat/<conversation>/summary`. Without the opt-in the
+    /// upserts under `chat/<id>-<created>/summary` (unique per conversation
+    /// lifetime; a resumed conversation saves nothing). Without the opt-in the
     /// user is told once, in this run, what would be stored. Memory off or
     /// unavailable writes nothing and says nothing (S8).
     fn save_summary(&mut self, id: PaneId, summary: String) -> Vec<Effect> {
@@ -81,13 +82,17 @@ impl App {
             .session()
             .map(|s| s.project.clone())
             .or_else(|| chat.project().map(str::to_owned));
-        let (Some(project), Some(conversation)) = (project, chat.conversation()) else {
+        // `None` for a resumed conversation: it never updates its saved summary.
+        let (Some(project), Some(key)) = (project, chat.summary_key()) else {
             return Vec::new();
         };
         if !opted_in {
             if !self.summary_notice_shown {
                 self.summary_notice_shown = true;
-                self.notice = Some(SUMMARY_NOTICE.to_owned());
+                // A transcript line, not the transient notice: it must outlive
+                // the next key press and not replace another message.
+                chat.push_system(SUMMARY_NOTICE);
+                self.dirty = true;
             }
             return Vec::new();
         }
@@ -106,7 +111,7 @@ impl App {
                 title: "Conversation summary".to_owned(),
                 content: summary,
             },
-            topic_key: Some(format!("chat/{conversation}/summary")),
+            topic_key: Some(key),
         })]
     }
 }

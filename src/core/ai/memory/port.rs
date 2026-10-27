@@ -33,7 +33,9 @@ pub enum MemCmd {
     /// Save a note. `session` is `None` until the conversation has one. `cwd`
     /// is the directory of the chat: the session registers with it.
     /// `topic_key` is an optional caller-supplied key: a later save under the
-    /// same key updates the note. Invalid keys fall back to the derived one.
+    /// same key updates the note. The caller owns its namespace under
+    /// `chat/` (for example `chat/<id>-<created>/summary`); a key outside it,
+    /// blank or otherwise invalid falls back to the derived one.
     Save {
         pane: PaneId,
         id: SaveId,

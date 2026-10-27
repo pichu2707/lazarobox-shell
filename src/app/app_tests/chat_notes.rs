@@ -844,6 +844,7 @@ fn created(conversation: i64, evicted: bool, evicted_notes: u32) -> AppEvent {
         conversation,
         evicted,
         evicted_notes,
+        created_at: 1_000,
     })
 }
 
@@ -984,6 +985,7 @@ fn store_replies_for_a_pane_that_is_gone_change_nothing() {
             conversation: 1,
             evicted: true,
             evicted_notes: 3,
+            created_at: 1_000,
         },
         StoreReply::LinkFailed {
             pane: gone,

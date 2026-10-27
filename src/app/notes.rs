@@ -222,6 +222,14 @@ impl App {
                     return Vec::new();
                 };
                 let save = chat.save_answered(*token);
+                // The opted-in summary save failing every time must not be
+                // silent forever: say so once per run.
+                if save.as_ref().is_some_and(|s| s.quiet) && !self.summary_failure_shown {
+                    self.summary_failure_shown = true;
+                    chat.push_system(format!(
+                        "could not save the conversation summary to engram: {reason}"
+                    ));
+                }
                 save_not_done(chat, save.as_ref(), reason);
             }
             MemReply::Saved {
@@ -346,12 +354,15 @@ impl App {
     pub(super) fn on_store_reply(&mut self, reply: &StoreReply) -> Vec<Effect> {
         match reply {
             StoreReply::Created {
-                pane, conversation, ..
+                pane,
+                conversation,
+                created_at,
+                ..
             } => {
                 let Some(chat) = self.panes.get_mut(pane).and_then(PaneState::chat_mut) else {
                     return Vec::new();
                 };
-                chat.set_conversation(*conversation);
+                chat.set_created(*conversation, *created_at);
                 for line in eviction_lines_of(reply) {
                     chat.push_system(line);
                 }

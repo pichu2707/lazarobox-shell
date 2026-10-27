@@ -2,7 +2,7 @@
 //! after a turn ends, with the `summarize` task's engine, and never holds the
 //! user's next send.
 
-use super::chat_notes::{CWD, PROJECT, ai, plain};
+use super::chat_notes::{CWD, PROJECT, ai, ctrl, oldest_save, plain, systems, type_text};
 use super::*;
 use crate::core::ai::{
     EngineState, Status,
@@ -276,13 +276,48 @@ fn opted_in(save: bool) -> AiConfig {
     config
 }
 
+const CREATED_AT: i64 = 1_000;
+
+/// The privacy notices among the system lines of the transcript.
+fn notices_in_transcript(a: &App) -> Vec<String> {
+    chat_of(a)
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::System(line) if line.contains("save_summaries") => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn known_conversation(a: &mut App) {
+    created_conversation(a, CONVERSATION, CREATED_AT);
+}
+
+fn created_conversation(a: &mut App, conversation: i64, created_at: i64) {
     a.update(AppEvent::Store(StoreReply::Created {
         pane: chat_id(),
-        conversation: CONVERSATION,
+        conversation,
         evicted: false,
         evicted_notes: 0,
+        created_at,
     }));
+}
+
+thread_local! {
+    static NOW_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static BASE: Instant = Instant::now();
+}
+
+fn mock_now() -> Instant {
+    BASE.with(|b| *b + Duration::from_millis(NOW_MS.with(|n| n.get())))
+}
+
+fn saved_key(effects: &[Effect]) -> Option<String> {
+    match saves(effects).as_slice() {
+        [MemCmd::Save { topic_key, .. }] => topic_key.clone(),
+        other => panic!("expected one save, got {other:?}"),
+    }
 }
 
 /// Runs one compaction to its end with `summary` as the model's text and
@@ -337,13 +372,13 @@ fn an_opted_in_summary_is_saved_once_under_its_conversation_key() {
         (*pane, session, project.as_str()),
         (chat_id(), &None, PROJECT)
     );
-    assert_eq!(topic_key.as_deref(), Some("chat/42/summary"));
+    assert_eq!(topic_key.as_deref(), Some("chat/42-1000/summary"));
     assert_eq!(note.kind, MemKind::Discovery);
     assert_eq!(note.content, "- we chose Axum");
 }
 
 #[test]
-fn the_saved_summary_never_carries_a_secret() {
+fn the_t1_redaction_keeps_a_secret_out_of_the_summary_that_is_saved() {
     let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
     known_conversation(&mut a);
     let effects = summarized(&mut a, "- the login uses password=hunter2 here");
@@ -367,7 +402,7 @@ fn a_later_summary_saves_again_under_the_same_key() {
             _ => unreachable!(),
         })
         .collect();
-    assert_eq!(keys, vec![Some("chat/42/summary".to_owned()); 2]);
+    assert_eq!(keys, vec![Some("chat/42-1000/summary".to_owned()); 2]);
 }
 
 #[test]
@@ -376,11 +411,21 @@ fn without_the_flag_nothing_is_saved_and_the_notice_comes_once() {
     known_conversation(&mut a);
     let first = summarized(&mut a, "- one");
     assert!(saves(&first).is_empty(), "{first:?}");
-    let notice = a.notice.take().expect("the privacy notice");
-    assert!(notice.contains("save_summaries"), "{notice}");
+    assert_eq!(a.notice, None, "not the transient notice");
+    let lines = notices_in_transcript(&a);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    for part in [
+        "save_summaries = true",
+        "[ai.memory]",
+        "engram",
+        "stay in engram",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {}", lines[0]);
+    }
     let second = summarized(&mut a, "- one\n- two");
     assert!(saves(&second).is_empty(), "{second:?}");
-    assert_eq!(a.notice, None, "the notice is shown once");
+    assert_eq!(notices_in_transcript(&a).len(), 1, "shown once per run");
+    assert_eq!(a.notice, None);
 }
 
 #[test]
@@ -445,7 +490,9 @@ fn the_answer_to_a_summary_save_adds_no_transcript_line_and_a_failure_none() {
         id: *id,
         reason: "boom".into(),
     }));
-    assert_eq!(chat_of(&a).entries().len(), before, "a failure is silent");
+    // The first failure of the run is told once, as a line (never a note
+    // line); the later ones are quiet.
+    assert_eq!(chat_of(&a).entries().len(), before + 1);
     assert_eq!(a.notice, None);
 
     let effects = summarized(&mut a, "- one\n- two");
@@ -473,8 +520,147 @@ fn the_answer_to_a_summary_save_adds_no_transcript_line_and_a_failure_none() {
         project: PROJECT.into(),
         session: "lazarobox-0123456789abcdef0123456789abcdef".into(),
         observation_id: 9,
-        topic_key: "chat/42/summary".into(),
+        topic_key: "chat/42-1000/summary".into(),
         title: "Conversation summary".into(),
     }));
     assert_eq!(chat_of(&a).entries().len(), before, "a save is silent");
+}
+
+#[test]
+fn a_reused_conversation_id_saves_under_a_different_key() {
+    // SQLite reuses the id of a deleted conversation: the creation time keeps
+    // the new chat from upserting over the summary of the old one.
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    created_conversation(&mut a, CONVERSATION, 1_000);
+    let old = saved_key(&summarized(&mut a, "- the old chat"));
+    created_conversation(&mut a, CONVERSATION, 2_000);
+    let new = saved_key(&summarized(&mut a, "- the new chat"));
+    assert_eq!(old.as_deref(), Some("chat/42-1000/summary"));
+    assert_eq!(new.as_deref(), Some("chat/42-2000/summary"));
+}
+
+#[test]
+fn a_resumed_conversation_does_not_update_its_saved_summary() {
+    // The rolling summary is not persisted: after a resume it covers only the
+    // later messages and would replace the fuller one already saved.
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    a.panes
+        .get_mut(&chat_id())
+        .and_then(PaneState::chat_mut)
+        .expect("a chat")
+        .set_conversation(CONVERSATION);
+    let effects = summarized(&mut a, "- narrower");
+    assert!(saves(&effects).is_empty(), "{effects:?}");
+    assert!(notices_in_transcript(&a).is_empty(), "nothing is offered");
+}
+
+#[test]
+fn a_summary_save_that_fails_says_so_once_per_run() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    for (i, summary) in ["- one", "- one\n- two", "- one\n- two\n- three"]
+        .into_iter()
+        .enumerate()
+    {
+        let effects = summarized(&mut a, summary);
+        let Some(MemCmd::Save { id, .. }) = saves(&effects).first().copied() else {
+            panic!("expected a save, got {effects:?}");
+        };
+        let before = systems(&a);
+        a.update(AppEvent::Memory(MemReply::SaveFailed {
+            pane: chat_id(),
+            id: *id,
+            reason: "engram refused".into(),
+        }));
+        let after = systems(&a);
+        if i == 0 {
+            assert_eq!(
+                &after[before.len()..],
+                ["could not save the conversation summary to engram: engram refused"]
+            );
+        } else {
+            assert_eq!(after, before, "told once, then quiet");
+        }
+    }
+    assert_eq!(a.notice, None);
+}
+
+#[test]
+fn an_unavailable_engram_stays_silent_for_a_summary_save() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- one");
+    let Some(MemCmd::Save { id, .. }) = saves(&effects).first().copied() else {
+        panic!("expected a save, got {effects:?}");
+    };
+    let before = systems(&a);
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: *id,
+        reason: Reason::NotRunning,
+    }));
+    assert_eq!(systems(&a), before);
+}
+
+#[test]
+fn a_summary_save_that_runs_out_of_time_stays_silent() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = app(true, Some("tiny"))
+        .with_ai(opted_in(true))
+        .with_clock(mock_now);
+    known_conversation(&mut a);
+    let effects = summarized(&mut a, "- one");
+    assert_eq!(saves(&effects).len(), 1);
+    assert_eq!(chat_of(&a).pending_save_ids().len(), 1);
+    NOW_MS.with(|n| n.set(60_000));
+    a.update(AppEvent::MemoryTick);
+    assert!(
+        chat_of(&a).pending_save_ids().is_empty(),
+        "the wait was given up"
+    );
+    // (The tick may also give up the context request of the chat; that line
+    // is not about the save.)
+    for line in systems(&a) {
+        assert!(
+            !line.contains("not saved") && !line.contains("could not save"),
+            "{line}"
+        );
+    }
+    assert_eq!(a.notice, None);
+}
+
+#[test]
+fn a_quiet_summary_save_leaves_a_saving_note_editor_untouched() {
+    let mut a = app(true, Some("tiny")).with_ai(opted_in(true));
+    known_conversation(&mut a);
+    let (turn, _) = until_compaction(&mut a);
+    press(&mut a, "n");
+    type_text(&mut a, "My note");
+    a.update(ctrl('s'));
+    assert!(chat_of(&a).note_editor().expect("editor").is_saving());
+    let editor_save = oldest_save(&a).0;
+
+    let effects = finish(&mut a, turn, "- one");
+    let Some(MemCmd::Save { id: quiet, .. }) = saves(&effects).first().copied() else {
+        panic!("expected a quiet save, got {effects:?}");
+    };
+    assert_ne!(*quiet, editor_save);
+    for reply in [
+        MemReply::SaveFailed {
+            pane: chat_id(),
+            id: *quiet,
+            reason: "engram refused".into(),
+        },
+        MemReply::SaveUnavailable {
+            pane: chat_id(),
+            id: *quiet,
+            reason: Reason::NotRunning,
+        },
+    ] {
+        a.update(AppEvent::Memory(reply));
+        let editor = chat_of(&a).note_editor().expect("still open");
+        assert!(editor.is_saving(), "its own answer is still awaited");
+        assert_eq!(editor.notice(), None);
+        assert_eq!(editor.title(), "My note");
+    }
 }
