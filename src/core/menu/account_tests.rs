@@ -1,7 +1,9 @@
 //! Tests of the `Hugging Face` row of the AI tab (config-menu, Hugging Face
 //! account row), at the `MenuState` level.
 
-use super::account::{HINT_CONNECT, HINT_TOKEN, TOKEN_HINT, TOKEN_TITLE};
+use super::account::{
+    HINT_CONNECT, HINT_TOKEN, TOKEN_HINT, TOKEN_TITLE, TOKEN_URL, TOKEN_URL_HINT,
+};
 use super::ai_tests::{machine, press, value_of};
 use super::footer_tests::hint;
 use super::*;
@@ -92,9 +94,16 @@ fn enter_opens_a_field_that_draws_one_dot_per_character() {
             Row::Title(Cow::Borrowed(TOKEN_TITLE)),
             Row::Field("••••••".to_owned()),
             Row::Text(Cow::Borrowed(TOKEN_HINT)),
+            Row::Text(Cow::Borrowed(TOKEN_URL_HINT)),
+            Row::Text(Cow::Borrowed(TOKEN_URL)),
         ]
     );
     assert_eq!(TOKEN_HINT, "paste a Hugging Face token");
+    assert_eq!(TOKEN_URL_HINT, "create a read token at:");
+    assert_eq!(
+        TOKEN_URL,
+        "https://huggingface.co/settings/tokens/new?tokenType=read"
+    );
     assert_eq!(hint(&m), HINT_TOKEN);
     assert!(!format!("{m:?}").contains("hf_abc"), "{m:?}");
 }

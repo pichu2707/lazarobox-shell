@@ -12,6 +12,10 @@ use crate::core::ai::picker::shown;
 pub const TOKEN_TITLE: &str = "Hugging Face account";
 /// The hint under the token field.
 pub const TOKEN_HINT: &str = "paste a Hugging Face token";
+/// Where to get a token: the Hub's form for a new read token. It sits on a
+/// line of its own so terminals that detect URLs keep it clickable.
+pub const TOKEN_URL_HINT: &str = "create a read token at:";
+pub const TOKEN_URL: &str = "https://huggingface.co/settings/tokens/new?tokenType=read";
 /// The footer of the token field.
 pub const HINT_TOKEN: &str = "Enter connect · Ctrl+U clear · Esc back";
 /// The footer of the row, by what Enter does there.

@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The Hugging Face token field shows the link to create a read token
+  (`https://huggingface.co/settings/tokens/new?tokenType=read`) on a line of
+  its own, so terminals that detect URLs keep it clickable.
+
 ## [0.25.1] - 2026-10-26
 
 ### Fixed

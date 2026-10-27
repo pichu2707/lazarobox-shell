@@ -254,7 +254,7 @@ Con `llama-server` instalado, la lista de modelos de llamacpp termina en la fila
 
 **Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
 
-- `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada.
+- `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada.
 - El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
 - Con una cuenta conectada, `Enter` ofrece desconectarla (`y/n`), que borra ese archivo.
 - Si la variable `HF_TOKEN` está definida, manda sobre el archivo, y la fila lo indica: `token set (HF_TOKEN)`.

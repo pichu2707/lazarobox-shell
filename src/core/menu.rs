@@ -561,13 +561,16 @@ impl MenuState {
     }
 
     /// The token field that replaces the rows while it is open: the token
-    /// drawn as one `•` per character, never as typed.
+    /// drawn as one `•` per character, never as typed, and the link to
+    /// create one.
     fn account_rows(&self) -> Option<Vec<Row>> {
         let field = self.account.field()?;
         Some(vec![
             Row::Title(Cow::Borrowed(account::TOKEN_TITLE)),
             Row::Field(field),
             Row::Text(Cow::Borrowed(account::TOKEN_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL)),
         ])
     }
 
