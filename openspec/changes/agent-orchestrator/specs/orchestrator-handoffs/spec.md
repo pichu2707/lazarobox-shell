@@ -37,13 +37,18 @@ When chat memory is on and engram is reachable, each handoff MUST be saved as an
 - WHEN the notes are listed
 - THEN the handoff is identifiable by its category and topic-key family
 
-### Requirement: Degraded mode when memory is off [S4]
-When chat memory is off, or engram is down or errors, the run MUST still start and complete. Handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
+### Requirement: Memory turned on for the run, degraded mode as fallback [S4]
+When chat memory is off, the run MUST turn memory on for its own handoffs only, for that run only: the menu setting and the saved configuration MUST NOT change, and other chat notes stay off. When engram is down, the run MUST try to start it as the chat memory does. In both cases the pane MUST say once that memory was turned on for this run (`memory on for this run`). When engram still cannot be reached, or errors, the run MUST still start and complete: handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
 
-#### Scenario: Memory off [auto]
-- GIVEN chat memory off
+#### Scenario: Memory off is turned on for the run [auto]
+- GIVEN chat memory off and engram reachable
 - WHEN a run completes a worker
-- THEN the handoff is in the in-memory ledger, no engram request was made and `handoffs not persisted` is shown
+- THEN the handoff is saved to engram, `memory on for this run` was shown once, and the menu still shows memory off
+
+#### Scenario: Engram unreachable [auto]
+- GIVEN chat memory off and engram that cannot be started
+- WHEN a run completes a worker
+- THEN the handoff is in the in-memory ledger, no engram save succeeded and `handoffs not persisted` is shown
 
 #### Scenario: Engram dies mid-run [auto]
 - GIVEN memory on and engram failing on the second save

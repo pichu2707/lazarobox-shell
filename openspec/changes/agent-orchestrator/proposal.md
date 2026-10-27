@@ -148,7 +148,7 @@ Resolved: two rounds (engram `sdd/agent-orchestrator/proposal-questions`), recor
 
 Assumptions, reviewed by the user one at a time on 2026-10-27:
 - (a) Confirmed. Orchestrate follows the existing fallback-to-General rule; Ollama is allowed but marked "not recommended".
-- (b) Confirmed. With chat memory off or engram down, the run still starts, keeps handoffs in memory and shows "handoffs not persisted".
+- (b) Changed by the user on 2026-10-27 ("Avisa y activa"): with chat memory off or engram down, the run turns memory on for its own handoffs (starting engram when needed) and says so once; the menu setting is not changed. Only when engram cannot be reached does the run keep handoffs in memory and show "handoffs not persisted". Rejected: always degrade without trying.
 - (c) Confirmed. When one worker fails during a parallel run, no new worker starts and running siblings finish their turn, but the orchestrator is not resumed until the user picks an option.
 - (d) Changed by the user: retry relaunches the same `WorkerSpec` from scratch (CLI turns are stateless), with the failed attempt's error appended to the prompt as untrusted data, sanitized and capped like the alert. Rejected: a retry identical to the failed attempt.
 - (e) Confirmed. Reads outside the run scope ask the user through the labelled queue; they are never silently denied or allowed.
