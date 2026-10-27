@@ -309,3 +309,23 @@ Status: 3/3 tasks done (7.1, 7.2, 7.3). All tasks of the change are done; manual
   (start_command), CHANGELOG `[Unreleased]`.
 - Snapshot reviewed: `snapshot_models_level_of_llamacpp_without_llama_server` gains the install row and
   the footer shows the generic hint (cursor on the install row) instead of the HF row's note.
+
+## PR7 review fixes
+
+- Remove stops the managed server first: `Installer` gets a `StopFn` hook (`with_stop`), run inside
+  the remove step, under the slot, before `activate::remove`, and only when the binary is owned
+  (`install::is_owned`). The runtime wires it to `LiveServers::managed().shutdown()` (stops without
+  retiring, so a later install lets the next turn start it again). ConfirmRemove says "a running
+  managed server is stopped first"; README and CHANGELOG say it.
+- Newer check uses the installed variant: `activate::note_variant` writes `<root>/variant`
+  (`vulkan`) after `swap_current` (removed for other builds); `check_newer` reads it
+  (`activate::installed_vulkan`) and resolves the Vulkan build on Linux; the notice says "(Vulkan build)".
+- `should_check_newer(update_check, already_checked)` is now the real gate used by
+  `App::install_effects` (the installed-tag condition lives in the picker and `check_newer`).
+- Stale notice: a new `AppEvent::InstallNewer` (the attestation warning keeps `InstallWarning`);
+  `check_newer` drops the notice while an install or remove holds the slot (`busy`) and re-reads
+  `current_tag` right before sending; `App::on_install_newer` never overwrites an existing notice.
+- CHANGELOG: attestation is optional; remove stops a running managed server.
+- RED observed by mutation: stop call removed, busy guard removed, current_tag re-read removed,
+  variant read disabled, `note_variant` removed (each failed its test); the notice and gate tests
+  were RED by compilation (missing event / signature).
