@@ -173,3 +173,42 @@ fn only_the_rows_that_change_files_or_run_code_carry_a_caution() {
     let line = on("Write").caution().unwrap();
     assert!(!line.contains('\n') && line.len() <= 44, "{line}");
 }
+
+// Design D18: the Exec row says why commands will be refused when the system
+// has no Landlock jail. The reason is a short note next to the value.
+fn exec_on(sandbox: Option<bool>) -> MenuState {
+    let mut m = open();
+    if let Some(sandbox) = sandbox {
+        m = m.with_sandbox(sandbox);
+    }
+    m.goto("Exec");
+    send(&mut m, KeyCode::Char(' '), false);
+    m
+}
+
+#[test]
+fn the_exec_row_says_it_needs_the_linux_sandbox_when_there_is_no_jail() {
+    let m = exec_on(Some(false));
+    assert_eq!(
+        value_of(&m, "Exec").as_deref(),
+        Some("on · needs Linux sandbox")
+    );
+}
+
+#[test]
+fn the_exec_row_is_plain_with_a_jail_or_before_the_system_is_known() {
+    for sandbox in [Some(true), None] {
+        assert_eq!(value_of(&exec_on(sandbox), "Exec").as_deref(), Some("on"));
+    }
+}
+
+#[test]
+fn the_reason_shows_only_while_exec_is_on_and_only_on_its_row() {
+    let mut m = exec_on(Some(false));
+    send(&mut m, KeyCode::Char(' '), false);
+    assert_eq!(value_of(&m, "Exec").as_deref(), Some("off"));
+    assert_eq!(value_of(&m, "Write").as_deref(), Some("off"));
+    m.goto("Write");
+    send(&mut m, KeyCode::Char(' '), false);
+    assert_eq!(value_of(&m, "Write").as_deref(), Some("on"));
+}

@@ -46,7 +46,11 @@ fn a_changed_config_gitmodules_and_hook_are_reported_with_both_texts() {
     let dir = project();
     let root = dir.path();
     let found = changes(root, || {
-        std::fs::write(root.join(".git/config"), "[core]\n\thooksPath = /tmp/x\n").unwrap();
+        std::fs::write(
+            root.join(".git/config"),
+            "[core]\n\thooksPath = /nowhere/x\n",
+        )
+        .unwrap();
         std::fs::write(root.join(".gitmodules"), "[submodule \"a\"]\n").unwrap();
         std::fs::write(root.join(".git/hooks/pre-commit"), "#!/bin/sh\nevil\n").unwrap();
     });

@@ -112,9 +112,7 @@ const GO_DENIED: &[&str] = &["modfile", "toolexec", "exec", "overlay", "vettool"
 
 /// Checks `program` and `args` against the table. Order: program, verb,
 /// flags, paths. `scripts` are the keys of the project's `package.json`
-/// `scripts` object: `yarn run` and `pnpm run` accept only those.
-// TODO(X-d): the call site reads `package.json` from the root and passes the
-// script names here and to `parse_run`; until then pass an empty slice.
+/// `scripts` object: `npm run`, `yarn run` and `pnpm run` accept only those.
 pub fn check(program: &str, args: &[String], scripts: &[String]) -> Result<Program, Refusal> {
     let program = Program::parse(program).ok_or(Refusal::Program)?;
     verb(program, args, scripts)?;
@@ -127,6 +125,35 @@ pub fn check(program: &str, args: &[String], scripts: &[String]) -> Result<Progr
         return Err(Refusal::Path);
     }
     Ok(program)
+}
+
+/// Whether `program args` is a `npm`, `yarn` or `pnpm` install: it runs the
+/// lifecycle scripts of the project and of its dependencies.
+pub fn installs(program: &str, args: &[String]) -> bool {
+    matches!(program, "npm" | "pnpm" | "yarn")
+        && matches!(args.first().map(String::as_str), Some("install" | "ci"))
+}
+
+/// Whether the install `args` end up with `--ignore-scripts` on: the flag is
+/// there and nothing turns it off again (`--ignore-scripts=false`,
+/// `--no-ignore-scripts`).
+pub fn skips_scripts(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--ignore-scripts")
+        && !args
+            .iter()
+            .any(|arg| arg.starts_with("--ignore-scripts=") || arg.starts_with("--no-ignore"))
+}
+
+/// The project files (tier B, design D12) a run of `program` executes, as the
+/// words of the prompt warning. `None` for a name outside the allow-list.
+pub fn runs_files(program: &str) -> Option<&'static str> {
+    Some(match Program::parse(program)? {
+        Program::Cargo => "build.rs, tests, Cargo.toml and .cargo/config",
+        Program::Npm | Program::Pnpm => "the scripts of package.json and its tests, and .npmrc",
+        Program::Yarn => "the scripts of package.json and its tests, and .yarnrc.yml",
+        Program::Pytest => "conftest.py, tests and pyproject.toml",
+        Program::Go => "tests, go.mod and go:generate directives",
+    })
 }
 
 fn verb(program: Program, args: &[String], scripts: &[String]) -> Result<(), Refusal> {
@@ -142,11 +169,12 @@ fn verb(program: Program, args: &[String], scripts: &[String]) -> Result<(), Ref
         Program::Npm | Program::Pnpm | Program::Yarn => match first {
             Some("test") => true,
             // yarn and pnpm fall back to running a binary of that name
-            // (`yarn run bash -c x`); only a declared script is a script.
-            Some("run") if program != Program::Npm => args
+            // (`yarn run bash -c x`), and the body of an npm script is read
+            // when it runs: only a declared script is a script, and the
+            // prompt shows its body.
+            Some("run") => args
                 .get(1)
                 .is_some_and(|script| scripts.iter().any(|known| known == script)),
-            Some("run") => args.get(1).is_some_and(|script| !script.starts_with('-')),
             Some("install" | "ci") => args[1..].iter().all(|arg| arg.starts_with('-')),
             _ => false,
         },
@@ -522,8 +550,8 @@ mod tests {
     // project's package.json declares; the bin fallback of those managers
     // (`yarn run bash -c x`) is never reachable.
     #[test]
-    fn yarn_and_pnpm_run_only_a_declared_script() {
-        for manager in ["yarn", "pnpm"] {
+    fn npm_yarn_and_pnpm_run_only_a_declared_script() {
+        for manager in ["npm", "yarn", "pnpm"] {
             assert_eq!(
                 refused(manager, &["run", "bash", "-c", "x"]),
                 Refusal::Verb,
@@ -544,8 +572,11 @@ mod tests {
             );
             assert!(check(manager, &argv(&["run", "lint"]), &only_lint).is_ok());
         }
-        // npm refuses an unknown script itself; the table does not gate it.
-        pass("npm", &["run", "anything"]);
+        // npm reads the body of the script when it runs: an undeclared name
+        // is refused here too, like yarn and pnpm.
+        assert_eq!(refused("npm", &["run", "anything"]), Refusal::Verb);
+        assert_eq!(refused("npm", &["run", "bash", "-c", "x"]), Refusal::Verb);
+        pass("npm", &["run", "build"]);
     }
 
     #[test]

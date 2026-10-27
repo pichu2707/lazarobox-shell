@@ -17,7 +17,7 @@ use super::jail::{
 use super::tools::allow::Program;
 
 /// Read and execute: the system programs and libraries a toolchain starts.
-const SYSTEM_RX: [&str; 5] = ["/usr", "/bin", "/lib", "/lib64", "/usr/local"];
+pub(crate) const SYSTEM_RX: [&str; 5] = ["/usr", "/bin", "/lib", "/lib64", "/usr/local"];
 
 /// Package caches under `$HOME` that are written when they exist.
 const HOME_CACHES: [&str; 7] = [

@@ -6,6 +6,7 @@ pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
 pub mod integrity;
 pub mod open;

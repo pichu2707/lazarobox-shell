@@ -94,22 +94,27 @@ The capture buffer keeps a 4 KiB head and a 28 KiB tail ring, with `[… N bytes
 ## Git (`core/ai/tools/git.rs` pure + `runtime/tools/git.rs`)
 
 Every invocation:
-- `git -c core.fsmonitor=false -c core.untrackedCache=false -c core.pager=cat -c diff.external= -c protocol.allow=never -c credential.helper= -c core.sshCommand=false --no-pager`.
-- Env: `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, and `GIT_OPTIONAL_LOCKS=0` for the read verbs.
+- `git -c core.hooksPath=<git-dir>/hooks -c core.fsmonitor=false -c core.untrackedCache=false -c core.pager=cat -c diff.external= -c protocol.allow=never -c credential.helper= -c core.sshCommand=false -c gpg.program=false --no-pager`. The hooks path is `<common-dir>/hooks`: the `GitDir` (`GitDir::new(git_dir, common_dir)`, both absolute and clean) holds `rev-parse --absolute-git-dir` and `--git-common-dir` from the G-b preflight, and every argv builder takes it. In a linked worktree the git dir is `.git/worktrees/<name>` and has no hooks; the common dir does. Status also passes `--untracked-files=normal --renames` so the user's config cannot change what is listed.
+- Env: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, and `GIT_OPTIONAL_LOCKS=0` for the read verbs.
+- **Hooks (user decision, 2026-10-26):** `core.hooksPath` is pinned to the repo's own `.git/hooks`. The write tools refuse to touch it, whereas a worktree hook dir (husky, `.githooks`) can be written by the model, so it never runs from lazarobox. If the repo sets another `core.hooksPath`, the commit review shows `hooks_notice`: "this repo sets core.hooksPath to X; lazarobox runs only the repo hooks folder". G-b reads the configured value.
+- **Global config (user decision, 2026-10-26):** it is never loaded (`GIT_CONFIG_GLOBAL=/dev/null`): `include.path`, filters, textconv and gpg settings in it are attack surface. A commit takes an `Identity` (name, email: non-empty, at most 256 bytes, one clean line, email with `@` and no whitespace) and passes `-c user.name=<name> -c user.email=<email>`.
+- **Identity source (user decision, 2026-10-27, replaces "global only"):** the identity is the repo's EFFECTIVE identity: the G-b preflight runs `git config user.name` / `user.email` inside the repo (outside the jail, global config in scope, so a repo-level override wins) and passes the values to `Identity::new`. G-a stays pure. An invalid value refuses the commit with a fixed error.
+- **Log history (user decision, 2026-10-27):** `git log` keeps history simplification together with the secret exclude pathspecs, so a commit that touches only secret files is hidden from the log. `--full-history` is never passed (a test pins it).
+- **G-b checklist (record, not implemented in G-a):** assert the cleared environment and git >= 2.32 (`GIT_CONFIG_GLOBAL` needs it); never pass through `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`; treat truncated status output as truncated (do not parse a cut record, say so to the model).
 
 The git spec is the run spec without the caches, plus:
-- ro_files `~/.gitconfig` and `$XDG_CONFIG_HOME/git/{config,ignore,attributes}`, for identity and ignores;
+- ro_files `$XDG_CONFIG_HOME/git/{ignore,attributes}` for ignores (the global config file is NOT granted: identity travels as `-c`, see above);
 - rw on `--absolute-git-dir` and `--git-common-dir`, resolved by a jailed read-only `rev-parse` preflight. Linked worktrees keep their gitdir outside the root.
 
 | Tool | Toggle | Ask | argv |
 |---|---|---|---|
-| `git_status` | git | none | `status --porcelain=v2 -z --branch --ignore-submodules=all -- . <excludes>` |
-| `git_diff{staged?, path?}` | git | on Cloud (shows file text) | `diff [--cached] --no-ext-diff --no-textconv --no-color -- <path\|.> <excludes>` |
-| `git_log{max_count?, path?}` | git | none | `log -n ≤50 --no-color --format=%H%x1f%an%x1f%aI%x1f%s` (never `-p`) |
-| `git_add{paths[]}` | git_write | one-line overlay (paths + diffstat), or the review view when that does not fit | `add -- :(literal)p…`. A secret name is refused. |
-| `git_commit{message}` | git_write | review view: the message, the full `--cached` diff, and the notice "signing disabled for this commit" | `-c commit.gpgsign=false commit -m <msg>`. Refused when the index holds a secret-listed path, so the review stays honest. Hooks run inside the jail. No AI trailer is added. |
+| `git_status` | git | none | `status --porcelain=v2 -z --branch --ignore-submodules=all --untracked-files=normal --renames -- . <excludes>`. Entries whose path or old path is a secret name or lives in a secret folder are dropped. |
+| `git_diff{staged?, path?}` | git | on Cloud (shows file text) | `diff [--cached] --no-ext-diff --no-textconv --ignore-submodules=all --no-color -- <:(literal)path\|.> <excludes>` |
+| `git_log{max_count?, path?}` | git | none | `log -n <1..50, default 20> --no-color --no-show-signature --format=%H%x1f%an%x1f%aI%x1f%s -- [:(literal)path] <excludes>` (never `-p`) |
+| `git_add{paths[]}` | git_write | one-line overlay (paths + diffstat), or the review view when that does not fit | `add -- :(literal)p… <excludes>`. A secret name or a path inside a secret folder is refused; the excludes keep `.` or a folder from staging the secrets below it. |
+| `git_commit{message}` | git_write | review view: the message, the full `--cached` diff, and the notice "signing disabled for this commit" | `-c commit.gpgsign=false -c user.name=<n> -c user.email=<e> commit --cleanup=whitespace -m <msg>`. Refused when the index holds a secret-listed path, so the review stays honest. Hooks run inside the jail. No AI trailer is added. |
 
-`<excludes>` are `:(exclude,glob)` pathspecs derived from SECRET_FILES. Filter drivers (git-lfs) stay active and run jailed. Every git tool is refused while this key has a batch staged or proposed.
+`<excludes>` are `:(exclude,glob,icase)` pathspecs (`icase` matches the case-insensitive path guard): `**/<name>` for every SECRET_FILES entry plus `.env`, `.env.*` and `.lbx-*.tmp`, and `**/<dir>/**` for every SECRET_DIRS and CREDENTIAL_DIRS entry. A path given to a verb is refused when it has a `.git` component, a secret name or a secret folder. Model-facing text (status, log) replaces control, format and bidi characters with `?`. **Residual risk:** filter drivers (clean/process, git-lfs) defined in the repo config stay active and run; this rests on the jail, not on git settings. Every git tool is refused while this key has a batch staged or proposed.
 
 ## Data Flow
 

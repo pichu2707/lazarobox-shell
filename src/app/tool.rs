@@ -136,11 +136,12 @@ impl App {
                 }
                 target
             }
-            // A user tool is never routed by the approval mode (D18): only a
+            // A user tool and a command are never routed by the approval mode (D18): only a
             // `run` can be typed or run by itself. It always opens the prompt.
             ApprovalAsk::Read { .. }
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
+            | ApprovalAsk::Exec { .. }
             | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
