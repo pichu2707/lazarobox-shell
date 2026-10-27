@@ -84,8 +84,6 @@ pub const NO_TOOLS_NOTICE: &str =
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Profile {
     Ollama,
-    // Routed to by the chat in a later commit.
-    #[cfg_attr(not(test), allow(dead_code))]
     OpenAi,
 }
 

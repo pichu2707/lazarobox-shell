@@ -291,3 +291,83 @@ async fn an_in_stream_error_never_matches() {
     assert_eq!(fake.bodies().len(), 1);
     assert!(notices(&events).is_empty());
 }
+
+// Routing ---------------------------------------------------------------------
+
+use super::ollama_tests::{finish, pane};
+use crate::core::ai::jail::{JailOff, JailSupport};
+
+/// The request of `ask` for another engine.
+fn ask_engine(lab: &Lab, engine: &str, tools: bool) -> ChatRequest {
+    let mut req = ask(lab, tools);
+    req.engine = engine.into();
+    req.model = Some("qwen2.5-7b-instruct".into());
+    req
+}
+
+#[test]
+fn only_ollama_and_llamacpp_get_in_process_tools() {
+    let env = CliEnv::from_env(JailSupport::Unavailable(JailOff::NotProbed));
+    let lab_request = |engine: &str| {
+        let mut req = super::tests::request("");
+        req.engine = engine.into();
+        req.tools = Tools::On {
+            origin: None,
+            external: Default::default(),
+            mcp: None,
+        };
+        req
+    };
+    assert!(wires_tools(&env, &lab_request("ollama")));
+    assert!(wires_tools(&env, &lab_request("llamacpp")));
+    assert!(!wires_tools(&env, &lab_request("lmstudio")));
+    assert!(!wires_tools(&env, &lab_request("vllm")));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_llamacpp_turn_with_tools_runs_the_loop_on_the_openai_wire() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse_text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats
+        .send(pane(1), 1, ask_engine(&lab, "llamacpp", true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(super::ollama_tests::tool_calls(&events), 1, "{events:?}");
+    assert_eq!(events.last(), Some(&done()));
+    assert_eq!(fake.paths(), ["/v1/chat/completions"; 2]);
+    assert!(fake.bodies()[0]["tools"].is_array());
+    // The tools run in-process: there is no MCP session for the pane.
+    assert!(lab.chats.session(pane(1)).is_none());
+}
+
+#[tokio::test]
+async fn llamacpp_with_tools_off_stays_a_plain_text_turn() {
+    let fake = fake(vec![sse_text("hi")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats
+        .send(pane(1), 1, ask_engine(&lab, "llamacpp", false));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("hi".into()), done()]);
+    assert!(fake.bodies()[0].get("tools").is_none());
+}
+
+#[tokio::test]
+async fn lmstudio_and_vllm_stay_text_only_even_with_tools_on() {
+    for engine in ["lmstudio", "vllm"] {
+        let fake = fake(vec![sse_text("hi")]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask_engine(&lab, engine, true));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(
+            events,
+            [StreamEvent::Delta("hi".into()), done()],
+            "{engine}"
+        );
+        assert!(fake.bodies()[0].get("tools").is_none(), "{engine}");
+        assert_eq!(fake.paths(), ["/v1/chat/completions"], "{engine}");
+    }
+}

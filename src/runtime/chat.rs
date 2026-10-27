@@ -422,6 +422,18 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
                             ollama::tool_turn(&request, port, dispatch, &Timeouts::SERVER, &tx)
                                 .await
                         }
+                        (Adapter::Llamacpp, Tools::On { .. }, Some(dispatch)) => {
+                            let profile = ollama::Profile::OpenAi;
+                            ollama::tool_turn_with(
+                                profile,
+                                &request,
+                                port,
+                                dispatch,
+                                &Timeouts::SERVER,
+                                &tx,
+                            )
+                            .await
+                        }
                         _ => http_turn(wire, port, path, body, tx).await,
                     }
                 }
@@ -613,13 +625,13 @@ struct Tooling {
 /// Whether a turn's engine will get its tools wired (see [`wires_tools`]).
 pub type Wires = Arc<dyn Fn(&ChatRequest) -> bool + Send + Sync>;
 
-/// Whether the tools of `request` reach its engine: a server engine (Ollama)
-/// runs them in-process; a CLI only when it will run jailed. The user's
+/// Whether the tools of `request` reach its engine: a server engine (Ollama,
+/// llama.cpp) runs them in-process; a CLI only when it will run jailed. The user's
 /// servers are started only for such a turn: for a bare CLI the wiring is
 /// dropped, so a server would run, and be announced, for nothing.
 pub fn wires_tools(cli: &CliEnv, request: &ChatRequest) -> bool {
     match adapter_for(&request.engine) {
-        Some(Adapter::Ollama) => true,
+        Some(Adapter::Ollama | Adapter::Llamacpp) => true,
         Some(adapter) => match adapter.build(request) {
             Invocation::Process(job) => cli::runs_jailed(cli, &job),
             Invocation::Http { .. } | Invocation::Refused(_) => false,
@@ -790,7 +802,10 @@ impl Chats {
             allowed: Default::default(),
         };
         let dispatch = tooling.host.dispatch(scope);
-        if adapter_for(&request.engine) == Some(Adapter::Ollama) {
+        if matches!(
+            adapter_for(&request.engine),
+            Some(Adapter::Ollama | Adapter::Llamacpp)
+        ) {
             // The pane may have had a CLI session: it must not stay open.
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
