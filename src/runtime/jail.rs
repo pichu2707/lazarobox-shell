@@ -92,7 +92,9 @@ mod imp {
 
     use super::Failure;
     use crate::core::ai::jail::JailSupport;
-    use crate::core::ai::jail::{JailArgs, JailSpec, MIN_ABI, parse_args, support_from_abi};
+    use crate::core::ai::jail::{
+        JailArgs, JailSpec, MIN_ABI, Os, RWX_REASON, parse_args, support_from_abi,
+    };
 
     /// `landlock_create_ruleset` has the same number on every architecture.
     const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
@@ -132,6 +134,9 @@ mod imp {
         if let JailSupport::Unavailable(off) = support_from_abi(abi) {
             return Err(Failure::NotEnforced(off.text()));
         }
+        job.spec
+            .check_exec(Os::Linux, &[])
+            .map_err(|_| Failure::NotEnforced(RWX_REASON.to_owned()))?;
         enforce(&job.spec, abi).map_err(Failure::NotEnforced)?;
         launch(&job)
     }
@@ -184,12 +189,16 @@ mod imp {
     }
 
     /// Each path with the rights its rule kind grants. Execute is only ever
-    /// part of an `rx` rule (R29).
+    /// part of an `rx` rule or the one `rwx` root (R29).
     fn rules(spec: &JailSpec, abi: ABI) -> Result<Vec<(PathBuf, BitFlags<AccessFs>)>, String> {
         let read_dir = AccessFs::ReadFile | AccessFs::ReadDir;
         let read_write_dir = AccessFs::from_all(abi) & !BitFlags::from(AccessFs::Execute);
         let read_write_file = AccessFs::from_file(abi) & !BitFlags::from(AccessFs::Execute);
-        let mut out = Vec::new();
+        let mut out: Vec<_> = spec
+            .rwx
+            .iter()
+            .map(|p| (p.clone(), AccessFs::from_all(abi)))
+            .collect();
         for path in &spec.rx {
             let access = if is_dir(path)? {
                 read_dir | AccessFs::Execute

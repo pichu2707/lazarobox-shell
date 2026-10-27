@@ -623,6 +623,43 @@ fn helper_args_refuse_anything_unclear() {
     }
 }
 
+#[test]
+fn helper_args_carry_an_rwx_root_before_the_other_lists() {
+    let job = JailArgs {
+        min_abi: None,
+        spec: JailSpec {
+            rwx: paths(&["/home/u/proj"]),
+            rx: paths(&["/usr/bin"]),
+            ..JailSpec::default()
+        },
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_a_relative_rwx_root() {
+    let err = parse_args(&args(&["--rwx", "rel/path", "--", "/bin/x"])).unwrap_err();
+    assert_eq!(err, ArgError(ARG_RELATIVE_RULE));
+    assert!(parse_args(&args(&["--rwx", "--", "/bin/x"])).is_err());
+}
+
 // ---- the ELF loader ----
 
 /// A minimal little-endian ELF64 image: header, `phdrs` program headers
@@ -1411,7 +1448,12 @@ fn every_macos_jail_text_is_a_safe_helper_reason() {
 
 #[test]
 fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
-    let mut texts = vec![MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON];
+    let mut texts = vec![
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+    ];
     texts.extend(ARG_REASONS);
     for text in texts {
         assert_eq!(known_helper_reason(text), Some(text.to_owned()));

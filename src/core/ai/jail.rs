@@ -262,6 +262,8 @@ const ARG_REASONS: [&str; 7] = [
 pub const MIN_ABI_REASON: &str = "--min-abi is Linux only";
 pub const PROFILE_REASON: &str = "the macOS profile could not be built";
 pub const EXEC_FAILED_REASON: &str = "/usr/bin/sandbox-exec could not be started";
+/// The helper's refusal of an `rwx` root that fails [`JailSpec::check_exec`].
+pub const RWX_REASON: &str = "the rwx root is not allowed";
 
 /// The reasons the helper can print that are safe to show, as the user will
 /// read them. The helper builds them from numbers and fixed text; everything
@@ -279,10 +281,15 @@ fn known_helper_reason(said: &str) -> Option<String> {
     if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
         return Some(JailOff::NoLandlock(abi).text());
     }
-    if let Some(fixed) = [MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON]
-        .into_iter()
-        .chain(ARG_REASONS)
-        .find(|text| *text == said)
+    if let Some(fixed) = [
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+    ]
+    .into_iter()
+    .chain(ARG_REASONS)
+    .find(|text| *text == said)
     {
         return Some(fixed.to_owned());
     }
@@ -1338,6 +1345,7 @@ impl JailArgs {
             out.extend([OsString::from("--min-abi"), OsString::from(abi.to_string())]);
         }
         let lists = [
+            ("--rwx", &self.spec.rwx),
             ("--rx", &self.spec.rx),
             ("--ro", &self.spec.ro),
             ("--rw", &self.spec.rw),
@@ -1374,6 +1382,7 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
             continue;
         }
         let list = match flag.to_str() {
+            Some("--rwx") => &mut spec.rwx,
             Some("--rx") => &mut spec.rx,
             Some("--ro") => &mut spec.ro,
             Some("--rw") => &mut spec.rw,

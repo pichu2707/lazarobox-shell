@@ -582,3 +582,75 @@ fn the_jail_that_runs_the_shim_still_denies_curl_and_the_ssh_dir() {
         }
     }
 }
+
+// ---- toolchain flags (X-c2) ----
+
+/// A canonical project root with a copy of `/usr/bin/true` in it, and a
+/// sibling `home/.ssh/id` the jail never grants.
+fn project_root() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("proj");
+    fs::create_dir(&root).unwrap();
+    fs::copy("/usr/bin/true", root.join("tool")).unwrap();
+    fs::create_dir_all(base.join("home/.ssh")).unwrap();
+    fs::write(base.join("home/.ssh/id"), "private\n").unwrap();
+    (dir, root, base.join("home/.ssh/id"))
+}
+
+#[test]
+fn an_rwx_root_runs_what_it_holds_and_keeps_ssh_unreadable() {
+    if !jail_available() {
+        return;
+    }
+    if probe_abi() < 3 {
+        eprintln!("skipped: execute and truncate rights need ABI 3");
+        return;
+    }
+    let (_dir, root, ssh) = project_root();
+    let loader = loader_of(Path::new("/usr/bin/true")).unwrap();
+    let tool_job = |tweak: &dyn Fn(&mut JailSpec)| {
+        let mut j = job("/usr/bin/true", &[], tweak);
+        j.program = root.join("tool");
+        j.spec.rx = vec![loader.clone()];
+        j
+    };
+
+    // The same folder as `rw` cannot be executed from (R29) ...
+    let out = run(&tool_job(&|s| s.rw.push(root.clone())));
+    assert!(!out.status.success() && denied(&out), "{}", stderr(&out));
+    // ... as `rwx` it can, and it stays writable.
+    let out = run(&tool_job(&|s| s.rwx.push(root.clone())));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let made = root.join("made");
+    let out = run(&job("/usr/bin/touch", &[made.to_str().unwrap()], |s| {
+        s.rwx.push(root.clone())
+    }));
+    assert!(out.status.success() && made.exists(), "{}", stderr(&out));
+
+    let out = run(&job("/bin/cat", &[ssh.to_str().unwrap()], |s| {
+        s.rwx.push(root.clone())
+    }));
+    assert!(denied(&out), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("private"));
+}
+
+#[test]
+fn the_helper_refuses_two_rwx_roots_and_a_whole_file_system() {
+    if !jail_available() {
+        return;
+    }
+    let (_dir, root, _ssh) = project_root();
+    let marker = root.join("marker");
+    for rwx in [
+        vec![root.clone(), root.join("tool")],
+        vec![PathBuf::from("/")],
+    ] {
+        let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+            s.rwx = rwx.clone()
+        }));
+        assert_eq!(out.status.code(), Some(125), "{rwx:?}: {}", stderr(&out));
+        assert_jail_error(&out);
+        assert!(!marker.exists(), "the program must not run");
+    }
+}
