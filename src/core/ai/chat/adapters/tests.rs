@@ -1723,3 +1723,43 @@ fn the_openai_body_offers_the_same_tools_as_ollama_and_tools_off_is_tool_less() 
             .is_none()
     );
 }
+
+// llamacpp-tools T1.10: the shape llama-server b11935 accepted (HTTP 200).
+#[test]
+fn the_openai_follow_up_equals_the_request_recorded_against_b11935() {
+    let recorded =
+        include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-result.request.json");
+    let mut req = request("You are a helpful assistant. Use the tools when they help.");
+    req.model = Some("qwen".into());
+    req.messages = vec![message(
+        Role::User,
+        "Find the directory named src in my home using a tool.",
+    )];
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![exchange(
+            "find_dir",
+            Some("JEDIAQavkL8v8oW7odZMfLsZ7CM6ZgAq"),
+            json!({"query": "src"}),
+            "/home/user/projects/lazarobox-shell/src\n/home/user/projects/site/src",
+        )],
+    }];
+    // The server's own `arguments` text has a space after the colon; the
+    // string is compared as JSON, everything else byte for byte as a value.
+    let parsed_args = |mut body: Value| {
+        let args = &mut body["messages"][2]["tool_calls"][0]["function"]["arguments"];
+        *args = serde_json::from_str(args.as_str().unwrap()).unwrap();
+        body
+    };
+    let mut ours = parsed_args(body_of(openai_round_body(&req, &rounds, true)));
+    let mut theirs = parsed_args(serde_json::from_str(recorded).unwrap());
+    // The recording offered only `find_dir` and `list_dir`: each of them must be
+    // what we offer, and the rest of the body must be equal.
+    let ours_tools = ours.as_object_mut().unwrap().remove("tools").unwrap();
+    let theirs_tools = theirs.as_object_mut().unwrap().remove("tools").unwrap();
+    assert_eq!(ours, theirs);
+    for tool in theirs_tools.as_array().unwrap() {
+        assert!(ours_tools.as_array().unwrap().contains(tool), "{tool}");
+    }
+}
