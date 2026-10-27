@@ -28,3 +28,26 @@ Existing tests/snapshots updated deliberately (each diff = one added `llamacpp n
 - SUGGESTION 1: the real detector always emits llamacpp (`reduce` walks the whole CATALOG), so the missing-from-detection case is test-only; the comment says so.
 - Known limitation, not fixed: at MIN_WIDTH (24) the explanation row, the footer and the HF row (its mark hides the label) are clipped with an ellipsis; at the 62-wide popup the text fits.
 - Pin `hub_tests.rs:61` (`src/core/ai/picker/hub_tests.rs`) pins only the HF mark, so it needed no change.
+## PR2: Pure logic + binary field (branch feat/llama-server-install-pr2)
+
+Status: 6/6 tasks done (2.1-2.6).
+
+- `src/core/ai/install.rs` (new): `Variant`, `Arch`, `Platform`, `asset_name`, `variants`,
+  `Release`, `pick_release` (numeric tag compare, digest required on the chosen release),
+  `check_member`, `check_link_target`, `needed_bytes`, `is_newer`, `should_check_newer`
+  (A2), `owned_root`, `is_owned`.
+- `Probe::Server.on_path: bool` -> `binary: Option<PathBuf>`; `EngineState.binary`;
+  `start_command(id, port, binary)` prints the absolute (shell-quoted) path only when
+  `install::is_owned`. `ai_detect::probe` reports the found path. Picker passes the
+  detected binary to the not-running hint.
+
+Deviations / notes for later PRs:
+- `Os` is reused from `core::ai::jail`; `Arch` is new in `install.rs`.
+- `is_owned` recognises `.../lazarobox/llama.cpp/...` by path components (no data_home
+  needed in the pure core).
+- Design D5 renames the staging top dir to `<tag>/` (so `current/llama-server` is on PATH);
+  the spec layout scenario says `<tag>/llama-<tag>/llama-server`. PR4 should follow D5 and
+  fix the scenario text.
+- `pick_release` aborts (Err) when the newest release holding the asset has a missing or
+  malformed digest, instead of silently taking an older release.
+- Tests and implementation for 2.1-2.4 were written together (RED not observed separately).

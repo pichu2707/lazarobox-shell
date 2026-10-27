@@ -438,7 +438,12 @@ fn listed_models(
             .filter(|e| is_stopped_server(Some(detection), e))
             .and_then(|_| {
                 let port = draft.servers().port(engine)?;
-                let command = start_command(engine, port)?;
+                let binary = detection
+                    .engines
+                    .iter()
+                    .find(|s| s.id == engine)
+                    .and_then(|s| s.binary.as_deref());
+                let command = start_command(engine, port, binary)?;
                 Some(format!(
                     "{engine} not running on 127.0.0.1:{port} · start it, then press r: {command}"
                 ))
@@ -985,6 +990,7 @@ mod tests {
 
     fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
         EngineState {
+            binary: None,
             id,
             status,
             models: models.iter().map(|m| m.to_string()).collect(),
@@ -1886,6 +1892,33 @@ mod tests {
             rows.iter()
                 .any(|r| r.key == PickKey::Info && r.label == LLAMA_SERVER_MISSING),
             "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_stopped_owned_llama_server_is_started_by_its_absolute_path() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
+        let mut stopped = state("llamacpp", Status::NotRunning, &[]);
+        stopped.binary = Some("/h/lazarobox/llama.cpp/current/llama-server".into());
+        let rows = model_rows(
+            "llamacpp",
+            Target::Task(Task::Chat),
+            &draft,
+            Some(&detection(vec![stopped])),
+        );
+        let text: String = rows
+            .iter()
+            .filter_map(|r| match &r.key {
+                PickKey::Note { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(
+            text.contains("press r: /h/lazarobox/llama.cpp/current/llama-server --port 8080"),
+            "{text}"
         );
     }
 

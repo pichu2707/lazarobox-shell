@@ -3142,6 +3142,7 @@ mod tests {
         panes.spawn_pane(first, &first_spec).unwrap();
         let found = Detection {
             engines: vec![EngineState {
+                binary: None,
                 id: "codex",
                 status: Status::Available,
                 models: vec!["default".to_string()],
@@ -3671,6 +3672,7 @@ mod tests {
             app_from_config(120, 30, Some(&config), None).with_env(Some("/bin/zsh"), None, work);
         app.update(AppEvent::EnginesDetected(Detection {
             engines: vec![EngineState {
+                binary: None,
                 id: "ollama",
                 status: Status::Available,
                 models: vec!["llama3:8b".to_owned()],

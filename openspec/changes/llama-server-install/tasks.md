@@ -42,12 +42,12 @@ Chain strategy: stacked-to-main
 
 ## PR2: Pure logic + binary field
 
-- [ ] 2.1 RED: `src/core/ai/install.rs` tests: `pick_release` newest tag, numeric compare (b999 vs b1000), no usable release, missing/malformed digest; `asset_name` per platform; Vulkan with/without ICD; unsupported platform.
-- [ ] 2.2 GREEN: create `install.rs` (`Variant`, `Platform`, `asset_name`, `Release`, `pick_release`) (~150).
-- [ ] 2.3 RED: `check_member` (traversal, absolute, control chars, `\`, wrong top), symlink rule (bare name ok, escaping rejected), `needed_bytes`, newer-tag compare, update-check opt-out (A2).
-- [ ] 2.4 GREEN: implement those in `install.rs` (~120).
-- [ ] 2.5 RED: `Probe::Server.binary`, `EngineState.binary`, `start_command` absolute path only when owned (chat-engines "Owned binary spawned", "System binary preferred").
-- [ ] 2.6 GREEN: `src/core/ai/mod.rs` + `src/runtime/ai_detect.rs` report found path (~80).
+- [x] 2.1 RED: `src/core/ai/install.rs` tests: `pick_release` newest tag, numeric compare (b999 vs b1000), no usable release, missing/malformed digest; `asset_name` per platform; Vulkan with/without ICD; unsupported platform.
+- [x] 2.2 GREEN: create `install.rs` (`Variant`, `Platform`, `asset_name`, `Release`, `pick_release`) (~150).
+- [x] 2.3 RED: `check_member` (traversal, absolute, control chars, `\`, wrong top), symlink rule (bare name ok, escaping rejected), `needed_bytes`, newer-tag compare, update-check opt-out (A2).
+- [x] 2.4 GREEN: implement those in `install.rs` (~120).
+- [x] 2.5 RED: `Probe::Server.binary`, `EngineState.binary`, `start_command` absolute path only when owned (chat-engines "Owned binary spawned", "System binary preferred").
+- [x] 2.6 GREEN: `src/core/ai/mod.rs` + `src/runtime/ai_detect.rs` report found path (~80).
 
 ## PR3: Download and verify (needs PR2)
 

@@ -47,6 +47,7 @@ fn ollama() -> AiConfig {
 fn ready_detection() -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".into()],

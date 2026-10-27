@@ -22,6 +22,7 @@ fn stopped_llamacpp() -> Detection {
         engines: CATALOG
             .iter()
             .map(|e| EngineState {
+                binary: None,
                 id: e.id,
                 status: if e.id == "llamacpp" {
                     Status::NotRunning

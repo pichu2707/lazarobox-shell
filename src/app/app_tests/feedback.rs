@@ -44,6 +44,7 @@ fn filled(opener: bool) -> App {
     let mut a = app().with_host(host()).with_opener(opener);
     a.engines = Some(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: Vec::new(),

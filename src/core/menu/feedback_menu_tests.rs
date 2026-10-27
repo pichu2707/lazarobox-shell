@@ -47,6 +47,7 @@ fn texts(menu: &MenuState) -> Vec<String> {
 
 fn engine(id: &'static str, status: Status, version: Option<&str>) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: Vec::new(),

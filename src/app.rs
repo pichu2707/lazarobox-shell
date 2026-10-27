@@ -6888,6 +6888,7 @@ mod app_tests {
             engines: CATALOG
                 .iter()
                 .map(|e| crate::core::ai::EngineState {
+                    binary: None,
                     id: e.id,
                     status,
                     models: Vec::new(),
@@ -7027,6 +7028,7 @@ mod app_tests {
                 .map(|e| {
                     let (status, models) = engine(e.id);
                     EngineState {
+                        binary: None,
                         id: e.id,
                         status,
                         models: models.into_iter().map(str::to_owned).collect(),

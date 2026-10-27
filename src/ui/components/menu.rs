@@ -518,6 +518,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "ollama" {
                         Status::Available
@@ -587,6 +588,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: match e.id {
                         "ollama" | "claude" => Status::Available,
@@ -1110,6 +1112,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: if e.id == "ollama" {
@@ -1149,6 +1152,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "codex" {
                         Status::Available
@@ -1266,6 +1270,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "claude" {
                         Status::Available
@@ -1328,6 +1333,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: vec!["m".to_owned()],
