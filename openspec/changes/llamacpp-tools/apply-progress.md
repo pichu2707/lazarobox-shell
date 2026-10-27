@@ -48,3 +48,20 @@ Four confirmed findings of a fresh review, each RED first, then GREEN.
 - Extra tests that passed without code: a late `id` after the name, `choices[0]` without `delta`.
 
 Gates: fmt, clippy -D warnings, cargo test (6124 passed lib). Ollama byte pins (T1.7) and fixture equality (T1.10) unchanged and green.
+
+## Batch 4 (PR2, branch feat/llamacpp-tools-pr2 off PR1)
+
+Done: T2.1-T2.8. PR3 not started (T3.0 is the manual gate).
+
+- T2.1: the existing Ollama tests already pinned the silent 400 retry; added `ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice` (green on old code).
+- T2.2: `enum Profile { Ollama, OpenAi }` with `path()`, `body()`, `rejected()`, `notice()`; `tool_turn` delegates to `tool_turn_with(Profile::Ollama, ..)`; `round<D: StreamDecoder + ToolCalls + Send>`; `rounds` matches on the profile for the decoder. The `ollama_tests` fake now records request paths and its helpers are `pub(super)` for the new `llamacpp_tests.rs`. `Profile::OpenAi` carried a temporary `cfg_attr(not(test), allow(dead_code))` until the routing commit removed it.
+- T2.4: widened `rejected` for OpenAi (starts with `HTTP 4`/`HTTP 5` and lowercase contains `tools` or `jinja`), only while `offer && history.is_empty()`; `NO_TOOLS_NOTICE` sent before the single retry; Ollama keeps `starts_with("HTTP 400")` and is silent. F3 replayed from the fixture.
+- T2.7: routing arm `(Adapter::Llamacpp, Tools::On, Some(d))` -> `tool_turn_with(Profile::OpenAi, ..)`; `wires_tools` true for `Ollama | Llamacpp`; the session opener gives llamacpp the in-process dispatch and closes the hub. `MCP_VERIFIED` untouched, so production stays dormant; tests reach the arm by setting `request.tools` directly.
+- T2.3, T2.5, T2.6: tests only (approval y/n, caps 8/24, history, cancel, F1+F2 replay, synthesized id `call_0_0`, one notice per pane via ChatState dedupe). No production change was needed.
+- T2.8: full suite green.
+
+Gotcha: a test that collects events only after `tool_turn_with` returns deadlocks on a long recorded reply (the turn channel fills); drain concurrently.
+
+PR2 production vs PR1 head (c5cac58): chat.rs +21/-4, ollama.rs +98/-15. Tests: llamacpp_tests.rs +660, ollama_tests.rs +63/-29. Gates: fmt, clippy -D warnings, `cargo test` 6142 lib passed, all green.
+
+Remaining: PR3 (T3.0 manual gate, T3.1-T3.3).
