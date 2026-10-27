@@ -306,7 +306,7 @@ El token va en la cabecera `Authorization` y solo a `huggingface.co`; `curl` no 
 
 ## 💬 Chat de IA (experimental)
 
-Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`) y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
+Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`), con los servidores locales **llama.cpp** (`llama-server`), **LM Studio** y **vLLM**, que hablan por HTTP con `127.0.0.1`, y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
 
 Teclas dentro del chat:
 
@@ -605,6 +605,9 @@ Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada 
 enabled = true
 search = true      # glob, grep y la lectura por ventanas de read_file
 write = false      # create_dir, write_file, edit_file, propose_batch
+exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
+git = false        # interruptor de las operaciones de git de solo lectura (aún no se ofrecen al modelo)
+git_write = false  # interruptor de las operaciones de git que escriben (aún no se ofrecen al modelo)
 ```
 
 La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
@@ -658,6 +661,26 @@ Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes
 - **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
 - **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
 - Solo Linux: en otras plataformas el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+
+#### Ejecución: `run_command`
+
+Con `exec = true` el modelo recibe `run_command`, que ejecuta un comando de la cadena de herramientas del proyecto. No hay shell: el programa y cada argumento van por separado. Solo se admite una lista cerrada de programas y subcomandos:
+
+| Programa                  | Subcomandos admitidos                                                      |
+| :------------------------ | :------------------------------------------------------------------------- |
+| `cargo`                   | `build`, `check`, `test`, `clippy`, `run`, `doc` y `fmt` (solo con `--check`) |
+| `go`                      | `test`, `vet`, `build`, `run`                                              |
+| `npm`, `yarn`, `pnpm`     | `test`, `run <script>` (solo un script declarado en `package.json`), `install` y `ci` |
+| `pytest`                  | cualquier argumento admitido                                               |
+
+Se rechazan las opciones que cambian de dónde se lee la configuración o el destino (`--config`, `--manifest-path`, `--target-dir`, `--fix`, `-g`, `--registry`, `-modfile`, etc.), las rutas absolutas y los `..`. El tiempo por defecto es de 120 s y el máximo, de 600 s.
+
+- **Cada comando pide tu `y`, en cualquier modo de aprobación** (`ask`, `auto` y `run`). El aviso muestra exactamente qué se ejecuta (los argumentos con caracteres de shell se muestran entre comillas) y una nota con el límite de tiempo, que la red está activa, que un test puede leer el `.env` y enviarlo, que la salida va al modelo (y, con un motor en la nube, también a su proveedor) y qué ficheros del proyecto ejecuta el programa (`build.rs`, scripts de `package.json`, `conftest.py`, `go.mod`...). Para `install` y `ci` de `npm`, `yarn` y `pnpm` avisa además de que se ejecutan los scripts de instalación del proyecto y de sus dependencias, salvo con `--ignore-scripts`. Si el aviso no cabe entero en pantalla, `y` no aprueba: amplía el panel.
+- **Se ejecuta dentro de la jaula Landlock, solo en Linux.** En macOS se rechaza. Si el sistema no tiene jaula, la fila **Exec** del menú de IA dice `on · needs Linux sandbox`.
+- **Un comando a la vez por chat y dos en total en la aplicación.** Un segundo comando espera o se rechaza con `a command is already running in this chat` o `too many commands are running; try again later`.
+- **`npm`, `yarn` y `pnpm` (`test` y `run`) solo desde la carpeta que contiene `package.json`.** Si no, se rechazan, para que un gestor no lea un `package.json` de una carpeta superior que nadie ha mostrado.
+- **Ganchos y configuración de git.** Antes y después de cada ejecución, lazarobox compara los ganchos (_hooks_) y la configuración de git. Si el comando los cambió, el resultado lo dice (`git hooks or config changed during the run (not reverted)`) y **no los revierte**. Si no se puede verificar el estado (una carpeta con demasiadas entradas, una configuración que no se entiende, un límite superado), el resultado indica `could not verify git hooks and config after this run` y el modelo debe tratar el proyecto como posiblemente contaminado y avisarte. Lo mismo ocurre con una ejecución cancelada o que falla después de arrancar: el aviso llega en el siguiente comando de ese chat.
+- **Las operaciones de git (`git`, `git_write`) aún no se ofrecen al modelo.** Los interruptores existen en la configuración y en el menú, pero hoy no añaden ninguna herramienta.
 
 ### Tools with Ollama
 
