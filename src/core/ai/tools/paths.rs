@@ -369,7 +369,11 @@ impl SecretRoots {
     }
 
     fn under_root(&self, real: &Path) -> bool {
-        self.roots.iter().any(|root| real.starts_with(root))
+        // macOS volumes fold case: a variant spelling of a root is the root.
+        let fold = cfg!(target_os = "macos");
+        self.roots
+            .iter()
+            .any(|root| starts_with_folded(real, root, fold))
     }
 
     /// [`judge_real`](Self::judge_real) for the safe commands: outside HOME is
@@ -381,6 +385,19 @@ impl SecretRoots {
             want == Want::Existing && !self.under_root(real)
         }
     }
+}
+
+/// `path.starts_with(root)`, comparing names ASCII case-insensitively when
+/// `fold` is set (a case-folding filesystem). Pure: nothing is read from disk.
+fn starts_with_folded(path: &Path, root: &Path, fold: bool) -> bool {
+    if !fold {
+        return path.starts_with(root);
+    }
+    let mut path = path.components();
+    root.components().all(|part| {
+        path.next()
+            .is_some_and(|got| got.as_os_str().eq_ignore_ascii_case(part.as_os_str()))
+    })
 }
 
 /// Resolves what a model asked for and judges it twice. A canonical-only
@@ -1431,6 +1448,25 @@ mod tests {
         let looped = f.home.join("loop");
         symlink(&looped, &looped).unwrap();
         assert!(SecretRoots::load(&f.home, &[looped]).is_none());
+    }
+
+    #[test]
+    fn a_folded_prefix_matches_a_case_variant_on_every_os() {
+        let root = Path::new("/h/dotfiles/ssh");
+        for (path, fold, want) in [
+            ("/h/dotfiles/SSH/id", true, true),
+            ("/H/DOTFILES/ssh", true, true),
+            ("/h/dotfiles/SSH/id", false, false),
+            ("/h/dotfiles/ssh/id", false, true),
+            ("/h/dotfiles/ssh2/id", true, false),
+            ("/h/dotfiles", true, false),
+        ] {
+            assert_eq!(
+                starts_with_folded(Path::new(path), root, fold),
+                want,
+                "{path} {fold}"
+            );
+        }
     }
 
     #[test]

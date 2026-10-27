@@ -51,7 +51,8 @@ impl Drop for CancelOnDrop {
 
 /// Extra time past `Limits::time` before the caller gives up on the thread.
 const GRACE: Duration = if cfg!(test) {
-    Duration::from_millis(30)
+    // Room for a busy CI runner to start the blocking thread.
+    Duration::from_millis(150)
 } else {
     Duration::from_millis(500)
 };
@@ -97,8 +98,11 @@ pub async fn run_over(
 
 #[cfg(test)]
 mod tests {
-    // `Duration` serves the Linux-only tests.
-    #![cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+    // `Duration` serves the tests that need the file tools.
+    #![cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_imports)
+    )]
     use super::*;
     use std::{
         sync::{
@@ -137,8 +141,8 @@ mod tests {
         (dir, home)
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_result_is_wrapped_with_a_fresh_nonce_per_call() {
         let (_dir, home) = home();
@@ -176,8 +180,8 @@ mod tests {
         );
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
         let (_dir, home) = home();
@@ -206,8 +210,8 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
         let (_dir, home) = home();
@@ -229,8 +233,8 @@ mod tests {
         }
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {
         let (_dir, home) = home();

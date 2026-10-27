@@ -10,7 +10,6 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     ffi::OsString,
-    fs::FileType,
     io::Read,
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -269,10 +268,15 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     let rel = real
         .strip_prefix(roots.home())
         .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
-        // No safe open on this platform: the tool cannot work at all.
-        std::io::ErrorKind::Unsupported => Failure::Unreadable,
-        _ => Failure::Refused,
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        // No safe open on this platform: the tool cannot work at all. An OS
+        // error of that kind is about the file (macOS opens a socket with
+        // `EOPNOTSUPP`), so it is refused like any other.
+        if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+            Failure::Unreadable
+        } else {
+            Failure::Refused
+        }
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
@@ -456,16 +460,42 @@ fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<Str
     Ok(out)
 }
 
+/// What a directory entry is, as far as the tools care. A symlink is its own
+/// kind: it is reported as such, never followed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Kind {
+    Dir,
+    File,
+    Link,
+    Other,
+    /// The type could not be told (macOS `DT_UNKNOWN` and a failed `fstatat`):
+    /// never shown, never entered.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Unknown,
+}
+
+impl Kind {
+    pub(super) fn is_dir(self) -> bool {
+        self == Kind::Dir
+    }
+    pub(super) fn is_file(self) -> bool {
+        self == Kind::File
+    }
+    pub(super) fn is_symlink(self) -> bool {
+        self == Kind::Link
+    }
+}
+
 /// The entries of an open directory, at most `max` of them, and whether more
-/// were left. Read through `/proc/self/fd`, so it is the opened directory and
-/// not a path that is listed. A symlink is reported as such, never followed.
+/// were left. Read through the descriptor itself (see `read_dir_fd`), so it is
+/// the opened directory and not a path that is listed. A symlink is reported as
+/// such, never followed.
 pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
-) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
-    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-        .map_err(|_| Failure::Unreadable)?;
+) -> Result<(Vec<(OsString, Kind)>, bool), Failure> {
+    let dir = read_dir_fd(fd).map_err(|_| Failure::Unreadable)?;
     let mut out = Vec::new();
     for entry in dir {
         if out.len() == max || budget.spent() {
@@ -473,13 +503,129 @@ pub(super) fn entries(
         }
         #[cfg(test)]
         std::thread::sleep(budget.entry_delay);
-        let entry = entry.map_err(|_| Failure::Unreadable)?;
-        out.push((
-            entry.file_name(),
-            entry.file_type().map_err(|_| Failure::Unreadable)?,
-        ));
+        out.push(entry.map_err(|_| Failure::Unreadable)?);
     }
     Ok((out, false))
+}
+
+/// Linux: the descriptor is listed through `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
+    Ok(dir.map(|entry| {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let kind = if kind.is_dir() {
+            Kind::Dir
+        } else if kind.is_file() {
+            Kind::File
+        } else if kind.is_symlink() {
+            Kind::Link
+        } else {
+            Kind::Other
+        };
+        Ok((entry.file_name(), kind))
+    }))
+}
+
+/// macOS: `fdopendir` on a duplicate of the descriptor. Written without a macOS
+/// compiler at hand: keep it small.
+#[cfg(target_os = "macos")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+    struct Dir(*mut libc::DIR);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `fdopendir` and is closed once, here.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+    impl Iterator for Dir {
+        type Item = std::io::Result<(OsString, Kind)>;
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                // SAFETY: `readdir` returns NULL at the end or on an error, told
+                // apart by `errno`; the entry is read before the next call.
+                let entry = unsafe {
+                    *libc::__error() = 0;
+                    libc::readdir(self.0)
+                };
+                if entry.is_null() {
+                    // SAFETY: `__error` points at this thread's `errno`.
+                    return match unsafe { *libc::__error() } {
+                        0 => None,
+                        errno => Some(Err(std::io::Error::from_raw_os_error(errno))),
+                    };
+                }
+                // SAFETY: a non-NULL entry has a NUL-terminated `d_name`.
+                let (name, d_type) = unsafe {
+                    let entry = &*entry;
+                    (
+                        CStr::from_ptr(entry.d_name.as_ptr()).to_bytes(),
+                        entry.d_type,
+                    )
+                };
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                let kind = match d_type {
+                    libc::DT_DIR => Kind::Dir,
+                    libc::DT_REG => Kind::File,
+                    libc::DT_LNK => Kind::Link,
+                    // SAFETY: `self.0` is the open stream.
+                    libc::DT_UNKNOWN => kind_at(unsafe { libc::dirfd(self.0) }, name),
+                    _ => Kind::Other,
+                };
+                return Some(Ok((OsStr::from_bytes(name).to_os_string(), kind)));
+            }
+        }
+    }
+
+    // SAFETY: `fcntl` takes no pointer here; a failed duplicate is -1. The
+    // duplicate keeps close-on-exec, which a plain `dup` would drop.
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: on success `fdopendir` owns `copy`; on failure it is still ours.
+    let dir = unsafe { libc::fdopendir(copy) };
+    if dir.is_null() {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: `copy` is a descriptor this function owns.
+        unsafe { libc::close(copy) };
+        return Err(error);
+    }
+    // The duplicate shares its offset with `fd`: start from the top.
+    // SAFETY: `dir` is a valid open stream.
+    unsafe { libc::rewinddir(dir) };
+    Ok(Dir(dir))
+}
+
+/// The kind of `name` in the folder `dirfd`, from `fstatat` without following a
+/// link. Any failure is `Unknown`, which `visible` hides.
+#[cfg(any(target_os = "macos", test))]
+fn kind_at(dirfd: i32, name: &[u8]) -> Kind {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return Kind::Unknown;
+    };
+    // SAFETY: `stat` is plain data; `fstatat` fills it when it returns 0.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is NUL-terminated and `st` is a valid out pointer.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    if rc != 0 {
+        return Kind::Unknown;
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => Kind::Dir,
+        libc::S_IFREG => Kind::File,
+        libc::S_IFLNK => Kind::Link,
+        _ => Kind::Other,
+    }
 }
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
@@ -489,9 +635,9 @@ pub(super) fn visible(
     budget: &Budget,
     dir: &Path,
     name: &OsStr,
-    kind: FileType,
+    kind: Kind,
 ) -> bool {
-    if is_excluded_name(&name.to_string_lossy()) {
+    if kind == Kind::Unknown || is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
     let full = dir.join(name);
@@ -694,10 +840,10 @@ fn find_dir(
     Ok(out)
 }
 
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// Needs the file tools: they open files below HOME without a link, Linux and macOS.
 // `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -1136,6 +1282,33 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_unknown_kind_is_never_visible() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        let cancel = AtomicBool::new(false);
+        let budget = Budget::new(&Limits::default(), &cancel);
+        let dir = f.home.join("dev/app");
+        let name = OsStr::new("main.rs");
+        assert!(visible(&roots, &budget, &dir, name, Kind::File));
+        assert!(visible(&roots, &budget, &dir, name, Kind::Other));
+        assert!(!visible(&roots, &budget, &dir, name, Kind::Unknown));
+    }
+
+    #[test]
+    fn kind_at_tells_dir_file_and_link_without_following_and_fails_closed() {
+        let f = fixture();
+        let dir = std::fs::File::open(f.home.join("dev/app")).unwrap();
+        symlink("main.rs", f.home.join("dev/app/ln")).unwrap();
+        let at = |name: &str| kind_at(dir.as_raw_fd(), name.as_bytes());
+        assert_eq!(at("main.rs"), Kind::File);
+        assert_eq!(at("ln"), Kind::Link);
+        assert_eq!(at("missing"), Kind::Unknown);
+        assert_eq!(at("bad\0name"), Kind::Unknown);
+        let parent = std::fs::File::open(f.home.join("dev")).unwrap();
+        assert_eq!(kind_at(parent.as_raw_fd(), b"app"), Kind::Dir);
+    }
+
+    #[test]
     fn a_window_with_no_safe_cut_point_says_so_instead_of_an_empty_body() {
         let f = fixture();
         // Minified JSON or base64: one long line, no whitespace to cut at.
@@ -1426,8 +1599,8 @@ mod tests {
 
     // Spec (agent-tools, approval model): `execute_with` never asks; asking is
     // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn grep_and_glob_are_dispatched_through_execute_with() {
         let f = fixture();
