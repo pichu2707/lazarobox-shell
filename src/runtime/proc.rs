@@ -1,6 +1,36 @@
 //! Child-process helpers shared by the runtime's probes and, later, the chat
 //! CLI engines.
 
+/// Makes reads of `fd` return at once (`WouldBlock`) instead of waiting.
+pub fn nonblocking(fd: &impl std::os::fd::AsRawFd) {
+    // SAFETY: `fcntl` on a descriptor the caller owns reads and sets flags.
+    unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+}
+
+/// Makes `command`'s child get `fd` as descriptor `target`, open. The
+/// parent's `fd` stays close-on-exec, so no other child gets it.
+pub fn hand_over(command: &mut tokio::process::Command, fd: std::os::fd::RawFd, target: i32) {
+    // SAFETY: between fork and exec only `dup2` and `fcntl` run (both
+    // async-signal-safe), on a descriptor the parent keeps open.
+    unsafe {
+        command.pre_exec(move || {
+            // `dup2` onto itself keeps the close-on-exec flag: clear it.
+            if fd == target {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else if libc::dup2(fd, target) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Kills a process group on `kill()` or, while still armed, on drop.
 ///
 /// Put it after the `Child` it guards so it drops first: a dropped future then

@@ -565,6 +565,7 @@ fn helper_args_round_trip() {
     let spec = jail_spec(&nvm_codex()).unwrap();
     let job = JailArgs {
         min_abi: Some(6),
+        arg0: None,
         spec,
         program: p("/home/u/.nvm/versions/node/v24.16.0/bin/node"),
         argv: args(&["codex.js", "--model", "-x; $(id)", "--"]),
@@ -575,6 +576,7 @@ fn helper_args_round_trip() {
 
     let bare = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec::default(),
         program: p("/bin/true"),
         argv: Vec::new(),
@@ -586,6 +588,7 @@ fn helper_args_round_trip() {
 fn helper_args_carry_the_write_exceptions_to_the_helper() {
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap(),
         program: p(STANDALONE),
         argv: Vec::new(),
@@ -627,6 +630,7 @@ fn helper_args_refuse_anything_unclear() {
 fn helper_args_carry_an_rwx_root_before_the_other_lists() {
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec {
             rwx: paths(&["/home/u/proj"]),
             rx: paths(&["/usr/bin"]),
@@ -671,6 +675,7 @@ fn helper_args_carry_the_toolchain_flags_and_leave_them_out_by_default() {
     };
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program: p("/usr/bin/cargo"),
         argv: args(&["build"]),
@@ -698,6 +703,7 @@ fn helper_args_carry_the_toolchain_flags_and_leave_them_out_by_default() {
 
     let plain = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec::default(),
         program: p("/bin/true"),
         argv: Vec::new(),
@@ -2808,4 +2814,43 @@ fn a_writable_path_next_to_an_execute_path_is_refused_on_linux_too() {
         spec.check_exec(Os::Linux, &[]),
         Err(ExecFault::WritableExec { .. })
     ));
+}
+
+#[test]
+fn helper_args_carry_the_name_the_program_runs_as() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: Some(OsString::from("cargo")),
+        spec: JailSpec::default(),
+        program: p("/home/u/.rustup/toolchains/x/bin/rustup"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--arg0",
+            "cargo",
+            "--",
+            "/home/u/.rustup/toolchains/x/bin/rustup",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_an_arg0_that_is_a_path_or_empty() {
+    for bad in ["a/b", "/bin/cargo", "../x", "", "a\0b"] {
+        let given = vec![
+            OsString::from("--arg0"),
+            OsString::from(bad),
+            OsString::from("--"),
+            OsString::from("/bin/x"),
+        ];
+        let err = parse_args(&given).unwrap_err();
+        assert!(ARG_REASONS.contains(&err.0), "{bad:?}: {err:?}");
+    }
 }

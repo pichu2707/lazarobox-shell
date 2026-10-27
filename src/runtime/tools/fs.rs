@@ -231,6 +231,7 @@ pub fn execute_over(
         | Call::CreateDir { .. }
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
+        | Call::RunCommand { .. }
         | Call::ProposeBatch => Err(Failure::NotReadTool),
     }
 }

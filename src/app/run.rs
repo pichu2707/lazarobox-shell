@@ -9,7 +9,7 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, run_sent_line,
+            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -444,6 +444,7 @@ impl App {
                     keys: RUN_KEYS,
                     armed,
                     why,
+                    notice: None,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -453,6 +454,7 @@ impl App {
                 keys: READ_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
             // The pattern and the folder were made one clean line when asked.
             ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
@@ -461,7 +463,47 @@ impl App {
                 keys: SEARCH_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
+            // The program, arguments and folder are what will run, and the host
+            // refused text that would not show as it is. The notice is part of
+            // what is approved, so the pane must fit it (it is not `why`).
+            ApprovalAsk::Exec {
+                program,
+                args,
+                cwd,
+                script,
+                timeout_secs,
+                cloud,
+                earlier,
+            } => {
+                // One logical line per fact, so the folder and the script are
+                // rows `fits` checks, not a clipped head. Arguments are quoted
+                // where the text alone would read as another argv.
+                let words: Vec<String> = std::iter::once(program.as_str())
+                    .chain(args.iter().map(String::as_str))
+                    .map(display_word)
+                    .collect();
+                let mut command = format!("{}\nin {}", words.join(" "), display_word(cwd));
+                for line in script.iter().flat_map(|text| text.split('\n')) {
+                    command.push_str("\nscript ");
+                    command.push_str(line);
+                }
+                Some(ApprovalPrompt {
+                    target: "run a command in the sandbox".to_owned(),
+                    command,
+                    keys: EXTERNAL_KEYS,
+                    armed,
+                    why: None,
+                    notice: Some(exec_notice(
+                        program,
+                        args,
+                        *timeout_secs,
+                        *cloud,
+                        earlier.as_deref(),
+                    )),
+                })
+            }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
@@ -472,6 +514,7 @@ impl App {
                 keys: EXTERNAL_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
         }
     }
@@ -488,5 +531,20 @@ impl App {
             ),
             None => format!("run in pane {number}"),
         })
+    }
+}
+
+/// `word` as a shell would need it written to be one word, for display only:
+/// quoted when it is empty or has a space, a quote or another character a
+/// shell reads. Nothing is run through a shell.
+fn display_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && !word
+            .chars()
+            .any(|c| c.is_whitespace() || "'\"\\$`;|&<>()*?#~{}![]^".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }

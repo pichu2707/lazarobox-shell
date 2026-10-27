@@ -744,3 +744,207 @@ Review fixes (slice X-c2):
 - `set_limits`: `min(getrlimit hard, value)` (a lower parent hard limit no longer gives EPERM); an out-of-range value is `RLIMIT_REASON`, never `RLIM_INFINITY`.
 - Tests: the rlimit test drops the inherited `ulimit -c` baseline, a lowered parent hard limit and symlinked/broad roots are end-to-end, `RLIMIT_REASON` is in the safe-reasons vector.
 - design.md: ABI bullets list restored (the X-c3 notes now follow it), helper rules and the in-root secrets/hooks residual risk stated.
+
+## Batch 21: slice X-c3 (runner, PR 19, branch feat/coding-tools-xc3, base feat/coding-tools-xc2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xc3.1 spawn core: `std::io::pipe` shared by stdout and stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`, audit exemption for `runner.rs` | done | feat(tools): spawn a program on one shared pipe in its own process group |
+| Xc3.2 timeout, cancel by drop, group kill of grandchildren, `kill_and_reap` then 500 ms drain | done | feat(tools): kill the process group on timeout, on cancel and after a normal exit |
+| Xc3.3a `Scratch` (private TMPDIR / GOTMPDIR) + `integrity` snapshot/compare | done | feat(tools): keep a private folder per run and watch git hooks, config and submodules |
+| Xc3.3b `run_jailed`: scrub, profile, GOTMPDIR, integrity, ring | done | feat(tools): run a toolchain program through the jail with a scrubbed env and watched git places |
+
+TDD evidence: Xc3.1 RED = `E0422/E0425 cannot find Run / Done / spawn_core` (7 errors), 9 tests green; audit RED = `runner.rs: path segment process/net, Command, libc::pid_t, libc::ETXTBSY` until the spawn side was added. Xc3.2 RED = timeout test never ended (no deadline; had to be killed by pid) and a setsid test; GREEN 16. Mutations: normal exit with `reap` instead of `kill_and_reap` hung the grandchild test; `DRAIN` 500 -> 5 ms failed the direct drain test; removing the `if open` drain alone SURVIVED every end-to-end test (the exit wake takes a `spawn_blocking` round trip, so the data is nearly always read first): the drain is covered by a direct test on `drain` (bytes left, writer still open, bound reached), not by a race. Xc3.3a RED = `E0425 snapshot/compare/Change/Kind/TEXT_CAP`, `E0433 Scratch` (23); 16 green; mutations: mode ignored, `metadata` instead of `symlink_metadata`, text kept over cap, digest dropped, scratch mode 0o755: each failed one test. Xc3.3b RED = `E0425 run_jailed/profile`, `E0422 Job`, 16 errors; 26 green; mutations: parent env leaked in, GOTMPDIR for the wrong tool, `profile` skipped, `compare(before, before)`: each failed 1-2 tests.
+
+API (`runtime/tools/runner.rs`): `Run{program, argv, cwd, env, timeout}` + `spawn_core(Run) -> io::Result<Done{ended: Ended, capture: Capture, duration}>` (below the allow-list; `timed_out` set, `cancelled` never: cancel is a dropped future). `Job{helper, spec, tool, program, argv, root, cwd, scratch: Scratch, timeout}` + `run_jailed(Job, &read_env) -> io::Result<Ran{done, changes: Vec<Change>}>`; `profile(spec)` sets `NetBind::Open` and `Rlimits::Toolchain` (always: a dev server may listen). X-d1 builds the `Layout` AFTER `Scratch::unique(parent, "run")` so `Layout.tmp == job.scratch.path()`, then `toolchain_spec`, then `Job`, then builds `RunOutcome::new(argv, done.ended, &done.capture, done.duration)`.
+
+Audit: `MAY_SPAWN = ["runner.rs"]` (`Command` and a `process` path segment, `libc::{pid_t, ETXTBSY}`, and `tokio::net::unix::pipe` only; sockets, `FS_WRITE`, other libc stay banned) and `scratch.rs` in `MAY_WRITE` (it makes and removes folders; `getpid` instead of `std::process`). New test `the_runner_may_start_a_process_and_nothing_else_and_others_may_not`.
+
+Integrity (user decision 5B): `integrity::{snapshot, compare, Change{path, kind: Added|Changed|Removed, before, after, mode}}`. Not run through a link; `.git` counts when it is a file; hooks capped at 64 names; text kept <= 64 KiB, bigger files by sha256. X-d1 MUST surface `Ran.changes` (warning with a diff built from `before`/`after`, and an offer to revert from `before`). Nothing writes in X-c3. A change is reported even when the run times out or fails.
+
+Manual checks (throwaway test, removed): a real `cargo check` in the real jail with a populated registry and with an index update: `.package-cache` needs no `rw_files`; `.global-cache` prints a harmless last-use warning (SQLite journal not writable; accepted), see design.md. Cargo's workspace search fails when an ancestor of the root holds an unreadable `Cargo.toml`.
+
+OPEN for X-d1 (risk): the helper execs with `arg0 = program` and `Layout.program` is the CANONICAL path, so `~/.cargo/bin/cargo` (a rustup proxy) becomes `rustup` and would run as rustup, not cargo. By reading the code only (not run): X-d1 must pass the proxy name as arg0 or resolve the real toolchain binary. `toolchain_spec` only accepts cargo under `$CARGO_HOME/bin`, so the toolchain-dir binary is refused today. My manual check used `rustup run stable cargo ...`.
+
+Size: see report. Checks green: fmt, clippy --all-targets -D warnings, cargo test.
+
+
+## X-c3 review fixes
+
+Eleven confirmed review findings fixed on `feat/coding-tools-xc3` (strict TDD: each test seen red, by a failing assertion or a compile error on the new API, before the code).
+
+| # | Fix | Where |
+|---|-----|-------|
+| 1 | Hooks are never capped silently: every entry is read; more than `HOOKS_ABSURD` (1024) in one folder gives a `Kind::Crowded` change on every run (`after` = "hooks dir has N entries") | `integrity.rs` |
+| 2 | `.git` is judged with `symlink_metadata` first: a link or a file is recorded and never entered; every read goes through `open_beneath` (openat2 BENEATH + NO_SYMLINKS, O_NOFOLLOW walk as fallback) | `integrity.rs` |
+| 3 | Watch list adds `core.hooksPath`, `include.path` / `includeIf.*.path` (chains, depth 6) when they resolve inside the root, `.git/modules/**/{config,hooks/*}` (nested module names too), `.git/config.worktree`, and the `gitdir:` target of a `.git` file when inside the root | `integrity.rs` |
+| 4 | `Scratch::unique` names are pid + counter + nanos and a taken name is skipped (16 tries, then `AlreadyExists`) | `scratch.rs` |
+| 5 | A failed `remove_dir_all` chmods the tree's folders (never links) to 0700 and retries once; what is still there is returned (`Scratch::finish`, `Ran.leftovers`) | `scratch.rs`, `runner.rs` |
+| 6 | `AfterOnDrop` guard holds `before`; a dropped or failed run takes a synchronous after-snapshot and pushes the diff to `Job.unreported` (`Unreported`) | `runner.rs` |
+| 7 | `NetBind::Open` kept; decision and port-squatting risk recorded in design.md (resolved list, D15) | `design.md` |
+| 8 | `JailArgs.arg0` / `--arg0 <name>`: plain name only (no `/`, no NUL, not empty); the helper runs `Command::new(canonical).arg0(name)`; `run_jailed` passes `Program::name()`. Linux only (sandbox-exec starts the program under its path) | `core/ai/jail.rs`, `runtime/jail.rs`, `runner.rs` |
+| 9 | The final `kill_and_reap` is bounded at 5 s (`REAP`) and is an error when it is not met | `runner.rs` |
+| 10 | `scratch.rs` has its own narrow allow list (`DirBuilder`, `remove_dir_all`, `set_permissions`, libc `getpid`); `DirBuilder` joins `FS_WRITE` (it was not banned anywhere); an aliased `fs` stays banned there | `audit.rs` |
+| 11 | `safe_path` canonicalizes each PATH entry before the in-root check (the entry is kept as written) | `core/ai/toolchain/env.rs` |
+
+Tests: the timeout test uses a ready marker (5 s deadline instead of 400 ms) and checks the leader is reaped; a Go dropped-run test (GOTMPDIR removed, group killed, leader reaped); a real-helper test that a `bash` started with `--arg0 cargo` reads `cargo` in `/proc/self/cmdline`.
+
+API for X-d1:
+- `Ran { done, changes: Vec<Change>, leftovers: Vec<PathBuf> }`. Surface `changes`; a `Kind::Crowded` change means "too many entries to see": treat the run as tainted, no diff, no revert. Say so when `leftovers` is not empty.
+- `Job.unreported: Unreported` (shared handle, `Clone`): keep a clone, call `unreported.drain()` after a cancelled run and treat the result like `Ran.changes`. A run that finishes never pushes.
+- `arg0` is set by `run_jailed` from `Job.tool.name()` (`cargo`, `go`, ...): X-d1 passes `Layout.program` as the canonical path and needs nothing else. This closes the OPEN risk of Batch 21 (`~/.cargo/bin/cargo` canonicalizing to rustup). `$RUSTUP_HOME` stays in `rx`.
+- Limit: the drop snapshot is taken right after the group is signalled, so a write in the instant between the signal and the death can be missed.
+
+
+## X-c3 review fixes, round 2
+
+Principle (orchestrator decision): the integrity check FAILS CLOSED. Git's config parser is not re-implemented: the plain subset is read exactly, and anything else marks the run as tainted. Strict TDD: the new tests were run against the previous code first (20 integrity tests red; the deep-tree scratch test aborted with a stack overflow; the drop test timed out; the env test failed) and then went green.
+
+| # | Fix | Where |
+|---|-----|-------|
+| 1 | Configs are read for parsing with their own cap (`CONFIG_CAP` 1 MiB), not `TEXT_CAP`; over it the run is unchecked | `integrity.rs` |
+| 2 | Strict-subset reader: `[core] hooksPath = x` on one line, `[Core] HooksPath` (case-insensitive), `[section "sub"]`, `[section.sub]`, `#`/`;` comments, a quoted value. Tainted: a backslash continuation anywhere, a stray CR or NUL, invalid UTF-8, a header it does not understand, inner or unbalanced quotes or a backslash in the value of a key it reads, `~` or `%(prefix)`, an empty path, a bare `hooksPath` | `integrity.rs` |
+| 3 | Include and submodule depth 6 -> 10 (git's limit); deeper is unchecked | `integrity.rs` |
+| 4 | A watched folder (`.git/hooks`, `.git/modules`, a module entry, a `hooksPath` folder) that is a link or a file is recorded as an item; a link to a folder inside the root is followed, so its hooks are watched | `integrity.rs` |
+| 5 | `core.hooksPath` equal to the root (`.`, or the root's absolute path) watches git's hook names in the root; a `hooksPath` folder that does not exist yet is watched through its lexical path | `integrity.rs` |
+| 6 | A linked hook or config also records its target when it resolves inside the root; a linked config is parsed from the target content (relative includes tried against both folders); a config link that leads outside the root is unchecked | `integrity.rs` |
+| 7 | A relative `core.hooksPath` is resolved against the git dir's `core.worktree` when set; for a submodule git dir with no `core.worktree` it is unchecked; a worktree outside the root leaves nothing to watch | `integrity.rs` |
+| 8 | Bounds per snapshot: 4096 items and 256 MiB hashed (`Limits`, `snapshot_with` for tests); past them the rest is not read and the run is unchecked. Folders are counted while iterating (stop collecting past the threshold, stop counting at 100000) | `integrity.rs` |
+| 9 | `make_removable` is an explicit-stack walk (`walk`), bounded to depth 4096 and 1,000,000 entries | `scratch.rs` |
+| 10 | The drop-time snapshot and the scratch cleanup of a dropped run run on detached `std::thread`s; the finished-run path takes its after-snapshot and removes the folders in `spawn_blocking`. `Unreported` may fill shortly AFTER the drop | `runner.rs` |
+| 11 | `safe_path` canonicalizes `root` once | `core/ai/toolchain/env.rs` |
+
+Notes: a path cannot be longer than `PATH_MAX` (4096), so the deep-tree scratch tests use 1500 levels (about 3000 characters) on a 64 KiB thread stack, where one frame per level would overflow, instead of 5000 levels. Items 4-6 resolve a path by `canonicalize` when it exists and by a lexical walk that refuses to cross a link when it does not.
+
+API changes for X-d1:
+- `Kind::Crowded` is now `Kind::Unchecked` (still `Copy`): `after` holds the reason text ("hooks dir has N entries", "config not understood: line 3: line continuation", "more watched places than the bound allows", ...). Show it as "could not verify git hooks/config after this run", with no diff and no revert. It is reported on every run, whatever changed, and also when only the before-snapshot was unchecked.
+- `Unreported` may fill shortly after a cancelled `run_jailed`, not at the drop: drain it again later (before a commit or push). If the thread cannot start, a `Kind::Unchecked` change is pushed.
+- No other signature changed (`snapshot`, `compare`, `Change`, `Ran`, `Job`).
+## Batch: slice G-a (git argv and parse, PR 20, branch feat/coding-tools-ga, base feat/coding-tools-m5a)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Ga.1 argv templates (status, diff, log, add, commit), `-c` hardening, `:(exclude,glob,icase)` from SECRET_FILES, `:(literal)` | done | feat(tools): add pure git argv templates and porcelain/log parsing |
+| Ga.2 porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50 | done | same commit |
+
+Notes:
+- `core/ai/tools/git.rs` (pure, about 390 production lines with docs). `SECRET_FILES` in `paths.rs` is now `pub(crate)` (one-word change); `pub mod git;` in `tools/mod.rs`.
+- Strict TDD: tests and code were written in one pass in one file, not as a separate red run; one test expectation was wrong and fixed at the first run.
+- Deviations: pathspec is `:(exclude,glob,icase)` (spec says `exclude,glob`) so a tracked `.ENV` is excluded like the case-insensitive path guard; `.env` and `.env.*` are added to SECRET_FILES because the guard treats env names separately. `git_diff`/`git_log` path is `:(literal)` and checked (relative, no `..`, no `.git`, no secret component). `git log` with a path appends excludes too. Default log count 20 (design leaves it open).
+- Pure helpers also in the module: `env(read)`, `check_message` (non-empty, <= 4096 bytes, no control except `\n`/`\t`, no bidi), `render_status`, `render_log`, status entries cap 200.
+- Checks: fmt, clippy -D warnings, `cargo test --lib` (5828), `cargo +1.88 check --all-targets` green.
+
+### G-a review round (feat/coding-tools-ga; commits 7b38111, 54ed578)
+- C1: `add_argv` appends `excludes()` (a folder or `.` no longer stages secrets); temp-repo test (skips without git) pins it.
+- Hardening: `--no-show-signature`, diff `--ignore-submodules=all`, `-c gpg.program=false`, env `GIT_ATTR_NOSYSTEM`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null`; log always has `--`; commit `--cleanup=whitespace`.
+- User decisions: `GitDir` (absolute clean path) is a parameter of every builder and pins `core.hooksPath=<git-dir>/hooks`; `hooks_notice(dir, configured)` for the commit review; `Identity` (name, email) gives `-c user.name/user.email`, validated. G-b: read the identity from the global config in the preflight, read `core.hooksPath`, resolve the git dir.
+- Parse/render: rename orig record always consumed (no forged entry); entries with a secret path/old path/secret folder dropped; `tidy` replaces control/format chars with `?` in rendered text. Secret folders (SECRET_DIRS, CREDENTIAL_DIRS) excluded as `**/<dir>/**` and refused by `check`. `.claude/` is in CREDENTIAL_DIRS, so a repo's own `.claude/` is excluded from add/diff/status.
+- TDD: tests first for the review items (7 RED), then the identity/hooks tests (RED = compile errors), then code. Spec and design updated.
+- Production lines now about 567 (with docs and blanks) vs 390 before: over 500.
+
+### G-a review fixes (feat/coding-tools-ga, round 2)
+- Split: `tools/git/parse.rs` now holds the status/log parse and render (pure move, commit "refactor(tools): move git parse and render into a submodule"). Non-comment lines: `git.rs` 291 + `git/parse.rs` 203, each under 400.
+- Identity (user decision 2026-10-27): the repo's effective identity (`git config user.name/user.email` in the repo, global in scope); G-b preflight reads it outside the jail and passes it to `Identity::new`. Replaces "global only" in design and spec.
+- Log (user decision 2026-10-27): history simplification kept with the secret excludes (secret-only commits stay hidden); test pins no `--full-history`.
+- Hooks: `GitDir::new(git_dir, common_dir)` pins `core.hooksPath=<common-dir>/hooks` (a linked worktree's git dir has no hooks); test for the linked-worktree case; `hooks_notice` says "lazarobox runs only the repo hooks folder".
+- Hardening: status adds `--untracked-files=normal --renames`; `parse_log` drops records whose hash is not 40/64 hex or whose date is not strict ISO 8601 (a `\x1f` in the author shifts the fields); `check` refuses control and format characters in paths; temp-repo test for `add .` (stages all but secrets).
+- G-b checklist recorded in design.md (cleared env, git >= 2.32, env vars never passed, truncated status stays truncated). Not implemented here.
+
+### G-b: git runtime (feat/coding-tools-gb)
+- Done: Gb.1, Gb.2, Gb.3. `runtime/tools/git.rs` (about 300 non-comment lines) + `git/tests.rs` (15 tests, 8 of them on a temp repo under `$HOME`, skipped without git or HOME).
+- API: `Ctx{helper, git, home, root, scratch_parent, timeout}`; `open(&ctx, read) -> Repo{dir: GitDir, dirs, identity: Result<Identity, GitError>, configured_hooks}`; `run(&ctx, &repo, argv, read_verb, read) -> Ran{done, leftovers}`; `status_output(&Done) -> Output::{Text, Truncated, Failed}` (parse only `Text`); pure pieces `jail_spec`, `git_env`, `check_env`, `version_ok`, `pointer_dirs`.
+- Design choices: no edit to `runner.rs`/`integrity.rs`/`scratch.rs`. Git is not a `Program` (that is the run_command allow-list), so it goes through `spawn_core` + `JailArgs` directly, and `toolchain_spec` is called with a placeholder `Program::Cargo` and `/usr/bin/git`; then caches are dropped (`rw` = the private TMPDIR + git dirs), net closed, toolchain rlimits.
+- A git dir under the root gets no rule (R29: `rw` under the `rwx` root would be `WritableExec`; confirmed with the real helper). Dirs outside the root (linked worktree: `.git/worktrees/<n>` and the common dir) are `rw`, refused when broad (`broad_place`) or when `check_exec` fails.
+- Preflight chicken-and-egg: in a linked worktree the git dir is outside the root, so even `rev-parse` cannot read it. `pointer_dirs` reads the worktree's `.git` file (`gitdir:`) and `commondir` and grants them `ro` for the preflight only; the real run then gets `rw` on what `rev-parse` reported. Verified by hand with the real `__jail-exec` (plain repo, linked worktree with ro and rw common dir).
+- Identity and `core.hooksPath` are read by `git config -z --get-regexp` run OUTSIDE the jail (user decision: global config in scope), through `spawn_core` with a tiny env (PATH, HOME, XDG_CONFIG_HOME, `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`). It only reads values. An unset or invalid identity is `Err(GitError::Identity)` in `Repo.identity` (the commit is refused then).
+- Env: scrub output filtered to PATH/HOME/USER/LANG/LC_ALL/TMPDIR/TERM (+ `XDG_CONFIG_HOME` when set) plus `core::git::env`. `check_env` fails closed if any `GIT_*` name beyond the fixed set is present or a fixed value is missing (covers `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT/KEY_*/VALUE_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`).
+- Version: `git --version` in the jail, must be >= 2.32 (`Fault::Version`).
+- Gb.2 test has a control: a plain git run first proves the planted `core.fsmonitor`/`diff.external`/`core.pager` do create the marker; the hardened run through `run()` does not. The unit tests use a stand-in helper (no Landlock), so the real-jail evidence is the manual run above.
+- Limits for G-c/G-d: (1) hooks live in `<common>/hooks`; for a worktree whose common dir is outside the root that dir is `rw` not `rwx`, so a hook cannot be executed in the jail (git ignores a non-executable hook). (2) A commit's hooks run in the jail and can write `.git/hooks` and `.git/config` (rw): the X-c3 integrity compare is NOT wired around git runs; G-c/X-d1 should decide. (3) tests need a root outside `/tmp` (broad place), so they use `tempdir_in($HOME)`.
+
+### G-b review fixes (feat/coding-tools-gb)
+- 1 (HIGH) planted `.git` file: `pointer_dirs` now returns `Result<Vec<PathBuf>, Fault>`. A git dir (or common dir) outside the root is accepted only as a genuine linked worktree: directly under `<common>/worktrees/`, `commondir` resolves to the common dir, and the `gitdir` back-link canonicalizes to `<root>/.git`; otherwise `Fault::Dir`. A non-worktree `.git` pointing outside the root (`--separate-git-dir`) is refused by design. `open` also refuses a rev-parse answer outside the root and the vouched dirs.
+- 2 (HIGH) integrity around git runs: `jailed` takes the X-c3 snapshot before and after (same `AfterOnDrop` guard as the runner, now `pub(crate)`), `Ran.changes` added, `Ctx.unreported` sink added. `integrity::snapshot_with_git_dirs(root, extra)` also watches `config`, `config.worktree`, `hooks/*` and modules of the rw git dirs outside the root (keyed by absolute path), each through a beneath-open. The read-only preflight calls are not watched.
+- 3 (MEDIUM) pointer reads: `read_small` opens beneath (no link followed), checks type and size on the opened file (regular, <= 4 KiB), `take()`s; `open` runs `pointer_dirs` in `spawn_blocking`.
+- 4 (MEDIUM) unjailed `git config`: exit other than 0/1, timeout or truncated capture is `Fault::Preflight`; PATH goes through `scrub` (`safe_path`).
+- 5 (LOW) temp-repo tests print a skip line; real-helper Landlock test `a_git_commit_in_the_real_jail_cannot_write_outside_its_grants` in `tests/jail.rs` (commit works, hook writes inside the root, a write outside the grants is denied).
+- 6 (LOW) `Fault::Spec(PathBuf)` names the git path; comment on the `Program::Cargo` placeholder: git outside the toolchain's system rx places is refused by design.
+- API changes: `pointer_dirs -> Result<Vec<PathBuf>, Fault>`; `Ctx.unreported: Unreported`; `Ran.changes: Vec<Change>`; `Fault::Spec(PathBuf)`; `integrity::snapshot_with_git_dirs`; `runner::{AfterOnDrop, watched}` now `pub(crate)` (`watched` takes extra dirs).
+- TDD: tests first (RED = compile errors on the new API), then code; audit test forced `open_beneath` instead of `OpenOptions` for the pointer reads.
+## Batch: slice X-d1 (host `run_command`, PR 26, branch feat/coding-tools-xd1, base feat/coding-tools-ga2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xd1 core: `Call::RunCommand`, `run_command` ToolDef (Exec family), `ApprovalAsk::Exec`, minimal app prompt arm | done | feat(tools): offer run_command in the Exec family and always ask for it |
+| Xd1.1 refusals before the ask (no jail, root policy, cwd, allow-list with `package.json` scripts, staged batch, busy chat) + Xd1.2 `RunGate` | done | feat(tools): refuse a command before it asks and gate one run per chat |
+| Xd1.3 run after `y`: gate, job, `run_jailed`, `RunOutcome`, changes note | done | feat(tools): run an approved command in the sandbox and report what it changed |
+
+Seam: all logic lives in the new `runtime/tools/host/{exec,gate}.rs` (children of `host`). `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 18 lines): field `exec: exec::Exec` + its init in `ToolHost::new`; one arm in the pre-ask `match (valid, locality)` (`Call::RunCommand` -> `exec::plan`, refusal sets `checked = Err`, success asks with `ask_for`); one arm in the decision match (`(Decision::Sent, Call::RunCommand)` -> `exec::run`); `mod exec; mod gate;` and the test modules. `files::gate` also refuses an Exec call when the family is off (unknown tool). No seam avoids host.rs: the refusals need an async step before the ask, and the run is a new decision arm.
+
+Design points:
+- `Call::RunCommand { args: Value }` keeps the model's object (shape already checked by `RUN_ARGS`); the allow-list needs `package.json` so `exec::inspect` calls `parse_run(args, &scripts)` before the ask and again after `y`. Scripts come from the `package.json` of the resolved cwd (plain file, <= 256 KiB, not a link).
+- Refusal order: family, jail (Landlock only), root policy (origin canonical, not HOME, `judge_real`), cwd (`plain_relative` + canonical inside the root), allow-list, text that would not show as it is (`clean(arg) != arg`), staged batch (`Staging` = "propose them first", `Proposed` = waiting for review), busy chat. All before any prompt.
+- `ask_for(RunCommand)` always returns `ApprovalAsk::Exec{program,args,cwd}` (any locality, any mode; the app never routes it). The host refuses text the prompt could not show exactly, so `y` approves what runs.
+- `RunGate`: `claimed: HashSet<StageKey>` + `Semaphore(2)`, 60 s wait cap, `Permit` frees both on drop (also a call cancelled while it waits). Taken after `y`, before spawn. `is_busy` is also checked before the ask.
+- Result: `RunOutcome::render` (facts line, then the output wrapped as data); non-zero exit is an ok result; exit 125 plus the helper marker is an error ("the Linux sandbox could not be applied"). `changes_note` appends the watched-git-place changes (names inside the data wrapper, "not reverted"); an unchecked change adds "could not verify git hooks and config after this run". It is the ONE function that reads an integrity `Kind` (`Added|Changed|Removed` explicit, `_` = unchecked), so the `Crowded` -> `Unchecked` rename needs no edit. `Exec.sink(key)` is the per-chat `Unreported`; every result drains it. X-d2 can drain it for a notice.
+- Private temp folder: `$XDG_RUNTIME_DIR/lazarobox-run`, else `<data>/lazarobox/run` (`Scratch::unique`, removed after the run).
+- Program: first executable on the scrubbed PATH (pytest: `<root>/.venv/bin/pytest` first), canonical, passed as `Layout.program`; arg0 comes from the runner.
+
+TDD evidence: core tests RED = `E0599 no variant RunCommand / Exec, no method is_exec` (4 errors); gate tests RED = `E0583 file not found for module gate`; host tests RED = `E0609 no field helper/read on Exec` (3 errors). The app prompt test and the host refusal tests passed on first run (written before the code, compile-RED). Real jail smoke (throwaway test, removed): `go test` through `target/debug/lazarobox-shell __jail-exec` started in Landlock and was refused by the jail on a GOCACHE outside the grants, as it should.
+
+Known gaps / notes:
+- The unchecked-kind case has no test here (the variant is `Crowded` on this branch and `Unchecked` after the rebase): add one `changes_note` test after the rebase.
+- PATH is the process PATH, not the login-shell extended one the CLI engines use: a GUI launch may not find `~/.cargo/bin`. X-d2 or a follow-up can pass `CliEnv.path`.
+- macOS: `jailed()` accepts only the Landlock backend.
+- Tests that need a project outside `/tmp` (the toolchain spec refuses scratch folders) build their world under `target/`.
+
+### X-d1 review fixes (feat/coding-tools-xd1)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | HIGH: a program printing the marker and exiting 125 returned before `ran.changes` was read | The helper reports "jail not enforced" on a status pipe (descriptor 3, number in `LAZAROBOX_JAIL_STATUS_FD`), closed by the `exec` of the program, so the program cannot write it. `Ran.not_enforced` carries it. `go` reads `ran.changes` and drains the sink FIRST and `failed()` appends the changes note on every error path. Exit 125 plus a forged marker is now a normal result. Descriptor plumbing lives in `runtime/proc.rs` (the audit forbids `libc::fcntl/dup2` in tool files). |
+| 2 | MEDIUM: `.venv/bin/pytest -> /bin/sh` | A venv candidate counts only when its real path starts with the root; otherwise the search falls through to the PATH. |
+| 3 | MEDIUM: npm/yarn/pnpm script bodies | `npm run <x>` is checked against the declared scripts. `ApprovalAsk::Exec` gained `script: Option<String>` (sanitized `name: body` lines, 200 chars each, with `pre`/`post`). The host keeps the whole `scripts` object at ask time (not a hash: nothing to collide) and refuses after `y` with "package.json changed after the question; ask again". |
+| 4 | MEDIUM: output to a cloud model | `exec::plan` refuses `Locality::Cloud` ("commands run only with a local model for now"). Marked `REMOVED BY X-d2`: delete the check and the `CLOUD` const. |
+| 5 | LOW-MEDIUM: prompt rendering | Args that are empty or have whitespace, quotes, `\`, `$` or a backtick show shell-quoted; args with control characters are refused; the folder moved from the clipped head row to a command row (`in <cwd>`), so `fits` checks it. Script lines show as `script ...` rows. |
+| 6 | Test for `Kind::Unchecked` in `changes_note` | Added (`an_unchecked_place_says_the_project_may_be_tainted`). |
+
+TDD evidence: RED seen for 1 (runner test `a_helper_that_reports_on_the_status_channel_is_not_enforced`, jail integration tests, 3 host tests), 2 (3 venv tests), 3 (2 host tests, 1 allow test), 5 (5 app tests, 1 host test). 4, 6 and the `script_line` test were written together with the code (they passed at first run).
+
+API notes for X-d2: `Plan` has `pin: Option<Pin>`; `exec::run` takes the ask-time `Option<Pin>`; `ApprovalAsk::Exec` has `script`; `ask_for` leaves it `None` and the host fills it. The prompt command is now `cmd\nin cwd[\nscript ...]` and the target is the fixed "run a command in the sandbox": the X-d2 notice goes in `why`, not the head. Remove the cloud check in `exec::plan`. `runner::spawn_with` is private; `Ran` gained `not_enforced`; `spawn_core`/`Run`/`Done` unchanged (git.rs untouched).
+
+## Batch: slice X-d2 (Exec ask and notice, branch feat/coding-tools-xd2, base feat/coding-tools-xd1)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Audit 3: a run that fails after it started reports its git changes (`after_failure` takes the after-snapshot before returning the error) | done | fix(tools): report git changes of a run that failed after it started |
+| Audit 1+2: install/ci show the lifecycle scripts (pinned like other scripts); npm/yarn/pnpm `test`/`run` refused without a `package.json` in the cwd | done | fix(tools): show install scripts and run npm scripts only beside package.json |
+| Xd2.1 notice, timeout, tier-B, cloud flag, earlier-run note; cloud refusal removed | done | feat(tools): ask for every command with the env, network and output notice |
+| Xd2.2 Exec menu row reason | done (no-jail); global-wait row DEFERRED | feat(menu): say on the Exec row that commands need the Linux sandbox |
+
+Decisions / deviations:
+- The notice is NOT in `ApprovalPrompt.why`: `why` is advice that is dropped when the pane is short, and the spec says the notice MUST be visible. `ApprovalPrompt` gained `notice: Option<String>`, drawn as `Part::Notice` rows after the command and counted by `fits` (own budget on top of `MAX_COMMAND_ROWS`), so a pane too small for it does not let `y` through.
+- `ApprovalAsk::Exec` gained `timeout_secs` (host fills the clamped value), `cloud` (`ask_for` sets it from the locality) and `earlier` (host fills from `Unreported::peek`, the sink stays intact for the model). `exec::fill` replaces the inline script fill in `host.rs` (net fewer lines there).
+- Tier-B: static per-program line of the project files the program runs (`allow::runs_files`), plus the install line (`allow::installs`). It does not look at which files the chat wrote.
+- Audit 2 chose the refusal: "run it from the folder that has package.json". The old yarn test now expects that text.
+- `JailSupport::runs_commands` is the single Landlock-only check (host `jailed()` and the menu share it). `MenuState::with_sandbox` default is "fine" so existing menu snapshots are untouched; the app passes its probe.
+- DEFERRED: the live "waiting for a slot" state of the global cap. The wait happens in `RunGate::acquire` after `y`; showing it needs a new stream event (the transcript row has no update channel). The refusal after 60 s already reads "too many commands are running; try again later".
+- README has no Exec/coding-tools section on this branch, so it was not touched; CHANGELOG `[Unreleased]` was written.
+- Optional LOW done: `display_word` quotes `; | & < > ( ) * ? # ~ { } !`.
+
+TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2 host tests failing (install script not shown, no refusal outside the package folder); Xd2.1 RED = compile errors on the new `Exec` fields, `exec_notice`, `Part::Notice`, `ApprovalPrompt.notice`, `peek`; Xd2.2 RED = `E0599 no method with_sandbox`.
+
+### X-d2 review fixes (feat/coding-tools-xd2)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | MEDIUM: `npm/yarn/pnpm install\|ci` outside a `package.json` folder ran unseen parent scripts | `runs_scripts` is now any package-manager call: with no `package.json` in the cwd it is refused ("run it from the folder that has package.json"). Test loops test, run, install and ci. |
+| 2 | MEDIUM: unbounded paths in `earlier_note` could push the notice past the row cap and disable `y` for the chat | Each path is cut at 60 columns, the line at 240: "N places under .git were touched by a cancelled run (not reverted): a, b, c, …". `exec_notice` no longer prefixes it. Tests: very long paths stay within 240 columns and the prompt fits at 80 and 100 columns. |
+| 3 | LOW: `--ignore-scripts` | `allow::skips_scripts` (flag present and not turned off by `=...` or `--no-ignore...`): the notice says "install scripts are skipped" and the pin shows no bodies; otherwise "and, depending on the package manager, its dependencies" plus "`--ignore-scripts` skips them". |
+| 4 | LOW: `pin()` hooks | Install also shows `preprepare`/`postprepare` (npm) and `prepublish` (yarn). |
+| 5 | LOW: tier-B | `.npmrc` for npm/pnpm, `.yarnrc.yml` for yarn (`allow::runs_files`). |
+| 6 | LOW: `wanted` cap by width | When the text would fit the row cap at a wide pane, the marker says "widen the pane" (`TOO_WIDE_TEXT`); otherwise the old marker. Still fail-closed: `fits` unchanged. |
+| 7 | LOW: `display_word` | Also quotes `[`, `]`, `^`. |
+| 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
+
+TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.
