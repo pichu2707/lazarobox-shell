@@ -132,6 +132,8 @@ pub struct ToolHost {
     next: AtomicU64,
     /// The staged batches of every chat: in memory, never saved.
     stages: Arc<Mutex<Stages>>,
+    /// Who may run a command now, and what the sandbox is.
+    exec: exec::Exec,
 }
 
 impl ToolHost {
@@ -158,6 +160,7 @@ impl ToolHost {
             limits,
             next: AtomicU64::new(1),
             stages: Arc::default(),
+            exec: exec::Exec::system(),
         })
     }
 
@@ -358,6 +361,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     None => checked = Err(UNSHOWABLE.into()),
                 }
             }
+            // A command is judged before it asks: a refusal never opens a prompt.
+            (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
+                Ok(_) => ask = ask_for(valid, locality),
+                Err(why) => checked = Err(why.into()),
+            },
             // A batch is sealed before the ask: the user reviews what was sealed.
             (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
                 Ok((batch, review)) => {
@@ -496,12 +504,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+mod exec;
 mod files;
+mod gate;
 mod orphan;
 
+#[cfg(test)]
+mod exec_tests;
 #[cfg(test)]
 mod external_tests;
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod gate_tests;
 #[cfg(test)]
 mod tests;
