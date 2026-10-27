@@ -99,7 +99,26 @@ fn listing_named(path: &str) -> Listing {
         hub: Some(PathBuf::from("/hub")),
         free: Some(50 * GB),
         missing: vec![4 * GB],
+        ram: None,
     }
+}
+
+/// Enter on the entry row, which asks for the popular models, an empty
+/// answer, then Esc: the search field.
+fn to_query(a: &mut App) {
+    goto_pick(a, HF_ROW);
+    assert_eq!(a.update(enter()), vec![Effect::HubAsk(Ask::Popular)]);
+    a.update(AppEvent::HubReply(
+        Ask::Popular,
+        Ok(Answer::Repos {
+            hits: Vec::new(),
+            ram: None,
+        }),
+    ));
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
 }
 
 /// Pastes `o/a`, gets its files and presses `y` on its only choice: the
@@ -109,9 +128,8 @@ fn start_download(a: &mut App) -> Vec<Effect> {
 }
 
 fn start_download_of(a: &mut App, listing: Listing) -> Vec<Effect> {
-    goto_pick(a, HF_ROW);
-    let mut effects = a.update(enter());
-    effects.extend(a.update(AppEvent::Paste("o/a".to_owned())));
+    to_query(a);
+    let mut effects = a.update(AppEvent::Paste("o/a".to_owned()));
     let asked = a.update(enter());
     assert_eq!(asked, vec![Effect::HubAsk(Ask::Files("o/a".to_owned()))]);
     effects.extend(asked);
@@ -218,8 +236,7 @@ fn the_cancel_prompt_cancels_and_the_end_says_how_to_resume() {
 #[test]
 fn a_failed_request_is_the_footer_error() {
     let mut a = at_llamacpp();
-    goto_pick(&mut a, HF_ROW);
-    a.update(enter());
+    to_query(&mut a);
     a.update(AppEvent::Paste("gated/model".to_owned()));
     a.update(enter());
     let message = "gated/model needs a Hugging Face token: set HF_TOKEN";

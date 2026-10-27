@@ -25,6 +25,10 @@ const MAX_QUERY: usize = 128;
 pub const HINT_ASKING: &str = "asking Hugging Face…";
 pub const HINT_QUERY: &str = "Enter search · Esc back";
 pub const HINT_LIST: &str = "j/k move · Enter choose · Esc back";
+pub const HINT_POPULAR: &str = "j/k move · Enter choose · Esc search";
+
+/// The mark of a repo or a file too big for this PC's memory.
+pub const TOO_BIG: &str = "too big for this PC";
 pub const HINT_CONFIRM: &str = "y download · n back";
 pub const HINT_CANCEL: &str = "cancel the download? (y/n)";
 
@@ -88,10 +92,14 @@ pub struct Confirm {
 pub enum Screen {
     /// The text field.
     Query(String),
-    /// The repos a search found for `text`.
+    /// The repos a search found for `text`, or the popular ones that fit
+    /// this PC (`popular`, with no text).
     Repos {
         text: String,
         hits: Vec<RepoHit>,
+        popular: bool,
+        /// This machine's memory, when known.
+        ram: Option<u64>,
     },
     /// The GGUF choices of a repo.
     Files(Box<Listing>),
@@ -151,6 +159,9 @@ impl Hub {
     pub fn title(&self) -> String {
         match self.screen() {
             Screen::Query(_) => "Download from Hugging Face".to_owned(),
+            Screen::Repos { popular: true, .. } => {
+                "Hugging Face: most downloaded for this PC".to_owned()
+            }
             Screen::Repos { text, .. } => format!("Hugging Face: \"{}\"", shown(text)),
             Screen::Files(listing) => format!("Hugging Face: {}", shown(&listing.files.repo.id)),
             Screen::Confirm(_) => "Hugging Face: download".to_owned(),
@@ -164,6 +175,7 @@ impl Hub {
         }
         match self.screen() {
             Screen::Query(_) => HINT_QUERY,
+            Screen::Repos { popular: true, .. } => HINT_POPULAR,
             Screen::Repos { .. } | Screen::Files(_) => HINT_LIST,
             Screen::Confirm(_) => HINT_CONFIRM,
         }
@@ -174,13 +186,22 @@ impl Hub {
     pub fn rows(&self) -> Vec<PickRow> {
         match self.screen() {
             Screen::Query(_) => Vec::new(),
-            Screen::Repos { text, hits } => {
+            Screen::Repos {
+                text,
+                hits,
+                popular,
+                ram,
+            } => {
                 if hits.is_empty() {
-                    return vec![info(format!("no GGUF models found for \"{text}\""))];
+                    return vec![info(if *popular {
+                        "no popular model fits this PC; Esc to search".to_owned()
+                    } else {
+                        format!("no GGUF models found for \"{text}\"")
+                    })];
                 }
                 hits.iter()
                     .enumerate()
-                    .map(|(index, hit)| item(index, format!("{}  {} ↓", hit.id, hit.downloads)))
+                    .map(|(index, hit)| item(index, repo_label(hit, *ram)))
                     .collect()
             }
             Screen::Files(listing) => {
@@ -189,13 +210,10 @@ impl Hub {
                 if files.choices.is_empty() {
                     rows.push(info(format!("no .gguf files in {}", files.repo.id)));
                 }
-                rows.extend(
-                    files
-                        .choices
-                        .iter()
-                        .enumerate()
-                        .map(|(index, choice)| item(index, choice.label())),
-                );
+                rows.extend(files.choices.iter().enumerate().map(|(index, choice)| {
+                    let big = listing.ram.is_some_and(|ram| !hf::fits(choice.size, ram));
+                    item(index, marked(choice.label(), big))
+                }));
                 rows
             }
             Screen::Confirm(confirm) => {
@@ -226,6 +244,26 @@ impl Hub {
                 .collect()
             }
         }
+    }
+}
+
+/// A repo row: `o/r  1200 ↓  ~2.5 GB`, the size estimated from its
+/// parameters, marked when it does not fit `ram`.
+fn repo_label(hit: &RepoHit, ram: Option<u64>) -> String {
+    let label = format!("{}  {} ↓", hit.id, hit.downloads);
+    let Some(bytes) = hit.params.map(hf::model_bytes) else {
+        return label;
+    };
+    let big = ram.is_some_and(|ram| !hf::fits(bytes, ram));
+    marked(format!("{label}  ~{}", hf::size_label(bytes)), big)
+}
+
+/// `label`, with the [`TOO_BIG`] mark when `big`.
+fn marked(label: String, big: bool) -> String {
+    if big {
+        format!("{label} · {TOO_BIG}")
+    } else {
+        label
     }
 }
 
@@ -299,16 +337,19 @@ impl Picker {
     }
 
     /// Enter on the llamacpp entry row: the cancel prompt while a download
-    /// runs, else the Query screen.
+    /// runs, else the Query screen, with the popular models asked for to
+    /// open over it.
     pub(super) fn open_hub(&mut self) -> Outcome {
         if self.download.is_some() {
             self.cancel_prompt = true;
-        } else {
-            self.level = Level::Hub(Hub::new());
-            self.cursor = 0;
-            self.offset = 0;
+            return Outcome::Stay;
         }
-        Outcome::Stay
+        let mut hub = Hub::new();
+        hub.asking = Some(Ask::Popular);
+        self.level = Level::Hub(hub);
+        self.cursor = 0;
+        self.offset = 0;
+        Outcome::Ask(Ask::Popular)
     }
 
     /// Enter on a Hugging Face screen.
@@ -458,11 +499,30 @@ impl Picker {
         hub.asking = None;
         match (ask, answer) {
             (_, Err(message)) => return Some(message),
-            (Ask::Search(text), Ok(Answer::Repos(mut hits))) => {
+            (Ask::Search(text), Ok(Answer::Repos { mut hits, ram })) => {
                 hits.sort_by_key(|hit| std::cmp::Reverse(hit.downloads));
                 self.push(Screen::Repos {
                     text: text.clone(),
                     hits,
+                    popular: false,
+                    ram,
+                });
+            }
+            (Ask::Popular, Ok(Answer::Repos { mut hits, ram })) => {
+                // Only what is known to fit; with the memory unknown, all.
+                if let Some(ram) = ram {
+                    hits.retain(|hit| {
+                        hit.params
+                            .is_some_and(|params| hf::fits(hf::model_bytes(params), ram))
+                    });
+                }
+                hits.sort_by_key(|hit| std::cmp::Reverse(hit.downloads));
+                hits.truncate(hf::SEARCH_LIMIT);
+                self.push(Screen::Repos {
+                    text: String::new(),
+                    hits,
+                    popular: true,
+                    ram,
                 });
             }
             (Ask::Files(_), Ok(Answer::Files(listing))) => {

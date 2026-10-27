@@ -12,6 +12,13 @@ baseline.
 
 ### Added
 
+- Hugging Face downloads open on a list you pick from with `j`/`k` and
+  `Enter`, no typing needed: the most downloaded text-generation GGUF models
+  that fit this PC's memory, each with its estimated size (about Q4_K_M, and
+  at most 70% of the RAM). `Esc` opens the search, which shows everything
+  and marks with `too big for this PC` the repos, and the files of a repo,
+  that do not fit.
+
 - Ctrl+O opens the link of the Hugging Face token field, and the prefilled
   issue of the Feedback form, in the browser (`xdg-open`; on WSL `wslview`,
   then `rundll32.exe url.dll,FileProtocolHandler`, since `explorer.exe` opens
