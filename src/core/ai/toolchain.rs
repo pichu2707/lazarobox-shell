@@ -11,8 +11,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use super::jail::{
-    DEV_RO_FILES, DEV_RW_FILE, ETC_LINKS, JailSpec, LINUX_RO, LINUX_RO_FILES, broad_place,
-    is_canonical_form, push_unique,
+    DEV_RO_FILES, DEV_RW_FILE, ETC_LINKS, JailSpec, LINUX_RO, LINUX_RO_FILES, Os, broad_place,
+    is_canonical_form, push_unique, writable_executable,
 };
 use super::tools::allow::Program;
 
@@ -83,6 +83,11 @@ pub enum Refusal {
     Program(PathBuf),
     /// A granted path equals, contains or is inside a credential place.
     Never(PathBuf),
+    /// A writable path equals, contains or is inside an execute path (R29).
+    WritableExec {
+        rx: PathBuf,
+        rw: PathBuf,
+    },
 }
 
 /// Builds the rules for one run. `resolve` canonicalizes a path and is `None`
@@ -138,7 +143,11 @@ pub fn toolchain_spec(
         Program::Npm | Program::Pnpm | Program::Yarn => {
             roots.extend(node_root(&layout.program, &layout.home));
         }
-        Program::Go => roots.extend(go_root(&layout.program, vars)),
+        // A go the system rx already covers (`/usr/bin/go`) needs no root; the
+        // folder above its `bin` would be `/usr`.
+        Program::Go if !covered(&spec, &layout.program) => {
+            roots.extend(go_root(&layout.program, vars));
+        }
         Program::Pytest if !covered(&spec, &layout.program) => {
             roots.push(pytest_root(&layout.program, resolve));
         }
@@ -172,9 +181,20 @@ pub fn toolchain_spec(
         .into_iter()
         .chain(CARGO_CACHES.map(|c| cargo_home.join(c)));
     for cache in caches {
-        if let Some(real) = resolve(&cache) {
+        // A cache in, over or equal to an execute place would be writable and
+        // executable at once (R29, as on macOS): it is dropped, and the tool
+        // then runs without that cache.
+        if let Some(real) = resolve(&cache)
+            && !spec
+                .exec_paths()
+                .iter()
+                .any(|x| x.starts_with(&real) || real.starts_with(x))
+        {
             push_unique(&mut spec.rw, real);
         }
+    }
+    if let Some((rx, rw)) = writable_executable(&spec, Os::Linux) {
+        return Err(Refusal::WritableExec { rx, rw });
     }
 
     let never: Vec<PathBuf> = NEVER_IN_HOME

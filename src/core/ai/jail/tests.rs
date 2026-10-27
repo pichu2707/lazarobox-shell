@@ -2590,27 +2590,30 @@ fn a_helper_under_packages_does_not_open_the_exception_for_a_program_elsewhere()
 
 #[test]
 fn one_rwx_root_passes_the_exec_check_on_linux() {
-    assert_eq!(with_rwx(&["/home/u/proj"]).check_exec(Os::Linux), Ok(()));
-    assert_eq!(with_rwx(&[]).check_exec(Os::Linux), Ok(()));
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &[]),
+        Ok(())
+    );
+    assert_eq!(with_rwx(&[]).check_exec(Os::Linux, &[]), Ok(()));
 }
 
 #[test]
 fn two_rwx_roots_are_refused() {
     let spec = with_rwx(&["/home/u/a", "/home/u/b"]);
-    assert_eq!(spec.check_exec(Os::Linux), Err(ExecFault::ManyRwx(2)));
+    assert_eq!(spec.check_exec(Os::Linux, &[]), Err(ExecFault::ManyRwx(2)));
 }
 
 #[test]
 fn an_rwx_root_must_be_canonical_and_not_the_top() {
     for bad in ["proj", "/home/u/../v", "/home/u/./p"] {
         assert_eq!(
-            with_rwx(&[bad]).check_exec(Os::Linux),
+            with_rwx(&[bad]).check_exec(Os::Linux, &[]),
             Err(ExecFault::NotCanonical(p(bad))),
             "{bad}"
         );
     }
     assert_eq!(
-        with_rwx(&["/"]).check_exec(Os::Linux),
+        with_rwx(&["/"]).check_exec(Os::Linux, &[]),
         Err(ExecFault::TooBroad(p("/")))
     );
 }
@@ -2618,8 +2621,8 @@ fn an_rwx_root_must_be_canonical_and_not_the_top() {
 #[test]
 fn rwx_is_refused_on_macos_until_seatbelt_runs_toolchains() {
     let spec = with_rwx(&["/Users/u/proj"]);
-    assert_eq!(spec.check_exec(Os::Macos), Err(ExecFault::Macos));
-    assert_eq!(with_rwx(&[]).check_exec(Os::Macos), Ok(()));
+    assert_eq!(spec.check_exec(Os::Macos, &[]), Err(ExecFault::Macos));
+    assert_eq!(with_rwx(&[]).check_exec(Os::Macos, &[]), Ok(()));
 }
 
 #[test]
@@ -2642,6 +2645,50 @@ fn a_cli_spec_never_carries_rwx() {
     for os in [Os::Linux, Os::Macos, Os::Other] {
         let spec = jail_spec_for(os, &nvm_codex(), &identity).unwrap();
         assert!(spec.rwx.is_empty(), "{os:?}");
-        assert_eq!(spec.check_exec(os), Ok(()));
+        assert_eq!(spec.check_exec(os, &[]), Ok(()));
     }
+}
+
+#[test]
+fn an_rwx_root_that_is_a_broad_place_is_refused() {
+    let homes = [Path::new("/home/u")];
+    for bad in ["/home", "/usr", "/home/u", "/tmp", "/home/u/.ssh", "/etc"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux, &homes),
+            Err(ExecFault::TooBroad(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &homes),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_writable_path_next_to_an_execute_path_is_refused_on_linux_too() {
+    // R29: equal, under or over, for rx and for the rwx root alike.
+    for (rx, rw) in [
+        ("/usr/local", "/usr/local/cargo/registry"),
+        ("/usr/local/cargo/registry", "/usr/local"),
+        ("/home/u/go", "/home/u/go"),
+    ] {
+        let mut spec = with_rwx(&["/home/u/proj"]);
+        spec.rx = paths(&[rx]);
+        spec.rw = paths(&[rw]);
+        assert_eq!(
+            spec.check_exec(Os::Linux, &[]),
+            Err(ExecFault::WritableExec {
+                rx: p(rx),
+                rw: p(rw)
+            }),
+            "{rx} {rw}"
+        );
+    }
+    let mut spec = with_rwx(&["/home/u/proj"]);
+    spec.rw_files = paths(&["/home/u/proj/.cache/f"]);
+    assert!(matches!(
+        spec.check_exec(Os::Linux, &[]),
+        Err(ExecFault::WritableExec { .. })
+    ));
 }

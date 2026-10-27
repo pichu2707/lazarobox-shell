@@ -1219,12 +1219,12 @@ pub(crate) fn except_outside_rw(spec: &JailSpec) -> Option<PathBuf> {
         .cloned()
 }
 
-/// The first execute path that is equal to, under or over a writable one,
-/// without letter case on macOS (see [`fold`]). An execute path under a write
-/// exception that is itself inside that writable folder is not writable, so it
+/// The first execute path (`rx` or the `rwx` root) that is equal to, under or
+/// over a writable one, without letter case on macOS (see [`fold`]). An execute
+/// path under a write exception that is itself inside that writable folder is not writable, so it
 /// does not count; a writable file never gets that, and neither does a program
 /// over the folder.
-fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
     // The exemption compares exactly: on a case-sensitive file system a case
     // variant of the exception is another, writable folder the deny misses.
     let excepted = |rx: &Path, rw: &Path| {
@@ -1232,7 +1232,7 @@ fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
             .iter()
             .any(|e| e.starts_with(rw) && rx.starts_with(e))
     };
-    spec.rx.iter().find_map(|rx| {
+    spec.rx.iter().chain(&spec.rwx).find_map(|rx| {
         let x = fold(rx, os);
         let in_dir = spec.rw.iter().find(|rw| {
             let w = fold(rw, os);
@@ -1256,10 +1256,14 @@ pub enum ExecFault {
     ManyRwx(usize),
     /// The `rwx` root is not absolute or holds a `.` or `..` segment.
     NotCanonical(PathBuf),
-    /// The `rwx` root is `/`, which would run and write the whole disk.
+    /// The `rwx` root is `/`, `$HOME`, a system or credential folder or
+    /// another broad place: it would run and write far more than a project.
     TooBroad(PathBuf),
     /// Seatbelt does not render `rwx` yet: `run_command` is Linux only.
     Macos,
+    /// An execute path (`rx` or `rwx`) is equal to, under or over a writable
+    /// one: what the program writes there it could then run (R29).
+    WritableExec { rx: PathBuf, rw: PathBuf },
 }
 
 impl JailSpec {
@@ -1271,7 +1275,8 @@ impl JailSpec {
 
     /// Checks the `rwx` class. A CLI spec has none and always passes. On macOS
     /// an `rwx` root is refused until the Seatbelt renderer grants toolchains.
-    pub fn check_exec(&self, os: Os) -> Result<(), ExecFault> {
+    /// `homes` holds both spellings of `$HOME`, for the broad-place rule.
+    pub fn check_exec(&self, os: Os, homes: &[&Path]) -> Result<(), ExecFault> {
         let Some(root) = self.rwx.first() else {
             return Ok(());
         };
@@ -1284,8 +1289,11 @@ impl JailSpec {
         if !is_canonical_form(root) {
             return Err(ExecFault::NotCanonical(root.clone()));
         }
-        if root.parent().is_none() {
+        if root.parent().is_none() || broad_place(root, homes) {
             return Err(ExecFault::TooBroad(root.clone()));
+        }
+        if let Some((rx, rw)) = writable_executable(self, os) {
+            return Err(ExecFault::WritableExec { rx, rw });
         }
         Ok(())
     }

@@ -81,7 +81,7 @@ fn cargo_gets_its_bin_and_rustup_home_and_the_registry_caches() {
             "/home/u/.cargo/git"
         ])
     );
-    assert_eq!(spec.check_exec(Os::Linux), Ok(()));
+    assert_eq!(spec.check_exec(Os::Linux, &[]), Ok(()));
 }
 
 #[test]
@@ -148,8 +148,9 @@ fn go_runs_from_goroot_or_from_the_folder_above_its_bin() {
     l.program = p("/home/u/sdk/go1.22/bin/go");
     l.vars.goroot = Some(p("/home/u/sdk/other"));
     assert_eq!(build(&l, &[]), Err(Refusal::Program(l.program.clone())));
+    // Under the system rx already: no root of its own.
     let usr = build(&layout(Program::Go, "/usr/local/go/bin/go"), &[]).unwrap();
-    assert_eq!(usr.rx, system_plus(&["/usr/local/go"]));
+    assert_eq!(usr.rx, system_plus(&[]));
 }
 
 #[test]
@@ -250,4 +251,48 @@ fn the_system_files_match_the_cli_jail() {
     assert!(spec.ro.contains(&p("/etc")));
     assert!(spec.ro_files.contains(&p("/dev/urandom")));
     assert_eq!(spec.rw_files, paths(&["/dev/null"]));
+}
+
+#[test]
+fn a_cache_inside_an_execute_place_is_dropped_not_made_writable() {
+    // The Docker rust layout: `/usr/local` is in the system rx and the cargo
+    // home lives under it, so its registry would be writable AND executable.
+    let mut l = layout(Program::Cargo, "/usr/local/cargo/bin/cargo");
+    l.vars.cargo_home = Some(p("/usr/local/cargo"));
+    l.vars.rustup_home = Some(p("/usr/local/rustup"));
+    // The credential files of that home sit inside the system rx, which
+    // Landlock cannot carve out: refused, never a writable+executable cache.
+    let exist = ["/usr/local/cargo/registry", "/usr/local/cargo/git"];
+    assert_eq!(build(&l, &exist), Err(Refusal::Never(p("/usr"))));
+    // Go: `~/go` is the goroot of a go in `~/go/bin`, and holds `pkg/mod`.
+    let l = layout(Program::Go, "/home/u/go/bin/go");
+    let spec = build(&l, &["/home/u/go/pkg/mod", "/home/u/.cache/go-build"]).unwrap();
+    assert_eq!(spec.rx, system_plus(&["/home/u/go"]));
+    assert_eq!(spec.rw, paths(&[TMP, "/home/u/.cache/go-build"]));
+    // An rwx root over a cache already writes it: nothing to grant twice.
+    let mut l = layout(Program::Go, "/usr/bin/go");
+    l.root = p("/home/u/go");
+    let spec = build(&l, &["/home/u/go/pkg/mod"]).unwrap();
+    assert_eq!(spec.rw, paths(&[TMP]));
+}
+
+#[test]
+fn a_private_tmp_inside_an_execute_place_is_refused() {
+    let mut l = layout(Program::Cargo, "/usr/bin/cargo");
+    l.tmp = p("/usr/local/tmp/1");
+    assert_eq!(
+        build(&l, &[]),
+        Err(Refusal::WritableExec {
+            rx: p("/usr"),
+            rw: p("/usr/local/tmp/1"),
+        })
+    );
+}
+
+#[test]
+fn a_system_go_is_covered_by_the_system_rx() {
+    let spec = build(&layout(Program::Go, "/usr/bin/go"), &[]).unwrap();
+    assert_eq!(spec.rx, system_plus(&[]));
+    let spec = build(&layout(Program::Go, "/usr/local/go/bin/go"), &[]).unwrap();
+    assert_eq!(spec.rx, system_plus(&[]));
 }

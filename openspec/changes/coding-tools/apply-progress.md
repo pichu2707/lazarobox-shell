@@ -712,3 +712,9 @@ Notes:
 - X-c3 needs: `scrub` output as the child env, a `resolve` backed by `fs::canonicalize`, PATH search over the scrubbed PATH to get `Layout.program`.
 - Open questions in design.md: macOS run_command (needs a Seatbelt toolchain slice, user decision), pytest `--user` site-packages read access.
 - Size: ~375 production lines (jail.rs 63, sbpl 6, toolchain.rs 236 incl. 3 doc lines, env.rs 69, mod 1), ~455 test lines. Checks: fmt, clippy -D warnings, cargo test --lib (5874), +1.88 check --all-targets.
+
+Review fixes (slice X-c1):
+- R29 on Linux: `writable_executable` is `pub(crate)` and also walks the `rwx` root; `toolchain_spec` drops any cache equal to, under or over an execute place (Go `~/go`, an `rwx` root over a cache) and refuses anything else writable there as `Refusal::WritableExec`; `JailSpec::check_exec(os, homes)` returns `ExecFault::WritableExec` too. The Docker rust layout is already `Refusal::Never("/usr")` (credentials inside the system `rx`).
+- `go_root` is skipped when `rx` covers the program (`/usr/bin/go`, `/usr/local/go/bin/go`).
+- `check_exec` takes `homes` and rejects a broad root with `broad_place`.
+- design.md: D24 row moved under D23; X-c3 notes (exec-capable GOTMPDIR, cargo `.package-cache`/`.global-cache`, git integrity check USER DECISION, `.env` in the root accepted residual risk).
