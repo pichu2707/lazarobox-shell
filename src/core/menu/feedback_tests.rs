@@ -3,8 +3,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::feedback::{
-    DESCRIPTION_REQUIRED, Facts, Feedback, Field, Kind, Outcome, REDACTED, TITLE_REQUIRED,
-    TOO_LONG, gh_message, host, issue_url,
+    DESCRIPTION_REQUIRED, Facts, Feedback, Field, Issue, Kind, NO_GH_TOO_LONG, Outcome, REDACTED,
+    SENDING, TITLE_REQUIRED, TOO_LONG, gh_message, host, issue_url,
 };
 
 const ISSUES: &str = "https://github.com/pichu2707/lazarobox-shell/issues/new";
@@ -36,6 +36,21 @@ fn ctrl_s(form: &mut Feedback) -> Outcome {
         &KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
         false,
     )
+}
+
+fn ctrl_o(form: &mut Feedback) -> Outcome {
+    form.on_key(
+        &KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        false,
+    )
+}
+
+/// The issue Ctrl+S sends, or a panic.
+fn sent(form: &mut Feedback) -> Issue {
+    match ctrl_s(form) {
+        Outcome::Send(issue) => issue,
+        other => panic!("not sent: {other:?}"),
+    }
 }
 
 fn type_text(form: &mut Feedback, text: &str) {
@@ -99,12 +114,13 @@ fn the_form_starts_on_a_bug_report_and_left_right_cycle_the_kind() {
     assert_eq!(form.field(), Field::Attach);
 }
 
+// Spec (open-links S4): Ctrl+O still gives the prefilled page.
 #[test]
-fn ctrl_s_gives_the_prefilled_bug_report_link() {
+fn ctrl_o_gives_the_prefilled_bug_report_link() {
     let mut form = filled(Kind::Bug);
     assert_eq!(
-        ctrl_s(&mut form),
-        Outcome::Copy(format!(
+        ctrl_o(&mut form),
+        Outcome::Open(format!(
             "{ISSUES}?template=bug.yml&title=Scroll%20jumps\
              &what-happened=It%20jumps%0Ato%20the%20top%20%26%20back\
              &environment=lazarobox%200.25.1%20%C2%B7%20linux%20%28WSL%29%20%C2%B7%20zsh\
@@ -123,8 +139,8 @@ fn an_idea_goes_to_the_idea_form_and_the_environment_can_be_left_out() {
     send(&mut form, KeyCode::Char(' '));
     assert!(!form.attach());
     assert_eq!(
-        ctrl_s(&mut form),
-        Outcome::Copy(format!(
+        ctrl_o(&mut form),
+        Outcome::Open(format!(
             "{ISSUES}?template=idea.yml&title=Scroll%20jumps\
              &idea=It%20jumps%0Ato%20the%20top%20%26%20back"
         ))
@@ -160,23 +176,29 @@ fn a_secret_is_masked_in_the_form_before_any_link() {
         form.description()
     );
     assert!(!form.description().contains("hf_abc"));
-    let Outcome::Copy(link) = ctrl_s(&mut form) else {
-        panic!("not copied");
-    };
-    assert!(!link.contains("hf_abc"), "{link}");
+    assert!(!form.sending(), "nothing was sent");
+    let issue = sent(&mut form);
+    assert!(!issue.body.contains("hf_abc"), "{}", issue.body);
+    assert!(issue.body.contains("[REDACTED]"), "{}", issue.body);
     assert_eq!(
         REDACTED,
         "Secrets were masked; review and press Ctrl+S again"
     );
 }
 
+// Spec (open-links S4): the link cap is only for the Ctrl+O link; the
+// same text is sent with Ctrl+S.
 #[test]
-fn a_link_too_long_for_github_is_refused() {
+fn a_link_too_long_for_github_is_refused_but_still_sent() {
     let mut form = filled(Kind::Bug);
     form.paste(&"ñ".repeat(1990));
-    assert_eq!(ctrl_s(&mut form), Outcome::Handled);
+    assert_eq!(ctrl_o(&mut form), Outcome::Handled);
     assert_eq!(form.error(), Some(TOO_LONG));
     assert_eq!(TOO_LONG, "Too long for a link: shorten the description");
+    let description = form.description();
+    let issue = sent(&mut form);
+    assert!(issue.body.contains(&description), "{}", issue.body);
+    assert_eq!(form.error(), None);
 }
 
 #[test]
@@ -265,6 +287,106 @@ fn the_host_facts_come_from_the_environment() {
         None,
     );
     assert_eq!(long.terminal.map(|t| t.chars().count()), Some(40));
+}
+
+const ENVIRONMENT: &str = "### Environment\n\n```text\n\
+     lazarobox 0.25.1 · linux (WSL) · zsh · WezTerm\n\
+     engines: ollama available · llamacpp not running\n```";
+
+// Spec (open-links S4, S6): Ctrl+S sends a bug report shaped like the
+// repository's bug form, labelled `bug`, and the form says it is sending.
+#[test]
+fn ctrl_s_sends_the_bug_report_shaped_like_the_issue_form() {
+    let mut form = filled(Kind::Bug);
+    assert_eq!(
+        ctrl_s(&mut form),
+        Outcome::Send(Issue {
+            repo: "pichu2707/lazarobox-shell".to_owned(),
+            title: "Scroll jumps".to_owned(),
+            body: format!("### What happened\n\nIt jumps\nto the top & back\n\n{ENVIRONMENT}"),
+            labels: vec!["bug".to_owned()],
+        })
+    );
+    assert!(form.sending());
+    assert_eq!(form.hint(), SENDING);
+    assert_eq!(SENDING, "Sending to GitHub…");
+    assert_eq!(form.error(), None);
+}
+
+// Spec (open-links S6): an idea goes as the idea form, labelled `idea`,
+// with no environment when Attach is off.
+#[test]
+fn ctrl_s_sends_an_idea_without_the_environment() {
+    let mut form = filled(Kind::Idea);
+    while form.field() != Field::Attach {
+        send(&mut form, KeyCode::Tab);
+    }
+    send(&mut form, KeyCode::Char(' '));
+    let issue = sent(&mut form);
+    assert_eq!(issue.title, "Scroll jumps");
+    assert_eq!(issue.body, "### The idea\n\nIt jumps\nto the top & back");
+    assert_eq!(issue.labels, ["idea"]);
+    assert_eq!(issue.repo, "pichu2707/lazarobox-shell");
+}
+
+// Spec (open-links S4): validation still stops the send.
+#[test]
+fn an_incomplete_form_is_not_sent() {
+    let mut form = Feedback::new(facts());
+    assert_eq!(ctrl_s(&mut form), Outcome::Handled);
+    assert_eq!(form.error(), Some(TITLE_REQUIRED));
+    assert!(!form.sending());
+}
+
+// Spec (open-links S7): one send at a time; while it runs every key,
+// Ctrl+S and Esc included, does nothing, so the form sent stays as shown.
+#[test]
+fn while_sending_every_key_does_nothing() {
+    let mut form = filled(Kind::Bug);
+    sent(&mut form);
+    let before = form.clone();
+    assert_eq!(ctrl_s(&mut form), Outcome::Handled);
+    assert_eq!(ctrl_o(&mut form), Outcome::Handled);
+    assert_eq!(send(&mut form, KeyCode::Esc), Outcome::Handled);
+    send(&mut form, KeyCode::Char('x'));
+    send(&mut form, KeyCode::Tab);
+    form.paste("pasted");
+    assert_eq!(form, before);
+}
+
+// Spec (open-links S7): a failure keeps everything typed, shows gh's
+// message on one line, and Ctrl+S sends again.
+#[test]
+fn a_failed_send_keeps_the_form_and_shows_why() {
+    let mut form = filled(Kind::Bug);
+    sent(&mut form);
+    form.failed("HTTP 502:\n\u{1b}[31mBad gateway\u{7}");
+    assert!(!form.sending());
+    assert_eq!(form.error(), Some("gh: HTTP 502: Bad gateway"));
+    assert_eq!(form.title(), "Scroll jumps");
+    assert_eq!(form.description(), "It jumps\nto the top & back");
+    sent(&mut form);
+    assert_eq!(form.error(), None);
+}
+
+// Spec (open-links S5): without gh the prefilled link is the fallback; a
+// link too long for GitHub keeps the form and says why.
+#[test]
+fn without_gh_the_link_is_the_fallback() {
+    let mut form = filled(Kind::Bug);
+    let Outcome::Open(link) = ctrl_o(&mut form) else {
+        panic!("no link");
+    };
+    sent(&mut form);
+    assert_eq!(form.fallback(), Some(link));
+    assert!(!form.sending());
+    let mut long = filled(Kind::Bug);
+    long.paste(&"ñ".repeat(1990));
+    sent(&mut long);
+    assert_eq!(long.fallback(), None);
+    assert!(!long.sending());
+    assert_eq!(long.error(), Some(NO_GH_TOO_LONG));
+    assert!(NO_GH_TOO_LONG.chars().count() <= 48);
 }
 
 // Spec (open-links S7): gh's message is shown on one line, with no control

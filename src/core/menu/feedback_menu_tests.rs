@@ -2,7 +2,9 @@
 //! at the `MenuState` level.
 
 use super::ai_tests::value_of;
-use super::feedback::{self, Facts, HINT_ATTACH, HINT_DONE, HINT_KIND, HINT_TEXT};
+use super::feedback::{
+    self, Facts, HINT_ATTACH, HINT_DONE, HINT_KIND, HINT_SENT, HINT_SENT_COPY, HINT_TEXT, SendReply,
+};
 use super::footer_tests::hint;
 use super::*;
 use crate::core::ai::{Detection, Diagnostics, EngineState, Status};
@@ -91,68 +93,36 @@ fn enter_opens_the_form_with_the_environment_shown() {
     assert_eq!(hint(&m), HINT_KIND);
     assert_eq!(
         HINT_KIND,
-        "←/→ kind · Tab · Ctrl+S copy · Ctrl+O open · Esc"
+        "←/→ kind · Tab · Ctrl+S send · Ctrl+O open · Esc"
     );
     // The focused text field draws its cursor.
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[2], "› Title");
     assert_eq!(texts(&m)[3], "  ▏");
     assert_eq!(hint(&m), HINT_TEXT);
-    assert_eq!(HINT_TEXT, "Tab next · Ctrl+S copy · Ctrl+O open · Esc back");
+    assert_eq!(HINT_TEXT, "Tab next · Ctrl+S send · Ctrl+O open · Esc back");
     send(&mut m, KeyCode::Tab);
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[6], "› [x] Attach the environment");
     assert_eq!(hint(&m), HINT_ATTACH);
     assert_eq!(
         HINT_ATTACH,
-        "Space attach · Ctrl+S copy · Ctrl+O open · Esc"
+        "Space attach · Ctrl+S send · Ctrl+O open · Esc"
     );
     // Every footer fits the 48 columns of the narrow popup.
-    for h in [HINT_KIND, HINT_TEXT, HINT_ATTACH, HINT_DONE] {
+    for h in [
+        HINT_KIND,
+        HINT_TEXT,
+        HINT_ATTACH,
+        HINT_DONE,
+        HINT_SENT,
+        HINT_SENT_COPY,
+        feedback::SENDING,
+    ] {
         assert!(h.chars().count() <= 48, "{h}");
     }
     // The form fits the view.
     assert!(texts(&m).len() <= VIEW_BODY);
-}
-
-// Spec (config-menu, Feedback): Ctrl+S copies the link and says how to use
-// it; Esc goes back to the row, not out of the menu.
-#[test]
-fn ctrl_s_copies_the_link_and_esc_goes_back_to_the_row() {
-    let mut m = on_row();
-    send(&mut m, KeyCode::Enter);
-    send(&mut m, KeyCode::Tab);
-    m.on_paste("Scroll jumps");
-    send(&mut m, KeyCode::Tab);
-    m.on_paste("It jumps\nback");
-    assert_eq!(texts(&m)[5], "  It jumps");
-    assert_eq!(texts(&m)[6], "  back▏");
-    let MenuCommand::Copy(link) = key_with(&mut m, KeyCode::Char('s'), KeyModifiers::CONTROL)
-    else {
-        panic!("no copy");
-    };
-    assert!(
-        link.starts_with(
-            "https://github.com/pichu2707/lazarobox-shell/issues/new?template=bug.yml&title=Scroll%20jumps&what-happened=It%20jumps%0Aback&environment="
-        ),
-        "{link}"
-    );
-    assert_eq!(
-        texts(&m),
-        [
-            "Feedback",
-            "Link copied. Paste it in your browser:",
-            "GitHub opens the issue form filled in, for you",
-            "to review and send.",
-        ]
-    );
-    m.set_copied("Copied 300 characters".to_owned());
-    assert_eq!(hint(&m), "Copied 300 characters");
-    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
-    assert!(!m.in_sub_level());
-    assert_eq!(value_of(&m, "Feedback"), "bug report or idea");
-    // A second Esc leaves the menu as usual.
-    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::Cancel);
 }
 
 /// The form with a title and a description, on a menu that has an opener
@@ -171,13 +141,25 @@ fn ctrl(menu: &mut MenuState, c: char) -> MenuCommand {
     key_with(menu, KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
+/// The prefilled link of [`filled`], as Ctrl+O copies it with no opener.
+fn prefilled() -> String {
+    match ctrl(&mut filled(false), 'o') {
+        MenuCommand::Copy(link) => link,
+        other => panic!("no copy: {other:?}"),
+    }
+}
+
 // Spec (config-menu, Feedback; open-links S4): Ctrl+O opens the prefilled
-// page, the same link Ctrl+S copies, and says so; Esc goes back to the row.
+// page and says so; Esc goes back to the row.
 #[test]
 fn ctrl_o_opens_the_prefilled_page_in_the_browser() {
-    let MenuCommand::Copy(link) = ctrl(&mut filled(true), 's') else {
-        panic!("no copy");
-    };
+    let link = prefilled();
+    assert!(
+        link.starts_with(
+            "https://github.com/pichu2707/lazarobox-shell/issues/new?template=bug.yml&title=Scroll%20jumps&what-happened=It%20jumps%0Aback&environment="
+        ),
+        "{link}"
+    );
     let mut m = filled(true);
     assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Open(link));
     assert_eq!(
@@ -197,12 +179,173 @@ fn ctrl_o_opens_the_prefilled_page_in_the_browser() {
 // Ctrl+O copies the link like Ctrl+S.
 #[test]
 fn without_an_opener_ctrl_o_copies_the_link() {
-    let MenuCommand::Copy(link) = ctrl(&mut filled(false), 's') else {
-        panic!("no copy");
-    };
     let mut m = filled(false);
-    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Copy(link));
-    assert_eq!(texts(&m)[1], "Link copied. Paste it in your browser:");
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Copy(prefilled()));
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            "Link copied. Paste it in your browser:",
+            "GitHub opens the issue form filled in, for you",
+            "to review and send.",
+        ]
+    );
+    m.set_copied("Copied 300 characters".to_owned());
+    assert_eq!(hint(&m), "Copied 300 characters");
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+    assert_eq!(value_of(&m, "Feedback"), "bug report or idea");
+    // A second Esc leaves the menu as usual.
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::Cancel);
+}
+
+const ISSUE_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42";
+
+/// The form of [`filled`] after its Ctrl+S, and the issue it sends.
+fn sending(opener: bool) -> (MenuState, feedback::Issue) {
+    let mut m = filled(opener);
+    let MenuCommand::SendIssue(issue) = ctrl(&mut m, 's') else {
+        panic!("not sent");
+    };
+    (m, *issue)
+}
+
+// Spec (open-links S4, S7): Ctrl+S sends the issue; the form stays, says
+// it is sending, and ignores Esc and a second Ctrl+S until the answer.
+#[test]
+fn ctrl_s_sends_the_issue_and_waits_for_the_answer() {
+    let (mut m, issue) = sending(true);
+    assert_eq!(issue.title, "Scroll jumps");
+    assert_eq!(issue.labels, ["bug"]);
+    assert!(
+        issue
+            .body
+            .starts_with("### What happened\n\nIt jumps\nback\n\n### Environment"),
+        "{}",
+        issue.body
+    );
+    let form = texts(&m);
+    assert_eq!(form[3], "  Scroll jumps");
+    assert_eq!(hint(&m), "Sending to GitHub…");
+    assert_eq!(ctrl(&mut m, 's'), MenuCommand::None);
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(m.in_sub_level(), "Esc does not leave while sending");
+    assert_eq!(texts(&m), form);
+    assert_eq!(hint(&m), "Sending to GitHub…");
+}
+
+// Spec (open-links S7): once sent, the view shows the issue's link on a
+// row of its own; Ctrl+O opens it and Esc goes back to the row.
+#[test]
+fn a_sent_issue_shows_its_link_which_ctrl_o_opens() {
+    let (mut m, _) = sending(true);
+    assert_eq!(
+        m.feedback_reply(SendReply::Sent(ISSUE_URL.to_owned())),
+        MenuCommand::None
+    );
+    assert_eq!(texts(&m), ["Feedback", "Sent:", ISSUE_URL]);
+    assert_eq!(hint(&m), HINT_SENT);
+    assert_eq!(HINT_SENT, "Ctrl+O open · Esc back");
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Open(ISSUE_URL.to_owned()));
+    assert_eq!(texts(&m), ["Feedback", "Sent:", ISSUE_URL]);
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+    assert_eq!(value_of(&m, "Feedback"), "bug report or idea");
+    // Without an opener Ctrl+O copies the link.
+    let (mut m, _) = sending(false);
+    m.feedback_reply(SendReply::Sent(ISSUE_URL.to_owned()));
+    assert_eq!(hint(&m), HINT_SENT_COPY);
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Copy(ISSUE_URL.to_owned()));
+}
+
+// Spec (open-links S7): a failure keeps the form with what was typed and
+// shows gh's message, sanitized; Ctrl+S sends again.
+#[test]
+fn a_failed_send_keeps_the_form_with_the_message() {
+    let (mut m, _) = sending(true);
+    let form = texts(&m);
+    assert_eq!(
+        m.feedback_reply(SendReply::Failed(
+            "HTTP 401: Bad credentials\n\u{1b}[0m".to_owned()
+        )),
+        MenuCommand::None
+    );
+    assert_eq!(texts(&m), form);
+    assert_eq!(m.footer(), Footer::Error("gh: HTTP 401: Bad credentials"));
+    assert!(matches!(ctrl(&mut m, 's'), MenuCommand::SendIssue(_)));
+}
+
+// Spec (open-links S5): without gh, the answer opens the prefilled page
+// (or copies it with no opener) and the view says why.
+#[test]
+fn without_gh_the_prefilled_page_opens_and_the_view_says_why() {
+    let (mut m, _) = sending(true);
+    assert_eq!(
+        m.feedback_reply(SendReply::NoGh),
+        MenuCommand::Open(prefilled())
+    );
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            "gh is not installed or not logged in:",
+            "opened the form in your browser, for you to",
+            "review and send.",
+        ]
+    );
+    assert_eq!(hint(&m), HINT_DONE);
+    let (mut m, _) = sending(false);
+    assert_eq!(
+        m.feedback_reply(SendReply::NoGh),
+        MenuCommand::Copy(prefilled())
+    );
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            "gh is not installed or not logged in: link",
+            "copied. Paste it in your browser to review",
+            "and send the issue.",
+        ]
+    );
+    for line in feedback::NO_GH_OPENED.iter().chain(&feedback::NO_GH_COPIED) {
+        assert!(line.chars().count() <= 46, "{line}");
+    }
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+}
+
+// Review finding (opener failure): when the browser did not open, the view
+// says the link was copied instead, and later links are copied.
+#[test]
+fn a_failed_open_turns_the_view_into_the_copied_one() {
+    let (mut m, _) = sending(true);
+    assert_eq!(
+        m.feedback_reply(SendReply::NoGh),
+        MenuCommand::Open(prefilled())
+    );
+    m.open_failed();
+    assert_eq!(texts(&m)[1..], feedback::NO_GH_COPIED);
+    assert_eq!(m.open_or_copy(prefilled()), MenuCommand::Copy(prefilled()));
+    let mut m = filled(true);
+    assert!(matches!(ctrl(&mut m, 'o'), MenuCommand::Open(_)));
+    m.open_failed();
+    assert_eq!(texts(&m)[1..], feedback::COPIED);
+}
+
+// Spec (open-links S7): an answer nobody waits for changes nothing.
+#[test]
+fn a_late_answer_changes_nothing() {
+    let mut m = filled(true);
+    let before = m.clone();
+    for reply in [
+        SendReply::Sent(ISSUE_URL.to_owned()),
+        SendReply::Failed("x".to_owned()),
+        SendReply::NoGh,
+    ] {
+        assert_eq!(m.feedback_reply(reply), MenuCommand::None);
+        assert_eq!(m, before);
+    }
 }
 
 #[test]

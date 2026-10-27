@@ -503,6 +503,9 @@ pub enum MenuCommand {
     /// opener (see [`MenuState::with_opener`]); without one the link is a
     /// [`MenuCommand::Copy`].
     Open(String),
+    /// Send this Feedback issue with `gh`; the answer comes back through
+    /// [`MenuState::feedback_reply`].
+    SendIssue(Box<feedback::Issue>),
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -609,18 +612,26 @@ pub struct MenuState {
     facts: feedback::Facts,
     /// The Feedback form, while it is open.
     feedback: Option<feedback::Feedback>,
-    /// The form made its link: the view says what was done with it until
-    /// Esc.
+    /// The form is done: the view says what became of it until Esc.
     feedback_done: Option<Done>,
     /// The host has a program that opens links in the browser.
     opener: bool,
 }
 
-/// What the Feedback form did with its link.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What became of the Feedback form.
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum Done {
+    /// Ctrl+O, with no opener: the link was copied.
     Copied,
+    /// Ctrl+O: the link was opened.
     Opened,
+    /// Ctrl+S: the issue was created, at this link.
+    Sent(String),
+    /// Ctrl+S found no `gh`: the link was opened instead.
+    NoGhOpened,
+    /// Ctrl+S found no `gh` and the host has no opener: the link was
+    /// copied instead.
+    NoGhCopied,
 }
 
 impl MenuState {
@@ -659,6 +670,17 @@ impl MenuState {
         self
     }
 
+    /// The browser did not open the last link: the Feedback view says it
+    /// was copied instead (the app copies it), and later links are copied.
+    pub fn open_failed(&mut self) {
+        self.opener = false;
+        self.feedback_done = match self.feedback_done.take() {
+            Some(Done::Opened) => Some(Done::Copied),
+            Some(Done::NoGhOpened) => Some(Done::NoGhCopied),
+            done => done,
+        };
+    }
+
     /// `url` opened when the host can, else copied.
     fn open_or_copy(&self, url: String) -> MenuCommand {
         if self.opener {
@@ -679,16 +701,20 @@ impl MenuState {
         matches!(self.selected_kind(), Some(ItemKind::Feedback))
     }
 
-    /// Whether the Feedback form, or what it says after its copy, is shown.
+    /// Whether the Feedback form, or what became of it, is shown.
     fn feedback_open(&self) -> bool {
         self.feedback.is_some() || self.feedback_done.is_some()
     }
 
     /// The Feedback view that replaces the rows while it is open.
     fn feedback_rows(&self) -> Option<Vec<Row>> {
-        let lines = match self.feedback_done {
-            Some(Done::Copied) => feedback::COPIED.iter().map(|l| (*l).to_owned()).collect(),
-            Some(Done::Opened) => feedback::OPENED.iter().map(|l| (*l).to_owned()).collect(),
+        let owned = |lines: &[&str]| lines.iter().map(|l| (*l).to_owned()).collect();
+        let lines = match &self.feedback_done {
+            Some(Done::Copied) => owned(&feedback::COPIED),
+            Some(Done::Opened) => owned(&feedback::OPENED),
+            Some(Done::NoGhOpened) => owned(&feedback::NO_GH_OPENED),
+            Some(Done::NoGhCopied) => owned(&feedback::NO_GH_COPIED),
+            Some(Done::Sent(url)) => vec![feedback::SENT.to_owned(), url.clone()],
             None => self.feedback.as_ref()?.lines(),
         };
         let mut rows = vec![Row::Title(Cow::Borrowed("Feedback"))];
@@ -697,12 +723,20 @@ impl MenuState {
     }
 
     /// Keys while the Feedback view is open: every one goes to the form;
-    /// once its link is copied or opened, only Esc (back to the row) does
-    /// anything.
+    /// once it is done, only Esc (back to the row) does anything, and
+    /// Ctrl+O on a sent issue opens its link.
     fn on_feedback_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
-        if self.feedback_done.is_some() {
-            if key.code == KeyCode::Esc && !repeat {
+        if let Some(done) = &self.feedback_done {
+            if repeat {
+                return MenuCommand::None;
+            }
+            if key.code == KeyCode::Esc {
                 self.feedback_done = None;
+            } else if let Done::Sent(url) = done
+                && key.code == KeyCode::Char('o')
+                && key.modifiers == KeyModifiers::CONTROL
+            {
+                return self.open_or_copy(url.clone());
             }
             return MenuCommand::None;
         }
@@ -715,17 +749,46 @@ impl MenuState {
                 self.feedback = None;
                 MenuCommand::None
             }
-            feedback::Outcome::Copy(link) => {
-                self.feedback = None;
-                self.feedback_done = Some(Done::Copied);
-                MenuCommand::Copy(link)
-            }
+            feedback::Outcome::Send(issue) => MenuCommand::SendIssue(Box::new(issue)),
             feedback::Outcome::Open(link) => {
                 self.feedback = None;
                 let command = self.open_or_copy(link);
                 self.feedback_done = Some(match command {
                     MenuCommand::Open(_) => Done::Opened,
                     _ => Done::Copied,
+                });
+                command
+            }
+        }
+    }
+
+    /// What became of the Feedback issue being sent. A sent issue shows its
+    /// link; a failure keeps the form with the message; without `gh` the
+    /// prefilled page opens instead (copied with no opener). An answer no
+    /// form waits for changes nothing.
+    pub fn feedback_reply(&mut self, reply: feedback::SendReply) -> MenuCommand {
+        let Some(form) = self.feedback.as_mut().filter(|form| form.sending()) else {
+            return MenuCommand::None;
+        };
+        match reply {
+            feedback::SendReply::Sent(url) => {
+                self.feedback = None;
+                self.feedback_done = Some(Done::Sent(url));
+                MenuCommand::None
+            }
+            feedback::SendReply::Failed(message) => {
+                form.failed(&message);
+                MenuCommand::None
+            }
+            feedback::SendReply::NoGh => {
+                let Some(link) = form.fallback() else {
+                    return MenuCommand::None;
+                };
+                self.feedback = None;
+                let command = self.open_or_copy(link);
+                self.feedback_done = Some(match command {
+                    MenuCommand::Open(_) => Done::NoGhOpened,
+                    _ => Done::NoGhCopied,
                 });
                 command
             }
@@ -909,8 +972,9 @@ impl MenuState {
     }
 
     /// A left click on the screen cell `(column, row)` of the size given by
-    /// [`Self::set_term`]: on the link line of the token field it does what
-    /// Ctrl+O does; anywhere else, or on the one-line fallback, nothing.
+    /// [`Self::set_term`]: on the link line of the token field, or of a
+    /// sent Feedback issue, it does what Ctrl+O does; anywhere else, or on
+    /// the one-line fallback, nothing.
     pub fn on_click(&self, config: &Config, column: u16, row: u16) -> MenuCommand {
         let Some((width, height)) = self.term else {
             return MenuCommand::None;
@@ -932,20 +996,26 @@ impl MenuState {
         }
         let index = usize::from(row - layout.first_row);
         match self.link_at(config, index) {
-            Some(url) => self.open_or_copy(url.to_owned()),
+            Some(url) => self.open_or_copy(url),
             None => MenuCommand::None,
         }
     }
 
-    /// The link drawn on body row `index`, if that row is one: only the
-    /// token field's link to create a token.
-    fn link_at(&self, config: &Config, index: usize) -> Option<&'static str> {
-        let on_link = self.account.field().is_some()
-            && matches!(
-                self.rows(config).get(index),
-                Some(Row::Text(text)) if text == account::TOKEN_URL
-            );
-        on_link.then_some(account::TOKEN_URL)
+    /// The link drawn on body row `index`, if that row is one: the token
+    /// field's link to create a token, or a sent Feedback issue's link.
+    fn link_at(&self, config: &Config, index: usize) -> Option<String> {
+        let link = if self.account.field().is_some() {
+            account::TOKEN_URL
+        } else if let Some(Done::Sent(url)) = &self.feedback_done {
+            url
+        } else {
+            return None;
+        };
+        let on_link = matches!(
+            self.rows(config).get(index),
+            Some(Row::Text(text)) if text == link
+        );
+        on_link.then(|| link.to_owned())
     }
 
     /// Whether the privacy warning is readable in full: the popup fits the
@@ -1901,10 +1971,12 @@ impl MenuState {
                 (None, false) => Cow::Borrowed(account::HINT_TOKEN_COPY),
             });
         }
-        if self.feedback_done.is_some() {
-            return Footer::Hint(match &self.copied {
-                Some(copied) => Cow::Owned(copied.clone()),
-                None => Cow::Borrowed(feedback::HINT_DONE),
+        if let Some(done) = &self.feedback_done {
+            return Footer::Hint(match (&self.copied, done, self.opener) {
+                (Some(copied), _, _) => Cow::Owned(copied.clone()),
+                (None, Done::Sent(_), true) => Cow::Borrowed(feedback::HINT_SENT),
+                (None, Done::Sent(_), false) => Cow::Borrowed(feedback::HINT_SENT_COPY),
+                (None, _, _) => Cow::Borrowed(feedback::HINT_DONE),
             });
         }
         if let Some(form) = &self.feedback {

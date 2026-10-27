@@ -220,6 +220,45 @@ fn a_click_in_the_feedback_form_does_nothing() {
     }
 }
 
+// Spec (open-links S2, S7): once the Feedback issue is sent, a click on its
+// link opens it; the other rows of that view do nothing.
+#[test]
+fn a_click_on_the_sent_issue_link_opens_it() {
+    const ISSUE: &str = "https://github.com/pichu2707/lazarobox-shell/issues/7";
+    let mut a = app().with_opener(true);
+    a.update(ctrl_space());
+    a.update(key('m'));
+    goto_row(&mut a, "Feedback");
+    a.update(special(KeyCode::Enter));
+    a.update(special(KeyCode::Tab));
+    a.update(AppEvent::Paste("Crash".to_owned()));
+    a.update(special(KeyCode::Tab));
+    a.update(AppEvent::Paste("It crashed".to_owned()));
+    let sent = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
+        matches!(sent.as_slice(), [Effect::SendIssue(_)]),
+        "{sent:?}"
+    );
+    a.update(AppEvent::IssueSent(
+        crate::core::menu::feedback::SendReply::Sent(ISSUE.to_owned()),
+    ));
+    let link = row_of(&a, |row| matches!(row, Row::Text(text) if text == ISSUE))
+        .expect("the link row is drawn");
+    for index in 0..link {
+        let at = cell_of(&a, index, 2);
+        assert_eq!(click(&mut a, at), vec![], "row {index}");
+    }
+    let at = cell_of(&a, link, 2);
+    assert_eq!(click(&mut a, at), vec![Effect::OpenUrl(ISSUE.to_owned())]);
+    assert_eq!(
+        a.menu().unwrap().footer(),
+        Footer::Hint("Opened in your browser".into())
+    );
+}
+
 // Spec (open-links S2): on the one-line fallback nothing is clickable.
 #[test]
 fn a_click_on_the_fallback_line_does_nothing() {

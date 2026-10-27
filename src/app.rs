@@ -218,6 +218,10 @@ pub enum AppEvent {
     DownloadEnd(End),
     /// What the runtime found for `Effect::HfAccount`.
     HfAccount(AccountReply),
+    /// What became of `Effect::SendIssue`.
+    IssueSent(crate::core::menu::feedback::SendReply),
+    /// The opener of `Effect::OpenUrl` failed on this link.
+    OpenFailed(String),
 }
 
 /// How the menu closed.
@@ -246,6 +250,10 @@ pub enum Effect {
     /// Open this link in the browser through the host's opener. Only emitted
     /// when the runtime said it has one (see [`App::with_opener`]).
     OpenUrl(String),
+    /// Send the Feedback issue with the user's `gh` (open-links S4), off
+    /// the loop; the runtime answers with one `AppEvent::IssueSent`. Only
+    /// emitted on the user's Ctrl+S, one at a time.
+    SendIssue(Box<crate::core::menu::feedback::Issue>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -1674,6 +1682,15 @@ impl App {
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
+            AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::IssueSent(reply) => match self.menu.as_mut() {
+                Some(menu) => {
+                    let command = menu.feedback_reply(reply);
+                    self.dirty = true;
+                    self.on_menu_command(command)
+                }
+                None => Vec::new(),
+            },
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1912,6 +1929,7 @@ impl App {
                 }
                 vec![Effect::OpenUrl(url)]
             }
+            MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
             MenuCommand::None => Vec::new(),
         }
     }
@@ -1934,6 +1952,25 @@ impl App {
             mode,
             sound: plays_sound(mode, sound),
         }]
+    }
+
+    /// The browser did not open `url`: the link is copied instead and the
+    /// footer says why; links are copied from now on.
+    fn on_open_failed(&mut self, url: &str) -> Vec<Effect> {
+        self.opener = false;
+        let Some(menu) = self.menu.as_mut() else {
+            self.notice = Some("The browser did not open".to_owned());
+            return Vec::new();
+        };
+        menu.open_failed();
+        self.dirty = true;
+        let effects = self.copy_from_menu(url);
+        if !effects.is_empty()
+            && let Some(menu) = self.menu.as_mut()
+        {
+            menu.set_copied("The browser did not open: link copied".to_owned());
+        }
+        effects
     }
 
     fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {

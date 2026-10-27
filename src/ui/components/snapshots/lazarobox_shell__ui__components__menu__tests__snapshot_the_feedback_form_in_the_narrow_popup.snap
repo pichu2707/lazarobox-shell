@@ -19,5 +19,5 @@ expression: shown
 │       WezTerm                                   │
 │       engines: ollama 0.12.3 available          │
 │                                                 │
-│ Tab next · Ctrl+S copy · Ctrl+O open · Esc back │
+│ Tab next · Ctrl+S send · Ctrl+O open · Esc back │
 └─────────────────────────────────────────────────┘

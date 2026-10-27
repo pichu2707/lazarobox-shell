@@ -14,7 +14,8 @@ baseline.
 
 - Ctrl+O opens the link of the Hugging Face token field, and the prefilled
   issue of the Feedback form, in the browser (`xdg-open`; on WSL `wslview`,
-  then `explorer.exe`; on macOS `open`). With no opener the link is copied.
+  then `explorer.exe`; on macOS `open`). With no opener the link is copied, and
+  when the opener fails the link is copied and the footer says so.
   With `Mouse` on, a left click on the token link line opens it too.
 
 - With `[ai.tools] write = true`, chats get four tools to change files in the
@@ -43,6 +44,13 @@ baseline.
 - On a cloud engine, `edit_file` asks like `read_file`, once per file per turn,
   because its answers reveal what a file contains.
 - Write is Linux only: elsewhere an approved batch writes nothing and says so.
+- Feedback: Ctrl+S now sends the issue with your own `gh`
+  (`gh issue create`, the body on stdin, no shell), shaped like the issue
+  forms and labelled `bug` or `idea`; the form shows `Sent:` and the issue's
+  link, which Ctrl+O or a click opens. A `gh` failure keeps the form and shows
+  its message. Without `gh`, or not logged in, Ctrl+S opens the prefilled page
+  instead. Ctrl+O still opens the prefilled page. lazarobox stores no GitHub
+  token.
 
 ## [0.26.0] - 2026-10-27
 

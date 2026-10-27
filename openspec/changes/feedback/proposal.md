@@ -18,12 +18,15 @@ In scope:
   - the lazarobox version, the OS and whether it is WSL;
   - the shell's name and the terminal (`TERM_PROGRAM`, or Windows Terminal through `WT_SESSION`);
   - the detected engines with their versions.
-- `Ctrl+S` builds the prefilled new-issue link (`issues/new?template=…&title=…&<field>=…&environment=…`) and copies it with OSC 52.
-  - lazarobox makes no network request.
-  - The title and the description are redacted first.
+- `Ctrl+S` sends the issue with the user's own `gh` (`gh issue create`), shaped like the issue form and labelled `bug` or `idea`.
+  - The app sends only on Ctrl+S, through `gh`; lazarobox stores no GitHub token and makes no other network request.
+  - Without `gh`, or with `gh` not logged in, it opens the prefilled page instead.
+- `Ctrl+O` builds the prefilled new-issue link (`issues/new?template=…&title=…&<field>=…&environment=…`) and opens it in the browser (or copies it with OSC 52 when the host has no opener).
+- The title and the description are redacted first.
 
 Out of scope:
-- Sending the issue through `gh` or the API.
+- Sending the issue through the GitHub API directly, or with a token lazarobox keeps.
+- Adding an idea to project 17 from the app.
 - Creating the project's «Goals» view and its auto-add workflow; the GitHub API cannot create them.
 
 ## Approach

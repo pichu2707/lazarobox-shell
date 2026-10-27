@@ -168,3 +168,35 @@ fn ctrl_o_in_the_token_field_opens_the_link_in_the_browser() {
         "{effects:?}"
     );
 }
+
+// Review finding (opener failure): an opener that fails is not reported as
+// opened: the link is copied, the footer says why, and the next Ctrl+O
+// copies at once.
+#[test]
+fn a_failed_open_copies_the_link_and_stops_opening() {
+    let ctrl_o = AppEvent::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let url = "https://huggingface.co/settings/tokens/new?tokenType=read";
+    let mut a = app().with_opener(true).with_hf_tokens(no_tokens);
+    a.update(ctrl_space());
+    a.update(key('m'));
+    goto_row(&mut a, "Hugging Face");
+    a.update(enter());
+    assert_eq!(
+        a.update(ctrl_o.clone()),
+        vec![Effect::OpenUrl(url.to_owned())]
+    );
+    let effects = a.update(AppEvent::OpenFailed(url.to_owned()));
+    assert!(
+        matches!(effects.as_slice(), [Effect::SetClipboard(_)]),
+        "{effects:?}"
+    );
+    assert_eq!(
+        a.menu().unwrap().footer(),
+        Footer::Hint("The browser did not open: link copied".into())
+    );
+    let effects = a.update(ctrl_o);
+    assert!(
+        matches!(effects.as_slice(), [Effect::SetClipboard(_)]),
+        "{effects:?}"
+    );
+}
