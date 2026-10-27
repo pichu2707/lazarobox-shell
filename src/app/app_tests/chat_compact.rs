@@ -48,6 +48,7 @@ fn app(memory: bool, summarize: Option<&str>) -> App {
             version: None,
             model_labels: Vec::new(),
             diagnostics: Default::default(),
+            binary: None,
         }],
         ..Default::default()
     }));

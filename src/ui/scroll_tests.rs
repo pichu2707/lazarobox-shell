@@ -104,6 +104,7 @@ fn chat_app() -> App {
         .with_ai(ollama());
     app.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".into()],

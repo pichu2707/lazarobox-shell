@@ -524,6 +524,13 @@ pub async fn detect_all(
 ) -> Detection {
     let lister = Lister { env, cache, force };
     let mut detection = detect_in(&ports.catalog(), &env.path, Some(lister)).await;
+    // `env.data` is `<data home>/lazarobox`.
+    detection.data_home = env
+        .data
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
     // The two do not wait on each other: the model scan is off the executor
     // and the `/props` probe is on the network.
     let (models, windows) = tokio::join!(
@@ -614,7 +621,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
     match target.kind {
         Kind::Server { port, path, .. } => Probe::Server {
             id: target.id,
-            on_path: found.is_some(),
+            binary: found,
             reply: http_get(port, path).await,
         },
         Kind::Cli => {
@@ -1969,6 +1976,7 @@ mod tests {
 
     fn state(id: &'static str, status: Status, models: &[&str], v: Option<&str>) -> EngineState {
         EngineState {
+            binary: None,
             id,
             status,
             models: models.iter().map(ToString::to_string).collect(),
@@ -2052,13 +2060,17 @@ mod tests {
         }
     }
 
-    fn expected(ollama: EngineState) -> Detection {
+    fn expected(ollama: EngineState, bin: &Path) -> Detection {
+        let found = |state: EngineState| EngineState {
+            binary: Some(bin.join(state.id)),
+            ..state
+        };
         Detection {
             engines: vec![
-                ollama,
+                found(ollama),
                 state("lmstudio", Status::Available, &["gemma-3-4b"], None),
                 state("llamacpp", Status::Available, &["m.gguf"], None),
-                state("vllm", Status::NotRunning, &[], None),
+                found(state("vllm", Status::NotRunning, &[], None)),
                 state("claude", Status::Available, &["default"], None),
                 state(
                     "codex",
@@ -2086,7 +2098,7 @@ mod tests {
         );
         assert_eq!(
             (detection, started.elapsed() < Duration::from_millis(2500)),
-            (expected(ollama), true)
+            (expected(ollama, f._dir.path()), true)
         );
         for (port, path, requests) in &f.servers {
             let get = format!(
@@ -2107,7 +2119,10 @@ mod tests {
         assert_eq!(
             (detection, started.elapsed() < Duration::from_millis(2500)),
             (
-                expected(state("ollama", Status::NotRunning, &[], None)),
+                expected(
+                    state("ollama", Status::NotRunning, &[], None),
+                    f._dir.path()
+                ),
                 true
             )
         );

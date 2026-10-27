@@ -10,6 +10,7 @@ pub(super) fn engine(
     version: Option<&str>,
 ) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| (*m).to_owned()).collect(),

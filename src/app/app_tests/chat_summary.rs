@@ -173,6 +173,7 @@ fn first_answer_streaming() -> App {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -710,6 +711,7 @@ fn the_reasoning_of_the_conversation_never_reaches_the_summary_request() {
 fn detected() -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],

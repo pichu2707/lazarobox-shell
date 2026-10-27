@@ -47,6 +47,7 @@ fn texts(menu: &MenuState) -> Vec<String> {
 
 fn engine(id: &'static str, status: Status, version: Option<&str>) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: Vec::new(),
@@ -371,6 +372,8 @@ fn the_attached_engines_are_the_detected_ones() {
             engine("gemini", Status::Available, Some("1.2\u{1b}[31m")),
         ],
         local_models: Vec::new(),
+        data_home: None,
+        vulkan_icd: false,
         ..Default::default()
     };
     assert_eq!(

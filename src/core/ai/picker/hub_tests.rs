@@ -10,6 +10,8 @@ fn llamacpp(status: Status, models: &[&str]) -> Detection {
     Detection {
         engines: vec![state("llamacpp", status, &[])],
         local_models: models.iter().map(PathBuf::from).collect(),
+        data_home: None,
+        vulkan_icd: false,
         ..Default::default()
     }
 }
@@ -58,9 +60,14 @@ fn the_row_is_shown_with_no_local_models_and_with_a_running_server() {
 }
 
 #[test]
-fn the_row_is_not_shown_without_llama_server_or_for_another_engine() {
+fn the_row_is_not_shown_for_another_engine() {
+    // Without llama-server it is still there, with a note (config-menu S1).
     let missing = rows(&llamacpp(Status::NotInstalled, &[]));
-    assert!(!missing.iter().any(|r| r.key == PickKey::HfDownload));
+    assert_eq!(
+        missing.last().map(|r| &r.mark),
+        Some(&Mark::Status(HF_NEEDS_SERVER.to_owned())),
+        "{missing:?}"
+    );
     let ollama = model_rows(
         "ollama",
         Target::Task(Task::Chat),

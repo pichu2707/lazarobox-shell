@@ -2,7 +2,7 @@
 //! `Detection`. No IO lives here: the runtime gathers `Probe`s, `reduce`
 //! classifies them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod catalog;
 pub mod chat;
@@ -10,6 +10,7 @@ pub mod config;
 pub mod gguf;
 pub mod hf;
 pub mod http;
+pub mod install;
 pub mod jail;
 pub mod memory;
 pub mod menu;
@@ -100,17 +101,46 @@ pub const CATALOG: &[Engine] = &[
 
 /// How to start the server engine `id` by hand so that it listens on
 /// `127.0.0.1:port`; `None` for an engine that is not a server. Shown, never
-/// run: lazarobox does not start servers. `<model…>` is for the user to fill.
-pub fn start_command(id: &str, port: u16) -> Option<String> {
+/// run: this text starts and installs nothing. The one program lazarobox
+/// installs, and only when asked, is `llama-server` (the guided wizard in
+/// `picker/install.rs`). `<model…>` is for the user to fill.
+/// `binary` is where the engine's binary was found: an owned `llama-server`
+/// (the guided install) is not on the user's PATH, so it is named by its
+/// absolute path; a system one is named bare.
+/// `data_home` is where an owned install lives; a binary outside it, or any
+/// path that is not plain UTF-8, is named bare.
+pub fn start_command(
+    id: &str,
+    port: u16,
+    binary: Option<&Path>,
+    data_home: Option<&Path>,
+) -> Option<String> {
     let command = match id {
         "ollama" if port == 11434 => "ollama serve".to_owned(),
         "ollama" => format!("OLLAMA_HOST=127.0.0.1:{port} ollama serve"),
         "lmstudio" => format!("lms server start --port {port}"),
-        "llamacpp" => format!("llama-server --port {port} -m <model.gguf>"),
+        "llamacpp" => {
+            let owned = binary
+                .filter(|b| data_home.is_some_and(|d| install::is_owned(b, d)))
+                .and_then(Path::to_str)
+                .filter(|text| !text.chars().any(char::is_control));
+            let program = owned.map_or_else(|| "llama-server".to_owned(), shell_quote);
+            format!("{program} --port {port} -m <model.gguf>")
+        }
         "vllm" => format!("vllm serve <model> --host 127.0.0.1 --port {port}"),
         _ => return None,
     };
     Some(command)
+}
+
+/// `text` as one shell word: bare when it is only plain path characters,
+/// else single-quoted.
+fn shell_quote(text: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+@:,=".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        return text.to_owned();
+    }
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// The loopback ports of the server engines: each catalog port, unless
@@ -199,6 +229,9 @@ pub struct EngineState {
     pub version: Option<String>,
     /// Why something about this engine is degraded, for the menu.
     pub diagnostics: Diagnostics,
+    /// The server engine's binary found on PATH (`None`: not found, or not a
+    /// server). Tells an owned `llama-server` from a system one.
+    pub binary: Option<PathBuf>,
 }
 
 /// Short, already sanitized reasons the menu shows next to a CLI engine.
@@ -218,6 +251,12 @@ pub struct Detection {
     /// The llama.cpp model files found on this machine, sorted by file name;
     /// looked for only when `llama-server` is installed.
     pub local_models: Vec<std::path::PathBuf>,
+    /// The data home an owned install lives under; `None` when it is not
+    /// known (nothing is owned then).
+    pub data_home: Option<std::path::PathBuf>,
+    /// Whether a Vulkan driver is registered on this machine: the install
+    /// plan offers the Vulkan build only then.
+    pub vulkan_icd: bool,
     /// The context window in tokens of the engines that report one (a
     /// running llama-server), by engine id.
     pub windows: Vec<(&'static str, usize)>,
@@ -237,7 +276,8 @@ impl Detection {
 pub enum Probe {
     Server {
         id: &'static str,
-        on_path: bool,
+        /// Where `llama-server`-style binary was found on PATH, if anywhere.
+        binary: Option<PathBuf>,
         reply: Option<(u16, Vec<u8>)>,
     },
     Cli {
@@ -263,8 +303,8 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                 Probe::Server { id, .. } | Probe::Cli { id, .. } => *id == engine.id,
             });
             match (probe, engine.kind) {
-                (Some(Probe::Server { on_path, reply, .. }), Kind::Server { owner, .. }) => {
-                    server_state(engine.id, owner, *on_path, reply.as_ref())
+                (Some(Probe::Server { binary, reply, .. }), Kind::Server { owner, .. }) => {
+                    server_state(engine.id, owner, binary.as_deref(), reply.as_ref())
                 }
                 (
                     Some(Probe::Cli {
@@ -332,13 +372,14 @@ fn bare(id: &'static str, status: Status) -> EngineState {
         version: None,
         model_labels: Vec::new(),
         diagnostics: Diagnostics::default(),
+        binary: None,
     }
 }
 
 fn server_state(
     id: &'static str,
     owner: Option<&str>,
-    on_path: bool,
+    binary: Option<&Path>,
     reply: Option<&(u16, Vec<u8>)>,
 ) -> EngineState {
     let models = reply
@@ -350,9 +391,13 @@ fn server_state(
     match models {
         Some(models) => EngineState {
             models,
+            binary: binary.map(Path::to_path_buf),
             ..bare(id, Status::Available)
         },
-        None if on_path => bare(id, Status::NotRunning),
+        None if binary.is_some() => EngineState {
+            binary: binary.map(Path::to_path_buf),
+            ..bare(id, Status::NotRunning)
+        },
         None => bare(id, Status::NotInstalled),
     }
 }
@@ -430,26 +475,26 @@ mod tests {
     #[test]
     fn each_server_has_a_loopback_start_command_on_its_port() {
         assert_eq!(
-            start_command("ollama", 11434).as_deref(),
+            start_command("ollama", 11434, None, None).as_deref(),
             Some("ollama serve")
         );
         assert_eq!(
-            start_command("ollama", 11500).as_deref(),
+            start_command("ollama", 11500, None, None).as_deref(),
             Some("OLLAMA_HOST=127.0.0.1:11500 ollama serve")
         );
         assert_eq!(
-            start_command("lmstudio", 1234).as_deref(),
+            start_command("lmstudio", 1234, None, None).as_deref(),
             Some("lms server start --port 1234")
         );
         assert_eq!(
-            start_command("llamacpp", 39080).as_deref(),
+            start_command("llamacpp", 39080, None, None).as_deref(),
             Some("llama-server --port 39080 -m <model.gguf>")
         );
         assert_eq!(
-            start_command("vllm", 8000).as_deref(),
+            start_command("vllm", 8000, None, None).as_deref(),
             Some("vllm serve <model> --host 127.0.0.1 --port 8000")
         );
-        assert_eq!(start_command("claude", 1), None);
+        assert_eq!(start_command("claude", 1, None, None), None);
     }
 
     #[test]
@@ -539,7 +584,7 @@ mod tests {
     fn server(id: &'static str, on_path: bool, reply: Option<(u16, &str)>) -> Probe {
         Probe::Server {
             id,
-            on_path,
+            binary: on_path.then(|| PathBuf::from(format!("/usr/bin/{id}"))),
             reply: reply.map(|(code, body)| (code, body.as_bytes().to_vec())),
         }
     }
@@ -551,6 +596,7 @@ mod tests {
         version: Option<&str>,
     ) -> Option<EngineState> {
         Some(EngineState {
+            binary: None,
             id,
             status,
             models: models.iter().map(|m| m.to_string()).collect(),
@@ -569,6 +615,117 @@ mod tests {
         get(&reduce(&[server(id, on_path, reply)]), id)
     }
 
+    fn found(id: &'static str, binary: Option<&str>, reply: Option<(u16, &str)>) -> EngineState {
+        let probe = Probe::Server {
+            id,
+            binary: binary.map(PathBuf::from),
+            reply: reply.map(|(code, body)| (code, body.as_bytes().to_vec())),
+        };
+        get(&reduce(&[probe]), id).expect("a catalog engine has a state")
+    }
+
+    /// `state` for a server whose binary `server(.., true, ..)` put on PATH.
+    fn state_on_path(
+        id: &'static str,
+        status: Status,
+        models: &[&str],
+        version: Option<&str>,
+    ) -> Option<EngineState> {
+        state(id, status, models, version).map(|s| EngineState {
+            binary: Some(PathBuf::from(format!("/usr/bin/{id}"))),
+            ..s
+        })
+    }
+
+    #[test]
+    fn the_found_binary_is_reported_whether_or_not_the_server_answers() {
+        let owned = "/home/u/.local/share/lazarobox/llama.cpp/current/llama-server";
+        let stopped = found("llamacpp", Some(owned), None);
+        assert_eq!(stopped.status, Status::NotRunning);
+        assert_eq!(stopped.binary.as_deref(), Some(Path::new(owned)));
+        let running = found("llamacpp", Some(owned), Some((200, LLAMA_OK)));
+        assert_eq!(running.status, Status::Available);
+        assert_eq!(running.binary.as_deref(), Some(Path::new(owned)));
+        let absent = found("llamacpp", None, None);
+        assert_eq!(absent.status, Status::NotInstalled);
+        assert_eq!(absent.binary, None);
+    }
+
+    #[test]
+    fn an_owned_binary_is_spawned_by_absolute_path_and_a_system_one_by_name() {
+        let owned = Path::new("/home/u/.local/share/lazarobox/llama.cpp/current/llama-server");
+        let data = Some(Path::new("/home/u/.local/share"));
+        assert_eq!(
+            start_command("llamacpp", 8080, Some(owned), data).as_deref(),
+            Some(format!("{} --port 8080 -m <model.gguf>", owned.display())).as_deref()
+        );
+        let system = Path::new("/usr/bin/llama-server");
+        assert_eq!(
+            start_command("llamacpp", 8080, Some(system), data).as_deref(),
+            Some("llama-server --port 8080 -m <model.gguf>")
+        );
+    }
+
+    #[test]
+    fn an_owned_path_with_odd_characters_is_quoted() {
+        let owned = Path::new("/home/o'neil/My Data/lazarobox/llama.cpp/current/llama-server");
+        let data = Some(Path::new("/home/o'neil/My Data"));
+        let command = start_command("llamacpp", 8080, Some(owned), data).unwrap();
+        assert!(
+            command.starts_with(
+                r#"'/home/o'\''neil/My Data/lazarobox/llama.cpp/current/llama-server' --port"#
+            ),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn spoofed_owned_paths_are_named_bare() {
+        let data = Some(Path::new("/home/u/.local/share"));
+        let bare = "llama-server --port 8080 -m <model.gguf>";
+        for spoof in [
+            "/opt/lazarobox/llama.cpp/bin/llama-server",
+            "/home/u/lazarobox/llama.cpp/x/../../../../usr/bin/llama-server",
+        ] {
+            let command = start_command("llamacpp", 8080, Some(Path::new(spoof)), data);
+            assert_eq!(command.as_deref(), Some(bare), "{spoof}");
+        }
+        // Without a known data home nothing can be owned.
+        let owned = Path::new("/home/u/.local/share/lazarobox/llama.cpp/current/llama-server");
+        let command = start_command("llamacpp", 8080, Some(owned), None);
+        assert_eq!(command.as_deref(), Some(bare));
+    }
+
+    #[test]
+    fn shell_metacharacters_in_an_owned_path_are_quoted() {
+        let data = Path::new("/h/$HOME `id`");
+        let owned = data.join("lazarobox/llama.cpp/current/llama-server");
+        let command = start_command("llamacpp", 8080, Some(&owned), Some(data)).unwrap();
+        assert!(
+            command.starts_with("'/h/$HOME `id`/lazarobox/llama.cpp/current/llama-server' --port"),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn an_owned_path_that_cannot_be_quoted_safely_is_named_bare() {
+        use std::os::unix::ffi::OsStrExt;
+        let bare = "llama-server --port 8080 -m <model.gguf>";
+        let tail = "/lazarobox/llama.cpp/current/llama-server";
+        for dir in ["/h/a\nb", "/h/a\tb", "/h/a\u{1b}[31mb", "/h/a\0b"] {
+            let data = Path::new(dir);
+            let owned = PathBuf::from(format!("{dir}{tail}"));
+            let command = start_command("llamacpp", 8080, Some(&owned), Some(data));
+            assert_eq!(command.as_deref(), Some(bare), "{dir:?}");
+        }
+        let mut raw = b"/h/\xff".to_vec();
+        raw.extend_from_slice(tail.as_bytes());
+        let owned = PathBuf::from(std::ffi::OsStr::from_bytes(&raw));
+        let data = Path::new(std::ffi::OsStr::from_bytes(b"/h/\xff"));
+        let command = start_command("llamacpp", 8080, Some(&owned), Some(data));
+        assert_eq!(command.as_deref(), Some(bare));
+    }
+
     #[test]
     fn server_matrix() {
         let ok = Some((200, OLLAMA_OK));
@@ -579,11 +736,11 @@ mod tests {
         );
         assert_eq!(
             one("ollama", true, ok),
-            state("ollama", Status::Available, &models, None)
+            state_on_path("ollama", Status::Available, &models, None)
         );
         assert_eq!(
             one("ollama", true, Some((200, "<html>"))),
-            state("ollama", Status::NotRunning, &[], None)
+            state_on_path("ollama", Status::NotRunning, &[], None)
         );
         assert_eq!(
             one("ollama", false, Some((200, "<html>"))),
@@ -595,7 +752,7 @@ mod tests {
     fn closed_port_follows_the_binary_rule() {
         assert_eq!(
             one("lmstudio", true, None),
-            state("lmstudio", Status::NotRunning, &[], None)
+            state_on_path("lmstudio", Status::NotRunning, &[], None)
         );
         assert_eq!(
             one("lmstudio", false, None),
@@ -608,7 +765,7 @@ mod tests {
         for code in [404, 503, 301] {
             assert_eq!(
                 one("ollama", true, Some((code, OLLAMA_OK))),
-                state("ollama", Status::NotRunning, &[], None)
+                state_on_path("ollama", Status::NotRunning, &[], None)
             );
         }
         let big = format!(
@@ -617,7 +774,7 @@ mod tests {
         );
         assert_eq!(
             one("ollama", true, Some((200, &big))),
-            state("ollama", Status::NotRunning, &[], None)
+            state_on_path("ollama", Status::NotRunning, &[], None)
         );
     }
 
@@ -628,10 +785,8 @@ mod tests {
             server("llamacpp", true, Some((200, foreign))),
             server("vllm", false, Some((200, LLAMA_OK))),
         ]);
-        assert_eq!(
-            get(&d, "llamacpp"),
-            state("llamacpp", Status::NotRunning, &[], None)
-        );
+        let stopped = get(&d, "llamacpp").map(|s| EngineState { binary: None, ..s });
+        assert_eq!(stopped, state("llamacpp", Status::NotRunning, &[], None));
         assert_eq!(
             get(&d, "vllm"),
             state("vllm", Status::NotInstalled, &[], None)
@@ -646,15 +801,17 @@ mod tests {
     fn lmstudio_valid_reply_is_available_with_exact_models() {
         let body = r#"{"object":"list","data":[{"id":"gemma-3-4b"},{"id":"qwen3"}]}"#;
         for on_path in [true, false] {
-            assert_eq!(
-                one("lmstudio", on_path, Some((200, body))),
-                state(
-                    "lmstudio",
-                    Status::Available,
-                    &["gemma-3-4b", "qwen3"],
-                    None
-                )
-            );
+            let expected = state(
+                "lmstudio",
+                Status::Available,
+                &["gemma-3-4b", "qwen3"],
+                None,
+            )
+            .map(|s| EngineState {
+                binary: on_path.then(|| PathBuf::from("/usr/bin/lmstudio")),
+                ..s
+            });
+            assert_eq!(one("lmstudio", on_path, Some((200, body))), expected);
         }
     }
 
@@ -662,14 +819,16 @@ mod tests {
     fn llamacpp_status_matrix() {
         let ok = Some((200, LLAMA_OK));
         for on_path in [true, false] {
-            assert_eq!(
-                one("llamacpp", on_path, ok),
-                state("llamacpp", Status::Available, &["m.gguf"], None)
-            );
+            let expected =
+                state("llamacpp", Status::Available, &["m.gguf"], None).map(|s| EngineState {
+                    binary: on_path.then(|| PathBuf::from("/usr/bin/llamacpp")),
+                    ..s
+                });
+            assert_eq!(one("llamacpp", on_path, ok), expected);
         }
         assert_eq!(
             one("llamacpp", true, Some((500, LLAMA_OK))),
-            state("llamacpp", Status::NotRunning, &[], None)
+            state_on_path("llamacpp", Status::NotRunning, &[], None)
         );
         assert_eq!(
             one("llamacpp", false, Some((500, LLAMA_OK))),
@@ -677,7 +836,7 @@ mod tests {
         );
         assert_eq!(
             one("llamacpp", true, None),
-            state("llamacpp", Status::NotRunning, &[], None)
+            state_on_path("llamacpp", Status::NotRunning, &[], None)
         );
     }
 
@@ -691,7 +850,7 @@ mod tests {
         ] {
             assert_eq!(
                 one("llamacpp", true, Some((200, body))),
-                state("llamacpp", Status::NotRunning, &[], None)
+                state_on_path("llamacpp", Status::NotRunning, &[], None)
             );
         }
         assert_eq!(
@@ -970,6 +1129,7 @@ mod tests {
     #[test]
     fn an_outdated_claude_row_says_an_update_is_needed() {
         let mk = |id, version: Option<&str>| EngineState {
+            binary: None,
             id,
             status: Status::Available,
             models: vec!["default".to_owned()],

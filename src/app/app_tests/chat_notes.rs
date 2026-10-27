@@ -88,6 +88,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
     }
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -787,6 +788,7 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],

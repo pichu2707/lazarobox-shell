@@ -1,0 +1,26 @@
+---
+source: src/ui/components/menu/tests/install.rs
+expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
+---
+┌ Menu ────────────────┐
+│ Settings │ AI        │
+│ Install llama-server │
+│ CPU build            │
+│ Vulkan build (GPU)   │
+│ I'll do it myself (c…│
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│ j/k move · Enter cho…│
+└──────────────────────┘

@@ -44,6 +44,7 @@ fn filled(opener: bool) -> App {
     let mut a = app().with_host(host()).with_opener(opener);
     a.engines = Some(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: Vec::new(),
@@ -52,6 +53,8 @@ fn filled(opener: bool) -> App {
             diagnostics: Diagnostics::default(),
         }],
         local_models: Vec::new(),
+        data_home: None,
+        vulkan_icd: false,
         ..Default::default()
     });
     a.update(ctrl_space());

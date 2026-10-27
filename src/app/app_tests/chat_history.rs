@@ -62,6 +62,7 @@ pub(super) fn ollama() -> AiConfig {
 pub(super) fn detection() -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
