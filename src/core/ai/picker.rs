@@ -1638,6 +1638,7 @@ mod tests {
         Detection {
             engines: vec![state("llamacpp", Status::NotRunning, &[])],
             local_models: models.iter().map(std::path::PathBuf::from).collect(),
+            ..Default::default()
         }
     }
 
@@ -1702,6 +1703,7 @@ mod tests {
         let d = Detection {
             engines: vec![state("llamacpp", Status::Available, &["/m/x.gguf"])],
             local_models: vec!["/m/a.gguf".into(), "/m/b.gguf".into()],
+            ..Default::default()
         };
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
@@ -1736,6 +1738,7 @@ mod tests {
         let d = Detection {
             engines: vec![state("llamacpp", Status::Available, &["served"])],
             local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
+            ..Default::default()
         };
         let rows = model_rows(
             "llamacpp",

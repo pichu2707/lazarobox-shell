@@ -10,6 +10,7 @@ fn llamacpp(status: Status, models: &[&str]) -> Detection {
     Detection {
         engines: vec![state("llamacpp", status, &[])],
         local_models: models.iter().map(PathBuf::from).collect(),
+        ..Default::default()
     }
 }
 

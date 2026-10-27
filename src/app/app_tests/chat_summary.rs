@@ -552,6 +552,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
         conversation: 7,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     }));
     approve_summary(&mut a, "alone");
     press(&mut a, "q");

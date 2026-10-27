@@ -371,6 +371,7 @@ fn the_attached_engines_are_the_detected_ones() {
             engine("gemini", Status::Available, Some("1.2\u{1b}[31m")),
         ],
         local_models: Vec::new(),
+        ..Default::default()
     };
     assert_eq!(
         feedback::engines(&detection),

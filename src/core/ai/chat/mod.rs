@@ -8,9 +8,11 @@ pub mod approval;
 #[cfg(test)]
 mod approval_batch_tests;
 pub mod approval_rows;
+pub mod budget;
 pub mod claude;
 pub mod cli;
 pub mod codex;
+pub mod compact;
 pub mod composer;
 pub mod copy;
 pub mod engine;
@@ -49,10 +51,7 @@ use crate::core::{
     layout::PaneId,
 };
 use composer::Composer;
-use engine::{
-    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
-    history_chars,
-};
+use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
 
@@ -248,6 +247,14 @@ pub(crate) fn sendable_indices(all: &[&Msg]) -> Vec<usize> {
         .collect()
 }
 
+/// The fill of a request's context and where the request went.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ContextFill {
+    fill: budget::Fill,
+    engine: String,
+    model: Option<String>,
+}
+
 /// The state of one chat pane.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatState {
@@ -274,6 +281,8 @@ pub struct ChatState {
     /// The text a summary request has collected so far; `Some` exactly while
     /// that request holds the stream slot.
     summarizing: Option<String>,
+    /// The rolling summary of the history that left the window (see `compact`).
+    compaction: compact::Compaction,
     /// The summary draft, while it is open over the conversation.
     draft: Option<summary::SummaryDraft>,
     /// The summary the user approved: sent once, with the session end.
@@ -295,6 +304,13 @@ pub struct ChatState {
     store: store::PaneStore,
     /// Messages to save, in order, until the app takes them.
     outbox: Vec<store::StoredMessage>,
+    /// The engine's context window in tokens, when the runtime knows it.
+    window: Option<usize>,
+    /// How full the context of the last request was, and the engine and model
+    /// it was sent to.
+    fill: Option<ContextFill>,
+    /// The turn about to be sent offers tools.
+    tools_offered: bool,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// `close_stream` already queued the answer in progress.
@@ -351,6 +367,7 @@ impl ChatState {
             memory: memory::ChatMemory::new(),
             editor: None,
             summarizing: None,
+            compaction: compact::Compaction::default(),
             draft: None,
             approved_summary: None,
             tag: None,
@@ -361,6 +378,9 @@ impl ChatState {
             profile: Profile::default(),
             store: store::PaneStore::new(),
             outbox: Vec::new(),
+            window: None,
+            fill: None,
+            tools_offered: false,
             request_engine: String::new(),
             closing: false,
             reprepare_prompt: false,
@@ -377,6 +397,27 @@ impl ChatState {
             batch_badge: None,
             orphan: None,
         }
+    }
+
+    /// The context window of the engine the next turns go to, in tokens.
+    pub fn set_window(&mut self, window: Option<usize>) {
+        self.window = window;
+    }
+
+    /// Whether the next turn offers tools, which reserves room for their
+    /// schemas in the budget.
+    pub fn set_tools_offered(&mut self, offered: bool) {
+        self.tools_offered = offered;
+    }
+
+    /// How full the context of the last request was, in percent, when it went
+    /// to `engine` and `model` (a fill of another engine means nothing now)
+    /// and its window was known; `None` otherwise, and before the first send.
+    pub fn context_percent(&self, engine: &str, model: Option<&str>) -> Option<u8> {
+        self.fill
+            .as_ref()
+            .filter(|f| f.engine == engine && f.model.as_deref() == model)
+            .map(|f| f.fill.percent())
     }
 
     /// What a model's `run_in_pane` does in this chat.
@@ -640,6 +681,11 @@ impl ChatState {
         self.started
     }
 
+    /// The engine of the request as sent; empty when idle.
+    pub fn stream_engine(&self) -> &str {
+        &self.request_engine
+    }
+
     /// The model of the request as sent; empty when idle or when the engine
     /// picked its own.
     pub fn stream_model(&self) -> &str {
@@ -777,17 +823,64 @@ impl ChatState {
                 content: all[i].text.clone(),
             })
             .collect();
-        // The memory block shares the history budget: its characters come off
-        // the cap, and the newest message is kept whole whatever is left.
-        // Only an adapter that carries it gets the block, and only then does it
-        // take budget.
-        let memory = adapters::carries_memory(engine)
+        // The memory block shares the history budget: its size comes off what
+        // the history may take, and the newest message is kept whole whatever
+        // is left. Only an adapter that carries it gets the block, and only
+        // then does it take budget.
+        let mut memory = adapters::carries_memory(engine)
             .then(|| self.memory.injected().map(|block| block.text.clone()))
             .flatten();
-        let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
-        let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
-        let oldest = sendable[history.len() - context.messages.len()];
-        self.place_marker(oldest, context.omitted);
+        let told = std::mem::take(&mut self.told);
+        let system = std::iter::once(system)
+            .chain(told.iter().map(String::as_str))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        // What left the window may ride along as a summary, counted against
+        // the budget like the memory block. Only when something is omitted.
+        let fit = |memory_text: &str| {
+            let room = budget::budget(
+                engine,
+                self.window,
+                &system,
+                memory_text,
+                self.tools_offered,
+            );
+            (room, compact::context_for(&history, room))
+        };
+        let (mut room, mut context) = fit(memory.as_deref().unwrap_or_default());
+        let mut summarized = false;
+        if context.omitted
+            && let Some(summary) = self.summary_block()
+        {
+            let joined = match memory.take() {
+                Some(block) => format!("{block}\n\n{summary}"),
+                None => summary,
+            };
+            (room, context) = fit(&joined);
+            memory = Some(joined);
+            summarized = true;
+        }
+        self.compaction.cancel();
+        self.compaction.sent(room);
+        let memory_text = memory.as_deref().unwrap_or_default();
+        self.fill = budget::fill(
+            self.window,
+            &system,
+            memory_text,
+            self.tools_offered,
+            &context.messages,
+        )
+        .map(|fill| ContextFill {
+            fill,
+            engine: engine.clone(),
+            model: model.clone(),
+        });
+        let start = history.len() - context.messages.len();
+        let oldest = sendable[start];
+        // A summary that covers what is out replaces the marker.
+        let covered = summarized && self.compaction.covers(start);
+        self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
@@ -797,13 +890,7 @@ impl ChatState {
         self.request_engine = engine.clone();
         self.generation += 1;
         self.scroll = Scroll::Follow;
-        let told = std::mem::take(&mut self.told);
         self.told_sent.clone_from(&told);
-        let system = std::iter::once(system)
-            .chain(told.iter().map(String::as_str))
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
@@ -904,6 +991,13 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Done(_) => {
+                // The answer now sits in the context the next turn carries.
+                let answer = self
+                    .answer_mut()
+                    .map_or(0, |a| budget::estimate_tokens(&a.text));
+                if let Some(f) = self.fill.as_mut() {
+                    f.fill.used += answer;
+                }
                 let line = (self.phase != Phase::Streaming).then(|| NO_ANSWER.to_owned());
                 self.finish(MsgStatus::Complete, line, now);
                 Follow::Nothing
@@ -1090,6 +1184,8 @@ impl ChatState {
 #[cfg(test)]
 mod anchor_tests;
 #[cfg(test)]
+mod compact_tests;
+#[cfg(test)]
 mod context_tests;
 #[cfg(test)]
 mod history_tests;
@@ -1113,3 +1209,5 @@ mod tag_editor_tests;
 mod tool_tests;
 #[cfg(test)]
 mod wait_tests;
+#[cfg(test)]
+mod window_tests;
