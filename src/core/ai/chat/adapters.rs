@@ -256,14 +256,12 @@ fn ollama_body(request: &ChatRequest) -> Vec<u8> {
     ollama_round_body(request, &[], false)
 }
 
-/// The request after `rounds` of tool calls. `tools` says whether to offer the
-/// registry (the loop passes `false` for the retry on a model that rejects
-/// tools). Each round adds the assistant message with its `tool_calls`, then
-/// one `role: "tool"` message per call carrying `tool_name`.
-pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+/// The messages every chat body starts with: the system text (when there is
+/// any), then the history. Shared by every OpenAI-shaped and Ollama body.
+fn base_messages(request: &ChatRequest) -> Vec<Value> {
     let system = system_text(request);
     let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
-    let mut messages: Vec<Value> = system
+    system
         .into_iter()
         .chain(request.messages.iter().map(|m| {
             let role = match m.role {
@@ -272,7 +270,32 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             };
             json!({"role": role, "content": m.content})
         }))
-        .collect();
+        .collect()
+}
+
+/// The registry as the `tools` array both wires send; empty when the request
+/// has no tools on or nothing to offer.
+fn offered_tools(request: &ChatRequest) -> Vec<Value> {
+    let external = match &request.tools {
+        Tools::On { external, .. } => external.external(),
+        Tools::Off => Vec::new(),
+    };
+    registry_with(&external, request.families)
+        .into_iter()
+        .map(|t| {
+            json!({"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.schema,
+            }})
+        })
+        .collect()
+}
+
+/// The request after `rounds` of tool calls. `tools` says whether to offer the
+/// registry (the loop passes `false` for the retry on a model that rejects
+/// tools). Each round adds the assistant message with its `tool_calls`, then
+/// one `role: "tool"` message per call carrying `tool_name`.
+pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+    let mut messages = base_messages(request);
     for round in rounds {
         let calls: Vec<Value> = round
             .exchanges
@@ -309,20 +332,9 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
         "stream": true,
     });
     if tools {
-        let external = match &request.tools {
-            Tools::On { external, .. } => external.external(),
-            Tools::Off => Vec::new(),
-        };
-        let offered: Vec<Value> = registry_with(&external, request.families)
-            .into_iter()
-            .map(|t| {
-                json!({"type": "function", "function": {
-                    "name": t.name, "description": t.description, "parameters": t.schema,
-                }})
-            })
-            .collect();
         // An empty list would read as "no tools" to some models and as an
         // error to others: with nothing to offer the key is left out.
+        let offered = offered_tools(request);
         if !offered.is_empty() {
             body["tools"] = Value::Array(offered);
         }
