@@ -609,3 +609,52 @@ async fn a_call_without_an_id_gets_one_synthesized_for_both_messages() {
     assert_eq!(messages[n - 2]["tool_calls"][0]["id"], "call_0_0");
     assert_eq!(messages[n - 1]["tool_call_id"], "call_0_0");
 }
+
+// One notice per pane ---------------------------------------------------------
+
+fn system_lines(state: &ChatState) -> usize {
+    state
+        .entries()
+        .iter()
+        .filter(|e| matches!(e, Entry::System(line) if line == NO_TOOLS_NOTICE))
+        .count()
+}
+
+/// Sends one turn on `state` and feeds it the events of the turn.
+async fn llamacpp_turn(lab: &mut Lab, state: &mut ChatState, text: &str) {
+    let ready = Availability::Ready {
+        engine: "llamacpp".into(),
+        model: Some("qwen2.5-7b-instruct".into()),
+    };
+    let SendOutcome::Sent { turn, mut request } = state.send(text, &ready, "") else {
+        panic!("send refused");
+    };
+    request.tools = Tools::On {
+        origin: Some(lab.home.clone()),
+        external: Default::default(),
+        mcp: None,
+    };
+    lab.chats.send(pane(1), turn, request);
+    for event in finish(&mut lab.rx).await {
+        state.apply(turn, event);
+    }
+}
+
+#[tokio::test]
+async fn the_notice_shows_once_per_pane_across_turns() {
+    // Every turn is refused once, then answered as text.
+    let steps = ["one", "two", "three"]
+        .into_iter()
+        .flat_map(|answer| [no_jinja(), sse_text(answer)])
+        .collect();
+    let fake = fake(steps).await;
+    let mut lab = lab(fake.port);
+    let mut first = ChatState::new(None);
+    llamacpp_turn(&mut lab, &mut first, "hello").await;
+    llamacpp_turn(&mut lab, &mut first, "again").await;
+    assert_eq!(system_lines(&first), 1, "one line in the pane");
+
+    let mut other = ChatState::new(None);
+    llamacpp_turn(&mut lab, &mut other, "hello").await;
+    assert_eq!(system_lines(&other), 1, "another pane shows its own");
+}
