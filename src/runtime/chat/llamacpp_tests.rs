@@ -294,7 +294,7 @@ async fn an_in_stream_error_never_matches() {
 
 // Routing ---------------------------------------------------------------------
 
-use super::ollama_tests::{finish, pane};
+use super::ollama_tests::{finish, next_call, pane, tool_calls};
 use crate::core::ai::jail::{JailOff, JailSupport};
 
 /// The request of `ask` for another engine.
@@ -336,7 +336,7 @@ async fn a_llamacpp_turn_with_tools_runs_the_loop_on_the_openai_wire() {
     lab.chats
         .send(pane(1), 1, ask_engine(&lab, "llamacpp", true));
     let events = finish(&mut lab.rx).await;
-    assert_eq!(super::ollama_tests::tool_calls(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "{events:?}");
     assert_eq!(events.last(), Some(&done()));
     assert_eq!(fake.paths(), ["/v1/chat/completions"; 2]);
     assert!(fake.bodies()[0]["tools"].is_array());
@@ -370,4 +370,175 @@ async fn lmstudio_and_vllm_stay_text_only_even_with_tools_on() {
         assert!(fake.bodies()[0].get("tools").is_none(), "{engine}");
         assert_eq!(fake.paths(), ["/v1/chat/completions"], "{engine}");
     }
+}
+
+// The loop on the OpenAI wire -------------------------------------------------
+
+use std::{sync::atomic::Ordering, time::Duration};
+
+use tokio::time::timeout;
+
+use crate::core::ai::{
+    chat::{
+        ChatState, Entry, SendOutcome,
+        approval::ApprovalAsk,
+        engine::{Availability, Decision, Role},
+    },
+    tools::registry::{Family, FamilySet},
+};
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_write_tool_waits_for_the_user_then_continues_with_the_answer() {
+    for (decision, expected) in [
+        (Decision::Sent, "typed into the user's pane"),
+        (
+            Decision::Denied("the user declined"),
+            "denied: the user declined",
+        ),
+    ] {
+        let fake = fake(vec![
+            sse_call(
+                "run_in_pane",
+                "{\"command\":\"cd ~/dev/curso-rust\"}",
+                Some("w1"),
+            ),
+            sse_text("done"),
+        ])
+        .await;
+        let mut lab = lab(fake.port);
+        lab.chats
+            .send(pane(1), 4, ask_engine(&lab, "llamacpp", true));
+        let (turn, id, approval) = next_call(&mut lab.rx).await;
+        assert_eq!(
+            approval,
+            Some(ApprovalAsk::Run {
+                command: "cd ~/dev/curso-rust".into()
+            })
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            fake.bodies().len(),
+            1,
+            "no follow-up while the user decides"
+        );
+        assert!(lab.chats.decide(pane(1), turn, id, decision));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(events.last(), Some(&done()));
+        let bodies = fake.bodies();
+        assert_eq!(bodies.len(), 2);
+        let tool = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(tool["tool_call_id"], "w1");
+        assert!(
+            tool["content"].as_str().unwrap().contains(expected),
+            "{tool}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_round_cap_is_8_and_24_with_a_coding_family() {
+    for (families, rounds) in [
+        (FamilySet::LEGACY, 8),
+        (FamilySet::LEGACY.with(Family::Search), 24),
+    ] {
+        let fake = fake(vec![sse_call(
+            "find_dir",
+            "{\"query\":\"curso\"}",
+            Some("c"),
+        )])
+        .await;
+        let mut lab = lab(fake.port);
+        let mut request = ask_engine(&lab, "llamacpp", true);
+        request.families = families;
+        lab.chats.send(pane(1), 1, request);
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), rounds);
+        assert_eq!(
+            tool_calls(&events),
+            rounds - 1,
+            "the last reply's calls do not run"
+        );
+        let n = events.len();
+        assert_eq!(
+            events[n - 2],
+            StreamEvent::Notice(ollama::CAP_NOTICE.into())
+        );
+        assert_eq!(events[n - 1], done());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn tool_messages_are_not_kept_for_the_next_llamacpp_turn() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("h1")),
+        sse_text("Found it"),
+        sse_text("again"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    let ready = Availability::Ready {
+        engine: "llamacpp".into(),
+        model: Some("qwen2.5-7b-instruct".into()),
+    };
+    let mut state = ChatState::new(None);
+    let SendOutcome::Sent { turn, mut request } = state.send("find the rust course", &ready, "")
+    else {
+        panic!("send refused");
+    };
+    request.tools = Tools::On {
+        origin: Some(lab.home.clone()),
+        external: Default::default(),
+        mcp: None,
+    };
+    lab.chats.send(pane(1), turn, request);
+    for event in finish(&mut lab.rx).await {
+        state.apply(turn, event);
+    }
+    let SendOutcome::Sent { request, .. } = state.send("and now?", &ready, "") else {
+        panic!("send refused");
+    };
+    let texts: Vec<_> = request
+        .messages
+        .iter()
+        .map(|m| (m.role, m.content.as_str()))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            (Role::User, "find the rust course"),
+            (Role::Assistant, "Found it"),
+            (Role::User, "and now?"),
+        ]
+    );
+    assert!(state.entries().iter().any(|e| matches!(e, Entry::Tool(_))));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancel_while_the_follow_up_waits_closes_the_socket_and_runs_nothing_more() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("k")),
+        Step::Hang,
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats
+        .send(pane(1), 1, ask_engine(&lab, "llamacpp", true));
+    timeout(Duration::from_secs(10), fake.hung.notified())
+        .await
+        .expect("the follow-up request arrived");
+    lab.chats.cancel(pane(1));
+    timeout(Duration::from_secs(10), fake.closed.notified())
+        .await
+        .expect("the socket closed");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(fake.connections.load(Ordering::SeqCst), 2);
 }
