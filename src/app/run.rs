@@ -541,7 +541,7 @@ fn display_word(word: &str) -> String {
     let plain = !word.is_empty()
         && !word
             .chars()
-            .any(|c| c.is_whitespace() || "'\"\\$`;|&<>()*?#~{}!".contains(c));
+            .any(|c| c.is_whitespace() || "'\"\\$`;|&<>()*?#~{}![]^".contains(c));
     if plain {
         word.to_owned()
     } else {

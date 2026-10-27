@@ -17,6 +17,8 @@ pub const MAX_COMMAND_ROWS: usize = 6;
 const NOTICE_ROOM: usize = 12;
 /// What the prompt says when it cannot show the whole text.
 pub const TOO_SMALL: &str = "pane too small to show it all: enlarge it or press n";
+/// What it says when the prompt is over the row cap: height does not help.
+pub const TOO_WIDE_TEXT: &str = "prompt too long for this pane: widen the pane or press n";
 /// The keys line while the prompt does not answer yet.
 pub const NOT_ARMED: &str = "…";
 /// How a tab is drawn.
@@ -56,7 +58,7 @@ fn command_rows(command: &str, width: usize) -> Vec<String> {
 }
 
 /// `text` cut to `width` display columns with an ellipsis.
-fn clip(text: &str, width: usize) -> String {
+pub fn clip(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_owned();
     }
@@ -117,19 +119,35 @@ fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec
 /// Everything the user would approve is shown, or the prompt says the pane is
 /// too small; text is never cut off silently.
 pub fn parts(prompt: &ApprovalPrompt, width: usize, height: usize) -> Vec<Part> {
-    full_rows(prompt, width, height).unwrap_or_else(|| match height {
-        0 => Vec::new(),
-        1 => vec![Part::Marker(TOO_SMALL.to_owned())],
-        _ => vec![
-            Part::Head(prompt.target.clone()),
-            Part::Marker(TOO_SMALL.to_owned()),
-        ],
+    full_rows(prompt, width, height).unwrap_or_else(|| {
+        // Over the cap because the text wraps, a taller pane does not help but
+        // a wider one does.
+        let wide = full_rows(prompt, WIDE, ROW_CAP).is_some();
+        let marker = if wide && full_rows(prompt, width, ROW_CAP).is_none() {
+            TOO_WIDE_TEXT
+        } else {
+            TOO_SMALL
+        };
+        match height {
+            0 => Vec::new(),
+            1 => vec![Part::Marker(marker.to_owned())],
+            _ => vec![
+                Part::Head(prompt.target.clone()),
+                Part::Marker(marker.to_owned()),
+            ],
+        }
     })
 }
 
+/// The most rows `wanted` plans for.
+const ROW_CAP: usize = MAX_COMMAND_ROWS + 3 + NOTICE_ROOM;
+
+/// A width at which text that only wraps too much would fit the cap.
+const WIDE: usize = 1000;
+
 /// The rows the whole prompt wants at `width`.
 pub fn wanted(prompt: &ApprovalPrompt, width: usize) -> usize {
-    full_rows(prompt, width, MAX_COMMAND_ROWS + 3 + NOTICE_ROOM).map_or(2, |rows| rows.len())
+    full_rows(prompt, width, ROW_CAP).map_or(2, |rows| rows.len())
 }
 
 /// Whether the prompt shows all of its text in a chat pane `width` x
@@ -427,6 +445,25 @@ mod tests {
         let six = (1..=6).map(|n| format!("echo {n}")).collect::<Vec<_>>();
         let rows = parts(&explained(&six.join("\n")), 40, MAX_COMMAND_ROWS + 2);
         assert!(!rows.iter().any(|r| matches!(r, Part::Why(_))), "{rows:?}");
+    }
+
+    // Past the row cap more height does not help: the marker says to widen.
+    #[test]
+    fn a_prompt_over_the_row_cap_says_to_widen_the_pane() {
+        let text = |rows: &[Part]| {
+            rows.iter()
+                .find_map(|r| match r {
+                    Part::Marker(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let long = noticed("ls", &"word ".repeat(400));
+        let rows = parts(&long, 20, 40);
+        assert!(text(&rows).contains("widen"), "{rows:?}");
+        assert!(!fits(&long, 20, 40));
+        let small = parts(&read(&"a".repeat(100)), 20, 4);
+        assert_eq!(text(&small), TOO_SMALL);
     }
 
     #[test]
