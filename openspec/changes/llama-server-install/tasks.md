@@ -74,9 +74,9 @@ Chain strategy: stacked-to-main
 
 ## PR6: Plumbing and rendering (needs PR3, PR4, PR5)
 
-- [ ] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
-- [ ] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
-- [ ] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
+- [x] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
+- [x] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
+- [x] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
 - [ ] 6.4 [manual] Real download, Linux x64 Vulkan, clean host (spec "Clean host end to end"). macOS arm64/x64 unverified (D12).
 
 ## PR7: Manage rows and docs (needs PR6)

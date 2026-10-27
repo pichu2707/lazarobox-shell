@@ -250,3 +250,19 @@ wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. En
 - Cancel: `Downloading{cancelling:true}` ("cancelling…", HINT_CANCELLING) until the reply
   arrives, then Plan; `asking()` keeps reporting the download; `asks_cancel()` false while cancelling.
 - OfferHf `y` with a running HF download is ignored in `Picker::install_step` (Step::Hub).
+
+## PR6: Plumbing and rendering (tasks 6.1-6.3 done; 6.4 manual pending)
+
+- `MenuCommand::Install(InstallAsk)` -> `Effect::Install` -> runtime `Installer`
+  (`src/runtime/llama_install/installer.rs`) -> `AppEvent::{InstallReply(id, ..), InstallProgress,
+  InstallWarning}` on the Hub's channel. `App::on_install_reply` forces a re-detection on
+  `Installed` (also with the menu closed). Attestation warnings become the notice.
+- `App::frame_drawn` calls `MenuState::install_arm` (the armed-confirm contract of PR5).
+- One download/install at a time: atomic `Slot`, second step replies `BUSY`; the cross-process
+  `activate::LOCKED` surfaces through `activate::install` as a wizard failure. A cancel still
+  replies for the original Download id (`Err("cancelled")`).
+- Vulkan ICD probe `has_vulkan_icd()` lives in the installer module (no consumer until PR7).
+- Test-only opener: `MenuState::open_install_for_test` (cfg(test)); PR7 adds the real entry row.
+- Footer uses `Wizard::hint()` (covers `asks_cancel` / `HINT_CANCELLING`); "Copied" cue wins on the plan.
+- Snapshots: `src/ui/components/menu/tests/install.rs` incl. MIN_WIDTH (copy/labels clip with an ellipsis at 24 cols).
+- PR4 review API change (async `remove`, "already installed" refusal) needs no change here: PR6 never calls `remove`; the refusal arrives as `Err` and shows as a wizard failure.
