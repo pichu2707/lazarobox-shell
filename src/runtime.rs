@@ -29,6 +29,7 @@ pub mod chat_store;
 mod config_write;
 pub mod desktop;
 pub mod engram;
+pub mod feedback;
 pub mod gguf;
 pub mod hf;
 pub mod jail;
