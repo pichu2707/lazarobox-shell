@@ -3,13 +3,24 @@
 //! first one found.
 
 /// The programs that open a URL in the default browser, best first. WSL
-/// prefers `wslview` (wslu), then the Windows `explorer.exe` through the
+/// prefers `wslview` (wslu), then the Windows `rundll32.exe` through the
 /// interop, then a Linux `xdg-open`; macOS has `open`.
 pub fn candidates(os: &str, wsl: bool) -> &'static [&'static str] {
     match (os, wsl) {
         ("macos", _) => &["open"],
-        (_, true) => &["wslview", "explorer.exe", "xdg-open"],
+        (_, true) => &["wslview", "rundll32.exe", "xdg-open"],
         _ => &["xdg-open"],
+    }
+}
+
+/// The arguments `program` takes before the link: `rundll32.exe` opens it
+/// through `url.dll`, which hands it to the default browser. (`explorer.exe`
+/// opens some links, such as the Hugging Face token page, in the file
+/// manager instead.)
+pub fn leading_args(program: &str) -> &'static [&'static str] {
+    match program {
+        "rundll32.exe" => &["url.dll,FileProtocolHandler"],
+        _ => &[],
     }
 }
 
@@ -31,9 +42,23 @@ mod tests {
         assert_eq!(candidates("linux", false), ["xdg-open"]);
         assert_eq!(
             candidates("linux", true),
-            ["wslview", "explorer.exe", "xdg-open"]
+            ["wslview", "rundll32.exe", "xdg-open"]
         );
         assert_eq!(candidates("macos", false), ["open"]);
+    }
+
+    // Bug (WSL): `explorer.exe` opens some links, such as the Hugging Face
+    // token page, in the file manager; `rundll32.exe` hands them to the
+    // default browser through `url.dll`.
+    #[test]
+    fn rundll32_gets_the_url_handler_before_the_link() {
+        assert_eq!(
+            leading_args("rundll32.exe"),
+            ["url.dll,FileProtocolHandler"]
+        );
+        for program in ["wslview", "xdg-open", "open"] {
+            assert!(leading_args(program).is_empty(), "{program}");
+        }
     }
 
     #[test]
