@@ -332,3 +332,137 @@ impl ChatState {
         self.compaction.set_for_test(text);
     }
 }
+
+// another conversation (F2) -------------------------------------------------
+
+fn resume(state: &mut ChatState) {
+    state.resume_into(
+        7,
+        crate::core::ai::config::Profile::Analyst,
+        super::tags::Tags::default(),
+        Vec::new(),
+    );
+}
+
+#[test]
+fn resuming_another_conversation_drops_the_summary_of_the_old_one() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    finish(&mut state, turn, "- secret of conversation A");
+    assert!(state.summary_block().is_some());
+    resume(&mut state);
+    assert_eq!(state.summary_block(), None);
+    let request = exchange(&mut state, 100);
+    assert_eq!(request.memory, None);
+}
+
+#[test]
+fn a_late_run_of_the_old_conversation_is_dropped_after_a_resume() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    resume(&mut state);
+    assert!(!state.is_compaction_turn(turn));
+    let before = state.entries().len();
+    state.apply(turn, StreamEvent::Delta("- from A".into()));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    assert_eq!(state.summary_block(), None);
+    assert_eq!(state.entries().len(), before);
+}
+
+// the input is redacted (F3) --------------------------------------------------
+
+#[test]
+fn a_secret_in_the_history_never_reaches_the_summarizer() {
+    let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let mut state = chat();
+    for _ in 0..10 {
+        let SendOutcome::Sent { turn, .. } = state.send(
+            &format!("my key is {secret} {}", "x".repeat(1_000)),
+            &ready(),
+            SYSTEM,
+        ) else {
+            panic!("refused");
+        };
+        state.apply(turn, StreamEvent::Delta("a".repeat(1_000)));
+        state.apply(turn, StreamEvent::Done(Finish::Stop));
+    }
+    let (_, request) = begun(&mut state);
+    assert!(!request.messages[0].content.contains(secret));
+    assert!(request.messages[0].content.contains("User: my key is"));
+}
+
+// the overflow keeps the newest part (F6) -------------------------------------
+
+#[test]
+fn an_overlong_summary_keeps_its_newest_lines() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    let text: String = (0..400)
+        .map(|i| format!("- fact number {i:04}\n"))
+        .collect();
+    assert!(text.chars().count() > ROLLING_CAP);
+    finish(&mut state, turn, &text);
+    let block = state.summary_block().unwrap();
+    assert!(block.contains("fact number 0399"), "the newest stays");
+    assert!(!block.contains("fact number 0000"), "the oldest goes");
+    let data = block
+        .lines()
+        .filter(|l| l.starts_with("- "))
+        .collect::<Vec<_>>();
+    assert!(data[0].ends_with(|c: char| c.is_ascii_digit()), "{data:?}");
+    assert!(
+        data[0].starts_with("- fact number"),
+        "no half line at the head"
+    );
+}
+
+#[test]
+fn newest_cuts_at_a_line_boundary() {
+    assert_eq!(newest("abc", 10), "abc");
+    assert_eq!(newest("aaaa\nbbbb\ncccc", 9), "bbbb\ncccc");
+    assert_eq!(newest("aaaa\nbbbb\ncccc", 8), "cccc");
+    assert_eq!(newest("abcdefghij", 4), "ghij");
+}
+
+#[test]
+fn the_summary_does_not_replace_the_marker_when_it_does_not_cover_what_left() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    finish(&mut state, turn, "- kept fact");
+    // Many sends later the window has moved well past what the summary holds.
+    for _ in 0..MIN_TURNS - 1 {
+        exchange(&mut state, 1_000);
+    }
+    let request = exchange(&mut state, 1_000);
+    assert!(request.memory.is_some());
+    assert_eq!(marker_count(&state), 1, "the gap is still announced");
+}
+
+#[test]
+fn coverage_is_by_transcript_position_not_by_filtered_position() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    finish(&mut state, turn, "- kept fact");
+    // Pretend the summary ends before the oldest message the window keeps.
+    state.compaction_for_test("- kept fact".into());
+    state.compaction.set_folded_for_test(0);
+    let request = exchange(&mut state, 1_000);
+    assert!(request.memory.is_some());
+    assert_eq!(marker_count(&state), 1);
+}
+
+// a late summary after a turn change, no send in between (F7) -----------------
+
+#[test]
+fn a_summary_for_a_turn_that_changed_without_a_send_is_not_a_compaction_turn() {
+    let mut state = overflowing(10);
+    let (turn, _) = begun(&mut state);
+    assert!(state.is_compaction_turn(turn));
+    // A turn change that is not a send (a resume of another conversation, or
+    // the runaway-answer cut): the run is not the current turn any more.
+    state.turn += 1;
+    assert!(!state.is_compaction_turn(turn));
+    state.apply(turn, StreamEvent::Delta("- late".into()));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    assert_eq!(state.summary_block(), None);
+}

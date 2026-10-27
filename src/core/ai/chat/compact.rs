@@ -49,9 +49,25 @@ pub fn summarized_line(count: usize) -> String {
     format!("{count} messages summarized")
 }
 
+/// The newest `cap` characters of `text`: an overflow loses the oldest part,
+/// cut at a line boundary so no half line is left at the head.
+pub fn newest(text: &str, cap: usize) -> String {
+    let total = text.chars().count();
+    if total <= cap {
+        return text.to_owned();
+    }
+    let skipped = total - cap;
+    let tail: String = text.chars().skip(skipped).collect();
+    let on_boundary = text.chars().nth(skipped - 1) == Some('\n');
+    match tail.find('\n') {
+        Some(at) if !on_boundary => tail[at + 1..].to_owned(),
+        _ => tail,
+    }
+}
+
 /// The block that carries `summary` into the prompt.
 pub fn block(summary: &str) -> Option<String> {
-    let kept: String = summary.chars().take(ROLLING_CAP).collect();
+    let kept = newest(summary, ROLLING_CAP);
     let data = neutralize(clean(&redact(&kept).text));
     let data = data.trim();
     if data.is_empty() {
@@ -74,6 +90,8 @@ pub(super) fn context_for(history: &[ChatMessage], budget: Budget) -> Context {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Compaction {
     summary: Option<String>,
+    /// Where the summary ends: the index, in the whole transcript (not in
+    /// the filtered history), of the first message it does not cover.
     folded: usize,
     turns: usize,
     room: Option<Budget>,
@@ -84,7 +102,10 @@ pub struct Compaction {
 struct Run {
     turn: u64,
     text: String,
+    /// The transcript index of the first message this run leaves uncovered.
     upto: usize,
+    /// How many messages it folds.
+    count: usize,
 }
 
 impl Compaction {
@@ -94,9 +115,19 @@ impl Compaction {
         self.turns += 1;
     }
 
-    /// The summary covers the first `folded` messages of the history.
-    pub(super) fn covers(&self, start: usize) -> bool {
-        self.summary.is_some() && self.folded >= start
+    /// The summary covers every message before the transcript index `oldest`.
+    pub(super) fn covers(&self, oldest: usize) -> bool {
+        self.summary.is_some() && self.folded >= oldest
+    }
+
+    /// Whether a run is in flight.
+    pub(super) fn running(&self) -> bool {
+        self.run.is_some()
+    }
+
+    /// A different conversation: nothing of the old one may reach it.
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
     }
 
     /// A newer turn supersedes the run in flight.
@@ -116,16 +147,19 @@ impl ChatState {
         turn == self.turn && self.compaction.run.as_ref().is_some_and(|r| r.turn == turn)
     }
 
-    /// The messages a request may carry, as a send filters them.
-    fn sendable_history(&self) -> Vec<ChatMessage> {
+    /// The messages a request may carry, as a send filters them, with the
+    /// transcript index of each and the transcript length.
+    fn sendable_history(&self) -> (Vec<usize>, Vec<ChatMessage>, usize) {
         let all: Vec<&super::Msg> = self.messages().collect();
-        sendable_indices(&all)
-            .into_iter()
-            .map(|i| ChatMessage {
+        let indices = sendable_indices(&all);
+        let history = indices
+            .iter()
+            .map(|&i| ChatMessage {
                 role: all[i].role,
                 content: all[i].text.clone(),
             })
-            .collect()
+            .collect();
+        (indices, history, all.len())
     }
 
     /// Starts a compaction run when enough history has left the window: the
@@ -145,7 +179,7 @@ impl ChatState {
         {
             return None;
         }
-        let history = self.sendable_history();
+        let (indices, history, whole) = self.sendable_history();
         let context = context_for(&history, self.compaction.room?);
         if !context.omitted {
             return None;
@@ -153,7 +187,10 @@ impl ChatState {
         let start = history.len() - context.messages.len();
         // The next exchange pushes a couple more messages out: fold them too.
         let target = (start + LEAD).min(history.len().saturating_sub(LEAD));
-        let folded = self.compaction.folded;
+        let from = indices
+            .iter()
+            .position(|&i| i >= self.compaction.folded)
+            .unwrap_or(indices.len());
         let previous = self.compaction.summary.clone().unwrap_or_default();
         let room = history_chars(engine)
             .min(INPUT_CAP)
@@ -161,8 +198,13 @@ impl ChatState {
         let mut chars = 0;
         let mut taken = 0;
         let mut transcript = String::new();
-        for message in history.get(folded..target).unwrap_or_default() {
-            let text: String = clean(&message.content).chars().take(MESSAGE_CAP).collect();
+        for message in history.get(from..target).unwrap_or_default() {
+            // Redacted before the cap, so a secret is not split by it.
+            let text: String = redact(&clean(&message.content))
+                .text
+                .chars()
+                .take(MESSAGE_CAP)
+                .collect();
             let size = text.chars().count();
             if chars + size > room {
                 break;
@@ -194,7 +236,8 @@ impl ChatState {
         self.compaction.run = Some(Run {
             turn: self.turn,
             text: String::new(),
-            upto: folded + taken,
+            upto: indices.get(from + taken).copied().unwrap_or(whole),
+            count: taken,
         });
         Some((
             self.turn,
@@ -247,15 +290,14 @@ impl ChatState {
         let Some(run) = self.compaction.run.take() else {
             return;
         };
-        let cut: String = clean(&run.text).chars().take(ROLLING_CAP).collect();
+        let cut = newest(&clean(&run.text), ROLLING_CAP);
         let text = redact(&cut).text;
         if text.trim().is_empty() {
             return;
         }
-        let count = run.upto.saturating_sub(self.compaction.folded);
         self.compaction.summary = Some(text.trim().to_owned());
         self.compaction.folded = run.upto;
-        self.entries.push(Entry::System(summarized_line(count)));
+        self.entries.push(Entry::System(summarized_line(run.count)));
         self.generation += 1;
     }
 }
@@ -265,5 +307,9 @@ impl Compaction {
     pub(super) fn set_for_test(&mut self, text: String) {
         self.summary = Some(text);
         self.folded = 1;
+    }
+
+    pub(super) fn set_folded_for_test(&mut self, folded: usize) {
+        self.folded = folded;
     }
 }
