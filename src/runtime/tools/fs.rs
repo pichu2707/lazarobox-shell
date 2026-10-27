@@ -243,7 +243,19 @@ fn read_file(
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
-    let file = std::fs::File::from(open_checked(roots, &real, false)?);
+    read_real(roots, &real, limits)
+}
+
+/// Reads the file at `real`, a path already resolved and judged with
+/// `roots`: opened with no link followed, proven to be that path and judged
+/// again ([`open_checked`]). A worker read inside its run's scope comes here
+/// with the path the scope returned, so the request is never resolved again.
+pub(crate) fn read_real(
+    roots: &SecretRoots,
+    real: &Path,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    let file = std::fs::File::from(open_checked(roots, real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
     if !meta.is_file() {

@@ -11,6 +11,7 @@ pub mod orchestra;
 pub mod pending;
 
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -18,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use crate::core::ai::tools::{Call, label};
+use crate::core::ai::tools::{Call, label, paths::SecretRoots};
 pub use approver::Waits;
 pub use fs::{Failure, Limits, ToolEnv};
 pub use host::{Approver, ToolHost, TurnScope, Unwired};
@@ -68,10 +69,59 @@ const GRACE: Duration = if cfg!(test) {
 /// already blocked (a hung open on a dead mount) cannot be interrupted and may
 /// still pin one blocking thread until the kernel returns.
 pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Failure> {
+    off_loop(limits, move |limits, cancel| {
+        fs::execute_with(&call, &env, limits, cancel)
+    })
+    .await
+}
+
+/// Reads exactly `real`, a worker read its run's scope allowed (D6), under
+/// the `roots` it was judged with: never the request resolved again. The
+/// opened file must be `real` and pass the roots once more, and `real` is
+/// under a scope root, so the file read is under it too. Bounded and wrapped
+/// as [`run`] is.
+pub async fn read_in_scope(
+    roots: SecretRoots,
+    real: PathBuf,
+    limits: Limits,
+) -> Result<String, Failure> {
+    off_loop(limits, move |limits, _| {
+        fs::read_real(&roots, &real, limits)
+    })
+    .await
+}
+
+/// The scope check of a worker read (D6), on the blocking pool: the real
+/// path the run's scope allows for `input`, with the secret roots that judged
+/// it, built for this one call so the read is opened under the same
+/// snapshot. `None` asks: outside the scope, a denied or ended one, roots
+/// that cannot be built, or a check that does not end within `limits.time`.
+pub async fn in_scope(
+    worker: &WorkerScope,
+    env: ToolEnv,
+    input: &str,
+    limits: &Limits,
+) -> Option<(SecretRoots, PathBuf)> {
+    let (handle, run, input) = (worker.handle.clone(), worker.run, input.to_owned());
+    let check = tokio::task::spawn_blocking(move || {
+        let roots = fs::load_roots(&env).ok()?;
+        let real = handle.allows(run, &roots, &env.origin, &input)?;
+        Some((roots, real))
+    });
+    tokio::time::timeout(limits.time, check).await.ok()?.ok()?
+}
+
+/// Runs `work` on the blocking pool, bounded by `limits.time` plus a short
+/// grace and cancelled when the caller goes away, and wraps its text as
+/// untrusted data under a fresh nonce.
+async fn off_loop<F>(limits: Limits, work: F) -> Result<String, Failure>
+where
+    F: FnOnce(&Limits, &AtomicBool) -> Result<String, Failure> + Send + 'static,
+{
     let cancel = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancel.clone());
     let bound = limits.time + GRACE;
-    let work = tokio::task::spawn_blocking(move || fs::execute_with(&call, &env, &limits, &cancel));
+    let work = tokio::task::spawn_blocking(move || work(&limits, &cancel));
     let text = tokio::time::timeout(bound, work)
         .await
         .map_err(|_| Failure::TimedOut)?

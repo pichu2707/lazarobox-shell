@@ -440,6 +440,15 @@ impl App {
                 armed,
                 why: None,
             }),
+            // A worker's read outside its scope: the label names the worker,
+            // its kind and `engine>model`, already sanitized.
+            ApprovalAsk::WorkerRead { path, label } => Some(ApprovalPrompt {
+                target: format!("worker {label}: send a file's text to the engine"),
+                command: format!("read {path}"),
+                keys: READ_KEYS,
+                armed,
+                why: None,
+            }),
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {

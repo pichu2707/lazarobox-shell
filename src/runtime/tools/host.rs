@@ -14,7 +14,8 @@
 //! the pure [`ask_for`] decides, from the call and the engine's locality.
 //! A call the turn does not offer (its role's toolset, D7) is refused first,
 //! as an unknown tool, and an orchestration call goes to the turn's run
-//! manager (D3).
+//! manager (D3). A worker's read runs unasked inside its run's read scope and
+//! asks with the worker's label outside it, on every engine (D6).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -170,6 +171,16 @@ impl ToolHost {
             limits,
             next: AtomicU64::new(1),
         })
+    }
+
+    /// What a read tool of a turn with this `origin` runs with.
+    fn env(&self, origin: &Path) -> ToolEnv {
+        ToolEnv {
+            home: self.home.clone(),
+            xdg_config_home: self.xdg_config_home.clone(),
+            xdg_data_home: self.xdg_data_home.clone(),
+            origin: origin.to_path_buf(),
+        }
     }
 
     /// The dispatch of one turn.
@@ -329,26 +340,47 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         other => Ok(other.clone()),
     };
     let mut ask = None;
+    // A worker read inside its run's scope: the real path to open and the
+    // secret roots that judged it.
+    let mut scoped = None;
     if let Ok(valid) = &checked {
-        match (valid, scope.locality) {
-            // A cloud read asks with the path as it will be opened: resolved,
-            // and only when the display shows it unchanged.
-            (Call::ReadFile { path, lines }, Locality::Cloud) => {
-                let home = host.home.as_deref().map(Path::new);
-                match home.and_then(|home| display_target(home, &scope.origin, path)) {
-                    Some(shown) => {
-                        ask = ask_for(
-                            &Call::ReadFile {
+        let home = host.home.as_deref().map(Path::new);
+        let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
+        match (valid, scope.locality, &scope.read_scope) {
+            // A worker read runs unasked inside its run's scope (D6). Outside
+            // it, or when the scope grants nothing, it asks with the worker's
+            // label on every engine, local ones too: never allowed and never
+            // refused in silence.
+            (Call::ReadFile { path, .. }, _, Some(worker)) => {
+                let env = host.env(&scope.origin);
+                scoped = super::in_scope(worker, env, path, &host.limits).await;
+                if scoped.is_none() {
+                    match shown(path) {
+                        Some(shown) => {
+                            ask = Some(ApprovalAsk::WorkerRead {
                                 path: shown,
-                                lines: *lines,
-                            },
-                            Locality::Cloud,
-                        )
+                                label: worker.label.clone(),
+                            })
+                        }
+                        None => checked = Err(UNSHOWABLE),
                     }
-                    None => checked = Err(UNSHOWABLE),
                 }
             }
-            (valid, locality) => ask = ask_for(valid, locality),
+            // A cloud read asks with the path as it will be opened: resolved,
+            // and only when the display shows it unchanged.
+            (Call::ReadFile { path, lines }, Locality::Cloud, None) => match shown(path) {
+                Some(shown) => {
+                    ask = ask_for(
+                        &Call::ReadFile {
+                            path: shown,
+                            lines: *lines,
+                        },
+                        Locality::Cloud,
+                    )
+                }
+                None => checked = Err(UNSHOWABLE),
+            },
+            (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
     // Asked before the announcement: `Approver::ask` registers the wait at
@@ -459,13 +491,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                 },
                 (Decision::Sent | Decision::Typed(_), call) => {
-                    let env = ToolEnv {
-                        home: host.home.clone(),
-                        xdg_config_home: host.xdg_config_home.clone(),
-                        xdg_data_home: host.xdg_data_home.clone(),
-                        origin: scope.origin.clone(),
+                    let limits = host.limits.clone();
+                    let done = match scoped {
+                        // Exactly what the scope allowed: resolving the
+                        // request again would reopen the race it closed.
+                        Some((roots, real)) => super::read_in_scope(roots, real, limits).await,
+                        None => run(call, host.env(&scope.origin), limits).await,
                     };
-                    match run(call, env, host.limits.clone()).await {
+                    match done {
                         Ok(text) => {
                             let summary = format!("{} bytes", text.len());
                             ended(ToolStatus::Ok, text, &summary)
