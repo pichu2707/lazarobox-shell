@@ -239,3 +239,14 @@ Status: 2/2 tasks done (5.1, 5.2).
 For PR6: route `y`/`n` keys to `Picker::install_answer`, Esc to `back`; `asks_cancel` on the
 wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. Entry
 (`open_install`) is not reachable from the UI until PR7 adds the manage row.
+
+### PR5 review fixes
+
+- Request ids: `InstallAsk::{Resolve,Download,Install}` carry a `u64` id; the wizard keeps
+  `in_flight: Option<u64>`; `Wizard::reply(id, ..)` / `Picker::install_reply(id, ..)` drop any
+  other id (Err included). Esc during Resolving drops the id (lookup is idempotent, no ask).
+- Armed confirms: a reply-driven entry to ConfirmDownload/ConfirmInstall/OfferHf disarms `y`/`n`
+  until `Wizard::arm()` / `Picker::install_arm()` (PR6 calls it from the draw/tick path).
+- Cancel: `Downloading{cancelling:true}` ("cancelling…", HINT_CANCELLING) until the reply
+  arrives, then Plan; `asking()` keeps reporting the download; `asks_cancel()` false while cancelling.
+- OfferHf `y` with a running HF download is ignored in `Picker::install_step` (Step::Hub).

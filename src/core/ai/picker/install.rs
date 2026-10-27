@@ -22,19 +22,21 @@ pub const HINT_WORKING: &str = "working… · Esc back";
 pub const HINT_CONFIRM_STEP: &str = "y continue · n back";
 pub const HINT_DOWNLOADING: &str = "Esc cancel the download";
 pub const HINT_CANCEL_INSTALL: &str = "cancel the download? (y/n)";
+pub const HINT_CANCELLING: &str = "cancelling…";
 pub const HINT_INSTALLING: &str = "installing…";
 pub const HINT_OFFER: &str = "y download a model · n close";
 pub const HINT_FAILED: &str = "Esc back";
 
-/// A step the user agreed to; the runtime runs it and replies.
+/// A step the user agreed to; the runtime runs it and replies with the same
+/// request id.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum InstallAsk {
     /// Look up the newest release holding the build of this variant.
-    Resolve(Variant),
+    Resolve(u64, Variant),
     /// Download this release and check it against its digest.
-    Download(Release),
+    Download(u64, Release),
     /// Unpack, check and activate this downloaded release.
-    Install(Release),
+    Install(u64, Release),
     /// Stop the download that runs (the partial file stays for a resume).
     Cancel,
 }
@@ -72,6 +74,8 @@ pub enum Screen {
         done: u64,
         /// `Esc` was pressed: `cancel the download? (y/n)` waits.
         cancel: bool,
+        /// The cancel was confirmed and the download is still stopping.
+        cancelling: bool,
     },
     ConfirmInstall(Release),
     Installing(Release),
@@ -84,6 +88,13 @@ pub enum Screen {
 pub struct Wizard {
     variants: Vec<Variant>,
     screen: Screen,
+    /// The id of the request the wizard waits on; any other reply is stale.
+    in_flight: Option<u64>,
+    /// The last id handed out.
+    last_id: u64,
+    /// Whether the confirm screen was drawn since a reply opened it. A key
+    /// queued for the previous screen must not answer a prompt never seen.
+    armed: bool,
 }
 
 fn variant_label(variant: Variant) -> &'static str {
@@ -99,7 +110,23 @@ impl Wizard {
         Wizard {
             variants,
             screen: Screen::Plan,
+            in_flight: None,
+            last_id: 0,
+            armed: true,
         }
+    }
+
+    /// A new request id, now in flight.
+    fn issue(&mut self) -> u64 {
+        self.last_id += 1;
+        self.in_flight = Some(self.last_id);
+        self.last_id
+    }
+
+    /// The screen was drawn: its `y`/`n` now answer what the user saw. The
+    /// picker calls this from its draw/tick path.
+    pub fn arm(&mut self) {
+        self.armed = true;
     }
 
     pub fn screen(&self) -> &Screen {
@@ -108,17 +135,25 @@ impl Wizard {
 
     /// The request in flight, if any.
     pub fn asking(&self) -> Option<InstallAsk> {
+        let id = self.in_flight?;
         match &self.screen {
-            Screen::Resolving(variant) => Some(InstallAsk::Resolve(*variant)),
-            Screen::Downloading { release, .. } => Some(InstallAsk::Download(release.clone())),
-            Screen::Installing(release) => Some(InstallAsk::Install(release.clone())),
+            Screen::Resolving(variant) => Some(InstallAsk::Resolve(id, *variant)),
+            Screen::Downloading { release, .. } => Some(InstallAsk::Download(id, release.clone())),
+            Screen::Installing(release) => Some(InstallAsk::Install(id, release.clone())),
             _ => None,
         }
     }
 
     /// Whether `cancel the download? (y/n)` waits for an answer.
     pub fn asks_cancel(&self) -> bool {
-        matches!(self.screen, Screen::Downloading { cancel: true, .. })
+        matches!(
+            self.screen,
+            Screen::Downloading {
+                cancel: true,
+                cancelling: false,
+                ..
+            }
+        )
     }
 
     pub fn title(&self) -> String {
@@ -140,6 +175,9 @@ impl Wizard {
             Screen::Plan => HINT_PLAN,
             Screen::Resolving(_) => HINT_WORKING,
             Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) => HINT_CONFIRM_STEP,
+            Screen::Downloading {
+                cancelling: true, ..
+            } => HINT_CANCELLING,
             Screen::Downloading { cancel: true, .. } => HINT_CANCEL_INSTALL,
             Screen::Downloading { .. } => HINT_DOWNLOADING,
             Screen::Installing(_) => HINT_INSTALLING,
@@ -175,6 +213,9 @@ impl Wizard {
                 "from: github.com/ggml-org/llama.cpp".to_owned(),
                 "the archive is checked against its SHA-256 digest".to_owned(),
             ]),
+            Screen::Downloading {
+                cancelling: true, ..
+            } => lines(vec!["cancelling…".to_owned()]),
             Screen::Downloading { release, done, .. } => {
                 let percent = if release.size == 0 {
                     0
@@ -207,7 +248,7 @@ impl Wizard {
         }
         if let Some(variant) = self.variants.get(index).copied() {
             self.screen = Screen::Resolving(variant);
-            return Step::Ask(InstallAsk::Resolve(variant));
+            return Step::Ask(InstallAsk::Resolve(self.issue(), variant));
         }
         if index == self.variants.len() {
             return Step::Copy(MANUAL.to_owned());
@@ -215,26 +256,42 @@ impl Wizard {
         Step::Stay
     }
 
-    /// `y`: agree to the step a screen proposes, or confirm a cancel.
+    /// `y`: agree to the step a screen proposes, or confirm a cancel. A
+    /// confirm screen not drawn yet ignores it.
     pub fn yes(&mut self) -> Step {
         match std::mem::replace(&mut self.screen, Screen::Plan) {
-            Screen::ConfirmDownload(release) => {
+            Screen::ConfirmDownload(release) if self.armed => {
                 self.screen = Screen::Downloading {
                     release: release.clone(),
                     done: 0,
                     cancel: false,
+                    cancelling: false,
                 };
-                Step::Ask(InstallAsk::Download(release))
+                Step::Ask(InstallAsk::Download(self.issue(), release))
             }
-            Screen::ConfirmInstall(release) => {
+            Screen::ConfirmInstall(release) if self.armed => {
                 self.screen = Screen::Installing(release.clone());
-                Step::Ask(InstallAsk::Install(release))
+                Step::Ask(InstallAsk::Install(self.issue(), release))
             }
-            Screen::OfferHf => {
+            Screen::OfferHf if self.armed => {
                 self.screen = Screen::OfferHf;
                 Step::Hub
             }
-            Screen::Downloading { cancel: true, .. } => Step::Ask(InstallAsk::Cancel),
+            Screen::Downloading {
+                release,
+                done,
+                cancel: true,
+                cancelling: false,
+            } => {
+                // Stays on screen as "cancelling…" until the reply arrives.
+                self.screen = Screen::Downloading {
+                    release,
+                    done,
+                    cancel: true,
+                    cancelling: true,
+                };
+                Step::Ask(InstallAsk::Cancel)
+            }
             other => {
                 self.screen = other;
                 Step::Stay
@@ -245,17 +302,20 @@ impl Wizard {
     /// `n`: decline the step, or keep the download.
     pub fn no(&mut self) -> Step {
         match &mut self.screen {
+            Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) | Screen::OfferHf
+                if !self.armed => {}
             Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) => {
                 self.screen = Screen::Plan;
-                Step::Stay
             }
-            Screen::Downloading { cancel, .. } => {
-                *cancel = false;
-                Step::Stay
-            }
-            Screen::OfferHf => Step::Close,
-            _ => Step::Stay,
+            Screen::Downloading {
+                cancel,
+                cancelling: false,
+                ..
+            } => *cancel = false,
+            Screen::OfferHf => return Step::Close,
+            _ => {}
         }
+        Step::Stay
     }
 
     /// Esc: back one screen. A download asks first; the install step cannot
@@ -263,12 +323,20 @@ impl Wizard {
     pub fn back(&mut self) -> Step {
         match &mut self.screen {
             Screen::Plan | Screen::OfferHf => Step::Close,
+            Screen::Downloading {
+                cancelling: true, ..
+            }
+            | Screen::Installing(_) => Step::Stay,
             Screen::Downloading { cancel, .. } => {
                 *cancel = true;
                 Step::Stay
             }
-            Screen::Installing(_) => Step::Stay,
-            _ => {
+            screen => {
+                // A lookup left behind: its reply is dropped by id. The
+                // lookup is idempotent, so nothing needs cancelling.
+                if matches!(screen, Screen::Resolving(_)) {
+                    self.in_flight = None;
+                }
                 self.screen = Screen::Plan;
                 Step::Stay
             }
@@ -290,18 +358,26 @@ impl Wizard {
         }
     }
 
-    /// The result of the step in flight. Dropped (`false`) when the wizard
-    /// no longer waits for that kind of result.
-    pub fn reply(&mut self, answer: Result<Reply, String>) -> bool {
-        let waiting = matches!(
-            self.screen,
-            Screen::Resolving(_) | Screen::Downloading { .. } | Screen::Installing(_)
-        );
-        if !waiting {
+    /// The result of request `id`. Dropped (`false`) when it is not the
+    /// request in flight or not the kind of result the screen waits for.
+    /// Opening a confirm screen disarms it until it is drawn.
+    pub fn reply(&mut self, id: u64, answer: Result<Reply, String>) -> bool {
+        if self.in_flight != Some(id) {
             return false;
         }
-        self.screen = match (&self.screen, answer) {
-            (_, Err(message)) => Screen::Failed(message),
+        let cancelling = matches!(
+            self.screen,
+            Screen::Downloading {
+                cancelling: true,
+                ..
+            }
+        );
+        let next = match (&self.screen, answer) {
+            // The user cancelled: whatever the download ended with, back to the plan.
+            _ if cancelling => Screen::Plan,
+            (Screen::Resolving(_) | Screen::Downloading { .. } | Screen::Installing(_), Err(m)) => {
+                Screen::Failed(m)
+            }
             (Screen::Resolving(_), Ok(Reply::Resolved(release))) => {
                 Screen::ConfirmDownload(release)
             }
@@ -312,6 +388,12 @@ impl Wizard {
             // A result of another kind: not the one this screen waits for.
             _ => return false,
         };
+        self.armed = !matches!(
+            next,
+            Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) | Screen::OfferHf
+        );
+        self.in_flight = None;
+        self.screen = next;
         true
     }
 }
@@ -343,6 +425,9 @@ impl Picker {
             Step::Stay => Outcome::Stay,
             Step::Ask(ask) => Outcome::Install(ask),
             Step::Copy(text) => Outcome::Copy(text),
+            // A Hugging Face download that runs owns the hub: the offer
+            // must not open its cancel prompt.
+            Step::Hub if self.download.is_some() => Outcome::Stay,
             Step::Hub => self.open_hub(),
             Step::Close => {
                 self.leave_hub(draft, detection);
@@ -394,10 +479,18 @@ impl Picker {
         self.install_step(step, draft, detection)
     }
 
-    /// The result of the step in flight.
-    pub fn install_reply(&mut self, answer: Result<Reply, String>) {
+    /// The wizard screen was drawn: its confirm prompts accept `y`/`n`.
+    pub fn install_arm(&mut self) {
         if let Some(wizard) = self.wizard_mut() {
-            wizard.reply(answer);
+            wizard.arm();
+        }
+    }
+
+    /// The result of request `id`; a stale one changes nothing.
+    pub fn install_reply(&mut self, id: u64, answer: Result<Reply, String>) {
+        if let Some(wizard) = self.wizard_mut()
+            && wizard.reply(id, answer)
+        {
             self.cursor = 0;
             self.offset = 0;
         }
