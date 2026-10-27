@@ -150,14 +150,14 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 
 ### S1c-2 (PR 5, ~330 lines, base: S1c-1 branch): tasks 1c.3, 1c.4
 
-- [ ] 1c.3 RED `runtime/tools/host.rs` tests: out-of-set call refused in `execute`; `Call::Orchestra` without handle = `UnknownTool`; read inside `ReadScope` skips the ask only when both paths inside; orchestrator never approves; label travels with the ask; closed session denies; wait bound held. Spec: agent-tools / Inside runs, outside asks; agent-orchestrator / Orchestrator cannot approve, Outside read asks with a label, Never silently decided; lazarobox-mcp-server / Bound held, Label travels, Closed session denies.
-- [ ] 1c.4 GREEN `runtime/tools/host.rs`: `TurnScope{orchestra: Option<OrchHandle>, read_scope, toolset}`, execute filter, ask label. REFACTOR + gates (S1c-2 closes here).
+- [x] 1c.3 RED `runtime/tools/host.rs` tests: out-of-set call refused in `execute`; `Call::Orchestra` without handle = `UnknownTool`; read inside `ReadScope` skips the ask only when both paths inside; orchestrator never approves; label travels with the ask; closed session denies; wait bound held. Spec: agent-tools / Inside runs, outside asks; agent-orchestrator / Orchestrator cannot approve, Outside read asks with a label, Never silently decided; lazarobox-mcp-server / Bound held, Label travels, Closed session denies.
+- [x] 1c.4 GREEN `runtime/tools/host.rs`: `TurnScope{orchestra: Option<OrchHandle>, read_scope, toolset}`, execute filter, ask label. REFACTOR + gates (S1c-2 closes here). Done: `OrchHandle` is `Arc<dyn Orchestra>` (`runtime/tools/orchestra.rs`, the RunManager implements it in S1d-2); `read_scope` is `Option<WorkerScope{handle, run, label}>`; a chat's `toolset` is its request's families; the ask is `ApprovalAsk::WorkerRead{path, label}` with label `<kind> <engine>><model>`; the host bounds `wait` at 120 s with `awaiting_user`. A worker read outside the scope asks on every engine, local ones included (user, 2026-10-27; agent-tools spec wording aligned).
 
 #### Obligations from the S1b-2 security review (S1c-2)
 
-- [ ] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`.
-- [ ] A denied or expired scope makes the host ASK, never silently allow or refuse.
-- [ ] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown.
+- [x] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`. Done: the scope check and the open share one snapshot built for the call; `open_checked` proves the fd is that path and judges it again. Decision (parent, 2026-10-27): a scoped read of a file with `nlink > 1` stays refused, with no ask (the stricter behaviour of every read).
+- [x] A denied or expired scope makes the host ASK, never silently allow or refuse.
+- [x] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown. Done: an orchestration call never asks; its argument is shown only in the row summary, cut by `summary::clip` to `SUMMARY_CAP` (120 characters), and the worker label's engine and model are cut like a server name (64 characters each).
 
 ## S1d: RunManager (3 chained PRs: S1d-1 = PR 6, S1d-2 = PR 7, S1d-3 = PR 8; ~1,200 lines re-estimated in total)
 

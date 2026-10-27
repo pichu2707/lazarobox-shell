@@ -28,6 +28,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use futures::{FutureExt, future::BoxFuture};
@@ -40,7 +41,7 @@ use crate::{
             approval::{ApprovalAsk, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
-        orchestra::tools::OrchCall,
+        orchestra::tools::{OrchCall, WAIT_MAX_SECS},
         tools::{
             Call, Locality, ToolError, command, label,
             mcp::refusal_text,
@@ -314,10 +315,27 @@ async fn call_external(
     )
 }
 
+/// What a `wait` the run manager holds past [`WAIT_MAX_SECS`] answers: the
+/// run is waiting for the user (an unresolved failure).
+const AWAITING_USER: &str = "awaiting_user";
+
 /// Runs an orchestration call on the run manager: its text for the model,
-/// and the row.
+/// and the row. A `wait` ends within [`WAIT_MAX_SECS`] even when the run
+/// manager holds it, so no call nears the MCP timeout.
 async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatus, String) {
-    let outcome = handle.call(call).await;
+    let bounded = matches!(call, OrchCall::Wait { .. });
+    let answer = handle.call(call);
+    let outcome = if bounded {
+        let bound = Duration::from_secs(u64::from(WAIT_MAX_SECS));
+        tokio::time::timeout(bound, answer)
+            .await
+            .unwrap_or_else(|_| Outcome {
+                text: AWAITING_USER.to_owned(),
+                is_error: false,
+            })
+    } else {
+        answer.await
+    };
     let (status, summary) = if outcome.is_error {
         (ToolStatus::Error, clip(&outcome.text))
     } else {

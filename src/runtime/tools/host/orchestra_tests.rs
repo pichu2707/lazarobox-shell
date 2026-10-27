@@ -1,6 +1,9 @@
 //! The host in an orchestrated turn: the role toolset filter in `execute`
 //! and the orchestration calls routed to the run manager.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::{sync::Mutex, time::Duration};
 
 use serde_json::json;
@@ -18,17 +21,17 @@ use crate::core::{
         },
         config::Task,
         orchestra::{
-            RunId, Toolset,
+            RunId, Toolset, WorkerId,
             run::{Roster, Run, UserChoice, WorkerEvent},
             scope::ReadScope,
-            tools::{MAX_PROMPT_BYTES, OrchCall},
+            tools::{MAX_PROMPT_BYTES, OrchCall, WAIT_MAX_SECS},
             worker::ErrorClass,
         },
         tools::{paths::SecretRoots, summary::SUMMARY_CAP},
     },
     layout::PaneId,
 };
-use crate::runtime::tools::{Orchestra, Pending, Waits, WorkerScope};
+use crate::runtime::tools::{Orchestra, Pending, Waits, WorkerScope, approver::ENDED};
 
 /// A run manager that answers every call with `answer` and remembers them.
 struct Fake {
@@ -573,4 +576,178 @@ async fn a_long_spawn_prompt_is_shown_clipped() {
         panic!("not routed")
     };
     assert_eq!(*got, prompt);
+}
+
+// -- held calls and pending worker asks: only the user decides --
+
+/// A run manager whose calls never answer, as a `wait` held by an
+/// unresolved failure.
+struct Held(Mutex<Vec<OrchCall>>);
+
+impl Orchestra for Held {
+    fn call(&self, call: OrchCall) -> BoxFuture<'static, Outcome> {
+        self.0.lock().unwrap().push(call);
+        std::future::pending().boxed()
+    }
+
+    fn allows(&self, _: RunId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
+        None
+    }
+}
+
+fn wait_for(id: u32) -> Call {
+    Call::Orchestra(OrchCall::Wait {
+        ids: vec![WorkerId(id)],
+        timeout: WAIT_MAX_SECS,
+    })
+}
+
+// Spec (lazarobox-mcp-server, Bound held): with a failure unresolved the
+// run manager holds `wait`; the host still returns `awaiting_user` within
+// 120 s, as a result the model can read, and asks nothing.
+#[tokio::test(start_paused = true)]
+async fn a_held_wait_returns_awaiting_user_within_120_s() {
+    let (_dir, home, host) = fixture();
+    let held = Arc::new(Held(Mutex::new(Vec::new())));
+    let (scope, mut rx) = orchestrator(&home, Some(held.clone()));
+    let start = tokio::time::Instant::now();
+    let bound = Duration::from_secs(u64::from(WAIT_MAX_SECS));
+    let out = timeout(bound * 10, host.dispatch(scope).call(wait_for(1)))
+        .await
+        .expect("wait held past the bound");
+    assert!(start.elapsed() <= bound, "{:?}", start.elapsed());
+    assert_eq!((out.is_error, out.text.as_str()), (false, "awaiting_user"));
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!((ask, status), (None, ToolStatus::Ok));
+    assert_eq!(held.0.lock().unwrap().len(), 1);
+}
+
+// Regression: a `wait` the run manager answers in time is its answer.
+#[tokio::test]
+async fn a_wait_answered_in_time_is_the_run_managers_answer() {
+    let (_dir, home, host) = fixture();
+    let fake = Fake::new("1: done");
+    let (scope, _rx) = orchestrator(&home, Some(fake.clone()));
+    let out = host.dispatch(scope).call(wait_for(1)).await;
+    assert_eq!((out.is_error, out.text.as_str()), (false, "1: done"));
+    assert_eq!(fake.calls().len(), 1);
+}
+
+/// A worker turn of run 1 on a cloud engine, scoped to `~/dev/app`, whose
+/// asks wait in `waits` under `PANE` and `TURN`, and its read of a file
+/// outside the scope, announced: its task, call id and pending count.
+async fn pending_outside_read(
+    host: &Arc<ToolHost>,
+    home: &Path,
+    waits: &Arc<Waits>,
+) -> (
+    tokio::task::JoinHandle<Outcome>,
+    CallId,
+    Pending,
+    mpsc::Receiver<StreamEvent>,
+) {
+    let pending = Pending::new();
+    let (mut scope, mut rx) = worker(Locality::Cloud, home, Scoped::over(home, &["~/dev/app"]));
+    scope.approver = waits.approver(PANE, TURN, pending.clone());
+    let task = tokio::spawn(host.dispatch(scope).call(read("~/dev/other/a.rs")));
+    let StreamEvent::ToolCall { id, approval, .. } = next(&mut rx).await else {
+        panic!("not a ToolCall")
+    };
+    assert_eq!(
+        approval.map(|ask| *ask),
+        Some(worker_ask(home, "dev/other/a.rs"))
+    );
+    assert_eq!(pending.count(), 1);
+    (task, id, pending, rx)
+}
+
+// Spec (agent-orchestrator, Orchestrator cannot approve): while a worker's
+// read waits, the orchestrator turn's calls that look like `y` (answers of
+// the run manager, a forged `run_in_pane`, a user tool) answer nothing; the
+// read stays pending until the user's key decides it.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_orchestrator_cannot_answer_a_workers_pending_read() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let waits = Waits::new();
+    let (task, id, pending, _rx) = pending_outside_read(&host, &home, &waits).await;
+    let fake = Fake::new("y");
+    let (mut scope, _orch_rx) = orchestrator(&home, Some(fake.clone()));
+    scope.approver = waits.approver(PANE, TURN, Pending::new());
+    let dispatch = host.dispatch(scope);
+    for call in [
+        Call::Orchestra(OrchCall::Collect { id: WorkerId(1) }),
+        wait_for(1),
+        run_cmd("y"),
+        server_tool(),
+    ] {
+        dispatch.call(call).await;
+    }
+    assert_eq!(fake.calls().len(), 2);
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished());
+    assert_eq!(pending.count(), 1);
+    // The user's key: the read was still waiting for it.
+    assert!(waits.decide(PANE, TURN, id, Decision::Sent));
+    let out = task.await.unwrap();
+    assert!(out.text.contains("outside the scope"), "{out:?}");
+    assert_eq!(pending.count(), 0);
+}
+
+// Spec (agent-orchestrator, Never silently decided): an outside read left
+// pending while time passes (past the `wait` bound and the worker deadline)
+// is not allowed by any timer; the timeout that ends the turn ends it as
+// `denied`, and the file is never opened.
+#[tokio::test]
+async fn an_outside_read_is_never_decided_by_a_timer() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let waits = Waits::new();
+    let (task, id, pending, mut rx) = pending_outside_read(&host, &home, &waits).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(3600)).await;
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished());
+    assert_eq!(pending.count(), 1);
+    // What the turn's timeout does.
+    waits.end_turn(PANE, TURN);
+    let out = task.await.unwrap();
+    let StreamEvent::ToolResult { status, .. } = next(&mut rx).await else {
+        panic!("not a result")
+    };
+    assert_eq!(status, ToolStatus::Denied);
+    assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
+    assert!(!out.text.contains("outside the scope"));
+    assert_eq!(pending.count(), 0);
+    assert!(!waits.decide(PANE, TURN, id, Decision::Sent));
+}
+
+// Spec (lazarobox-mcp-server, Closed session denies): a worker cancelled
+// with a read pending: its call is dropped, or its session closes; either
+// way the approval ends `denied`, nothing is opened and a late `y` finds
+// nothing to answer.
+#[tokio::test]
+async fn a_cancelled_workers_pending_read_ends_denied() {
+    for how in ["call dropped", "session closed"] {
+        let (_dir, home, host) = fixture();
+        project(&home);
+        let waits = Waits::new();
+        let (task, id, pending, mut rx) = pending_outside_read(&host, &home, &waits).await;
+        match how {
+            "call dropped" => task.abort(),
+            _ => waits.end_pane(PANE),
+        }
+        let StreamEvent::ToolResult { status, .. } = next(&mut rx).await else {
+            panic!("{how}: not a result")
+        };
+        assert_eq!(status, ToolStatus::Denied, "{how}");
+        if let Ok(out) = task.await {
+            assert!(out.is_error && out.text.contains(ENDED), "{how}: {out:?}");
+            assert!(!out.text.contains("outside the scope"), "{how}");
+        }
+        assert_eq!(pending.count(), 0, "{how}");
+        assert!(!waits.decide(PANE, TURN, id, Decision::Sent), "{how}");
+    }
 }
