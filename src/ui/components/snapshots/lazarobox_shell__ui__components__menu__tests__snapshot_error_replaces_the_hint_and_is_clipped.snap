@@ -8,5 +8,6 @@ expression: text(&buf)
 │ Tab bar position                            top │
 │ Mouse                                        on │
 │ Updates                                  0.15.3 │
+│ Feedback                     bug report or idea │
 │ config.toml: statusline is not a table; fix it …│
 └─────────────────────────────────────────────────┘

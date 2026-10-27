@@ -15,6 +15,14 @@ baseline.
 - The Hugging Face token field shows the link to create a read token
   (`https://huggingface.co/settings/tokens/new?tokenType=read`) on a line of
   its own, so terminals that detect URLs keep it clickable.
+- A **Feedback** row at the end of the Settings tab opens a short form (a bug
+  report or an idea, a title, a description) that attaches the lazarobox
+  version, the OS and WSL, the shell, the terminal and the detected AI
+  engines. `Ctrl+S` copies a link that opens the matching GitHub issue form
+  filled in; lazarobox sends nothing itself. Secrets in the text are masked
+  before any link.
+- GitHub issue forms for bug reports and ideas; ideas go to the project's
+  Goals board.
 
 ### Fixed
 

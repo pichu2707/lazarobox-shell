@@ -6,7 +6,7 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 7] = [
+const SETTINGS: [&str; 8] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -14,6 +14,7 @@ const SETTINGS: [&str; 7] = [
     "Sound",
     "llama-server idle",
     "Updates",
+    "Feedback",
 ];
 
 const AI: [&str; 17] = [
@@ -185,13 +186,13 @@ fn j_and_k_wrap_inside_the_settings_tab() {
     );
     assert_eq!(m.active_tab(), 0);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Updates", "wraps back");
+    assert_eq!(selected_label(&m), "Feedback", "wraps back");
     let up = KeyCode::Up;
     let down = KeyCode::Down;
     send(&mut m, key(down));
     assert_eq!(selected_label(&m), "Statusline position");
     send(&mut m, key(up));
-    assert_eq!(selected_label(&m), "Updates");
+    assert_eq!(selected_label(&m), "Feedback");
 }
 
 #[test]
@@ -473,7 +474,7 @@ fn the_no_ai_menu_keeps_its_single_tab_layout() {
         Row::Title("Settings".into()),
         "titles stay with one tab"
     );
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
 }
 
 #[test]

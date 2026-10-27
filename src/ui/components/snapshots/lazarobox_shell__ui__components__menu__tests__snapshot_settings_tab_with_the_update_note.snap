@@ -11,7 +11,7 @@ expression: "text(&draw(62, POPUP_H, &with_update()))"
 │ Sound                                                   on │
 │ llama-server idle                                   15 min │
 │ * Updates                                 0.16.0 available │
-│                                                            │
+│ Feedback                                bug report or idea │
 │                                                            │
 │                                                            │
 │                                                            │

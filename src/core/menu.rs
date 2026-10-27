@@ -77,6 +77,8 @@ pub enum ItemKind {
     /// connects one (a masked token field), checks it or disconnects it. It
     /// never writes a config edit.
     HfAccount,
+    /// The `Feedback` row of the Settings tab: Enter opens the form.
+    Feedback,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -173,6 +175,10 @@ pub static SECTIONS: &[Section] = &[Section {
         Item {
             label: "Updates",
             kind: ItemKind::Updates,
+        },
+        Item {
+            label: "Feedback",
+            kind: ItemKind::Feedback,
         },
     ],
 }];
@@ -314,7 +320,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::NotifySound
             | ItemKind::ManagedIdle
             | ItemKind::Updates
-            | ItemKind::HfAccount => None,
+            | ItemKind::HfAccount
+            | ItemKind::Feedback => None,
         })
 }
 
@@ -439,6 +446,9 @@ const WARNING_TEXT: [&str; 7] = [
     "Once saved, this note is not shown again.",
 ];
 const WARNING_PROMPT: &str = "Turn memory on? (y/n)";
+const HINT_FEEDBACK_ROW: &str = "Enter open · j/k move · s save · Esc cancel";
+/// The value of the `Feedback` row.
+const FEEDBACK_VALUE: &str = "bug report or idea";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
 
 /// Why a picker row cannot be chosen: its mark, or the text of an
@@ -517,6 +527,12 @@ pub struct MenuState {
     installed: Option<String>,
     /// The `Hugging Face` row of the AI tab.
     account: account::Account,
+    /// What the Feedback form attaches.
+    facts: feedback::Facts,
+    /// The Feedback form, while it is open.
+    feedback: Option<feedback::Feedback>,
+    /// The form made its link: the view says how to use it until Esc.
+    feedback_copied: bool,
 }
 
 impl MenuState {
@@ -538,6 +554,66 @@ impl MenuState {
             command_shown: None,
             installed: None,
             account: account::Account::default(),
+            facts: feedback::Facts {
+                version: RUNNING_VERSION.to_owned(),
+                ..feedback::Facts::default()
+            },
+            feedback: None,
+            feedback_copied: false,
+        }
+    }
+
+    /// What the Feedback form attaches: the host and the detected engines.
+    pub fn with_feedback(mut self, facts: feedback::Facts) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Whether the selection is on the `Feedback` row.
+    fn on_feedback_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Feedback))
+    }
+
+    /// Whether the Feedback form, or what it says after its copy, is shown.
+    fn feedback_open(&self) -> bool {
+        self.feedback.is_some() || self.feedback_copied
+    }
+
+    /// The Feedback view that replaces the rows while it is open.
+    fn feedback_rows(&self) -> Option<Vec<Row>> {
+        let lines = if self.feedback_copied {
+            feedback::COPIED.iter().map(|l| (*l).to_owned()).collect()
+        } else {
+            self.feedback.as_ref()?.lines()
+        };
+        let mut rows = vec![Row::Title(Cow::Borrowed("Feedback"))];
+        rows.extend(lines.into_iter().map(|line| Row::Text(Cow::Owned(line))));
+        Some(rows)
+    }
+
+    /// Keys while the Feedback view is open: every one goes to the form;
+    /// once its link is copied, only Esc (back to the row) does anything.
+    fn on_feedback_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if self.feedback_copied {
+            if key.code == KeyCode::Esc && !repeat {
+                self.feedback_copied = false;
+            }
+            return MenuCommand::None;
+        }
+        let Some(form) = &mut self.feedback else {
+            return MenuCommand::None;
+        };
+        match form.on_key(key, repeat) {
+            feedback::Outcome::Handled => MenuCommand::None,
+            feedback::Outcome::Close => {
+                self.feedback = None;
+                MenuCommand::None
+            }
+            feedback::Outcome::Copy(link) => {
+                self.feedback = None;
+                self.feedback_copied = true;
+                MenuCommand::Copy(link)
+            }
         }
     }
 
@@ -793,6 +869,7 @@ impl MenuState {
         self.in_warning()
             || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
             || self.account.field().is_some()
+            || self.feedback_open()
     }
 
     /// Whether the menu has an AI section.
@@ -957,7 +1034,8 @@ impl MenuState {
             | ItemKind::NotifySound
             | ItemKind::ManagedIdle
             | ItemKind::Updates
-            | ItemKind::HfAccount => None,
+            | ItemKind::HfAccount
+            | ItemKind::Feedback => None,
         }
     }
 
@@ -987,6 +1065,9 @@ impl MenuState {
             return rows;
         }
         if let Some(rows) = self.account_rows() {
+            return rows;
+        }
+        if let Some(rows) = self.feedback_rows() {
             return rows;
         }
         let mut rows = Vec::new();
@@ -1161,6 +1242,16 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Feedback => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Borrowed(FEEDBACK_VALUE)),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Choice(choice) | ItemKind::Toggle(choice) => {
                         let row = Row::Item {
                             label: item.label,
@@ -1205,6 +1296,9 @@ impl MenuState {
         if self.account.field().is_some() {
             return self.on_account_key(key, repeat);
         }
+        if self.feedback_open() {
+            return self.on_feedback_key(key, repeat);
+        }
         if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
             return self.on_picker_key(key, repeat);
         }
@@ -1236,6 +1330,12 @@ impl MenuState {
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
             KeyCode::Char('d') if !repeat && self.on_account_row() => {
                 self.account.forget();
+                MenuCommand::None
+            }
+            KeyCode::Enter if self.on_feedback_row() => {
+                if !repeat {
+                    self.feedback = Some(feedback::Feedback::new(self.facts.clone()));
+                }
                 MenuCommand::None
             }
             KeyCode::Enter if self.on_account_row() => match self.account.enter() {
@@ -1593,6 +1693,10 @@ impl MenuState {
     /// A paste: goes to the custom field or the Hugging Face search when
     /// one is focused, else ignored.
     pub fn on_paste(&mut self, text: &str) {
+        if let Some(form) = &mut self.feedback {
+            form.paste(text);
+            return;
+        }
         if self.account.field().is_some() {
             self.account.paste(text);
             return;
@@ -1623,6 +1727,18 @@ impl MenuState {
         }
         if self.account.field().is_some() {
             return Footer::Hint(Cow::Borrowed(account::HINT_TOKEN));
+        }
+        if self.feedback_copied {
+            return Footer::Hint(match &self.copied {
+                Some(copied) => Cow::Owned(copied.clone()),
+                None => Cow::Borrowed(feedback::HINT_DONE),
+            });
+        }
+        if let Some(form) = &self.feedback {
+            return match form.error() {
+                Some(error) => Footer::Error(error),
+                None => Footer::Hint(Cow::Borrowed(form.hint())),
+            };
         }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
@@ -1703,6 +1819,7 @@ impl MenuState {
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
             _ if self.on_account_row() => Cow::Borrowed(self.account.hint()),
+            _ if self.on_feedback_row() => Cow::Borrowed(HINT_FEEDBACK_ROW),
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
@@ -1863,6 +1980,7 @@ mod tests {
                 row("Tab bar position", Some("top"), false),
                 row("Mouse", Some("on"), false),
                 row("Updates", Some("0.15.3"), false),
+                row("Feedback", Some("bug report or idea"), false),
             ]
         );
     }
@@ -1906,9 +2024,13 @@ mod tests {
             menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(3), "so is the Updates row");
             menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(4), "and the Feedback row");
+            menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(0), "wraps past the last row");
             menu.on_key(&up, false, &mut config);
-            assert_eq!(selected(&menu), Some(3), "wraps before the first row");
+            assert_eq!(selected(&menu), Some(4), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(3));
             menu.on_key(&up, false, &mut config);
             assert_eq!(selected(&menu), Some(2));
             menu.on_key(&up, false, &mut config);
@@ -2142,3 +2264,6 @@ mod account_tests;
 
 #[cfg(test)]
 mod feedback_tests;
+
+#[cfg(test)]
+mod feedback_menu_tests;

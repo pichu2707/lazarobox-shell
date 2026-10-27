@@ -50,8 +50,31 @@ fn on_updates(update: Option<&str>, env: Option<InstallEnv>) -> App {
 fn to_updates_row(a: &mut App) {
     a.update(ctrl_space());
     a.update(key('m'));
-    // The last row of the Settings tab: `k` from the first wraps to it.
+    // The row above Feedback, the last of the Settings tab: `k` from the
+    // first wraps to Feedback, one more reaches Updates.
     a.update(key('k'));
+    a.update(key('k'));
+    assert!(
+        selected_label(a).ends_with("Updates"),
+        "the cursor is on Updates"
+    );
+}
+
+/// The label of the selected menu row.
+fn selected_label(a: &App) -> &'static str {
+    a.menu()
+        .unwrap()
+        .rows(a.config())
+        .into_iter()
+        .find_map(|row| match row {
+            crate::core::menu::Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(label),
+            _ => None,
+        })
+        .expect("a selected row")
 }
 
 fn spawned(effects: &[Effect]) -> Vec<(&PaneId, &SpawnSpec)> {
@@ -171,8 +194,11 @@ fn closing_for_the_install_treats_an_unsaved_draft_as_esc_does() {
     let mut enter_app = fresh();
     enter_app.update(key('l'));
     assert_ne!(*enter_app.config(), original);
-    // From the first row `k` wraps to Updates, the last one.
+    // From the first row `k` wraps to Feedback, the last one; one more
+    // reaches Updates.
     enter_app.update(key('k'));
+    enter_app.update(key('k'));
+    assert!(selected_label(&enter_app).ends_with("Updates"));
     let effects = enter_app.update(enter());
     assert_eq!(spawned(&effects).len(), 1, "{effects:?}");
     assert_eq!(*enter_app.config(), *esc_app.config(), "same as Esc");

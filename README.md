@@ -139,8 +139,21 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
+| `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
+
+### Feedback: fallos e ideas desde el terminal
+
+`Enter` sobre **Feedback** abre un formulario corto:
+
+- **Kind**: `Bug report` o `Idea or goal` (`←`/`→`).
+- **Title** y **Description** (`Tab` pasa al siguiente campo; en la descripción, `Enter` añade una línea).
+- **Attach the environment** (`Espacio` lo activa o desactiva): la versión de lazarobox, el sistema (y si es WSL), la shell, la terminal (`TERM_PROGRAM`) y los motores de IA detectados con su versión. Se ve entero antes de copiar; nunca incluye rutas, nombres de usuario ni claves.
+
+`Ctrl+S` copia al portapapeles (OSC 52, como el resto de copias del menú) un enlace a GitHub que abre el formulario de issue ya relleno: el de fallos (`bug`) o el de ideas (`idea`, que llegan al tablero de Goals del proyecto). Ábrelo en el navegador, revísalo y envíalo desde allí. **lazarobox no envía nada por red.** Antes de crear el enlace, el título y la descripción pasan por el mismo filtro de secretos que las notas de memoria; si enmascara algo, el formulario lo muestra (`Secrets were masked; review and press Ctrl+S again`) para que lo revises. Un enlace de más de 8000 caracteres se rechaza (`Too long for a link: shorten the description`).
+
+Desde la web, los formularios de issue de GitHub piden los mismos datos.
 
 ---
 
