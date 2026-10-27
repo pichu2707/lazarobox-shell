@@ -986,3 +986,116 @@ fn nothing_is_released_before_the_end_and_a_late_fragment_is_ignored() {
         "the ended stream ignores more"
     );
 }
+
+// llamacpp-tools T1.5: malformed and bounded input.
+fn oa_calls(parts: &[String]) -> (Vec<StreamEvent>, Vec<ToolRequest>) {
+    let input = format!("{}{TOOLS_END}", parts.concat());
+    oa_run(&[input.as_bytes()])
+}
+
+#[test]
+fn a_call_without_an_id_has_none_and_still_validates() {
+    let (_, calls) = oa_calls(&[frag(
+        r#"{"index":0,"function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    )]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, None);
+    assert!(calls[0].call.is_ok());
+}
+
+#[test]
+fn a_fragment_without_an_index_opens_a_slot_only_with_an_id_or_a_name() {
+    let (_, calls) = oa_calls(&[
+        frag(r#"{"id":"a","function":{"name":"find_dir","arguments":"{\"que"}}"#),
+        frag(r#"{"function":{"arguments":"ry\":\"x\"}"}}"#),
+        frag(r#"{"id":"b","function":{"name":"list_dir","arguments":"{\"path\":\"/a\"}"}}"#),
+        frag(r#"{"function":{"name":"read_file","arguments":"{\"path\":\"/b\"}"}}"#),
+    ]);
+    let seen: Vec<_> = calls
+        .iter()
+        .map(|c| (c.name.as_str(), c.id.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("find_dir", Some("a")),
+            ("list_dir", Some("b")),
+            ("read_file", None)
+        ]
+    );
+    assert!(calls.iter().all(|c| c.call.is_ok()), "{calls:?}");
+    // With nothing to continue, an empty fragment is dropped.
+    let (_, none) = oa_calls(&[frag(r#"{"function":{"arguments":"{}"}}"#)]);
+    assert!(none.is_empty());
+}
+
+#[test]
+fn a_tool_calls_field_of_the_wrong_shape_is_ignored() {
+    let ok =
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#;
+    let wrong = [
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":\"nope\"}}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":{\"index\":0}}}]}\n\n".to_owned(),
+        frag(r#"1,"x",null,[]"#),
+    ];
+    let (events, calls) = oa_calls(&[wrong.concat(), frag(ok)]);
+    assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn a_non_string_name_or_arguments_refuses_only_that_call() {
+    let (_, calls) = oa_calls(&[
+        frag(r#"{"index":0,"id":"a","function":{"name":5,"arguments":"{}"}}"#),
+        frag(r#"{"index":1,"id":"b","function":{"name":"find_dir","arguments":{"query":"x"}}}"#),
+        frag(
+            r#"{"index":2,"id":"c","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+        ),
+    ]);
+    assert_eq!(calls.len(), 3);
+    assert!(calls[0].call.is_err());
+    assert_eq!(calls[1].call, invalid(ToolError::NotAnObject));
+    assert_eq!(calls[1].arguments, serde_json::json!({}));
+    assert!(calls[2].call.is_ok());
+}
+
+#[test]
+fn empty_arguments_become_an_empty_object() {
+    let (_, calls) = oa_calls(&[frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir"}}"#,
+    )]);
+    assert_eq!(calls[0].call, invalid(ToolError::MissingArgument));
+}
+
+#[test]
+fn the_seventeenth_slot_is_one_refusal_and_its_fragments_are_dropped() {
+    let parts: Vec<String> = (0..=MAX_CALLS)
+        .map(|i| {
+            frag(&format!(
+                r#"{{"index":{i},"id":"c{i}","function":{{"name":"find_dir","arguments":"{{\"query\":\"x\"}}"}}}}"#
+            ))
+        })
+        .chain([frag(r#"{"index":16,"function":{"arguments":"more"}}"#)])
+        .collect();
+    let (_, calls) = oa_calls(&parts);
+    assert_eq!(calls.len(), MAX_CALLS + 1);
+    assert!(calls[..MAX_CALLS].iter().all(|c| c.call.is_ok()));
+    assert_eq!(calls[MAX_CALLS].call, Err(CallError::TooMany));
+    assert_eq!(calls[MAX_CALLS].arguments, serde_json::json!({}));
+}
+
+#[test]
+fn the_accumulated_bytes_are_capped_and_no_call_is_released() {
+    let piece = "x".repeat(100_000);
+    let mut parts = vec![frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{"}}"#,
+    )];
+    parts.extend((0..11).map(|_| {
+        frag(&format!(
+            r#"{{"index":0,"function":{{"arguments":"{piece}"}}}}"#
+        ))
+    }));
+    let (events, calls) = oa_calls(&parts);
+    assert_eq!(events, [failed(TOO_LONG)]);
+    assert!(calls.is_empty());
+}

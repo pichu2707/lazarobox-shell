@@ -4,7 +4,10 @@
 
 use serde_json::{Value, json};
 
-use super::{SseParser, StreamDecoder, StreamEvent, ToolCalls, ToolRequest, tool_call};
+use super::{
+    CallError, MAX_CALLS, SERVER_LINE_CAP, SseParser, StreamDecoder, StreamEvent, ToolCalls,
+    ToolRequest, refused, too_long, tool_call,
+};
 use crate::core::ai::tools::{registry::FamilySet, servers::Qualified};
 
 /// One call being assembled.
@@ -13,11 +16,27 @@ struct Slot {
     id: String,
     name: String,
     arguments: String,
+    /// A `name` or `arguments` that was not a string: this call is refused.
+    broken: bool,
+}
+
+/// A string field; anything but `null` or absent marks the call broken.
+fn text<'a>(value: &'a Value, broken: &mut bool) -> &'a str {
+    match value {
+        Value::String(s) => s,
+        other => {
+            *broken |= !other.is_null();
+            ""
+        }
+    }
 }
 
 /// The fragments of one reply, in first-seen order.
 pub(super) struct Calls {
     slots: Vec<Slot>,
+    /// Bytes of ids, names and arguments kept so far.
+    bytes: usize,
+    overflowed: bool,
     external: Qualified,
     families: FamilySet,
 }
@@ -26,30 +45,44 @@ impl Calls {
     pub(super) fn new(external: Qualified, families: FamilySet) -> Self {
         Self {
             slots: Vec::new(),
+            bytes: 0,
+            overflowed: false,
             external,
             families,
         }
     }
 
-    /// Folds the `tool_calls` fragments of one chunk into the slots.
-    pub(super) fn collect(&mut self, value: &Value) {
-        let Some(list) = value["choices"][0]["delta"]["tool_calls"].as_array() else {
-            return;
-        };
+    /// Folds the `tool_calls` fragments of one chunk into the slots. Past the
+    /// byte cap it returns the error that ends the stream.
+    pub(super) fn collect(&mut self, value: &Value) -> Option<StreamEvent> {
+        let list = value["choices"][0]["delta"]["tool_calls"].as_array()?;
         for entry in list.iter().filter(|e| e.is_object()) {
             let index = entry["index"].as_u64();
             let function = &entry["function"];
-            let id = entry["id"].as_str().unwrap_or("");
-            let name = function["name"].as_str().unwrap_or("");
+            let mut broken = false;
+            let (id, name, args) = (
+                text(&entry["id"], &mut broken),
+                text(&function["name"], &mut broken),
+                text(&function["arguments"], &mut broken),
+            );
+            self.bytes += id.len() + name.len() + args.len();
+            if self.bytes > SERVER_LINE_CAP {
+                return Some(too_long());
+            }
             let found = index.and_then(|i| self.slots.iter().position(|s| s.index == Some(i)));
             let at = match found {
                 Some(at) => at,
                 None if index.is_some() || !(id.is_empty() && name.is_empty()) => {
+                    if self.slots.len() == MAX_CALLS {
+                        self.overflowed = true;
+                        continue;
+                    }
                     self.slots.push(Slot {
                         index,
                         id: String::new(),
                         name: String::new(),
                         arguments: String::new(),
+                        broken: false,
                     });
                     self.slots.len() - 1
                 }
@@ -63,25 +96,36 @@ impl Calls {
                 slot.id = id.to_owned();
             }
             slot.name.push_str(name);
-            slot.arguments
-                .push_str(function["arguments"].as_str().unwrap_or(""));
+            slot.arguments.push_str(args);
+            slot.broken |= broken;
         }
+        None
     }
 
-    /// The assembled calls, validated like an Ollama call.
+    /// The assembled calls, validated like an Ollama call, then one refusal
+    /// for any slot past [`MAX_CALLS`].
     pub(super) fn release(&mut self) -> Vec<ToolRequest> {
-        std::mem::take(&mut self.slots)
+        let mut calls: Vec<ToolRequest> = std::mem::take(&mut self.slots)
             .into_iter()
             .map(|s| {
+                let arguments = match (s.broken, s.arguments.is_empty()) {
+                    (true, _) => Value::Null,
+                    (false, true) => "{}".into(),
+                    (false, false) => s.arguments.into(),
+                };
                 let mut entry = json!({"function": {
-                    "name": s.name, "arguments": s.arguments, "index": s.index,
+                    "name": s.name, "arguments": arguments, "index": s.index,
                 }});
                 if !s.id.is_empty() {
                     entry["id"] = s.id.into();
                 }
                 tool_call(&entry, &self.external, self.families)
             })
-            .collect()
+            .collect();
+        if std::mem::take(&mut self.overflowed) {
+            calls.push(refused(CallError::TooMany));
+        }
+        calls
     }
 }
 

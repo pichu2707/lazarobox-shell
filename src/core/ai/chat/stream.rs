@@ -544,9 +544,9 @@ impl SseParser {
     fn dispatch(&mut self) -> Vec<StreamEvent> {
         match self.data.take() {
             Some(data) if !data.is_empty() => {
-                let (events, value) = sse_decode(&data);
+                let (mut events, value) = sse_decode(&data);
                 if let (Some(calls), Some(value)) = (self.calls.as_mut(), value) {
-                    calls.collect(&value);
+                    events.splice(..0, calls.collect(&value));
                 }
                 events
             }
