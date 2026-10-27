@@ -282,8 +282,8 @@ mod unix {
             }
         }
 
-        // Probe (a). Linux reads back `<path> (deleted)`; macOS may fail or give
-        // some other path. Either is fine, as long as it never equals the old one.
+        // Probe (a). Linux reads back `<path> (deleted)`. macOS `F_GETPATH` gives
+        // the old path, so its `fd_path` fails: the path names no file any more.
         #[test]
         fn the_path_of_a_deleted_file_no_longer_equals_the_checked_one() {
             let (_dir, home) = tree();
@@ -460,7 +460,7 @@ mod macos_sys {
         io,
         os::{
             fd::{AsRawFd, OwnedFd},
-            unix::ffi::OsStrExt,
+            unix::{ffi::OsStrExt, fs::MetadataExt},
         },
         path::PathBuf,
     };
@@ -468,7 +468,21 @@ mod macos_sys {
     /// The real path of an open descriptor, from `fcntl(F_GETPATH)`. Never
     /// `F_GETPATH_NOFIRMLINK`: the policy judges the firmlink spelling (`/Users`).
     /// Any failure is an error, so the caller refuses.
+    ///
+    /// `F_GETPATH` keeps answering the old path of a deleted file (probe (a)),
+    /// so the path counts only while it still names this very file: the same
+    /// device and inode, read without following a link.
     pub fn fd_path(fd: &OwnedFd) -> io::Result<PathBuf> {
+        let path = getpath(fd)?;
+        let named = std::fs::symlink_metadata(&path)?;
+        let opened = std::fs::File::from(fd.try_clone()?).metadata()?;
+        if (opened.dev(), opened.ino()) != (named.dev(), named.ino()) {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+        Ok(path)
+    }
+
+    fn getpath(fd: &OwnedFd) -> io::Result<PathBuf> {
         let mut buf = [0u8; libc::MAXPATHLEN as usize];
         // SAFETY: `F_GETPATH` writes at most MAXPATHLEN bytes into `buf`.
         if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } < 0 {
