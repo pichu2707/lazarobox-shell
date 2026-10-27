@@ -36,3 +36,15 @@ Done: T1.0, T1.1, T1.2 (hook landed), T1.3, T1.4, T1.5, T1.6, T1.9, T1.10. PR1 i
 PR1 production lines vs main: +309/-26 (net +283); tests/fixtures excluded. Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (6119 passed lib) all green.
 
 Remaining: PR2 (T2.1-T2.8), PR3 (T3.0-T3.3).
+
+## PR1 review fixes
+
+Four confirmed findings of a fresh review, each RED first, then GREEN.
+
+- Clean end: `Calls` now records a `finish_reason` other than `tool_calls` or `stop` (`length`, `content_filter`, unknown) as `cut`; `take_calls` releases nothing then, even after `[DONE]`. A bare `[DONE]`, `tool_calls` and `stop` stay clean.
+- Overflow: a fragment dropped past `MAX_CALLS` sets `dropping`; its index-less continuations are dropped instead of being appended to slot 16. Any fragment that lands in a slot clears it.
+- Call ids: `unique_id` keeps the server id only when new to the whole body, else synthesizes `call_{r}_{n}` (suffix `_k` on collision). Covers duplicate ids, two long ids cut to one 64-char prefix, and a server id equal to a synthesized one. Assistant `tool_calls[i].id` and its tool message share one value.
+- Assistant content: `round.text` was already `""` when empty (never null); added a test with non-empty and empty text, and aligned design D7 wording.
+- Extra tests that passed without code: a late `id` after the name, `choices[0]` without `delta`.
+
+Gates: fmt, clippy -D warnings, cargo test (6124 passed lib). Ollama byte pins (T1.7) and fixture equality (T1.10) unchanged and green.
