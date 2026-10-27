@@ -9,7 +9,9 @@ use std::ffi::OsString;
 
 use std::path::{Path, PathBuf};
 
-use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER};
+use crate::core::ai::jail::{
+    JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER, STATUS_FD, STATUS_FD_VAR,
+};
 
 #[cfg(any(target_os = "macos", test))]
 mod seatbelt;
@@ -52,10 +54,12 @@ pub fn resolve(path: &Path) -> Option<PathBuf> {
 /// the process image is replaced and this never returns; it returns the exit
 /// status only when the program did not run.
 pub fn exec_main(args: &[OsString]) -> i32 {
+    let status = take_status();
     match imp::exec(args) {
         Ok(never) => match never {},
         Err(Failure::NotEnforced(why)) => {
             eprintln!("{NOT_ENFORCED_MARKER}: {why}");
+            report(status, &format!("{NOT_ENFORCED_MARKER}: {why}\n"));
             NOT_ENFORCED_EXIT
         }
         Err(Failure::Exec(program, error)) => {
@@ -63,6 +67,39 @@ pub fn exec_main(args: &[OsString]) -> i32 {
             EXEC_FAILED
         }
     }
+}
+
+/// The status descriptor a parent handed over, if it did: the one place the
+/// helper can say "jail not enforced" that the program cannot forge, because
+/// the descriptor is closed by the `exec` of the program. The variable is
+/// removed so the program never sees it.
+fn take_status() -> Option<libc::c_int> {
+    let named = std::env::var_os(STATUS_FD_VAR)?;
+    // SAFETY: the helper is single-threaded here, before any thread starts.
+    unsafe { std::env::remove_var(STATUS_FD_VAR) };
+    // Only the agreed number: an arbitrary one could name any descriptor.
+    if named.to_str().and_then(|n| n.parse::<libc::c_int>().ok()) != Some(STATUS_FD) {
+        return None;
+    }
+    // SAFETY: `fcntl` on a number is memory-safe; a bad one is an error.
+    unsafe {
+        let flags = libc::fcntl(STATUS_FD, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(STATUS_FD, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+            return None;
+        }
+    }
+    Some(STATUS_FD)
+}
+
+/// Writes `line` on the status descriptor, if there is one.
+fn report(status: Option<libc::c_int>, line: &str) {
+    let Some(fd) = status else {
+        return;
+    };
+    // SAFETY: the buffer is valid for its length. A short or failed write
+    // leaves the parent with no report, which it reads as "enforced": the
+    // helper's exit status and stderr still say what happened.
+    unsafe { libc::write(fd, line.as_ptr().cast(), line.len()) };
 }
 
 /// Why the helper did not run the program.

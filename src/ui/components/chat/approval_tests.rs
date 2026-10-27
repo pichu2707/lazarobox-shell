@@ -55,6 +55,7 @@ fn prompt(command: &str) -> ApprovalPrompt {
         keys: RUN_KEYS,
         armed: true,
         why: None,
+        notice: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn read_prompt(path: &str) -> ApprovalPrompt {
         keys: READ_KEYS,
         armed: true,
         why: None,
+        notice: None,
     }
 }
 

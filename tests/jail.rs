@@ -22,8 +22,8 @@ use lazarobox_shell::{
         ai::{
             chat::engine::ChatError,
             jail::{
-                ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, NetBind, Rlimits, elf_loader,
-                exit_error,
+                ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, NOT_ENFORCED_MARKER, NetBind,
+                Rlimits, STATUS_FD, STATUS_FD_VAR, elf_loader, exit_error,
             },
             tools::Call,
         },
@@ -902,4 +902,70 @@ fn a_git_commit_in_the_real_jail_cannot_write_outside_its_grants() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "second");
+}
+
+/// Runs the helper with a status pipe as descriptor 3, like `run_jailed`, and
+/// returns the output and what came back on the pipe.
+fn run_with_status(job: &JailArgs) -> (Output, String) {
+    use std::io::Read;
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
+
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let fd = writer.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    command
+        .args(job.render())
+        .env(STATUS_FD_VAR, STATUS_FD.to_string())
+        .stdin(Stdio::null());
+    // SAFETY: only `dup2` runs between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(fd, STATUS_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = command.output().expect("the helper starts");
+    drop(command);
+    drop(writer);
+    let mut said = String::new();
+    reader.read_to_string(&mut said).unwrap();
+    (out, said)
+}
+
+#[test]
+fn a_helper_that_cannot_apply_the_rules_says_so_on_the_status_pipe() {
+    if !jail_available() {
+        return;
+    }
+    let mut j = job("/usr/bin/true", &[], |_| {});
+    j.min_abi = Some(99);
+    let (out, said) = run_with_status(&j);
+    assert_eq!(out.status.code(), Some(125));
+    assert!(said.starts_with(NOT_ENFORCED_MARKER), "{said:?}");
+}
+
+// The program must not be able to write there: the helper closes the pipe on
+// exec, so a program that tries (and prints the marker) leaves it empty.
+#[test]
+fn the_program_it_runs_cannot_write_on_the_status_pipe() {
+    if !jail_available() {
+        return;
+    }
+    let script = format!(
+        "echo '{NOT_ENFORCED_MARKER}: x' >&{STATUS_FD}; echo \"$LAZAROBOX_JAIL_STATUS_FD\""
+    );
+    let (out, said) = run_with_status(&job("/bin/sh", &["-c", &script], |_| {}));
+    assert_eq!(said, "", "{}", stderr(&out));
+    assert!(
+        denied(&out) || stderr(&out).contains("Bad file descriptor"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out).trim(),
+        "",
+        "the variable must not reach the program"
+    );
 }

@@ -285,11 +285,20 @@ fn a_status_that_was_cut_is_reported_as_truncated_and_not_parsed() {
 
 // --- the temp repo ---
 
+/// The first git on `PATH` that the jail accepts. A git outside the system
+/// places (Homebrew's `/opt/homebrew` on Apple silicon) is refused by design
+/// (`Fault::Spec`), so a test that needs a git to run skips there instead of
+/// failing on a refusal that is the feature.
 fn git_bin() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|d| d.join("git"))
-        .find_map(|c| std::fs::canonicalize(c).ok())
+        .filter_map(|c| std::fs::canonicalize(c).ok())
+        .find(|real| {
+            crate::core::ai::toolchain::SYSTEM_RX
+                .iter()
+                .any(|place| real.starts_with(place))
+        })
 }
 
 const HELPER: &str = "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";

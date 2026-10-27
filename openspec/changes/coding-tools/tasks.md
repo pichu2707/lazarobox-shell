@@ -254,13 +254,13 @@ Spec: command-runner "Process rules".
 
 ### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".
-- [ ] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
-- [ ] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
-- [ ] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
+- [x] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
+- [x] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
+- [x] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
 ### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
-- [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
-- [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
+- [x] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
+- [x] Xd2.2 (no-jail reason done; the live global-wait row is deferred, see apply-progress X-d2) RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
 ## Phase M4: git (0.22)
 
