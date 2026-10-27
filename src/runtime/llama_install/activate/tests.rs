@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 use super::*;
@@ -154,25 +155,54 @@ async fn prune_keeps_the_previous_tag_only() {
     assert_eq!(current(&root), "b9020");
 }
 
+// The tag `current` points at is not installed over: it would be moved aside
+// while a running llama-server may use it.
 #[tokio::test]
-async fn installing_the_same_tag_again_works() {
+async fn the_current_tag_is_not_installed_again() {
     need_tar!();
     let (_data, root) = owned();
     put(&root, "b9000", OK).await.unwrap();
-    put(&root, "b9000", OK).await.unwrap();
-    assert_eq!(tags(&root), ["b9000"]);
+    let why = put(&root, "b9000", "#!/bin/sh\necho other\n")
+        .await
+        .unwrap_err();
+    assert_eq!(why, "b9000 is already installed");
+    assert_eq!(
+        fs::read_to_string(root.join("b9000/llama-server")).unwrap(),
+        OK
+    );
     assert_eq!(current(&root), "b9000");
+    // Nothing was left behind, and the download stays for another try.
+    assert!(!fs::read_dir(&root).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staging")
+    }));
+    assert!(root.join(".download/b9000.tar.gz").exists());
+}
+
+// The previous tag (kept for rollback) can be installed again.
+#[tokio::test]
+async fn installing_the_previous_tag_again_works() {
+    need_tar!();
+    let (_data, root) = owned();
+    put(&root, "b9000", OK).await.unwrap();
+    put(&root, "b9010", OK).await.unwrap();
+    put(&root, "b9000", OK).await.unwrap();
+    assert_eq!(current(&root), "b9000");
+    assert_eq!(tags(&root), ["b9000", "b9010"]);
 }
 
 #[tokio::test]
-async fn a_failed_reinstall_of_the_same_tag_puts_the_old_one_back() {
+async fn a_failed_reinstall_of_a_kept_tag_puts_the_old_one_back() {
     need_tar!();
     let (_data, root) = owned();
     put(&root, "b9000", OK).await.unwrap();
+    put(&root, "b9010", OK).await.unwrap();
     put(&root, "b9000", BROKEN).await.unwrap_err();
     let script = fs::read_to_string(root.join("b9000/llama-server")).unwrap();
     assert_eq!(script, OK);
-    assert_eq!(current(&root), "b9000");
+    assert_eq!(current(&root), "b9010");
 }
 
 // Spec (Another install running): a held lock refuses install and remove.
@@ -187,7 +217,7 @@ async fn a_held_lock_refuses_install_and_remove() {
         .unwrap_err();
     assert_eq!(why, LOCKED);
     let binary = root.join("current/llama-server");
-    assert_eq!(remove(&binary, data.path()), Err(LOCKED.to_owned()));
+    assert_eq!(remove(&binary, data.path()).await, Err(LOCKED.to_owned()));
     drop(held);
     install(&root, &release, &archive, &path()).await.unwrap();
 }
@@ -269,14 +299,16 @@ async fn remove_deletes_the_owned_install() {
     let (data, root) = owned();
     put(&root, "b9000", OK).await.unwrap();
     put(&root, "b9010", OK).await.unwrap();
-    remove(&root.join("current/llama-server"), data.path()).unwrap();
+    remove(&root.join("current/llama-server"), data.path())
+        .await
+        .unwrap();
     assert!(!root.exists());
     assert!(data.path().join("lazarobox").exists());
 }
 
 // Assumption A3: a system binary is never touched.
-#[test]
-fn remove_refuses_a_binary_it_does_not_own() {
+#[tokio::test]
+async fn remove_refuses_a_binary_it_does_not_own() {
     let (data, root) = owned();
     let system = tempfile::tempdir().unwrap();
     let binary = system.path().join("llama-server");
@@ -286,14 +318,146 @@ fn remove_refuses_a_binary_it_does_not_own() {
         root.join("../../../etc/llama-server"),
         install::owned_root(data.path()),
     ] {
-        assert!(remove(&target, data.path()).is_err(), "{target:?}");
+        assert!(remove(&target, data.path()).await.is_err(), "{target:?}");
     }
     assert!(binary.exists() && root.exists());
 }
 
-#[test]
-fn removing_what_is_not_there_is_fine() {
+#[tokio::test]
+async fn removing_what_is_not_there_is_fine() {
     let data = tempfile::tempdir().unwrap();
     let binary = install::current_dir(data.path()).join("llama-server");
-    assert_eq!(remove(&binary, data.path()), Ok(()));
+    assert_eq!(remove(&binary, data.path()).await, Ok(()));
+}
+
+// A root that is a dangling symlink loses just the link, and does not wait
+// on a lock it cannot create.
+#[tokio::test]
+async fn a_dangling_symlink_root_is_removed_as_a_link() {
+    let data = tempfile::tempdir().unwrap();
+    let root = install::owned_root(data.path());
+    fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(data.path().join("nowhere"), &root).unwrap();
+    let binary = root.join("current/llama-server");
+    remove(&binary, data.path()).await.unwrap();
+    assert!(fs::symlink_metadata(&root).is_err());
+}
+
+#[tokio::test]
+async fn a_symlink_root_to_a_folder_loses_only_the_link() {
+    let data = tempfile::tempdir().unwrap();
+    let root = install::owned_root(data.path());
+    fs::create_dir_all(root.parent().unwrap()).unwrap();
+    let real = data.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::write(real.join("keep"), "x").unwrap();
+    std::os::unix::fs::symlink(&real, &root).unwrap();
+    remove(&root.join("current/llama-server"), data.path())
+        .await
+        .unwrap();
+    assert!(fs::symlink_metadata(&root).is_err());
+    assert!(real.join("keep").exists());
+}
+
+// An install that left a closed folder behind (or an archive that made one)
+// must not make the remove, the prune or the staging sweep fail forever.
+fn close(dir: &Path) {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+}
+
+#[tokio::test]
+async fn remove_and_sweep_get_past_closed_folders() {
+    let (data, root) = owned();
+    let stale = root.join(".staging-1/out/a");
+    fs::create_dir_all(stale.join("b")).unwrap();
+    close(&stale.join("b"));
+    close(&stale);
+    let old = root.join("b8000/lib");
+    fs::create_dir_all(&old).unwrap();
+    close(&old);
+    sweep_staging(&root);
+    assert!(!root.join(".staging-1").exists());
+    prune(&root, "b9000", None);
+    assert!(!root.join("b8000").exists());
+    let again = root.join("b7000/lib");
+    fs::create_dir_all(&again).unwrap();
+    close(&again);
+    remove(&root.join("current/llama-server"), data.path())
+        .await
+        .unwrap();
+    assert!(!root.exists());
+}
+
+// Closed folders from a real archive: the install opens them before its
+// walk and the staging goes whole.
+#[tokio::test]
+async fn an_archive_with_closed_folders_installs_and_leaves_no_staging() {
+    need_tar!();
+    let (_data, root) = owned();
+    let work = root.join(".download");
+    fs::create_dir_all(&work).unwrap();
+    let top = "llama-b9000";
+    let made = archive(
+        &work,
+        &[
+            dir("llama-b9000/"),
+            Entry {
+                mode: 0o755,
+                ..file("llama-b9000/llama-server", OK.as_bytes())
+            },
+            Entry {
+                mode: 0o000,
+                ..dir("llama-b9000/lib/")
+            },
+            file("llama-b9000/lib/x", b"x"),
+        ],
+    );
+    let release = Release {
+        tag: "b9000".to_owned(),
+        asset: "a.tar.gz".to_owned(),
+        size: 0,
+        sha256: sha(&fs::read(&made).unwrap()),
+    };
+    install(&root, &release, &made, &path()).await.unwrap();
+    assert!(root.join(top.replace("llama-", "")).join("lib/x").is_file());
+    assert!(!fs::read_dir(&root).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staging")
+    }));
+}
+
+// A second process on the lock, not just a second handle: flock(1) holds it
+// from outside this process.
+#[tokio::test]
+async fn a_lock_held_by_another_process_is_respected() {
+    let (_data, root) = owned();
+    let Some(flock) = crate::runtime::ai_detect::find_on_path("flock", &path()) else {
+        eprintln!("SKIPPED: flock(1) is not installed; the cross-process lock was not checked");
+        return;
+    };
+    let mut child = std::process::Command::new(flock)
+        .arg(root.join(".lock"))
+        .args(["sleep", "30"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    // Wait until the child really holds it (the lock is not ours yet).
+    let mut held = false;
+    for _ in 0..100 {
+        if lock(&root).is_err() {
+            held = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let outcome = lock(&root).err();
+    // flock(1) runs `sleep` as a child that keeps the lock: stop the group.
+    // SAFETY: signalling the process group of a child spawned just above.
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let _ = child.wait();
+    assert!(held, "flock(1) never took the lock");
+    assert_eq!(outcome.as_deref(), Some(LOCKED));
+    assert!(lock(&root).is_ok());
 }

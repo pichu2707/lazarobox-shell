@@ -281,6 +281,9 @@ pub fn with_owned_path(path: &OsStr, data_home: Option<&Path>) -> OsString {
     if entries.contains(&current) {
         return path.to_owned();
     }
+    // An empty `PATH` splits into one empty entry; it is not an entry the
+    // user wrote, so only then is it dropped. In a longer `PATH` an empty or
+    // `.` entry stays as it was and the owned folder is only appended.
     entries.retain(|entry| !entry.as_os_str().is_empty() || !path.is_empty());
     entries.push(current);
     std::env::join_paths(entries).unwrap_or_else(|_| path.to_owned())
@@ -697,5 +700,17 @@ mod tests {
             entries(&empty),
             [PathBuf::from("/data/lazarobox/llama.cpp/current")]
         );
+    }
+
+    // Empty and `.` entries were the user's: only the owned folder is added.
+    #[test]
+    fn empty_and_dot_entries_are_kept_as_they_were() {
+        let path = std::ffi::OsString::from("/usr/bin::.:/opt/bin:");
+        let out = with_owned_path(&path, Some(Path::new("/data")));
+        let mut expected = std::env::split_paths(&path).collect::<Vec<_>>();
+        expected.push(PathBuf::from("/data/lazarobox/llama.cpp/current"));
+        assert_eq!(entries(&out), expected);
+        assert!(entries(&out).contains(&PathBuf::new()));
+        assert!(entries(&out).contains(&PathBuf::from(".")));
     }
 }

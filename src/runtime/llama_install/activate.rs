@@ -17,7 +17,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use super::unpack::{extract, find_tar};
+use super::unpack::{extract, find_tar, remove_tree};
 use crate::core::ai::install::{self, Release};
 use crate::runtime::ai_detect::run_capped;
 
@@ -75,9 +75,19 @@ fn sweep_staging(root: &Path) {
             .to_string_lossy()
             .starts_with(STAGING_PREFIX)
         {
-            let _ = fs::remove_dir_all(entry.path());
+            let _ = remove_tree(&entry.path());
         }
     }
+}
+
+/// Runs `work` on the blocking pool: the folder work of an install (the lock
+/// wait, deleting trees) must not hold an async worker.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| "the install was interrupted".to_owned())?
 }
 
 /// Copies `archive` to `to` while hashing exactly the bytes copied, and
@@ -164,7 +174,7 @@ fn prune(root: &Path, keep: &str, previous: Option<&str>) {
         let is_tag_dir = install::tag_number(&name).is_some()
             && fs::symlink_metadata(entry.path()).is_ok_and(|m| m.is_dir());
         if is_tag_dir && name != keep && Some(name.as_str()) != previous {
-            let _ = fs::remove_dir_all(entry.path());
+            let _ = remove_tree(&entry.path());
         }
     }
 }
@@ -192,15 +202,31 @@ pub async fn install(
         return Err("the release names an unsafe file".to_owned());
     }
     let tar = find_tar(path)?;
-    let _lock = lock(root)?;
-    sweep_staging(root);
+    let (lock_root, sweep_root) = (root.to_owned(), root.to_owned());
+    let _lock = blocking(move || lock(&lock_root)).await?;
     let staging = root.join(format!("{STAGING_PREFIX}{}", std::process::id()));
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&staging)
-        .map_err(|e| format!("cannot create the staging folder: {e}"))?;
-    let result = place(root, release, archive, path, &tar, &staging).await;
-    let _ = fs::remove_dir_all(&staging);
+    let (make, tag) = (staging.clone(), release.tag.clone());
+    // The tag `current` points at is the running one: it is not moved aside.
+    blocking(move || {
+        if current_tag(&sweep_root).is_some_and(|current| current == tag) {
+            return Err(format!("{tag} is already installed"));
+        }
+        sweep_staging(&sweep_root);
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&make)
+            .map_err(|e| format!("cannot create the staging folder: {e}"))
+    })
+    .await?;
+    let mut result = place(root, release, archive, path, &tar, &staging).await;
+    let gone = staging.clone();
+    if let Err(why) = blocking(move || remove_tree(&gone)).await {
+        // A leftover is swept by the next install; an install that failed
+        // anyway says so, one that worked is not turned into a failure.
+        if let Err(e) = &mut result {
+            e.push_str(&format!(" ({why})"));
+        }
+    }
     if result.is_ok() {
         let _ = fs::remove_file(archive);
     }
@@ -228,51 +254,87 @@ async fn place(
     .map_err(|_| "unpacking was interrupted".to_owned())??;
 
     let (tag_dir, aside) = (root.join(&release.tag), staging.join("replaced"));
-    // The same tag installed again: the old folder waits to be put back.
+    // The same tag installed again (not the current one, which is refused):
+    // the old folder waits to be put back.
     let replaced = fs::rename(&tag_dir, &aside).is_ok();
-    let undo = |installed: bool| {
-        if installed {
-            let _ = fs::remove_dir_all(&tag_dir);
-        }
-        if replaced {
-            let _ = fs::rename(&aside, &tag_dir);
-        }
-    };
     if let Err(e) = fs::rename(out.join(&top), &tag_dir) {
-        undo(false);
+        undo(&tag_dir, &aside, false, replaced).await;
         return Err(format!("cannot place the new install: {e}"));
     }
     if !runs(&tag_dir, path).await {
-        undo(true);
+        undo(&tag_dir, &aside, true, replaced).await;
         return Err("the new llama-server does not run on this machine".to_owned());
     }
     let previous = current_tag(root).filter(|tag| *tag != release.tag);
     if let Err(e) = swap_current(root, &release.tag) {
-        undo(true);
+        undo(&tag_dir, &aside, true, replaced).await;
         return Err(format!("cannot switch to the new install: {e}"));
     }
-    prune(root, &release.tag, previous.as_deref());
+    let (root, keep) = (root.to_owned(), release.tag.clone());
+    let _ = blocking(move || {
+        prune(&root, &keep, previous.as_deref());
+        Ok(())
+    })
+    .await;
     Ok(())
+}
+
+/// Puts the folders back as they were: the new `tag_dir` goes (when it was
+/// placed) and the one moved `aside` returns.
+async fn undo(tag_dir: &Path, aside: &Path, installed: bool, replaced: bool) {
+    let (tag_dir, aside) = (tag_dir.to_owned(), aside.to_owned());
+    let _ = blocking(move || {
+        if installed {
+            let _ = remove_tree(&tag_dir);
+        }
+        if replaced {
+            let _ = fs::rename(&aside, &tag_dir);
+        }
+        Ok(())
+    })
+    .await;
 }
 
 /// Removes the owned install, which is everything under the owned root
 /// (older tags and a kept download included). Never a system binary: only
-/// when `binary` is inside the owned root of `data_home`.
-pub fn remove(binary: &Path, data_home: &Path) -> Result<(), String> {
+/// when `binary` is inside the owned root of `data_home`. A root that is a
+/// symlink (even a dangling one) loses just the link.
+pub async fn remove(binary: &Path, data_home: &Path) -> Result<(), String> {
     if !install::is_owned(binary, data_home) {
         return Err("this llama-server is not managed by lazarobox; it is not removed".to_owned());
     }
     let root = install::owned_root(data_home);
-    if fs::symlink_metadata(&root).is_err() {
-        return Ok(());
+    blocking(move || remove_root(&root)).await
+}
+
+fn remove_root(root: &Path) -> Result<(), String> {
+    let fail = |e: io::Error| format!("cannot remove {}: {e}", root.display());
+    match fs::symlink_metadata(root) {
+        Err(_) => return Ok(()),
+        Ok(meta) if meta.file_type().is_symlink() => return fs::remove_file(root).map_err(fail),
+        Ok(_) => {}
     }
-    let _lock = lock(&root)?;
-    let result = if fs::symlink_metadata(&root).is_ok_and(|m| m.file_type().is_symlink()) {
-        fs::remove_file(&root)
-    } else {
-        fs::remove_dir_all(&root)
-    };
-    result.map_err(|e| format!("cannot remove {}: {e}", root.display()))
+    let _lock = lock(root)?;
+    // `.lock` goes last: an install waiting on it must find the lock until
+    // the rest is gone. Once it is deleted a waiter holds a lock on a file
+    // nobody sees; its install then fails on the missing folder.
+    let mut first = None;
+    let mut entries = fs::read_dir(root).map_err(fail)?;
+    while let Some(entry) = entries.next().transpose().map_err(fail)? {
+        if entry.file_name() != LOCK_FILE
+            && let Err(e) = remove_tree(&entry.path())
+        {
+            first.get_or_insert(e);
+        }
+    }
+    if let Some(e) = first {
+        return Err(e);
+    }
+    match fs::remove_file(root.join(LOCK_FILE)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(fail(e)),
+        _ => {}
+    }
+    fs::remove_dir(root).map_err(fail)
 }
 
 #[cfg(test)]

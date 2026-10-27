@@ -303,3 +303,99 @@ fn a_missing_tar_is_said_plainly() {
         Err(NO_TAR.to_owned())
     );
 }
+
+fn dir_mode(name: &str, mode: u32) -> Entry<'_> {
+    Entry { mode, ..dir(name) }
+}
+
+// A folder the archive closes (000, 0500) must neither stop the walk nor
+// leave a tree that cannot be deleted.
+#[test]
+fn a_closed_folder_is_opened_and_the_tree_can_be_deleted() {
+    need_tar!();
+    for mode in [0o000, 0o500] {
+        let (work, result) = run(&[
+            dir("llama-b9000/"),
+            dir_mode("llama-b9000/lib/", mode),
+            file("llama-b9000/lib/x", b"x"),
+            dir_mode("llama-b9000/lib/deep/", mode),
+            file("llama-b9000/lib/deep/y", b"y"),
+        ]);
+        result.unwrap_or_else(|e| panic!("mode {mode:o}: {e}"));
+        let top = work.path().join("staging").join(TOP);
+        let lib = std::fs::metadata(top.join("lib")).unwrap();
+        assert_eq!(lib.mode() & 0o700, 0o700, "mode {mode:o}");
+        assert_eq!(std::fs::read(top.join("lib/deep/y")).unwrap(), b"y");
+        remove_tree(&work.path().join("staging")).unwrap();
+        assert!(!work.path().join("staging").exists());
+    }
+}
+
+#[test]
+fn remove_tree_opens_what_is_closed_and_never_follows_a_link() {
+    let work = tempfile::tempdir().unwrap();
+    let outside = work.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let tree = work.path().join("tree");
+    std::fs::create_dir_all(tree.join("a/b")).unwrap();
+    std::fs::write(tree.join("a/b/f"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside, tree.join("a/link")).unwrap();
+    for closed in ["a/b", "a"] {
+        std::fs::set_permissions(tree.join(closed), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+    }
+    remove_tree(&tree).unwrap();
+    assert!(!tree.exists());
+    // The link's target was not touched (its mode is still 0500).
+    let meta = std::fs::metadata(&outside).unwrap();
+    assert_eq!(meta.mode() & 0o777, 0o500);
+    // A link alone goes without its target; nothing at all is fine.
+    let link = work.path().join("link");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    remove_tree(&link).unwrap();
+    assert!(outside.exists() && std::fs::symlink_metadata(&link).is_err());
+    remove_tree(&link).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+// The verbose listing joins a hardlink's name and target with " link to ":
+// a member named like that could fake the target, so it is refused. Same for
+// a newline in a name (GNU tar prints it escaped; the control-character
+// check of `check_member` refuses the rest).
+#[test]
+fn a_member_named_like_a_hardlink_line_or_with_a_newline_is_refused() {
+    need_tar!();
+    for name in [
+        "llama-b9000/a link to llama-b9000/b",
+        "llama-b9000/a\nllama-b9000/b",
+    ] {
+        let (_work, result) = run(&[dir("llama-b9000/"), file(name, b"x")]);
+        assert!(result.is_err(), "{name:?} was accepted");
+    }
+    let why = refused(&[link(
+        "llama-b9000/h",
+        b'1',
+        "llama-b9000/a link to llama-b9000/b",
+    )]);
+    assert!(why.contains("hardlink") || why.contains("unsafe"), "{why}");
+}
+
+// A symlink that points out of the install, followed by a file written
+// under it: the refusal must come from our checks, and the victim folder
+// must stay empty.
+#[test]
+fn a_file_written_through_an_absolute_symlink_dir_is_refused_by_our_checks() {
+    need_tar!();
+    let victim = tempfile::tempdir().unwrap();
+    let target = victim.path().to_str().unwrap().to_owned();
+    let (work, result) = run(&[
+        dir("llama-b9000/"),
+        link("llama-b9000/sub", b'2', &target),
+        file("llama-b9000/sub/evil", b"x"),
+    ]);
+    let why = result.expect_err("must be refused");
+    assert!(why.contains("unsafe symlink"), "{why}");
+    assert_eq!(std::fs::read_dir(victim.path()).unwrap().count(), 0);
+    drop(work);
+}

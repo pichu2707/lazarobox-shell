@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::io;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -22,6 +23,12 @@ const MAX_ENTRIES: usize = 10_000;
 
 /// Deepest folder nesting the walk follows.
 const MAX_DEPTH: usize = 32;
+
+/// What the verbose listing puts between a hardlink's name and its target.
+const LINK_TO: &str = " link to ";
+
+/// What the verbose listing puts between a symlink's name and its target.
+const ARROW: &str = " -> ";
 
 /// The `tar` found on `path`.
 pub fn find_tar(path: &OsStr) -> Result<PathBuf, String> {
@@ -63,6 +70,13 @@ pub fn extract(tar: &Path, archive: &Path, staging: &Path, top: &str) -> Result<
         if count > MAX_ENTRIES {
             return Err(format!("archive has too many members (over {MAX_ENTRIES})"));
         }
+        // The verbose listing joins a hardlink's name and target with this
+        // text: a name holding it could not be told from a hardlink line.
+        // (A newline in a name is refused by `check_member`: GNU tar prints
+        // it escaped, as a backslash.)
+        if name.contains(LINK_TO) || name.contains(ARROW) {
+            return Err(format!("unsafe archive member {name:?}: reads like a link"));
+        }
         install::check_member(name, top)?;
     }
     if count == 0 {
@@ -93,13 +107,26 @@ pub fn extract(tar: &Path, archive: &Path, staging: &Path, top: &str) -> Result<
 }
 
 /// One line of the verbose listing: its first character is the member type.
-/// Files, folders and symlinks pass (a symlink is judged where it landed);
+/// Files and folders pass; a symlink needs a bare-name target (and is judged
+/// again where it landed);
 /// a hardlink needs a target inside the top folder; the rest (devices,
 /// fifos) is refused.
 fn check_listed_kind(line: &str, top: &str) -> Result<(), String> {
     match line.chars().next() {
-        Some('-' | 'd' | 'l') => Ok(()),
-        Some('h') => match line.split_once(" link to ") {
+        Some('-' | 'd') => Ok(()),
+        // The target is judged before anything is written: a later member
+        // could otherwise be written through a link that points out.
+        Some('l') => match line.split_once(ARROW) {
+            Some((_, target)) => install::check_link_target(target),
+            None => Err(format!("unreadable symlink entry {line:?}")),
+        },
+        Some('h') => match line.split_once(LINK_TO) {
+            // No member name holds the separator (refused from the plain
+            // listing), so the first one splits the line; a target holding
+            // another would be ambiguous.
+            Some((_, target)) if target.contains(LINK_TO) => {
+                Err(format!("unsafe hardlink target {target:?}"))
+            }
             Some((_, target)) => install::check_hardlink_target(target, top),
             None => Err(format!("unreadable hardlink entry {line:?}")),
         },
@@ -120,6 +147,9 @@ fn check_result(staging: &Path, top: &str) -> Result<(), String> {
     if !only_top || !fs::symlink_metadata(&top_dir).is_ok_and(|m| m.is_dir()) {
         return Err(format!("the archive does not hold just {top}/"));
     }
+    // A folder the archive made unreadable (mode 000, 0500) would stop the
+    // walk and could not be deleted later: give the owner back its access.
+    make_owner_rwx(&top_dir)?;
     // (device, inode) -> (links the inode has, links found in the tree).
     let mut links = HashMap::new();
     walk(&top_dir, 0, &mut links)?;
@@ -127,6 +157,46 @@ fn check_result(staging: &Path, top: &str) -> Result<(), String> {
         return Err("the archive links a file to one outside the install".to_owned());
     }
     Ok(())
+}
+
+/// Gives every folder under (and including) `top` the owner's `rwx`, without
+/// following a link. Iterative: the depth is the archive's, not ours.
+fn make_owner_rwx(top: &Path) -> Result<(), String> {
+    let mut pending = vec![top.to_owned()];
+    while let Some(dir) = pending.pop() {
+        let meta = fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
+        if !meta.is_dir() {
+            continue;
+        }
+        let mode = meta.mode() & 0o7777;
+        if mode & 0o700 != 0o700 {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode | 0o700))
+                .map_err(|e| format!("cannot open {}: {e}", dir.display()))?;
+        }
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            pending.push(entry.map_err(|e| e.to_string())?.path());
+        }
+    }
+    Ok(())
+}
+
+/// Deletes `path` whatever the modes inside it: a link or a file goes as it
+/// is (a link is never followed); a folder first gets its subfolders opened
+/// to the owner, so `remove_dir_all` cannot stop at one the archive closed.
+/// Nothing there is not a failure.
+pub fn remove_tree(path: &Path) -> Result<(), String> {
+    let fail = |e: io::Error| format!("cannot remove {}: {e}", path.display());
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fail(e)),
+    };
+    if !meta.is_dir() {
+        return fs::remove_file(path).map_err(fail);
+    }
+    // Best effort: a failure here shows again as `remove_dir_all`'s.
+    let _ = make_owner_rwx(path);
+    fs::remove_dir_all(path).map_err(fail)
 }
 
 fn walk(
