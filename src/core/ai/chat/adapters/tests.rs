@@ -1533,3 +1533,88 @@ fn an_unknown_or_unparseable_claude_version_fails_open() {
         assert!(!claude_too_old(Some(line)), "{line:?}");
     }
 }
+
+// Byte pin (llamacpp-tools T1.7). The shared-helper refactor of the round body
+// must not change one byte of what Ollama receives. `serde_json` has no
+// `preserve_order`, so keys come out sorted: these are golden bytes, not a
+// parsed comparison.
+fn pin_exchange(id: Option<&str>, index: Option<u64>, name: &str, args: Value) -> ToolExchange {
+    ToolExchange {
+        id: id.map(Into::into),
+        index,
+        name: name.into(),
+        arguments: args,
+        result: "/home/u/curso-rust".into(),
+    }
+}
+
+#[test]
+fn pin_no_rounds_with_a_system_prompt_and_a_memory_block() {
+    let mut with_memory = request("be brief");
+    with_memory.memory = Some("<m>x</m>".into());
+    let golden = br#"{"messages":[{"content":"be brief\n\n<m>x</m>","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&with_memory, &[], false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn pin_one_round_without_ids_index_or_thinking() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: "Looking.".into(),
+        exchanges: vec![pin_exchange(
+            None,
+            None,
+            "find_dir",
+            json!({"query": "curso"}),
+        )],
+    }];
+    let golden = br#"{"messages":[{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"},{"content":"Looking.","role":"assistant","tool_calls":[{"function":{"arguments":{"query":"curso"},"name":"find_dir"}}]},{"content":"/home/u/curso-rust","role":"tool","tool_name":"find_dir"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&request(""), &rounds, false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn pin_one_round_with_ids_index_and_thinking() {
+    let rounds = [ToolRound {
+        thinking: Some("hm".into()),
+        text: String::new(),
+        exchanges: vec![
+            pin_exchange(Some("c1"), Some(0), "find_dir", json!({"query": "curso"})),
+            pin_exchange(Some("c2"), Some(1), "list_dir", json!({"path": "/home/u"})),
+        ],
+    }];
+    let golden = br#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"},{"content":"","role":"assistant","thinking":"hm","tool_calls":[{"function":{"arguments":{"query":"curso"},"index":0,"name":"find_dir"},"id":"c1"},{"function":{"arguments":{"path":"/home/u"},"index":1,"name":"list_dir"},"id":"c2"}]},{"content":"/home/u/curso-rust","role":"tool","tool_call_id":"c1","tool_name":"find_dir"},{"content":"/home/u/curso-rust","role":"tool","tool_call_id":"c2","tool_name":"list_dir"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&request("be brief"), &rounds, false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn pin_tools_on_is_the_tools_off_bytes_plus_the_tools_key_last() {
+    let mut on = request("be brief");
+    on.tools = Tools::On {
+        origin: None,
+        external: Default::default(),
+        mcp: None,
+    };
+    let off_bytes = ollama_round_body(&on, &[], false);
+    let on_bytes = ollama_round_body(&on, &[], true);
+    // Sorted keys put `tools` after `stream`: the only difference is a suffix.
+    let head = &off_bytes[..off_bytes.len() - 1];
+    assert!(on_bytes.starts_with(head));
+    assert!(on_bytes.ends_with(b"}"));
+    assert_eq!(
+        &on_bytes[head.len()..head.len() + 9],
+        br#","tools":"#.as_slice()
+    );
+    let tools: Value =
+        serde_json::from_slice(&on_bytes[head.len() + 9..on_bytes.len() - 1]).unwrap();
+    assert_eq!(tools[0]["function"]["name"], "find_dir");
+    assert_eq!(tools[0]["type"], "function");
+}
