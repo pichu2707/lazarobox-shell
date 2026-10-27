@@ -9,22 +9,27 @@ use std::{
     collections::VecDeque,
     io::Read,
     os::unix::fs::MetadataExt,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
 
 use regex::RegexBuilder;
 
-use super::fs::{
-    Budget, Failure, Limits, OMITTED_MARKER, ToolEnv, entries, load_roots, one_line, open_checked,
-    redaction_changes, visible,
+use super::{
+    fs::{
+        Budget, Failure, Limits, OMITTED_MARKER, ToolEnv, entries, load_roots, one_line,
+        open_checked, redaction_changes, visible,
+    },
+    staged::{MARKER, StagedView, plain, plain_str},
 };
 use crate::core::ai::{
     memory::redact::redact,
     sanitize::clean,
     tools::{
         glob::{BOUND_MARKER, Glob, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH, render},
-        paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve},
+        paths::{
+            PathVerdict, SecretRoots, is_excluded_name, is_git_config, plain_relative, resolve,
+        },
     },
 };
 
@@ -62,6 +67,18 @@ pub fn grep(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
+    grep_over(pattern, dir, env, limits, cancel, None)
+}
+
+/// [`grep`] that also searches the staged text of `view`, marking those paths.
+pub fn grep_over(
+    pattern: &str,
+    dir: Option<&str>,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+) -> Result<String, Failure> {
     if pattern.len() > MAX_PATTERN_BYTES {
         return Err(Failure::BadPattern);
     }
@@ -70,9 +87,20 @@ pub fn grep(
         .build()
         .map_err(|_| Failure::BadPattern)?;
     let mut found = Found::default();
-    let walked = walk(dir, env, limits, cancel, |roots, path, rel| {
-        read_text(roots, path).is_none_or(|text| found.scan(rel, &text, &re))
-    })?;
+    let walked = walk(
+        dir,
+        env,
+        limits,
+        cancel,
+        view,
+        |roots, path, rel, staged| {
+            let text = match staged {
+                Some(text) => prepared(text),
+                None => read_text(roots, path).map(plain),
+            };
+            text.is_none_or(|text| found.scan(&shown(rel, staged), &text, &re))
+        },
+    )?;
     Ok(found.render(walked.omitted, walked.bounded))
 }
 
@@ -85,12 +113,24 @@ pub fn glob(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
+    glob_over(pattern, dir, env, limits, cancel, None)
+}
+
+/// [`glob`] that also lists the staged files of `view`, marking those paths.
+pub fn glob_over(
+    pattern: &str,
+    dir: Option<&str>,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+) -> Result<String, Failure> {
     let matcher = Glob::new(pattern).map_err(|_| Failure::BadPattern)?;
     let mut paths = Vec::new();
     // The walk may collect one name past the cap, so `render` can say it cut.
-    let walked = walk(dir, env, limits, cancel, |_, _, rel| {
+    let walked = walk(dir, env, limits, cancel, view, |_, _, rel, staged| {
         if matcher.is_match(rel) {
-            paths.push(rel.to_owned());
+            paths.push(shown(rel, staged));
         }
         paths.len() <= MAX_MATCHES
     })?;
@@ -102,24 +142,20 @@ pub fn glob(
     Ok(out)
 }
 
+/// The path as the result shows it: marked when its text is staged, and with
+/// the marker words defanged otherwise.
+fn shown(rel: &str, staged: Option<&str>) -> String {
+    match staged {
+        Some(_) => format!("{rel} {MARKER}"),
+        None => plain_str(rel).into_owned(),
+    }
+}
+
 /// `dir` joined to `root` by text alone, when it is a plain root-relative
-/// path that the approval label shows exactly as it is searched. `None` for an
-/// empty, absolute or `~` path, any `..`, and any text the label would change
-/// (controls, zero-width or bidi characters, runs of whitespace).
+/// path that the approval label shows exactly as it is searched (see
+/// [`plain_relative`]).
 fn shown_dir(root: &Path, dir: &str) -> Option<PathBuf> {
-    let label = clean(dir).split_whitespace().collect::<Vec<_>>().join(" ");
-    if dir.is_empty() || dir.starts_with('~') || label != dir {
-        return None;
-    }
-    let mut out = root.to_path_buf();
-    for part in Path::new(dir).components() {
-        match part {
-            Component::CurDir => {}
-            Component::Normal(name) => out.push(name),
-            _ => return None,
-        }
-    }
-    Some(out)
+    plain_relative(dir).map(|rel| root.join(rel))
 }
 
 /// What a [`walk`] left out.
@@ -134,13 +170,16 @@ struct Walked {
 /// root when `None`), never following a link, never entering a skipped
 /// folder, never showing a secret name or a git setting. `visit` gets the
 /// secret roots, the real path and the root-relative one-line path of each
-/// regular file; it returns `false` to stop.
+/// regular file, and the staged text of it when `view` holds one (a file the
+/// batch creates is visited after the disk, under the same rules); it returns
+/// `false` to stop.
 fn walk(
     dir: Option<&str>,
     env: &ToolEnv,
     limits: &Limits,
     cancel: &AtomicBool,
-    mut visit: impl FnMut(&SecretRoots, &Path, &str) -> bool,
+    view: Option<&StagedView>,
+    mut visit: impl FnMut(&SecretRoots, &Path, &str, Option<&str>) -> bool,
 ) -> Result<Walked, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
@@ -167,8 +206,9 @@ fn walk(
     }) {
         return Err(Failure::Refused);
     }
-    let mut queue = VecDeque::from([(start, 0usize)]);
+    let mut queue = VecDeque::from([(start.clone(), 0usize)]);
     let (mut visited, mut bounded, mut omitted) = (0usize, false, false);
+    let mut seen: Vec<PathBuf> = Vec::new();
     'walk: while let Some((folder, level)) = queue.pop_front() {
         if budget.spent() {
             bounded = true;
@@ -219,12 +259,55 @@ fn walk(
                 } else {
                     queue.push_back((path, level + 1));
                 }
-            } else if !visit(&roots, &path, &one_line(rel.as_os_str())) {
-                break 'walk;
+            } else {
+                let staged = view.and_then(|v| v.text(&path));
+                seen.extend(staged.map(|_| path.clone()));
+                if !visit(&roots, &path, &one_line(rel.as_os_str()), staged) {
+                    return Ok(Walked { omitted, bounded });
+                }
             }
         }
     }
+    // The files only the batch makes, under the rules the walk applies.
+    for (path, text) in view.iter().flat_map(|v| v.files_below(&start)) {
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        let within = path
+            .strip_prefix(&start)
+            .unwrap_or(path)
+            .components()
+            .count();
+        if seen.iter().any(|p| p == path) || within > limits.depth + 1 {
+            continue;
+        }
+        match staged_only(&roots, path, rel) {
+            Some(true) => omitted = true,
+            Some(false) if !visit(&roots, path, &one_line(rel.as_os_str()), Some(text)) => break,
+            _ => {}
+        }
+    }
     Ok(Walked { omitted, bounded })
+}
+
+/// Whether the walk would show the staged file `path` (`rel` below the root):
+/// `Some(false)` shown, `Some(true)` left out as a secret-looking name (said so
+/// in the result), `None` left out silently (a skipped folder, a git setting).
+fn staged_only(roots: &SecretRoots, path: &Path, rel: &Path) -> Option<bool> {
+    let names: Vec<_> = rel.components().map(|c| c.as_os_str()).collect();
+    let (_, folders) = names.split_last()?;
+    if folders
+        .iter()
+        .any(|name| skipped_dir(&name.to_string_lossy()))
+        || is_git_config(path)
+    {
+        return None;
+    }
+    let secret = names
+        .iter()
+        .any(|name| is_excluded_name(&name.to_string_lossy()) || redaction_changes(name));
+    if secret || redaction_changes(rel.as_os_str()) {
+        return Some(true);
+    }
+    roots.judge_real(path).then_some(false)
 }
 
 /// The cleaned and redacted text of a regular file of at most
@@ -243,8 +326,12 @@ fn read_text(roots: &SecretRoots, path: &Path) -> Option<String> {
     if bytes.len() > MAX_FILE_BYTES || bytes.contains(&0) {
         return None;
     }
-    let text = String::from_utf8(bytes).ok()?;
-    Some(redact(&clean(&text)).text)
+    prepared(&String::from_utf8(bytes).ok()?)
+}
+
+/// The cleaned and redacted `text`, unless it is over [`MAX_FILE_BYTES`].
+fn prepared(text: &str) -> Option<String> {
+    (text.len() <= MAX_FILE_BYTES).then(|| redact(&clean(text)).text)
 }
 
 /// The match lines so far and whether a cap stopped the search.
@@ -606,7 +693,20 @@ mod tests {
         )
     }
 
-    // Spec (code-search, glob): Matches under the root.
+    #[test]
+    fn a_leftover_write_temp_is_neither_searched_nor_globbed() {
+        let f = fixture();
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        fs::write(f.root.join("src").join(temp), "needle\n").unwrap();
+        fs::write(f.root.join("src/a.rs"), "needle\n").unwrap();
+        for out in [run(&f, "needle", None), find(&f, "**/*", None)] {
+            let out = out.unwrap();
+            assert!(out.starts_with("src/a.rs"), "{out}");
+            assert!(!out.contains(".lbx-"), "{out}");
+        }
+    }
+
+    // Spec (code-search, glob): Matches under the root.    // Spec (code-search, glob): Matches under the root.
     #[test]
     fn glob_lists_matching_files_relative_to_the_root_and_never_content() {
         let f = fixture();

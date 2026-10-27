@@ -107,17 +107,27 @@ mod linux {
             .collect()
     }
 
-    fn cstring(bytes: &[u8]) -> io::Result<CString> {
+    pub(in crate::runtime::tools) fn cstring(bytes: &[u8]) -> io::Result<CString> {
         CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
     }
 
-    fn owned(fd: i32) -> io::Result<OwnedFd> {
+    pub(in crate::runtime::tools) fn owned(fd: i32) -> io::Result<OwnedFd> {
         if fd < 0 {
             Err(io::Error::last_os_error())
         } else {
             // SAFETY: `fd` is a new descriptor this process owns.
             Ok(unsafe { OwnedFd::from_raw_fd(fd) })
         }
+    }
+
+    /// Opens the existing `name` of the folder `dirfd` for reading, with fixed
+    /// flags: never created, never written, no link in the last place. The
+    /// write module cannot choose flags, so it cannot open for writing here.
+    pub(in crate::runtime::tools) fn open_existing_at(
+        dirfd: RawFd,
+        name: &CString,
+    ) -> io::Result<OwnedFd> {
+        open_raw(dirfd, name, flags(false))
     }
 
     fn open_raw(dirfd: RawFd, path: &CString, flags: i32) -> io::Result<OwnedFd> {

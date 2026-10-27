@@ -26,6 +26,9 @@ exclude = [
 ]
 
 [dependencies]
+# Line diff for the batch review
+similar = "2"
+
 # Async Runtime
 tokio = { version = "1.38", features = ["full"] }
 

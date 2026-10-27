@@ -1,0 +1,8 @@
+---
+source: src/ui/components/chat/badge_tests.rs
+expression: shot_of(&buf)
+---
+ staged 3
+› question
+
+an answer

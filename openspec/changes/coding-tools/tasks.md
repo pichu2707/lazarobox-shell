@@ -38,12 +38,12 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 6 | M1-c search wiring + approval | ~350 | M1-b branch | Ready (see decision 4) |
 | 7 | W-a content rules + `resolve_write` | ~350 | M1-c branch | Ready |
 | 8 | W-b write primitives (`open.rs`) | ~350 | W-a branch | Ready |
-| 9 | W-c stage state machine | ~400 | W-b branch | Ready |
-| 10 | W-d edit + diff | ~400 | W-c branch | Ready |
+| 9 | W-c stage state machine | ~400 | W-b branch | Done (apply) |
+| 10 | W-d edit + diff | ~400 | W-c branch | Done |
 | 11 | W-e1 ReviewDoc + layout + coverage core | ~400 | W-d branch | Ready |
 | 12 | W-e2 apply (journal, rollback, `WriteOps`) | ~450 | W-e1 branch | Ready |
 | 13 | W-e3 `Stages` store + `StagedView` | ~350 | W-e2 branch | Ready |
-| 14 | W-e4 review view (app + ui) | ~600 | W-e3 branch | Ready, likely size:exception |
+| 14 | W-e4 review view (app + ui) | ~600 | W-e3 branch | Done (apply), 542 production lines: size:exception or split |
 | 15 | X-a allow-list | ~350 | W-e4 branch | Ready |
 | 16 | X-b `Capture` + `RunOutcome` | ~350 | X-a branch | Ready |
 | 17 | X-c1 toolchain `JailSpec` (pure) | ~450 | X-b branch | Ready |
@@ -51,19 +51,19 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 19 | X-c3 runner (spawn core, `GroupKill`, env scrub) | ~450 | X-c2 branch | Ready |
 | 20 | G-a git argv + porcelain parse (pure) | ~350 | X-c3 branch | Ready |
 | 21 | G-b git runtime (git jail, preflight) | ~350 | G-a branch | Ready |
-| 22 | W-f host staging tools | ~450 | G-b branch | BLOCKED by S1c-2 on main |
-| 23 | W-g runtime chat: discard on close, orphan effects | ~400 | W-f branch | BLOCKED by S1c-2 |
-| 24 | W-h badge, Ctrl+G, quit notice | ~450 | W-g branch | BLOCKED by S1c-2 |
+| 22 | W-f host staging tools | ~450 | G-b branch | Ready (spike a seam first) |
+| 23 | W-g runtime chat: discard on close, orphan effects | ~400 | W-f branch | Ready (spike a seam first) |
+| 24 | W-h badge, Ctrl+G, quit notice | ~450 | W-g branch | Ready (spike a seam first) |
 | 25 | M5-a docs for search + write (0.19/0.20) | ~300 | W-h branch | Ready after #24 |
-| 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | BLOCKED by S1c-2 |
-| 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | BLOCKED by S1c-2 |
-| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | BLOCKED by S1c-2 |
-| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | BLOCKED by S1c-2 |
+| 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | Ready (spike a seam first) |
+| 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | Ready (spike a seam first) |
+| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | Ready (spike a seam first) |
+| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | Ready (spike a seam first) |
 | 30 | M5-b docs for run + git, threat model, CHANGELOG | ~300 | G-d branch | Ready after #29 |
 
 Likely `size:exception`: W-e4 (high), then T, P0a, W-e2, X-c3, G-d, X-c1, W-f, W-h, X-d1 (medium; decide with real numbers). Every other PR is expected between 300 and 450 and should be split further if a work-unit commit crosses 300.
 
-Blocked-slice rule: the BLOCKED rows cannot start until agent-orchestrator S1c-2 (PR 5 of its chain) is on `main` together with the S1 tracker (user decision, S1c-2 is not merged early). They sit at the end of the chain so everything above can proceed now. All 7 BLOCKED PRs edit `runtime/tools/host.rs` (execute path), which S1c-2 changes (`TurnScope`, execute filter, scope check, ask label).
+Host-slice rule (updated 2026-10-25, user decision): the former BLOCKED rows (W-f..h, X-d1/2, G-c/d) are NO LONGER blocked by agent-orchestrator S1c-2. coding-tools may land in `runtime/tools/host.rs` first; the orchestrator chain then rebases on it. Each of those slices still starts with a spike for a seam that avoids `host.rs` (as M1c.0 did); an edit to `host.rs` is allowed only when no such seam exists, and it must stay tiny and be reported as a rebase point against S1c-2 (`TurnScope`, execute filter, scope check, ask label).
 
 ### Rebase points against agent-orchestrator
 
@@ -73,7 +73,7 @@ Blocked-slice rule: the BLOCKED rows cannot start until agent-orchestrator S1c-2
 | P0b vs S1c-1 | `runtime/mcp/session.rs` (generic `Hub<K: HubKey>`) | S1c-1 rebases onto P0b | P0b only adds a `FamilySet` argument at LEGACY; keep the diff in session.rs to the minimum. |
 | P0b vs S1d-x | `runtime/chat.rs:716`, `chat/adapters.rs:287` (`Chats::with_orchestra`) | S1d-3 rebases | Same, minimum diff. |
 | T vs S1a/S1e | `core/menu/*`, `app/*` (ORCH row, Ctrl+O) | whoever lands second | T adds 5 rows: re-count the menu row tests and snapshots after the S1 tracker merges. |
-| W-f..h, X-d, G-c/d | `host.rs`, `runtime/chat.rs` | coding-tools chain | Rebase the whole remaining chain on main once S1c-2 and S1 tracker are merged. |
+| W-f..h, X-d, G-c/d | `host.rs`, `runtime/chat.rs` | agent-orchestrator S1c-2 and later | coding-tools lands first (user decision 2026-10-25); the orchestrator chain rebases on it. Keep each `host.rs` edit tiny. |
 
 ## Phase P0 (direct to main)
 
@@ -132,65 +132,87 @@ Release point 0.19: P0 + T + M1 (see decision 2).
 
 ### W-a: content rules and `resolve_write` (PR 7, ~350)
 Spec: code-write "Deny rules", "Root policy", "Caps".
-- [ ] Wa.1 RED: content refusal table (C0 except `\t`/`\n`, DEL, C1, `\r`, the fixed Unicode list including ZWJ); existing file must be UTF-8 with no CR/NUL; no newline added. GREEN: `tools/content.rs`. ~170.
-- [ ] Wa.2 RED: `resolve_write`: root is HOME / ancestor of HOME / system dir / missing / outside HOME refused; `.git`/`node_modules` components and SECRET lists refused; one text `path not available`; tier-B warnings (Makefile, build.rs, Cargo.toml, `.cargo/config*`, package.json, pyproject.toml, setup.py, conftest.py, go.mod, `*.sh`, `.github/workflows/*`). GREEN: `tools/paths.rs`. ~180.
+- [x] Wa.1 RED: content refusal table (C0 except `\t`/`\n`, DEL, C1, `\r`, the fixed Unicode list including ZWJ); existing file must be UTF-8 with no CR/NUL; no newline added. GREEN: `tools/content.rs`. ~170.
+- [x] Wa.2 RED: `resolve_write`: root is HOME / ancestor of HOME / system dir / missing / outside HOME refused; `.git`/`node_modules` components and SECRET lists refused; one text `path not available`; tier-B warnings (Makefile, build.rs, Cargo.toml, `.cargo/config*`, package.json, pyproject.toml, setup.py, conftest.py, go.mod, `*.sh`, `.github/workflows/*`). GREEN: `tools/paths.rs`. ~180.
 
 ### W-b: write primitives (PR 8, ~350)
 Spec: code-write "Apply" (primitives), "Nothing writes without approval".
-- [ ] Wb.1 RED (tempfile, Linux): open parent with openat2 `RESOLVE_BENEATH|NO_SYMLINKS`; reject symlink swap, nlink>1, non-regular. GREEN: `runtime/tools/open.rs`. ~180.
-- [ ] Wb.2 RED: `mkdirat`, `O_EXCL` temp + fsync + `renameat2(NOREPLACE)` for create, `renameat` replace keeping base mode. GREEN. ~170.
+- [x] Wb.1 RED (tempfile, Linux): open parent with openat2 `RESOLVE_BENEATH|NO_SYMLINKS`; reject symlink swap, nlink>1, non-regular. GREEN: `runtime/tools/write.rs` (moved out of `open.rs`, see design D22). ~180.
+- [x] Wb.2 RED: `mkdirat`, `O_EXCL` temp + fsync + `renameat2(NOREPLACE)` for create, `renameat` replace keeping base mode. GREEN. ~170.
+
+Obligations from the W-a review (`resolve_write` is a check made earlier, not a lock):
+- [x] Re-check at open time with `openat`/`O_NOFOLLOW` along the directory chain, or re-run `resolve_write` and compare the two real paths. (Done: `open_checked` on the parent, design D22.)
+- [x] `fstat` the opened file and refuse `nlink > 1`.
+- [x] Refuse a final symlink.
+- [x] Re-run `judge_real` on the real path of the opened fd.
+- [x] Decide on purpose whether `check_new` runs on the whole post-edit text or only on the new text, and test that choice. (Decided: only the new text, design D23. The primitives never inspect bytes, so the test belongs to Wd.1.)
+- [x] Document the BOM asymmetry: `check_new` refuses a leading BOM, `check_existing` accepts it. (Design D23.)
 
 ### W-c: stage state machine (PR 9, ~400)
 Spec: code-write "create_dir and write_file staging", "Propose batch and size cap", "Orphan, close and quit".
-- [ ] Wc.1 RED: `Staging -> Proposed(gen) -> Applied|Discarded`; staging refused while Proposed; stale gen refused; Proposed-orphan vs Staging-orphan. GREEN: `tools/stage.rs` with `StageKey::Pane`, `BatchId`. ~200.
-- [ ] Wc.2 RED: caps at stage time (50 entries, 1 MiB) with "batch is full: propose it, then stage the rest", and re-check at propose; `write_file` 32 KiB. GREEN. ~120.
-- [ ] Wc.3 RED: `write_file` on an existing file only when <= 64 KiB and `redact(clean(text)) == text`, else "use edit_file". GREEN. ~80.
+- [x] Wc.1 RED: `Staging -> Proposed(gen) -> Applied|Discarded`; staging refused while Proposed; stale gen refused; Proposed-orphan vs Staging-orphan. GREEN: `tools/stage.rs` with `StageKey::Pane`, `BatchId`. ~200.
+- [x] Wc.2 RED: caps at stage time (50 entries, 1 MiB) with "batch is full: propose it, then stage the rest", and re-check at propose; `write_file` 32 KiB. GREEN. ~120.
+- [x] Wc.3 RED: `write_file` on an existing file only when <= 64 KiB and `redact(clean(text)) == text`, else "use edit_file". GREEN. ~80.
 
 ### W-d: edit and diff (PR 10, ~400)
 Spec: code-write "edit_file staging", "Batch review and coverage gate".
-- [ ] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170.
-- [ ] Wd.2 RED: diff with `similar` (Myers, 500 ms deadline, 3 context lines), create shows all added, `no newline at end of file`. GREEN: `tools/diff.rs`, `Cargo.toml`. ~230.
+- [x] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170. Decision from W-b (design D23): `check_new` runs on the `new` text only, never on the whole result; add a test that an existing file holding a control character or a BOM can still be edited elsewhere, and that a `new` text with a BOM or a control is refused.
+- [x] Wd.2 RED: diff with `similar` (Myers, 500 ms deadline, 3 context lines), create shows all added, `no newline at end of file`. GREEN: `tools/diff.rs`, `Cargo.toml`. ~230.
 
 ### W-e1: ReviewDoc and coverage core (PR 11, ~400)
 Spec: code-write "Batch review and coverage gate"; chat-pane "Batch review view".
-- [ ] We1.1 RED: `ReviewDoc` (headers, warnings, hunk lines), invisible chars in context lines shown as `<U+XXXX>`. GREEN: `core/ai/chat/review.rs`. ~170.
-- [ ] We1.2 RED: single `layout(doc, width)`; a logical line is seen only when all its wrapped rows were shown; coverage after resize; `y` enabled only when all seen AND 800 ms elapsed. GREEN (pure, injectable clock). ~230.
+- [x] We1.1 RED: `ReviewDoc` (headers, warnings, hunk lines), invisible chars in context lines shown as `<U+XXXX>`. GREEN: `core/ai/chat/review.rs`. ~170.
+- [x] We1.2 RED: single `layout(doc, width)`; a logical line is seen only when all its wrapped rows were shown; coverage after resize; `y` enabled only when all seen AND 800 ms elapsed. GREEN (pure, injectable clock). ~230.
+- [x] Obligation from the Wd review (honoured in `chat/review.rs`: no `Display`/`Serialize`/`Into<String>` on `ReviewDoc`, `Debug` prints counts, tests pin it): diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review slice MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering.
 
 ### W-e2: apply (PR 12, ~450)
 Spec: code-write "Apply" (preflight, drift, rollback, partial).
-- [ ] We2.1 RED: `WriteOps` trait + fault injector; preflight drift refuses the whole batch (`Drifted`). GREEN: `runtime/tools/apply.rs`. ~200. Dep: Wb.
-- [ ] We2.2 RED: journaled ordered apply (dirs by depth, then files), fault at step k rolls back in reverse. GREEN. ~150.
-- [ ] We2.3 RED: failing undo returns `Partial{changed}`; success returns `Vec<Change>` for S7. GREEN. ~100.
+- [x] We2.1 RED: `WriteOps` trait + fault injector; preflight drift refuses the whole batch (`Drifted`). GREEN: `runtime/tools/apply.rs`. ~200. Dep: Wb.
+- [x] We2.2 RED: journaled ordered apply (dirs by depth, then files), fault at step k rolls back in reverse. GREEN. ~150.
+- [x] We2.3 RED: failing undo returns `Partial{changed}`; success returns `Vec<Change>` for S7. GREEN. ~100.
+
+Obligations from the W-a review (the same as W-b, applied where the write happens). All met by going through `write.rs` only; `apply.rs` opens, reads and writes nothing itself:
+- [x] Re-check each target at apply time along the chain: the preflight probes through `open_target` (`openat2` `RESOLVE_BENEATH|NO_SYMLINKS` parent, judged again) and every write re-opens the parent. A refused target is `Drifted`; tests on the real disk.
+- [x] `fstat` and refuse `nlink > 1`: inside `open_in` (shared by the probe and by `replace_file`/`delete_file`); a hard-linked target drifts (test).
+- [x] Refuse a final symlink: `O_NOFOLLOW` in `open_in`; a target that became a symlink is refused and nothing is written through it (test).
+- [x] Re-run `judge_real` on the opened fd's real path: `open_in` does it for the probe and for every write and undo.
+- [x] `check_new` scope settled in D23 (new text only); apply never inspects bytes. Not a W-e2 test: it belongs to Wd.1.
+- [x] BOM asymmetry documented in D23; apply writes the staged bytes as they are.
 
 ### W-e3: Stages store and StagedView (PR 13, ~350)
 Spec: code-search "Staged view"; code-write "Orphan, close and quit".
-- [ ] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
-- [ ] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
+- [x] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
+- [x] Obligation from the Wc review: the store MUST give each new batch of a key a monotonic, never-reused generation (`u64`, `checked_add`); `Batch` cannot check it, and a reused generation would let a stale answer hit a new batch.
+- [x] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
 
 ### W-e4: review view (PR 14, ~600, likely size:exception)
 Spec: chat-pane "Batch review view"; code-write "Batch review and coverage gate".
-- [ ] We4.1 RED: `ApprovalAsk::Batch(Arc<BatchReview>)` routes `Prompt` in every mode; `n`/Esc rejects, `y` locked until coverage + 800 ms. GREEN: `chat/approval.rs`, `app/review.rs`. ~220. Dep: We1.
-- [ ] We4.2 RED (TestBackend + insta, fake clock): full-pane view with warnings, gate counter. GREEN: `ui/components/review.rs`. ~250 plus snapshots.
-- [ ] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
-- Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR.
+- [x] We4.1 RED: `ApprovalAsk::Batch(Arc<BatchReview>)` routes `Prompt` in every mode; `n`/Esc rejects, `y` locked until coverage + 800 ms. GREEN: `chat/approval.rs`, `app/review.rs`. ~220. Dep: We1.
+- [x] We4.2 RED (TestBackend + insta, fake clock): full-pane view with warnings, gate counter. GREEN: `ui/components/review.rs`. ~250 plus snapshots.
+- [x] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
+- [x] Unreviewable batch (decision from the We1 review): when `ReviewDoc::reviewable()` is false (a truncated diff, or no entry) `y` never arms, whatever was seen. The view offers only reject/discard, shows the "too large to review" warning, and the answer to the model says the batch was too large to review and tells it to split the change into smaller batches.
+- Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR. (Applied: We4.3 is the last commit; production is 542 lines, so the exception or a split is still needed.)
+- [x] Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review view MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. W-e1 gave `ReviewDoc` no `Display`/`Serialize`/`Into<String>` (and a counts-only `Debug`); the view MUST NOT add one, and the answer sent back to the model (`denied` or the apply result) carries counts and paths only, built from `ReviewDoc::files/added/removed`, never from `lines()`.
 
-### W-f: host staging tools (PR 22, ~450, BLOCKED by S1c-2)
+### W-f: host staging tools (PR 22, ~450, host.rs slice: spike a seam first)
 Spec: code-write "create_dir and write_file staging", "edit_file staging", "Propose batch and size cap", "Nothing writes without approval"; lazarobox-mcp-server "Coding tools run in the app".
-- [ ] Wf.1 RED: `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse (family Write gate). ~100.
-- [ ] Wf.2 RED: `host.rs` stages without ask or disk touch; `ToolEnv` carries `StagedView`; `propose_batch` seals and asks. ~220.
-- [ ] Wf.3 RED: all-toggles-off golden stays green; a Write tool call with Write off is `UnknownTool`. ~130. Host re-checks the family as defense in depth.
+- [x] Wf.1 RED: `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse (family Write gate). ~100.
+- [x] Wf.2 RED: `host.rs` stages without ask or disk touch; the read tools get the `StagedView` (via `run_over`, `ToolEnv` unchanged); `propose_batch` seals and asks. ~220. Seam: `runtime/tools/host/files.rs`, see design "Host seam for the write family".
+- [x] Wf.3 RED: all-toggles-off golden stays green; a Write tool call with Write off is `UnknownTool`. ~130. Host re-checks the family as defense in depth.
+- [x] Unreviewable batch: a staged batch whose diff is truncated cannot be approved (`ReviewDoc::reviewable()`). `propose_batch` still seals it, the user can only reject/discard it, and the result the model receives says the batch was too large to review and that it must split the change into smaller batches (counts and paths only).
+- [x] Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The host tools MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. The `edit_file`, `write_file` and `propose_batch` results carry counts and paths only, never diff text.
 
-### W-g: runtime chat lifecycle (PR 23, ~400, BLOCKED by S1c-2)
+### W-g: runtime chat lifecycle (PR 23, ~400, host.rs slice: spike a seam first)
 Spec: code-write "Orphan, close and quit", "Apply"; chat-pane "Closing discards a batch".
-- [ ] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
-- [ ] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
-- [ ] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
+- [x] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
+- [x] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
+- [x] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
 
-### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, BLOCKED by S1c-2)
+### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, host.rs slice: spike a seam first)
 Spec: chat-pane "Staged batch indicator"; code-write "Orphan, close and quit".
-- [ ] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
-- [ ] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
-- [ ] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
+- [x] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
+- [x] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
+- [x] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
 
 Go/no-go checkpoint on review UX after W-h (design rollout).
 
@@ -226,13 +248,13 @@ Spec: command-runner "Process rules".
 - [ ] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
 - [ ] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90.
 
-### X-d1: host `run_command` (PR 26, ~450, BLOCKED by S1c-2)
+### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".
 - [ ] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
 - [ ] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
 - [ ] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
-### X-d2: Exec ask and notice (PR 27, ~400, BLOCKED by S1c-2)
+### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
 - [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
 - [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
@@ -247,11 +269,11 @@ Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
 - [ ] Gb.1 RED: git `JailSpec` (run spec without caches, ro `~/.gitconfig` and XDG git files, rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
 - [ ] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
 
-### G-c: host git read verbs (PR 28, ~300, BLOCKED by S1c-2)
+### G-c: host git read verbs (PR 28, ~300, host.rs slice: spike a seam first)
 - [ ] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.
 - [ ] Gc.2 RED: `ApprovalAsk::GitDiff`, host wiring, Git family gate. ~150.
 
-### G-d: add and commit (PR 29, ~450, BLOCKED by S1c-2)
+### G-d: add and commit (PR 29, ~450, host.rs slice: spike a seam first)
 Spec: git-tools "add", "commit", "Two toggles".
 - [ ] Gd.1 RED: `git_add` refuses secret names; one-line overlay (paths + diffstat) or the review view when it does not fit; GitWrite gate. ~170.
 - [ ] Gd.2 RED: `git_commit`: `CommitReview` (message, full `--cached` diff, notice "signing disabled for this commit"), `-c commit.gpgsign=false`, no AI trailer, refused when the index holds a secret path, hooks run in the jail. ~200.
@@ -274,7 +296,7 @@ Spec: git-tools "add", "commit", "Two toggles".
 P0a -> P0b -> (tracker rebase on main) -> T -> M1-a -> M1-b -> M1-c
  -> W-a -> W-b -> W-c -> W-d -> W-e1 -> W-e2 -> W-e3 -> W-e4
  -> X-a -> X-b -> X-c1 -> X-c2 -> X-c3 -> G-a -> G-b
- -> [S1c-2 + S1 tracker on main] -> W-f -> W-g -> W-h -> M5-a
+ -> W-f -> W-g -> W-h -> M5-a
  -> X-d1 -> X-d2 -> G-c -> G-d -> M5-b -> Z.1..Z.3
 ```
 
@@ -283,7 +305,7 @@ The chain is linear (feature-branch-chain). Pure cores are independent by file, 
 ## Risks
 
 - Real sizes: 20 of 30 PRs are at or above 400; per-commit measurement is the only reliable stop.
-- 7 PRs are blocked on S1c-2 reaching main with the S1 tracker; if that slips, M2/M3/M4 cannot ship any user-visible behaviour (they stay dark).
+- 7 PRs edit `host.rs` and `runtime/chat.rs`, which S1c-2 also changes. They are no longer blocked (user decision 2026-10-25); the cost moves to the orchestrator chain, which rebases on them.
 - `host.rs`, `runtime/chat.rs`, `session.rs`, menu files are shared with the orchestrator chain: expect repeated rebases.
 - A 30-branch linear chain amplifies a rebase on any early change (review fixes in P0 or T ripple through all).
 

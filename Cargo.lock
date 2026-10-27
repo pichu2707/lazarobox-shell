@@ -755,6 +755,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha2",
+ "similar",
  "tempfile",
  "tokio",
  "toml",

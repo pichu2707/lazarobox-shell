@@ -65,11 +65,35 @@ pub fn is_env_name(name: &str) -> bool {
     lower == ".env" || lower.starts_with(".env.")
 }
 
+/// Whether a name is an environment template (`.env.example`,
+/// `.env.local.sample`): an env name that ends in `.example`, `.sample`,
+/// `.template` or `.dist` (ASCII case-insensitive). It holds no secret by
+/// convention, so a write may create it; a read still refuses it.
+fn is_env_template(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_env_name(name)
+        && [".example", ".sample", ".template", ".dist"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+}
+
+/// Whether a name is a temp file of the write primitives:
+/// `.lbx-<32 lowercase hex digits>.tmp`. A crash can leave one behind; it is
+/// hidden from every tool and refused as a read or write target.
+pub fn is_temp_name(name: &str) -> bool {
+    name.strip_prefix(".lbx-")
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .is_some_and(|hex| {
+            hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
 /// Whether an entry name is excluded wherever it appears below `$HOME`. The
 /// walking tools skip such entries; the root folders are judged by position
 /// in [`check_path`].
 pub fn is_excluded_name(name: &str) -> bool {
     is_env_name(name)
+        || is_temp_name(name)
         || SECRET_FILES
             .iter()
             .any(|file| file.eq_ignore_ascii_case(name))
@@ -164,6 +188,34 @@ pub fn display_target(home: &Path, origin: &Path, input: &str) -> Option<String>
     let plain = crate::core::ai::tools::summary::clip(&text) == text;
     let secret = crate::core::ai::memory::redact::redact(&text).hits > 0;
     (plain && !secret).then_some(text)
+}
+
+/// The root-relative path `input` names by text alone, when the approval label
+/// shows it exactly as it is used. `None` for an empty, absolute or `~` path,
+/// any `..`, and any text the label would change (controls, zero-width, bidi
+/// or other invisible characters, runs of whitespace, a secret-looking run). A `.` part is
+/// dropped, so `.` gives an empty path.
+pub fn plain_relative(input: &str) -> Option<PathBuf> {
+    let label = crate::core::ai::sanitize::clean(input)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if input.is_empty()
+        || input.starts_with('~')
+        || label != input
+        || input.chars().any(super::content::is_hidden)
+    {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in Path::new(input).components() {
+        match part {
+            Component::CurDir => {}
+            Component::Normal(name) => out.push(name),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// Expands a leading `~` or `~/` to `home`. `~user` is not supported and
@@ -354,6 +406,13 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
     }
 }
 
+/// The real path `input` names, whether or not it exists: the path a read
+/// resolves, with the deepest existing ancestor canonicalized (no `..` is
+/// folded by text first) and the missing names appended. Not judged.
+pub fn real_target(roots: &SecretRoots, origin: &Path, input: &str) -> Option<PathBuf> {
+    canonical_new(&locate(roots, origin, input)?)
+}
+
 /// `input` with `~` expanded and a relative path joined to `origin`. `None`
 /// for a relative `origin` (`canonicalize` would depend on the process cwd)
 /// or an unsupported `~user`.
@@ -432,6 +491,137 @@ fn canonical_new(path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Folder names a write never enters, at any depth below HOME.
+const WRITE_DENIED_DIRS: &[&str] = &[".git", "node_modules"];
+
+/// File names that run code when the project is built or tested: a change
+/// carries a warning in the review. Lower case, compared ASCII
+/// case-insensitively.
+const BUILD_FILES: &[&str] = &[
+    "makefile",
+    "build.rs",
+    "cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "conftest.py",
+    "go.mod",
+    "justfile",
+    "rakefile",
+    "tox.ini",
+    "noxfile.py",
+    "cmakelists.txt",
+    "build.gradle",
+    "build.gradle.kts",
+    "pom.xml",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    ".pre-commit-config.yaml",
+    ".gitlab-ci.yml",
+    ".gitattributes",
+    ".gitmodules",
+    // Read by the user's shell at login.
+    ".bashrc",
+    ".zshrc",
+    ".profile",
+    ".bash_profile",
+];
+
+/// Folders whose every file runs on a git event or when the project opens.
+const BUILD_DIRS: &[&str] = &[".husky", ".githooks", ".devcontainer"];
+
+/// Where a write may land: the real path, and whether it is a build file.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct WriteTarget {
+    pub real: PathBuf,
+    pub build_file: bool,
+}
+
+/// Whether the root-relative path `rel` is a build file (tier B): one of
+/// [`BUILD_FILES`], `Dockerfile.*`, `settings.gradle*`, `*.sh`, `*.ps1`,
+/// `*.bat`, `*.cmd`, a file below one of [`BUILD_DIRS`], `.vscode/tasks.json`,
+/// `.vscode/launch.json`, `.cargo/config*` or `.github/workflows/*`.
+fn is_build_file(rel: &Path) -> bool {
+    let names: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    let Some((name, dirs)) = names.split_last() else {
+        return false;
+    };
+    BUILD_FILES.contains(&name.as_str())
+        || name.starts_with("dockerfile.")
+        || name.starts_with("settings.gradle")
+        || [".sh", ".ps1", ".bat", ".cmd"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+        || dirs.iter().any(|d| BUILD_DIRS.contains(&d.as_str()))
+        || (dirs.last().is_some_and(|d| d == ".vscode")
+            && (name == "tasks.json" || name == "launch.json"))
+        || (dirs.last().is_some_and(|d| d == ".cargo") && name.starts_with("config"))
+        || dirs.ends_with(&[".github".to_owned(), "workflows".to_owned()])
+}
+
+/// The path policy of the write tools. `origin` is the root; `input` is a
+/// path below it. Allowed only when:
+/// - the root is a real folder strictly inside HOME and not secret (HOME, a
+///   parent of HOME, a system folder, a missing or outside root all refuse);
+/// - `input` is a plain relative path that the review shows exactly as it is
+///   written (see [`plain_relative`]), in its canonical text form: no `.`
+///   part, empty part or trailing slash, and no secret-looking run;
+/// - the real target is the root joined to that text, so no link sits on the
+///   way, in or out of the root, and nothing below HOME is excluded by name,
+///   position or secret root, nor is a `.git` or `node_modules` folder (an
+///   env template such as `.env.example` is the one name let through);
+/// - the target itself, and any folder above it, may not exist yet.
+///
+/// Every refusal is the same `None` (the text is [`REFUSED`]). It reads the
+/// disk but writes nothing.
+pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<WriteTarget> {
+    if !origin.is_absolute() {
+        return None;
+    }
+    let root = origin.canonicalize().ok()?;
+    if root == roots.real || !root.is_dir() || !roots.judge_real(&root) {
+        return None;
+    }
+    let rel = plain_relative(input)?;
+    // A secret-looking run would show redacted in the review.
+    if rel.to_str() != Some(input) || crate::core::ai::memory::redact::redact(input).hits > 0 {
+        return None;
+    }
+    let shown = root.join(&rel);
+    let real = canonical_new(&shown)?;
+    // An env template is judged by the folder it sits in: only its own name
+    // is let through.
+    let template = real
+        .file_name()
+        .is_some_and(|name| is_env_template(&name.to_string_lossy()));
+    let judged = if template { real.parent()? } else { &real };
+    if real != shown || !roots.judge_real(judged) {
+        return None;
+    }
+    let below_home = real.strip_prefix(&roots.real).ok()?;
+    // A dot folder of HOME (`.config`, `.local`) or `dotfiles` holds files
+    // that run at login or on start: the review carries the tier-B warning.
+    let dotfiles = below_home.components().next().is_some_and(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        name.starts_with('.') || name.eq_ignore_ascii_case("dotfiles")
+    });
+    let denied = below_home.components().any(|c| {
+        WRITE_DENIED_DIRS
+            .iter()
+            .any(|dir| c.as_os_str().eq_ignore_ascii_case(dir))
+    });
+    (!denied).then(|| WriteTarget {
+        build_file: dotfiles || is_build_file(&rel),
+        real,
+    })
+}
+
 #[cfg(test)]
 mod display_tests {
     use super::*;
@@ -502,6 +692,47 @@ mod tests {
             "/h/p/.git/config/x",
         ] {
             assert!(!is_git_config(Path::new(no)), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_plain_relative_path_keeps_its_parts_and_drops_dots() {
+        assert_eq!(plain_relative("src/a.rs"), Some(PathBuf::from("src/a.rs")));
+        assert_eq!(plain_relative("./src/./a"), Some(PathBuf::from("src/a")));
+        assert_eq!(plain_relative("."), Some(PathBuf::new()));
+    }
+
+    #[test]
+    fn invisible_filler_and_blank_characters_are_not_plain() {
+        for code in [
+            0x034fu32, 0x115f, 0x1160, 0x180e, 0x2800, 0x3164, 0xfe00, 0xfe0f, 0xffa0, 0xfff9,
+            0xfffb, 0xe0100, 0xe01ef,
+        ] {
+            let input = format!("a{}b", char::from_u32(code).unwrap());
+            assert_eq!(plain_relative(&input), None, "U+{code:04X}");
+        }
+        assert_eq!(
+            plain_relative("a\u{3165}b"),
+            Some(PathBuf::from("a\u{3165}b"))
+        );
+    }
+
+    #[test]
+    fn a_path_the_label_would_change_is_not_plain() {
+        for bad in [
+            "",
+            "~",
+            "~/x",
+            "/etc/x",
+            "../x",
+            "a/../b",
+            "a\nb",
+            "a  b",
+            "a\u{200b}b",
+            "a\u{202e}b",
+            "a\u{1b}[0mb",
+        ] {
+            assert_eq!(plain_relative(bad), None, "{bad:?}");
         }
     }
 
@@ -923,6 +1154,27 @@ mod tests {
             }
         }
         assert!(is_excluded_name(".envrc"));
+    }
+
+    #[test]
+    fn a_leftover_write_temp_name_is_excluded_and_nothing_else_is() {
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        assert!(is_temp_name(temp) && is_excluded_name(temp));
+        for other in [
+            ".lbx-0123456789abcdef0123456789abcde.tmp",
+            ".lbx-0123456789ABCDEF0123456789abcdef.tmp",
+            ".lbx-0123456789abcdef0123456789abcdeg.tmp",
+            "lbx-0123456789abcdef0123456789abcdef.tmp",
+            ".lbx-0123456789abcdef0123456789abcdef.tmp2",
+            "a.tmp",
+        ] {
+            assert!(!is_temp_name(other), "{other}");
+        }
+        let f = fixture();
+        assert_eq!(
+            check_path(&f.home, &f.home.join("project").join(temp)),
+            PathVerdict::Refused
+        );
     }
 
     #[test]
@@ -1386,5 +1638,430 @@ mod exec_tests {
         assert_eq!(verdict, PathVerdict::Refused);
         assert!(!ok(&f, "project", "~root", Want::Existing));
         assert_eq!(SecretRoots::load(Path::new("relative"), &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    /// A temp `$HOME` holding a project, canonical like the real one.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        top: PathBuf,
+        home: PathBuf,
+        origin: PathBuf,
+        outside: PathBuf,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let home = top.join("home");
+        let origin = home.join("project");
+        let outside = top.join("outside");
+        for sub in ["home/project/src", "home/.ssh", "outside"] {
+            fs::create_dir_all(top.join(sub)).unwrap();
+        }
+        fs::write(origin.join("src/lib.rs"), "x").unwrap();
+        fs::write(origin.join("notes.txt"), "x").unwrap();
+        fs::write(outside.join("note.txt"), "x").unwrap();
+        symlink(&outside, origin.join("out_link")).unwrap();
+        symlink(origin.join("src"), origin.join("in_link")).unwrap();
+        symlink(origin.join("notes.txt"), origin.join("file_link")).unwrap();
+        symlink(origin.join("missing"), origin.join("dangling")).unwrap();
+        Fixture {
+            _dir: dir,
+            top,
+            home,
+            origin,
+            outside,
+        }
+    }
+
+    fn write(f: &Fixture, origin: &Path, input: &str) -> Option<WriteTarget> {
+        let roots = SecretRoots::load(&f.home, &[])?;
+        resolve_write(&roots, origin, input)
+    }
+
+    fn ok(f: &Fixture, input: &str) -> Option<WriteTarget> {
+        write(f, &f.origin, input)
+    }
+
+    #[test]
+    fn a_file_in_a_folder_that_may_not_exist_yet_resolves_below_the_root() {
+        let f = fixture();
+        for (input, want) in [
+            ("src/lib.rs", "src/lib.rs"),
+            ("notes.txt", "notes.txt"),
+            ("new.rs", "new.rs"),
+            ("src/util/deep/mod.rs", "src/util/deep/mod.rs"),
+            ("fresh/dir", "fresh/dir"),
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert_eq!(target.real, f.origin.join(want), "{input}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_created_by_resolving() {
+        let f = fixture();
+        assert!(ok(&f, "src/util/new.rs").is_some());
+        assert!(!f.origin.join("src/util").exists());
+    }
+
+    #[test]
+    fn the_root_may_not_be_home_a_parent_of_home_or_a_system_folder() {
+        let f = fixture();
+        let missing = f.origin.join("missing");
+        for origin in [
+            f.home.clone(),
+            f.top.clone(),
+            f.outside.clone(),
+            PathBuf::from("/"),
+            PathBuf::from("/home"),
+            PathBuf::from("/usr"),
+            PathBuf::from("/etc"),
+            missing,
+            f.origin.join("notes.txt"),
+            f.home.join(".ssh"),
+            PathBuf::from("project"),
+        ] {
+            assert_eq!(write(&f, &origin, "x.txt"), None, "{origin:?}");
+        }
+        assert!(write(&f, &f.origin.join("src"), "x.txt").is_some());
+    }
+
+    #[test]
+    fn a_target_outside_the_root_is_refused_however_it_gets_there() {
+        let f = fixture();
+        for input in [
+            "../x",
+            "src/../../x",
+            "/etc/x",
+            "/tmp/x",
+            "~/x",
+            "~",
+            &format!("{}/x", f.origin.display()),
+            "out_link/x",
+            "out_link/note.txt",
+            "out_link",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_link_anywhere_on_the_way_is_refused_even_when_it_stays_inside() {
+        let f = fixture();
+        for input in ["in_link/new.rs", "in_link/lib.rs", "file_link", "dangling"] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_path_the_label_cannot_show_exactly_is_refused() {
+        let f = fixture();
+        for input in [
+            "",
+            ".",
+            "./",
+            "./new.rs",
+            "src/",
+            "src//new.rs",
+            "src/./new.rs",
+            "a\nb",
+            "a\tb",
+            "a  b",
+            " a",
+            "a\u{200b}b",
+            "a\u{202e}b",
+            "a\u{1b}[31mb",
+            "a\u{0}b",
+            "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn git_and_node_modules_are_refused_at_any_depth_and_case() {
+        let f = fixture();
+        for input in [
+            ".git/hooks/pre-commit",
+            ".git/config",
+            "src/.git/x",
+            ".GIT/x",
+            ".git",
+            "node_modules/x/index.js",
+            "web/node_modules/x.js",
+            "Node_Modules/x.js",
+            "node_modules",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+        // Look-alikes are ordinary names.
+        for input in [
+            ".github/ci.yml",
+            ".gitignore",
+            "my.git/x",
+            "node_modules2/x",
+        ] {
+            assert!(ok(&f, input).is_some(), "{input}");
+        }
+    }
+
+    #[test]
+    fn secret_names_are_refused_at_any_depth() {
+        let f = fixture();
+        for input in [
+            ".env",
+            ".env.local",
+            "src/.env",
+            ".ENV",
+            "a/.env.d/x",
+            ".npmrc",
+            "web/.npmrc",
+            ".netrc",
+            ".git-credentials",
+            ".envrc",
+            ".bash_history",
+            "docs/.pgpass",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_root_inside_a_secret_folder_writes_nothing() {
+        let f = fixture();
+        let nested = f.home.join(".ssh/keys");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(write(&f, &nested, "x.txt"), None);
+    }
+
+    #[test]
+    fn every_refusal_is_none_for_its_own_cause() {
+        let f = fixture();
+        fs::write(f.origin.join(".env"), "x").unwrap();
+        // An existing secret name, a missing secret name and an escaping path.
+        for input in [
+            ".env",
+            "missing/.env",
+            "../missing/x",
+            "../../outside/note.txt",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+        assert_eq!(REFUSED, "path not available");
+    }
+
+    #[test]
+    fn only_a_home_that_is_not_a_system_folder_can_judge_a_write() {
+        // The system-folder rule lives in `SecretRoots::load`; `resolve_write`
+        // holds no copy of it, and the private fields cannot build a roots
+        // value for `/usr` that `load` would refuse. So the rule is tested
+        // where it sits: no roots, no write, whatever the root folder is.
+        for home in ["/usr", "/tmp", "/etc", "/home", "/"] {
+            assert_eq!(SecretRoots::load(Path::new(home), &[]), None, "{home}");
+        }
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        for origin in ["/usr/bin", "/tmp", "/etc"] {
+            assert_eq!(
+                resolve_write(&roots, Path::new(origin), "x.txt"),
+                None,
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn invisible_characters_in_a_name_are_refused() {
+        let f = fixture();
+        for code in [
+            0x034fu32, 0x115f, 0x1160, 0x180e, 0x2800, 0x3164, 0xfe0f, 0xffa0, 0xfff9, 0xe0100,
+        ] {
+            let input = format!("src/a{}b.rs", char::from_u32(code).unwrap());
+            assert_eq!(ok(&f, &input), None, "U+{code:04X}");
+        }
+    }
+
+    /// A fixture with a root folder `rel` directly below HOME.
+    fn root_in_home(f: &Fixture, rel: &str) -> PathBuf {
+        let root = f.home.join(rel);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_root_under_a_dot_folder_of_home_or_dotfiles_carries_the_warning() {
+        let f = fixture();
+        for rel in [
+            ".config/nvim",
+            ".config/autostart",
+            ".config/systemd/user",
+            ".local/bin",
+            ".config/fish",
+            // Not `.CONFIG`: on a case-insensitive file system (macOS) that
+            // is the `.config` folder above, and its real path differs.
+            ".CACHE/x",
+            "dotfiles",
+        ] {
+            let root = root_in_home(&f, rel);
+            let target = write(&f, &root, "init.lua").unwrap_or_else(|| panic!("{rel} refused"));
+            assert!(target.build_file, "{rel}");
+            assert_eq!(target.real, root.join("init.lua"), "{rel}");
+        }
+        // The letter case of `dotfiles` does not matter. Its own fixture:
+        // on a case-insensitive file system it is the `dotfiles` folder above.
+        let g = fixture();
+        let root = root_in_home(&g, "Dotfiles/zsh");
+        let target = write(&g, &root, "init.lua").expect("Dotfiles/zsh refused");
+        assert!(target.build_file);
+        assert_eq!(target.real, root.join("init.lua"));
+        // A root that is not in a dot folder or `dotfiles` is not flagged.
+        for rel in ["dev/.config/app", "dotfiles2", "my.dotfiles"] {
+            let root = root_in_home(&f, rel);
+            assert!(!write(&f, &root, "init.lua").unwrap().build_file, "{rel}");
+        }
+        assert!(!ok(&f, "src/new.rs").unwrap().build_file);
+    }
+
+    #[test]
+    fn env_templates_are_writable_but_real_env_files_are_not() {
+        let f = fixture();
+        for input in [
+            ".env.example",
+            ".env.local.sample",
+            "web/.env.template",
+            ".ENV.DIST",
+            ".env.production.example",
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert!(!target.build_file, "{input}");
+        }
+        for input in [
+            ".env",
+            ".env.local",
+            ".env.example.local",
+            ".env.examples",
+            ".env.example/x",
+            ".env.d/x.example",
+            "web/.env",
+            ".envrc",
+        ] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn the_tier_b_list_covers_hooks_ci_containers_and_build_tools() {
+        let f = fixture();
+        for input in [
+            ".husky/pre-commit",
+            ".husky/_/husky.sh",
+            ".githooks/pre-push",
+            ".pre-commit-config.yaml",
+            ".vscode/tasks.json",
+            ".vscode/launch.json",
+            ".devcontainer/devcontainer.json",
+            ".devcontainer/sub/Dockerfile",
+            "Dockerfile",
+            "docker/Dockerfile.dev",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+            "justfile",
+            "Justfile",
+            "Rakefile",
+            "tox.ini",
+            "noxfile.py",
+            "CMakeLists.txt",
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+            "pom.xml",
+            ".gitlab-ci.yml",
+            ".gitattributes",
+            ".gitmodules",
+            ".bashrc",
+            ".zshrc",
+            ".profile",
+            ".bash_profile",
+            "tools/setup.ps1",
+            "run.bat",
+            "RUN.CMD",
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert!(target.build_file, "{input}");
+        }
+        for input in [
+            ".vscode/settings.json",
+            ".vscode/extensions.json",
+            "tasks.json",
+            ".husky",
+            "Dockerfile2",
+            "dockerfile_notes.md",
+            "compose.txt",
+            "pom.xml.bak",
+            "tox.ini.md",
+            "build.gradle.md",
+            "settings.grad",
+            "run.bat.txt",
+            "notes.cmdx",
+            "profile",
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert!(!target.build_file, "{input}");
+        }
+    }
+
+    #[test]
+    fn build_files_carry_a_warning_and_other_files_do_not() {
+        let f = fixture();
+        for input in [
+            "Makefile",
+            "sub/Makefile",
+            "build.rs",
+            "crates/a/build.rs",
+            "Cargo.toml",
+            "crates/a/Cargo.toml",
+            ".cargo/config",
+            ".cargo/config.toml",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+            "tests/conftest.py",
+            "go.mod",
+            "run.sh",
+            "scripts/deploy.sh",
+            ".github/workflows/ci.yml",
+            ".GitHub/Workflows/ci.yml",
+            "MAKEFILE",
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert!(target.build_file, "{input}");
+        }
+        for input in [
+            "src/main.rs",
+            "Cargo.lock",
+            "README.md",
+            ".github/CODEOWNERS",
+            "workflows/ci.yml",
+            ".github/workflows",
+            ".cargo/other",
+            "cargo.toml.bak",
+            "notes.shx",
+            "build.rs.txt",
+            "sh",
+        ] {
+            let target = ok(&f, input).unwrap_or_else(|| panic!("{input} refused"));
+            assert!(!target.build_file, "{input}");
+        }
     }
 }

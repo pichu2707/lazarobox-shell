@@ -6,12 +6,18 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::core::ai::{
-    chat::engine::CallId,
+    chat::{
+        engine::CallId,
+        review::{self, BatchReview},
+        review_view::ReviewView,
+    },
     config::ApprovalMode,
     sanitize::clean,
     tools::{
@@ -37,6 +43,11 @@ fn next_id() -> u64 {
         })
         .unwrap_or(u64::MAX)
 }
+
+/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
+/// user was already typing cannot answer it. The review of a batch waits
+/// longer; see [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
@@ -73,13 +84,27 @@ pub enum ApprovalAsk {
         tool: String,
         args: String,
     },
+    /// Write a proposed batch of files. The user reads it in the review view;
+    /// it is never routed by the approval mode, so no mode approves it.
+    Batch(Arc<BatchReview>),
+}
+
+impl ApprovalAsk {
+    /// How long after it opens the keys start to answer this ask: the review
+    /// of a batch waits longer than any other ask, because the user has to
+    /// read it first.
+    pub fn arm_delay(&self) -> Duration {
+        match self {
+            Self::Batch(_) => review::ARM_DELAY,
+            _ => ASK_ARM_DELAY,
+        }
+    }
 }
 
 /// Which calls wait for the user's answer before they run (D17).
-/// `run_in_pane` always does. `read_file` and `grep` do on a cloud engine,
-/// because the text they return goes to the provider, and run free on a local
-/// one. The
-/// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud
+/// engine, because the text they return goes to the provider, and run free on a
+/// local one. The directory tools never ask. The mode of the chat (ask or auto-type, D18) is
 /// not an input: the app applies it to the ask this returns.
 ///
 /// The path of a read ask is shown as it is: the caller passes the target
@@ -91,6 +116,11 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             command: command.clone(),
         }),
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
+            Some(ApprovalAsk::Read { path: path.clone() })
+        }
+        // An edit answers whether a text occurs in the file, so on a cloud
+        // engine it asks like a read of that file (and routes like one).
+        Call::EditFile { path, .. } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
         // A user tool always asks, on any engine and in any approval mode:
@@ -111,11 +141,17 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             })
         }
         // `glob` returns names only and, like the directory tools, never asks.
+        // Staging touches no disk and asks nothing: the host builds the batch
+        // ask itself when `propose_batch` seals the batch.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
         | Call::Glob { .. }
-        | Call::Grep { .. } => None,
+        | Call::Grep { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::ProposeBatch => None,
     }
 }
 
@@ -450,6 +486,9 @@ pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
+    /// approval, however that ends.
+    review: Option<ReviewView>,
 }
 
 impl Approvals {
@@ -489,6 +528,7 @@ impl Approvals {
             return Err(Refusal::new(ANOTHER_PENDING));
         }
         let id = next_id();
+        self.review = None;
         self.pending = Some(Approval {
             id,
             ask,
@@ -509,6 +549,7 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take().map(|approval| (approval, reply))
     }
 
@@ -519,7 +560,32 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take()
+    }
+
+    /// The review view of the pending batch, if it is one.
+    pub fn review(&self) -> Option<&ReviewView> {
+        self.review.as_ref()
+    }
+
+    pub fn review_mut(&mut self) -> Option<&mut ReviewView> {
+        self.review.as_mut()
+    }
+
+    /// The pane is `size` now: the rows are laid out again, none counts as
+    /// seen until a frame draws it.
+    pub fn fit_review(&mut self, size: (usize, usize)) {
+        if let Some(view) = self.review.as_mut() {
+            view.fit(size);
+        }
+    }
+
+    /// Attaches the view to the pending approval.
+    pub fn set_review(&mut self, view: ReviewView) {
+        if self.pending.is_some() {
+            self.review = Some(view);
+        }
     }
 }
 
@@ -963,6 +1029,36 @@ mod tests {
                 path: "~/a.txt".into()
             })
         );
+    }
+
+    // Spec (code-write, edit_file staging): on a cloud engine an edit asks
+    // like a read of the same file, because its answers say what the file
+    // holds; on a local one it never asks. It routes like a read in every mode.
+    #[test]
+    fn a_cloud_edit_asks_like_a_read_and_routes_like_one() {
+        let edit = Call::EditFile {
+            path: "~/a.txt".into(),
+            old: "SECRET-OLD".into(),
+            new: "SECRET-NEW".into(),
+        };
+        let read = Call::ReadFile {
+            path: "~/a.txt".into(),
+            lines: None,
+        };
+        assert_eq!(ask_for(&edit, Locality::Local), None);
+        let ask = ask_for(&edit, Locality::Cloud).expect("a cloud edit asks");
+        assert_eq!(ask, ask_for(&read, Locality::Cloud).unwrap());
+        assert!(!format!("{ask:?}").contains("SECRET"));
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                let read_ask = ask_for(&read, Locality::Cloud).unwrap();
+                assert_eq!(
+                    route(&ask, origin, mode, FREE),
+                    route(&read_ask, origin, mode, FREE),
+                    "{mode:?}"
+                );
+            }
+        }
     }
 
     fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {

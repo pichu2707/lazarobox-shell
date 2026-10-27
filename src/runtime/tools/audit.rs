@@ -9,14 +9,36 @@
 //! wherever it sits (a `mod tests`, a nested module, a field, a statement),
 //! up to its closing brace, or to the next `;` or `,` outside any bracket.
 //! It also flags `extern` blocks, `use libc::*`, an aliased `std::fs`, and a
-//! `libc::syscall` whose number is not `SYS_openat2`.
+//! `libc::syscall` whose number is not the one the file is allowed.
+//!
+//! Every `.rs` file under `src/runtime/tools/` is scanned, whatever its name.
+//! The bans come in two sets. `PROCESS_NET` (spawn, sockets, `extern`) holds
+//! for every file. `FS_WRITE` (create, write, remove, rename) holds for every
+//! file except those in `MAY_WRITE`, and even those have a `libc` allow-list of
+//! their own. Naming the `write` module is allowed only in `MAY_CALL_WRITE`.
 //!
 //! A best-effort tripwire against accidental use, not a guarantee. It cannot
 //! see a macro that builds a call from tokens, a call made through a path the
 //! ban list does not name, or code reached through another crate.
 
-/// A path segment that may not appear at all.
-const BANNED_IDENTS: &[&str] = &[
+/// Identifiers that start a process, open a socket or declare foreign code.
+/// They hold for every file, the write module included.
+const PROCESS_NET: &[&str] = &[
+    "Command",
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+    "UnixStream",
+    "UnixListener",
+    "UnixDatagram",
+    "extern",
+];
+
+/// A segment that is banned when it is part of a longer path (`PROCESS_NET`).
+const BANNED_IN_PATH: &[&str] = &["process", "net"];
+
+/// Identifiers that create, write, resize or remove (`FS_WRITE`).
+const FS_WRITE: &[&str] = &[
     "OpenOptions",
     "O_TRUNC",
     "O_CREAT",
@@ -30,14 +52,6 @@ const BANNED_IDENTS: &[&str] = &[
     "remove_file",
     "remove_dir",
     "remove_dir_all",
-    "Command",
-    "TcpStream",
-    "TcpListener",
-    "UdpSocket",
-    "UnixStream",
-    "UnixListener",
-    "UnixDatagram",
-    "extern",
     "hard_link",
     "set_permissions",
     "set_len",
@@ -45,13 +59,22 @@ const BANNED_IDENTS: &[&str] = &[
     "write_vectored",
 ];
 
-/// A segment that is banned when it is part of a longer path.
-const BANNED_IN_PATH: &[&str] = &["process", "net"];
-
-/// `fs::<name>` calls that change the tree.
+/// `fs::<name>` calls that change the tree (`FS_WRITE`).
 const BANNED_FS: &[&str] = &["write", "copy", "rename", "symlink", "truncate"];
 
-/// The only `libc::` names the tool code may use.
+/// The files (relative to `src/runtime/tools/`) that may use `FS_WRITE` names.
+const MAY_WRITE: &[&str] = &["write.rs"];
+
+/// The files that may name the `write` module. `apply.rs` drives it through
+/// `WriteOps`, and has no write API of its own.
+const MAY_CALL_WRITE: &[&str] = &["write.rs", "mod.rs", "audit.rs", "apply.rs"];
+
+/// The files that may name the `apply` module, the one entry to a disk write.
+/// `stage.rs` is the store that applies a proposed batch; later wiring slices
+/// add the file that calls the store.
+const MAY_CALL_APPLY: &[&str] = &["apply.rs", "mod.rs", "audit.rs", "stage.rs"];
+
+/// The only `libc::` names the read side may use.
 const LIBC_ALLOWED: &[&str] = &[
     "openat",
     "syscall",
@@ -72,6 +95,55 @@ const LIBC_ALLOWED: &[&str] = &[
     "EINVAL",
     "E2BIG",
 ];
+
+/// The only `libc::` names `write.rs` may use: exactly what it calls.
+const WRITE_LIBC_ALLOWED: &[&str] = &[
+    "openat",
+    "mkdirat",
+    "unlinkat",
+    "renameat",
+    "fsync",
+    "syscall",
+    "SYS_renameat2",
+    "RENAME_NOREPLACE",
+    "getrandom",
+    "GRND_NONBLOCK",
+    "getpid",
+    "O_WRONLY",
+    "O_CREAT",
+    "O_EXCL",
+    "O_NOFOLLOW",
+    "O_CLOEXEC",
+    "AT_REMOVEDIR",
+    "EEXIST",
+    "EINTR",
+    "c_uint",
+    "c_long",
+];
+
+/// What one file may do.
+pub struct Allow {
+    /// Whether `FS_WRITE` names are allowed.
+    fs_write: bool,
+    /// The `libc::` names.
+    libc: &'static [&'static str],
+    /// The only name `libc::syscall` may be called with.
+    syscall: &'static str,
+}
+
+/// The read side: no write, `openat2` only.
+pub const READ_SIDE: Allow = Allow {
+    fs_write: false,
+    libc: LIBC_ALLOWED,
+    syscall: "SYS_openat2",
+};
+
+/// The write module: may write, with its own `libc` list.
+pub const WRITE_SIDE: Allow = Allow {
+    fs_write: true,
+    libc: WRITE_LIBC_ALLOWED,
+    syscall: "SYS_renameat2",
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Tok {
@@ -287,8 +359,13 @@ pub fn mode_violations(src: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every banned use in the non-test code of `src`, one line each.
+/// Every banned use in the non-test code of `src` under the read-side rules.
 pub fn violations(src: &str) -> Vec<String> {
+    scan(src, &READ_SIDE)
+}
+
+/// Every banned use in the non-test code of `src`, one line each.
+pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
     let t = non_test_tokens(src);
     let mut found = Vec::new();
     let ident = |k: usize| match t.get(k) {
@@ -300,30 +377,33 @@ pub fn violations(src: &str) -> Vec<String> {
         let name = name.as_str();
         let after_path = k > 0 && t[k - 1] == Tok::Path;
         let before_path = t.get(k + 1) == Some(&Tok::Path);
-        if BANNED_IDENTS.contains(&name) {
+        if PROCESS_NET.contains(&name) || (!allow.fs_write && FS_WRITE.contains(&name)) {
             found.push(format!("`{name}`"));
         }
         if BANNED_IN_PATH.contains(&name) && (after_path || before_path) {
             found.push(format!("path segment `{name}`"));
         }
-        if let (true, true, Some(next)) = (name == "fs", before_path, ident(k + 2))
+        if let (true, true, Some(next), false) =
+            (name == "fs", before_path, ident(k + 2), allow.fs_write)
             && (BANNED_FS.contains(&next) || next.starts_with("remove_"))
         {
             found.push(format!("`fs::{next}`"));
         }
         // `File::create`, `File::create_new`, `File::options`.
         if name == "File"
+            && !allow.fs_write
             && before_path
             && matches!(ident(k + 2), Some("create" | "create_new" | "options"))
         {
             found.push(format!("`File::{}`", ident(k + 2).unwrap_or_default()));
         }
         // `use std::fs as x` hides every later `x::write`.
-        if name == "fs" && ident(k + 1) == Some("as") {
+        if name == "fs" && !allow.fs_write && ident(k + 1) == Some("as") {
             found.push("`fs` aliased".to_string());
         }
         // `use std::fs::{write, self as x}`: look inside the group.
-        if name == "fs" && before_path && t.get(k + 2) == Some(&Tok::Punct('{')) {
+        if name == "fs" && !allow.fs_write && before_path && t.get(k + 2) == Some(&Tok::Punct('{'))
+        {
             let group = t[k + 3..].iter().take_while(|x| **x != Tok::Punct('}'));
             let mut prev_as = false;
             for tok in group {
@@ -340,7 +420,7 @@ pub fn violations(src: &str) -> Vec<String> {
         if name == "libc" && before_path && t.get(k + 2) == Some(&Tok::Punct('*')) {
             found.push("`use libc::*`".to_string());
         }
-        // Only `openat2` may be called through `libc::syscall`.
+        // Only the file's own syscall may be called through `libc::syscall`.
         if name == "libc" && before_path && ident(k + 2) == Some("syscall") {
             let arg = (t.get(k + 3), ident(k + 4), t.get(k + 5), ident(k + 6));
             let ok = matches!(
@@ -349,23 +429,26 @@ pub fn violations(src: &str) -> Vec<String> {
                     Some(Tok::Punct('(')),
                     Some("libc"),
                     Some(Tok::Path),
-                    Some("SYS_openat2")
-                )
+                    Some(number)
+                ) if number == allow.syscall
             );
             if !ok && t.get(k + 3) == Some(&Tok::Punct('(')) {
-                found.push("`libc::syscall` with a number other than SYS_openat2".to_string());
+                found.push(format!(
+                    "`libc::syscall` with a number other than {}",
+                    allow.syscall
+                ));
             }
         }
         if name == "libc" && before_path {
             match t.get(k + 2) {
-                Some(Tok::Ident(next)) if !LIBC_ALLOWED.contains(&next.as_str()) => {
+                Some(Tok::Ident(next)) if !allow.libc.contains(&next.as_str()) => {
                     found.push(format!("`libc::{next}`"));
                 }
                 // `libc::{a, b}`: every name inside the braces.
                 Some(Tok::Punct('{')) => {
                     for tok in t[k + 3..].iter().take_while(|x| **x != Tok::Punct('}')) {
                         if let Tok::Ident(n) = tok
-                            && !LIBC_ALLOWED.contains(&n.as_str())
+                            && !allow.libc.contains(&n.as_str())
                         {
                             found.push(format!("`libc::{n}`"));
                         }
@@ -378,24 +461,278 @@ pub fn violations(src: &str) -> Vec<String> {
     found
 }
 
+/// Every reference to the `write` module in the non-test code of `src`: the
+/// name beside a `::`, or anywhere inside a `use` item (a group, an alias).
+/// `write!`, `Write` and `.write(` are other things and do not match.
+pub fn write_refs(src: &str) -> Vec<String> {
+    module_refs(src, "write")
+}
+
+/// The same for the `apply` module: only the files in `MAY_CALL_APPLY` may
+/// name it. A method `.apply(` or a `fn apply` is another thing.
+pub fn apply_refs(src: &str) -> Vec<String> {
+    module_refs(src, "apply")
+}
+
+fn module_refs(src: &str, module: &str) -> Vec<String> {
+    let t = non_test_tokens(src);
+    let mut in_use = false;
+    let mut found = Vec::new();
+    for (k, tok) in t.iter().enumerate() {
+        match tok {
+            Tok::Ident(name) if name == "use" => in_use = true,
+            Tok::Punct(';') => in_use = false,
+            Tok::Ident(name) if name == module => {
+                let beside = (k > 0 && t[k - 1] == Tok::Path) || t.get(k + 1) == Some(&Tok::Path);
+                if in_use || beside {
+                    found.push(format!("a reference to the `{module}` module"));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Every problem of the file `rel` (relative to the tools folder, `/`
+/// separated) under the rules its name earns.
+pub fn file_problems(rel: &str, src: &str) -> Vec<String> {
+    let allow = if MAY_WRITE.contains(&rel) {
+        &WRITE_SIDE
+    } else {
+        &READ_SIDE
+    };
+    let mut found = scan(src, allow);
+    if !MAY_CALL_WRITE.contains(&rel) {
+        found.extend(write_refs(src));
+    }
+    if !MAY_CALL_APPLY.contains(&rel) {
+        found.extend(apply_refs(src));
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_tool_code_starts_no_process_opens_no_socket_and_creates_no_file() {
-        for (name, source) in [
-            ("fs.rs", include_str!("fs.rs")),
-            ("open.rs", include_str!("open.rs")),
-            ("mod.rs", include_str!("mod.rs")),
-        ] {
-            // A tokenizer gone wrong would pass everything: it must see code.
-            assert!(
-                non_test_tokens(source).len() > 50,
-                "{name} yields no tokens"
-            );
-            assert_eq!(violations(source), Vec::<String>::new(), "{name}");
+    /// The out-of-line modules that are declared `#[cfg(test)]` in `src`.
+    fn test_only_mods(src: &str) -> Vec<String> {
+        let t = tokenize(src);
+        let mut out = Vec::new();
+        for i in 0..t.len() {
+            if !is_cfg_test(&t, i) {
+                continue;
+            }
+            let mut k = i + 7;
+            if t.get(k) == Some(&Tok::Ident("pub".into())) {
+                k += 1;
+            }
+            if let (Some(Tok::Ident(kw)), Some(Tok::Ident(name)), Some(Tok::Punct(';'))) =
+                (t.get(k), t.get(k + 1), t.get(k + 2))
+                && kw == "mod"
+            {
+                out.push(name.clone());
+            }
         }
+        out
+    }
+
+    /// Every file under `root` with its problems, and how many files were
+    /// walked and how many were skipped as test-only modules (they never ship).
+    fn tree_problems(root: &std::path::Path) -> (usize, usize, Vec<String>) {
+        let mut files = Vec::new();
+        rust_files(root, &mut files);
+        files.sort();
+        let mut test_only = Vec::new();
+        for file in &files {
+            let src = std::fs::read_to_string(file).unwrap();
+            let stem = file.file_stem().unwrap().to_string_lossy().into_owned();
+            let base = if stem == "mod" {
+                file.parent().unwrap().to_path_buf()
+            } else {
+                file.with_extension("")
+            };
+            test_only.extend(
+                test_only_mods(&src)
+                    .into_iter()
+                    .map(|name| base.join(format!("{name}.rs"))),
+            );
+        }
+        let mut found = Vec::new();
+        for file in &files {
+            if test_only.contains(file) {
+                continue;
+            }
+            let rel = file.strip_prefix(root).unwrap().to_string_lossy();
+            let src = std::fs::read_to_string(file).unwrap();
+            // A tokenizer gone wrong would pass everything: it must see code.
+            assert!(non_test_tokens(&src).len() > 5, "{rel} yields no tokens");
+            found.extend(
+                file_problems(&rel, &src)
+                    .into_iter()
+                    .map(|problem| format!("{rel}: {problem}")),
+            );
+        }
+        (files.len(), test_only.len(), found)
+    }
+
+    #[test]
+    fn every_tool_file_starts_no_process_opens_no_socket_and_writes_only_in_write_rs() {
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tools");
+        let (walked, skipped, found) = tree_problems(&tools);
+        assert!(walked >= 11, "the walk found {walked} files");
+        // `host/tests.rs`, `host/external_tests.rs` and `audit.rs`.
+        assert!(skipped >= 3, "{skipped} test-only files skipped");
+        assert_eq!(found, Vec::<String>::new());
+    }
+
+    fn planted(files: &[(&str, &str)]) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, src) in files {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, src).unwrap();
+        }
+        tree_problems(dir.path()).2
+    }
+
+    #[test]
+    fn a_planted_violation_in_any_file_of_the_tree_is_caught() {
+        let clean = "fn f() { let _ = 1 + 2 + 3; }";
+        for (rel, src) in [
+            ("search.rs", "fn f() { std::fs::write(p, b) }"),
+            ("host/deep/new.rs", "fn f() { std::fs::write(p, b) }"),
+            ("write.rs", "fn f() { Command::new(\"ls\") }"),
+            ("write.rs", "fn f() { libc::unlink(p) }"),
+            ("write.rs", "fn f() { libc::open(p, 0) }"),
+            ("write.rs", "fn f() { libc::syscall(libc::SYS_openat2, a) }"),
+            ("write.rs", "use std::net::TcpStream;"),
+            (
+                "host.rs",
+                "use crate::runtime::tools::{write::create_file};",
+            ),
+            ("host.rs", "use crate::runtime::tools::{self, write};"),
+            ("host.rs", "fn f() { super::write::make_dir(r, p) }"),
+            ("fs.rs", "use crate::runtime::tools::write as w;"),
+            ("fs.rs", "use super::apply::{apply, Disk};"),
+            (
+                "fs.rs",
+                "fn f() { crate::runtime::tools::apply::apply(o, e) }",
+            ),
+            (
+                "host/x.rs",
+                "fn f() { crate::runtime::tools::write::make_dir(r, p) }",
+            ),
+        ] {
+            let found = planted(&[(rel, src), ("ok.rs", clean)]);
+            assert!(!found.is_empty(), "{rel}: {src}");
+            assert!(found.iter().all(|line| line.starts_with(rel)), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn apply_may_name_the_write_module_but_never_a_write_api_itself() {
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tools");
+        let src = std::fs::read_to_string(tools.join("apply.rs")).unwrap();
+        // It is on the list for a reason: it does reference `write`.
+        assert!(!write_refs(&src).is_empty());
+        assert_eq!(file_problems("apply.rs", &src), Vec::<String>::new());
+        // ...and it earns nothing else: every write token is still flagged.
+        for bad in [
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { std::fs::remove_file(p) }",
+            "fn f() { libc::unlinkat(a, p, 0) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+        ] {
+            assert!(!file_problems("apply.rs", bad).is_empty(), "{bad}");
+        }
+        let named = "use super::write::{self, WriteError};";
+        assert_eq!(planted(&[("apply.rs", named)]), Vec::<String>::new());
+        assert!(!planted(&[("host/apply.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn stage_may_name_the_apply_module_but_holds_no_write_api_and_not_the_write_module() {
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tools");
+        let src = std::fs::read_to_string(tools.join("stage.rs")).unwrap();
+        // It is on the list for a reason: it does reference `apply`.
+        assert!(!apply_refs(&src).is_empty());
+        assert_eq!(file_problems("stage.rs", &src), Vec::<String>::new());
+        // ...and it earns nothing else: every write token is still flagged,
+        // and so is the `write` module itself.
+        for bad in [
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { std::fs::remove_file(p) }",
+            "fn f() { libc::unlinkat(a, p, 0) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+            "use super::write::create_file;",
+        ] {
+            assert!(!file_problems("stage.rs", bad).is_empty(), "{bad}");
+        }
+        let named = "use super::apply::{self, ApplyResult};";
+        assert_eq!(planted(&[("stage.rs", named)]), Vec::<String>::new());
+        assert!(!planted(&[("host/stage.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn the_write_file_may_write_and_name_the_write_module_and_others_may_not() {
+        let writes = "fn f() { std::fs::write(p, b); libc::unlinkat(a, p, 0); \
+                      libc::syscall(libc::SYS_renameat2, a) }";
+        assert_eq!(planted(&[("write.rs", writes)]), Vec::<String>::new());
+        let named = "pub mod write; use super::write::make_dir;";
+        assert_eq!(planted(&[("mod.rs", named)]), Vec::<String>::new());
+        // The same text, one folder down, earns nothing.
+        assert!(!planted(&[("host/write.rs", writes)]).is_empty());
+        assert!(!planted(&[("host/mod.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn other_senses_of_the_word_write_are_not_the_module() {
+        for good in [
+            "use std::fmt::Write; fn f(s: &mut String) { write!(s, \"x\").ok(); }",
+            "fn f(s: &mut String) { writeln!(s).ok(); w.write(b); let write = 1; }",
+            "use std::io::{Read, Write};",
+        ] {
+            assert_eq!(write_refs(good), Vec::<String>::new(), "{good}");
+        }
+        for good in [
+            "fn apply(o: &dyn Ops) {} fn f() { x.apply(y); let apply = 1; }",
+            "pub mod apply; type R = ApplyResult;",
+        ] {
+            assert_eq!(apply_refs(good), Vec::<String>::new(), "{good}");
+        }
+        assert!(!apply_refs("use a::{b, apply};").is_empty());
+        assert!(!write_refs("use a::{b, write};").is_empty());
+        assert!(!write_refs("fn f() { write::go() }").is_empty());
+        assert_eq!(
+            write_refs("#[cfg(test)] mod t { use super::write::go; }"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_only_files_are_found_from_their_declaration() {
+        assert_eq!(
+            test_only_mods(
+                "#[cfg(test)]\nmod a;\n#[cfg(test)] pub mod b;\nmod c;\n#[cfg(test)] mod d { }"
+            ),
+            ["a", "b"]
+        );
+        // A file declared test-only is not scanned; a sibling is.
+        let found = planted(&[
+            (
+                "host.rs",
+                "#[cfg(test)]\nmod tests;\nfn f() { let _ = 1 + 2 + 3; }",
+            ),
+            ("host/tests.rs", "fn t() { std::fs::write(p, b) }"),
+            ("host/other.rs", "fn t() { std::fs::write(p, b) }"),
+        ]);
+        assert!(!found.is_empty(), "{found:?}");
+        assert!(
+            found.iter().all(|f| f.starts_with("host/other.rs")),
+            "{found:?}"
+        );
     }
 
     /// Every `.rs` file under `dir`, recursively.
