@@ -204,9 +204,9 @@ A `remove llama-server` entry MUST exist when an owned install exists. It MUST a
 - THEN the owned directory is gone and the system binary is untouched
 
 #### Scenario: Prune old tags [auto]
-- GIVEN installed `b9000` and a new successful `b9100` install
+- GIVEN installed `b8900` and `b9000` and a new successful `b9100` install
 - WHEN activation completes
-- THEN `b9000` is removed and `current` points to `b9100`
+- THEN `b8900` is removed, `b9000` (the immediately previous tag) is kept for manual rollback, and `current` points to `b9100`
 
 ### Requirement: Cancel and cleanup [S3]
 Cancelling during download or extraction (or any failure) MUST remove partial archives and temp directories and MUST leave a previously active install untouched.
