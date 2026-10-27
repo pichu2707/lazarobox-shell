@@ -1,5 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
+use std::path::Path;
+
 use super::*;
 
 #[test]
@@ -154,4 +156,78 @@ fn what_cannot_be_removed_is_reported_not_swallowed() {
     std::fs::set_permissions(&fence, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(left, std::slice::from_ref(&path));
     assert!(path.exists());
+}
+
+/// A chain of `levels` one-letter folders under `base`, as deep as a path
+/// can go (`PATH_MAX` allows about two thousand).
+fn deep(base: &Path, levels: usize) -> PathBuf {
+    let mut path = base.to_path_buf();
+    for _ in 0..levels {
+        path.push("d");
+    }
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[test]
+fn the_chmod_walk_uses_no_recursion_so_a_deep_tree_cannot_overflow_the_stack() {
+    let parent = tempfile::tempdir().unwrap();
+    let base = parent.path().join("t");
+    std::fs::create_dir(&base).unwrap();
+    let bottom = deep(&base, 1500);
+    std::fs::set_permissions(&bottom, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // A small stack: one frame per level would not fit in it.
+    let walker = base.clone();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || make_removable(&walker))
+        .unwrap()
+        .join()
+        .unwrap();
+    let mode = std::fs::metadata(&bottom).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "the deepest folder was reached");
+}
+
+#[test]
+fn a_deep_read_only_tree_is_removed_by_a_scratch_finish() {
+    let parent = tempfile::tempdir().unwrap();
+    let scratch = Scratch::unique(parent.path(), "run").unwrap();
+    let path = scratch.path().to_path_buf();
+    let bottom = deep(&path, 1500);
+    std::fs::set_permissions(&bottom, std::fs::Permissions::from_mode(0o500)).unwrap();
+    std::fs::set_permissions(path.join("d"), std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert_eq!(scratch.finish(), Vec::<PathBuf>::new());
+    assert!(!path.exists());
+}
+
+#[test]
+fn the_chmod_walk_stops_at_its_depth_bound() {
+    let parent = tempfile::tempdir().unwrap();
+    let bottom = deep(parent.path(), 20);
+    std::fs::set_permissions(&bottom, std::fs::Permissions::from_mode(0o500)).unwrap();
+    walk(parent.path(), 10, usize::MAX);
+    let mode = std::fs::metadata(&bottom).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o500, "past the bound nothing is changed");
+    walk(parent.path(), 100, usize::MAX);
+    let mode = std::fs::metadata(&bottom).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
+#[test]
+fn the_chmod_walk_stops_at_its_entry_bound() {
+    let parent = tempfile::tempdir().unwrap();
+    for n in 0..30 {
+        let dir = parent.path().join(format!("f{n:02}"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    walk(parent.path(), usize::MAX, 10);
+    let changed = (0..30)
+        .filter(|n| {
+            let dir = parent.path().join(format!("f{n:02}"));
+            std::fs::metadata(dir).unwrap().permissions().mode() & 0o777 == 0o700
+        })
+        .count();
+    assert!(changed < 30, "the walk visited every entry");
+    walk(parent.path(), usize::MAX, usize::MAX);
 }

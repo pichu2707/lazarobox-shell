@@ -96,19 +96,45 @@ fn remove(path: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// How deep and how many entries [`make_removable`] goes: a path cannot be
+/// deeper than `PATH_MAX` allows anyway, and a program must not be able to
+/// make this walk last.
+const WALK_DEPTH: usize = 4096;
+const WALK_ENTRIES: usize = 1_000_000;
+
 /// `0700` on every folder under `path` and on `path` itself, with
 /// `symlink_metadata`: a link is never entered and never changed.
 fn make_removable(path: &Path) {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return;
-    };
-    if !meta.file_type().is_dir() {
-        return;
-    }
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
-    if let Ok(entries) = fs::read_dir(path) {
+    walk(path, WALK_DEPTH, WALK_ENTRIES);
+}
+
+/// [`make_removable`] with its bounds. An explicit stack, no recursion: a
+/// program decides how deep the tree is.
+fn walk(path: &Path, max_depth: usize, max_entries: usize) {
+    let mut stack = vec![(path.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(meta) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if !meta.file_type().is_dir() {
+            continue;
+        }
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        if depth >= max_depth {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
-            make_removable(&entry.path());
+            seen += 1;
+            if seen > max_entries {
+                return;
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                stack.push((entry.path(), depth + 1));
+            }
         }
     }
 }
