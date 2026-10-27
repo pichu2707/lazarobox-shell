@@ -132,6 +132,8 @@ pub struct ToolHost {
     next: AtomicU64,
     /// The staged batches of every chat: in memory, never saved.
     stages: Arc<Mutex<Stages>>,
+    /// Who may run a command now, and what the sandbox is.
+    exec: exec::Exec,
 }
 
 impl ToolHost {
@@ -158,6 +160,7 @@ impl ToolHost {
             limits,
             next: AtomicU64::new(1),
             stages: Arc::default(),
+            exec: exec::Exec::system(),
         })
     }
 
@@ -318,6 +321,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut ask = None;
     let mut sealed = None;
     let mut approves = None;
+    let mut pinned = None;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
             // A cloud read asks with the path as it will be opened: resolved,
@@ -358,6 +362,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     None => checked = Err(UNSHOWABLE.into()),
                 }
             }
+            // A command is judged before it asks: a refusal never opens a prompt.
+            (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
+                Ok(plan) => {
+                    ask = ask_for(valid, locality);
+                    if let Some(ask) = ask.as_mut() {
+                        exec::fill(&host, &plan, ask);
+                    }
+                    pinned = plan.pin;
+                }
+                Err(why) => checked = Err(why.into()),
+            },
             // A batch is sealed before the ask: the user reviews what was sealed.
             (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
                 Ok((batch, review)) => {
@@ -486,6 +501,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
+                // Only after `y`: the sandbox starts here and nowhere else.
+                (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    exec::run(&host, &scope, &call, pinned.take()).await
+                }
                 (Decision::Sent | Decision::Typed(_), call) => {
                     files::run(&host, &scope, call).await
                 }
@@ -496,12 +515,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+mod exec;
 mod files;
+mod gate;
 mod orphan;
 
+#[cfg(test)]
+mod exec_tests;
 #[cfg(test)]
 mod external_tests;
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod gate_tests;
 #[cfg(test)]
 mod tests;

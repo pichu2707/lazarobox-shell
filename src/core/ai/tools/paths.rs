@@ -20,7 +20,7 @@ pub const REFUSED: &str = "path not available";
 /// place; a custom `$XDG_DATA_HOME` is not followed here, nor are
 /// `$XDG_CONFIG_HOME` or `$GH_CONFIG_DIR`. The list is best effort, not
 /// complete.
-const SECRET_DIRS: &[&str] = &[
+pub(crate) const SECRET_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".config/gh",
@@ -35,7 +35,7 @@ const SECRET_DIRS: &[&str] = &[
 /// File names that are never readable wherever they sit below `$HOME`:
 /// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
 /// project file may hold a token) and shell or REPL histories.
-const SECRET_FILES: &[&str] = &[
+pub(crate) const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
     ".pgpass",
