@@ -1763,3 +1763,69 @@ fn the_openai_follow_up_equals_the_request_recorded_against_b11935() {
         assert!(ours_tools.as_array().unwrap().contains(tool), "{tool}");
     }
 }
+
+fn call_ids(rounds: &[ToolRound]) -> (Vec<String>, Vec<String>) {
+    let body = body_of(openai_round_body(&request(""), rounds, false));
+    let messages = body["messages"].as_array().unwrap();
+    let mut calls = Vec::new();
+    let mut answers = Vec::new();
+    for m in messages {
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            calls.push(c["id"].as_str().unwrap().to_owned());
+        }
+        if m["role"] == "tool" {
+            answers.push(m["tool_call_id"].as_str().unwrap().to_owned());
+        }
+    }
+    (calls, answers)
+}
+
+fn round_of(ids: &[Option<&str>]) -> ToolRound {
+    ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: ids
+            .iter()
+            .map(|id| exchange("find_dir", *id, json!({"query": "a"}), "r"))
+            .collect(),
+    }
+}
+
+#[test]
+fn the_openai_call_ids_are_unique_and_match_their_answers() {
+    let long = "x".repeat(64);
+    let cases = [
+        vec![round_of(&[Some("same"), Some("same")])],
+        // `echo` keeps 64 characters: two longer ids collapse to this prefix.
+        vec![round_of(&[Some(&long), Some(&long)])],
+        vec![round_of(&[Some("call_0_1"), None])],
+        vec![round_of(&[None, Some("call_0_0")])],
+        vec![round_of(&[Some("a")]), round_of(&[Some("a"), None])],
+    ];
+    for rounds in cases {
+        let (calls, answers) = call_ids(&rounds);
+        let unique: std::collections::HashSet<_> = calls.iter().collect();
+        assert_eq!(unique.len(), calls.len(), "{calls:?}");
+        assert_eq!(calls, answers);
+        assert!(calls.iter().all(|id| !id.is_empty()));
+    }
+}
+
+#[test]
+fn the_openai_assistant_content_is_the_text_or_an_empty_string() {
+    let mut with_text = round_of(&[None]);
+    with_text.text = "Looking.".into();
+    let body = body_of(openai_round_body(
+        &request(""),
+        &[with_text, round_of(&[None])],
+        false,
+    ));
+    let messages = body["messages"].as_array().unwrap();
+    let assistants: Vec<&Value> = messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .collect();
+    let n = assistants.len();
+    assert_eq!(assistants[n - 2]["content"], json!("Looking."));
+    assert_eq!(assistants[n - 1]["content"], json!(""));
+}

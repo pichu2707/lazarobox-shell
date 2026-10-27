@@ -336,15 +336,38 @@ fn call_id(round: usize, n: usize) -> String {
     format!("call_{round}_{n}")
 }
 
+/// The id for call `n` of round `round`: the server's when it is new to the
+/// body, else a synthesized one that no earlier id uses (a server may repeat
+/// ids, and `echo` can cut two long ones to the same prefix).
+fn unique_id(
+    used: &mut std::collections::HashSet<String>,
+    server: Option<&str>,
+    round: usize,
+    n: usize,
+) -> String {
+    let mut id = server.map_or_else(String::new, str::to_owned);
+    let mut tries = 0;
+    while id.is_empty() || used.contains(&id) {
+        id = call_id(round, n);
+        if tries > 0 {
+            id = format!("{id}_{tries}");
+        }
+        tries += 1;
+    }
+    used.insert(id.clone());
+    id
+}
+
 /// The request after `rounds` of tool calls on the OpenAI wire (llama.cpp):
 /// the assistant message holds `tool_calls` with string arguments, then one
 /// `role: "tool"` message per call carrying its `tool_call_id`. No reasoning
 /// is echoed, and no `parallel_tool_calls` or `tool_choice` is set.
 pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
     let mut messages = base_messages(request);
+    let mut used = std::collections::HashSet::new();
     for (r, round) in rounds.iter().enumerate() {
         let ids: Vec<String> = (round.exchanges.iter().enumerate())
-            .map(|(n, x)| x.id.clone().unwrap_or_else(|| call_id(r, n)))
+            .map(|(n, x)| unique_id(&mut used, x.id.as_deref(), r, n))
             .collect();
         let calls: Vec<Value> = round
             .exchanges
