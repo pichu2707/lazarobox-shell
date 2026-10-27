@@ -833,3 +833,27 @@ fn the_text_sse_parser_pins_finish_reasons_tool_fragments_and_reasoning() {
         [StreamEvent::Done(Finish::Stop)]
     );
 }
+
+#[test]
+fn sse_decode_hands_back_the_json_only_for_a_healthy_payload() {
+    let (events, value) = sse_decode(b"{\"choices\":[{\"delta\":{\"content\":\"a\"}}]}");
+    assert_eq!(events, [delta("a")]);
+    assert_eq!(value.unwrap()["choices"][0]["delta"]["content"], "a");
+    for data in [&b"[DONE]"[..], b"nope", b"{\"error\":\"x\"}"] {
+        assert!(sse_decode(data).1.is_none(), "{data:?}");
+    }
+    assert_eq!(sse_event(b"[DONE]"), [StreamEvent::Done(Finish::Stop)]);
+}
+
+#[test]
+fn the_ollama_decoder_gives_its_calls_through_the_shared_trait() {
+    fn drain(decoder: &mut impl ToolCalls) -> Vec<ToolRequest> {
+        decoder.take_calls()
+    }
+    let mut decoder = OllamaToolDecoder::server();
+    let line = b"{\"message\":{\"tool_calls\":[{\"function\":{\"name\":\"find_dir\",\"arguments\":{\"query\":\"x\"}}}]},\"done\":true}\n";
+    decoder.feed(line);
+    decoder.finish();
+    assert_eq!(drain(&mut decoder).len(), 1);
+    assert!(drain(&mut decoder).is_empty(), "drained");
+}

@@ -31,6 +31,14 @@ pub trait StreamDecoder {
     fn finish(&mut self) -> Vec<StreamEvent>;
 }
 
+/// A decoder that also collects the tool calls of a reply.
+pub trait ToolCalls {
+    /// The calls of the reply, in order, after a clean end; the decoder
+    /// forgets them. Empty before the end, after an error and after a
+    /// truncated stream.
+    fn take_calls(&mut self) -> Vec<ToolRequest>;
+}
+
 /// Splits bytes into lines at `\n`, dropping a trailing `\r`. A line over the
 /// cap is reported once and the buffer is dropped.
 pub(super) struct Lines {
@@ -208,14 +216,20 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
 
 /// Events of one SSE `data` payload.
 fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
+    sse_decode(data).0
+}
+
+/// Events of one SSE `data` payload, and its JSON when it parsed and is not an
+/// error. One parse feeds both, so events and tool calls cannot disagree.
+fn sse_decode(data: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
     if data.trim_ascii() == b"[DONE]" {
-        return vec![StreamEvent::Done(Finish::Stop)];
+        return (vec![StreamEvent::Done(Finish::Stop)], None);
     }
     let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(data)) else {
-        return vec![malformed()];
+        return (vec![malformed()], None);
     };
     if let Some(error) = server_error(&value) {
-        return vec![error];
+        return (vec![error], None);
     }
     let choice = &value["choices"][0];
     let mut events: Vec<StreamEvent> = delta(choice["delta"]["content"].as_str())
@@ -224,7 +238,7 @@ fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
     if let Some(reason) = choice["finish_reason"].as_str() {
         events.push(StreamEvent::Done(finish_reason(Some(reason))));
     }
-    events
+    (events, Some(value))
 }
 
 /// Decodes Ollama `/api/chat` replies, one JSON object per line.
@@ -444,6 +458,12 @@ impl OllamaToolDecoder {
             }
         }
         events
+    }
+}
+
+impl ToolCalls for OllamaToolDecoder {
+    fn take_calls(&mut self) -> Vec<ToolRequest> {
+        Self::take_calls(self)
     }
 }
 
