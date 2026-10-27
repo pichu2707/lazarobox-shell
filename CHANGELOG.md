@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-27
+
 ### Added
 
 - The Hugging Face token field shows the link to create a read token
@@ -1166,7 +1168,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...v0.24.0
