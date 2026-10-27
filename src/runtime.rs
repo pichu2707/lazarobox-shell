@@ -1423,6 +1423,20 @@ impl Panes {
                         chats.send(pane, turn, request);
                     }
                 }
+                Effect::ChatCompact {
+                    pane,
+                    turn,
+                    request,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_background(pane, turn, request);
+                    }
+                }
+                Effect::ChatCompactCancel(pane) => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.cancel_background(pane);
+                    }
+                }
                 Effect::ChatCancel(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.cancel(pane);

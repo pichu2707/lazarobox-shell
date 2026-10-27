@@ -4,20 +4,33 @@
 //! delays the user, and the next send supersedes it.
 
 use super::*;
-use crate::core::ai::{chat::engine::availability_for, config::Task};
+use crate::core::ai::{
+    chat::engine::availability_for,
+    config::{CompactionMode, Task},
+};
 
 impl App {
     /// A turn of chat `id` ended well: asks for a compaction run when the
-    /// conversation is due for one and the `summarize` engine is ready. Any
+    /// conversation is due for one and its engine is ready. Any
     /// other state starts nothing; the truncation marker stands.
     pub(super) fn start_compaction(&mut self, id: PaneId) -> Vec<Effect> {
-        let availability =
-            availability_for(Task::Summarize, &self.ai, self.engines.as_ref(), self.jail);
+        if self.ai.compaction() == CompactionMode::Off {
+            return Vec::new();
+        }
+        // Chat content only goes to the engine the user picked for it: the
+        // `summarize` task when set explicitly, the chat engine otherwise
+        // (never the `general` fallback of an unset `summarize`).
+        let task = if self.ai.get(Task::Summarize).engine.is_some() {
+            Task::Summarize
+        } else {
+            Task::Chat
+        };
+        let availability = availability_for(task, &self.ai, self.engines.as_ref(), self.jail);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         match chat.begin_compaction(&availability) {
-            Some((turn, request)) => vec![Effect::ChatSend {
+            Some((turn, request)) => vec![Effect::ChatCompact {
                 pane: id,
                 turn,
                 request,
@@ -36,7 +49,7 @@ impl App {
         let follow = chat.apply_compaction(event);
         self.dirty |= chat.generation() != before;
         if follow == Follow::CancelEngine {
-            vec![Effect::ChatCancel(id)]
+            vec![Effect::ChatCompactCancel(id)]
         } else {
             Vec::new()
         }

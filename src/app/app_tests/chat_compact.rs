@@ -11,7 +11,7 @@ use crate::core::ai::{
         compact::COMPACT_PROMPT,
         engine::{ChatError, ChatRequest, Finish, StreamEvent},
     },
-    config::{Assignment, Task},
+    config::{Assignment, CompactionMode, Task},
     memory::port::MemReply,
 };
 
@@ -96,9 +96,7 @@ fn exchange(a: &mut App, size: usize) -> (Vec<Effect>, ChatRequest) {
 
 fn compaction_of(effects: &[Effect]) -> Option<(u64, ChatRequest)> {
     effects.iter().find_map(|e| match e {
-        Effect::ChatSend { turn, request, .. } if request.system == COMPACT_PROMPT.trim_end() => {
-            Some((*turn, request.clone()))
-        }
+        Effect::ChatCompact { turn, request, .. } => Some((*turn, request.clone())),
         _ => None,
     })
 }
@@ -125,19 +123,57 @@ fn a_run_goes_out_after_a_turn_ends_with_the_summarize_engine() {
 }
 
 #[test]
-fn an_unassigned_summarize_task_inherits_the_general_engine() {
-    let mut a = app(true, None);
+fn an_unassigned_summarize_task_uses_the_chat_engine_never_the_general_one() {
     let mut config = ai(true);
     config.set(
         Task::General,
         Assignment {
-            engine: Some("ollama".into()),
-            model: Some("llama3:8b".into()),
+            engine: Some("claude".into()),
+            model: Some("opus".into()),
         },
     );
-    a = a.with_ai(config);
+    let mut a = app(true, None).with_ai(config);
     let (_, request) = until_compaction(&mut a);
+    assert_eq!(request.engine, "ollama");
     assert_eq!(request.model.as_deref(), Some("llama3:8b"));
+}
+
+#[test]
+fn an_explicit_summarize_task_wins_over_the_chat_engine() {
+    let mut config = ai(true);
+    config.set(
+        Task::General,
+        Assignment {
+            engine: Some("claude".into()),
+            model: Some("opus".into()),
+        },
+    );
+    config.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("tiny".into()),
+        },
+    );
+    let mut a = app(true, None).with_ai(config);
+    let (_, request) = until_compaction(&mut a);
+    assert_eq!(request.model.as_deref(), Some("tiny"));
+}
+
+#[test]
+fn compaction_off_sends_no_run_and_keeps_the_marker() {
+    let mut config = ai(true);
+    config.set_compaction(CompactionMode::Off);
+    let mut a = app(true, Some("tiny")).with_ai(config);
+    for _ in 0..14 {
+        let (end, _) = exchange(&mut a, 1_000);
+        assert_eq!(compaction_of(&end), None);
+    }
+    assert!(
+        chat_of(&a).entries().iter().any(
+            |e| matches!(e, Entry::System(s) if s == crate::core::ai::chat::TRUNCATION_MARKER)
+        )
+    );
 }
 
 #[test]

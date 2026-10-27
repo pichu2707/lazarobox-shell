@@ -270,6 +270,15 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start a background compaction run for a pane: not a turn of the chat,
+    /// so it touches neither the pane's tool session nor its servers.
+    ChatCompact {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop the background compaction run of a pane and nothing else.
+    ChatCompactCancel(PaneId),
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),

@@ -349,6 +349,13 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
 
+**Compactación del historial:** cuando un chat largo desborda la ventana del modelo, lazarobox resume lo que sale con un modelo y lo envía como bloque inerte en lugar de perderlo. El resumen nunca va a un motor que no hayas elegido: usa la tarea `summarize` solo si la fijas explícitamente en `[ai.tasks.summarize]`; si no, usa el motor y el modelo del chat (nunca el general). Cuesta una llamada extra cada pocos envíos; `[ai.chat] compaction = "off"` la desactiva y queda el aviso de que los mensajes antiguos no se envían (por defecto `"auto"`; cualquier otro valor es un error de configuración).
+
+```toml
+[ai.chat]
+compaction = "off"   # "auto" (por defecto) | "off"
+```
+
 **Privacidad:**
 
 - Con **Ollama**, **LM Studio**, **llama.cpp** y **vLLM** todo es local: el chat solo habla con `127.0.0.1` en el puerto habitual de cada servidor (11434, 1234, 8080 y 8000, o el de `[ai.servers]`) y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo).
