@@ -19,3 +19,20 @@ Done: T1.7 tightened, T1.2 (partial, see deviation), T1.8.
 - T1.8: `base_messages()` and `offered_tools()` extracted from `ollama_round_body`; the four T1.7 pins unchanged and green before and after.
 
 Remaining PR1: T1.0 (manual), T1.1, T1.2 hook, T1.3-T1.6, T1.9, T1.10.
+
+## Batch 3 (PR1 finished)
+
+Done: T1.0, T1.1, T1.2 (hook landed), T1.3, T1.4, T1.5, T1.6, T1.9, T1.10. PR1 is complete; PR2 and PR3 not started.
+
+- T1.0: F1, F2, F3 and the two request files recorded by the orchestrator (real b11935, Vulkan0 RTX 4080 SUPER, Qwen2.5-7B Q4_K_M); commit `test(chat): record llama.cpp b11935 tool-call fixtures`.
+- T1.1: answers recorded in design.md Open Questions. F3 is `HTTP 500` with `tools param requires --jinja flag`; rendered as `HTTP 500: {"error":...}`, `tools` at char 42 and `jinja` at 65 (cap 200). Pinned in `runtime/loopback/tests.rs`. `content:""` accepted (D7 kept). Spec unchanged.
+- T1.2/T1.3: `SseParser.calls: Option<openai::Calls>`, `stream/openai.rs` (`Calls`, `OpenAiToolDecoder`). `sse_event` wrapper removed (dead). Hook output is spliced before the chunk events so a cap error wins.
+- T1.4: tests only (clean-end rule was built with T1.3). The mutant "Error clears clean" survives: equivalent, because the parser stops at the first final event so no Error follows a Done. Kept as in the Ollama decoder.
+- T1.5: bounds (16 slots, 1 MiB), `broken` slots (non-string id/name/arguments), empty arguments become `{}`. Mutation checked per rule.
+- T1.6: F1 decodes to `find_dir {"query":"src"}`, id as recorded, index 0, at every 7th split point; F2 gives text and no call.
+- T1.9: `openai_round_body`, `call_id(round, n)` (both 0-based, `call_{round}_{n}`), shared `finish_body` tail also used by `ollama_round_body` (T1.7 pins unchanged).
+- T1.10: the recorded req2 equals our body (arguments compared as JSON: the server text has a space after the colon; the recording offered only `find_dir` and `list_dir`, so each of them must be in our tools and the rest is equal).
+
+PR1 production lines vs main: +309/-26 (net +283); tests/fixtures excluded. Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (6119 passed lib) all green.
+
+Remaining: PR2 (T2.1-T2.8), PR3 (T3.0-T3.3).
