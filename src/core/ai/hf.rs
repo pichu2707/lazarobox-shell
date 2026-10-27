@@ -610,6 +610,9 @@ pub fn wipe(text: &mut String) {
 pub enum AccountAsk {
     /// Check a pasted token and, once the Hub accepts it, save it.
     Connect(Secret),
+    /// Stop the connect in flight: unless it is already saved, its token is
+    /// not.
+    CancelConnect,
     /// Who the saved token belongs to.
     Check,
     /// Delete the token file.

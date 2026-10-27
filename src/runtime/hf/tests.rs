@@ -537,7 +537,7 @@ fn account_worker(
 }
 
 async fn account_reply(
-    hub: &Hub,
+    hub: &mut Hub,
     ask: AccountAsk,
     rx: &mut mpsc::Receiver<AppEvent>,
 ) -> AccountReply {
@@ -553,6 +553,27 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+// Esc in the token field stops a connect: its check is dropped and nothing
+// is saved.
+#[tokio::test]
+async fn a_cancelled_connect_saves_nothing() {
+    need_curl!();
+    let (base, _) = serve(Box::new(|_| {
+        thread::sleep(Duration::from_secs(5));
+        ok(r#"{"type":"user","name":"ana"}"#)
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let (mut hub, mut rx) = account_worker(&base, dir.path(), None);
+    hub.account(AccountAsk::Connect(Secret::new("hf_abc".into())));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let reply = account_reply(&mut hub, AccountAsk::CancelConnect, &mut rx).await;
+    assert_eq!(
+        reply,
+        AccountReply::Connected(Err("Hugging Face token not saved: cancelled".to_owned()))
+    );
+    assert!(!dir.path().join("token").exists());
+}
+
 // Spec (model-download, Connect a Hugging Face account): Connect.
 #[tokio::test]
 async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
@@ -561,9 +582,9 @@ async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
     let dir = tempfile::tempdir().unwrap();
     // A missing folder is made, with mode 0700.
     let hf_home = dir.path().join("cache/huggingface");
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_abc".into())),
         &mut rx,
     )
@@ -614,9 +635,9 @@ async fn a_rejected_token_writes_nothing() {
     }));
     let dir = tempfile::tempdir().unwrap();
     let hf_home = dir.path().join("hf");
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_bad".into())),
         &mut rx,
     )
@@ -640,9 +661,9 @@ async fn a_connect_replaces_a_saved_token_and_writes_through_a_symlink() {
     let hf_home = dir.path().join("hf");
     std::fs::create_dir(&hf_home).unwrap();
     std::os::unix::fs::symlink(&real, hf_home.join("token")).unwrap();
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_new".into())),
         &mut rx,
     )
@@ -663,12 +684,12 @@ async fn a_disconnect_deletes_the_token_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("token");
     std::fs::write(&file, "hf_abc").unwrap();
-    let (hub, mut rx) = account_worker("http://127.0.0.1:9", dir.path(), None);
-    let reply = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    let (mut hub, mut rx) = account_worker("http://127.0.0.1:9", dir.path(), None);
+    let reply = account_reply(&mut hub, AccountAsk::Disconnect, &mut rx).await;
     assert_eq!(reply, AccountReply::Disconnected(Ok(())));
     assert!(!file.exists());
     // A file already gone is no failure.
-    let again = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    let again = account_reply(&mut hub, AccountAsk::Disconnect, &mut rx).await;
     assert_eq!(again, AccountReply::Disconnected(Ok(())));
 }
 
@@ -680,8 +701,8 @@ async fn a_check_asks_who_the_saved_token_belongs_to() {
     let (base, seen) = serve(Box::new(|_| ok(r#"{"name":"ana"}"#)));
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("token"), "hf_saved\n").unwrap();
-    let (hub, mut rx) = account_worker(&base, dir.path(), Some("hf_env"));
-    let reply = account_reply(&hub, AccountAsk::Check, &mut rx).await;
+    let (mut hub, mut rx) = account_worker(&base, dir.path(), Some("hf_env"));
+    let reply = account_reply(&mut hub, AccountAsk::Check, &mut rx).await;
     assert_eq!(reply, AccountReply::Checked(Ok("ana".to_owned())));
     let request = seen.lock().unwrap()[0].clone();
     assert_eq!(header(&request, "authorization"), Some("Bearer hf_saved"));

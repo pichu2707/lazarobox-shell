@@ -284,10 +284,27 @@ pub async fn whoami(curl: &Curl) -> Result<String, String> {
 /// What a connect that finds no token file reads as.
 pub const NO_TOKEN_FILE: &str = "Hugging Face token not saved: no token file (set HF_HOME)";
 
+/// What a connect stopped before it saved reads as.
+pub const CONNECT_CANCELLED: &str = "Hugging Face token not saved: cancelled";
+
 /// Checks the pasted `token` with `curl` (which carries it) and, once the
-/// Hub accepts it, saves it in the token file of `env`.
-async fn connect(curl: &Curl, env: &TokenEnv, token: Secret) -> Result<String, String> {
-    let name = whoami(curl).await?;
+/// Hub accepts it, saves it in the token file of `env`. `cancel` (a send,
+/// or its sender dropped) stops it before the save; curl dies with its
+/// dropped request.
+async fn connect(
+    curl: &Curl,
+    env: &TokenEnv,
+    token: Secret,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<String, String> {
+    let name = tokio::select! {
+        biased;
+        _ = &mut cancel => return Err(CONNECT_CANCELLED.to_owned()),
+        name = whoami(curl) => name?,
+    };
+    if !matches!(cancel.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+        return Err(CONNECT_CANCELLED.to_owned());
+    }
     let path = hf::token_file(env).ok_or_else(|| NO_TOKEN_FILE.to_owned())?;
     let saved = tokio::task::spawn_blocking(move || save_token(&path, token.expose())).await;
     match saved {
@@ -673,6 +690,8 @@ pub struct Hub {
     events: mpsc::Sender<AppEvent>,
     /// The cancel of the running download, open while it runs.
     cancel: Option<oneshot::Sender<()>>,
+    /// The cancel of the last connect; a new one drops it, which stops it.
+    connecting: Option<oneshot::Sender<()>>,
 }
 
 impl Hub {
@@ -689,6 +708,7 @@ impl Hub {
             hub,
             events,
             cancel: None,
+            connecting: None,
         }
     }
 
@@ -709,7 +729,18 @@ impl Hub {
     /// Runs one account request of the `Hugging Face` row; one
     /// `AppEvent::HfAccount` answers it. A pasted token goes only to curl's
     /// stdin and to the token file, and is dropped once the check is done.
-    pub fn account(&self, ask: AccountAsk) {
+    pub fn account(&mut self, ask: AccountAsk) {
+        let (stop, cancel) = oneshot::channel();
+        match ask {
+            AccountAsk::CancelConnect => {
+                if let Some(stop) = self.connecting.take() {
+                    let _ = stop.send(());
+                }
+                return;
+            }
+            AccountAsk::Connect(_) => self.connecting = Some(stop),
+            AccountAsk::Check | AccountAsk::Disconnect => {}
+        }
         let (make, env, events) = (
             Arc::clone(&self.make),
             Arc::clone(&self.env),
@@ -720,13 +751,14 @@ impl Hub {
             let reply = match ask {
                 AccountAsk::Connect(token) => {
                     let curl = make(Some(token.clone()));
-                    AccountReply::Connected(connect(&curl, &env, token).await)
+                    AccountReply::Connected(connect(&curl, &env, token, cancel).await)
                 }
                 AccountAsk::Check => {
                     let curl = make(hf::saved_token(&env, read_token_file).map(Secret::new));
                     AccountReply::Checked(whoami(&curl).await)
                 }
                 AccountAsk::Disconnect => AccountReply::Disconnected(disconnect(&env)),
+                AccountAsk::CancelConnect => return,
             };
             let _ = events.send(AppEvent::HfAccount(reply)).await;
         });

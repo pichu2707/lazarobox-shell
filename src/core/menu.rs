@@ -576,11 +576,15 @@ impl MenuState {
 
     /// Keys while the token field is open: every letter is typed, Ctrl+U
     /// clears, Enter checks the token and Esc goes back to the row (also
-    /// while the check runs).
+    /// while the check runs, which it stops).
     fn on_account_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match key.code {
-            KeyCode::Esc if !repeat => self.account.close(),
+            KeyCode::Esc if !repeat => {
+                if let Some(ask) = self.account.close() {
+                    return MenuCommand::HfAccount(ask);
+                }
+            }
             KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => self.account.clear(),
             _ if !plain => {}
             KeyCode::Char(c) => self.account.type_char(c),

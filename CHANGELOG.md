@@ -26,6 +26,8 @@ baseline.
   instead of failing on every resume.
 - A relative `HF_TOKEN_PATH` is read from the working directory, as
   `huggingface_hub` reads it, instead of being ignored.
+- Esc while a pasted Hugging Face token is being checked stops the check, so
+  the token is not saved.
 
 ### Security
 

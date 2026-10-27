@@ -183,7 +183,11 @@ fn a_rejected_token_reads_as_the_footer_error_and_is_dropped() {
 fn a_reply_after_esc_updates_the_account_but_shows_no_error() {
     let mut m = pasted();
     send(&mut m, KeyCode::Enter);
-    send(&mut m, KeyCode::Esc);
+    // Esc during the check stops it, so the token is not saved.
+    assert_eq!(
+        send(&mut m, KeyCode::Esc),
+        MenuCommand::HfAccount(AccountAsk::CancelConnect)
+    );
     assert!(!m.in_sub_level());
     m.account_reply(AccountReply::Connected(Err(REJECTED.to_owned())));
     assert_eq!(hint(&m), HINT_CONNECT);

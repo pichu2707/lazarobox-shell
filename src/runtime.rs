@@ -1488,7 +1488,7 @@ impl Panes {
                     }
                 }
                 Effect::HfAccount(ask) => {
-                    if let Some(hub) = &self.hub {
+                    if let Some(hub) = self.hub.as_mut() {
                         hub.account(ask);
                     }
                 }

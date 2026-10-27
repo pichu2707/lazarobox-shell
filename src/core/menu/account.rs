@@ -180,13 +180,15 @@ impl Account {
         Some(ask)
     }
 
-    /// Esc in the field: back to the row, the token dropped. A check in
-    /// flight is no longer waited for.
-    pub fn close(&mut self) {
+    /// Esc in the field: back to the row, the token dropped. A connect in
+    /// flight is no longer waited for, and is stopped before it saves.
+    pub fn close(&mut self) -> Option<AccountAsk> {
         self.field = None;
         if self.asking == Some(Asking::Connect) {
             self.asking = None;
+            return Some(AccountAsk::CancelConnect);
         }
+        None
     }
 
     /// What the runtime found. The account follows what really happened,
