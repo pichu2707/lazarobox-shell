@@ -40,6 +40,7 @@ fn created(conversation: i64) -> StoreReply {
         conversation,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     }
 }
 

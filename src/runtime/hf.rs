@@ -27,8 +27,15 @@ use crate::core::ai::hf::{
 pub use crate::core::ai::hf::{End, space_check};
 use crate::core::ai::sanitize;
 
-/// What a missing curl reads as.
+/// What a missing curl reads as for the Hub.
 pub const NO_CURL: &str = "Hugging Face needs curl on the PATH";
+
+/// The service `Curl::hub` talks to, as errors name it.
+const HUB_LABEL: &str = "Hugging Face";
+
+/// The GitHub API and the GitHub download host.
+const GITHUB_API: &str = "https://api.github.com";
+const GITHUB: &str = "https://github.com";
 
 /// An API request gets this long, connect included.
 const API_TIMEOUT_SECS: u64 = 15;
@@ -42,12 +49,14 @@ const ERROR_CAP: u64 = 4 * 1024;
 /// How often the progress of a download is read.
 const TICK: Duration = Duration::from_millis(250);
 
-/// How curl is run for the Hub.
+/// How curl is run for the Hub, or for GitHub (the llama-server install).
 pub struct Curl {
+    /// The service, as errors name it ("Hugging Face", "GitHub").
+    label: &'static str,
     program: OsString,
     /// The `PATH` curl is looked up in.
     path: OsString,
-    /// `https://huggingface.co`; a local server in tests.
+    /// `https://huggingface.co` or a GitHub host; a local server in tests.
     base: String,
     https_only: bool,
     /// Test requests must not go through the developer's proxy.
@@ -60,15 +69,49 @@ pub struct Curl {
 impl Curl {
     /// The production curl: the Hub over HTTPS only.
     pub fn hub(path: OsString, token: Option<Secret>) -> Self {
+        Self::to(HUB_LABEL, hf::HUB, path, token)
+    }
+
+    /// The GitHub API over HTTPS only. No token: none is read or sent.
+    pub fn github_api(path: OsString) -> Self {
+        Self::to("GitHub", GITHUB_API, path, None)
+    }
+
+    /// The GitHub download host over HTTPS only, for release assets.
+    pub fn github(path: OsString) -> Self {
+        Self::to("GitHub", GITHUB, path, None)
+    }
+
+    fn to(label: &'static str, base: &str, path: OsString, token: Option<Secret>) -> Self {
         Curl {
+            label,
             program: "curl".into(),
             path,
-            base: hf::HUB.to_owned(),
+            base: base.to_owned(),
             https_only: true,
             noproxy: false,
             token,
             user_agent: super::update::user_agent(env!("CARGO_PKG_VERSION")),
         }
+    }
+
+    /// Tests: plain HTTP to the local server `base`, never through a proxy.
+    #[cfg(test)]
+    pub(super) fn local(mut self, base: &str) -> Self {
+        self.base = base.to_owned();
+        self.https_only = false;
+        self.noproxy = true;
+        self
+    }
+
+    /// What a missing curl reads as.
+    fn no_curl(&self) -> String {
+        format!("{} needs curl on the PATH", self.label)
+    }
+
+    /// What a reply that is not the expected text reads as.
+    fn unreadable(&self) -> String {
+        format!("{} request failed: unreadable reply", self.label)
     }
 
     /// The arguments every request starts with.
@@ -116,8 +159,38 @@ impl Curl {
     }
 
     /// A download of `path` into `out`, resuming what `out` already holds.
-    pub fn download_args(&self, path: &str, out: &Path) -> Vec<String> {
+    #[cfg(test)]
+    pub(super) fn download_args(&self, path: &str, out: &Path) -> Vec<String> {
+        self.download_args_within(path, out, None)
+    }
+
+    /// Like [`Self::download_args`]; with `Some(size)` the download is also
+    /// bounded, for a host the Hub's trust does not cover: at most `size`
+    /// bytes (`0` for an unknown size sets no cap), five redirects, and a
+    /// stop when it moves under 1 byte/s for a minute.
+    pub(super) fn download_args_within(
+        &self,
+        path: &str,
+        out: &Path,
+        size: Option<u64>,
+    ) -> Vec<String> {
         let mut args = self.common();
+        if let Some(size) = size {
+            if size > 0 {
+                args.extend(["--max-filesize".to_owned(), size.to_string()]);
+            }
+            args.extend(
+                [
+                    "--max-redirs",
+                    "5",
+                    "--speed-limit",
+                    "1",
+                    "--speed-time",
+                    "60",
+                ]
+                .map(str::to_owned),
+            );
+        }
         args.extend(
             [
                 "--location",
@@ -149,13 +222,16 @@ impl Curl {
 
     /// Starts curl with `args` in its own process group, writing the token
     /// config on its stdin.
-    async fn spawn(&self, args: &[String]) -> Result<(Child, Option<GroupKill>), String> {
+    pub(super) async fn spawn(
+        &self,
+        args: &[String],
+    ) -> Result<(Child, Option<GroupKill>), String> {
         // An empty or relative entry makes the lookup search the current
         // directory, where a planted `curl` could be: refuse such a `PATH`.
         let safe =
             !self.path.is_empty() && std::env::split_paths(&self.path).all(|dir| dir.is_absolute());
         if !safe {
-            return Err(NO_CURL.to_owned());
+            return Err(self.no_curl());
         }
         let config = self.stdin_config();
         let mut child = Command::new(&self.program)
@@ -172,8 +248,8 @@ impl Curl {
             .process_group(0)
             .spawn()
             .map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => NO_CURL.to_owned(),
-                _ => format!("Hugging Face request failed: {e}"),
+                io::ErrorKind::NotFound => self.no_curl(),
+                _ => format!("{} request failed: {e}", self.label),
             })?;
         let guard = child
             .id()
@@ -187,7 +263,7 @@ impl Curl {
     }
 
     /// An API GET: the status and the body, or why it failed.
-    async fn get(&self, path: &str) -> Result<(u16, String), String> {
+    pub(super) async fn get(&self, path: &str) -> Result<(u16, String), String> {
         let (mut child, mut guard) = self.spawn(&self.api_args(path)).await?;
         let mut out = Vec::new();
         let limit = REPLY_CAP as u64 + 8;
@@ -199,20 +275,20 @@ impl Curl {
         let error = error_line(&mut child).await;
         let status = finish(&mut child, &mut guard, !read || too_long).await;
         if too_long {
-            return Err("Hugging Face request failed: reply too long".to_owned());
+            return Err(format!("{} request failed: reply too long", self.label));
         }
-        let text = String::from_utf8(out).map_err(|_| hf::UNREADABLE.to_owned())?;
+        let text = String::from_utf8(out).map_err(|_| self.unreadable())?;
         let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));
         match code.parse::<u16>() {
             Ok(code) if code != 0 => Ok((code, body.to_owned())),
-            _ if status.is_ok_and(|s| s.success()) => Err(hf::UNREADABLE.to_owned()),
-            _ => Err(format!("Hugging Face request failed: {error}")),
+            _ if status.is_ok_and(|s| s.success()) => Err(self.unreadable()),
+            _ => Err(format!("{} request failed: {error}", self.label)),
         }
     }
 }
 
 /// Reaps curl and disarms its guard; with `kill`, the group goes first.
-async fn finish(
+pub(super) async fn finish(
     child: &mut Child,
     guard: &mut Option<GroupKill>,
     kill: bool,
@@ -230,7 +306,7 @@ async fn finish(
 }
 
 /// The last line curl wrote on stderr, cleaned for the screen.
-async fn error_line(child: &mut Child) -> String {
+pub(super) async fn error_line(child: &mut Child) -> String {
     let mut err = Vec::new();
     if let Some(stderr) = child.stderr.take() {
         let _ = stderr.take(ERROR_CAP).read_to_end(&mut err).await;
@@ -437,7 +513,7 @@ pub async fn download(
             }
             if !has_size(&partial, file.size) {
                 let path = hf::resolve_path(&job.id, &job.commit, &file.path);
-                let fetched = fetch(curl, &path, &partial, &mut cancel, |on_disk| {
+                let fetched = fetch(curl, &path, &partial, None, &mut cancel, |on_disk| {
                     progress(done + on_disk, total);
                 })
                 .await;
@@ -467,14 +543,18 @@ pub async fn download(
 
 /// Runs one curl download into `partial`. `None` when curl ended well;
 /// otherwise how the download ends.
-async fn fetch(
+pub(super) async fn fetch(
     curl: &Curl,
     path: &str,
     partial: &Path,
+    bound: Option<u64>,
     cancel: &mut oneshot::Receiver<()>,
     mut on_disk: impl FnMut(u64),
 ) -> Option<End> {
-    let (mut child, mut guard) = match curl.spawn(&curl.download_args(path, partial)).await {
+    let (mut child, mut guard) = match curl
+        .spawn(&curl.download_args_within(path, partial, bound))
+        .await
+    {
         Ok(started) => started,
         Err(message) => return Some(End::Failed(message)),
     };
@@ -527,7 +607,7 @@ fn keep(partial: &Path, blob: &Path, file: &HubFile) -> Result<(), End> {
 }
 
 /// The sha256 of a file, in lowercase hex.
-fn sha256(path: &Path) -> io::Result<String> {
+pub(super) fn sha256(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
@@ -555,11 +635,11 @@ fn write_ref(cache: &RepoCache, commit: &str) -> io::Result<()> {
     std::fs::write(at, commit)
 }
 
-fn file_len(path: &Path) -> u64 {
+pub(super) fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
-fn has_size(path: &Path, size: u64) -> bool {
+pub(super) fn has_size(path: &Path, size: u64) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
 }
 
@@ -846,7 +926,7 @@ impl Hub {
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::runtime) mod tests;
 
 #[cfg(test)]
 mod hub_tests {

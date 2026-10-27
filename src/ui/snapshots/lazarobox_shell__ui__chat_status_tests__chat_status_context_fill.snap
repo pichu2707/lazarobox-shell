@@ -1,0 +1,5 @@
+---
+source: src/ui/chat_status_tests.rs
+expression: status(&app).trim_end()
+---
+ ◐ CHAT  /srv/app                                 ▰▰▰━━━━━ ⠋ thinking llama3:8b 0s  ollama › llama3:8b · context 15%

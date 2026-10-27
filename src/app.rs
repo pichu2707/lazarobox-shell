@@ -28,6 +28,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -50,9 +51,11 @@ use crate::core::{
 mod auto_run;
 mod chat;
 mod chat_copy;
+mod compact;
 mod context;
 mod history;
 mod hub;
+mod install;
 mod notes;
 mod offer;
 mod review;
@@ -216,6 +219,21 @@ pub enum AppEvent {
     },
     /// The running Hugging Face download ended.
     DownloadEnd(End),
+    /// The bytes on disk of the llama-server archive that downloads, for the
+    /// request `id`.
+    InstallProgress {
+        id: u64,
+        done: u64,
+        total: u64,
+    },
+    /// The result of the install step the wizard asked for; it names the
+    /// request it answers.
+    InstallReply(u64, Result<InstallReply, String>),
+    /// A notice about the install (an attestation that was not verified):
+    /// shown, not swallowed.
+    InstallWarning(String),
+    /// A newer llama.cpp build exists; shown unless a notice is already up.
+    InstallNewer(String),
     /// What the runtime found for `Effect::HfAccount`.
     HfAccount(AccountReply),
     /// What became of `Effect::SendIssue`.
@@ -269,6 +287,15 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start a background compaction run for a pane: not a turn of the chat,
+    /// so it touches neither the pane's tool session nor its servers.
+    ChatCompact {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop the background compaction run of a pane and nothing else.
+    ChatCompactCancel(PaneId),
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
@@ -402,6 +429,11 @@ pub enum Effect {
     Download(Box<Job>),
     /// Stop the running Hugging Face download; its partial file stays.
     CancelDownload,
+    /// Run one step of the llama-server install wizard, or the newer build
+    /// check; the runtime answers
+    /// with `AppEvent::InstallReply` (and `InstallProgress` while it
+    /// downloads).
+    Install(InstallAsk),
     /// Connect, check or disconnect the Hugging Face account of the menu's
     /// `Hugging Face` row; the runtime answers with one
     /// `AppEvent::HfAccount`.
@@ -671,6 +703,10 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The privacy notice of the rolling summary was shown in this run.
+    summary_notice_shown: bool,
+    /// A quiet save (the rolling summary) failed and the user was told.
+    summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -778,6 +814,8 @@ pub struct App {
     history: bool,
     /// The Hugging Face download that runs; one at a time.
     download: Option<crate::core::ai::picker::Running>,
+    /// The newer llama.cpp build check ran this run: it asks GitHub once.
+    newer_checked: bool,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -808,6 +846,8 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            summary_notice_shown: false,
+            summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -856,6 +896,7 @@ impl App {
             no_server: None,
             history: false,
             download: None,
+            newer_checked: false,
         }
     }
 
@@ -1681,6 +1722,10 @@ impl App {
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
+            AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
+            AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
+            AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -1832,7 +1877,10 @@ impl App {
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
         let mut saved_over = None;
+        let mut stop_download = false;
         if let Some(menu) = self.menu.take() {
+            // The wizard goes with the menu: its download must not run on.
+            stop_download = menu.install_downloading();
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
@@ -1851,6 +1899,9 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
+        if stop_download {
+            effects.push(Effect::Install(InstallAsk::Cancel));
+        }
         // Last, so its notice is the one shown.
         if let Some((before, idle)) = saved_over {
             let now = self.ai.managed_options().idle();
@@ -1923,6 +1974,7 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
                 if let Some(menu) = self.menu.as_mut() {
@@ -2381,6 +2433,10 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A compaction run is not a turn: the pane stays idle meanwhile.
+        if chat.is_compaction_turn(turn) {
+            return self.on_compaction(id, event);
+        }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
         // (a delta that ends the turn) count as `Error`.
@@ -2389,6 +2445,14 @@ impl App {
             _ => Ended::Error,
         };
         let tool = ToolEvent::of(&event);
+        // A llama-server that fails may be gone or restarted with another
+        // window: detect again, so the next turn is sized by what it says now.
+        let llamacpp_failed = live
+            && chat.stream_engine() == "llamacpp"
+            && matches!(
+                event,
+                StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
+            );
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -2399,6 +2463,12 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if finished && how == Ended::Done {
+            effects.extend(self.start_compaction(id));
+        }
+        if llamacpp_failed {
+            effects.extend(self.request_detection());
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -6889,6 +6959,7 @@ mod app_tests {
             engines: CATALOG
                 .iter()
                 .map(|e| crate::core::ai::EngineState {
+                    binary: None,
                     id: e.id,
                     status,
                     models: Vec::new(),
@@ -7028,6 +7099,7 @@ mod app_tests {
                 .map(|e| {
                     let (status, models) = engine(e.id);
                     EngineState {
+                        binary: None,
                         id: e.id,
                         status,
                         models: models.into_iter().map(str::to_owned).collect(),
@@ -7889,6 +7961,9 @@ mod app_tests {
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
 
+    /// Rolling compaction of the history (chat-memory S3, S4, S8).
+    mod chat_compact;
+
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
 
@@ -7912,6 +7987,13 @@ mod app_tests {
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;
+
+    /// The llama-server install wizard of the llamacpp picker
+    /// (llama-server-install).
+    mod install;
+
+    /// The manage rows of llamacpp: remove and the newer build notice.
+    mod install_manage;
 
     /// The Feedback row of the Settings tab (config-menu).
     mod feedback;

@@ -200,7 +200,7 @@ Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Conte
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
-El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. La única descarga que hace lazarobox es la de modelos GGUF de Hugging Face, y solo cuando tú la confirmas (ver «Descargar modelos de Hugging Face»).
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. lazarobox solo descarga dos cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»).
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
 
@@ -257,9 +257,25 @@ Límites de esta fase:
 - Los alias de shell no se detectan: el binario debe estar en el `PATH`.
 - Al arrancar desde un lanzador de escritorio o rofi, el `PATH` suele ser mínimo. lazarobox pregunta una vez a tu shell de login (`$SHELL -l -i -c`; `/bin/sh` si `$SHELL` no está definido) y pone sus carpetas al principio del `PATH`, seguidas de las del proceso que falten, tanto para detectar los CLIs como para lanzarlos en el chat: así se elige el mismo ejecutable que en tu terminal, y una copia antigua en `/usr/local/bin` no tapa la tuya. La shell arranca con el `PATH` del proceso más `/usr/local/bin:/usr/bin:/bin`, para que tus archivos rc (`brew shellenv`, nvm) encuentren `tr`, `readlink` y demás. Si `$SHELL` falla, se prueba una vez `/bin/bash -l -c` (salvo que `$SHELL` ya sea bash; lee los archivos de login pero no `~/.bashrc`); entre las dos consultas comparten un límite total de unos 3 s. Si ambas fallan o tardan demasiado, se usa el `PATH` del proceso tal cual. El entorno del proceso no se modifica. La consulta ejecuta tus archivos rc interactivos al arrancar, así que cualquier demonio que lancen (por ejemplo `ssh-agent`, o un autoarranque de tmux o zellij) también se inicia en ese momento.
 
+### Instalar llama-server (la excepción)
+
+lazarobox no instala programas: detecta los que ya tienes. **`llama-server` es la única excepción**, y solo si tú la pides: con llamacpp en `not installed`, su lista de modelos ofrece `install llama-server…`. Nada se descarga hasta que confirmas cada paso con `y`.
+
+| Tema | Qué hace |
+|------|----------|
+| Qué se descarga | El archivo `llama-<tag>-bin-…tar.gz` de la última versión de [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) que tiene un build para tu sistema. Eliges la variante: CPU, Vulkan (solo en Linux y solo si hay un driver Vulkan instalado) o Metal (macOS). |
+| De dónde | Solo de `github.com/ggml-org/llama.cpp`, con el `curl` del sistema (HTTPS). La URL la construye lazarobox; no se sigue ninguna otra. No se lee ningún token de GitHub. |
+| Cómo se verifica | El sha256 del archivo se compara con el `digest` que publica GitHub; si no coincide, se borra y no se extrae nada. Si `gh` está instalado y con sesión iniciada, se ejecuta además `gh attestation verify` y un fallo detiene la instalación; sin `gh` (o sin sesión) el asistente avisa de que la atestación no se verificó y sigue. Antes de activarlo se ejecuta `llama-server --version`; si falla, no se activa. |
+| Dónde queda | `$XDG_DATA_HOME/lazarobox/llama.cpp/` (por defecto `~/.local/share/lazarobox/llama.cpp/`): una carpeta por versión y `current` apuntando a la activa. Se conserva la versión anterior para volver atrás a mano. |
+| Orden en el `PATH` | La carpeta `current` se añade **al final** del `PATH`: un `llama-server` tuyo (el del sistema) siempre gana. Si ya hay uno, `install llama-server…` no se ofrece. |
+| Avisos de versión | Con una instalación propia, al abrir llamacpp se pregunta una vez por ejecución si hay una versión más nueva (de la misma variante que instalaste, también Vulkan) y, si la hay, el pie lo dice, salvo que ya muestre otro aviso. Nunca se instala sola. No se pregunta con `[updates] check = false`, y sin red no dice nada. |
+| Cómo quitarlo | Con una instalación propia, la lista de llamacpp ofrece `remove the llama.cpp install`: pregunta `y`/`n` y borra `$XDG_DATA_HOME/lazarobox/llama.cpp/` entero. Si el `llama-server` gestionado está en marcha, se para antes de borrar. Nunca toca un `llama-server` del sistema. También puedes borrar esa carpeta a mano. |
+
+Si prefieres hacerlo tú, la fila `I'll do it myself (copy instructions)` copia al portapapeles cómo hacerlo a mano y no descarga nada. Al terminar, el asistente ofrece descargar un modelo de Hugging Face.
+
 ### Descargar modelos de Hugging Face
 
-Con `llama-server` instalado, la lista de modelos de llamacpp termina en la fila `download from Hugging Face…`. Desde ahí:
+La lista de modelos de llamacpp termina en la fila `download from Hugging Face…`; sin `llama-server` instalado sigue disponible (la descarga solo necesita `curl`) y avisa de que hace falta `llama-server` para ejecutar el modelo. Desde ahí:
 
 1. **Elige un modelo de la lista.** Al entrar se muestran los modelos de texto GGUF más descargados **que caben en la memoria de tu PC**, con su tamaño estimado (`Qwen/Qwen3-4B-GGUF  630088 ↓  ~2.5 GB`): se eligen con `j`/`k` y `Enter`, sin escribir nada. El tamaño se estima con los parámetros del modelo a unos 5 bits por parámetro (como `Q4_K_M`), y un modelo cabe si ocupa como mucho el 70% de la RAM.
    **O busca.** `Esc` en esa lista abre el campo de búsqueda: escribe un texto para buscar repos GGUF (los más descargados primero) o pega su id, `owner/repo` (por ejemplo `Qwen/Qwen2.5-0.5B-Instruct-GGUF`). Al buscar se muestra todo, y lo que no cabe en tu PC lleva la marca `too big for this PC`.
@@ -348,6 +364,13 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 ```
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
+
+**Compactación del historial:** cuando un chat largo desborda la ventana del modelo, lazarobox resume lo que sale con un modelo y lo envía como bloque inerte en lugar de perderlo. El resumen nunca va a un motor que no hayas elegido: usa la tarea `summarize` solo si la fijas explícitamente en `[ai.tasks.summarize]`; si no, usa el motor y el modelo del chat (nunca el general). Cuesta una llamada extra cada pocos envíos; `[ai.chat] compaction = "off"` la desactiva y queda el aviso de que los mensajes antiguos no se envían (por defecto `"auto"`; cualquier otro valor es un error de configuración).
+
+```toml
+[ai.chat]
+compaction = "off"   # "auto" (por defecto) | "off"
+```
 
 **Privacidad:**
 
@@ -715,6 +738,7 @@ Se activa desde el menú de IA (`Ctrl+Espacio` y `m`), que antes muestra una adv
 enabled = true        # por defecto false
 acknowledged = true   # advertencia de privacidad aceptada
 port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
+save_summaries = false  # por defecto false; true guarda el resumen de los chats largos
 ```
 
 **Privacidad (léelo antes de activarla):**
@@ -740,6 +764,8 @@ port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
 La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Encontrar las notas en engram:** el _topic key_ de cada nota empieza por `chat/` (`chat/<tipo>/<título>`), por ejemplo `chat/decision/use-axum`.
+
+**Resumen de los chats largos (opcional):** cuando la compactación del historial resume un chat largo, ese resumen solo va al prompt. Con `save_summaries = true` en `[ai.memory]` se escribe además en engram como **una única nota por conversación** (`chat/<id>-<creación>/summary`, donde `<creación>` es la hora de creación de la conversación, para que el identificador reutilizado de una conversación borrada no pise el resumen de otra), que se actualiza en cada resumen nuevo en lugar de crear otra; pasa por la misma ocultación de secretos que el resto de notas. Los resúmenes guardados **permanecen en engram aunque borres el chat**, hasta que los elimines tú explícitamente. Una conversación **reanudada no actualiza su resumen guardado**: el resumen continuo no se persiste y, tras reanudar, solo cubriría los mensajes posteriores. Sin la opción no se escribe nada de forma automática y, la primera vez que habría guardado un resumen, lazarobox añade una línea al chat (una vez por ejecución) que explica qué se guardaría, dónde y cómo activarlo. Si con la opción activada engram rechaza el guardado, se avisa una vez por ejecución (`could not save the conversation summary to engram: <motivo>`); con la memoria desactivada o engram sin responder no se escribe nada y no hay avisos.
 
 **Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 

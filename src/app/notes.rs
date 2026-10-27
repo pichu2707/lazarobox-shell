@@ -136,6 +136,7 @@ impl App {
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                     note,
+                    topic_key: None,
                 })]
             }
         }
@@ -221,6 +222,14 @@ impl App {
                     return Vec::new();
                 };
                 let save = chat.save_answered(*token);
+                // The opted-in summary save failing every time must not be
+                // silent forever: say so once per run.
+                if save.as_ref().is_some_and(|s| s.quiet) && !self.summary_failure_shown {
+                    self.summary_failure_shown = true;
+                    chat.push_system(format!(
+                        "could not save the conversation summary to engram: {reason}"
+                    ));
+                }
                 save_not_done(chat, save.as_ref(), reason);
             }
             MemReply::Saved {
@@ -246,8 +255,10 @@ impl App {
                 // The editor that sent this save closes; one the user opened
                 // since stays.
                 chat.close_saved_editor(save.as_ref());
-                let kind = topic_key.split('/').nth(1).unwrap_or("note");
-                chat.push_system(format!("saved note {kind}: {title}"));
+                if !save.as_ref().is_some_and(|s| s.quiet) {
+                    let kind = topic_key.split('/').nth(1).unwrap_or("note");
+                    chat.push_system(format!("saved note {kind}: {title}"));
+                }
                 let links = self.link_effects(id);
                 return self.with_waiting_sends(links);
             }
@@ -343,12 +354,15 @@ impl App {
     pub(super) fn on_store_reply(&mut self, reply: &StoreReply) -> Vec<Effect> {
         match reply {
             StoreReply::Created {
-                pane, conversation, ..
+                pane,
+                conversation,
+                created_at,
+                ..
             } => {
                 let Some(chat) = self.panes.get_mut(pane).and_then(PaneState::chat_mut) else {
                     return Vec::new();
                 };
-                chat.set_conversation(*conversation);
+                chat.set_created(*conversation, *created_at);
                 for line in eviction_lines_of(reply) {
                     chat.push_system(line);
                 }
@@ -458,6 +472,10 @@ impl App {
 /// when that editor is gone (Esc, or another one is open) the transcript says
 /// so instead.
 pub(super) fn save_not_done(chat: &mut ChatState, save: Option<&PendingSave>, reason: &str) {
+    // A save the app sent on its own (the rolling summary) fails silently.
+    if save.is_some_and(|s| s.quiet) {
+        return;
+    }
     if !chat.fail_save(save, reason) {
         chat.push_system(format!("note not saved: {reason}"));
     }

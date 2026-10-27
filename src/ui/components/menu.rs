@@ -518,6 +518,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "ollama" {
                         Status::Available
@@ -587,6 +588,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: match e.id {
                         "ollama" | "claude" => Status::Available,
@@ -662,6 +664,29 @@ mod tests {
     fn snapshot_ai_task_list_with_the_cursor_on_settings() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &mixed())));
     }
+
+    #[test]
+    fn snapshot_models_level_of_llamacpp_without_llama_server() {
+        let mut menu = picker_of("code", 0);
+        let on = |menu: &MenuState, name: &str| {
+            menu.rows(&Config::default())
+                .iter()
+                .any(|r| matches!(r, Row::Pick { label, selected: true, .. } if label == name))
+        };
+        for _ in 0..10 {
+            if on(&menu, "llamacpp") {
+                break;
+            }
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        assert!(on(&menu, "llamacpp"));
+        press(&mut menu, &[KeyCode::Enter]);
+        // Down to the Hugging Face row, so its mark is drawn selected.
+        press(&mut menu, &[KeyCode::Char('j')]);
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu)));
+    }
+
+    mod install;
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
@@ -1089,6 +1114,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: if e.id == "ollama" {
@@ -1128,6 +1154,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "codex" {
                         Status::Available
@@ -1245,6 +1272,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "claude" {
                         Status::Available
@@ -1307,6 +1335,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: vec!["m".to_owned()],

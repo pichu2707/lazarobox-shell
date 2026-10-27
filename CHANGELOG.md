@@ -12,6 +12,21 @@ baseline.
 
 ### Added
 
+- `llama-server` can be installed from lazarobox, the one documented exception
+  to "lazarobox never installs anything". With llamacpp `not installed`, its
+  model list offers `install llama-server…`: pick a build (CPU, Vulkan on
+  Linux with a driver, Metal on macOS), confirm the download and the install
+  with `y`. The archive comes from `github.com/ggml-org/llama.cpp`, is held
+  to its published SHA-256 digest (and verified with `gh attestation verify`
+  when `gh` is logged in; otherwise a warning is shown), and is unpacked
+  under `$XDG_DATA_HOME/lazarobox/llama.cpp/`.
+  A `llama-server` of your own on the `PATH` always wins. With an owned
+  install the list offers `remove the llama.cpp install` (y/n), which stops a
+  running managed server first, and opening llamacpp tells you once per run
+  when a newer build exists (of the installed variant, Vulkan included; never
+  with `[updates] check = false`, silent offline, and it never replaces
+  another footer notice). The Hugging Face download row
+  no longer needs `llama-server`.
 - `run_command` asks before every command, in every approval mode, and the
   prompt now says what the user is approving: the timeout, that the network
   is on and a test can read and send out the project's `.env`, that the output
