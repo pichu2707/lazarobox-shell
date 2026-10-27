@@ -31,7 +31,7 @@ pub(crate) use cli::{
     trusted_cargo_path, trusted_real_path,
 };
 pub use live::LiveServers;
-pub use managed::Managed;
+pub use managed::{Lease, Managed};
 
 use self::external::{Externals, Start};
 use super::{
@@ -386,12 +386,17 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
         let managed = live.managed().filter(|_| request.engine == "llamacpp");
         Box::pin(async move {
             let _tools = tools;
-            if let Some(managed) = managed
-                && let Err(reason) = managed.ensure().await
-            {
-                let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
-                return;
-            }
+            // Held until the turn ends: the idle stop never cuts it.
+            let lease = match managed {
+                Some(managed) => match managed.lease().await {
+                    Ok(lease) => Some(lease),
+                    Err(reason) => {
+                        let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
+                        return;
+                    }
+                },
+                None => None,
+            };
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
@@ -405,7 +410,12 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
                     path,
                     body,
                 } => {
-                    let port = port.unwrap_or(catalog_port);
+                    // The managed server's port is known once it runs.
+                    let port = lease
+                        .as_ref()
+                        .map(Lease::port)
+                        .or(port)
+                        .unwrap_or(catalog_port);
                     // Only a turn that offers tools has a dispatch to loop on.
                     match (adapter, &request.tools, ollama::current()) {
                         (Adapter::Ollama, Tools::On { .. }, Some(dispatch)) => {
@@ -543,6 +553,7 @@ async fn run_turn(
     let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
+    let mut listening = true;
     let mut pipe = Pipe::new();
     loop {
         let event = tokio::select! {
@@ -562,9 +573,13 @@ async fn run_turn(
             None => pipe.end_without_final(),
         };
         let ended = pipe.is_over();
+        // Once the app stops listening (lazarobox is quitting), the events
+        // are dropped but the turn keeps running: returning would drop the
+        // adapter and SIGKILL its group before the polite stop is over. Only
+        // `Chats::shutdown` (or the engine ending) stops it then.
         for event in out {
-            if app.send((pane, turn, event)).await.is_err() {
-                return;
+            if listening && app.send((pane, turn, event)).await.is_err() {
+                listening = false;
             }
         }
         if ended {

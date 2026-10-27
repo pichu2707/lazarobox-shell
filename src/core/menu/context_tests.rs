@@ -68,9 +68,10 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "Git",
             "Git write",
             "Approval",
+            "Hugging Face",
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 9];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 10];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -83,7 +84,15 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Tools");
-    for label in ["Search", "Write", "Exec", "Git", "Git write", "Approval"] {
+    for label in [
+        "Search",
+        "Write",
+        "Exec",
+        "Git",
+        "Git write",
+        "Approval",
+        "Hugging Face",
+    ] {
         press(&mut m, 'j');
         assert_eq!(selected_label(&m), label);
     }
@@ -94,8 +103,9 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
         "wraps inside the AI tab"
     );
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Approval");
+    assert_eq!(selected_label(&m), "Hugging Face");
     for label in [
+        "Approval",
         "Git write",
         "Git",
         "Exec",

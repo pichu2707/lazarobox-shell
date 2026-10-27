@@ -10,6 +10,178 @@ baseline.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-27
+
+### Added
+
+- The Hugging Face token field shows the link to create a read token
+  (`https://huggingface.co/settings/tokens/new?tokenType=read`) on a line of
+  its own, so terminals that detect URLs keep it clickable.
+- A **Feedback** row at the end of the Settings tab opens a short form (a bug
+  report or an idea, a title, a description) that attaches the lazarobox
+  version, the OS and WSL, the shell, the terminal and the detected AI
+  engines. `Ctrl+S` copies a link that opens the matching GitHub issue form
+  filled in; lazarobox sends nothing itself. Secrets in the text are masked
+  before any link.
+- GitHub issue forms for bug reports and ideas; ideas go to the project's
+  Goals board.
+
+### Fixed
+
+- The `downloaded <file>` notice draws control and format characters of the
+  file name as `?`, like the rest of the Hugging Face screens.
+- A repo id with `--`, or a part ending in `-` or `.`, is refused, as the Hub
+  refuses it.
+- A partial download longer than its file is removed and fetched again
+  instead of failing on every resume.
+- A relative `HF_TOKEN_PATH` is read from the working directory, as
+  `huggingface_hub` reads it, instead of being ignored.
+- Esc while a pasted Hugging Face token is being checked stops the check, so
+  the token is not saved.
+- `d` on the Hugging Face row disconnects a saved token even when its check
+  fails (offline, or a token the Hub no longer accepts).
+
+### Security
+
+- Every copy of the Hugging Face token that curl is given (the token and its
+  header line) is zeroed when it is dropped, as the pasted token already was.
+
+## [0.25.1] - 2026-10-26
+
+### Fixed
+
+- On macOS, codex installed with its official standalone installer now runs in the jail (#180). That installer puts the binary under `~/.codex/packages/standalone/releases/<version>/bin`, inside codex's own state folder, so the jail refused to start with `… would be both run and written by the jail`.
+  - `~/.codex` stays writable, but `~/.codex/packages` is now read and run only.
+  - The state folder and the folders above `packages` cannot be renamed, removed or replaced from inside the jail, so a planted tree can never take the binary's place.
+  - The exception applies only when the program itself is in a real `packages` folder with that exact spelling. Every other layout where the program could be written is still refused.
+  - Inside the jail codex cannot update itself. Run it directly to update; lazarobox picks up the new version on its next start.
+
+## [0.25.0] - 2026-10-26
+
+### Added
+
+- Download GGUF models from Hugging Face without leaving lazarobox (#282). The llamacpp model list ends in `download from Hugging Face…`:
+  - search the Hub or paste `owner/repo`, then pick a quantization (split models count as one);
+  - a confirmation shows the file, its size, the license with a link to read it, the target folder and the free space, and nothing downloads before `y`;
+  - the download runs in the background with the system `curl` (HTTPS only), with progress in the list and the status bar, and it can be cancelled and resumed;
+  - each file's size and sha256 are checked before it lands in the standard Hugging Face cache (`~/.cache/huggingface/hub`), where the model list finds it and the managed llama-server runs it.
+- A `Hugging Face` row at the end of the AI tab connects an account for gated or private repos. The pasted token is checked with the Hub and saved where `hf auth login` saves it (`~/.cache/huggingface/token`, mode 0600), never in `config.toml` and never on a command line. `HF_TOKEN` still wins when set.
+
+### Changed
+
+- lazarobox may now download a model, but only from that Hugging Face flow and only after you confirm it. It still never pulls a model through a server.
+
+## [0.24.0] - 2026-10-26
+
+### Added
+
+- The quit prompt names `llama-server (shared)` when the managed llama-server
+  this lazarobox started is answering another lazarobox, since quitting cuts
+  that reply; the idle stop waits for such a reply and counts the idle time from
+  it. Tabs and panes of one lazarobox share its server and never count.
+- Managed llama-server: one server per model, each on its own port (the
+  configured one and the seven after it). A second lazarobox, or a
+  `llama-server` you started in a terminal, serving the same model file is used
+  as it is and never stopped by lazarobox; another model starts its own server
+  on the next free port. Only a listening socket of your own user is used.
+- The quit prompt names what still runs in the panes (jobs started with `&`,
+  `nohup` or `disown`, or a program in the foreground):
+  `Quit? still running: sleep 77, npm run dev (y/n)`, three names at most and
+  fitted to the width. After quitting, the same jobs are written to stderr
+  with their process group, also after `exit` in the last pane. lazarobox
+  still never stops them: a pane behaves like any terminal.
+- `[ai.servers.llamacpp] args` passes extra arguments to the managed
+  llama-server, after the ones lazarobox sets: for example
+  `args = ["-ngl", "99", "-c", "16384"]`. Each entry is one argument, with
+  no shell. A list that sets `--host`, `--port`, `-m` or `--model` (also as
+  `--port=8080`), or that is not a list of strings, is ignored whole with a
+  startup notice.
+- The managed llama-server stops after `[ai.servers.llamacpp] idle_minutes`
+  without a turn (15 by default, 0 = never), freeing the GPU memory; the
+  next llamacpp turn starts it again. A turn still answering is never cut:
+  the idle time counts from its end. The Settings tab of the menu has a
+  `llama-server idle` row (5 min, 15 min, 30 min, never) that applies at
+  once, with no restart.
+
+### Changed
+
+- Managed llama-server: a port where something else already answers no longer
+  fails the turn with `another program answers on 127.0.0.1:<port>`; the next
+  free port is used, and the turn fails only when all eight are taken (`no free
+  port on 127.0.0.1 from <port> to <port+7>`). With llamacpp managed, the model
+  picker keeps listing the local models while another llama-server answers on
+  the port.
+- The managed llama-server checks its model file before each start. When
+  it is missing nothing starts and the chat reads `llama-server not
+  started: model file not found: <path>`, instead of the last line of a
+  failed llama-server. It is not checked when the config loads, so a drive
+  mounted later works on the next turn.
+
+### Fixed
+
+- Nothing lazarobox starts is left running once it ends, however it ends.
+  A small watcher (`lazarobox-shell __watch`, in its own session; `ps` on
+  Linux shows `/proc/self/exe __watch`) outlives it; every process group
+  lazarobox starts (CLI chat turns, MCP servers, the managed llama-server,
+  short probes) is listed with it and taken off once reaped. When lazarobox
+  quits, crashes, is killed with SIGKILL or loses its terminal, the watcher
+  sends SIGHUP and SIGTERM to the groups still listed, SIGKILL after 3 s, and
+  exits. Before, a crash or SIGKILL left them all
+  running, and on macOS the managed llama-server then held its port so every
+  later start failed. A group is only signalled while its leader is still the
+  listed process (same start time) or gone, so a reused pid is never hit.
+  `engram serve` is never listed.
+- Quitting is polite. It used to SIGKILL CLI chat turns, MCP servers and the
+  managed llama-server at once. Now, as soon as the terminal is restored,
+  everything lazarobox started gets SIGHUP and SIGTERM, and SIGKILL only if
+  it still runs 2 s later, while the history and the memory are saved. A
+  turn still streaming its answer keeps running until then instead of being
+  cut at its next line. A group whose leader ends gets SIGKILL at once for
+  what it left behind. If lazarobox is killed during the quit, the watcher
+  repeats the same stop, where what a leader left behind gets the grace too.
+- A managed llama-server that ends on its own, during its start or later,
+  no longer leaves its children running: they get SIGKILL before the server
+  is reaped.
+
+## [0.23.0] - 2026-10-25
+
+### Added
+
+- `[ai.tools]` gains five family toggles, all `false` by default: `search`,
+  `write`, `exec`, `git` and `git_write`. The AI tab of the menu shows them
+  as rows (Search, Write, Exec, Git, Git write) with a caution line for
+  Write, Exec and Git write; saving writes only those keys and keeps the
+  rest of `config.toml`. A family is offered only while `[ai.tools] enabled`
+  is on and the chat's engine is verified for tools. With every toggle off,
+  the tools offered to the engine are the same as in 0.22.0.
+- With `search = true`, chats get two tools:
+  - `glob` lists the files of the project that match a pattern (`*`, `?`,
+    `**`, `[...]`), sorted and capped at 100. It never asks for approval,
+    like `list_dir`.
+  - `grep` searches file contents with a regular expression, capped at 100
+    matches or 20 KiB, 200 characters per line. On a cloud engine it asks
+    first (`search <pattern> in <folder>`), in every approval mode; on a
+    local engine it runs freely.
+  - Both skip symlinks, `.git`, `node_modules`, `target` and other build
+    folders, binary files and secret files (their names are left out and
+    the result says so). `grep` matches against the redacted text, so a
+    pattern cannot probe a secret. A folder the ask could not show exactly
+    (a symlink, `~`, an absolute path, `..`, hidden characters) is refused.
+  - `read_file` takes `start_line` and `max_lines` to read a window of a
+    long file, and says where the next window starts.
+- Ollama allows 24 tool rounds per turn when any of these families is on
+  (8 otherwise).
+
+### Changed
+
+- The menu popup is 22 rows tall (was 16); the full popup needs a terminal
+  of at least 21 rows, a smaller one shows the one-line `MENU` fallback.
+
+### Security
+
+- `read_file` refuses a git `config` or `config.worktree` file under any
+  `.git` folder, which can hold remote URLs with credentials.
+
 ## [0.22.0] - 2026-10-23
 
 ### Added
@@ -996,7 +1168,12 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0
+[0.25.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...v0.25.1
+[0.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...v0.20.0

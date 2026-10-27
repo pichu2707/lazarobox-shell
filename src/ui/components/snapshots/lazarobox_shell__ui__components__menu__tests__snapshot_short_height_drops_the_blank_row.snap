@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(51, 8, &fresh()))"
+expression: "text(&draw(51, 9, &fresh()))"
 ---
 ┌ Menu ───────────────────────────────────────────┐
 │ Settings                                        │
@@ -8,5 +8,6 @@ expression: "text(&draw(51, 8, &fresh()))"
 │ Tab bar position                            top │
 │ Mouse                                        on │
 │ Updates                                  0.15.3 │
+│ Feedback                     bug report or idea │
 │ j/k move · h/l change · s save · Esc cancel     │
 └─────────────────────────────────────────────────┘

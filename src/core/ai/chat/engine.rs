@@ -294,7 +294,9 @@ pub fn availability_with(
         return Availability::Checking;
     };
     // A llama-server that lazarobox starts itself only needs its binary: the
-    // turn starts it. It ignores the model name, so none is looked up.
+    // turn starts it. It ignores the model name, so none is looked up. It
+    // returns before the jail and gated-off checks, which never apply to
+    // llamacpp (pinned by a test).
     if engine == "llamacpp"
         && let Some(server) = cfg.managed()
         && detection

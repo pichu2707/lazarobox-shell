@@ -13,13 +13,16 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             review::BatchEvent,
             store::{StoreCmd, StoreReply},
+            wrap::text_width,
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
         gguf,
+        hf::{AccountAsk, AccountReply, Answer, Ask, End, Job, TokenFacts},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -49,6 +52,7 @@ mod chat;
 mod chat_copy;
 mod context;
 mod history;
+mod hub;
 mod notes;
 mod offer;
 mod review;
@@ -171,6 +175,12 @@ pub enum AppEvent {
     /// The background update check answered (or the cache was read): the
     /// newer version to announce, if any. Never carries an action.
     UpdateChecked(Option<String>),
+    /// What still runs in the panes (see `Effect::ListRunning`): one
+    /// command per job, for the quit prompt.
+    StillRunning(Vec<String>),
+    /// The llama-server this lazarobox started is answering another
+    /// lazarobox (see `Effect::ListRunning`): quitting cuts that reply.
+    ServerAnswersOthers,
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -196,6 +206,18 @@ pub enum AppEvent {
     /// What happened to the batch of chat `.0` outside a model turn (close,
     /// orphan review, apply, discard).
     Batch(PaneId, BatchEvent),
+    /// The Hub answered `Effect::HubAsk` (or the request failed, with its
+    /// message). It names the request it answers.
+    HubReply(Ask, Result<Answer, String>),
+    /// The bytes on disk of the running Hugging Face download, and its total.
+    DownloadProgress {
+        done: u64,
+        total: u64,
+    },
+    /// The running Hugging Face download ended.
+    DownloadEnd(End),
+    /// What the runtime found for `Effect::HfAccount`.
+    HfAccount(AccountReply),
 }
 
 /// How the menu closed.
@@ -357,8 +379,36 @@ pub enum Effect {
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
+    /// How long the managed llama-server may sit unused now (a menu save
+    /// changed it); `None` never stops it.
+    ManagedIdle(Option<Duration>),
+    /// Ask the Hub, from the picker's Hugging Face screens; the runtime
+    /// answers with one `AppEvent::HubReply`.
+    HubAsk(Ask),
+    /// Start this Hugging Face download. Emitted only while none runs; the
+    /// runtime reports `AppEvent::DownloadProgress` and one
+    /// `AppEvent::DownloadEnd`.
+    Download(Box<Job>),
+    /// Stop the running Hugging Face download; its partial file stays.
+    CancelDownload,
+    /// Connect, check or disconnect the Hugging Face account of the menu's
+    /// `Hugging Face` row; the runtime answers with one
+    /// `AppEvent::HfAccount`.
+    HfAccount(AccountAsk),
+    /// Name the jobs still running in the panes, for the quit prompt; the
+    /// runtime answers with one `AppEvent::StillRunning`, and with
+    /// `AppEvent::ServerAnswersOthers` when its llama-server is answering
+    /// another lazarobox.
+    ListRunning,
     Quit,
 }
+
+/// Display columns of one job named by the quit prompt.
+const JOB_NAME_MAX: usize = 24;
+
+/// How the quit prompt names a llama-server this lazarobox started that is
+/// answering another lazarobox.
+const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
@@ -610,6 +660,11 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// What still runs in the panes, named by the open quit prompt.
+    still_running: Vec<String>,
+    /// Whether the open quit prompt also names the llama-server, answering
+    /// another lazarobox now.
+    serving_others: bool,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
@@ -661,6 +716,15 @@ pub struct App {
     /// ever learns that a token is present, never its value. The default says
     /// no.
     token_check: fn() -> bool,
+    /// What the runtime finds of the Hugging Face tokens (`HF_TOKEN` set, a
+    /// token file saved), read when the menu opens; never a token. The
+    /// default finds none.
+    hf_tokens: fn() -> TokenFacts,
+    /// What the Feedback form attaches about this host (the runtime probe).
+    host: crate::core::menu::feedback::Facts,
+    /// The Hugging Face account of the saved token, once a connect or a
+    /// check found it in this session.
+    hf_account: Option<String>,
     /// What each delete in flight from a conversation list does with the
     /// notes of its conversation (see `history::NoteChoice`).
     note_choices: Vec<(PaneId, i64, history::NoteChoice)>,
@@ -699,6 +763,8 @@ pub struct App {
     /// its messages are saved through `Effect::Store`. Off by default, so a
     /// build without a store thread behaves as a plain chat.
     history: bool,
+    /// The Hugging Face download that runs; one at a time.
+    download: Option<crate::core::ai::picker::Running>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -729,6 +795,8 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            still_running: Vec::new(),
+            serving_others: false,
             update: None,
             install_env: None,
             cargo_check: |_| false,
@@ -751,6 +819,13 @@ impl App {
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
+            hf_tokens: TokenFacts::default,
+            host: crate::core::menu::feedback::Facts {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                os: std::env::consts::OS.to_owned(),
+                ..Default::default()
+            },
+            hf_account: None,
             note_choices: Vec::new(),
             engines: None,
             detecting: false,
@@ -766,6 +841,7 @@ impl App {
             offer_pane: None,
             no_server: None,
             history: false,
+            download: None,
         }
     }
 
@@ -861,6 +937,19 @@ impl App {
     /// it no token counts as present.
     pub fn with_token_check(mut self, token_check: fn() -> bool) -> Self {
         self.token_check = token_check;
+        self
+    }
+
+    /// Injects what the runtime found of this host, for the Feedback form.
+    pub fn with_host(mut self, host: crate::core::menu::feedback::Facts) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// Injects what the runtime finds of the Hugging Face tokens, read each
+    /// time the menu opens.
+    pub fn with_hf_tokens(mut self, hf_tokens: fn() -> TokenFacts) -> Self {
+        self.hf_tokens = hf_tokens;
         self
     }
 
@@ -978,6 +1067,37 @@ impl App {
 
     pub fn input(&self) -> InputMode {
         self.input
+    }
+
+    /// The statusline label when it says more than [`InputMode::label`]: the
+    /// quit prompt naming what still runs in the panes, in at most `room`
+    /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
+    /// columns; fewer when they do not fit, then only how many.
+    pub fn status_label(&self, room: usize) -> Option<String> {
+        let running: Vec<&str> = self
+            .still_running
+            .iter()
+            .map(String::as_str)
+            .chain(self.serving_others.then_some(SHARED_SERVER))
+            .collect();
+        if self.input != InputMode::Confirm(Confirm::Quit) || running.is_empty() {
+            return None;
+        }
+        let total = running.len();
+        let named = (1..=total.min(3)).rev().map(|shown| {
+            let names: Vec<String> = running[..shown]
+                .iter()
+                .map(|name| fit(name, JOB_NAME_MAX))
+                .collect();
+            let more = match total - shown {
+                0 => String::new(),
+                n => format!(" +{n} more"),
+            };
+            format!("Quit? still running: {}{more} (y/n)", names.join(", "))
+        });
+        named
+            .chain([format!("Quit? {total} still running (y/n)")])
+            .find(|label| text_width(label) <= room)
     }
 
     /// The open menu, if any.
@@ -1508,6 +1628,19 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // Only the open quit prompt shows it; a late answer is dropped.
+            AppEvent::StillRunning(names) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running = names;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::StillRunning(_) => Vec::new(),
+            AppEvent::ServerAnswersOthers if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.serving_others = true;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::ServerAnswersOthers => Vec::new(),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
@@ -1524,6 +1657,10 @@ impl App {
                     }
                 }
             }
+            AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
+            AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
+            AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1633,7 +1770,16 @@ impl App {
             MenuState::open(&self.config)
                 .with_ai(self.ai.clone(), self.engines.clone())
                 .with_update(self.update.clone())
-                .with_installed(self.installed.clone()),
+                .with_installed(self.installed.clone())
+                .with_download(self.download.clone())
+                .with_hf((self.hf_tokens)(), self.hf_account.clone())
+                .with_feedback(crate::core::menu::feedback::Facts {
+                    engines: self
+                        .engines
+                        .as_ref()
+                        .map(crate::core::menu::feedback::engines),
+                    ..self.host.clone()
+                }),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -1658,7 +1804,8 @@ impl App {
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
-                    saved_over = Some(self.ai.managed().cloned());
+                    saved_over =
+                        Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     self.ai = menu.ai_draft();
                 }
             }
@@ -1673,7 +1820,11 @@ impl App {
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
         // Last, so its notice is the one shown.
-        if let Some(before) = saved_over {
+        if let Some((before, idle)) = saved_over {
+            let now = self.ai.managed_options().idle();
+            if now != idle {
+                effects.push(Effect::ManagedIdle(now));
+            }
             effects.extend(self.start_managed(before.as_ref()));
         }
         effects
@@ -1731,6 +1882,10 @@ impl App {
             MenuCommand::Update => self.on_update_command(),
             MenuCommand::CheckUpdate => vec![Effect::CheckUpdate],
             MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
+            MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
+            MenuCommand::Download(job) => self.start_download(job),
+            MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::None => Vec::new(),
         }
     }
@@ -1858,6 +2013,14 @@ impl App {
             ) => InputMode::Terminal,
         };
         match step {
+            // The quit prompt names what still runs in the panes.
+            Step::Run(
+                PrefixAction::RequestQuit | PrefixAction::ClosePane | PrefixAction::CloseTab,
+            ) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running.clear();
+                self.serving_others = false;
+                vec![Effect::ListRunning]
+            }
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
@@ -2930,7 +3093,7 @@ mod app_tests {
     #[test]
     fn prefix_q_asks_for_confirmation() {
         let mut a = in_prefix();
-        assert_eq!(a.update(key('q')), vec![]);
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -3036,7 +3199,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Prefix);
 
         let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
-        assert_eq!(a.update(shift_q), vec![]);
+        assert_eq!(a.update(shift_q), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -3045,6 +3208,140 @@ mod app_tests {
         let mut a = in_prefix();
         a.update(key('q'));
         assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    /// Room for any quit prompt label.
+    const WIDE: usize = 200;
+
+    fn names(list: &[&str]) -> AppEvent {
+        AppEvent::StillRunning(list.iter().map(|n| (*n).to_owned()).collect())
+    }
+
+    // Spec S7: the quit prompt asks the runtime what still runs in the panes.
+    #[test]
+    fn asking_to_quit_asks_what_still_runs() {
+        let mut a = in_prefix();
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        // Nothing listed yet, or nothing runs: the plain prompt.
+        assert_eq!(a.status_label(WIDE), None);
+        a.update(names(&[]));
+        assert_eq!(a.status_label(WIDE), None);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_what_still_runs() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev"]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec S13 (managed-llama-server-followups): "avisarle cuando vaya a
+    // cerrar": the llama-server this lazarobox started, answering another
+    // lazarobox, is named after the jobs, once, whatever the order.
+    #[test]
+    fn the_quit_prompt_names_a_shared_llama_server_that_is_answering() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(names(&["sleep 77"]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, llama-server (shared) (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn a_shared_llama_server_alone_is_named() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: llama-server (shared) (y/n)")
+        );
+    }
+
+    // Spec S13: an answer that comes after the prompt closed is dropped, and
+    // the next prompt asks again.
+    #[test]
+    fn a_late_shared_server_answer_is_dropped() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(key('n'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(ctrl_space());
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.status_label(WIDE), None);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_three_jobs_at_most_and_shortens_long_ones() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[
+            "a",
+            "python -m http.server --bind 127.0.0.1 8000",
+            "c",
+            "d",
+            "e",
+        ]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: a, python -m http.server -…, c +2 more (y/n)")
+        );
+    }
+
+    #[test]
+    fn closing_the_last_pane_or_tab_asks_what_still_runs_too() {
+        for group in ['w', 't'] {
+            let mut a = launched(80, 25);
+            a.update(ctrl_space());
+            a.update(key(group));
+            let close = if group == 'w' { 'q' } else { 'c' };
+            assert_eq!(a.update(key(close)), vec![Effect::ListRunning], "{group}");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        }
+    }
+
+    #[test]
+    fn a_narrow_quit_prompt_names_fewer_jobs_then_only_how_many() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev", "cargo watch"]));
+        let label = |room| a.status_label(room);
+        assert_eq!(
+            label(60).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev +1 more (y/n)")
+        );
+        assert_eq!(
+            label(45).as_deref(),
+            Some("Quit? still running: sleep 77 +2 more (y/n)")
+        );
+        assert_eq!(label(30).as_deref(), Some("Quit? 3 still running (y/n)"));
+        assert_eq!(label(10), None);
+    }
+
+    #[test]
+    fn a_list_that_comes_after_the_prompt_is_ignored() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(key('n'));
+        a.update(names(&["sleep 77"]));
+        assert_eq!(a.status_label(WIDE), None);
+        // A new prompt does not show the old list before its own arrives.
+        a.update(ctrl_space());
+        a.update(key('q'));
+        assert_eq!(a.status_label(WIDE), None);
     }
 
     #[test]
@@ -7545,6 +7842,15 @@ mod app_tests {
 
     /// Copying the reason behind a degraded engine from the AI picker.
     mod menu_copy;
+
+    /// A Hugging Face download from the llamacpp picker (config-menu).
+    mod hf_download;
+
+    /// The Hugging Face account row of the AI tab (config-menu).
+    mod hf_account;
+
+    /// The Feedback row of the Settings tab (config-menu).
+    mod feedback;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

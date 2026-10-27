@@ -122,16 +122,20 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let thinking = pick_stream(&streams, focused)
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
-    let line = |path| {
+    let download = app.status_download();
+    let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
             .update(app.status_update())
+            .download(download.as_deref())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.scroll_position())
             .marker(app.copy_selection_kind())
     };
+    let label = app.status_label(plain("").label_room(status.width));
+    let line = |path| plain(path).label(label.as_deref());
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
 
@@ -534,6 +538,24 @@ mod tests {
         );
     }
 
+    // Spec S7: the quit prompt names what still runs, fitted to the width.
+    #[test]
+    fn the_quit_prompt_names_what_still_runs_within_the_width() {
+        let jobs = AppEvent::StillRunning(vec!["sleep 77".into(), "npm run dev".into()]);
+        for (cols, shown) in [
+            (100, "Quit? still running: sleep 77, npm run dev (y/n)"),
+            (40, "Quit? 2 still running (y/n)"),
+            (20, "Quit? (y/n)"),
+        ] {
+            let mut app = App::new(cols, 3);
+            press(&mut app, ' ', KeyModifiers::CONTROL);
+            keys(&mut app, "q");
+            app.update(jobs.clone());
+            let line = status(&app);
+            assert!(line.contains(shown), "{cols}: {line:?}");
+        }
+    }
+
     // Spec: Root hint clipped and cleared; Narrow width.
     #[test]
     fn a_narrow_statusline_clips_the_hint_by_whole_entries_and_never_panics() {
@@ -845,14 +867,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 24 rows: the popup with its AI section is 22 rows high, centred.
-        let app = menu_app(64, 24);
-        let (buf, _) = draw_at(&app, 64, 24);
+        // 25 rows: the popup with its AI section is 23 rows high, centred.
+        let app = menu_app(64, 25);
+        let (buf, _) = draw_at(&app, 64, 25);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 23).contains("MENU"), "{:?}", row(&buf, 23));
+        assert!(row(&buf, 24).contains("MENU"), "{:?}", row(&buf, 24));
         insta::assert_snapshot!(
-            (0..24)
+            (0..25)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
