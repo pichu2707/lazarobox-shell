@@ -722,6 +722,7 @@ Se activa desde el menú de IA (`Ctrl+Espacio` y `m`), que antes muestra una adv
 enabled = true        # por defecto false
 acknowledged = true   # advertencia de privacidad aceptada
 port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
+save_summaries = false  # por defecto false; true guarda el resumen de los chats largos
 ```
 
 **Privacidad (léelo antes de activarla):**
@@ -747,6 +748,8 @@ port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
 La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Encontrar las notas en engram:** el _topic key_ de cada nota empieza por `chat/` (`chat/<tipo>/<título>`), por ejemplo `chat/decision/use-axum`.
+
+**Resumen de los chats largos (opcional):** cuando la compactación del historial resume un chat largo, ese resumen solo va al prompt. Con `save_summaries = true` en `[ai.memory]` se escribe además en engram como **una única nota por conversación** (`chat/<id>-<creación>/summary`, donde `<creación>` es la hora de creación de la conversación, para que el identificador reutilizado de una conversación borrada no pise el resumen de otra), que se actualiza en cada resumen nuevo en lugar de crear otra; pasa por la misma ocultación de secretos que el resto de notas. Los resúmenes guardados **permanecen en engram aunque borres el chat**, hasta que los elimines tú explícitamente. Una conversación **reanudada no actualiza su resumen guardado**: el resumen continuo no se persiste y, tras reanudar, solo cubriría los mensajes posteriores. Sin la opción no se escribe nada de forma automática y, la primera vez que habría guardado un resumen, lazarobox añade una línea al chat (una vez por ejecución) que explica qué se guardaría, dónde y cómo activarlo. Si con la opción activada engram rechaza el guardado, se avisa una vez por ejecución (`could not save the conversation summary to engram: <motivo>`); con la memoria desactivada o engram sin responder no se escribe nada y no hay avisos.
 
 **Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 

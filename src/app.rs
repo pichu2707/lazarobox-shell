@@ -681,6 +681,10 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The privacy notice of the rolling summary was shown in this run.
+    summary_notice_shown: bool,
+    /// A quiet save (the rolling summary) failed and the user was told.
+    summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -818,6 +822,8 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            summary_notice_shown: false,
+            summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
             update: None,

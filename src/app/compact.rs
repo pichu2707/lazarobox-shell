@@ -5,8 +5,12 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::engine::availability_for,
+    chat::{compact::SUMMARY_NOTICE, engine::availability_for},
     config::{CompactionMode, Task},
+    memory::{
+        kind::MemKind,
+        port::{MemCmd, Note},
+    },
 };
 
 impl App {
@@ -49,9 +53,65 @@ impl App {
         let follow = chat.apply_compaction(event);
         self.dirty |= chat.generation() != before;
         if follow == Follow::CancelEngine {
-            vec![Effect::ChatCompactCancel(id)]
-        } else {
-            Vec::new()
+            return vec![Effect::ChatCompactCancel(id)];
         }
+        match chat.take_fresh_summary() {
+            Some(summary) => self.save_summary(id, summary),
+            None => Vec::new(),
+        }
+    }
+
+    /// A run kept `summary` for chat `id` (chat-memory S5, S6). It goes to
+    /// engram only when memory is on and ready, the conversation has a stable
+    /// id and the user opted in (`[ai.memory] save_summaries`); the save
+    /// upserts under `chat/<id>-<created>/summary` (unique per conversation
+    /// lifetime; a resumed conversation saves nothing). Without the opt-in the
+    /// user is told once, in this run, what would be stored. Memory off or
+    /// unavailable writes nothing and says nothing (S8).
+    fn save_summary(&mut self, id: PaneId, summary: String) -> Vec<Effect> {
+        if !self.ai.memory.active() {
+            return Vec::new();
+        }
+        let opted_in = self.ai.memory.save_summaries;
+        let now = (self.clock)();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        // The pair the session was registered with, as a note save does.
+        let project = chat
+            .session()
+            .map(|s| s.project.clone())
+            .or_else(|| chat.project().map(str::to_owned));
+        // `None` for a resumed conversation: it never updates its saved summary.
+        let (Some(project), Some(key)) = (project, chat.summary_key()) else {
+            return Vec::new();
+        };
+        if !opted_in {
+            if !self.summary_notice_shown {
+                self.summary_notice_shown = true;
+                // A transcript line, not the transient notice: it must outlive
+                // the next key press and not replace another message.
+                chat.push_system(SUMMARY_NOTICE);
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+        let token = chat.quiet_save_sent_at(&project, now);
+        vec![Effect::Memory(MemCmd::Save {
+            pane: id,
+            id: token,
+            session: chat.session().map(|s| s.id.clone()),
+            project,
+            cwd: chat
+                .origin_cwd()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            note: Note {
+                kind: MemKind::Discovery,
+                title: "Conversation summary".to_owned(),
+                content: summary,
+            },
+            topic_key: Some(key),
+        })]
     }
 }

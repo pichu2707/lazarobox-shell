@@ -268,6 +268,10 @@ pub struct MemoryConfig {
     pub enabled: bool,
     pub acknowledged: bool,
     pub port: u16,
+    /// `save_summaries`: the rolling summary of a long chat is written to
+    /// engram, one note per conversation. Off by default (opt-in); only
+    /// meaningful while memory is [`active`](MemoryConfig::active).
+    pub save_summaries: bool,
 }
 
 impl Default for MemoryConfig {
@@ -276,6 +280,7 @@ impl Default for MemoryConfig {
             enabled: false,
             acknowledged: false,
             port: DEFAULT_ENGRAM_PORT,
+            save_summaries: false,
         }
     }
 }
@@ -1198,6 +1203,7 @@ fn read_memory(table: &Table, problems: &mut Vec<String>, port_env: Option<&str>
     };
     flag("enabled", &mut memory.enabled);
     flag("acknowledged", &mut memory.acknowledged);
+    flag("save_summaries", &mut memory.save_summaries);
     match section.get("port") {
         None => {}
         Some(Value::Integer(n)) if (1..=65535).contains(n) => memory.port = *n as u16,
@@ -1566,6 +1572,7 @@ mod tests {
             enabled,
             acknowledged,
             port,
+            save_summaries: false,
         }
     }
 
@@ -2017,6 +2024,23 @@ mod tests {
         }
         let with_key = "[ai.memory]\nport = 9000\n";
         assert_eq!(memory_of(with_key, Some("8123")).0.port, 9000);
+    }
+
+    #[test]
+    fn save_summaries_defaults_to_off_and_reads_a_boolean() {
+        for text in ["", "[ai.memory]\nenabled = true\n"] {
+            assert!(!memory_of(text, None).0.save_summaries, "{text:?}");
+        }
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = true\n", None);
+        assert!(memory.save_summaries);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_save_summaries_stays_off_with_its_problem() {
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = \"yes\"\n", None);
+        assert!(!memory.save_summaries);
+        assert_eq!(problems, ["ai.memory.save_summaries: expected a boolean"]);
     }
 
     // Spec: Wrong types and range.
