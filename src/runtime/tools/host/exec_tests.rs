@@ -201,7 +201,7 @@ async fn yarn_run_needs_a_script_declared_in_the_package_json_of_the_folder() {
     let missing = command("yarn", &["run", "build"], None);
     assert_eq!(
         refused(&w, missing).await,
-        ("subcommand not allowed".into(), false)
+        ("run it from the folder that has package.json".into(), false)
     );
     let asks = Asks::new(Decision::Denied("the user declined"));
     let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
@@ -860,4 +860,73 @@ fn an_unchecked_place_says_the_project_may_be_tainted() {
     assert!(both.contains("tainted"), "{both}");
     assert!(both.contains("changed .git/config"), "{both}");
     assert_eq!(exec::changes_note(&[], "n0nce"), None);
+}
+
+// --- install scripts and the folder of package.json ---
+
+#[tokio::test]
+async fn the_ask_for_an_install_shows_the_lifecycle_scripts_of_the_project() {
+    let w = world();
+    package(
+        &w,
+        r#"{"postinstall": "node setup.js", "prepare": "husky", "build": "tsc"}"#,
+    );
+    for verb in ["install", "ci"] {
+        let asks = Asks::new(Decision::Denied("the user declined"));
+        let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+        d.call(command("npm", &[verb], None)).await;
+        let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+            panic!("{:?}", asks.asked());
+        };
+        assert_eq!(
+            script.as_deref(),
+            Some("postinstall: node setup.js\nprepare: husky"),
+            "{verb}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_install_with_no_lifecycle_script_shows_no_script() {
+    let w = world();
+    package(&w, r#"{"build": "tsc"}"#);
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("pnpm", &["install"], None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(*script, None);
+}
+
+#[tokio::test]
+async fn a_lifecycle_script_edited_while_the_install_question_is_open_is_refused() {
+    let w = world();
+    package(&w, r#"{"postinstall": "true"}"#);
+    let (d, _rx) = w.turn(
+        &w.proj,
+        Arc::new(Rewrites(w.proj.join("package.json"))),
+        exec_set(),
+    );
+    let out = d.call(command("npm", &["install"], None)).await;
+    assert!(
+        out.is_error && out.text.contains("package.json changed"),
+        "{out:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_and_run_need_the_folder_that_has_package_json() {
+    let w = world();
+    std::fs::create_dir(w.proj.join("sub")).unwrap();
+    package(&w, r#"{"build": "tsc"}"#);
+    for args in [&["test"][..], &["run", "build"][..]] {
+        for program in ["npm", "yarn", "pnpm"] {
+            assert_eq!(
+                refused(&w, command(program, args, Some("sub"))).await,
+                ("run it from the folder that has package.json".into(), false),
+                "{program} {args:?}"
+            );
+        }
+    }
 }

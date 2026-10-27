@@ -60,6 +60,7 @@ const NOT_FOUND: &str = "the program was not found on the PATH";
 const NO_PLACE: &str = "the program is not in a place the sandbox can grant";
 const NO_SANDBOX: &str = "the sandbox could not be built for this run";
 const NOT_ENFORCED: &str = "the Linux sandbox could not be applied";
+const NO_PACKAGE: &str = "run it from the folder that has package.json";
 const PACKAGE_CHANGED: &str = "package.json changed after the question; ask again";
 /// The most bytes of `package.json` read to find its scripts.
 const PACKAGE_MAX: u64 = 256 * 1024;
@@ -197,6 +198,11 @@ fn inspect(
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
         .ok_or(REFUSED)?;
     let package = Package::read(&cwd);
+    // A manager walks up to a parent `package.json` that nothing here would
+    // show or pin, so a script runs only from the folder that has its own.
+    if package.missing && runs_scripts(args) {
+        return Err(NO_PACKAGE);
+    }
     let request = parse_run(args, &package.names()).map_err(|why| match why {
         RunError::Shape(shape) => refusal_text(shape),
         RunError::Refused(refusal) => refusal.text(),
@@ -223,31 +229,50 @@ fn staged(stages: &Arc<std::sync::Mutex<Stages>>, key: StageKey) -> Result<(), &
 
 /// The `scripts` of the `package.json` in a folder: none when it is missing,
 /// not a plain file, too big or not JSON.
-#[derive(Default)]
-struct Package(serde_json::Map<String, Value>);
+struct Package {
+    scripts: serde_json::Map<String, Value>,
+    /// There is no plain `package.json` in the folder.
+    missing: bool,
+}
+
+/// Whether `args` is a `npm`, `yarn` or `pnpm` call of `test` or `run`.
+fn runs_scripts(args: &Value) -> bool {
+    let manager = args["program"]
+        .as_str()
+        .and_then(Program::parse)
+        .is_some_and(|p| matches!(p, Program::Npm | Program::Pnpm | Program::Yarn));
+    manager && matches!(args["args"][0].as_str(), Some("test" | "run"))
+}
 
 impl Package {
     fn read(dir: &Path) -> Self {
         let path = dir.join("package.json");
+        let none = || Self {
+            scripts: Default::default(),
+            missing: true,
+        };
         let Ok(meta) = fs::symlink_metadata(&path) else {
-            return Self::default();
+            return none();
         };
         if !meta.is_file() || meta.len() > PACKAGE_MAX {
-            return Self::default();
+            return none();
         }
         let text = fs::read_to_string(&path).unwrap_or_default();
         let scripts = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|json| json["scripts"].as_object().cloned());
-        Self(scripts.unwrap_or_default())
+        Self {
+            scripts: scripts.unwrap_or_default(),
+            missing: false,
+        }
     }
 
     fn names(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
+        self.scripts.keys().cloned().collect()
     }
 
     fn body(&self, name: &str) -> Option<&str> {
-        self.0.get(name).and_then(Value::as_str)
+        self.scripts.get(name).and_then(Value::as_str)
     }
 }
 
@@ -260,19 +285,28 @@ fn pin(request: &RunRequest, package: &Package) -> Option<Pin> {
     ) {
         return None;
     }
-    let name = match request.args.first().map(String::as_str) {
-        Some("test") => Some("test"),
-        Some("run") => request.args.get(1).map(String::as_str),
-        _ => None,
+    // `install` and `ci` run the lifecycle scripts of the project (and of its
+    // dependencies, which the prompt says in general terms).
+    let keys: Vec<String> = match request.args.first().map(String::as_str) {
+        Some("test") => vec!["pretest".into(), "test".into(), "posttest".into()],
+        Some("run") => request
+            .args
+            .get(1)
+            .into_iter()
+            .flat_map(|name| [format!("pre{name}"), name.clone(), format!("post{name}")])
+            .collect(),
+        Some("install" | "ci") => ["preinstall", "install", "postinstall", "prepare"]
+            .map(str::to_owned)
+            .to_vec(),
+        _ => Vec::new(),
     };
-    let lines: Vec<String> = name
+    let lines: Vec<String> = keys
         .into_iter()
-        .flat_map(|name| [format!("pre{name}"), name.to_owned(), format!("post{name}")])
         .filter_map(|key| package.body(&key).map(|body| script_line(&key, body)))
         .collect();
     Some(Pin {
         shown: (!lines.is_empty()).then(|| lines.join("\n")),
-        scripts: Value::Object(package.0.clone()).to_string(),
+        scripts: Value::Object(package.scripts.clone()).to_string(),
     })
 }
 
