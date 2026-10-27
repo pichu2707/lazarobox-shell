@@ -3,6 +3,8 @@
 //! user agreed to leaves as [`InstallAsk`] and its result comes back through
 //! [`Wizard::reply`]; nothing here touches the network or the disk.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::super::Detection;
 use super::super::config::AiConfig;
 use super::super::hf;
@@ -26,6 +28,11 @@ pub const HINT_CANCELLING: &str = "cancelling…";
 pub const HINT_INSTALLING: &str = "installing…";
 pub const HINT_OFFER: &str = "y download a model · n close";
 pub const HINT_FAILED: &str = "Esc back";
+
+/// The last request id handed out by any wizard. Process-wide: the installer
+/// outlives the menu, so a late reply of a closed wizard must never match the
+/// id a new wizard waits on.
+static LAST_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A step the user agreed to; the runtime runs it and replies with the same
 /// request id.
@@ -90,8 +97,6 @@ pub struct Wizard {
     screen: Screen,
     /// The id of the request the wizard waits on; any other reply is stale.
     in_flight: Option<u64>,
-    /// The last id handed out.
-    last_id: u64,
     /// Whether the confirm screen was drawn since a reply opened it. A key
     /// queued for the previous screen must not answer a prompt never seen.
     armed: bool,
@@ -111,16 +116,20 @@ impl Wizard {
             variants,
             screen: Screen::Plan,
             in_flight: None,
-            last_id: 0,
             armed: true,
         }
     }
 
     /// A new request id, now in flight.
     fn issue(&mut self) -> u64 {
-        self.last_id += 1;
-        self.in_flight = Some(self.last_id);
-        self.last_id
+        let id = LAST_ID.fetch_add(1, Ordering::Relaxed) + 1;
+        self.in_flight = Some(id);
+        id
+    }
+
+    /// Whether a download is in flight: closing the wizard now must stop it.
+    pub fn downloading(&self) -> bool {
+        self.in_flight.is_some() && matches!(self.screen, Screen::Downloading { .. })
     }
 
     /// The screen was drawn: its `y`/`n` now answer what the user saw. The
@@ -343,17 +352,13 @@ impl Wizard {
         }
     }
 
-    /// The bytes on disk of the download that runs.
-    pub fn progress(&mut self, done: u64, total: u64) {
-        if let Screen::Downloading {
-            release,
-            done: seen,
-            ..
-        } = &mut self.screen
-        {
-            if total > 0 {
-                release.size = total;
-            }
+    /// The bytes on disk of the download of request `id`. Progress of any
+    /// other request is dropped; the size shown stays the release's.
+    pub fn progress(&mut self, id: u64, done: u64) {
+        if self.in_flight != Some(id) {
+            return;
+        }
+        if let Screen::Downloading { done: seen, .. } = &mut self.screen {
             *seen = done;
         }
     }
@@ -496,10 +501,10 @@ impl Picker {
         }
     }
 
-    /// The bytes on disk of the download that runs.
-    pub fn install_progress(&mut self, done: u64, total: u64) {
+    /// The bytes on disk of the download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
         if let Some(wizard) = self.wizard_mut() {
-            wizard.progress(done, total);
+            wizard.progress(id, done);
         }
     }
 }

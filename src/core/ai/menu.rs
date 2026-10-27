@@ -10,7 +10,7 @@ use super::{
         cycled_idle,
     },
     hf::{Answer, Ask},
-    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, task_label},
+    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -299,11 +299,19 @@ impl AiMenu {
         }
     }
 
-    /// The bytes on disk of the install download that runs.
-    pub fn install_progress(&mut self, done: u64, total: u64) {
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
         if let Some(picker) = &mut self.picker {
-            picker.install_progress(done, total);
+            picker.install_progress(id, done);
         }
+    }
+
+    /// Whether an install download runs for the open wizard.
+    pub fn install_downloading(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.install())
+            .is_some_and(Wizard::downloading)
     }
 
     /// The wizard screen was drawn: its prompts now accept `y`/`n`.

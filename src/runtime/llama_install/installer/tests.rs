@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -68,6 +69,17 @@ async fn reply_of(
     }
 }
 
+/// Waits until the server got a request: the download is under way.
+async fn request_seen(seen: &Arc<Mutex<Vec<String>>>) {
+    for _ in 0..1000 {
+        if !seen.lock().unwrap().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the server never got a request");
+}
+
 // Spec (Newest matching tag wins): the lookup answers with the release.
 #[tokio::test]
 async fn resolve_replies_with_the_release_under_the_same_id() {
@@ -116,6 +128,7 @@ async fn a_download_reports_progress_and_the_attestation_warning_then_replies() 
     );
     assert!(
         before.contains(&AppEvent::InstallProgress {
+            id: 7,
             done: 10,
             total: 10
         }),
@@ -132,14 +145,14 @@ async fn a_download_reports_progress_and_the_attestation_warning_then_replies() 
 #[tokio::test]
 async fn a_cancel_replies_for_the_download_it_stopped() {
     need_curl!();
-    let (base, _) = serve(Box::new(|_| {
+    let (base, seen) = serve(Box::new(|_| {
         thread::sleep(Duration::from_secs(30));
         Vec::new()
     }));
     let home = tempfile::tempdir().unwrap();
     let (mut installer, mut rx) = installer(&base, Some(home.path()));
     installer.ask(InstallAsk::Download(5, release()));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    request_seen(&seen).await;
     installer.ask(InstallAsk::Cancel);
     let (_, id, answer) = reply_of(&mut rx).await;
     assert_eq!((id, answer), (5, Err(CANCELLED.to_owned())));
@@ -149,16 +162,19 @@ async fn a_cancel_replies_for_the_download_it_stopped() {
 #[tokio::test]
 async fn a_second_download_is_refused_while_one_runs() {
     need_curl!();
-    let (base, _) = serve(Box::new(|_| {
+    let (base, seen) = serve(Box::new(|_| {
         thread::sleep(Duration::from_secs(30));
         Vec::new()
     }));
     let home = tempfile::tempdir().unwrap();
     let (mut installer, mut rx) = installer(&base, Some(home.path()));
     installer.ask(InstallAsk::Download(1, release()));
+    request_seen(&seen).await;
     installer.ask(InstallAsk::Download(2, release()));
     let (_, id, answer) = reply_of(&mut rx).await;
     assert_eq!((id, answer), (2, Err(BUSY.to_owned())));
+    // The refusal left the cancel of the download that runs alone.
+    assert!(installer.cancel.lock().unwrap().is_some());
     installer.ask(InstallAsk::Cancel);
     let (_, id, answer) = reply_of(&mut rx).await;
     assert_eq!((id, answer), (1, Err(CANCELLED.to_owned())));
@@ -219,4 +235,40 @@ fn a_folder_with_only_a_subfolder_or_a_non_json_file_has_no_icd() {
     std::fs::create_dir(dir.path().join("x_icd.json")).unwrap();
     std::fs::write(dir.path().join("readme.txt"), "").unwrap();
     assert!(!has_icd_in(&[dir.path()]));
+}
+
+#[test]
+fn the_busy_message_names_the_step_still_running() {
+    assert_eq!(BUSY, "another install step is still running");
+}
+
+// Review fix: a step that panics still replies, and frees the slot.
+#[tokio::test]
+async fn a_step_that_panics_replies_with_its_own_id_and_frees_the_slot() {
+    let (mut installer, mut rx) = installer("http://127.0.0.1:1", None);
+    let slot = Slot::take(&installer.busy, &installer.cancel).expect("a free slot");
+    installer.spawn(11, Some(slot), async {
+        if true {
+            panic!("an injected failure");
+        }
+        Ok(Reply::Installed)
+    });
+    let (_, id, answer) = reply_of(&mut rx).await;
+    assert_eq!((id, answer), (11, Err(CRASHED.to_owned())));
+    installer.ask(InstallAsk::Install(12, release()));
+    let (_, id, answer) = reply_of(&mut rx).await;
+    assert_eq!(id, 12);
+    assert_ne!(answer, Err(BUSY.to_owned()));
+}
+
+// Review fix: the cancel of a download that ended is not kept.
+#[tokio::test]
+async fn the_cancel_is_cleared_when_the_download_ends() {
+    need_curl!();
+    let (base, _) = file_server(BODY);
+    let home = tempfile::tempdir().unwrap();
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::Download(1, release()));
+    assert_eq!(reply_of(&mut rx).await.1, 1);
+    assert!(installer.cancel.lock().unwrap().is_none());
 }

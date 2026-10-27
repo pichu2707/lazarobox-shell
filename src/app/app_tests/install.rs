@@ -19,6 +19,19 @@ fn esc() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }
 
+/// The id of the request the open wizard waits on.
+fn pending(a: &App) -> u64 {
+    match a
+        .menu()
+        .unwrap()
+        .install_asking()
+        .expect("a request in flight")
+    {
+        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
+        InstallAsk::Cancel => unreachable!("cancel has no id"),
+    }
+}
+
 fn installs(effects: &[Effect]) -> Vec<InstallAsk> {
     effects
         .iter()
@@ -49,9 +62,12 @@ fn drawn(a: &mut App) {
 fn at_confirm_download() -> App {
     let mut a = wizard();
     let asked = a.update(enter());
-    assert_eq!(installs(&asked), vec![InstallAsk::Resolve(1, Variant::Cpu)]);
+    assert_eq!(
+        installs(&asked),
+        vec![InstallAsk::Resolve(pending(&a), Variant::Cpu)]
+    );
     a.update(AppEvent::InstallReply(
-        1,
+        pending(&a),
         Ok(InstallReply::Resolved(release())),
     ));
     drawn(&mut a);
@@ -61,13 +77,19 @@ fn at_confirm_download() -> App {
 fn at_downloading() -> App {
     let mut a = at_confirm_download();
     let asked = a.update(key('y'));
-    assert_eq!(installs(&asked), vec![InstallAsk::Download(2, release())]);
+    assert_eq!(
+        installs(&asked),
+        vec![InstallAsk::Download(pending(&a), release())]
+    );
     a
 }
 
 fn at_confirm_install() -> App {
     let mut a = at_downloading();
-    a.update(AppEvent::InstallReply(2, Ok(InstallReply::Downloaded)));
+    a.update(AppEvent::InstallReply(
+        pending(&a),
+        Ok(InstallReply::Downloaded),
+    ));
     drawn(&mut a);
     a
 }
@@ -86,7 +108,7 @@ fn enter_on_a_build_asks_the_runtime_to_resolve_it() {
     let effects = a.update(enter());
     assert_eq!(
         installs(&effects),
-        vec![InstallAsk::Resolve(1, Variant::Cpu)]
+        vec![InstallAsk::Resolve(pending(&a), Variant::Cpu)]
     );
     assert_eq!(effects.len(), 1, "{effects:?}");
 }
@@ -112,10 +134,16 @@ fn replies_walk_resolve_download_install_and_the_offer() {
     assert_eq!(footer(&a), "y continue · n back");
     a.update(key('y'));
     assert_eq!(footer(&a), "Esc cancel the download");
-    a.update(AppEvent::InstallReply(2, Ok(InstallReply::Downloaded)));
+    a.update(AppEvent::InstallReply(
+        pending(&a),
+        Ok(InstallReply::Downloaded),
+    ));
     drawn(&mut a);
     let asked = a.update(key('y'));
-    assert_eq!(installs(&asked), vec![InstallAsk::Install(3, release())]);
+    assert_eq!(
+        installs(&asked),
+        vec![InstallAsk::Install(pending(&a), release())]
+    );
     assert_eq!(footer(&a), "installing…");
 }
 
@@ -125,14 +153,17 @@ fn a_reply_opened_prompt_ignores_y_until_a_frame_drew_it() {
     let mut a = wizard();
     a.update(enter());
     a.update(AppEvent::InstallReply(
-        1,
+        pending(&a),
         Ok(InstallReply::Resolved(release())),
     ));
     let early = a.update(key('y'));
     assert!(installs(&early).is_empty(), "{early:?}");
     drawn(&mut a);
     let late = a.update(key('y'));
-    assert_eq!(installs(&late), vec![InstallAsk::Download(2, release())]);
+    assert_eq!(
+        installs(&late),
+        vec![InstallAsk::Download(pending(&a), release())]
+    );
 }
 
 #[test]
@@ -148,6 +179,7 @@ fn n_on_a_confirm_screen_goes_back_to_the_plan_without_asking() {
 fn progress_shows_as_a_percentage_on_the_download_screen() {
     let mut a = at_downloading();
     a.update(AppEvent::InstallProgress {
+        id: pending(&a),
         done: 250,
         total: 1000,
     });
@@ -179,7 +211,10 @@ fn esc_asks_and_y_cancels_the_download_then_its_reply_returns_to_the_plan() {
     let cancel = a.update(key('y'));
     assert_eq!(installs(&cancel), vec![InstallAsk::Cancel]);
     assert_eq!(footer(&a), "cancelling…");
-    a.update(AppEvent::InstallReply(2, Err("cancelled".to_owned())));
+    a.update(AppEvent::InstallReply(
+        pending(&a),
+        Err("cancelled".to_owned()),
+    ));
     assert_eq!(cursor_label(&a), "CPU build");
     assert!(a.notice().is_none(), "{:?}", a.notice());
 }
@@ -206,7 +241,10 @@ fn esc_on_the_plan_closes_the_wizard() {
 fn installed_redetects_the_engines_once() {
     let mut a = at_confirm_install();
     a.update(key('y'));
-    let effects = a.update(AppEvent::InstallReply(3, Ok(InstallReply::Installed)));
+    let effects = a.update(AppEvent::InstallReply(
+        pending(&a),
+        Ok(InstallReply::Installed),
+    ));
     assert_eq!(
         effects
             .iter()
@@ -221,9 +259,10 @@ fn installed_redetects_the_engines_once() {
 fn installed_redetects_even_when_the_menu_was_closed() {
     let mut a = at_confirm_install();
     a.update(key('y'));
+    let id = pending(&a);
     a.menu = None;
     a.input = InputMode::Terminal;
-    let effects = a.update(AppEvent::InstallReply(3, Ok(InstallReply::Installed)));
+    let effects = a.update(AppEvent::InstallReply(id, Ok(InstallReply::Installed)));
     assert!(
         effects.iter().any(|e| matches!(e, Effect::RedetectEngines)),
         "{effects:?}"
@@ -233,11 +272,14 @@ fn installed_redetects_even_when_the_menu_was_closed() {
 #[test]
 fn a_failure_shows_its_text_and_a_stale_reply_changes_nothing() {
     let mut a = at_downloading();
-    let failed = a.update(AppEvent::InstallReply(2, Err("boom".to_owned())));
+    let failed = a.update(AppEvent::InstallReply(pending(&a), Err("boom".to_owned())));
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(cursor_label_any(&a), "boom");
     // A reply that is not the one in flight changes nothing on the screen.
-    a.update(AppEvent::InstallReply(9, Ok(InstallReply::Downloaded)));
+    a.update(AppEvent::InstallReply(
+        u64::MAX,
+        Ok(InstallReply::Downloaded),
+    ));
     assert_eq!(cursor_label_any(&a), "boom");
 }
 
@@ -254,7 +296,10 @@ fn a_warning_becomes_the_notice() {
 fn y_on_the_offer_asks_for_the_popular_models() {
     let mut a = at_confirm_install();
     a.update(key('y'));
-    a.update(AppEvent::InstallReply(3, Ok(InstallReply::Installed)));
+    a.update(AppEvent::InstallReply(
+        pending(&a),
+        Ok(InstallReply::Installed),
+    ));
     drawn(&mut a);
     let effects = a.update(key('y'));
     assert!(
@@ -262,5 +307,45 @@ fn y_on_the_offer_asks_for_the_popular_models() {
             .iter()
             .any(|e| matches!(e, Effect::HubAsk(crate::core::ai::hf::Ask::Popular))),
         "{effects:?}"
+    );
+}
+
+// Review fix: closing the menu while the archive downloads stops the download.
+#[test]
+fn closing_the_menu_while_downloading_cancels_the_download() {
+    let mut a = at_downloading();
+    let effects = a.close_menu(Outcome::Reverted);
+    assert_eq!(installs(&effects), vec![InstallAsk::Cancel]);
+}
+
+#[test]
+fn closing_the_menu_with_nothing_downloading_asks_nothing() {
+    let mut a = at_confirm_download();
+    let effects = a.close_menu(Outcome::Reverted);
+    assert!(installs(&effects).is_empty(), "{effects:?}");
+}
+
+// Review fix: progress of another request does not move the bar.
+#[test]
+fn progress_of_a_request_that_is_not_in_flight_is_ignored() {
+    let mut a = at_downloading();
+    let id = pending(&a);
+    a.update(AppEvent::InstallProgress {
+        id: id + 1000,
+        done: 900,
+        total: 1000,
+    });
+    assert_eq!(
+        cursor_label_any(&a),
+        "↓ 0% llama-b9000-bin-ubuntu-x64.tar.gz"
+    );
+    a.update(AppEvent::InstallProgress {
+        id,
+        done: 500,
+        total: 1000,
+    });
+    assert_eq!(
+        cursor_label_any(&a),
+        "↓ 50% llama-b9000-bin-ubuntu-x64.tar.gz"
     );
 }

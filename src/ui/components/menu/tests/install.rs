@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::core::ai::install::{Release, Variant};
-use crate::core::ai::picker::InstallReply;
+use crate::core::ai::picker::{InstallAsk, InstallReply};
 
 fn release() -> Release {
     Release {
@@ -32,10 +32,19 @@ fn wizard() -> MenuState {
     menu
 }
 
+/// The id of the request the wizard waits on.
+fn pending(menu: &MenuState) -> u64 {
+    match menu.install_asking().expect("a request in flight") {
+        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
+        InstallAsk::Cancel => unreachable!("cancel has no id"),
+    }
+}
+
 fn confirm_download() -> MenuState {
     let mut menu = wizard();
     press(&mut menu, &[KeyCode::Enter]);
-    menu.install_reply(1, Ok(InstallReply::Resolved(release())));
+    let id = pending(&menu);
+    menu.install_reply(id, Ok(InstallReply::Resolved(release())));
     menu.install_arm();
     menu
 }
@@ -43,13 +52,15 @@ fn confirm_download() -> MenuState {
 fn downloading() -> MenuState {
     let mut menu = confirm_download();
     press(&mut menu, &[KeyCode::Char('y')]);
-    menu.install_progress(10_250_000, 41_000_000);
+    let id = pending(&menu);
+    menu.install_progress(id, 10_250_000);
     menu
 }
 
 fn confirm_install() -> MenuState {
     let mut menu = downloading();
-    menu.install_reply(2, Ok(InstallReply::Downloaded));
+    let id = pending(&menu);
+    menu.install_reply(id, Ok(InstallReply::Downloaded));
     menu.install_arm();
     menu
 }
@@ -57,7 +68,8 @@ fn confirm_install() -> MenuState {
 fn offer() -> MenuState {
     let mut menu = confirm_install();
     press(&mut menu, &[KeyCode::Char('y')]);
-    menu.install_reply(3, Ok(InstallReply::Installed));
+    let id = pending(&menu);
+    menu.install_reply(id, Ok(InstallReply::Installed));
     menu
 }
 
@@ -133,7 +145,8 @@ fn snapshot_install_offer() {
 #[test]
 fn snapshot_install_failed() {
     let mut menu = downloading();
-    menu.install_reply(2, Err("download failed: checksum mismatch".to_owned()));
+    let id = pending(&menu);
+    menu.install_reply(id, Err("download failed: checksum mismatch".to_owned()));
     insta::assert_snapshot!(show(&menu));
 }
 

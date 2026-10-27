@@ -1058,11 +1058,27 @@ impl MenuState {
         }
     }
 
-    /// The bytes on disk of the install download that runs.
-    pub fn install_progress(&mut self, done: u64, total: u64) {
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
         if let Some(ai) = &mut self.ai {
-            ai.install_progress(done, total);
+            ai.install_progress(id, done);
         }
+    }
+
+    /// Whether the open install wizard waits on a download, which closing
+    /// the menu must stop.
+    pub fn install_downloading(&self) -> bool {
+        self.ai.as_ref().is_some_and(AiMenu::install_downloading)
+    }
+
+    /// The request the open install wizard waits on. Tests only.
+    #[cfg(test)]
+    pub fn install_asking(&self) -> Option<crate::core::ai::picker::InstallAsk> {
+        self.ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .and_then(|p| p.install())
+            .and_then(|w| w.asking())
     }
 
     /// A frame drew the wizard: its prompts now accept `y`/`n`.

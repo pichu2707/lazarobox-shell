@@ -218,8 +218,10 @@ pub enum AppEvent {
     },
     /// The running Hugging Face download ended.
     DownloadEnd(End),
-    /// The bytes on disk of the llama-server archive that downloads.
+    /// The bytes on disk of the llama-server archive that downloads, for the
+    /// request `id`.
     InstallProgress {
+        id: u64,
         done: u64,
         total: u64,
     },
@@ -1697,7 +1699,7 @@ impl App {
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
-            AppEvent::InstallProgress { done, total } => self.on_install_progress(done, total),
+            AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
             AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
@@ -1850,7 +1852,10 @@ impl App {
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
         let mut saved_over = None;
+        let mut stop_download = false;
         if let Some(menu) = self.menu.take() {
+            // The wizard goes with the menu: its download must not run on.
+            stop_download = menu.install_downloading();
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
@@ -1869,6 +1874,9 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
+        if stop_download {
+            effects.push(Effect::Install(InstallAsk::Cancel));
+        }
         // Last, so its notice is the one shown.
         if let Some((before, idle)) = saved_over {
             let now = self.ai.managed_options().idle();

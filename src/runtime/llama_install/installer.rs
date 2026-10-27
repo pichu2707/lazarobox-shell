@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, oneshot};
@@ -21,7 +22,10 @@ use crate::runtime::hf::Curl;
 pub const CANCELLED: &str = "cancelled";
 
 /// What a step asked while another one runs reads as.
-pub const BUSY: &str = "another install step is running; wait for it to end";
+pub const BUSY: &str = "another install step is still running";
+
+/// What the reply of a step that panicked says.
+pub const CRASHED: &str = "install step crashed";
 
 /// What a step without a data folder reads as.
 pub const NO_HOME: &str = "no data folder was found to install llama.cpp into";
@@ -50,21 +54,34 @@ fn has_icd_in(dirs: &[&Path]) -> bool {
 /// host.
 type MakeCurl = Arc<dyn Fn(bool) -> Curl + Send + Sync>;
 
+/// The cancel of the download that runs, shared with its slot.
+type CancelSlot = Arc<Mutex<Option<oneshot::Sender<()>>>>;
+
 /// The single place a download or an install runs; freed when it is dropped,
-/// whatever way its task ends.
-struct Slot(Arc<AtomicBool>);
+/// whatever way its task ends. Its cancel goes with it.
+struct Slot {
+    busy: Arc<AtomicBool>,
+    cancel: CancelSlot,
+}
 
 impl Slot {
-    fn take(flag: &Arc<AtomicBool>) -> Option<Slot> {
-        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+    fn take(busy: &Arc<AtomicBool>, cancel: &CancelSlot) -> Option<Slot> {
+        busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
-            .then(|| Slot(Arc::clone(flag)))
+            .then(|| Slot {
+                busy: Arc::clone(busy),
+                cancel: Arc::clone(cancel),
+            })
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        // The cancel first: once the slot is free, a new step owns it.
+        if let Ok(mut cancel) = self.cancel.lock() {
+            cancel.take();
+        }
+        self.busy.store(false, Ordering::Release);
     }
 }
 
@@ -76,7 +93,7 @@ pub struct Installer {
     data_home: Option<PathBuf>,
     events: mpsc::Sender<AppEvent>,
     /// The cancel of the download that runs.
-    cancel: Option<oneshot::Sender<()>>,
+    cancel: CancelSlot,
     busy: Arc<AtomicBool>,
 }
 
@@ -94,7 +111,7 @@ impl Installer {
             path,
             data_home,
             events,
-            cancel: None,
+            cancel: Arc::new(Mutex::new(None)),
             busy: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -121,8 +138,9 @@ impl Installer {
             InstallAsk::Download(id, release) => self.download(id, release),
             InstallAsk::Install(id, release) => self.install(id, release),
             InstallAsk::Cancel => {
-                if let Some(cancel) = self.cancel.take() {
-                    let _ = cancel.send(());
+                let stop = self.cancel.lock().ok().and_then(|mut cancel| cancel.take());
+                if let Some(stop) = stop {
+                    let _ = stop.send(());
                 }
             }
         }
@@ -138,7 +156,11 @@ impl Installer {
     ) {
         let events = self.events.clone();
         tokio::spawn(async move {
-            let answer = step.await;
+            // The step runs on its own task: a panic ends it with a reply
+            // instead of leaving the wizard waiting for ever.
+            let answer = tokio::spawn(step)
+                .await
+                .unwrap_or_else(|_| Err(CRASHED.to_owned()));
             drop(slot);
             let _ = events.send(AppEvent::InstallReply(id, answer)).await;
         });
@@ -146,7 +168,7 @@ impl Installer {
 
     /// The steps that change the disk run one at a time.
     fn slot(&self, id: u64) -> Option<Slot> {
-        let slot = Slot::take(&self.busy);
+        let slot = Slot::take(&self.busy, &self.cancel);
         if slot.is_none() {
             self.spawn(id, None, async { Err(BUSY.to_owned()) });
         }
@@ -161,12 +183,14 @@ impl Installer {
     fn download(&mut self, id: u64, release: Release) {
         let Some(slot) = self.slot(id) else { return };
         let (stop, mut cancel) = oneshot::channel();
-        self.cancel = Some(stop);
+        if let Ok(mut cancel) = self.cancel.lock() {
+            *cancel = Some(stop);
+        }
         let (curl, path, root) = ((self.make)(false), self.path.clone(), self.root());
         let events = self.events.clone();
         self.spawn(id, Some(slot), async move {
             let progress = |done, total| {
-                let _ = events.try_send(AppEvent::InstallProgress { done, total });
+                let _ = events.try_send(AppEvent::InstallProgress { id, done, total });
             };
             let fetched =
                 download_verified(&curl, &path, &root?, &release, progress, &mut cancel).await;

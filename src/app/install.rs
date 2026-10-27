@@ -9,9 +9,9 @@ use crate::core::ai::picker::InstallReply;
 
 impl App {
     /// The bytes on disk of the archive that downloads.
-    pub(super) fn on_install_progress(&mut self, done: u64, total: u64) -> Vec<Effect> {
+    pub(super) fn on_install_progress(&mut self, id: u64, done: u64) -> Vec<Effect> {
         if let Some(menu) = self.menu.as_mut() {
-            menu.install_progress(done, total);
+            menu.install_progress(id, done);
             self.dirty = true;
         }
         Vec::new()
