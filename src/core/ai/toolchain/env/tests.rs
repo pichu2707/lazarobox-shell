@@ -121,3 +121,16 @@ fn a_path_with_no_safe_entry_is_left_out() {
     assert_eq!(get(&scrubbed(&[("PATH", "")]), "PATH"), None);
     assert_eq!(get(&scrubbed(&[]), "PATH"), None);
 }
+
+#[test]
+fn a_path_entry_that_links_into_the_project_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let root = base.join("proj");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir(base.join("other")).unwrap();
+    std::os::unix::fs::symlink(root.join("bin"), base.join("sneaky")).unwrap();
+    let raw = format!("{}:{}", base.join("sneaky").display(), base.join("other").display());
+    let kept = safe_path(&OsString::from(raw), &root).unwrap();
+    assert_eq!(kept, OsString::from(base.join("other")));
+}

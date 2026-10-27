@@ -55,9 +55,15 @@ pub fn scrub(
 }
 
 /// `raw` without its relative and project entries; `None` when none is left.
+/// An entry is judged by where it really leads: a link that points into the
+/// project is a project entry. The entry itself is kept as it was written.
 fn safe_path(raw: &OsString, root: &Path) -> Option<OsString> {
     let kept: Vec<PathBuf> = std::env::split_paths(raw)
-        .filter(|entry| entry.is_absolute() && !entry.starts_with(root))
+        .filter(|entry| {
+            entry.is_absolute()
+                && !entry.starts_with(root)
+                && !std::fs::canonicalize(entry).is_ok_and(|real| real.starts_with(root))
+        })
         .collect();
     if kept.is_empty() {
         return None;
