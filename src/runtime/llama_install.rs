@@ -385,5 +385,8 @@ async fn run_gh(
     }
 }
 
+pub mod activate;
+mod unpack;
+
 #[cfg(test)]
 mod tests;
