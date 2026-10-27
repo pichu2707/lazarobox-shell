@@ -561,23 +561,30 @@ impl MenuState {
     }
 
     /// The token field that replaces the rows while it is open: the token
-    /// drawn as one `•` per character, never as typed.
+    /// drawn as one `•` per character, never as typed, and the link to
+    /// create one.
     fn account_rows(&self) -> Option<Vec<Row>> {
         let field = self.account.field()?;
         Some(vec![
             Row::Title(Cow::Borrowed(account::TOKEN_TITLE)),
             Row::Field(field),
             Row::Text(Cow::Borrowed(account::TOKEN_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL)),
         ])
     }
 
     /// Keys while the token field is open: every letter is typed, Ctrl+U
     /// clears, Enter checks the token and Esc goes back to the row (also
-    /// while the check runs).
+    /// while the check runs, which it stops).
     fn on_account_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match key.code {
-            KeyCode::Esc if !repeat => self.account.close(),
+            KeyCode::Esc if !repeat => {
+                if let Some(ask) = self.account.close() {
+                    return MenuCommand::HfAccount(ask);
+                }
+            }
             KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => self.account.clear(),
             _ if !plain => {}
             KeyCode::Char(c) => self.account.type_char(c),
@@ -1226,6 +1233,10 @@ impl MenuState {
                 }
             }
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Char('d') if !repeat && self.on_account_row() => {
+                self.account.forget();
+                MenuCommand::None
+            }
             KeyCode::Enter if self.on_account_row() => match self.account.enter() {
                 Some(ask) if !repeat => MenuCommand::HfAccount(ask),
                 _ => MenuCommand::None,

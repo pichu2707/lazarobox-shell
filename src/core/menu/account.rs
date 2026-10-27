@@ -12,11 +12,15 @@ use crate::core::ai::picker::shown;
 pub const TOKEN_TITLE: &str = "Hugging Face account";
 /// The hint under the token field.
 pub const TOKEN_HINT: &str = "paste a Hugging Face token";
+/// Where to get a token: the Hub's form for a new read token. It sits on a
+/// line of its own so terminals that detect URLs keep it clickable.
+pub const TOKEN_URL_HINT: &str = "create a read token at:";
+pub const TOKEN_URL: &str = "https://huggingface.co/settings/tokens/new?tokenType=read";
 /// The footer of the token field.
 pub const HINT_TOKEN: &str = "Enter connect · Ctrl+U clear · Esc back";
 /// The footer of the row, by what Enter does there.
 pub const HINT_CONNECT: &str = "Enter connect · j/k move · s save · Esc cancel";
-pub const HINT_CHECK: &str = "Enter check · j/k move · s save · Esc cancel";
+pub const HINT_CHECK: &str = "Enter check · d disconnect · j/k move · s save · Esc cancel";
 pub const HINT_DISCONNECT: &str = "Enter disconnect · j/k move · s save · Esc cancel";
 
 /// Longest token taken, in characters.
@@ -80,8 +84,13 @@ impl Account {
 
     /// The disconnect prompt, while it waits for `y` or `n`.
     pub fn prompt(&self) -> Option<String> {
-        let name = self.name.as_deref().filter(|_| self.prompt)?;
-        Some(format!("disconnect {}? (y/n)", shown(name)))
+        if !self.prompt {
+            return None;
+        }
+        Some(match &self.name {
+            Some(name) => format!("disconnect {}? (y/n)", shown(name)),
+            None => "disconnect the saved token? (y/n)".to_owned(),
+        })
     }
 
     /// The footer of the row (the field and the prompt have their own).
@@ -110,6 +119,14 @@ impl Account {
         } else {
             self.field = Some(Secret::default());
             None
+        }
+    }
+
+    /// `d` on the row: the disconnect prompt for a saved token, also when
+    /// its account is unknown (the Hub is offline, or refuses it).
+    pub fn forget(&mut self) {
+        if self.facts.saved && self.asking.is_none() {
+            self.prompt = true;
         }
     }
 
@@ -176,13 +193,15 @@ impl Account {
         Some(ask)
     }
 
-    /// Esc in the field: back to the row, the token dropped. A check in
-    /// flight is no longer waited for.
-    pub fn close(&mut self) {
+    /// Esc in the field: back to the row, the token dropped. A connect in
+    /// flight is no longer waited for, and is stopped before it saves.
+    pub fn close(&mut self) -> Option<AccountAsk> {
         self.field = None;
         if self.asking == Some(Asking::Connect) {
             self.asking = None;
+            return Some(AccountAsk::CancelConnect);
         }
+        None
     }
 
     /// What the runtime found. The account follows what really happened,

@@ -395,13 +395,16 @@ pub fn license(repo: &Repo) -> License {
 }
 
 /// Whether `text` is a repo id: `<owner>/<name>`, each of ASCII letters,
-/// digits, `.`, `_` and `-`, not starting with `.` or `-`, and no `..`.
+/// digits, `.`, `_` and `-`, not starting or ending with `.` or `-`, with
+/// no `..` and no `--` (the separator of the cache folder), as on the Hub.
 pub fn is_repo_id(text: &str) -> bool {
     let part = |p: &str| {
         !p.is_empty()
             && p.len() <= 96
             && !p.starts_with(['.', '-'])
+            && !p.ends_with(['.', '-'])
             && !p.contains("..")
+            && !p.contains("--")
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     };
@@ -490,9 +493,11 @@ pub fn token(env: &TokenEnv, read: impl Fn(&Path) -> Option<String>) -> Option<S
     }
 }
 
-/// A token trimmed; a blank one is none.
-fn clean(token: String) -> Option<String> {
-    Some(token.trim().to_owned()).filter(|t| !t.is_empty())
+/// A token trimmed; a blank one is none. The untrimmed text is zeroed.
+fn clean(mut token: String) -> Option<String> {
+    let trimmed = token.trim().to_owned();
+    wipe(&mut token);
+    Some(trimmed).filter(|t| !t.is_empty())
 }
 
 /// The token file of [`token`]'s lookup, the one `hf auth login` writes:
@@ -605,6 +610,9 @@ pub fn wipe(text: &mut String) {
 pub enum AccountAsk {
     /// Check a pasted token and, once the Hub accepts it, save it.
     Connect(Secret),
+    /// Stop the connect in flight: unless it is already saved, its token is
+    /// not.
+    CancelConnect,
     /// Who the saved token belongs to.
     Check,
     /// Delete the token file.

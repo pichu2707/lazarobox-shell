@@ -228,6 +228,9 @@ fn a_repo_id_is_owner_slash_name() {
     }
     for bad in [
         "", "qwen", "a/b/c", "/b", "a/", "a b/c", "../x", "a/..", ".a/b", "a/b c", "a/-b",
+        // As on the Hub: no `--` (the cache folder's separator) and no
+        // `-` or `.` at the end of a part.
+        "a--b/c", "a/b--c", "a-/b", "a/b-", "a/b.",
     ] {
         assert!(!is_repo_id(bad), "{bad}");
     }

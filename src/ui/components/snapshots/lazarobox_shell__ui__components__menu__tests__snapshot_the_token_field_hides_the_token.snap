@@ -7,8 +7,8 @@ expression: shown
 │ Hugging Face account                                       │
 │ ••••••                                                     │
 │ paste a Hugging Face token                                 │
-│                                                            │
-│                                                            │
+│ create a read token at:                                    │
+│ https://huggingface.co/settings/tokens/new?tokenType=read  │
 │                                                            │
 │                                                            │
 │                                                            │

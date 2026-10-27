@@ -83,7 +83,7 @@ fn curl(base: &str, token: Option<&str>) -> Curl {
         base: base.to_owned(),
         https_only: false,
         noproxy: true,
-        token: token.map(str::to_owned),
+        token: token.map(|t| Secret::new(t.to_owned())),
         user_agent: "lazarobox-shell/9.9.9".to_owned(),
     }
 }
@@ -132,7 +132,7 @@ fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
 // Spec (model-download, Hub requests): Only HTTPS to the Hub.
 #[test]
 fn the_hub_requests_are_https_only_and_end_with_the_url() {
-    let hub = Curl::hub("/usr/bin".into(), Some("secret-123".into()));
+    let hub = Curl::hub("/usr/bin".into(), Some(Secret::new("secret-123".into())));
     let api = hub.api_args("/api/models/o/r");
     assert_eq!(api[0], "-q");
     for flag in [["--proto", "=https"], ["--proto-redir", "=https"]] {
@@ -161,7 +161,7 @@ fn the_hub_requests_are_https_only_and_end_with_the_url() {
         assert!(args.windows(2).any(|w| w == ["--config", "-"]), "{args:?}");
     }
     assert_eq!(
-        hub.stdin_config().as_deref(),
+        hub.stdin_config().as_ref().map(Secret::expose),
         Some("header = \"Authorization: Bearer secret-123\"\n")
     );
     // Without a token, nothing is read from stdin.
@@ -174,7 +174,7 @@ fn the_hub_requests_are_https_only_and_end_with_the_url() {
 fn a_token_that_cannot_be_a_header_is_not_sent() {
     for bad in ["a\"b", "a\\b", "a b", "a\nb"] {
         assert_eq!(
-            Curl::hub("/usr/bin".into(), Some(bad.into())).stdin_config(),
+            Curl::hub("/usr/bin".into(), Some(Secret::new(bad.into()))).stdin_config(),
             None,
             "{bad:?}"
         );
@@ -352,6 +352,27 @@ async fn a_partial_download_resumes_from_where_it_stopped() {
     assert_eq!(header(&request, "range"), Some("bytes=4-"));
 }
 
+// A partial file longer than the file cannot be resumed: it is removed and
+// the download starts over.
+#[tokio::test]
+async fn an_oversized_partial_file_is_removed_and_fetched_again() {
+    need_curl!();
+    let (base, seen) = file_server(b"0123456789");
+    let hub = tempfile::tempdir().unwrap();
+    let blobs = hub.path().join("models--o--r/blobs");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let mut job = job(&[("a.gguf", 10, 1)]);
+    let id = sha(b"0123456789");
+    job.choice.files[0].oid = id.clone();
+    std::fs::write(blobs.join(format!("{id}.incomplete")), b"0123456789xx").unwrap();
+    let end = download(&curl(&base, None), hub.path(), &job, |_, _| {}, no_cancel()).await;
+    assert!(matches!(end, End::Done(_)), "{end:?}");
+    assert_eq!(std::fs::read(blobs.join(&id)).unwrap(), b"0123456789");
+    assert!(!blobs.join(format!("{id}.incomplete")).exists());
+    let request = seen.lock().unwrap()[0].clone();
+    assert_eq!(header(&request, "range"), None);
+}
+
 #[tokio::test]
 async fn a_cancelled_download_keeps_its_partial_file_and_no_link() {
     need_curl!();
@@ -511,12 +532,12 @@ fn account_worker(
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let (base, home) = (base.to_owned(), hf_home.to_owned());
     let hub = Hub::new(OsString::new(), None, move || env_at(&home, hf_token), tx)
-        .with_curl(move |token| curl(&base, token.as_deref()));
+        .with_curl(move |token| curl(&base, token.as_ref().map(Secret::expose)));
     (hub, rx)
 }
 
 async fn account_reply(
-    hub: &Hub,
+    hub: &mut Hub,
     ask: AccountAsk,
     rx: &mut mpsc::Receiver<AppEvent>,
 ) -> AccountReply {
@@ -532,6 +553,27 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+// Esc in the token field stops a connect: its check is dropped and nothing
+// is saved.
+#[tokio::test]
+async fn a_cancelled_connect_saves_nothing() {
+    need_curl!();
+    let (base, _) = serve(Box::new(|_| {
+        thread::sleep(Duration::from_secs(5));
+        ok(r#"{"type":"user","name":"ana"}"#)
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let (mut hub, mut rx) = account_worker(&base, dir.path(), None);
+    hub.account(AccountAsk::Connect(Secret::new("hf_abc".into())));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let reply = account_reply(&mut hub, AccountAsk::CancelConnect, &mut rx).await;
+    assert_eq!(
+        reply,
+        AccountReply::Connected(Err("Hugging Face token not saved: cancelled".to_owned()))
+    );
+    assert!(!dir.path().join("token").exists());
+}
+
 // Spec (model-download, Connect a Hugging Face account): Connect.
 #[tokio::test]
 async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
@@ -540,9 +582,9 @@ async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
     let dir = tempfile::tempdir().unwrap();
     // A missing folder is made, with mode 0700.
     let hf_home = dir.path().join("cache/huggingface");
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_abc".into())),
         &mut rx,
     )
@@ -572,7 +614,8 @@ async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
     let args = curl(&base, Some("hf_abc")).api_args(hf::WHOAMI_PATH);
     assert!(!args.iter().any(|a| a.contains("hf_abc")), "{args:?}");
     assert!(args.windows(2).any(|w| w == ["--config", "-"]), "{args:?}");
-    let production = Curl::hub("/usr/bin".into(), Some("hf_abc".into())).api_args(hf::WHOAMI_PATH);
+    let production =
+        Curl::hub("/usr/bin".into(), Some(Secret::new("hf_abc".into()))).api_args(hf::WHOAMI_PATH);
     assert_eq!(
         production.last().map(String::as_str),
         Some("https://huggingface.co/api/whoami-v2")
@@ -592,9 +635,9 @@ async fn a_rejected_token_writes_nothing() {
     }));
     let dir = tempfile::tempdir().unwrap();
     let hf_home = dir.path().join("hf");
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_bad".into())),
         &mut rx,
     )
@@ -618,9 +661,9 @@ async fn a_connect_replaces_a_saved_token_and_writes_through_a_symlink() {
     let hf_home = dir.path().join("hf");
     std::fs::create_dir(&hf_home).unwrap();
     std::os::unix::fs::symlink(&real, hf_home.join("token")).unwrap();
-    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let (mut hub, mut rx) = account_worker(&base, &hf_home, None);
     let reply = account_reply(
-        &hub,
+        &mut hub,
         AccountAsk::Connect(Secret::new("hf_new".into())),
         &mut rx,
     )
@@ -641,12 +684,12 @@ async fn a_disconnect_deletes_the_token_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("token");
     std::fs::write(&file, "hf_abc").unwrap();
-    let (hub, mut rx) = account_worker("http://127.0.0.1:9", dir.path(), None);
-    let reply = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    let (mut hub, mut rx) = account_worker("http://127.0.0.1:9", dir.path(), None);
+    let reply = account_reply(&mut hub, AccountAsk::Disconnect, &mut rx).await;
     assert_eq!(reply, AccountReply::Disconnected(Ok(())));
     assert!(!file.exists());
     // A file already gone is no failure.
-    let again = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    let again = account_reply(&mut hub, AccountAsk::Disconnect, &mut rx).await;
     assert_eq!(again, AccountReply::Disconnected(Ok(())));
 }
 
@@ -658,8 +701,8 @@ async fn a_check_asks_who_the_saved_token_belongs_to() {
     let (base, seen) = serve(Box::new(|_| ok(r#"{"name":"ana"}"#)));
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("token"), "hf_saved\n").unwrap();
-    let (hub, mut rx) = account_worker(&base, dir.path(), Some("hf_env"));
-    let reply = account_reply(&hub, AccountAsk::Check, &mut rx).await;
+    let (mut hub, mut rx) = account_worker(&base, dir.path(), Some("hf_env"));
+    let reply = account_reply(&mut hub, AccountAsk::Check, &mut rx).await;
     assert_eq!(reply, AccountReply::Checked(Ok("ana".to_owned())));
     let request = seen.lock().unwrap()[0].clone();
     assert_eq!(header(&request, "authorization"), Some("Bearer hf_saved"));
@@ -682,4 +725,24 @@ fn the_facts_say_whether_hf_token_is_set_and_a_token_is_saved() {
             saved: true
         }
     );
+}
+
+// A relative `HF_TOKEN_PATH` is read from the working directory, as
+// `huggingface_hub` reads it; the other paths stay as they are.
+#[test]
+fn a_relative_token_path_resolves_against_the_working_directory() {
+    let vars = |name: &str| match name {
+        "HF_TOKEN_PATH" => Some(OsString::from("tok/en")),
+        "HF_HOME" => Some(OsString::from("/hf")),
+        _ => None,
+    };
+    let env = token_env_from(vars, Path::new("/work"));
+    assert_eq!(env.hf_token_path, Some(PathBuf::from("/work/tok/en")));
+    assert_eq!(env.hf_home, Some(PathBuf::from("/hf")));
+    assert_eq!(env.hf_token, None);
+    let absolute = token_env_from(
+        |name: &str| (name == "HF_TOKEN_PATH").then(|| OsString::from("/t")),
+        Path::new("/work"),
+    );
+    assert_eq!(absolute.hf_token_path, Some(PathBuf::from("/t")));
 }

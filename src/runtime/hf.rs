@@ -52,13 +52,14 @@ pub struct Curl {
     https_only: bool,
     /// Test requests must not go through the developer's proxy.
     noproxy: bool,
-    token: Option<String>,
+    /// Zeroed when the curl is dropped, like every copy made from it.
+    token: Option<Secret>,
     user_agent: String,
 }
 
 impl Curl {
     /// The production curl: the Hub over HTTPS only.
-    pub fn hub(path: OsString, token: Option<String>) -> Self {
+    pub fn hub(path: OsString, token: Option<Secret>) -> Self {
         Curl {
             program: "curl".into(),
             path,
@@ -137,13 +138,13 @@ impl Curl {
 
     /// The config line curl reads on stdin: the token as a header. `None`
     /// without a token, or with one that cannot be a header value.
-    pub fn stdin_config(&self) -> Option<String> {
-        let token = self.token.as_deref()?;
+    pub fn stdin_config(&self) -> Option<Secret> {
+        let token = self.token.as_ref()?.expose();
         let fits = !token.is_empty()
             && token
                 .bytes()
                 .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\');
-        fits.then(|| format!("header = \"Authorization: Bearer {token}\"\n"))
+        fits.then(|| Secret::new(format!("header = \"Authorization: Bearer {token}\"\n")))
     }
 
     /// Starts curl with `args` in its own process group, writing the token
@@ -180,7 +181,7 @@ impl Curl {
             .and_then(GroupKill::new);
         if let (Some(config), Some(mut stdin)) = (config, child.stdin.take()) {
             // Dropped at the end of the block: curl sees the end of its config.
-            let _ = stdin.write_all(config.as_bytes()).await;
+            let _ = stdin.write_all(config.expose().as_bytes()).await;
         }
         Ok((child, guard))
     }
@@ -283,10 +284,27 @@ pub async fn whoami(curl: &Curl) -> Result<String, String> {
 /// What a connect that finds no token file reads as.
 pub const NO_TOKEN_FILE: &str = "Hugging Face token not saved: no token file (set HF_HOME)";
 
+/// What a connect stopped before it saved reads as.
+pub const CONNECT_CANCELLED: &str = "Hugging Face token not saved: cancelled";
+
 /// Checks the pasted `token` with `curl` (which carries it) and, once the
-/// Hub accepts it, saves it in the token file of `env`.
-async fn connect(curl: &Curl, env: &TokenEnv, token: Secret) -> Result<String, String> {
-    let name = whoami(curl).await?;
+/// Hub accepts it, saves it in the token file of `env`. `cancel` (a send,
+/// or its sender dropped) stops it before the save; curl dies with its
+/// dropped request.
+async fn connect(
+    curl: &Curl,
+    env: &TokenEnv,
+    token: Secret,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<String, String> {
+    let name = tokio::select! {
+        biased;
+        _ = &mut cancel => return Err(CONNECT_CANCELLED.to_owned()),
+        name = whoami(curl) => name?,
+    };
+    if !matches!(cancel.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+        return Err(CONNECT_CANCELLED.to_owned());
+    }
     let path = hf::token_file(env).ok_or_else(|| NO_TOKEN_FILE.to_owned())?;
     let saved = tokio::task::spawn_blocking(move || save_token(&path, token.expose())).await;
     match saved {
@@ -404,6 +422,10 @@ pub async fn download(
         let blob = cache.blob(&file.oid);
         if !has_size(&blob, file.size) {
             let partial = cache.incomplete(&file.oid);
+            // Longer than the file: it cannot be resumed, so it starts over.
+            if file_len(&partial) > file.size {
+                let _ = std::fs::remove_file(&partial);
+            }
             if !has_size(&partial, file.size) {
                 let path = hf::resolve_path(&job.id, &job.commit, &file.path);
                 let fetched = fetch(curl, &path, &partial, &mut cancel, |on_disk| {
@@ -571,13 +593,22 @@ const TOKEN_CAP: u64 = 4 * 1024;
 /// Where this process's environment says the Hugging Face token is (see
 /// [`hf::token`]). Read at each request; the token is never stored or shown.
 pub fn token_env() -> TokenEnv {
-    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    token_env_from(|name| std::env::var_os(name), &cwd)
+}
+
+/// [`token_env`] from the variables `var` gives. A relative
+/// `HF_TOKEN_PATH` is read from `cwd`, as `huggingface_hub` reads it.
+fn token_env_from(var: impl Fn(&str) -> Option<OsString>, cwd: &Path) -> TokenEnv {
+    let path = |name: &str| var(name).map(PathBuf::from);
     TokenEnv {
-        hf_token: std::env::var("HF_TOKEN").ok(),
-        hf_token_path: var("HF_TOKEN_PATH"),
-        hf_home: var("HF_HOME"),
-        xdg_cache_home: var("XDG_CACHE_HOME"),
-        home: var("HOME"),
+        hf_token: var("HF_TOKEN").and_then(|t| t.into_string().ok()),
+        hf_token_path: path("HF_TOKEN_PATH")
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| cwd.join(p)),
+        hf_home: path("HF_HOME"),
+        xdg_cache_home: path("XDG_CACHE_HOME"),
+        home: path("HOME"),
     }
 }
 
@@ -643,7 +674,7 @@ fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
 }
 
 /// Builds the curl of one request, carrying this token.
-type MakeCurl = Arc<dyn Fn(Option<String>) -> Curl + Send + Sync>;
+type MakeCurl = Arc<dyn Fn(Option<Secret>) -> Curl + Send + Sync>;
 
 /// Reads where the token is, at each request.
 type ReadEnv = Arc<dyn Fn() -> TokenEnv + Send + Sync>;
@@ -659,6 +690,8 @@ pub struct Hub {
     events: mpsc::Sender<AppEvent>,
     /// The cancel of the running download, open while it runs.
     cancel: Option<oneshot::Sender<()>>,
+    /// The cancel of the last connect; a new one drops it, which stops it.
+    connecting: Option<oneshot::Sender<()>>,
 }
 
 impl Hub {
@@ -675,12 +708,13 @@ impl Hub {
             hub,
             events,
             cancel: None,
+            connecting: None,
         }
     }
 
     /// Tests: every request goes through the curl `make` builds.
     #[cfg(test)]
-    fn with_curl(mut self, make: impl Fn(Option<String>) -> Curl + Send + Sync + 'static) -> Self {
+    fn with_curl(mut self, make: impl Fn(Option<Secret>) -> Curl + Send + Sync + 'static) -> Self {
         self.make = Arc::new(make);
         self
     }
@@ -689,13 +723,24 @@ impl Hub {
     /// file is read there.
     fn curl(&self) -> impl FnOnce() -> Curl + Send + 'static {
         let (make, env) = (Arc::clone(&self.make), Arc::clone(&self.env));
-        move || make(hf::token(&env(), read_token_file))
+        move || make(hf::token(&env(), read_token_file).map(Secret::new))
     }
 
     /// Runs one account request of the `Hugging Face` row; one
     /// `AppEvent::HfAccount` answers it. A pasted token goes only to curl's
     /// stdin and to the token file, and is dropped once the check is done.
-    pub fn account(&self, ask: AccountAsk) {
+    pub fn account(&mut self, ask: AccountAsk) {
+        let (stop, cancel) = oneshot::channel();
+        match ask {
+            AccountAsk::CancelConnect => {
+                if let Some(stop) = self.connecting.take() {
+                    let _ = stop.send(());
+                }
+                return;
+            }
+            AccountAsk::Connect(_) => self.connecting = Some(stop),
+            AccountAsk::Check | AccountAsk::Disconnect => {}
+        }
         let (make, env, events) = (
             Arc::clone(&self.make),
             Arc::clone(&self.env),
@@ -705,14 +750,15 @@ impl Hub {
             let env = env();
             let reply = match ask {
                 AccountAsk::Connect(token) => {
-                    let curl = make(Some(token.expose().to_owned()));
-                    AccountReply::Connected(connect(&curl, &env, token).await)
+                    let curl = make(Some(token.clone()));
+                    AccountReply::Connected(connect(&curl, &env, token, cancel).await)
                 }
                 AccountAsk::Check => {
-                    let curl = make(hf::saved_token(&env, read_token_file));
+                    let curl = make(hf::saved_token(&env, read_token_file).map(Secret::new));
                     AccountReply::Checked(whoami(&curl).await)
                 }
                 AccountAsk::Disconnect => AccountReply::Disconnected(disconnect(&env)),
+                AccountAsk::CancelConnect => return,
             };
             let _ = events.send(AppEvent::HfAccount(reply)).await;
         });

@@ -1645,6 +1645,12 @@ mod tests {
         let shown = text(&draw(62, POPUP_H, &menu));
         assert!(shown.contains(" ••••••"), "{shown}");
         assert!(shown.contains("paste a Hugging Face token"), "{shown}");
+        // The link to create a token fits on one line, so terminals that
+        // detect URLs keep it clickable.
+        assert!(
+            shown.contains(" https://huggingface.co/settings/tokens/new?tokenType=read "),
+            "{shown}"
+        );
         // No run of cells holds the token, nor any part of it.
         assert!(!shown.contains("hf_"), "{shown}");
         insta::assert_snapshot!(shown);
