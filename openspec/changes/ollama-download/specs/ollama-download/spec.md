@@ -34,7 +34,7 @@ The library page MUST be read into model cards, each with:
 - pulls (such as `86.3M`, `512K`).
 
 A card that cannot be read is skipped. Cards with the `embedding` capability are left out. Cards with the `cloud` capability and no size tag are left out too.
-A size tag's parameter count is its number × 10^9 (`b`) or × 10^6 (`m`). Its estimated size is 5 bits per parameter, and it fits when that size is at most 70% of the total RAM (the hf-popular rule).
+A size tag's parameter count is its number × 10^9 (`b`) or × 10^6 (`m`), and a mixture of experts `<n>x<size>` counts `n` times its size. An "effective" size (`e2b`, `e4b`) gives no count: its download is several times what the name says (`gemma3n:e2b` is 7.8 GB), so it never makes a card fit; its exact size shows on the Sizes screen. The estimated size is 5 bits per parameter, and a size fits when that estimate is at most 70% of the total RAM (the hf-popular rule).
 The Popular list keeps the cards with at least one size that fits, in page order (most pulled first), at most 20. With the memory unknown, no card is left out for its size.
 
 #### Scenario: Read the real page [auto, fixture]
