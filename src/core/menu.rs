@@ -16,8 +16,8 @@ use super::{
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         menu::AiMenu,
         picker::{
-            HINT_ASKING, HINT_CANCEL, Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker,
-            QUERY_HINT, Running, Screen, Target,
+            HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark, NOT_IN_LIST, Outcome,
+            PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
         },
     },
     config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
@@ -492,6 +492,9 @@ pub enum MenuCommand {
     /// Send this request to the Hub; the reply comes back through
     /// [`MenuState::hub_reply`].
     HubAsk(Ask),
+    /// Run this llama-server install step; the reply comes back through
+    /// [`MenuState::install_reply`].
+    Install(InstallAsk),
     /// Start this Hugging Face download (`y` on the Confirm screen).
     Download(Box<Job>),
     /// Stop the Hugging Face download that runs.
@@ -1045,6 +1048,61 @@ impl MenuState {
         if let Some(message) = error {
             self.error = Some(message);
         }
+    }
+
+    /// The result of install request `id`. The wizard keeps it only while it
+    /// waits for that request.
+    pub fn install_reply(&mut self, id: u64, answer: Result<InstallReply, String>) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_reply(id, answer);
+        }
+    }
+
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_progress(id, done);
+        }
+    }
+
+    /// Whether the open install wizard waits on a download, which closing
+    /// the menu must stop.
+    pub fn install_downloading(&self) -> bool {
+        self.ai.as_ref().is_some_and(AiMenu::install_downloading)
+    }
+
+    /// The request the open install wizard waits on. Tests only.
+    #[cfg(test)]
+    pub fn install_asking(&self) -> Option<crate::core::ai::picker::InstallAsk> {
+        self.ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .and_then(|p| p.install())
+            .and_then(|w| w.asking())
+    }
+
+    /// A frame drew the wizard: its prompts now accept `y`/`n`.
+    pub fn install_arm(&mut self) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_arm();
+        }
+    }
+
+    /// Opens the install wizard over the open picker. Tests only.
+    #[cfg(test)]
+    pub fn open_install_for_test(&mut self, variants: Vec<crate::core::ai::install::Variant>) {
+        if let Some(ai) = &mut self.ai {
+            ai.open_install(variants);
+        }
+    }
+
+    /// Whether the install wizard is open. Tests only.
+    #[cfg(test)]
+    pub fn install_open(&self) -> bool {
+        self.ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .is_some_and(|p| p.install().is_some())
     }
 
     /// Adds the AI section, editing a draft of `ai` against `engines`.
@@ -1619,6 +1677,9 @@ impl MenuState {
         if ai.picker().is_some_and(|p| p.hub().is_some()) {
             return Self::on_hub_key(ai, key, repeat);
         }
+        if ai.picker().is_some_and(|p| p.install().is_some()) {
+            return Self::on_install_key(ai, key, repeat);
+        }
         // The custom field is checked before the modifier guard: Ctrl+U
         // clears it, and every letter, shortcuts included, is typed.
         if ai.picker().is_some_and(|p| p.text().is_some()) {
@@ -1649,6 +1710,8 @@ impl MenuState {
                 Outcome::Copy(text) => return MenuCommand::Copy(text),
                 // The Hugging Face entry row asks for the popular models.
                 Outcome::Ask(ask) => return MenuCommand::HubAsk(ask),
+                // An owned install asks for the newer build check.
+                Outcome::Install(ask) => return MenuCommand::Install(ask),
                 _ => {}
             },
             KeyCode::Char('y') if !repeat => {
@@ -1668,6 +1731,36 @@ impl MenuState {
             _ => {}
         }
         MenuCommand::None
+    }
+
+    /// Keys on the install wizard. Esc goes back one screen (a download asks
+    /// first); `y` and `n` answer the step a screen proposes; Enter chooses
+    /// a build. No key here saves or edits the config.
+    fn on_install_key(ai: &mut AiMenu, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        let outcome = match key.code {
+            KeyCode::Esc if !repeat => ai.drive(Picker::back),
+            _ if !plain => Outcome::Stay,
+            KeyCode::Char('j') | KeyCode::Down => {
+                ai.edit_with(|p, d, e| p.step(true, d, e));
+                Outcome::Stay
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                ai.edit_with(|p, d, e| p.step(false, d, e));
+                Outcome::Stay
+            }
+            _ if repeat => Outcome::Stay,
+            KeyCode::Enter => ai.drive(Picker::enter),
+            KeyCode::Char('y') => ai.drive(|p, d, e| p.install_answer(true, d, e)),
+            KeyCode::Char('n') => ai.drive(|p, d, e| p.install_answer(false, d, e)),
+            _ => Outcome::Stay,
+        };
+        match outcome {
+            Outcome::Install(ask) => MenuCommand::Install(ask),
+            Outcome::Copy(text) => MenuCommand::Copy(text),
+            Outcome::Ask(ask) => MenuCommand::HubAsk(ask),
+            _ => MenuCommand::None,
+        }
     }
 
     /// Keys on the Hugging Face screens. Esc goes back one screen, also
@@ -1991,6 +2084,13 @@ impl MenuState {
         let picker = ai.and_then(AiMenu::picker);
         if picker.is_some_and(Picker::asks_cancel) {
             return Footer::Hint(Cow::Borrowed(HINT_CANCEL));
+        }
+        if let Some(wizard) = picker.and_then(Picker::install) {
+            // Copying the manual steps says so until the next key.
+            return Footer::Hint(match &self.copied {
+                Some(copied) => Cow::Owned(copied.clone()),
+                None => Cow::Borrowed(wizard.hint()),
+            });
         }
         if let Some(hub) = picker.and_then(Picker::hub) {
             return match hub.screen() {

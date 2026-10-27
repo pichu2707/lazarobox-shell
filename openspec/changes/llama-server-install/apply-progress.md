@@ -250,3 +250,82 @@ wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. En
 - Cancel: `Downloading{cancelling:true}` ("cancelling…", HINT_CANCELLING) until the reply
   arrives, then Plan; `asking()` keeps reporting the download; `asks_cancel()` false while cancelling.
 - OfferHf `y` with a running HF download is ignored in `Picker::install_step` (Step::Hub).
+
+## PR6: Plumbing and rendering (tasks 6.1-6.3 done; 6.4 manual pending)
+
+- `MenuCommand::Install(InstallAsk)` -> `Effect::Install` -> runtime `Installer`
+  (`src/runtime/llama_install/installer.rs`) -> `AppEvent::{InstallReply(id, ..), InstallProgress,
+  InstallWarning}` on the Hub's channel. `App::on_install_reply` forces a re-detection on
+  `Installed` (also with the menu closed). Attestation warnings become the notice.
+- `App::frame_drawn` calls `MenuState::install_arm` (the armed-confirm contract of PR5).
+- One download/install at a time: atomic `Slot`, second step replies `BUSY`; the cross-process
+  `activate::LOCKED` surfaces through `activate::install` as a wizard failure. A cancel still
+  replies for the original Download id (`Err("cancelled")`).
+- Vulkan ICD probe `has_vulkan_icd()` lives in the installer module (no consumer until PR7).
+- Test-only opener: `MenuState::open_install_for_test` (cfg(test)); PR7 adds the real entry row.
+- Footer uses `Wizard::hint()` (covers `asks_cancel` / `HINT_CANCELLING`); "Copied" cue wins on the plan.
+- Snapshots: `src/ui/components/menu/tests/install.rs` incl. MIN_WIDTH (copy/labels clip with an ellipsis at 24 cols).
+- PR4 review API change (async `remove`, "already installed" refusal) needs no change here: PR6 never calls `remove`; the refusal arrives as `Err` and shows as a wizard failure.
+
+### PR6 review fixes
+
+- Request ids are process-wide (`static LAST_ID: AtomicU64` in `picker/install.rs`): two wizards never
+  issue the same id, so a late reply of a closed wizard is ignored by the next one.
+- A panicking installer step runs as an inner `tokio::spawn`; on `JoinError` the reply is
+  `Err(CRASHED)` ("install step crashed") with the original id and the slot is freed.
+- Closing the menu while the archive downloads emits `Effect::Install(InstallAsk::Cancel)`
+  (`App::close_menu`, via `Wizard::downloading`). The slot owns the cancel sender and clears it when the
+  task ends; the BUSY path never touches it. BUSY reads "another install step is still running".
+- `AppEvent::InstallProgress` carries the request `id`; progress of any other request is ignored and
+  progress never overwrites `release.size`.
+- The two timing tests were made deterministic: the cancel and busy tests wait for the server to log
+  the request (no fixed sleep). 10 runs of the installer tests: 13/13 green each time.
+- RED observed by mutation of each fix (ids, panic, cancel clearing, close-menu cancel, progress id).
+
+## PR7: Manage rows, newer-build notice, docs (branch feat/llama-server-install-pr7, base PR6)
+
+Status: 3/3 tasks done (7.1, 7.2, 7.3). All tasks of the change are done; manual checks pending.
+
+- Rows (`src/core/ai/picker/manage.rs`): `install llama-server…` when llamacpp is `NotInstalled`;
+  `remove the llama.cpp install` only when the llamacpp binary is owned (`install::is_owned` over
+  `EngineState.binary` and `Detection.data_home`); none with a system binary (A3). The row sits right
+  before the Hugging Face row, so "HF last" tests stay as they were; on a not-installed llamacpp the
+  cursor now lands on the install row (disabled_tests updated).
+- `Detection.vulkan_icd` (set in `detect_all` from `has_vulkan_icd()`): the install row opens the
+  wizard with `install::variants(Platform::CURRENT, vulkan_icd)`. `open_install_for_test` stays only
+  as a platform-independent fixture for the UI/app snapshots (the real opener is the row).
+- Remove: wizard screens `ConfirmRemove` (disarmed until drawn) -> `Removing` -> `Removed`/`Failed`;
+  `InstallAsk::Remove(id, binary)` -> `Installer::remove` (slot, `activate::remove(binary, data_home)`),
+  `Reply::Removed`; `on_install_reply` forces re-detection on `Installed` and `Removed`.
+  A failed remove has no plan to go back to: Esc closes the wizard.
+- Newer notice: `InstallAsk::CheckNewer` (no id) is emitted by `Picker::enter` when llamacpp's model
+  level opens with an owned binary. `App::install_effects` gates it: once per run (`newer_checked`),
+  never with `[updates] check = false`. `Installer::check_newer` reads `activate::current_tag`
+  (now `pub`), resolves the newest release for the first variant of the platform and sends
+  `AppEvent::InstallWarning(notice)` only when `install::is_newer`; every failure is silent; no slot.
+  Not offered without an installed tag: no request at all.
+- Docs: README section "Instalar llama-server (la excepción)" (Spanish), the line "nunca descarga"
+  rewritten, the HF section no longer says llama-server is required, `core/ai/mod.rs` doc comment
+  (start_command), CHANGELOG `[Unreleased]`.
+- Snapshot reviewed: `snapshot_models_level_of_llamacpp_without_llama_server` gains the install row and
+  the footer shows the generic hint (cursor on the install row) instead of the HF row's note.
+
+## PR7 review fixes
+
+- Remove stops the managed server first: `Installer` gets a `StopFn` hook (`with_stop`), run inside
+  the remove step, under the slot, before `activate::remove`, and only when the binary is owned
+  (`install::is_owned`). The runtime wires it to `LiveServers::managed().shutdown()` (stops without
+  retiring, so a later install lets the next turn start it again). ConfirmRemove says "a running
+  managed server is stopped first"; README and CHANGELOG say it.
+- Newer check uses the installed variant: `activate::note_variant` writes `<root>/variant`
+  (`vulkan`) after `swap_current` (removed for other builds); `check_newer` reads it
+  (`activate::installed_vulkan`) and resolves the Vulkan build on Linux; the notice says "(Vulkan build)".
+- `should_check_newer(update_check, already_checked)` is now the real gate used by
+  `App::install_effects` (the installed-tag condition lives in the picker and `check_newer`).
+- Stale notice: a new `AppEvent::InstallNewer` (the attestation warning keeps `InstallWarning`);
+  `check_newer` drops the notice while an install or remove holds the slot (`busy`) and re-reads
+  `current_tag` right before sending; `App::on_install_newer` never overwrites an existing notice.
+- CHANGELOG: attestation is optional; remove stops a running managed server.
+- RED observed by mutation: stop call removed, busy guard removed, current_tag re-read removed,
+  variant read disabled, `note_variant` removed (each failed its test); the notice and gate tests
+  were RED by compilation (missing event / signature).

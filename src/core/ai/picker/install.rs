@@ -3,6 +3,9 @@
 //! user agreed to leaves as [`InstallAsk`] and its result comes back through
 //! [`Wizard::reply`]; nothing here touches the network or the disk.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::super::Detection;
 use super::super::config::AiConfig;
 use super::super::hf;
@@ -25,7 +28,13 @@ pub const HINT_CANCEL_INSTALL: &str = "cancel the download? (y/n)";
 pub const HINT_CANCELLING: &str = "cancelling…";
 pub const HINT_INSTALLING: &str = "installing…";
 pub const HINT_OFFER: &str = "y download a model · n close";
+pub const HINT_REMOVING: &str = "removing…";
 pub const HINT_FAILED: &str = "Esc back";
+
+/// The last request id handed out by any wizard. Process-wide: the installer
+/// outlives the menu, so a late reply of a closed wizard must never match the
+/// id a new wizard waits on.
+static LAST_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A step the user agreed to; the runtime runs it and replies with the same
 /// request id.
@@ -39,6 +48,13 @@ pub enum InstallAsk {
     Install(u64, Release),
     /// Stop the download that runs (the partial file stays for a resume).
     Cancel,
+    /// Delete the owned install; the binary is the one the user chose to
+    /// remove (the runtime refuses anything outside the owned folder).
+    Remove(u64, PathBuf),
+    /// Look up, once per run, whether a newer build exists. No id: nothing
+    /// waits for the answer, a newer build shows up as a notice and
+    /// anything else stays silent.
+    CheckNewer,
 }
 
 /// A step's success. A failure is the `Err` text of the reply.
@@ -47,6 +63,7 @@ pub enum Reply {
     Resolved(Release),
     Downloaded,
     Installed,
+    Removed,
 }
 
 /// What a key asks of the picker.
@@ -81,17 +98,21 @@ pub enum Screen {
     Installing(Release),
     OfferHf,
     Failed(String),
+    /// `remove the llama.cpp install? (y/n)`.
+    ConfirmRemove,
+    Removing,
+    Removed,
 }
 
 /// The wizard state: which screen is open and which variants the plan has.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Wizard {
     variants: Vec<Variant>,
+    /// The binary a remove wizard deletes; `None` on the install wizard.
+    binary: Option<PathBuf>,
     screen: Screen,
     /// The id of the request the wizard waits on; any other reply is stale.
     in_flight: Option<u64>,
-    /// The last id handed out.
-    last_id: u64,
     /// Whether the confirm screen was drawn since a reply opened it. A key
     /// queued for the previous screen must not answer a prompt never seen.
     armed: bool,
@@ -109,18 +130,40 @@ impl Wizard {
     pub fn new(variants: Vec<Variant>) -> Self {
         Wizard {
             variants,
+            binary: None,
             screen: Screen::Plan,
             in_flight: None,
-            last_id: 0,
             armed: true,
         }
     }
 
+    /// A wizard that asks to delete the owned install `binary` belongs to.
+    /// Disarmed until its prompt is drawn, like every confirm screen.
+    pub fn remove(binary: PathBuf) -> Self {
+        Wizard {
+            variants: Vec::new(),
+            binary: Some(binary),
+            screen: Screen::ConfirmRemove,
+            in_flight: None,
+            armed: false,
+        }
+    }
+
+    /// The builds the plan offers.
+    pub fn variants(&self) -> &[Variant] {
+        &self.variants
+    }
+
     /// A new request id, now in flight.
     fn issue(&mut self) -> u64 {
-        self.last_id += 1;
-        self.in_flight = Some(self.last_id);
-        self.last_id
+        let id = LAST_ID.fetch_add(1, Ordering::Relaxed) + 1;
+        self.in_flight = Some(id);
+        id
+    }
+
+    /// Whether a download is in flight: closing the wizard now must stop it.
+    pub fn downloading(&self) -> bool {
+        self.in_flight.is_some() && matches!(self.screen, Screen::Downloading { .. })
     }
 
     /// The screen was drawn: its `y`/`n` now answer what the user saw. The
@@ -140,6 +183,7 @@ impl Wizard {
             Screen::Resolving(variant) => Some(InstallAsk::Resolve(id, *variant)),
             Screen::Downloading { release, .. } => Some(InstallAsk::Download(id, release.clone())),
             Screen::Installing(release) => Some(InstallAsk::Install(id, release.clone())),
+            Screen::Removing => Some(InstallAsk::Remove(id, self.binary.clone()?)),
             _ => None,
         }
     }
@@ -166,7 +210,11 @@ impl Wizard {
                 "Install llama-server: install".to_owned()
             }
             Screen::OfferHf => "llama-server installed".to_owned(),
+            Screen::Failed(_) if self.binary.is_some() => "Remove llama-server: failed".to_owned(),
             Screen::Failed(_) => "Install llama-server: failed".to_owned(),
+            Screen::ConfirmRemove | Screen::Removing | Screen::Removed => {
+                "Remove llama-server".to_owned()
+            }
         }
     }
 
@@ -182,7 +230,9 @@ impl Wizard {
             Screen::Downloading { .. } => HINT_DOWNLOADING,
             Screen::Installing(_) => HINT_INSTALLING,
             Screen::OfferHf => HINT_OFFER,
-            Screen::Failed(_) => HINT_FAILED,
+            Screen::Failed(_) | Screen::Removed => HINT_FAILED,
+            Screen::ConfirmRemove => HINT_CONFIRM_STEP,
+            Screen::Removing => HINT_REMOVING,
         }
     }
 
@@ -237,6 +287,14 @@ impl Wizard {
                 "Download a model from Hugging Face?".to_owned(),
             ]),
             Screen::Failed(message) => lines(vec![message.clone()]),
+            Screen::ConfirmRemove => lines(vec![
+                "remove the llama.cpp install of lazarobox?".to_owned(),
+                "every downloaded build is deleted; a llama-server of your own is not touched"
+                    .to_owned(),
+                "a running managed server is stopped first".to_owned(),
+            ]),
+            Screen::Removing => lines(vec!["removing…".to_owned()]),
+            Screen::Removed => lines(vec!["the llama.cpp install was removed".to_owned()]),
         }
     }
 
@@ -277,6 +335,11 @@ impl Wizard {
                 self.screen = Screen::OfferHf;
                 Step::Hub
             }
+            Screen::ConfirmRemove if self.armed && self.binary.is_some() => {
+                self.screen = Screen::Removing;
+                let binary = self.binary.clone().unwrap_or_default();
+                Step::Ask(InstallAsk::Remove(self.issue(), binary))
+            }
             Screen::Downloading {
                 release,
                 done,
@@ -302,8 +365,12 @@ impl Wizard {
     /// `n`: decline the step, or keep the download.
     pub fn no(&mut self) -> Step {
         match &mut self.screen {
-            Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) | Screen::OfferHf
+            Screen::ConfirmDownload(_)
+            | Screen::ConfirmInstall(_)
+            | Screen::OfferHf
+            | Screen::ConfirmRemove
                 if !self.armed => {}
+            Screen::ConfirmRemove => return Step::Close,
             Screen::ConfirmDownload(_) | Screen::ConfirmInstall(_) => {
                 self.screen = Screen::Plan;
             }
@@ -322,15 +389,18 @@ impl Wizard {
     /// be interrupted.
     pub fn back(&mut self) -> Step {
         match &mut self.screen {
-            Screen::Plan | Screen::OfferHf => Step::Close,
+            Screen::Plan | Screen::OfferHf | Screen::ConfirmRemove | Screen::Removed => Step::Close,
             Screen::Downloading {
                 cancelling: true, ..
             }
-            | Screen::Installing(_) => Step::Stay,
+            | Screen::Installing(_)
+            | Screen::Removing => Step::Stay,
             Screen::Downloading { cancel, .. } => {
                 *cancel = true;
                 Step::Stay
             }
+            // A remove wizard has no plan to go back to.
+            Screen::Failed(_) if self.binary.is_some() => Step::Close,
             screen => {
                 // A lookup left behind: its reply is dropped by id. The
                 // lookup is idempotent, so nothing needs cancelling.
@@ -343,17 +413,13 @@ impl Wizard {
         }
     }
 
-    /// The bytes on disk of the download that runs.
-    pub fn progress(&mut self, done: u64, total: u64) {
-        if let Screen::Downloading {
-            release,
-            done: seen,
-            ..
-        } = &mut self.screen
-        {
-            if total > 0 {
-                release.size = total;
-            }
+    /// The bytes on disk of the download of request `id`. Progress of any
+    /// other request is dropped; the size shown stays the release's.
+    pub fn progress(&mut self, id: u64, done: u64) {
+        if self.in_flight != Some(id) {
+            return;
+        }
+        if let Screen::Downloading { done: seen, .. } = &mut self.screen {
             *seen = done;
         }
     }
@@ -375,9 +441,14 @@ impl Wizard {
         let next = match (&self.screen, answer) {
             // The user cancelled: whatever the download ended with, back to the plan.
             _ if cancelling => Screen::Plan,
-            (Screen::Resolving(_) | Screen::Downloading { .. } | Screen::Installing(_), Err(m)) => {
-                Screen::Failed(m)
-            }
+            (
+                Screen::Resolving(_)
+                | Screen::Downloading { .. }
+                | Screen::Installing(_)
+                | Screen::Removing,
+                Err(m),
+            ) => Screen::Failed(m),
+            (Screen::Removing, Ok(Reply::Removed)) => Screen::Removed,
             (Screen::Resolving(_), Ok(Reply::Resolved(release))) => {
                 Screen::ConfirmDownload(release)
             }
@@ -496,10 +567,10 @@ impl Picker {
         }
     }
 
-    /// The bytes on disk of the download that runs.
-    pub fn install_progress(&mut self, done: u64, total: u64) {
+    /// The bytes on disk of the download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
         if let Some(wizard) = self.wizard_mut() {
-            wizard.progress(done, total);
+            wizard.progress(id, done);
         }
     }
 }

@@ -19,8 +19,11 @@ fn release() -> Release {
 /// The id of the request in flight.
 fn id_of(w: &Wizard) -> u64 {
     match w.asking().expect("a request in flight") {
-        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
-        InstallAsk::Cancel => panic!("cancel has no id"),
+        InstallAsk::Resolve(id, _)
+        | InstallAsk::Download(id, _)
+        | InstallAsk::Install(id, _)
+        | InstallAsk::Remove(id, _) => id,
+        InstallAsk::Cancel | InstallAsk::CheckNewer => panic!("no id"),
     }
 }
 
@@ -93,12 +96,11 @@ fn a_new_wizard_asks_nothing_and_y_at_the_plan_does_nothing() {
 #[test]
 fn choosing_a_variant_asks_to_resolve_it() {
     let mut w = wizard();
-    assert_eq!(
-        w.enter(1),
-        Step::Ask(InstallAsk::Resolve(1, Variant::Vulkan))
-    );
+    let step = w.enter(1);
+    let id = id_of(&w);
+    assert_eq!(step, Step::Ask(InstallAsk::Resolve(id, Variant::Vulkan)));
     assert!(matches!(w.screen(), Screen::Resolving(Variant::Vulkan)));
-    assert_eq!(w.asking(), Some(InstallAsk::Resolve(1, Variant::Vulkan)));
+    assert_eq!(w.asking(), Some(InstallAsk::Resolve(id, Variant::Vulkan)));
 }
 
 // Scenario: "I'll do it myself" never starts anything.
@@ -124,7 +126,8 @@ fn the_release_waits_for_a_yes_before_the_download() {
     assert!(matches!(w.screen(), Screen::ConfirmDownload(r) if *r == release()));
     assert_eq!(w.asking(), None);
     assert_eq!(w.enter(0), Step::Stay);
-    assert_eq!(w.yes(), Step::Ask(InstallAsk::Download(2, release())));
+    let step = w.yes();
+    assert_eq!(step, Step::Ask(InstallAsk::Download(id_of(&w), release())));
     assert!(matches!(w.screen(), Screen::Downloading { .. }));
 }
 
@@ -155,7 +158,8 @@ fn the_install_waits_for_a_yes_after_the_verified_download() {
     let mut w = confirming_install();
     assert!(matches!(w.screen(), Screen::ConfirmInstall(_)));
     assert_eq!(w.asking(), None);
-    assert_eq!(w.yes(), Step::Ask(InstallAsk::Install(3, release())));
+    let step = w.yes();
+    assert_eq!(step, Step::Ask(InstallAsk::Install(id_of(&w), release())));
     assert!(matches!(w.screen(), Screen::Installing(_)));
 }
 
@@ -177,14 +181,16 @@ fn the_asks_come_in_order_and_hugging_face_comes_last() {
     answer(&mut w, Ok(Reply::Downloaded));
     w.arm();
     asks.push(w.yes());
-    assert_eq!(
-        asks,
-        vec![
-            Step::Ask(InstallAsk::Resolve(1, Variant::Cpu)),
-            Step::Ask(InstallAsk::Download(2, release())),
-            Step::Ask(InstallAsk::Install(3, release())),
-        ]
-    );
+    let [
+        Step::Ask(InstallAsk::Resolve(a, Variant::Cpu)),
+        Step::Ask(InstallAsk::Download(b, downloaded)),
+        Step::Ask(InstallAsk::Install(c, installed)),
+    ] = asks.as_slice()
+    else {
+        panic!("not the three asks in order: {asks:?}");
+    };
+    assert!(a < b && b < c, "{asks:?}");
+    assert_eq!((downloaded, installed), (&release(), &release()));
     answer(&mut w, Ok(Reply::Installed));
     w.arm();
     assert!(matches!(w.screen(), Screen::OfferHf));
@@ -267,7 +273,8 @@ fn y_without_a_cancel_prompt_does_not_cancel_the_download() {
 fn the_download_row_shows_the_share_done() {
     let mut w = confirming_download();
     w.yes();
-    w.progress(10_000_000, 40_000_000);
+    let id = id_of(&w);
+    w.progress(id, 10_000_000);
     assert!(labels(&w).iter().any(|l| l.contains("25%")));
 }
 
@@ -334,9 +341,11 @@ fn the_picker_turns_a_wizard_ask_into_an_outcome() {
     let mut p = picker();
     let (draft, none) = (AiConfig::default(), None);
     assert!(p.install().is_some());
+    let outcome = p.enter(&draft, none);
+    let id = id_of(p.install().unwrap());
     assert_eq!(
-        p.enter(&draft, none),
-        Outcome::Install(InstallAsk::Resolve(1, Variant::Cpu))
+        outcome,
+        Outcome::Install(InstallAsk::Resolve(id, Variant::Cpu))
     );
 }
 
@@ -363,9 +372,11 @@ fn the_picker_routes_replies_and_answers_to_the_wizard() {
     p.enter(&draft, None);
     preply(&mut p, Ok(Reply::Resolved(release())));
     p.install_arm();
+    let outcome = p.install_answer(true, &draft, None);
+    let id = id_of(p.install().unwrap());
     assert_eq!(
-        p.install_answer(true, &draft, None),
-        Outcome::Install(InstallAsk::Download(2, release()))
+        outcome,
+        Outcome::Install(InstallAsk::Download(id, release()))
     );
     preply(&mut p, Ok(Reply::Downloaded));
     p.install_arm();
@@ -418,7 +429,8 @@ fn a_queued_y_for_the_cancel_prompt_does_not_start_the_install() {
     assert!(matches!(w.screen(), Screen::ConfirmInstall(_)));
     // Once drawn, the user's own `y` counts.
     w.arm();
-    assert_eq!(w.yes(), Step::Ask(InstallAsk::Install(3, release())));
+    let step = w.yes();
+    assert_eq!(step, Step::Ask(InstallAsk::Install(id_of(&w), release())));
 }
 
 #[test]
@@ -453,13 +465,16 @@ fn a_late_reply_for_a_left_lookup_is_dropped() {
     let cpu = id_of(&w);
     // Esc drops the lookup (idempotent: no cancel ask), Vulkan starts another.
     assert_eq!(w.back(), Step::Stay);
+    let step = w.enter(1);
+    let vulkan = id_of(&w);
     assert_eq!(
-        w.enter(1),
-        Step::Ask(InstallAsk::Resolve(cpu + 1, Variant::Vulkan))
+        step,
+        Step::Ask(InstallAsk::Resolve(vulkan, Variant::Vulkan))
     );
+    assert_ne!(cpu, vulkan);
     assert!(!w.reply(cpu, Ok(Reply::Resolved(release()))));
     assert!(matches!(w.screen(), Screen::Resolving(Variant::Vulkan)));
-    assert!(w.reply(cpu + 1, Ok(Reply::Resolved(release()))));
+    assert!(w.reply(vulkan, Ok(Reply::Resolved(release()))));
     assert!(matches!(w.screen(), Screen::ConfirmDownload(_)));
 }
 
@@ -519,4 +534,63 @@ fn y_on_the_offer_is_ignored_while_a_hugging_face_download_runs() {
     assert!(!p.asks_cancel());
     assert!(p.hub().is_none());
     assert!(p.install().is_some());
+}
+
+// Review fix: ids are process-wide, so a closed wizard's late reply never
+// matches the request of a new one.
+#[test]
+fn two_wizards_never_issue_the_same_id() {
+    let (mut a, mut b) = (wizard(), wizard());
+    a.enter(0);
+    b.enter(0);
+    assert_ne!(id_of(&a), id_of(&b));
+}
+
+#[test]
+fn a_late_reply_from_a_closed_wizard_is_ignored_by_the_next_one() {
+    let mut closed = wizard();
+    closed.enter(0);
+    let late = id_of(&closed);
+    drop(closed);
+    let mut next = wizard();
+    next.enter(0);
+    assert!(!next.reply(late, Ok(Reply::Resolved(release()))));
+    assert!(matches!(next.screen(), Screen::Resolving(_)));
+}
+
+// Review fix: closing the wizard mid-download has something to stop.
+#[test]
+fn a_wizard_downloads_only_between_the_yes_and_the_reply() {
+    let mut w = confirming_download();
+    assert!(!w.downloading());
+    w.yes();
+    assert!(w.downloading());
+    answer(&mut w, Ok(Reply::Downloaded));
+    assert!(!w.downloading());
+}
+
+// Review fix: progress names its request; the size on screen stays the release's.
+#[test]
+fn progress_of_another_request_is_ignored_and_never_resizes_the_release() {
+    let mut w = confirming_download();
+    w.yes();
+    let id = id_of(&w);
+    w.progress(id + 1, 5);
+    assert!(matches!(w.screen(), Screen::Downloading { done: 0, .. }));
+    w.progress(id, 7);
+    assert!(matches!(w.screen(), Screen::Downloading { done: 7, .. }));
+    let Screen::Downloading { release: shown, .. } = w.screen() else {
+        panic!("not downloading");
+    };
+    assert_eq!(shown.size, release().size);
+}
+
+// Remove stops a running managed server first, and the prompt says so.
+#[test]
+fn the_remove_prompt_says_a_running_managed_server_is_stopped_first() {
+    let w = Wizard::remove(std::path::PathBuf::from(
+        "/h/lazarobox/llama.cpp/current/llama-server",
+    ));
+    let text = labels(&w).join(" ");
+    assert!(text.contains("stopped first"), "{text}");
 }

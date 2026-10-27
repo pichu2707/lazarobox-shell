@@ -240,10 +240,16 @@ pub fn is_newer(installed: &str, candidate: &str) -> bool {
     }
 }
 
-/// Whether the newer-build check may ask GitHub: only with an owned install
-/// of a known tag, and never when `[updates] check = false`.
-pub fn should_check_newer(update_check: bool, installed_tag: Option<&str>) -> bool {
-    update_check && installed_tag.is_some_and(|tag| tag_number(tag).is_some())
+/// Whether the newer-build check may ask GitHub: once per run, and never
+/// when `[updates] check = false`. (That there is an owned install is
+/// decided where the ask is made and where it runs.)
+pub fn should_check_newer(update_check: bool, already_checked: bool) -> bool {
+    update_check && !already_checked
+}
+
+/// Whether `asset` is a Vulkan build (the name upstream gives it).
+pub fn is_vulkan_asset(asset: &str) -> bool {
+    asset.contains("-vulkan-")
 }
 
 /// `<data_home>/lazarobox/llama.cpp`: everything the install owns.
@@ -508,10 +514,9 @@ mod tests {
 
     #[test]
     fn the_newer_check_respects_the_update_opt_out() {
-        assert!(should_check_newer(true, Some("b9000")));
-        assert!(!should_check_newer(false, Some("b9000")));
-        assert!(!should_check_newer(true, None));
-        assert!(!should_check_newer(true, Some("weird")));
+        assert!(should_check_newer(true, false));
+        assert!(!should_check_newer(false, false), "updates are off");
+        assert!(!should_check_newer(true, true), "once per run");
     }
 
     #[test]
