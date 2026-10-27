@@ -99,6 +99,9 @@ pub async fn run_jailed(
     };
     let args = JailArgs {
         min_abi: None,
+        // The proxies (`cargo`, `go`) run under their own name, whatever they
+        // canonicalize to.
+        arg0: Some(OsString::from(job.tool.name())),
         spec: profile(job.spec),
         program: job.program,
         argv: job.argv,

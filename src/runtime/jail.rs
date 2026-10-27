@@ -158,10 +158,9 @@ mod imp {
     }
 
     fn launch(job: &JailArgs) -> Result<Infallible, Failure> {
-        let error = Command::new(&job.program)
-            .arg0(&job.program)
-            .args(&job.argv)
-            .exec();
+        // A proxy decides what to run from the name it is started as.
+        let name = job.arg0.as_deref().unwrap_or(job.program.as_os_str());
+        let error = Command::new(&job.program).arg0(name).args(&job.argv).exec();
         Err(Failure::Exec(job.program.display().to_string(), error))
     }
 

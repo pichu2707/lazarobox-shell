@@ -130,7 +130,11 @@ fn a_path_entry_that_links_into_the_project_is_dropped() {
     std::fs::create_dir_all(root.join("bin")).unwrap();
     std::fs::create_dir(base.join("other")).unwrap();
     std::os::unix::fs::symlink(root.join("bin"), base.join("sneaky")).unwrap();
-    let raw = format!("{}:{}", base.join("sneaky").display(), base.join("other").display());
+    let raw = format!(
+        "{}:{}",
+        base.join("sneaky").display(),
+        base.join("other").display()
+    );
     let kept = safe_path(&OsString::from(raw), &root).unwrap();
     assert_eq!(kept, OsString::from(base.join("other")));
 }

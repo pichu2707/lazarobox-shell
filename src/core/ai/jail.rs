@@ -11,6 +11,7 @@
 //! itself inside the jail.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
@@ -250,7 +251,8 @@ const ARG_NO_PROGRAM: &str = "no program after `--`";
 const ARG_RELATIVE_PROGRAM: &str = "the program must be an absolute path";
 const ARG_BAD_NET_BIND: &str = "--net-bind takes only `open`";
 const ARG_BAD_RLIMITS: &str = "--rlimits takes only `toolchain`";
-const ARG_REASONS: [&str; 9] = [
+const ARG_BAD_ARG0: &str = "--arg0 takes a plain name";
+const ARG_REASONS: [&str; 10] = [
     ARG_NO_SEPARATOR,
     ARG_NO_VALUE,
     ARG_BAD_ABI,
@@ -260,6 +262,7 @@ const ARG_REASONS: [&str; 9] = [
     ARG_RELATIVE_PROGRAM,
     ARG_BAD_NET_BIND,
     ARG_BAD_RLIMITS,
+    ARG_BAD_ARG0,
 ];
 
 /// The macOS helper's other fixed texts (`runtime::jail::seatbelt`).
@@ -1375,6 +1378,12 @@ impl JailSpec {
 pub struct JailArgs {
     /// Test-only: refuse to run below this ABI (exit 125).
     pub min_abi: Option<u32>,
+    /// The name the program sees as its own (`argv[0]`), when it is not its
+    /// path: a proxy like `cargo` is a link to `rustup`, which picks what to
+    /// do from the name it is run as. A plain name, set from a fixed list by
+    /// the caller, never from model input. Linux only: `sandbox-exec` starts
+    /// the program itself, so on macOS the program runs under its path.
+    pub arg0: Option<OsString>,
     pub spec: JailSpec,
     pub program: PathBuf,
     pub argv: Vec<OsString>,
@@ -1390,6 +1399,9 @@ impl JailArgs {
         let mut out = vec![OsString::from(SUBCOMMAND)];
         if let Some(abi) = self.min_abi {
             out.extend([OsString::from("--min-abi"), OsString::from(abi.to_string())]);
+        }
+        if let Some(name) = &self.arg0 {
+            out.extend([OsString::from("--arg0"), name.clone()]);
         }
         let lists = [
             ("--rwx", &self.spec.rwx),
@@ -1422,6 +1434,7 @@ impl JailArgs {
 pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     let mut spec = JailSpec::default();
     let mut min_abi = None;
+    let mut arg0 = None;
     let mut it = args.iter();
     loop {
         let flag = it.next().ok_or(ArgError(ARG_NO_SEPARATOR))?;
@@ -1432,6 +1445,14 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
         if flag == "--min-abi" {
             let abi = value.to_str().and_then(|v| v.parse().ok());
             min_abi = Some(abi.ok_or(ArgError(ARG_BAD_ABI))?);
+            continue;
+        }
+        if flag == "--arg0" {
+            let bytes = value.as_bytes();
+            if bytes.is_empty() || bytes.contains(&b'/') || bytes.contains(&0) {
+                return Err(ArgError(ARG_BAD_ARG0));
+            }
+            arg0 = Some(value.clone());
             continue;
         }
         if flag == "--net-bind" {
@@ -1470,6 +1491,7 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     }
     Ok(JailArgs {
         min_abi,
+        arg0,
         spec,
         program,
         argv: it.cloned().collect(),

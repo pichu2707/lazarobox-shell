@@ -371,6 +371,8 @@ async fn the_helper_gets_the_toolchain_profile_and_then_the_program() {
         args,
         [
             "arg:__jail-exec".to_owned(),
+            "arg:--arg0".to_owned(),
+            "arg:cargo".to_owned(),
             "arg:--rwx".to_owned(),
             format!("arg:{root}"),
             "arg:--net-bind".to_owned(),

@@ -87,6 +87,7 @@ fn job(program: &str, argv: &[&str], tweak: impl FnOnce(&mut JailSpec)) -> JailA
     tweak(&mut spec);
     JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv: argv.iter().map(OsString::from).collect(),
@@ -352,6 +353,7 @@ fn an_execute_rule_on_a_folder_runs_what_lives_inside_it() {
         let program = fs::canonicalize(inside.join("tool")).unwrap();
         let args = JailArgs {
             min_abi: None,
+            arg0: None,
             spec: JailSpec {
                 ro: system_ro(),
                 rx: vec![package.clone(), loader.clone()],
@@ -431,6 +433,7 @@ fn the_granted_loader_cannot_run_a_program_whose_folder_is_not_readable() {
     let through_loader = |ro: Vec<PathBuf>| {
         run(&JailArgs {
             min_abi: None,
+            arg0: None,
             spec: JailSpec {
                 ro,
                 rx: vec![loader.clone()],
@@ -769,4 +772,25 @@ fn the_helper_refuses_a_symlinked_or_a_broad_rwx_root() {
         s.rwx = vec![root.clone()]
     }));
     assert!(out.status.success() && marker.exists(), "{}", stderr(&out));
+}
+
+#[test]
+fn arg0_is_the_name_the_program_runs_as_not_its_path() {
+    if !jail_available() {
+        return;
+    }
+    // What a rustup proxy relies on: it picks its role from `argv[0]`.
+    let mut named = job(
+        "/bin/bash",
+        &[
+            "-c",
+            "read -r -d '' first </proc/$$/cmdline; echo \"$first\"",
+        ],
+        |s| s.ro.push(PathBuf::from("/proc")),
+    );
+    let out = run(&named);
+    assert_eq!(stdout(&out).trim(), named.program.to_str().unwrap());
+    named.arg0 = Some(OsString::from("cargo"));
+    let out = run(&named);
+    assert_eq!(stdout(&out).trim(), "cargo", "{}", stderr(&out));
 }
