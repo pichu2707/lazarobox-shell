@@ -1150,3 +1150,64 @@ fn the_recorded_answer_streams_text_and_holds_no_call() {
         "{text}"
     );
 }
+
+// llamacpp-tools PR1 review fixes.
+fn cut_reply(reason: &str) -> String {
+    let end =
+        format!("data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{reason}\"}}]}}\n\n");
+    [
+        frag(r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#),
+        frag(r#"{"index":1,"id":"b","function":{"name":"list_dir","arguments":"{\"pa"}}"#),
+        end,
+        "data: [DONE]\n\n".to_owned(),
+    ]
+    .concat()
+}
+
+#[test]
+fn only_tool_calls_and_stop_end_a_reply_cleanly() {
+    for reason in ["length", "content_filter", "something_new"] {
+        let (events, calls) = oa_run(&[cut_reply(reason).as_bytes()]);
+        assert!(
+            matches!(events.as_slice(), [StreamEvent::Done(_)]),
+            "{reason}"
+        );
+        assert!(calls.is_empty(), "{reason}");
+    }
+    for reason in ["tool_calls", "stop"] {
+        let (_, calls) = oa_run(&[cut_reply(reason).as_bytes()]);
+        assert_eq!(calls.len(), 2, "{reason}");
+    }
+}
+
+#[test]
+fn the_continuations_of_a_dropped_call_do_not_reach_the_last_slot() {
+    let one = r#"{"function":{"name":"find_dir","arguments":"{\"query\":\"a\"}"}}"#;
+    let mut parts: Vec<String> = (0..MAX_CALLS)
+        .map(|i| frag(&one.replacen('{', &format!("{{\"index\":{i},\"id\":\"i{i}\","), 1)))
+        .collect();
+    parts.push(frag(
+        r#"{"index":16,"id":"over","function":{"name":"find_dir","arguments":"{\"query\":"}}"#,
+    ));
+    parts.push(frag(r#"{"function":{"arguments":"\"zzz\"}"}}"#));
+    let (_, calls) = oa_calls(&parts);
+    assert_eq!(calls.len(), MAX_CALLS + 1);
+    assert_eq!(calls[MAX_CALLS].call, Err(CallError::TooMany));
+    assert_eq!(
+        calls[MAX_CALLS - 1].call,
+        Ok(Call::FindDir { query: "a".into() })
+    );
+}
+
+#[test]
+fn a_late_id_after_the_name_is_kept_and_a_choice_without_delta_is_ignored() {
+    let no_delta = "data: {\"choices\":[{}]}\n\n".to_owned();
+    let (_, calls) = oa_calls(&[
+        no_delta,
+        frag(r#"{"index":0,"function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#),
+        frag(r#"{"index":0,"id":"late"}"#),
+    ]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id.as_deref(), Some("late"));
+    assert!(calls[0].call.is_ok());
+}

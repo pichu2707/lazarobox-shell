@@ -37,6 +37,12 @@ pub(super) struct Calls {
     /// Bytes of ids, names and arguments kept so far.
     bytes: usize,
     overflowed: bool,
+    /// The last fragment was dropped past the cap: its index-less
+    /// continuations are dropped too.
+    dropping: bool,
+    /// A `finish_reason` other than `tool_calls` or `stop` was seen: the
+    /// reply was cut off or filtered, so no call is released.
+    cut: bool,
     external: Qualified,
     families: FamilySet,
 }
@@ -47,6 +53,8 @@ impl Calls {
             slots: Vec::new(),
             bytes: 0,
             overflowed: false,
+            dropping: false,
+            cut: false,
             external,
             families,
         }
@@ -55,6 +63,9 @@ impl Calls {
     /// Folds the `tool_calls` fragments of one chunk into the slots. Past the
     /// byte cap it returns the error that ends the stream.
     pub(super) fn collect(&mut self, value: &Value) -> Option<StreamEvent> {
+        if let Some(reason) = value["choices"][0]["finish_reason"].as_str() {
+            self.cut |= !matches!(reason, "tool_calls" | "stop");
+        }
         let list = value["choices"][0]["delta"]["tool_calls"].as_array()?;
         for entry in list.iter().filter(|e| e.is_object()) {
             let index = entry["index"].as_u64();
@@ -75,6 +86,7 @@ impl Calls {
                 None if index.is_some() || !(id.is_empty() && name.is_empty()) => {
                     if self.slots.len() == MAX_CALLS {
                         self.overflowed = true;
+                        self.dropping = true;
                         continue;
                     }
                     self.slots.push(Slot {
@@ -86,11 +98,13 @@ impl Calls {
                     });
                     self.slots.len() - 1
                 }
+                None if self.dropping => continue,
                 None => match self.slots.len().checked_sub(1) {
                     Some(last) => last,
                     None => continue,
                 },
             };
+            self.dropping = false;
             let slot = &mut self.slots[at];
             if slot.id.is_empty() {
                 slot.id = id.to_owned();
@@ -163,7 +177,7 @@ impl OpenAiToolDecoder {
     /// The calls of the reply after a clean end; the decoder forgets them.
     pub fn take_calls(&mut self) -> Vec<ToolRequest> {
         match self.parser.calls.as_mut() {
-            Some(calls) if self.clean => calls.release(),
+            Some(calls) if self.clean && !calls.cut => calls.release(),
             _ => Vec::new(),
         }
     }
