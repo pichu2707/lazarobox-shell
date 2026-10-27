@@ -4,7 +4,7 @@
 use super::{
     port::Note,
     redact::redact,
-    slug::{clean_title, topic_key},
+    slug::{clean_title, topic_key, valid_topic_key},
 };
 use serde_json::json;
 
@@ -113,8 +113,20 @@ pub fn end_session(id: &str, summary: &str) -> Result<Call, BadSessionId> {
     ))
 }
 
-pub fn save(session_id: &str, project: &str, note: &Note) -> Call {
+/// The save call. `topic_key` is a caller-supplied key: a save under the same
+/// key updates the note instead of adding one. A key that is blank, too long,
+/// holds control characters or changes under redaction is dropped and the key
+/// derived from the title is used, so a bad key never blocks or leaks.
+pub fn save(
+    session_id: &str,
+    project: &str,
+    note: &Note,
+    topic_key_override: Option<&str>,
+) -> Call {
     let title = clean_title(&redact(&note.title).text);
+    let key = topic_key_override
+        .filter(|key| valid_topic_key(key) && redact(key).text == *key)
+        .map_or_else(|| topic_key(note.kind, &title), str::to_owned);
     let body = json!({
         "session_id": session_id,
         "type": note.kind.as_str(),
@@ -122,7 +134,7 @@ pub fn save(session_id: &str, project: &str, note: &Note) -> Call {
         "content": safe_text(&note.content),
         "project": project,
         "scope": "project",
-        "topic_key": topic_key(note.kind, &title),
+        "topic_key": key,
     });
     call(Method::Post, "/observations".into(), Some(body))
 }
@@ -268,6 +280,7 @@ mod tests {
             "lazarobox-ab",
             "widget",
             &note("Use Axum", "We chose Axum."),
+            None,
         );
         assert_eq!(
             (call.method, call.target.as_str(), call.auth),
@@ -289,7 +302,7 @@ mod tests {
 
     #[test]
     fn save_redacts_before_building_the_body() {
-        let call = save("s", "p", &note("t", "keep this, password=hunter2 ok"));
+        let call = save("s", "p", &note("t", "keep this, password=hunter2 ok"), None);
         let raw = String::from_utf8(call.body.expect("body")).expect("utf8");
         assert!(!raw.contains("hunter2"));
         assert!(raw.contains("[REDACTED]") && raw.contains("keep this"));
@@ -297,7 +310,7 @@ mod tests {
 
     #[test]
     fn save_cleans_the_title_and_derives_the_key_from_it() {
-        let call = save("s", "p", &note("  Fix\u{1b}[31m  the Parser\n", "c"));
+        let call = save("s", "p", &note("  Fix\u{1b}[31m  the Parser\n", "c"), None);
         let body = json_body(&call);
         let title = body["title"].as_str().expect("title");
         assert!(!title.chars().any(char::is_control));
@@ -311,7 +324,7 @@ mod tests {
             "Config password=hunter2 done".to_string(),
             format!("Key {key} leaked"),
         ] {
-            let call = save(SID, "p", &note(&title, "c"));
+            let call = save(SID, "p", &note(&title, "c"), None);
             let raw = String::from_utf8(call.body.expect("body")).expect("utf8");
             assert!(!raw.contains("hunter2"), "{title}");
             assert!(
@@ -323,7 +336,7 @@ mod tests {
 
     #[test]
     fn save_cuts_content_at_50000_bytes_on_a_char_boundary() {
-        let three = save("s", "p", &note("t", &"日".repeat(17_000)));
+        let three = save("s", "p", &note("t", &"日".repeat(17_000)), None);
         let content = json_body(&three)["content"]
             .as_str()
             .expect("c")
@@ -331,11 +344,11 @@ mod tests {
         assert_eq!(content.chars().count(), 16_666);
         assert_eq!(content.len(), 49_998);
 
-        let small = save("s", "p", &note("t", &"日".repeat(16_000)));
+        let small = save("s", "p", &note("t", &"日".repeat(16_000)), None);
         let kept = json_body(&small)["content"].as_str().expect("c").len();
         assert_eq!(kept, 48_000);
 
-        let ascii = save("s", "p", &note("t", &"a".repeat(60_000)));
+        let ascii = save("s", "p", &note("t", &"a".repeat(60_000)), None);
         let kept = json_body(&ascii)["content"].as_str().expect("c").len();
         assert_eq!(kept, CONTENT_CAP);
     }
@@ -349,6 +362,50 @@ mod tests {
     }
 
     #[test]
+    fn save_upserts_under_the_key_the_caller_gives() {
+        let call = save(
+            SID,
+            "p",
+            &note("Chat summary", "c"),
+            Some("chat/12/summary"),
+        );
+        let body = json_body(&call);
+        assert_eq!(body["topic_key"], "chat/12/summary");
+        // The title is still the note's own.
+        assert_eq!(body["title"], "Chat summary");
+    }
+
+    #[test]
+    fn save_without_a_caller_key_derives_it_as_before() {
+        let call = save(SID, "p", &note("Use Axum", "c"), None);
+        assert_eq!(json_body(&call)["topic_key"], "chat/decision/use-axum");
+    }
+
+    #[test]
+    fn an_invalid_caller_key_is_dropped_for_the_derived_one() {
+        let secret = "chat/sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789/summary";
+        let long = "k".repeat(201);
+        let bad = ["", "   ", "a\nb", "k\u{1b}[0m", "a\u{200b}b", &long, secret];
+        for key in bad {
+            let call = save(SID, "p", &note("Use Axum", "c"), Some(key));
+            let raw = String::from_utf8(call.body.clone().expect("body")).expect("utf8");
+            assert_eq!(
+                json_body(&call)["topic_key"],
+                "chat/decision/use-axum",
+                "{key:?}"
+            );
+            assert!(!raw.contains("sk-ant"), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_caller_key_at_the_cap_is_kept() {
+        let key = "k".repeat(200);
+        let call = save(SID, "p", &note("t", "c"), Some(&key));
+        assert_eq!(json_body(&call)["topic_key"], key.as_str());
+    }
+
+    #[test]
     fn only_delete_asks_for_auth() {
         let calls = [
             health(),
@@ -356,7 +413,7 @@ mod tests {
             context("p"),
             register_session(SID, "p", "/x").expect("call"),
             end_session(SID, "t").expect("call"),
-            save("s", "p", &note("t", "c")),
+            save("s", "p", &note("t", "c"), None),
         ];
         assert!(calls.iter().all(|c| !c.auth));
     }

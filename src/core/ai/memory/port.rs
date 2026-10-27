@@ -32,6 +32,8 @@ pub enum MemCmd {
     Context { pane: PaneId, project: String },
     /// Save a note. `session` is `None` until the conversation has one. `cwd`
     /// is the directory of the chat: the session registers with it.
+    /// `topic_key` is an optional caller-supplied key: a later save under the
+    /// same key updates the note. Invalid keys fall back to the derived one.
     Save {
         pane: PaneId,
         id: SaveId,
@@ -39,6 +41,7 @@ pub enum MemCmd {
         project: String,
         cwd: String,
         note: Note,
+        topic_key: Option<String>,
     },
     /// End a session with its summary. `cwd` is set when the end carries a
     /// summary the user approved: a session no note registered (or the server
@@ -311,6 +314,7 @@ mod tests {
                 project: "p".into(),
                 cwd: "/x".into(),
                 note,
+                topic_key: None,
             },
             MemCmd::End {
                 session: "s".into(),
@@ -438,6 +442,7 @@ mod tests {
                 title: "t".into(),
                 content: "c".into(),
             },
+            topic_key: None,
         };
         let refused = save.unavailable(Reason::Busy);
         assert_eq!(

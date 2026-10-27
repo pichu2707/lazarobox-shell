@@ -487,6 +487,7 @@ fn save_cmd(n: u64, session: Option<&str>, title: &str, content: &str) -> Effect
             title: title.into(),
             content: content.into(),
         },
+        topic_key: None,
     })
 }
 

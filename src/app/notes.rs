@@ -136,6 +136,7 @@ impl App {
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                     note,
+                    topic_key: None,
                 })]
             }
         }

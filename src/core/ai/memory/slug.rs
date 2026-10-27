@@ -51,9 +51,30 @@ pub fn topic_key(kind: MemKind, title: &str) -> String {
     format!("chat/{}/{}", kind.as_str(), slug(title))
 }
 
+/// The longest caller-supplied topic key, in characters.
+pub const TOPIC_KEY_CAP: usize = 200;
+
+/// Whether `key` may be used as a caller-supplied topic key: not blank, at
+/// most `TOPIC_KEY_CAP` characters, no control or format characters.
+pub fn valid_topic_key(key: &str) -> bool {
+    !key.trim().is_empty()
+        && key.chars().count() <= TOPIC_KEY_CAP
+        && !key.chars().any(|c| c.is_control() || is_format(c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_topic_key_is_not_blank_bounded_and_free_of_control_characters() {
+        assert!(valid_topic_key("chat/12/summary"));
+        assert!(valid_topic_key(&"k".repeat(TOPIC_KEY_CAP)));
+        for bad in ["", " \t", "a\nb", "a\u{1b}b", "a\u{200b}b"] {
+            assert!(!valid_topic_key(bad), "{bad:?}");
+        }
+        assert!(!valid_topic_key(&"k".repeat(TOPIC_KEY_CAP + 1)));
+    }
 
     #[test]
     fn slug_table_from_the_spec() {
