@@ -18,10 +18,13 @@ use crate::{
     core::ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{ToolExchange, ToolRound, ollama_round_body},
+            adapters::{ToolExchange, ToolRound, ollama_round_body, openai_round_body},
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
             prompts,
-            stream::{CallError, OllamaToolDecoder, ToolRequest},
+            stream::{
+                CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
+                ToolRequest,
+            },
         },
         tools::{
             mcp::refusal_text,
@@ -72,6 +75,34 @@ pub const FAILED: &str = "the tool failed";
 /// How a rejected `tools` field shows in the error of a reply: any 400.
 const REJECTED: &str = "HTTP 400";
 
+/// The wire a tool loop speaks: Ollama's own (`/api/chat`, NDJSON) or the
+/// OpenAI chat-completions one (`/v1/chat/completions`, SSE) of llama.cpp.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Profile {
+    Ollama,
+    // Routed to by the chat in a later commit.
+    #[cfg_attr(not(test), allow(dead_code))]
+    OpenAi,
+}
+
+impl Profile {
+    /// The path the requests of this wire go to.
+    fn path(self) -> &'static str {
+        match self {
+            Profile::Ollama => "/api/chat",
+            Profile::OpenAi => "/v1/chat/completions",
+        }
+    }
+
+    /// The body of one request of this wire.
+    fn body(self, request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+        match self {
+            Profile::Ollama => ollama_round_body(request, rounds, tools),
+            Profile::OpenAi => openai_round_body(request, rounds, tools),
+        }
+    }
+}
+
 tokio::task_local! {
     /// The dispatch of the tool session of the turn this task runs.
     pub static DISPATCH: Arc<dyn Dispatch>;
@@ -93,7 +124,19 @@ pub async fn tool_turn(
     timeouts: &Timeouts,
     tx: &mpsc::Sender<StreamEvent>,
 ) {
-    let looped = rounds(request, port, dispatch, timeouts, tx);
+    tool_turn_with(Profile::Ollama, request, port, dispatch, timeouts, tx).await;
+}
+
+/// [`tool_turn`] on the wire of `profile`.
+pub async fn tool_turn_with(
+    profile: Profile,
+    request: &ChatRequest,
+    port: u16,
+    dispatch: Arc<dyn Dispatch>,
+    timeouts: &Timeouts,
+    tx: &mpsc::Sender<StreamEvent>,
+) {
+    let looped = rounds(profile, request, port, dispatch, timeouts, tx);
     if timeout(timeouts.total, looped).await.is_err() {
         let _ = tx
             .send(StreamEvent::Error(ChatError::Failed(TOO_LONG.into())))
@@ -102,6 +145,7 @@ pub async fn tool_turn(
 }
 
 async fn rounds(
+    profile: Profile,
     request: &ChatRequest,
     port: u16,
     dispatch: Arc<dyn Dispatch>,
@@ -125,11 +169,23 @@ async fn rounds(
     let limit = max_rounds(request.families);
     while requests < limit && !tx.is_closed() {
         let body = if offer {
-            ollama_round_body(&tooled, &history, true)
+            profile.body(&tooled, &history, true)
         } else {
-            ollama_round_body(plain, &history, false)
+            profile.body(plain, &history, false)
         };
-        let reply = round(timeouts, port, &body, gap, &external, request.families, tx).await;
+        let path = profile.path();
+        let reply = match profile {
+            Profile::Ollama => {
+                let decoder = OllamaToolDecoder::server_with(external.clone())
+                    .with_families(request.families);
+                round(timeouts, port, path, &body, gap, decoder, tx).await
+            }
+            Profile::OpenAi => {
+                let decoder = OpenAiToolDecoder::server_with(external.clone())
+                    .with_families(request.families);
+                round(timeouts, port, path, &body, gap, decoder, tx).await
+            }
+        };
         let finish = match reply.end {
             Some(Ok(finish)) => finish,
             // A model that rejects `tools` is asked again as plain text,
@@ -214,23 +270,22 @@ struct Reply {
 /// end of the stream is held back, because a reply with tool calls is not the
 /// end of the turn. `gap` puts a line break before the first text, to part it
 /// from the text of the round before. What is kept to echo back is capped.
-async fn round(
+async fn round<D: StreamDecoder + ToolCalls + Send>(
     timeouts: &Timeouts,
     port: u16,
+    path: &str,
     body: &[u8],
     gap: bool,
-    external: &Qualified,
-    families: FamilySet,
+    mut decoder: D,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> Reply {
     let (inner, mut events) = mpsc::channel(TURN_CHANNEL);
-    let mut decoder = OllamaToolDecoder::server_with(external.clone()).with_families(families);
     let post = async {
         post_stream_with(
             timeouts,
             "127.0.0.1",
             port,
-            "/api/chat",
+            path,
             body,
             &mut decoder,
             &inner,

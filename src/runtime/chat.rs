@@ -954,6 +954,8 @@ impl Chats {
 mod adapter_tests;
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod llamacpp_tests;
 mod ollama;
 #[cfg(test)]
 mod ollama_tests;
