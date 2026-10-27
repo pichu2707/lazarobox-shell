@@ -796,3 +796,40 @@ fn truncated_string_arguments_are_refused_without_a_panic() {
         assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args}");
     }
 }
+
+// Characterization (llamacpp-tools T1.2): the text-only SSE path before the
+// `sse_decode` split. Committed on the old code; the split must not move it.
+#[test]
+fn the_text_sse_parser_pins_finish_reasons_tool_fragments_and_reasoning() {
+    // `length` maps to Finish::Length, anything else to Stop.
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"]),
+        [StreamEvent::Done(Finish::Length)]
+    );
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+    // A bare `[DONE]` ends the stream cleanly, once.
+    assert_eq!(
+        sse(&[b"data: [DONE]\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+    // Tool-call fragments and a reasoning field give no text event, and a delta
+    // carrying both content and a fragment still streams its content.
+    let fragments = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",",
+        "\"function\":{\"name\":\"find_dir\",\"arguments\":\"{\\\"q\\\"\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hm\",\"content\":\"ok\",",
+        "\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    );
+    let want = [delta("ok"), StreamEvent::Done(Finish::Stop)];
+    assert_eq!(sse(&[fragments.as_bytes()]), want);
+    same_at_every_split(fragments, &want, sse);
+    // An empty `choices` array (usage-only chunk) is ignored.
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+}
