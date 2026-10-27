@@ -51,12 +51,12 @@ Chain strategy: stacked-to-main
 
 ## PR3: Download and verify (needs PR2)
 
-- [ ] 3.1 RED: `src/runtime/hf/tests.rs`-style tests with local HTTP server: label in errors, 403/429 message, resolve picks newest with asset, no usable release.
-- [ ] 3.2 GREEN: `src/runtime/hf.rs` `Curl.label`, `github_api`/`github`, `pub(super)` helpers (~80).
-- [ ] 3.3 RED: `src/runtime/llama_install.rs` tests: digest match, mismatch deletes archive, missing digest aborts, insufficient space, cancel keeps `.download`, resume.
-- [ ] 3.4 GREEN: resolve + download + size/sha256 in `llama_install.rs` (~140).
-- [ ] 3.5 RED: attestation: failure aborts; `gh` absent or logged out warns and continues (fake `gh` on PATH).
-- [ ] 3.6 GREEN: `gh attestation verify` step (~80).
+- [x] 3.1 RED: `src/runtime/hf/tests.rs`-style tests with local HTTP server: label in errors, 403/429 message, resolve picks newest with asset, no usable release.
+- [x] 3.2 GREEN: `src/runtime/hf.rs` `Curl.label`, `github_api`/`github`, `pub(super)` helpers (~80).
+- [x] 3.3 RED: `src/runtime/llama_install.rs` tests: digest match, mismatch deletes archive, missing digest aborts, insufficient space, cancel keeps `.download`, resume.
+- [x] 3.4 GREEN: resolve + download + size/sha256 in `llama_install.rs` (~140).
+- [x] 3.5 RED: attestation: failure aborts; `gh` absent or logged out warns and continues (fake `gh` on PATH).
+- [x] 3.6 GREEN: `gh attestation verify` step (~80).
 
 ## PR4: Extract, activate, remove (needs PR2, PR3)
 

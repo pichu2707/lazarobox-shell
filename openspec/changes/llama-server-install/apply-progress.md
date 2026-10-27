@@ -69,3 +69,46 @@ Deviations / notes for later PRs:
   `//`, `./`, NUL members, `$`/backtick/control-char/non-UTF-8 paths; `one()` no longer forces
   `binary: None` (binary assertions restored via `state_on_path`).
 - Strict TDD: RED observed (13 failing tests) before the implementation.
+## PR3: Download and verify (branch feat/llama-server-install-pr3, from PR2 9ec1f53)
+
+Status: 6/6 tasks done (3.1-3.6). Mode: Strict TDD.
+
+Commits:
+- `refactor(hf): label curl errors and add GitHub constructors` (3.1, 3.2)
+- `feat(ai): resolve and download a verified llama.cpp archive` (3.3, 3.4)
+- `feat(ai): verify the archive attestation with gh when available` (3.5, 3.6)
+
+Delivered:
+- `Curl.label` ("Hugging Face" / "GitHub") names the service in errors; Hub texts unchanged
+  (`NO_CURL` kept). `Curl::github_api(path)`, `Curl::github(path)` (https only, no token),
+  `#[cfg(test)] Curl::local(base)`. `get`, `spawn`, `download_args`, `fetch`, `finish`,
+  `error_line`, `sha256`, `file_len`, `has_size` are `pub(super)`. `hf::tests` helpers
+  (`serve`, `file_server`, `reply`, `ok`, `header`, `sha`, `no_cancel`, `curl_available`) are
+  `pub(in crate::runtime)` so the installer tests reuse the fake server.
+- `src/runtime/llama_install.rs`: `resolve(curl, platform, variant)` (releases?per_page=10,
+  403/429 -> `RATE_LIMITED`), `archive_path(root, release)` (`<root>/.download/<asset>`),
+  `download(curl, root, release, progress, &mut cancel) -> End` (name safety, digest
+  well-formed, space check with `needed_bytes`, resume, size + sha256 in Rust, a wrong archive
+  is deleted), `download_verified(curl, gh_path, root, release, progress, &mut cancel) ->
+  Fetched {Done{archive, warning}, Cancelled, Failed}` (`gh auth status`, then
+  `gh attestation verify <archive> --repo ggml-org/llama.cpp`; `gh` absent -> `NO_GH`
+  warning, logged out -> `GH_LOGGED_OUT` warning; failure deletes the archive; 60 s limit;
+  cancel keeps the archive).
+
+TDD Cycle Evidence:
+
+| Task | RED (observed) | GREEN | Triangulation / refactor |
+|------|----------------|-------|--------------------------|
+| 3.1/3.2 | `cargo test --lib runtime::hf`: E0560 no field `label`, E0599 no `github_api`/`github`/`local` | 33 passed (30 baseline + 3) | Hub label asserted unchanged (`NO_CURL`, `hf::UNREADABLE`) |
+| 3.3/3.4 | `cargo test --lib runtime::llama_install`: unresolved `resolve`, `download`, `Platform`... | 15 passed | digest mismatch, size mismatch, missing/odd digest, unsafe names, no space, cancel, resume, complete archive, oversized partial, rate limit 403+429, 500, no usable release. Mutation check: skipping the mismatch branch fails `a_digest_mismatch_deletes_the_archive` |
+| 3.5/3.6 | unresolved `Fetched`, `download_verified`, `NO_GH`, `GH_LOGGED_OUT`, `attest_within`; `download` signature mismatch | 22 passed (5 consecutive runs green) | pass, fail aborts, gh absent, logged out, mismatch never reaches gh, cancel stops gh, hang times out |
+
+Deviations / notes for later PRs:
+- Spec "Cancel mid-download: partial file deleted" contradicts D5 (cancel keeps `.download`
+  for resume) and task 3.3; D5 followed. The spec scenario text should be fixed at archive.
+- `download` takes `&mut oneshot::Receiver<()>` so `download_verified` can reuse one cancel
+  for the digest step and gh.
+- `gh` is looked up with `desktop::which` on the PATH passed in (the login PATH).
+  PR4/PR6 must pass the owned root (`install::owned_root(data_home)`) as `root`; the
+  `.download` dir lives inside it, so `remove` deletes it too.
+- Unknown size (0) skips the size check and resume shortcut; the digest still guards.
