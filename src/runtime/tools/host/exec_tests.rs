@@ -347,7 +347,9 @@ async fn an_ask_with_no_earlier_changes_says_nothing_about_them() {
     assert_eq!(*earlier, None);
 }
 
-// Scenario "Unproposed staged changes".
+// Scenario "Unproposed staged changes". Staging reads the disk through the
+// safe write primitives, which exist on Linux only (macOS refuses by design).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
     let w = world();
