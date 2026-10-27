@@ -158,6 +158,6 @@ Assumptions needing user review (not yet confirmed):
 Proposed by the planner on 2026-10-27, not yet confirmed by the user. Each is asked one at a time; the recommendation is listed first.
 
 - **P1 What RDD reviews. Confirmed 2026-10-27 (user: "vamos"): (a).** The staged batch, before the user's batch review, so a correction never touches the disk and the user sees the receipt next to the diff. Rejected: (b) the applied files, after the user approved the batch.
-- **P2 Who consents.** (a) The user, once per high-risk change, through an inline prompt like the scope prompt (recommended). (b) A per-run setting chosen at run start.
+- **P2 Who consents. Confirmed 2026-10-27: (a).** The user, once per high-risk change, through an inline prompt like the scope prompt. Rejected: (b) a per-run setting chosen at run start.
 - **P3 How risk is assessed.** (a) Deterministic rules in the pure core (paths and kinds: build files, CI, dependencies and lockfiles, config formats, secrets) give the floor, and the orchestrator may only raise it (recommended). (b) The orchestrator's judgment alone.
 - **P4 Lenses and workers.** (a) Each lens is one `review` worker on the Review assignment, run in parallel once S3 lands and one by one before (recommended). (b) One `review` worker covers every selected lens.
