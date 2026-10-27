@@ -8,7 +8,7 @@ A pure core, `src/core/ai/orchestra/`, holds the run, worker and ledger state ma
 
 The orchestrator is a normal chat turn in an orchestrating pane (global `[ai.orchestrator] enabled` on AND the pane's ORCH mode on). It is resolved from a new `Task::Orchestrate` slot. Its MCP session offers four extra tools: `spawn_agent`, `wait`, `collect` and `cancel`. Those calls go through `ToolHost` to the `RunManager`, never to the file tools. Worker tool calls reuse the orchestrator turn's approver and event channel. That lets S1 ship without the `PaneId` → session-key refactor; S3 does the refactor.
 
-The end state (decision 2): the orchestrator plans (S5), Code workers write (S7, write-tools SDD), a captured runner runs tests (S8, test-runner SDD), and Review workers review the change ledger (S7). This change builds the coordination, contracts and UX. The two other SDDs plug into fixed seams: `Toolset::Code` and `ChangeLedger` for writes, `Evidence` for tests.
+The end state (decision 2): the orchestrator runs the ODD steps (S5), Code workers stage writes (S7, coding-tools M2), a high-risk change gets a receipt-driven review (S7b), and a captured runner gives test-first evidence (S8, coding-tools M3 `run_command`). This change builds the coordination, contracts and UX. The coding-tools milestones plug into fixed seams: `Toolset::Code` and `ChangeLedger` for writes, `Evidence` for tests.
 
 ## Architecture Decisions
 
@@ -26,8 +26,10 @@ The end state (decision 2): the orchestrator plans (S5), Code workers write (S7,
 | D10 | Error classification | per-decoder structured events · a pure text classifier over `ChatError` | Decoders already flatten provider errors into `Failed(text)` (`claude.rs:184`, `codex.rs:150`, `gemini.rs:109/138`). A new event variant touches every `match` | **Pure `classify(engine, &ChatError) -> ErrorClass`**, with golden fixtures per adapter. `Jail(_)` maps to JailRefusal. S2 lets `claude.rs` keep `rate_limit_event` (ignored today, :19) as text, so it can be classified |
 | D11 | Worker output to the orchestrator | raw · wrapped | injection | `collect` wraps with `label::wrap(nonce, …)` (`tools/label.rs:19`, 32 KiB cap, a nonce per call). The worker text is never placed in an approval or a system prompt |
 | D12 | Provider notice | per run · once | O2 | `[ai.orchestrator] notice_accepted`, shown inline in the chat pane the first time an orchestrating pane would start a run (keys: Enter or `y` accepts, Esc dismisses). It is modelled on the memory warning (`menu.rs:64-80` `warning`/`answer_warning`) but lives in the pane. Only accepting records `true` (config write effect); a dismissal leaves it `false`, so it shows again at the next run. It never gates use: the run starts without waiting |
-| D13 | Handoffs | chat_store · engram with topic keys | O4 | `MemCmd::Save` gains `topic_key: Option<String>` (upsert). Keys: `orchestra/{run}/worker/{n}`, `orchestra/{run}/phase/{phase}`, `orchestra/{run}/ledger`. Saves only when `MemoryConfig::active()` (`config.rs:214`) and through the existing note redaction. Otherwise the run keeps them in memory and shows `handoffs not persisted` (b) |
+| D13 | Handoffs | chat_store · engram with topic keys | O4 | `MemCmd::Save` gains `topic_key: Option<String>` (upsert). Keys: `orchestra/{run}/worker/{n}`, `orchestra/{run}/step/{step}` (renamed from `phase/{phase}` by D15), `orchestra/{run}/feature`, `orchestra/{run}/receipt/{n}`, `orchestra/{run}/ledger`. Saves only when `MemoryConfig::active()` (`config.rs:214`) and through the existing note redaction. Otherwise the run keeps them in memory and shows `handoffs not persisted` (b) |
 | D14 | README | per slice · once | binding decision 1 | **No README edits until S10.** CHANGELOG `Internal` lines and openspec may change per slice. The feature stays default-off and undocumented until S10 |
+| D15 | Run method (O12, 2026-10-27) | SDD phases (explore → propose → spec → design → tasks → apply → verify) · ODD steps | Phases force every goal through seven documents; ODD sizes the work first and tracks only large goals | **ODD.** `Ledger.step` over `Step::{Authorize, Explore, Resolve, Classify, Track, Implement, Close}`, closed only with a handoff. `classify` stores `Size::{Small, Large}` with a one-line reason. A large goal gets `FeatureDoc{header, specs: Vec<Spec{id, text}>, tasks: Vec<TaskRow{id, specs, status}>, log: Vec<String>}`; `log[0]` is the goal verbatim. The doc is one handoff, topic key `orchestra/{run}/feature`. Workers get the doc by reference in `WorkerSpec.prompt` (document key, task id, `S#`). A goal the authorize step marks read-only refuses `spawn_agent{kind: code}`. |
+| D16 | High-risk review (O12, 2026-10-27) | none (the user's batch review only) · review every change · receipt-driven review on risk | Reviewing every change wastes workers on passive edits; none leaves a lockfile or CI change to one glance | **RDD on risk.** `assess(&StagedChange) -> Tier{Passive, Medium, High}` in the pure core from path rules (build files, CI, dependency and lockfiles, config formats, secret-guarded paths), raised only by an orchestrator `raise{tier, reason}`; a failed assessment is `High`. A `High` change asks the user (`ConsentAsk`, like the scope prompt). On consent, `Review{lenses, findings, refuted, correction, outcome}` runs lens workers (`Toolset::ReadOnly` plus the staged view, candidate wrapped as untrusted), one refuter batch, at most one correction worker. The receipt is a handoff `orchestra/{run}/receipt/{n}` and a line in the batch review. Pending choices P1-P4 in the proposal. |
 
 ## Interfaces / Contracts (core, `src/core/ai/orchestra/`)
 
@@ -78,14 +80,15 @@ S4: turn ends, run Open → ledger continuation turn; handoffs → engram (topic
 | 2 | S2 failure alerts (429 is first-class under real load) | this SDD |
 | 3 | S3 parallel workers, approval queue, `SessionKey` | this SDD |
 | 4 | S4 ledger continuation (survives the 15-min cap) and handoffs | this SDD |
-| 5 | **write-tools SDD**: `create_dir`/`write_file`/`edit_file`, a diff-capable approval overlay, writes confined to a project root | separate SDD |
-| 6 | S7 Code workers get `Toolset::Code`, a per-worker `ChangeLedger`, and review over the diffs | this SDD (needs 5) |
-| 7 | **test-runner SDD**: a captured, non-pane `run_command` with a timeout, output caps, a jail/profile for toolchains (cargo/npm/pytest; dependency fetch needs the network) | separate SDD |
-| 8 | S8 red-green: `Evidence{command, exit, digest}`, failing then passing, required by the orchestrator | this SDD (needs 7, 6) |
-| 9 | S5 SDD/TDD playbooks become real (plan → write → test → review) | this SDD |
+| 5 | **coding-tools M2** (merged, #342): `create_dir`/`write_file`/`edit_file`/`propose_batch`, staged batches, a full-pane batch review, writes confined to the chat origin | coding-tools |
+| 6 | S7 Code workers get `Toolset::Code` and a per-worker `ChangeLedger` over their staged changes | this SDD (needs 5) |
+| 6b | S7b receipt-driven review of high-risk staged changes (D16) | this SDD (needs 6, S4) |
+| 7 | **coding-tools M3** (not started): a captured, non-pane `run_command` with a timeout, output caps, a jail/profile for toolchains (cargo/npm/pytest; dependency fetch needs the network) | coding-tools |
+| 8 | S8 ODD test-first: `Evidence{command, exit, digest}`, failing then passing, or an explicit exception | this SDD (needs 7, 6) |
+| 9 | S5 ODD playbooks become real (classify → track → implement → close, with writes and evidence) | this SDD |
 | 10 | S9 run view, persistence; S10 README | this SDD |
 
-Steps 1-4 and the write-tools SDD can proceed in parallel. The test-runner SDD is the longest pole: no design exists for it yet (`command-executor` is an unrelated old exploration). Commits stay with the user (non-goal), through the pane.
+Step 5 is done. Steps 1-4 and step 7 can proceed in parallel; step 7 (coding-tools M3) is the longest pole. Commits stay with the user (non-goal), through the pane.
 
 ## Delivery: feature-branch-chain (binding, 2026-10-20)
 
@@ -105,10 +108,11 @@ The tracker branch is `feat/agent-orchestrator`; only it merges to `main`, after
 | **S2** failure alerts | `core/ai/orchestra/errors.rs` (+ fixtures per adapter), `core/ai/chat/claude.rs` (rate-limit text), the alert change model/provider → detached picker → `RunOverrides` (no config write), override marker in run state and worker rows, `app/orchestra.rs`, UI | ~540 | 2 |
 | **S3** parallel | `runtime/tools/approver.rs` (`Waits` by `SessionKey`), `runtime/chat.rs` (`Tagged`), `core/ai/chat/approval.rs` (`Approvals.pending` → labelled FIFO), `app.rs`/`app/tool.rs`, `[ai.orchestrator] max_parallel/max_workers/run_timeout_mins`, cancel one/all | ~1100 | 3 |
 | **S4** ledger and handoffs | `core/ai/orchestra/ledger.rs`, `core/ai/memory/port.rs` (`topic_key`), `runtime/engram/worker.rs`, `Finish` tool, continuation in `app/orchestra.rs`, `max_turns`, on-course check | ~750 | 2 |
-| **S5** phases | `prompts/*/orchestrate*.md` playbooks, `Ledger.phase`, phase handoff keys | ~350 | 1 |
+| **S5** ODD flow | `prompts/*/orchestrate*.md` ODD playbooks, `Ledger.step`, `Size`, `FeatureDoc`, step and feature handoff keys, read-only goal refuses `code` (D15) | ~500 | 2 |
 | **S6** usage | `StreamEvent::Usage` in 3 decoders and Ollama, per-worker/per-run rows | ~450 | 1-2 |
-| **S7** writes (needs write-tools) | `Toolset::Code`, `ChangeLedger`, collect "files changed" | ~500 | 2 |
-| **S8** red-green (needs test-runner) | `Evidence`, orchestrator gates, prompts | ~400 | 1 |
+| **S7** writes (needs coding-tools M2) | `Toolset::Code`, `ChangeLedger` over staged changes, collect "files changed" | ~500 | 2 |
+| **S7b** RDD | `core/ai/orchestra/review.rs` (`assess`, `Tier`, `Review`), lens and refuter prompts, `ConsentAsk`, receipt handoff, the receipt line in the batch review (D16) | ~900 | 3 |
+| **S8** test-first (needs coding-tools M3) | `Evidence`, the exception record, orchestrator gates, prompts | ~400 | 1 |
 | **S9** run view and persistence | `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume | ~900 | 3 |
 | **S10** docs and end-to-end acceptance | `README.md` (usage, `Orchestrator` gate and Ctrl+O, menu row, provider-terms notice, Ollama "not recommended"), CHANGELOG, the manual "build a project from the chat" acceptance run | ~150 | 1 |
 
@@ -134,4 +138,5 @@ No data migration. Older builds ignore `[ai.orchestrator]` and `[ai.tasks.orches
 - [ ] D6 TOCTOU: the scope decides only the ask. The read itself re-resolves under the deny-list, so a swapped link can at most read an allowed file without an ask.
 - [ ] D4 shares the orchestrator's (pane, turn) for worker asks. In S1 a second simultaneous ask is denied `another approval is pending` (acceptable with one worker); S3 removes this.
 - [ ] S1 runs end with the orchestrator turn (15 min); a long worker is cut there until S4.
-- [ ] The test-runner SDD does not exist yet; it gates S8 and the product goal.
+- [ ] coding-tools M3 (`run_command`) is not started; it gates S8 and the product goal.
+- [ ] D16 waits on the user's choices P1-P4 (proposal, Decisions pending); S7b design is final only after them.

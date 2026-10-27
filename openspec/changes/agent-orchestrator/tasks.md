@@ -282,25 +282,31 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 - [ ] 4.1 `core/ai/orchestra/ledger.rs`, `Finish` tool, continuation in `app/orchestra.rs`, `max_turns`, on-course verdict (define channel in S4 design). Spec: orchestrator-handoffs / Continuation from the ledger, Ledger bounded, Verdict stored, Malformed verdict, Failure forces blocked.
 - [ ] 4.2 `core/ai/memory/port.rs` `topic_key`, `runtime/engram/worker.rs` upsert, handoff content, redaction, degraded mode, inert data, hint. Spec: engram-client / both; chat-memory / all three; orchestrator-handoffs / Handoff content .. Injected handoff; chat-pane / Hint once.
 
-### S5: SDD/TDD phases, read-only (1 PR, ~350, risk Low) depends on S4
-- [ ] 5.1 Playbooks `prompts/*/orchestrate*.md`, `Ledger.phase`, dependency order, apply as draft, phase handoff keys. Spec: prompt-profiles / Playbook per phase; agent-orchestrator / Dependency enforced, Apply is a draft; orchestrator-handoffs / Phase needs a handoff.
+### S5: ODD flow, read-only until S7 (2 PRs, ~500, risk Low) depends on S4 (O12, D15)
+- [ ] 5.1 `Ledger.step` and `Step` order, `Size` with its reason, step handoff keys, a read-only goal refuses `spawn_agent{kind: code}`. Spec: agent-orchestrator / Read-only goal spawns no code worker, Implement is a draft before S7; orchestrator-handoffs / Step needs a handoff.
+- [ ] 5.2 `FeatureDoc` (specs verbatim, tasks with `S#`, log with `L1` = goal), one handoff per run, a correction appends to the log and rewrites one `S#`; ODD playbooks `prompts/*/orchestrate*.md`. Spec: agent-orchestrator / A large goal needs its document, Specs keep the user's words; orchestrator-handoffs / A correction keeps the log; prompt-profiles / Playbook per step.
 
 ### S6: usage (1-2 PRs, ~450, risk Medium) depends on S1
 - [ ] 6.1 `StreamEvent::Usage` in claude/codex/gemini/Ollama decoders, per-worker and per-run rows. Spec: chat-engines / Claude result usage, No usage reported; agent-orchestrator / Usage summed.
 
-### S7: write integration (2 PRs, ~500, risk Medium, decision: No) EXTERNAL DEPENDENCY: write-tools SDD (must be applied first)
-- [ ] 7.1 `Toolset::Code`, `ChangeLedger`, "files changed" in collect, every write asks. Spec: agent-orchestrator / Write always asks, Files changed listed.
+### S7: write integration (2 PRs, ~500, risk Medium, decision: No) depends on coding-tools M2 (merged, #342)
+- [ ] 7.1 `Toolset::Code` with the coding-tools write tools, `ChangeLedger` over staged changes, "files changed" in collect; writes reach the disk only through the user's batch review. Spec: agent-orchestrator / Writes wait for the batch review, Files changed listed.
 
-### S8: TDD red-green (1 PR, ~400, risk Medium) EXTERNAL DEPENDENCY: test-runner SDD (does not exist yet) plus S7
-- [ ] 8.1 `Evidence{command, exit, digest}`, orchestrator requires failing then passing evidence. Spec: agent-orchestrator / Green without red refused.
+### S7b: receipt-driven review, RDD (3 PRs, ~900, risk High) depends on S7 and S4 (O12, D16; design final after P1-P4)
+- [ ] 7b.1 `assess` and `Tier` in the pure core: path rules give the floor, the orchestrator only raises, a failed assessment is `High`. Spec: agent-orchestrator / A lockfile is high, The orchestrator cannot lower.
+- [ ] 7b.2 `ConsentAsk` inline, decline goes on `not reviewed`, lens workers over the staged view (candidate wrapped), refuter batch, at most one correction, lens and refuter prompts. Spec: agent-orchestrator / Consent first, Declined goes on unreviewed, One correction at most; prompt-profiles / Lens prompts exist.
+- [ ] 7b.3 Receipt handoff and its line in the batch review; a receipt never approves. Spec: agent-orchestrator / A receipt never approves; orchestrator-handoffs / Declined consent still leaves a receipt.
+
+### S8: ODD test-first evidence (1 PR, ~400, risk Medium) EXTERNAL DEPENDENCY: coding-tools M3 `run_command` (not started) plus S7
+- [ ] 8.1 `Evidence{command, exit, digest}` from `run_command`, failing then passing, or an explicit exception with its reason. Spec: agent-orchestrator / Green without red refused, Exception recorded.
 
 ### S9: run view and persistence (3 PRs, ~900, risk High, decision: Yes) depends on S4
 - [ ] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run.
 
-### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 plus write-tools SDD and test-runner SDD
+### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 and S7b plus coding-tools M2 and M3
 - [ ] 10.1 README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"), CHANGELOG. Spec: agent-orchestrator / README written once [manual].
 - [ ] 10.2 Manual acceptance: build a small project from the chat; missing-dependency path automated. Spec: agent-orchestrator / Small task from the chat [manual], Missing dependency.
 
 ## Dependency graph
 
-S1a -> S1b -> S1b-2 -> S1c-1 -> S1c-2 -> S1d-1 -> S1d-2 -> S1d-3 -> S1e-1a -> S1e-1b -> S1e-1c -> S1e-2 (12 PRs, sequential, no parallel work inside the chain; each PR's base is the previous branch; decided by the user 2026-10-21). Then S2, S3, S6 depend only on S1 (sequential in the chain, parallelizable in analysis). S4 after S3; S5 after S4; S9 after S4; S7 needs write-tools SDD; S8 needs test-runner SDD and S7; S10 last.
+S1a -> S1b -> S1b-2 -> S1c-1 -> S1c-2 -> S1d-1 -> S1d-2 -> S1d-3 -> S1e-1a -> S1e-1b -> S1e-1c -> S1e-2 (12 PRs, sequential, no parallel work inside the chain; each PR's base is the previous branch; decided by the user 2026-10-21). Then S2, S3, S6 depend only on S1 (sequential in the chain, parallelizable in analysis). S4 after S3; S5 after S4; S9 after S4; S7 needs coding-tools M2 (merged); S7b needs S7 and S4; S8 needs coding-tools M3 and S7; S10 last.
