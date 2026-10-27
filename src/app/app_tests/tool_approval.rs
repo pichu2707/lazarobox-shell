@@ -1087,3 +1087,57 @@ fn an_argument_a_shell_would_read_is_shown_quoted() {
         );
     }
 }
+
+fn exec_row(a: &App) -> Option<String> {
+    use crate::core::menu::Row;
+    a.menu
+        .as_ref()?
+        .all_rows(&a.config)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::Item {
+                label: "Exec",
+                value: Some(value),
+                ..
+            } => Some(value.into_owned()),
+            _ => None,
+        })
+}
+
+fn menu_with_exec_on(jail: crate::core::ai::jail::JailSupport) -> App {
+    use crate::core::ai::config::ToolToggle;
+    let mut ai = crate::core::ai::config::AiConfig::default();
+    ai.set_toggle(ToolToggle::Exec, true);
+    let mut a = App::new(80, 25).with_ai(ai).with_jail(jail);
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(' '),
+        KeyModifiers::CONTROL,
+    )));
+    a.update(key('m'));
+    a
+}
+
+// Design D18: the menu row says what the refusal will say.
+#[test]
+fn the_exec_row_says_why_when_the_system_has_no_landlock_jail() {
+    use crate::core::ai::jail::{Backend, JailOff, JailSupport};
+    let landlock = JailSupport::Available {
+        backend: Backend::Landlock,
+        abi: 4,
+    };
+    assert_eq!(
+        exec_row(&menu_with_exec_on(landlock)).as_deref(),
+        Some("on")
+    );
+    for off in [
+        JailSupport::Unavailable(JailOff::NoLandlock(2)),
+        JailSupport::Unavailable(JailOff::NoBackend),
+        JailSupport::Unavailable(JailOff::NotProbed),
+    ] {
+        assert_eq!(
+            exec_row(&menu_with_exec_on(off)).as_deref(),
+            Some("on · needs Linux sandbox"),
+            "{off:?}"
+        );
+    }
+}

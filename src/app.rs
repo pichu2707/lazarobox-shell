@@ -1804,6 +1804,7 @@ impl App {
                 .with_download(self.download.clone())
                 .with_hf((self.hf_tokens)(), self.hf_account.clone())
                 .with_opener(self.opener)
+                .with_sandbox(self.jail.runs_commands())
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines

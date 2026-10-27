@@ -100,6 +100,20 @@ pub enum JailSupport {
     Unavailable(JailOff),
 }
 
+impl JailSupport {
+    /// Whether `run_command` may run here: only the Landlock jail confines a
+    /// toolchain run (design D18), not the macOS one.
+    pub fn runs_commands(self) -> bool {
+        matches!(
+            self,
+            Self::Available {
+                backend: Backend::Landlock,
+                ..
+            }
+        )
+    }
+}
+
 /// Why this system cannot jail a CLI at all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JailOff {

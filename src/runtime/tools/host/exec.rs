@@ -23,7 +23,7 @@ use super::{
 use crate::{
     core::ai::{
         chat::approval::{ApprovalAsk, script_line},
-        jail::{Backend, JailSupport},
+        jail::JailSupport,
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
@@ -93,7 +93,7 @@ impl Exec {
     }
 
     /// The sink of `key`'s runs that were dropped before they ended (a shared
-    /// handle): X-d2 drains it for the user's notice, and every result drains
+    /// handle): the next ask peeks at it for the user's notice, and every result drains
     /// it for the model.
     pub(super) fn sink(&self, key: StageKey) -> Unreported {
         let mut sinks = self.sinks.lock().unwrap_or_else(PoisonError::into_inner);
@@ -101,13 +101,7 @@ impl Exec {
     }
 
     fn jailed(&self) -> bool {
-        matches!(
-            (self.jail)(),
-            JailSupport::Available {
-                backend: Backend::Landlock,
-                ..
-            }
-        )
+        (self.jail)().runs_commands()
     }
 }
 
