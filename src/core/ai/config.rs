@@ -146,6 +146,31 @@ pub enum ApprovalMode {
     Run,
 }
 
+/// Whether the chat compacts its history with a model call (`[ai.chat]
+/// compaction`). `Off` never starts a run: the truncation marker stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CompactionMode {
+    /// Compact when enough history has left the window. The default.
+    #[default]
+    Auto,
+    /// Never compact.
+    Off,
+}
+
+/// The exact problem of an unreadable `ai.chat.compaction`.
+pub const COMPACTION_PROBLEM: &str = "ai.chat.compaction: expected \"auto\" or \"off\"";
+
+impl CompactionMode {
+    /// The mode of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "auto" => Some(Self::Auto),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 /// A coding-tools family switch: one boolean under `[ai.tools]`, off by
 /// default. `Read` and `Pane` have none: they are the 0.18.0 tools.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -243,6 +268,10 @@ pub struct MemoryConfig {
     pub enabled: bool,
     pub acknowledged: bool,
     pub port: u16,
+    /// `save_summaries`: the rolling summary of a long chat is written to
+    /// engram, one note per conversation. Off by default (opt-in); only
+    /// meaningful while memory is [`active`](MemoryConfig::active).
+    pub save_summaries: bool,
 }
 
 impl Default for MemoryConfig {
@@ -251,6 +280,7 @@ impl Default for MemoryConfig {
             enabled: false,
             acknowledged: false,
             port: DEFAULT_ENGRAM_PORT,
+            save_summaries: false,
         }
     }
 }
@@ -308,6 +338,7 @@ pub struct AiConfig {
     notify_sound: bool,
     tools: bool,
     approval: ApprovalMode,
+    compaction: CompactionMode,
     toggles: [bool; 5],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
@@ -395,6 +426,7 @@ impl Default for AiConfig {
             notify_sound: true,
             tools: true,
             approval: ApprovalMode::Ask,
+            compaction: CompactionMode::Auto,
             toggles: [false; 5],
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
@@ -552,6 +584,15 @@ impl AiConfig {
     pub fn with_servers(mut self, servers: ServerPorts) -> Self {
         self.servers = servers;
         self
+    }
+
+    /// Whether the chat compacts its history (`[ai.chat] compaction`).
+    pub fn compaction(&self) -> CompactionMode {
+        self.compaction
+    }
+
+    pub fn set_compaction(&mut self, mode: CompactionMode) {
+        self.compaction = mode;
     }
 
     pub fn set_approval(&mut self, mode: ApprovalMode) {
@@ -743,6 +784,7 @@ pub fn read_with_port_env(
     let mut config = read_tasks(table, problems);
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
+    config.compaction = read_compaction(table, problems);
     config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
     (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
@@ -792,6 +834,33 @@ fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
         Some(_) => {
             problems.push(APPROVAL_PROBLEM.to_owned());
             ApprovalMode::Ask
+        }
+    }
+}
+
+/// Reads `[ai.chat] compaction`. A missing table or key is `auto`; anything
+/// but `"auto"` or `"off"` falls back to `auto` with a problem.
+fn read_compaction(table: &Table, problems: &mut Vec<String>) -> CompactionMode {
+    let section = match table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("chat"))
+    {
+        None => return CompactionMode::Auto,
+        Some(Value::Table(section)) => section,
+        Some(_) => {
+            problems.push("ai.chat: expected a table".to_owned());
+            return CompactionMode::Auto;
+        }
+    };
+    match section.get("compaction") {
+        None => CompactionMode::Auto,
+        Some(Value::String(id)) if CompactionMode::from_id(id).is_some() => {
+            CompactionMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push(COMPACTION_PROBLEM.to_owned());
+            CompactionMode::Auto
         }
     }
 }
@@ -1134,6 +1203,7 @@ fn read_memory(table: &Table, problems: &mut Vec<String>, port_env: Option<&str>
     };
     flag("enabled", &mut memory.enabled);
     flag("acknowledged", &mut memory.acknowledged);
+    flag("save_summaries", &mut memory.save_summaries);
     match section.get("port") {
         None => {}
         Some(Value::Integer(n)) if (1..=65535).contains(n) => memory.port = *n as u16,
@@ -1502,6 +1572,7 @@ mod tests {
             enabled,
             acknowledged,
             port,
+            save_summaries: false,
         }
     }
 
@@ -1955,6 +2026,23 @@ mod tests {
         assert_eq!(memory_of(with_key, Some("8123")).0.port, 9000);
     }
 
+    #[test]
+    fn save_summaries_defaults_to_off_and_reads_a_boolean() {
+        for text in ["", "[ai.memory]\nenabled = true\n"] {
+            assert!(!memory_of(text, None).0.save_summaries, "{text:?}");
+        }
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = true\n", None);
+        assert!(memory.save_summaries);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_save_summaries_stays_off_with_its_problem() {
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = \"yes\"\n", None);
+        assert!(!memory.save_summaries);
+        assert_eq!(problems, ["ai.memory.save_summaries: expected a boolean"]);
+    }
+
     // Spec: Wrong types and range.
     #[test]
     fn a_wrong_memory_value_falls_back_alone_with_its_problem() {
@@ -2195,6 +2283,35 @@ mod tests {
                 "ai.tools.enabled: expected a boolean".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn compaction_defaults_to_auto_and_reads_off() {
+        for text in [
+            "",
+            "[ai]\n",
+            "[ai.chat]\n",
+            "[ai.chat]\ncompaction = \"auto\"\n",
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.compaction(), CompactionMode::Auto, "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+        let (config, problems) = read_text("[ai.chat]\ncompaction = \"off\"\n");
+        assert_eq!(config.compaction(), CompactionMode::Off);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_bad_compaction_falls_back_to_auto_with_the_exact_problem() {
+        for value in ["\"OFF\"", "\"no\"", "false", "1", "\" off\""] {
+            let (config, problems) = read_text(&format!("[ai.chat]\ncompaction = {value}\n"));
+            assert_eq!(config.compaction(), CompactionMode::Auto, "{value}");
+            assert_eq!(problems, vec![COMPACTION_PROBLEM.to_owned()], "{value}");
+        }
+        let (config, problems) = read_text("[ai]\nchat = 1\n");
+        assert_eq!(config.compaction(), CompactionMode::Auto);
+        assert_eq!(problems, vec!["ai.chat: expected a table".to_owned()]);
     }
 
     // Spec (configuration): `[ai.tools] approval`, default and parse (D18).

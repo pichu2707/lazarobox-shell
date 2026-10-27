@@ -51,9 +51,53 @@ pub fn topic_key(kind: MemKind, title: &str) -> String {
     format!("chat/{}/{}", kind.as_str(), slug(title))
 }
 
+/// The longest caller-supplied topic key, in characters.
+pub const TOPIC_KEY_CAP: usize = 200;
+
+/// Whether `key` may be used as a caller-supplied topic key: inside the
+/// `chat/` namespace lazarobox owns, at most `TOPIC_KEY_CAP` characters, no
+/// control or format characters.
+pub fn valid_topic_key(key: &str) -> bool {
+    key.strip_prefix("chat/")
+        .is_some_and(|rest| !rest.trim().is_empty())
+        && key.chars().count() <= TOPIC_KEY_CAP
+        && !key.chars().any(|c| c.is_control() || is_format(c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_topic_key_is_not_blank_bounded_and_free_of_control_characters() {
+        assert!(valid_topic_key("chat/12/summary"));
+        assert!(valid_topic_key(&format!(
+            "chat/{}",
+            "k".repeat(TOPIC_KEY_CAP - 5)
+        )));
+        for bad in ["", " \t", "chat/a\nb", "chat/a\u{1b}b", "chat/a\u{200b}b"] {
+            assert!(!valid_topic_key(bad), "{bad:?}");
+        }
+        assert!(!valid_topic_key(&format!(
+            "chat/{}",
+            "k".repeat(TOPIC_KEY_CAP - 4)
+        )));
+    }
+
+    #[test]
+    fn a_caller_key_must_live_under_the_chat_namespace() {
+        for outside in [
+            "decision/use-axum",
+            "other/12/summary",
+            "chatter/1",
+            "Chat/1",
+            "chat/",
+            "chat/ \t",
+        ] {
+            assert!(!valid_topic_key(outside), "{outside:?}");
+        }
+        assert!(valid_topic_key("chat/12-1000/summary"));
+    }
 
     #[test]
     fn slug_table_from_the_spec() {

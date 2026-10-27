@@ -713,6 +713,33 @@ impl Chats {
         self
     }
 
+    /// Starts a background text-only run (a compaction) for `pane`. Unlike
+    /// [`Chats::send`] it is not a turn of the chat: it ends no wait, stops no
+    /// server and replaces no tool session, so a user's tool call or MCP
+    /// server of the pane survives it. A later `send` aborts it.
+    pub fn send_background(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+        self.turns.retain(|_, task| !task.is_finished());
+        if let Some(old) = self.turns.remove(&pane) {
+            old.abort();
+        }
+        let channel = mpsc::channel(TURN_CHANNEL);
+        let task = tokio::spawn(run_turn(
+            self.runner.clone(),
+            self.tx.clone(),
+            Turn {
+                pane,
+                turn,
+                waits: self.waits.clone(),
+                external: None,
+            },
+            request,
+            channel,
+            None,
+            None,
+        ));
+        self.turns.insert(pane, task);
+    }
+
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
     pub fn send(&mut self, pane: PaneId, turn: u64, mut request: ChatRequest) {
         self.turns.retain(|_, task| !task.is_finished());
@@ -937,6 +964,14 @@ impl Chats {
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.
+    /// Stops the background run of `pane` and nothing else (see
+    /// [`Chats::send_background`]).
+    pub fn cancel_background(&mut self, pane: PaneId) {
+        if let Some(task) = self.turns.remove(&pane) {
+            task.abort();
+        }
+    }
+
     pub fn cancel(&mut self, pane: PaneId) {
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();

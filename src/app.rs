@@ -50,6 +50,7 @@ use crate::core::{
 mod auto_run;
 mod chat;
 mod chat_copy;
+mod compact;
 mod context;
 mod history;
 mod hub;
@@ -269,6 +270,15 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start a background compaction run for a pane: not a turn of the chat,
+    /// so it touches neither the pane's tool session nor its servers.
+    ChatCompact {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop the background compaction run of a pane and nothing else.
+    ChatCompactCancel(PaneId),
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
@@ -671,6 +681,10 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The privacy notice of the rolling summary was shown in this run.
+    summary_notice_shown: bool,
+    /// A quiet save (the rolling summary) failed and the user was told.
+    summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -808,6 +822,8 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            summary_notice_shown: false,
+            summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -2380,6 +2396,10 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A compaction run is not a turn: the pane stays idle meanwhile.
+        if chat.is_compaction_turn(turn) {
+            return self.on_compaction(id, event);
+        }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
         // (a delta that ends the turn) count as `Error`.
@@ -2406,6 +2426,9 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if finished && how == Ended::Done {
+            effects.extend(self.start_compaction(id));
+        }
         if llamacpp_failed {
             effects.extend(self.request_detection());
         }
@@ -7898,6 +7921,9 @@ mod app_tests {
 
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
+
+    /// Rolling compaction of the history (chat-memory S3, S4, S8).
+    mod chat_compact;
 
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
