@@ -1,0 +1,27 @@
+---
+source: src/ui/components/menu/tests/install.rs
+expression: show(&menu)
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Install llama-server: failed                               │
+│ download failed: checksum mismatch                         │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ Esc back                                                   │
+└────────────────────────────────────────────────────────────┘

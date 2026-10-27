@@ -54,6 +54,7 @@ fn filled(opener: bool) -> App {
         }],
         local_models: Vec::new(),
         data_home: None,
+        vulkan_icd: false,
     });
     a.update(ctrl_space());
     a.update(key('m'));

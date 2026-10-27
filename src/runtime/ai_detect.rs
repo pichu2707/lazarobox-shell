@@ -530,6 +530,7 @@ pub async fn detect_all(
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_path_buf);
+    detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
     detection
 }
 

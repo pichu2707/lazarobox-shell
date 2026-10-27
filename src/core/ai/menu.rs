@@ -10,7 +10,7 @@ use super::{
         cycled_idle,
     },
     hf::{Answer, Ask},
-    picker::{Outcome, PickRow, Picker, Running, Target, task_label},
+    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -292,6 +292,44 @@ impl AiMenu {
         self.picker.as_ref()
     }
 
+    /// The result of install request `id`, for the open wizard.
+    pub fn install_reply(&mut self, id: u64, answer: Result<InstallReply, String>) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_reply(id, answer);
+        }
+    }
+
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_progress(id, done);
+        }
+    }
+
+    /// Whether an install download runs for the open wizard.
+    pub fn install_downloading(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.install())
+            .is_some_and(Wizard::downloading)
+    }
+
+    /// The wizard screen was drawn: its prompts now accept `y`/`n`.
+    pub fn install_arm(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_arm();
+        }
+    }
+
+    /// Opens the install wizard over the open picker. Tests only: the entry
+    /// row that opens it comes later.
+    #[cfg(test)]
+    pub fn open_install(&mut self, variants: Vec<crate::core::ai::install::Variant>) {
+        if let Some(picker) = &mut self.picker {
+            picker.open_install(variants);
+        }
+    }
+
     /// The rows of the open picker; none when it is closed.
     pub fn pick_rows(&self) -> Vec<PickRow> {
         self.picker
@@ -364,7 +402,8 @@ impl AiMenu {
             | Outcome::Copy(_)
             | Outcome::Ask(_)
             | Outcome::Download(_)
-            | Outcome::CancelDownload => {}
+            | Outcome::CancelDownload
+            | Outcome::Install(_) => {}
         }
         outcome
     }

@@ -9,7 +9,7 @@ use crate::core::ai::hf::{Choice, HubFile, Job, License};
 
 const COMMIT: &str = "9217f5db79a29953eb74d5343926648285ec7e67";
 
-fn curl_available() -> bool {
+pub(in crate::runtime) fn curl_available() -> bool {
     Command::new("curl")
         .arg("--version")
         .stdout(Stdio::null())
@@ -28,11 +28,11 @@ macro_rules! need_curl {
     };
 }
 
-type Handler = dyn Fn(&str) -> Vec<u8> + Send + Sync;
+pub(in crate::runtime) type Handler = dyn Fn(&str) -> Vec<u8> + Send + Sync;
 
 /// A local HTTP server answering every request with `handler(request)`,
 /// recording each request's head.
-fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(in crate::runtime) fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -61,7 +61,7 @@ fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
     (base, seen)
 }
 
-fn reply(status: &str, body: &[u8]) -> Vec<u8> {
+pub(in crate::runtime) fn reply(status: &str, body: &[u8]) -> Vec<u8> {
     let mut out = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -71,13 +71,14 @@ fn reply(status: &str, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn ok(body: &str) -> Vec<u8> {
+pub(in crate::runtime) fn ok(body: &str) -> Vec<u8> {
     reply("200 OK", body.as_bytes())
 }
 
 /// A test curl: plain HTTP to the local server, never through a proxy.
 fn curl(base: &str, token: Option<&str>) -> Curl {
     Curl {
+        label: "Hugging Face",
         program: "curl".into(),
         path: std::env::var_os("PATH").unwrap_or_default(),
         base: base.to_owned(),
@@ -89,7 +90,7 @@ fn curl(base: &str, token: Option<&str>) -> Curl {
 }
 
 /// The sha256 of `bytes` in hex: the object id the Hub gives an LFS file.
-fn sha(bytes: &[u8]) -> String {
+pub(in crate::runtime) fn sha(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
@@ -122,7 +123,7 @@ fn job(files: &[(&str, u64, u8)]) -> Job {
     }
 }
 
-fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+pub(in crate::runtime) fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
     request.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
         key.eq_ignore_ascii_case(name).then(|| value.trim())
@@ -266,7 +267,7 @@ async fn failures_name_the_repo_and_the_status() {
 
 /// A server for the files of `o/r` at COMMIT: `a.gguf` holds `body`; a
 /// Range request gets the rest from that offset.
-fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(in crate::runtime) fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
     serve(Box::new(move |request| {
         let from = header(request, "range")
             .and_then(|r| r.strip_prefix("bytes="))
@@ -289,7 +290,7 @@ fn file_server(body: &'static [u8]) -> (String, Arc<Mutex<Vec<String>>>) {
     }))
 }
 
-fn no_cancel() -> oneshot::Receiver<()> {
+pub(in crate::runtime) fn no_cancel() -> oneshot::Receiver<()> {
     let (tx, rx) = oneshot::channel();
     std::mem::forget(tx);
     rx
@@ -745,4 +746,99 @@ fn a_relative_token_path_resolves_against_the_working_directory() {
         Path::new("/work"),
     );
     assert_eq!(absolute.hf_token_path, Some(PathBuf::from("/t")));
+}
+
+// Spec (llama-server-install, Release resolution): GitHub only over HTTPS,
+// with the URL built by the caller and no token.
+#[test]
+fn the_github_requests_are_https_only_and_end_with_the_url() {
+    let api = Curl::github_api("/usr/bin".into())
+        .api_args("/repos/ggml-org/llama.cpp/releases?per_page=10");
+    assert_eq!(api[0], "-q");
+    for flag in [["--proto", "=https"], ["--proto-redir", "=https"]] {
+        assert!(api.windows(2).any(|w| w == flag), "{api:?}");
+    }
+    assert_eq!(
+        api[api.len() - 2..],
+        [
+            "--",
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
+        ]
+    );
+    let github = Curl::github("/usr/bin".into());
+    let download = github.download_args(
+        "/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz",
+        Path::new("/x/a.tar.gz"),
+    );
+    assert_eq!(
+        download[download.len() - 2..],
+        [
+            "--",
+            "https://github.com/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz"
+        ]
+    );
+    assert!(
+        download.windows(2).any(|w| w == ["--continue-at", "-"]),
+        "{download:?}"
+    );
+    // The GitHub download is bounded: its size, its redirects, a stall.
+    let bounded = github.download_args_within(
+        "/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz",
+        Path::new("/x/a.tar.gz"),
+        Some(1234),
+    );
+    for flag in [
+        ["--max-filesize", "1234"],
+        ["--max-redirs", "5"],
+        ["--speed-limit", "1"],
+        ["--speed-time", "60"],
+    ] {
+        assert!(bounded.windows(2).any(|w| w == flag), "{bounded:?}");
+    }
+    // The Hub download keeps its own arguments.
+    assert!(
+        !download
+            .iter()
+            .any(|a| a.starts_with("--max-") || a.starts_with("--speed-"))
+    );
+    // No GitHub token is ever read or sent.
+    for args in [api, download] {
+        assert!(!args.iter().any(|a| a == "--config"), "{args:?}");
+    }
+    assert_eq!(github.stdin_config(), None);
+}
+
+// Spec (llama-server-install, Errors): tool-missing reads with the service.
+#[tokio::test]
+async fn a_github_request_without_curl_names_github() {
+    let missing = Curl::github_api(OsString::new());
+    assert_eq!(
+        missing.get("/x").await,
+        Err("GitHub needs curl on the PATH".to_owned())
+    );
+    // The Hub keeps its own words.
+    assert_eq!(NO_CURL, "Hugging Face needs curl on the PATH");
+}
+
+#[tokio::test]
+async fn a_failed_github_request_carries_the_github_label() {
+    need_curl!();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // Nothing listens on port 1.
+    let refused = Curl::github_api(path.clone()).local("http://127.0.0.1:1");
+    let message = refused.get("/x").await.unwrap_err();
+    assert!(message.starts_with("GitHub request failed: "), "{message}");
+    // A reply that is not text.
+    let (base, _) = serve(Box::new(|_| reply("200 OK", &[0xff, 0xfe])));
+    let unreadable = Curl::github_api(path).local(&base).get("/x").await;
+    assert_eq!(
+        unreadable,
+        Err("GitHub request failed: unreadable reply".to_owned())
+    );
+    // The Hub label is untouched.
+    let (base, _) = serve(Box::new(|_| reply("200 OK", &[0xff, 0xfe])));
+    assert_eq!(
+        curl(&base, None).get("/x").await,
+        Err(hf::UNREADABLE.to_owned())
+    );
 }

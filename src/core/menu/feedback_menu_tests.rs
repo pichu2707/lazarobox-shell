@@ -373,6 +373,7 @@ fn the_attached_engines_are_the_detected_ones() {
         ],
         local_models: Vec::new(),
         data_home: None,
+        vulkan_icd: false,
     };
     assert_eq!(
         feedback::engines(&detection),

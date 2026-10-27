@@ -35,6 +35,7 @@ pub mod gh;
 pub mod hf;
 pub mod jail;
 pub mod jobs;
+pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
@@ -267,7 +268,15 @@ pub async fn run() -> io::Result<()> {
     let path = login_path
         .await
         .unwrap_or_else(|_| login_path::sanitize(&process_path));
-    let cli_env = chat::CliEnv::from_env(jail).with_path(path);
+    let cli_env = chat::CliEnv::from_env(jail);
+    // The owned llama.cpp install, last: a system `llama-server` wins. Its
+    // folder is looked at on each lookup, so an install or a remove needs
+    // only a forced detection, not a new `PATH`.
+    let path = crate::core::ai::install::with_owned_path(
+        &path,
+        cli_env.data.as_deref().and_then(std::path::Path::parent),
+    );
+    let cli_env = cli_env.with_path(path);
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
@@ -532,7 +541,7 @@ pub async fn run() -> io::Result<()> {
                 chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
                 chat_tx,
             )
-            .with_live(live)
+            .with_live(live.clone())
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
             // `<data>/run`. Without a private folder every turn runs as text.
             .with_tools(
@@ -559,8 +568,36 @@ pub async fn run() -> io::Result<()> {
             cli_env.path.clone(),
             hub_dir(),
             hf::token_env,
-            hub_tx,
-        ));
+            hub_tx.clone(),
+        ))
+        // The install wizard's steps: curl, gh and tar from the same PATH,
+        // into the owned folder under the data home. They answer on the
+        // Hub's channel.
+        .with_installer(
+            llama_install::installer::Installer::new(
+                cli_env.path.clone(),
+                cli_env
+                    .data
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf),
+                hub_tx,
+            )
+            // A remove stops the managed server first: it may run from the
+            // files that are about to go. It is not retired, so a later
+            // install makes the next turn start it again.
+            .with_stop(Arc::new({
+                let live = live.clone();
+                move || {
+                    let live = live.clone();
+                    Box::pin(async move {
+                        if let Some(managed) = live.managed() {
+                            managed.shutdown().await;
+                        }
+                    })
+                }
+            })),
+        );
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,
@@ -1156,6 +1193,9 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The llama-server install steps. `None` ignores `Effect::Install`
+    /// (unit tests).
+    installer: Option<llama_install::installer::Installer>,
 }
 
 impl Panes {
@@ -1188,6 +1228,7 @@ impl Panes {
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            installer: None,
         }
     }
 
@@ -1332,6 +1373,12 @@ impl Panes {
     /// Sets what runs the Hugging Face effects.
     fn with_hub(mut self, hub: hf::Hub) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Sets what runs the install wizard's steps.
+    fn with_installer(mut self, installer: llama_install::installer::Installer) -> Self {
+        self.installer = Some(installer);
         self
     }
 
@@ -1620,6 +1667,12 @@ impl Panes {
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                }
+                // Returns at once: the step runs on its own task.
+                Effect::Install(ask) => {
+                    if let Some(installer) = self.installer.as_mut() {
+                        installer.ask(ask);
                     }
                 }
                 Effect::HfAccount(ask) => {
@@ -2733,6 +2786,45 @@ mod tests {
             (Outcome::Continue, vec![AppEvent::StillRunning(Vec::new())])
         );
         assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
+    // Design D9: an install step reaches the installer, whose reply comes
+    // back on the event channel under the same id.
+    #[tokio::test]
+    async fn an_install_effect_reaches_the_installer_and_its_reply_comes_back() {
+        use crate::core::ai::install::{Release, Variant};
+        use crate::core::ai::picker::InstallAsk;
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let (events, mut inbox) = mpsc::channel(4);
+        // No data folder: a download is refused before any network.
+        let installer =
+            llama_install::installer::Installer::new(std::ffi::OsString::new(), None, events);
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_installer(installer);
+        let release = Release {
+            tag: "b9000".to_owned(),
+            asset: "a.tar.gz".to_owned(),
+            size: 1,
+            sha256: "a".repeat(64),
+        };
+        let (outcome, _) = panes.apply(vec![
+            Effect::Install(InstallAsk::Download(3, release)),
+            // Without an installer the effect would be dropped silently.
+            Effect::Install(InstallAsk::Resolve(4, Variant::Cpu)),
+        ]);
+        assert_eq!(outcome, Outcome::Continue);
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(10), inbox.recv())
+                .await
+                .expect("a reply arrives");
+            let Some(AppEvent::InstallReply(id, Err(_))) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, [3, 4]);
     }
 
     #[test]
