@@ -57,7 +57,7 @@ Landlock ABI limits:
 - 3 (Linux 6.2) is the minimum.
 - Below 4 (6.7), TCP is not mediated at all. That is acceptable because the network stays on.
 - 6 (6.12) adds the signal and abstract-socket scope, which `enforce` already applies.
-- **No ABI up to 6 mediates `connect()` to existing pathname UNIX sockets**, for example the gpg-agent or D-Bus sockets under `/run/user/$UID`. This is a documented residual risk; a seccomp AF_UNIX filter is a later hardening option. Check this against the kernel docs during X-c.
+- **No ABI up to 8 mediates `connect()` to existing pathname UNIX sockets**, for example the gpg-agent or D-Bus sockets under `/run/user/$UID`. This is an accepted, documented residual risk; a seccomp AF_UNIX filter is a later hardening option. Checked in X-c2: ABI 9 adds `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` (landlock crate 0.4.7, `AccessFs::ResolveUnix`: "connect to a pathname UNIX domain socket"), which the helper already handles through `AccessFs::from_all` on an ABI 9 kernel, so there a socket needs a rule. The local kernel headers (6.19) do not define it, so on ABI <= 8 (this machine included) the only guard is that `$HOME` secrets and `SSH_AUTH_SOCK`/`DBUS_*` env are not passed (env scrub). Scoping applies only to abstract sockets (ABI 6).
 
 Toolchain run notes (recorded in X-c1 for X-c3, not implemented):
 - `go test` and `go run` build and start binaries, so they need an exec-capable `GOTMPDIR` under the `rwx` root (for example `<root>/.lbx-gotmp`, created before and removed after the run); the private TMPDIR is `rw` only and never executable.

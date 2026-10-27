@@ -241,9 +241,9 @@ Spec: command-runner "Jail profile".
 - [x] Xc1.4 review fixes: R29 on Linux (cache dropped, else `WritableExec`), `go_root` skipped when `rx` covers the program, `check_exec` rejects broad roots, X-c3 notes in design.md.
 
 ### X-c2: helper flags (PR 18, ~400)
-- [ ] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
-- [ ] Xc2.2 RED: `--net-bind open` (listen allowed), `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) set before exec. GREEN. ~200.
-- Check the pathname UNIX socket residual risk against the kernel docs here and record it (accepted risk; seccomp is follow-up).
+- [x] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
+- [x] Xc2.2 RED: `--net-bind open` (listen allowed), `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) set before exec. GREEN. ~200.
+- [x] Check the pathname UNIX socket residual risk against the kernel docs here and record it (accepted risk; seccomp is follow-up). Recorded in design.md (Landlock ABI limits) and apply-progress batch 20.
 
 ### X-c3: runner (PR 19, ~450)
 Spec: command-runner "Process rules".

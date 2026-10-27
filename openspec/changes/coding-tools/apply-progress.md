@@ -718,3 +718,23 @@ Review fixes (slice X-c1):
 - `go_root` is skipped when `rx` covers the program (`/usr/bin/go`, `/usr/local/go/bin/go`).
 - `check_exec` takes `homes` and rejects a broad root with `broad_place`.
 - design.md: D24 row moved under D23; X-c3 notes (exec-capable GOTMPDIR, cargo `.package-cache`/`.global-cache`, git integrity check USER DECISION, `.env` in the root accepted residual risk).
+
+## Batch 20: slice X-c2 (helper flags, PR 18, branch feat/coding-tools-xc2, base feat/coding-tools-xc1)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xc2.1 `--rwx` render/parse, Landlock rwx rule with Execute, `check_exec` in the helper | done | feat(jail): let the helper take an rwx root and grant it execute under Landlock |
+| Xc2.2 `--net-bind open`, `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) | done | feat(jail): let the helper open the TCP bind and cap core, file size and CPU time for a toolchain run |
+| UNIX socket residual risk check | done | docs commit (design.md, this file) |
+
+TDD evidence: Xc2.1 RED = pure round trip failed (`--rwx` unknown flag path) and two real-helper tests failed (rwx exec denied, two rwx roots not refused). GREEN: both green, 17 tests in `tests/jail.rs`. Mutation: rwx rule with `read_write_dir` (no Execute) failed the rwx exec test. Xc2.2 RED = `E0433 NetBind / Rlimits / Limit`, `E0560 no field net_bind / rlimits` (9 errors); GREEN at once, helper tests green on this kernel (ABI >= 4, so none skipped). Existing struct literals of `JailSpec` in two unit-test files needed `..JailSpec::default()` / the new fields.
+
+Notes:
+- API (core/ai/jail.rs): `JailSpec.{net_bind: NetBind, rlimits: Rlimits}` (Default = Closed / None), `Rlimits::limits() -> &[(Limit, u64)]` with `Limit::{Core, FileSize, CpuSeconds}`, constants `RWX_REASON`, `RLIMIT_REASON` (on the `known_helper_reason` whitelist), two new `ARG_*` reasons. The flags live on `JailSpec`, not `JailArgs`, so no existing `JailArgs` literal changed.
+- Helper (runtime/jail.rs, Linux): `check_exec(Os::Linux)` fails with `NotEnforced(RWX_REASON)` (exit 125, program never runs); `set_limits` runs before `enforce` (soft = hard); the rwx root gets `AccessFs::from_all(abi)` (Execute included); BindTcp is handled only when `net_bind` is Closed and ABI >= 4.
+- macOS: `sbpl::render` refuses rwx, an open bind and toolchain rlimits with `SbplError::Rwx` (fail closed; no macOS toolchain slice planned).
+- `toolchain_spec` (X-c1) does not yet set `net_bind`/`rlimits`: X-c3 sets them on the run spec (net_bind Open only if a dev server is wanted; rlimits Toolchain always).
+- Residual risk (checked): pathname UNIX socket `connect()` is not mediated up to Landlock ABI 8. ABI 9 adds `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` (landlock crate 0.4.7 `AccessFs::ResolveUnix`), already handled by `from_all` in the helper, so ABI 9 kernels gate it. The local 6.19 kernel headers lack it (ABI <= 8 here). Accepted; seccomp AF_UNIX filter is a follow-up. A stale comment in `tests/jail.rs` claiming the crate caps below ABI 9 was corrected (the crate supports V9).
+- `ulimit -f` is 512-byte blocks in dash and 1024 in bash, so the rlimit test accepts either value for 4 GiB.
+- Size: ~125 production lines (jail.rs 81, runtime/jail.rs 38, sbpl.rs 6), ~255 test lines. Checks: fmt, clippy --all-targets -D warnings, cargo test (5880 lib, 19 jail).
+

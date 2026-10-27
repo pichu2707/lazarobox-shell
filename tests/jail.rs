@@ -474,11 +474,11 @@ impl Dispatch for Done {
 /// `rw_file` rule on the socket. No folder.
 ///
 /// Landlock note: the socket rule binds to the inode, so the socket must be
-/// bound before the helper starts and a rebind invalidates it. While the
-/// pinned landlock crate (0.4.7) caps `from_all` below ABI 9, connecting to a
-/// pathname socket is not gated at all. ABI 9 adds
-/// `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`: a crate that handles it must grant that
-/// access on this rule, or the shim stops connecting.
+/// bound before the helper starts and a rebind invalidates it. Below ABI 9,
+/// connecting to a pathname socket is not gated at all. ABI 9 adds
+/// `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which the pinned crate (0.4.7) already
+/// handles in `from_all`; `AccessFs::from_file` includes it, so this rule
+/// keeps the shim connecting there.
 fn with_shim_grant(spec: &mut JailSpec, socket: &Path) {
     let bin = canon(env!("CARGO_BIN_EXE_lazarobox-shell"));
     for path in [Some(bin.clone()), loader_of(&bin)].into_iter().flatten() {
