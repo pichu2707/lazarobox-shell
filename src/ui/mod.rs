@@ -138,6 +138,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
+            .context(app.status_context())
             .update(app.status_update())
             .download(download.as_deref())
             .thinking(thinking.clone())

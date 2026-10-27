@@ -39,6 +39,7 @@ pub struct StatusLine<'a> {
     marker: Option<SelectionKind>,
     thinking: Option<ThinkingView>,
     memory: Option<MemBadge>,
+    context: Option<u8>,
     update: Option<&'a str>,
     download: Option<&'a str>,
 }
@@ -56,6 +57,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            context: None,
             update: None,
             download: None,
         }
@@ -79,6 +81,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            context: None,
             update: None,
             download: None,
         }
@@ -136,6 +139,14 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// How full the chat's context is, in percent (` · context 42%`), over a
+    /// focused chat that has sent a turn. It outranks the memory state and
+    /// the update mark when the line is narrow.
+    pub fn context(mut self, context: Option<u8>) -> Self {
+        self.context = context;
+        self
+    }
+
     /// The newer released version, shown as ` · update <ver>` after the
     /// engine. Text only. It outranks the memory state when the line is narrow
     /// and is dropped when even it does not fit.
@@ -175,16 +186,18 @@ impl<'a> StatusLine<'a> {
     /// it takes (0 when it does not fit next to the mode block, which has
     /// priority). The marks are part of it only if they fit and showing them
     /// costs the thinking indicator nothing; the memory state goes first, then
-    /// the update mark, then the download mark.
+    /// the update mark, then the context fill, then the download mark.
     fn fit_right(&self, width: u16) -> (Line<'a>, usize) {
         let fits = |line: &Line| line.width() + self.mode_block_width() <= usize::from(width);
         let plain = self.right_line(Marks::default());
         let plain_width = if fits(&plain) { plain.width() } else { 0 };
         let indicator = |right: usize| Line::from(self.indicator(width, right)).width();
         // Every set of the marks there are, the most kept first: the download
-        // mark weighs most, the memory state least.
-        let wanted = (1..8u8).rev().map(|set| Marks {
-            download: set & 4 != 0 && self.download.is_some(),
+        // mark weighs most, then the context fill, the update mark and, least,
+        // the memory state.
+        let wanted = (1..16u8).rev().map(|set| Marks {
+            download: set & 8 != 0 && self.download.is_some(),
+            context: set & 4 != 0 && self.context.is_some(),
             update: set & 2 != 0 && self.update.is_some(),
             memory: set & 1 != 0 && self.memory.is_some(),
         });
@@ -265,6 +278,17 @@ impl<'a> StatusLine<'a> {
                 Style::new().fg(t.warning_orange).bg(t.bg_panel),
             ));
         }
+        if let Some(percent) = self.context.filter(|_| marks.context) {
+            let color = if percent >= 90 {
+                t.warning_orange
+            } else {
+                t.text_muted
+            };
+            spans.push(Span::styled(
+                format!(" \u{b7} context {percent}%"),
+                Style::new().fg(color).bg(t.bg_panel),
+            ));
+        }
         if let Some(badge) = self.memory.filter(|_| marks.memory) {
             let (text, color) = match badge {
                 MemBadge::Ready => ("ready", t.text_muted),
@@ -294,6 +318,7 @@ impl<'a> StatusLine<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct Marks {
     memory: bool,
+    context: bool,
     update: bool,
     download: bool,
 }
@@ -325,6 +350,8 @@ impl Widget for StatusLine<'_> {
 
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod context_tests;
 #[cfg(test)]
 mod download_tests;
 #[cfg(test)]

@@ -13,4 +13,4 @@ expression: text(&app)
                                                  │answer 70
                                                  │answer 71
                                                  │
- ◐ CHAT ↑9/73  /srv/app                                                       ollama › llama3:8b
+ ◐ CHAT ↑9/73  /srv/app                                          ollama › llama3:8b · context 0%

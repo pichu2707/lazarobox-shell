@@ -322,3 +322,70 @@ fn memory_off_and_a_shell_pane_show_no_memory_text() {
         "shell: {line}"
     );
 }
+
+// chat-memory S1 / S2: the context fill ----------------------------------------
+
+/// A chat whose engine reports a context window of `window` tokens.
+fn windowed_app(window: Option<usize>) -> App {
+    let mut app = App::new(COLS, ROWS)
+        .with_env(Some("/bin/zsh"), None, "/srv/app".into())
+        .with_ai(ollama());
+    app.update(AppEvent::EnginesDetected(Detection {
+        windows: window.map(|w| ("ollama", w)).into_iter().collect(),
+        ..ready_detection()
+    }));
+    prefixed(&mut app, "c");
+    app.update(AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
+    app
+}
+
+#[test]
+fn a_chat_shows_no_fill_before_its_first_send() {
+    assert!(!status(&windowed_app(Some(10_000))).contains("context"));
+}
+
+#[test]
+fn the_fill_is_the_share_of_the_engines_window_after_a_send() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    // 1 history + 2 system + 1500 tools reserve = 1503 of 10000.
+    let line = status(&app);
+    assert!(line.contains("ollama › llama3:8b · context 15%"), "{line}");
+}
+
+#[test]
+fn without_a_window_the_fill_is_against_the_character_cap() {
+    let mut app = windowed_app(None);
+    send(&mut app, "hi");
+    let line = status(&app);
+    assert!(line.contains("context 0%"), "{line}");
+}
+
+#[test]
+fn a_smaller_window_fills_faster() {
+    let mut app = windowed_app(Some(3_000));
+    send(&mut app, "hi");
+    let line = status(&app);
+    assert!(line.contains("context 50%"), "{line}");
+}
+
+#[test]
+fn a_shell_pane_shows_no_fill() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    prefixed(&mut app, "h");
+    assert!(!status(&app).contains("context"));
+}
+
+#[test]
+fn snapshot_a_chat_status_with_the_context_fill() {
+    let mut app = windowed_app(Some(10_000));
+    send(&mut app, "hi");
+    insta::assert_snapshot!("chat_status_context_fill", status(&app).trim_end());
+}
