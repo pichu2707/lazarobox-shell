@@ -89,20 +89,23 @@ fn enter_opens_the_form_with_the_environment_shown() {
         ]
     );
     assert_eq!(hint(&m), HINT_KIND);
-    assert_eq!(HINT_KIND, "←/→ kind · Tab next · Ctrl+S link · Esc back");
+    assert_eq!(
+        HINT_KIND,
+        "←/→ kind · Tab · Ctrl+S copy · Ctrl+O open · Esc"
+    );
     // The focused text field draws its cursor.
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[2], "› Title");
     assert_eq!(texts(&m)[3], "  ▏");
     assert_eq!(hint(&m), HINT_TEXT);
-    assert_eq!(HINT_TEXT, "Tab next · Ctrl+S link · Esc back");
+    assert_eq!(HINT_TEXT, "Tab next · Ctrl+S copy · Ctrl+O open · Esc back");
     send(&mut m, KeyCode::Tab);
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[6], "› [x] Attach the environment");
     assert_eq!(hint(&m), HINT_ATTACH);
     assert_eq!(
         HINT_ATTACH,
-        "Space attach · Tab next · Ctrl+S link · Esc back"
+        "Space attach · Ctrl+S copy · Ctrl+O open · Esc"
     );
     // Every footer fits the 48 columns of the narrow popup.
     for h in [HINT_KIND, HINT_TEXT, HINT_ATTACH, HINT_DONE] {
@@ -150,6 +153,56 @@ fn ctrl_s_copies_the_link_and_esc_goes_back_to_the_row() {
     assert_eq!(value_of(&m, "Feedback"), "bug report or idea");
     // A second Esc leaves the menu as usual.
     assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::Cancel);
+}
+
+/// The form with a title and a description, on a menu that has an opener
+/// or not.
+fn filled(opener: bool) -> MenuState {
+    let mut m = on_row().with_opener(opener);
+    send(&mut m, KeyCode::Enter);
+    send(&mut m, KeyCode::Tab);
+    m.on_paste("Scroll jumps");
+    send(&mut m, KeyCode::Tab);
+    m.on_paste("It jumps\nback");
+    m
+}
+
+fn ctrl(menu: &mut MenuState, c: char) -> MenuCommand {
+    key_with(menu, KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+// Spec (config-menu, Feedback; open-links S4): Ctrl+O opens the prefilled
+// page, the same link Ctrl+S copies, and says so; Esc goes back to the row.
+#[test]
+fn ctrl_o_opens_the_prefilled_page_in_the_browser() {
+    let MenuCommand::Copy(link) = ctrl(&mut filled(true), 's') else {
+        panic!("no copy");
+    };
+    let mut m = filled(true);
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Open(link));
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            "Opened in your browser. GitHub shows the issue",
+            "form filled in, for you to review and send.",
+        ]
+    );
+    assert_eq!(hint(&m), HINT_DONE);
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+}
+
+// Spec (config-menu, Feedback; open-links S3): with no opener on the host,
+// Ctrl+O copies the link like Ctrl+S.
+#[test]
+fn without_an_opener_ctrl_o_copies_the_link() {
+    let MenuCommand::Copy(link) = ctrl(&mut filled(false), 's') else {
+        panic!("no copy");
+    };
+    let mut m = filled(false);
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Copy(link));
+    assert_eq!(texts(&m)[1], "Link copied. Paste it in your browser:");
 }
 
 #[test]

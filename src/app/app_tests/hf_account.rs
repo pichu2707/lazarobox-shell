@@ -137,3 +137,34 @@ fn a_reply_with_the_menu_closed_still_keeps_the_account() {
     );
     assert_eq!(a.hf_account.as_deref(), Some("ana"));
 }
+
+// Spec (open-links S1, S3): Ctrl+O in the token field opens the link to
+// create a token through the host's opener and says so; with no opener the
+// link is copied instead.
+#[test]
+fn ctrl_o_in_the_token_field_opens_the_link_in_the_browser() {
+    let ctrl_o = AppEvent::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let url = "https://huggingface.co/settings/tokens/new?tokenType=read";
+
+    let mut a = app().with_opener(true).with_hf_tokens(no_tokens);
+    a.update(ctrl_space());
+    a.update(key('m'));
+    goto_row(&mut a, "Hugging Face");
+    a.update(enter());
+    assert_eq!(
+        a.update(ctrl_o.clone()),
+        vec![Effect::OpenUrl(url.to_owned())]
+    );
+    assert_eq!(
+        a.menu().unwrap().footer(),
+        Footer::Hint("Opened in your browser".into())
+    );
+
+    let mut a = on_row(no_tokens);
+    a.update(enter());
+    let effects = a.update(ctrl_o);
+    assert!(
+        matches!(effects.as_slice(), [Effect::SetClipboard(_)]),
+        "{effects:?}"
+    );
+}

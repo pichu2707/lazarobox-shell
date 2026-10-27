@@ -243,6 +243,9 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Open this link in the browser through the host's opener. Only emitted
+    /// when the runtime said it has one (see [`App::with_opener`]).
+    OpenUrl(String),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -722,6 +725,8 @@ pub struct App {
     hf_tokens: fn() -> TokenFacts,
     /// What the Feedback form attaches about this host (the runtime probe).
     host: crate::core::menu::feedback::Facts,
+    /// The host has a program that opens links in the browser.
+    opener: bool,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -825,6 +830,7 @@ impl App {
                 os: std::env::consts::OS.to_owned(),
                 ..Default::default()
             },
+            opener: false,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -943,6 +949,13 @@ impl App {
     /// Injects what the runtime found of this host, for the Feedback form.
     pub fn with_host(mut self, host: crate::core::menu::feedback::Facts) -> Self {
         self.host = host;
+        self
+    }
+
+    /// Injects whether the runtime found a program that opens links in the
+    /// browser; without one the menu copies its links instead.
+    pub fn with_opener(mut self, opener: bool) -> Self {
+        self.opener = opener;
         self
     }
 
@@ -1773,6 +1786,7 @@ impl App {
                 .with_installed(self.installed.clone())
                 .with_download(self.download.clone())
                 .with_hf((self.hf_tokens)(), self.hf_account.clone())
+                .with_opener(self.opener)
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -1886,6 +1900,10 @@ impl App {
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
+            MenuCommand::Open(url) => {
+                menu.set_copied("Opened in your browser".to_owned());
+                vec![Effect::OpenUrl(url)]
+            }
             MenuCommand::None => Vec::new(),
         }
     }

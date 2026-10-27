@@ -2,7 +2,7 @@
 //! account row), at the `MenuState` level.
 
 use super::account::{
-    HINT_CONNECT, HINT_TOKEN, TOKEN_HINT, TOKEN_TITLE, TOKEN_URL, TOKEN_URL_HINT,
+    HINT_CONNECT, HINT_TOKEN, HINT_TOKEN_COPY, TOKEN_HINT, TOKEN_TITLE, TOKEN_URL, TOKEN_URL_HINT,
 };
 use super::ai_tests::{machine, press, value_of};
 use super::footer_tests::hint;
@@ -104,8 +104,45 @@ fn enter_opens_a_field_that_draws_one_dot_per_character() {
         TOKEN_URL,
         "https://huggingface.co/settings/tokens/new?tokenType=read"
     );
-    assert_eq!(hint(&m), HINT_TOKEN);
+    assert_eq!(hint(&m), HINT_TOKEN_COPY, "no opener in this menu");
     assert!(!format!("{m:?}").contains("hf_abc"), "{m:?}");
+}
+
+// Spec (config-menu; open-links S1, S3): Ctrl+O in the field opens the link
+// to create a token, and the field stays open for the paste; with no opener
+// on the host it copies the link, and the footer says which.
+#[test]
+fn ctrl_o_opens_the_token_link_or_copies_it_without_an_opener() {
+    let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    for (opener, command, footer) in [
+        (true, MenuCommand::Open(TOKEN_URL.to_owned()), HINT_TOKEN),
+        (
+            false,
+            MenuCommand::Copy(TOKEN_URL.to_owned()),
+            HINT_TOKEN_COPY,
+        ),
+    ] {
+        let mut m = on_row(TokenFacts::default(), None).with_opener(opener);
+        send(&mut m, KeyCode::Enter);
+        assert_eq!(hint(&m), footer);
+        assert_eq!(m.on_key(&ctrl_o, false, &mut Config::default()), command);
+        assert!(
+            m.rows(&Config::default())
+                .contains(&Row::Field(String::new()))
+        );
+        assert_eq!(
+            m.on_key(&ctrl_o, true, &mut Config::default()),
+            MenuCommand::None
+        );
+    }
+    assert_eq!(
+        HINT_TOKEN,
+        "Enter connect · Ctrl+O open link · Ctrl+U clear · Esc back"
+    );
+    assert_eq!(
+        HINT_TOKEN_COPY,
+        "Enter connect · Ctrl+O copy link · Ctrl+U clear · Esc back"
+    );
 }
 
 #[test]

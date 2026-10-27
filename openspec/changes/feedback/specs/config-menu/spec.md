@@ -34,15 +34,23 @@ Keys:
 - Esc goes back to the row.
 
 The footer reads:
-- `←/→ kind · Tab next · Ctrl+S link · Esc back` on the kind;
-- `Tab next · Ctrl+S link · Esc back` on a text field;
-- `Space attach · Tab next · Ctrl+S link · Esc back` on the attach line.
+- `←/→ kind · Tab · Ctrl+S copy · Ctrl+O open · Esc` on the kind;
+- `Tab next · Ctrl+S copy · Ctrl+O open · Esc back` on a text field;
+- `Space attach · Ctrl+S copy · Ctrl+O open · Esc` on the attach line.
+
+Ctrl+O makes the same link as Ctrl+S and opens it in the browser through the host's opener; the view then reads `Opened in your browser. GitHub shows the issue`, `form filled in, for you to review and send.` until Esc. On a host with no opener Ctrl+O copies the link like Ctrl+S.
 
 #### Scenario: Ctrl+S copies the link [auto]
 - GIVEN a bug report titled `Scroll jumps`, described `It jumps\nback`, with the environment attached
 - WHEN Ctrl+S is pressed
 - THEN the menu copies `https://github.com/pichu2707/lazarobox-shell/issues/new?template=bug.yml&title=Scroll%20jumps&what-happened=It%20jumps%0Aback&environment=<the facts>`, percent-encoded
 - AND the view reads `Link copied. Paste it in your browser:`, `GitHub opens the issue form filled in, for you`, `to review and send.`, with the footer `Copied <n> characters`, then `Esc back`
+- AND Esc goes back to the row
+
+#### Scenario: Ctrl+O opens the prefilled page [auto]
+- GIVEN the bug report above, on a host with an opener
+- WHEN Ctrl+O is pressed
+- THEN the link Ctrl+S would copy is opened in the browser, and the view reads `Opened in your browser. GitHub shows the issue`, `form filled in, for you to review and send.`
 - AND Esc goes back to the row
 
 #### Scenario: An idea, without the environment [auto]
