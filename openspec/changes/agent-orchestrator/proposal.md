@@ -146,12 +146,12 @@ Exploration approach C: async `spawn_agent` / `wait` / `collect` / `cancel` over
 
 Resolved: two rounds (engram `sdd/agent-orchestrator/proposal-questions`), recorded as O1 to O8.
 
-Assumptions needing user review (not yet confirmed):
-- (a) Orchestrate follows the existing fallback-to-General rule; Ollama is allowed but marked "not recommended".
-- (b) With chat memory off or engram down, the run still starts, keeps handoffs in memory and shows "handoffs not persisted".
-- (c) When one worker fails during a parallel run, no new worker starts and running siblings finish their turn, but the orchestrator is not resumed until the user picks an option.
-- (d) Retry relaunches the same `WorkerSpec` from scratch (CLI turns are stateless).
-- (e) Reads outside the run scope ask the user through the labelled queue; they are never silently denied or allowed.
+Assumptions, reviewed by the user one at a time on 2026-10-27:
+- (a) Confirmed. Orchestrate follows the existing fallback-to-General rule; Ollama is allowed but marked "not recommended".
+- (b) Confirmed. With chat memory off or engram down, the run still starts, keeps handoffs in memory and shows "handoffs not persisted".
+- (c) Confirmed. When one worker fails during a parallel run, no new worker starts and running siblings finish their turn, but the orchestrator is not resumed until the user picks an option.
+- (d) Changed by the user: retry relaunches the same `WorkerSpec` from scratch (CLI turns are stateless), with the failed attempt's error appended to the prompt as untrusted data, sanitized and capped like the alert. Rejected: a retry identical to the failed attempt.
+- (e) Confirmed. Reads outside the run scope ask the user through the labelled queue; they are never silently denied or allowed.
 
 ## Decisions (O12)
 

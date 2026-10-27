@@ -196,7 +196,7 @@ S1e-1a bases on the S1d-3 branch.
 
 ### S1d-3 (PR 8, ~480 lines, base: S1d-2 branch): tasks 1d.3b, 1d.4b, 1d.5
 
-- [ ] 1d.3b RED `runtime/orchestra/tests.rs`, control path: cancel kills the process; halt then retry relaunches same spec; worker read outside scope reaches the approver; Ctrl+C cancels all; shutdown. Spec: agent-orchestrator / Retry relaunches the same spec, Ctrl+C cancels all.
+- [ ] 1d.3b RED `runtime/orchestra/tests.rs`, control path: cancel kills the process; halt then retry relaunches same spec with the previous error appended as untrusted data; worker read outside scope reaches the approver; Ctrl+C cancels all; shutdown. Spec: agent-orchestrator / Retry relaunches the same spec, Ctrl+C cancels all.
 - [ ] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`.
 - [ ] 1d.5 GREEN `runtime/chat.rs` (`with_orchestra`, `cancel`/`shutdown` forward), `runtime.rs` wiring. REFACTOR + gates (S1d-3 closes here).
 
