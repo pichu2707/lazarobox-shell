@@ -28,7 +28,7 @@ mod tests {
         let raw = include_bytes!("../../../tests/fixtures/llamacpp/props.http");
         let (status, body) = parse_response(raw).expect("a whole reply");
         assert_eq!(status, 200);
-        assert_eq!(llamacpp_n_ctx(&body), Some(8_192));
+        assert_eq!(llamacpp_n_ctx(&body), Some(16_384));
     }
 
     #[test]
