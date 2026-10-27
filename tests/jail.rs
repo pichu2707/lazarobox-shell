@@ -104,6 +104,23 @@ fn run(job: &JailArgs) -> Output {
     run_raw(&job.render())
 }
 
+/// `run` for a program this test just wrote. Another test forking at that
+/// moment holds its write handle until its child execs, so the helper's exec
+/// fails with ETXTBSY for a moment; that one error is retried briefly.
+fn run_written(job: &JailArgs) -> Output {
+    let busy = format!("(os error {})", libc::ETXTBSY);
+    let mut attempt = 0;
+    loop {
+        let out = run(job);
+        if attempt < 4 && !out.status.success() && stderr(&out).contains(&busy) {
+            attempt += 1;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
+        return out;
+    }
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -340,7 +357,7 @@ fn an_execute_rule_on_a_folder_runs_what_lives_inside_it() {
             program,
             argv: Vec::new(),
         };
-        run(&args)
+        run_written(&args)
     };
 
     let out = run_tool(&package);
