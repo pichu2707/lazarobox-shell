@@ -196,6 +196,7 @@ pub(super) fn created(id: PaneId, conversation: i64) -> AppEvent {
         conversation,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     })
 }
 
@@ -566,6 +567,7 @@ fn an_eviction_shows_its_line_in_the_new_conversation() {
         conversation: 5,
         evicted: true,
         evicted_notes: 0,
+        created_at: 1_000,
     }));
     assert!(systems(chat_of(&a)).contains(&"oldest conversation removed (limit 200)".to_owned()));
 }

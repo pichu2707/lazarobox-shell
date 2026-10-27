@@ -11,7 +11,7 @@ Request wire (OpenAI shape). The system prompt and history are assembled exactly
 
 Response decode. The SSE stream carries tool calls as `choices[0].delta.tool_calls` fragments: the first fragment of a call carries `index` and, normally, `id` and `function.name`; later fragments carry `index` and `function.arguments` pieces. The decoder MUST accumulate fragments per `index` (arguments concatenated in arrival order) and MUST release the calls only after a clean end: `finish_reason: "tool_calls"` or `[DONE]` after the stream ended normally. A stream that is truncated (connection closed, framing error, idle timeout, cancel, answer cap) before a clean end MUST run no accumulated call. Validation of the accumulated calls MUST reuse the Ollama rules: a name unknown to the registry or a call whose arguments hold duplicate keys is refused (the model gets a refusal result, nothing is executed), arguments that are not valid JSON are refused, and at most 16 calls are accepted per reply. Text deltas keep streaming as today and tool-call text cannot forge a tool event.
 
-Server without tool support. When the server rejects the request that carries `tools` (HTTP 4xx or 5xx whose sanitized message mentions `tools` or `jinja`, for example a server started with `--no-jinja`) and NO round has started yet in the turn, the adapter MUST retry once as a text turn without `tools`, the text answer streams, and the assignment MUST NOT change. For `llamacpp` ONLY, a system notice that the server does not accept tools MUST then be shown ONCE per pane (not once per turn); later turns in that pane MUST NOT repeat it. Ollama is explicitly different: its rejection fallback (HTTP 400 on the first request) stays silent, with no notice, exactly as in "Ollama native tools". Once a round has started (at least one tool result was sent), a rejection or any error MUST NOT trigger the fallback: it ends the turn as an ordinary error and no request without `tools` is made.
+Server without tool support. When the server rejects the request that carries `tools` (HTTP 4xx or 5xx whose sanitized message names the `--jinja` flag, for example a server started with `--no-jinja`) and NO round has started yet in the turn, the adapter MUST retry once as a text turn without `tools`, the text answer streams, and the assignment MUST NOT change. For `llamacpp` ONLY, a system notice that the server does not accept tools MUST then be shown ONCE per pane (not once per turn); later turns in that pane MUST NOT repeat it. Ollama is explicitly different: its rejection fallback (HTTP 400 on the first request) stays silent, with no notice, exactly as in "Ollama native tools". Once a round has started (at least one tool result was sent), a rejection or any error MUST NOT trigger the fallback: it ends the turn as an ordinary error and no request without `tools` is made.
 
 `lmstudio` and `vllm` remain text-only: they MUST NOT be offered tools and MUST NOT get a routing arm into the tool loop; their request bodies stay the tool-less body of today.
 
@@ -100,13 +100,13 @@ Server without tool support. When the server rejects the request that carries `t
 - WHEN a turn runs
 - THEN a second request without `tools` is made, the text answer streams, the assignment is unchanged and one system notice that the server does not accept tools is shown
 
-#### Scenario: Fallback on HTTP 400 and 5xx mentioning tools or jinja [auto]
-- GIVEN fake servers answering 400, 422 and 500 with a message mentioning `tools` or `jinja`
+#### Scenario: Fallback on HTTP 4xx and 5xx naming --jinja [auto]
+- GIVEN fake servers answering 400, 422 and 500 with a message naming `--jinja`
 - WHEN a turn runs against each
 - THEN each triggers the single retry without `tools`
 
 #### Scenario: Unrelated errors do not trigger the fallback [auto]
-- GIVEN a fake llamacpp server that answers 500 with a message that mentions neither `tools` nor `jinja`
+- GIVEN a fake llamacpp server that answers 500 with a message that does not name `--jinja` (including a Jinja template exception or a 400 mentioning `tools`)
 - WHEN a turn runs
 - THEN the turn ends with the ordinary short error and no request without `tools` is made
 
