@@ -29,7 +29,7 @@ The user works with strong models through their own CLIs and subscriptions and w
   - **ODD**: the run classifies the goal as small or large. Small work is one worker. Large work gets a feature document (specs quoting the goal verbatim, tasks, log), with one worker per task, each handed the document by reference. Test-first evidence comes from the test runner, never from worker text. S5 becomes the ODD flow; S8 becomes ODD test-first evidence.
   - **RDD**: new slice S7b. A change from `code` workers is assessed for risk; a high-risk change is reviewed by `review` workers through up to four lenses (risk, resilience, readability, reliability), with a refuter for inferential blockers and at most one bounded correction, and ends in a receipt. The user consents per change; the orchestrator never consents and never approves.
   - Commits stay out of scope (non-goal below). A receipt is information, never an approval to apply or commit.
-  - Points still open are listed under **Decisions pending (O12)**.
+  - The user's choices P1-P4 are listed under **Decisions (O12)**.
 
 ## Scope
 
