@@ -72,8 +72,12 @@ pub const RESULTS_CAP: usize = 256 * 1024;
 pub const DROPPED: &str = "result dropped: the tool output limit of this turn was reached";
 /// What the model is told when a call panicked.
 pub const FAILED: &str = "the tool failed";
-/// How a rejected `tools` field shows in the error of a reply: any 400.
+/// How a rejected `tools` field shows in the error of an Ollama reply: any 400.
 const REJECTED: &str = "HTTP 400";
+/// The line a pane gets once when its llama.cpp server refuses `tools` and the
+/// turn goes on as text. The chat keeps one copy of a line per pane.
+pub const NO_TOOLS_NOTICE: &str =
+    "llama-server refused tools (start it with --jinja): answering as plain text";
 
 /// The wire a tool loop speaks: Ollama's own (`/api/chat`, NDJSON) or the
 /// OpenAI chat-completions one (`/v1/chat/completions`, SSE) of llama.cpp.
@@ -91,6 +95,29 @@ impl Profile {
         match self {
             Profile::Ollama => "/api/chat",
             Profile::OpenAi => "/v1/chat/completions",
+        }
+    }
+
+    /// Whether the error text of a reply says the server refused `tools`.
+    /// Ollama answers a plain 400. llama-server answers a 4xx or 5xx whose
+    /// message names `tools` or `jinja` (500 without `--jinja`); the status
+    /// prefix keeps an in-stream error from matching.
+    pub(super) fn rejected(self, text: &str) -> bool {
+        match self {
+            Profile::Ollama => text.starts_with(REJECTED),
+            Profile::OpenAi => {
+                let lower = text.to_lowercase();
+                (text.starts_with("HTTP 4") || text.starts_with("HTTP 5"))
+                    && (lower.contains("tools") || lower.contains("jinja"))
+            }
+        }
+    }
+
+    /// The line sent before the retry as text, if this wire says anything.
+    pub(super) fn notice(self) -> Option<&'static str> {
+        match self {
+            Profile::Ollama => None,
+            Profile::OpenAi => Some(NO_TOOLS_NOTICE),
         }
     }
 
@@ -189,12 +216,15 @@ async fn rounds(
         let finish = match reply.end {
             Some(Ok(finish)) => finish,
             // A model that rejects `tools` is asked again as plain text,
-            // once, and only before it took any: later a 400 is an error. The
-            // failed request produced no event.
+            // once, and only before it took any: later it is an error. The
+            // failed request produced no event, but llama.cpp says why.
             Some(Err(ChatError::Failed(text)))
-                if offer && history.is_empty() && text.starts_with(REJECTED) =>
+                if offer && history.is_empty() && profile.rejected(&text) =>
             {
                 offer = false;
+                if let Some(line) = profile.notice() {
+                    let _ = tx.send(StreamEvent::Notice(line.into())).await;
+                }
                 continue;
             }
             Some(Err(error)) => {

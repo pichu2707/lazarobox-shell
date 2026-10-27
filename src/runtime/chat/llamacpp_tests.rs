@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    ollama::{Profile, tool_turn, tool_turn_with},
+    ollama::{NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
     ollama_tests::{Lab, OK_HEAD, Step, ask, direct, fake, lab, text},
     tests::done,
     *,
@@ -143,4 +143,151 @@ async fn one_openai_round_runs_the_call_and_echoes_the_server_id() {
             .unwrap()
             .contains("curso-rust")
     );
+}
+
+// Rejected tools --------------------------------------------------------------
+
+fn notices(events: &[StreamEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(line) => Some(line.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The recorded reply of a server started with `--no-jinja` (F3).
+fn no_jinja() -> Step {
+    Step::Reply(include_bytes!("../../../tests/fixtures/llamacpp/no-jinja-tools.http").to_vec())
+}
+
+#[test]
+fn the_openai_profile_rejects_4xx_and_5xx_that_name_tools_or_jinja() {
+    for text in [
+        "HTTP 400: tools are not supported",
+        "HTTP 422: unprocessable, Jinja template",
+        "HTTP 500: {\"error\":{\"message\":\"tools param requires --jinja flag\"}}",
+    ] {
+        assert!(Profile::OpenAi.rejected(text), "{text}");
+    }
+    for text in [
+        "HTTP 500: boom",
+        "HTTP 404: model not found",
+        "HTTP 200: tools",
+        "the stream broke: tools",
+        "stream error: jinja",
+    ] {
+        assert!(!Profile::OpenAi.rejected(text), "{text}");
+    }
+}
+
+#[test]
+fn the_ollama_profile_keeps_the_plain_400_and_no_notice() {
+    assert!(Profile::Ollama.rejected("HTTP 400: nope"));
+    assert!(!Profile::Ollama.rejected("HTTP 500: tools param requires --jinja flag"));
+    assert!(!Profile::Ollama.rejected("HTTP 422: tools"));
+    assert_eq!(Profile::Ollama.notice(), None);
+    assert_eq!(Profile::OpenAi.notice(), Some(NO_TOOLS_NOTICE));
+}
+
+#[tokio::test]
+async fn the_recorded_no_jinja_reply_retries_once_as_text_with_one_notice() {
+    let fake = fake(vec![no_jinja(), sse_text("plain answer")]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice(NO_TOOLS_NOTICE.into()),
+            StreamEvent::Delta("plain answer".into()),
+            done()
+        ]
+    );
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0]["tools"].is_array());
+    assert!(bodies[1].get("tools").is_none());
+    assert_eq!(bodies[1]["messages"][0]["content"], "be brief");
+    assert_eq!(fake.paths(), ["/v1/chat/completions"; 2]);
+}
+
+#[tokio::test]
+async fn a_400_422_or_500_naming_tools_or_jinja_retries() {
+    for (code, body) in [
+        (400, "tools not supported"),
+        (422, "needs jinja"),
+        (500, "tools param requires --jinja flag"),
+    ] {
+        let fake = fake(vec![
+            super::ollama_tests::status(code, body),
+            sse_text("ok"),
+        ])
+        .await;
+        let lab = lab(fake.port);
+        let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+        assert_eq!(notices(&events), [NO_TOOLS_NOTICE], "{code}");
+        assert_eq!(fake.bodies().len(), 2, "{code}");
+    }
+}
+
+#[tokio::test]
+async fn an_unrelated_500_is_an_error_with_no_retry_and_no_notice() {
+    let fake = fake(vec![super::ollama_tests::status(500, "out of memory")]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 500")),
+        "{events:?}"
+    );
+    assert!(notices(&events).is_empty());
+    assert_eq!(fake.bodies().len(), 1);
+}
+
+#[tokio::test]
+async fn the_retry_is_made_once() {
+    let fake = fake(vec![no_jinja()]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(fake.bodies().len(), 2, "one retry, not a loop");
+    assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
+    assert_eq!(notices(&events).len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_rejection_after_a_round_is_an_error_without_retry_or_notice() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("a")),
+        no_jinja(),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 500")),
+        "{events:?}"
+    );
+    assert!(notices(&events).is_empty());
+    assert_eq!(fake.bodies().len(), 2);
+}
+
+#[tokio::test]
+async fn an_in_stream_error_never_matches() {
+    let step = Step::Reply(
+        format!(
+            "{OK_HEAD}data: {}\n\n",
+            json!({"error": {"message": "tools exploded"}})
+        )
+        .into_bytes(),
+    );
+    let fake = fake(vec![step]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Error(_))),
+        "{events:?}"
+    );
+    assert_eq!(fake.bodies().len(), 1);
+    assert!(notices(&events).is_empty());
 }
