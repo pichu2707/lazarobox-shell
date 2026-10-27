@@ -12,6 +12,7 @@ pub mod budget;
 pub mod claude;
 pub mod cli;
 pub mod codex;
+pub mod compact;
 pub mod composer;
 pub mod copy;
 pub mod engine;
@@ -50,10 +51,7 @@ use crate::core::{
     layout::PaneId,
 };
 use composer::Composer;
-use engine::{
-    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
-    build_context_tokens,
-};
+use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
 
@@ -283,6 +281,8 @@ pub struct ChatState {
     /// The text a summary request has collected so far; `Some` exactly while
     /// that request holds the stream slot.
     summarizing: Option<String>,
+    /// The rolling summary of the history that left the window (see `compact`).
+    compaction: compact::Compaction,
     /// The summary draft, while it is open over the conversation.
     draft: Option<summary::SummaryDraft>,
     /// The summary the user approved: sent once, with the session end.
@@ -367,6 +367,7 @@ impl ChatState {
             memory: memory::ChatMemory::new(),
             editor: None,
             summarizing: None,
+            compaction: compact::Compaction::default(),
             draft: None,
             approved_summary: None,
             tag: None,
@@ -826,7 +827,7 @@ impl ChatState {
         // the history may take, and the newest message is kept whole whatever
         // is left. Only an adapter that carries it gets the block, and only
         // then does it take budget.
-        let memory = adapters::carries_memory(engine)
+        let mut memory = adapters::carries_memory(engine)
             .then(|| self.memory.injected().map(|block| block.text.clone()))
             .flatten();
         let told = std::mem::take(&mut self.told);
@@ -835,17 +836,34 @@ impl ChatState {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let memory_text = memory.as_deref().unwrap_or_default();
-        let context = match budget::budget(
-            engine,
-            self.window,
-            &system,
-            memory_text,
-            self.tools_offered,
-        ) {
-            budget::Budget::Chars(max) => build_context(&history, max),
-            budget::Budget::Tokens { room, .. } => build_context_tokens(&history, room),
+        // What left the window may ride along as a summary, counted against
+        // the budget like the memory block. Only when something is omitted.
+        let fit = |memory_text: &str| {
+            let room = budget::budget(
+                engine,
+                self.window,
+                &system,
+                memory_text,
+                self.tools_offered,
+            );
+            (room, compact::context_for(&history, room))
         };
+        let (mut room, mut context) = fit(memory.as_deref().unwrap_or_default());
+        let mut summarized = false;
+        if context.omitted
+            && let Some(summary) = self.summary_block()
+        {
+            let joined = match memory.take() {
+                Some(block) => format!("{block}\n\n{summary}"),
+                None => summary,
+            };
+            (room, context) = fit(&joined);
+            memory = Some(joined);
+            summarized = true;
+        }
+        self.compaction.cancel();
+        self.compaction.sent(room);
+        let memory_text = memory.as_deref().unwrap_or_default();
         self.fill = budget::fill(
             self.window,
             &system,
@@ -858,8 +876,11 @@ impl ChatState {
             engine: engine.clone(),
             model: model.clone(),
         });
-        let oldest = sendable[history.len() - context.messages.len()];
-        self.place_marker(oldest, context.omitted);
+        let start = history.len() - context.messages.len();
+        let oldest = sendable[start];
+        // A summary that covers what is out replaces the marker.
+        let covered = summarized && self.compaction.covers(start);
+        self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
@@ -1162,6 +1183,8 @@ impl ChatState {
 
 #[cfg(test)]
 mod anchor_tests;
+#[cfg(test)]
+mod compact_tests;
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
