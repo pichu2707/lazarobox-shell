@@ -6,7 +6,7 @@ use super::*;
 fn a_scratch_folder_is_private_canonical_and_gone_when_dropped() {
     let parent = tempfile::tempdir().unwrap();
     let parent = parent.path().canonicalize().unwrap();
-    let scratch = Scratch::unique(&parent.join("tmp")).unwrap();
+    let scratch = Scratch::unique(&parent.join("tmp"), "run").unwrap();
     let path = scratch.path().to_path_buf();
     assert!(path.starts_with(parent.join("tmp")));
     assert_eq!(path, path.canonicalize().unwrap());
@@ -23,8 +23,8 @@ fn a_scratch_folder_is_private_canonical_and_gone_when_dropped() {
 #[test]
 fn two_scratch_folders_never_share_a_name() {
     let parent = tempfile::tempdir().unwrap();
-    let one = Scratch::unique(parent.path()).unwrap();
-    let two = Scratch::unique(parent.path()).unwrap();
+    let one = Scratch::unique(parent.path(), "run").unwrap();
+    let two = Scratch::unique(parent.path(), "run").unwrap();
     assert_ne!(one.path(), two.path());
 }
 

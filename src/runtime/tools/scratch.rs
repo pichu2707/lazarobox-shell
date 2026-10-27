@@ -17,8 +17,8 @@ pub struct Scratch(PathBuf);
 
 impl Scratch {
     /// A new private folder in `parent`, which is made (private too) when it
-    /// does not exist. The name holds the pid and a counter.
-    pub fn unique(parent: &Path) -> io::Result<Scratch> {
+    /// does not exist. The name is `prefix`, the pid and a counter.
+    pub fn unique(parent: &Path, prefix: &str) -> io::Result<Scratch> {
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -26,7 +26,7 @@ impl Scratch {
         // SAFETY: getpid has no preconditions and cannot fail. (`std::process`
         // is off limits to this file: it may write, not start a process.)
         let pid = unsafe { libc::getpid() };
-        let name = format!("run-{pid}-{}", RUNS.fetch_add(1, Ordering::Relaxed));
+        let name = format!("{prefix}-{pid}-{}", RUNS.fetch_add(1, Ordering::Relaxed));
         Scratch::exact(&fs::canonicalize(parent)?.join(name))
     }
 

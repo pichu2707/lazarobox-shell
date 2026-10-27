@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 
 /// Largest file whose text is kept.
 pub const TEXT_CAP: usize = 64 * 1024;
+/// Most bytes of a file that go into its digest.
+const HASH_CAP: u64 = 16 * 1024 * 1024;
 /// Most files taken from the hooks folder.
 const HOOKS_MAX: usize = 64;
 
@@ -97,8 +99,10 @@ fn read_item(path: &Path) -> Option<Item> {
         return None;
     }
     let mut hasher = Sha256::new();
+    hasher.update(meta.len().to_le_bytes());
     let mut text = Vec::new();
-    let mut file = fs::File::open(path).ok()?;
+    // A file bigger than this is told by its size and its first part.
+    let mut file = fs::File::open(path).ok()?.take(HASH_CAP);
     let mut buf = [0u8; 8192];
     let mut size = 0usize;
     loop {

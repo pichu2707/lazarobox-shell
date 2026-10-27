@@ -20,9 +20,14 @@ use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 use tokio::process::Command;
 
+use crate::core::ai::jail::{JailArgs, JailSpec, NetBind, Rlimits};
+use crate::core::ai::toolchain::env::scrub;
+use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::run::{Capture, Ended};
 use crate::runtime::ai_detect::wait_exit_unreaped;
 use crate::runtime::proc::GroupKill;
+use crate::runtime::tools::integrity::{self, Change};
+use crate::runtime::tools::scratch::Scratch;
 
 /// One program to start. The environment is cleared first: `env` is all the
 /// program sees.
@@ -33,6 +38,93 @@ pub struct Run {
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
     pub timeout: Duration,
+}
+
+/// A program the allow-list let through, ready to run in the toolchain jail.
+#[derive(Debug)]
+pub struct Job {
+    /// The `lazarobox` binary that serves `__jail-exec`.
+    pub helper: PathBuf,
+    /// The rules for the run (`toolchain_spec`); [`profile`] adds the rest.
+    pub spec: JailSpec,
+    pub tool: Program,
+    /// The canonical program and its argv (the allow-list already judged them).
+    pub program: PathBuf,
+    pub argv: Vec<OsString>,
+    /// The canonical project root: the one `rwx` folder.
+    pub root: PathBuf,
+    pub cwd: PathBuf,
+    /// The private `TMPDIR`, already in `spec.rw`. Removed when the run ends.
+    pub scratch: Scratch,
+    pub timeout: Duration,
+}
+
+/// A finished jailed run: how it went and which watched places in the root it
+/// changed (X-d1 shows them with a diff and offers to put them back).
+#[derive(Debug)]
+pub struct Ran {
+    pub done: Done,
+    pub changes: Vec<Change>,
+}
+
+/// The two settings every toolchain run gets, whatever the spec says: TCP
+/// listening open (a dev server) and the core, file-size and CPU limits.
+pub fn profile(spec: JailSpec) -> JailSpec {
+    JailSpec {
+        net_bind: NetBind::Open,
+        rlimits: Rlimits::Toolchain,
+        ..spec
+    }
+}
+
+/// Runs `job` through the jail helper with a scrubbed environment. `read`
+/// stands in for the parent's environment. The private folders are made
+/// before the program starts and removed after it (or if the future is
+/// dropped); the watched places of the root are read before and after.
+pub async fn run_jailed(
+    job: Job,
+    read: &(dyn Fn(&str) -> Option<OsString> + Sync),
+) -> io::Result<Ran> {
+    // Held to the end: the folder goes with the run.
+    let mut env = scrub(read, &job.root, job.scratch.path());
+    // `go run` and `go test` execute what they build, and the private TMPDIR
+    // never executes: they get a folder under the `rwx` root.
+    let _gotmp = match job.tool {
+        Program::Go => {
+            let gotmp = Scratch::unique(&job.root, ".lbx-gotmp")?;
+            env.push((OsString::from("GOTMPDIR"), gotmp.path().into()));
+            Some(gotmp)
+        }
+        _ => None,
+    };
+    let args = JailArgs {
+        min_abi: None,
+        spec: profile(job.spec),
+        program: job.program,
+        argv: job.argv,
+    };
+    let before = watched(&job.root).await;
+    let done = spawn_core(Run {
+        program: job.helper,
+        argv: args.render(),
+        cwd: job.cwd,
+        env,
+        timeout: job.timeout,
+    })
+    .await?;
+    let after = watched(&job.root).await;
+    Ok(Ran {
+        done,
+        changes: integrity::compare(&before, &after),
+    })
+}
+
+/// [`integrity::snapshot`] off the event loop.
+async fn watched(root: &std::path::Path) -> integrity::Snapshot {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || integrity::snapshot(&root))
+        .await
+        .unwrap_or_default()
 }
 
 /// How a run went.
