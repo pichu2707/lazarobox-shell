@@ -248,9 +248,9 @@ Spec: command-runner "Jail profile".
 
 ### X-c3: runner (PR 19, ~450)
 Spec: command-runner "Process rules".
-- [ ] Xc3.1 RED (`/bin/sh` scripts below the allow-list): spawn core on `std::io::pipe`, shared stdout/stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`. GREEN: `runtime/tools/runner.rs`. ~220.
-- [ ] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
-- [ ] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90.
+- [x] Xc3.1 RED (`/bin/sh` scripts below the allow-list): spawn core on `std::io::pipe`, shared stdout/stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`. GREEN: `runtime/tools/runner.rs`. ~220.
+- [x] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
+- [x] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90. Also done here: exec-capable `GOTMPDIR`, `net_bind` Open + `rlimits` Toolchain on every run, the git integrity snapshot/compare (`integrity.rs`, user decision 5B). X-d1 must show `Ran.changes`.
 
 ### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".

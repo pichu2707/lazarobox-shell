@@ -744,3 +744,26 @@ Review fixes (slice X-c2):
 - `set_limits`: `min(getrlimit hard, value)` (a lower parent hard limit no longer gives EPERM); an out-of-range value is `RLIMIT_REASON`, never `RLIM_INFINITY`.
 - Tests: the rlimit test drops the inherited `ulimit -c` baseline, a lowered parent hard limit and symlinked/broad roots are end-to-end, `RLIMIT_REASON` is in the safe-reasons vector.
 - design.md: ABI bullets list restored (the X-c3 notes now follow it), helper rules and the in-root secrets/hooks residual risk stated.
+
+## Batch 21: slice X-c3 (runner, PR 19, branch feat/coding-tools-xc3, base feat/coding-tools-xc2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xc3.1 spawn core: `std::io::pipe` shared by stdout and stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`, audit exemption for `runner.rs` | done | feat(tools): spawn a program on one shared pipe in its own process group |
+| Xc3.2 timeout, cancel by drop, group kill of grandchildren, `kill_and_reap` then 500 ms drain | done | feat(tools): kill the process group on timeout, on cancel and after a normal exit |
+| Xc3.3a `Scratch` (private TMPDIR / GOTMPDIR) + `integrity` snapshot/compare | done | feat(tools): keep a private folder per run and watch git hooks, config and submodules |
+| Xc3.3b `run_jailed`: scrub, profile, GOTMPDIR, integrity, ring | done | feat(tools): run a toolchain program through the jail with a scrubbed env and watched git places |
+
+TDD evidence: Xc3.1 RED = `E0422/E0425 cannot find Run / Done / spawn_core` (7 errors), 9 tests green; audit RED = `runner.rs: path segment process/net, Command, libc::pid_t, libc::ETXTBSY` until the spawn side was added. Xc3.2 RED = timeout test never ended (no deadline; had to be killed by pid) and a setsid test; GREEN 16. Mutations: normal exit with `reap` instead of `kill_and_reap` hung the grandchild test; `DRAIN` 500 -> 5 ms failed the direct drain test; removing the `if open` drain alone SURVIVED every end-to-end test (the exit wake takes a `spawn_blocking` round trip, so the data is nearly always read first): the drain is covered by a direct test on `drain` (bytes left, writer still open, bound reached), not by a race. Xc3.3a RED = `E0425 snapshot/compare/Change/Kind/TEXT_CAP`, `E0433 Scratch` (23); 16 green; mutations: mode ignored, `metadata` instead of `symlink_metadata`, text kept over cap, digest dropped, scratch mode 0o755: each failed one test. Xc3.3b RED = `E0425 run_jailed/profile`, `E0422 Job`, 16 errors; 26 green; mutations: parent env leaked in, GOTMPDIR for the wrong tool, `profile` skipped, `compare(before, before)`: each failed 1-2 tests.
+
+API (`runtime/tools/runner.rs`): `Run{program, argv, cwd, env, timeout}` + `spawn_core(Run) -> io::Result<Done{ended: Ended, capture: Capture, duration}>` (below the allow-list; `timed_out` set, `cancelled` never: cancel is a dropped future). `Job{helper, spec, tool, program, argv, root, cwd, scratch: Scratch, timeout}` + `run_jailed(Job, &read_env) -> io::Result<Ran{done, changes: Vec<Change>}>`; `profile(spec)` sets `NetBind::Open` and `Rlimits::Toolchain` (always: a dev server may listen). X-d1 builds the `Layout` AFTER `Scratch::unique(parent, "run")` so `Layout.tmp == job.scratch.path()`, then `toolchain_spec`, then `Job`, then builds `RunOutcome::new(argv, done.ended, &done.capture, done.duration)`.
+
+Audit: `MAY_SPAWN = ["runner.rs"]` (`Command` and a `process` path segment, `libc::{pid_t, ETXTBSY}`, and `tokio::net::unix::pipe` only; sockets, `FS_WRITE`, other libc stay banned) and `scratch.rs` in `MAY_WRITE` (it makes and removes folders; `getpid` instead of `std::process`). New test `the_runner_may_start_a_process_and_nothing_else_and_others_may_not`.
+
+Integrity (user decision 5B): `integrity::{snapshot, compare, Change{path, kind: Added|Changed|Removed, before, after, mode}}`. Not run through a link; `.git` counts when it is a file; hooks capped at 64 names; text kept <= 64 KiB, bigger files by sha256. X-d1 MUST surface `Ran.changes` (warning with a diff built from `before`/`after`, and an offer to revert from `before`). Nothing writes in X-c3. A change is reported even when the run times out or fails.
+
+Manual checks (throwaway test, removed): a real `cargo check` in the real jail with a populated registry and with an index update: `.package-cache` needs no `rw_files`; `.global-cache` prints a harmless last-use warning (SQLite journal not writable; accepted), see design.md. Cargo's workspace search fails when an ancestor of the root holds an unreadable `Cargo.toml`.
+
+OPEN for X-d1 (risk): the helper execs with `arg0 = program` and `Layout.program` is the CANONICAL path, so `~/.cargo/bin/cargo` (a rustup proxy) becomes `rustup` and would run as rustup, not cargo. By reading the code only (not run): X-d1 must pass the proxy name as arg0 or resolve the real toolchain binary. `toolchain_spec` only accepts cargo under `$CARGO_HOME/bin`, so the toolchain-dir binary is refused today. My manual check used `rustup run stable cargo ...`.
+
+Size: see report. Checks green: fmt, clippy --all-targets -D warnings, cargo test.
