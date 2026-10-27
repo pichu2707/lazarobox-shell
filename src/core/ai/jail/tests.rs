@@ -660,6 +660,80 @@ fn helper_args_refuse_a_relative_rwx_root() {
     assert!(parse_args(&args(&["--rwx", "--", "/bin/x"])).is_err());
 }
 
+#[test]
+fn helper_args_carry_the_toolchain_flags_and_leave_them_out_by_default() {
+    let spec = JailSpec {
+        rwx: paths(&["/home/u/proj"]),
+        rx: paths(&["/usr/bin"]),
+        net_bind: NetBind::Open,
+        rlimits: Rlimits::Toolchain,
+        ..JailSpec::default()
+    };
+    let job = JailArgs {
+        min_abi: None,
+        spec,
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--net-bind",
+            "open",
+            "--rlimits",
+            "toolchain",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+
+    let plain = JailArgs {
+        min_abi: None,
+        spec: JailSpec::default(),
+        program: p("/bin/true"),
+        argv: Vec::new(),
+    };
+    let text = plain.render();
+    assert!(!text.iter().any(|a| a == "--net-bind" || a == "--rlimits"));
+}
+
+#[test]
+fn helper_args_refuse_a_bad_toolchain_flag() {
+    for bad in [
+        args(&["--rwx", "rel/path", "--", "/bin/x"]),
+        args(&["--net-bind", "closed", "--", "/bin/x"]),
+        args(&["--net-bind", "--", "/bin/x"]),
+        args(&["--rlimits", "all", "--", "/bin/x"]),
+        args(&["--rlimits", "Toolchain", "--", "/bin/x"]),
+    ] {
+        assert!(parse_args(&bad).is_err(), "{bad:?}");
+    }
+    let err = parse_args(&args(&["--net-bind", "closed", "--", "/bin/x"])).unwrap_err();
+    assert!(ARG_REASONS.contains(&err.0), "{err:?}");
+}
+
+#[test]
+fn the_toolchain_limits_are_core_zero_file_4_gib_and_cpu_1200_seconds() {
+    assert_eq!(Rlimits::None.limits(), []);
+    assert_eq!(
+        Rlimits::Toolchain.limits(),
+        [
+            (Limit::Core, 0),
+            (Limit::FileSize, 4 << 30),
+            (Limit::CpuSeconds, 1200),
+        ]
+    );
+}
+
 // ---- the ELF loader ----
 
 /// A minimal little-endian ELF64 image: header, `phdrs` program headers
@@ -1833,7 +1907,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
                 "/opt/lb/share/ca.pem",
             ]),
             rw_files: paths(&["/dev/null", "/run/user/1000/lazarobox/shim.sock"]),
-            rw_except: Vec::new(),
+            ..JailSpec::default()
         }
     );
 }

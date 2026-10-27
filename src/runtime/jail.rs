@@ -93,7 +93,8 @@ mod imp {
     use super::Failure;
     use crate::core::ai::jail::JailSupport;
     use crate::core::ai::jail::{
-        JailArgs, JailSpec, MIN_ABI, Os, RWX_REASON, parse_args, support_from_abi,
+        JailArgs, JailSpec, Limit, MIN_ABI, NetBind, Os, RLIMIT_REASON, RWX_REASON, parse_args,
+        support_from_abi,
     };
 
     /// `landlock_create_ruleset` has the same number on every architecture.
@@ -137,6 +138,7 @@ mod imp {
         job.spec
             .check_exec(Os::Linux, &[])
             .map_err(|_| Failure::NotEnforced(RWX_REASON.to_owned()))?;
+        set_limits(&job.spec).map_err(Failure::NotEnforced)?;
         enforce(&job.spec, abi).map_err(Failure::NotEnforced)?;
         launch(&job)
     }
@@ -147,6 +149,28 @@ mod imp {
             .args(&job.argv)
             .exec();
         Err(Failure::Exec(job.program.display().to_string(), error))
+    }
+
+    /// Sets the spec's resource limits (soft and hard) on this process, so the
+    /// program inherits them through `exec`.
+    fn set_limits(spec: &JailSpec) -> Result<(), String> {
+        for (limit, value) in spec.rlimits.limits() {
+            let resource = match limit {
+                Limit::Core => libc::RLIMIT_CORE,
+                Limit::FileSize => libc::RLIMIT_FSIZE,
+                Limit::CpuSeconds => libc::RLIMIT_CPU,
+            };
+            let value = libc::rlim_t::try_from(*value).unwrap_or(libc::RLIM_INFINITY);
+            let rlim = libc::rlimit {
+                rlim_cur: value,
+                rlim_max: value,
+            };
+            // SAFETY: `rlim` is a valid, initialized struct that outlives the call.
+            if unsafe { libc::setrlimit(resource, &rlim) } != 0 {
+                return Err(RLIMIT_REASON.to_owned());
+            }
+        }
+        Ok(())
     }
 
     /// Builds the ruleset with every filesystem right of the probed ABI as a
@@ -164,9 +188,10 @@ mod imp {
                 .scope(Scope::from_all(abi_v))
                 .map_err(|e| e.to_string())?;
         }
-        if abi >= NET_ABI {
+        if abi >= NET_ABI && spec.net_bind == NetBind::Closed {
             // Handled with no rule at all: nothing may listen on TCP, while
             // outgoing connect (not handled) stays open for the CLIs' APIs.
+            // A toolchain run (`net_bind` open) leaves bind unhandled.
             ruleset = ruleset
                 .handle_access(AccessNet::BindTcp)
                 .map_err(|e| e.to_string())?;

@@ -16,7 +16,7 @@ fn spec(rx: &[&str], ro: &[&str], rw: &[&str], rof: &[&str], rwf: &[&str]) -> Ja
         rw: list(rw),
         ro_files: list(rof),
         rw_files: list(rwf),
-        rw_except: Vec::new(),
+        ..JailSpec::default()
     }
 }
 
@@ -560,5 +560,17 @@ fn an_rwx_root_is_refused_by_the_renderer() {
     spec.rwx = vec![p("/Users/u/proj")];
     assert_eq!(render(&spec), Err(SbplError::Rwx));
     spec.rwx.clear();
+    assert!(render(&spec).is_ok());
+}
+
+#[test]
+fn an_open_tcp_bind_or_toolchain_rlimits_are_refused_by_the_renderer() {
+    let mut spec = one_each();
+    spec.net_bind = NetBind::Open;
+    assert_eq!(render(&spec), Err(SbplError::Rwx));
+    spec.net_bind = NetBind::Closed;
+    spec.rlimits = Rlimits::Toolchain;
+    assert_eq!(render(&spec), Err(SbplError::Rwx));
+    spec.rlimits = Rlimits::None;
     assert!(render(&spec).is_ok());
 }

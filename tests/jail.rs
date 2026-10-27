@@ -21,7 +21,10 @@ use lazarobox_shell::{
     core::{
         ai::{
             chat::engine::ChatError,
-            jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
+            jail::{
+                ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, NetBind, Rlimits, elf_loader,
+                exit_error,
+            },
             tools::Call,
         },
         layout::PaneIds,
@@ -653,4 +656,53 @@ fn the_helper_refuses_two_rwx_roots_and_a_whole_file_system() {
         assert_jail_error(&out);
         assert!(!marker.exists(), "the program must not run");
     }
+}
+
+#[test]
+fn an_open_net_bind_lets_the_program_listen_and_the_default_does_not() {
+    if !jail_available() {
+        return;
+    }
+    if probe_abi() < 4 {
+        eprintln!("skipped: ABI below 4 has no TCP rules");
+        return;
+    }
+    let Ok(python) = fs::canonicalize("/usr/bin/python3") else {
+        eprintln!("skipped: /usr/bin/python3 is not installed");
+        return;
+    };
+    let python = python.to_str().unwrap();
+    let bind = "import socket\ntry:\n s=socket.socket();s.bind(('127.0.0.1',0));s.listen(1)\n print('LISTENING')\nexcept OSError as e:\n print('ERR',e.errno)\n";
+    let out = run(&job(python, &["-S", "-c", bind], |_| {}));
+    assert_eq!(stdout(&out).trim(), "ERR 13", "{}", stderr(&out));
+    let out = run(&job(python, &["-S", "-c", bind], |s| {
+        s.net_bind = NetBind::Open
+    }));
+    assert_eq!(stdout(&out).trim(), "LISTENING", "{}", stderr(&out));
+}
+
+#[test]
+fn the_toolchain_rlimits_are_set_before_the_program_runs() {
+    if !jail_available() {
+        return;
+    }
+    let script = "ulimit -c; ulimit -f; ulimit -t";
+    let out = run(&job("/bin/sh", &["-c", script], |_| {}));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stdout(&out).starts_with("0\n"), "{}", stdout(&out));
+
+    let out = run(&job("/bin/sh", &["-c", script], |s| {
+        s.rlimits = Rlimits::Toolchain
+    }));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<_> = stdout(&out).lines().map(str::to_owned).collect();
+    // `ulimit -f` counts 512-byte blocks in dash and 1024-byte ones in bash.
+    let fsize = ["8388608", "4194304"];
+    assert!(
+        lines.len() == 3
+            && lines[0] == "0"
+            && fsize.contains(&lines[1].as_str())
+            && lines[2] == "1200",
+        "{lines:?}"
+    );
 }

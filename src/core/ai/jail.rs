@@ -248,7 +248,9 @@ const ARG_UNKNOWN_FLAG: &str = "unknown flag";
 const ARG_RELATIVE_RULE: &str = "rule paths must be absolute";
 const ARG_NO_PROGRAM: &str = "no program after `--`";
 const ARG_RELATIVE_PROGRAM: &str = "the program must be an absolute path";
-const ARG_REASONS: [&str; 7] = [
+const ARG_BAD_NET_BIND: &str = "--net-bind takes only `open`";
+const ARG_BAD_RLIMITS: &str = "--rlimits takes only `toolchain`";
+const ARG_REASONS: [&str; 9] = [
     ARG_NO_SEPARATOR,
     ARG_NO_VALUE,
     ARG_BAD_ABI,
@@ -256,6 +258,8 @@ const ARG_REASONS: [&str; 7] = [
     ARG_RELATIVE_RULE,
     ARG_NO_PROGRAM,
     ARG_RELATIVE_PROGRAM,
+    ARG_BAD_NET_BIND,
+    ARG_BAD_RLIMITS,
 ];
 
 /// The macOS helper's other fixed texts (`runtime::jail::seatbelt`).
@@ -264,6 +268,8 @@ pub const PROFILE_REASON: &str = "the macOS profile could not be built";
 pub const EXEC_FAILED_REASON: &str = "/usr/bin/sandbox-exec could not be started";
 /// The helper's refusal of an `rwx` root that fails [`JailSpec::check_exec`].
 pub const RWX_REASON: &str = "the rwx root is not allowed";
+/// The helper could not set a resource limit.
+pub const RLIMIT_REASON: &str = "a resource limit could not be set";
 
 /// The reasons the helper can print that are safe to show, as the user will
 /// read them. The helper builds them from numbers and fixed text; everything
@@ -286,6 +292,7 @@ fn known_helper_reason(said: &str) -> Option<String> {
         PROFILE_REASON,
         EXEC_FAILED_REASON,
         RWX_REASON,
+        RLIMIT_REASON,
     ]
     .into_iter()
     .chain(ARG_REASONS)
@@ -1015,6 +1022,46 @@ pub struct JailSpec {
     /// can carve them out (a later `deny file-write*` beats the allow);
     /// Landlock cannot, so Linux never gets one.
     pub rw_except: Vec<PathBuf>,
+    pub net_bind: NetBind,
+    pub rlimits: Rlimits,
+}
+
+/// Whether the jailed program may listen on TCP (Landlock ABI 4+; below that
+/// nothing is mediated). Closed unless a toolchain run asks for a dev server.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NetBind {
+    #[default]
+    Closed,
+    Open,
+}
+
+/// The resource limits the helper sets before `exec`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rlimits {
+    #[default]
+    None,
+    Toolchain,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limit {
+    Core,
+    FileSize,
+    CpuSeconds,
+}
+
+impl Rlimits {
+    /// Each limit with the value used for both its soft and hard bound.
+    pub fn limits(self) -> &'static [(Limit, u64)] {
+        match self {
+            Rlimits::None => &[],
+            Rlimits::Toolchain => &[
+                (Limit::Core, 0),
+                (Limit::FileSize, 4 << 30),
+                (Limit::CpuSeconds, 1200),
+            ],
+        }
+    }
 }
 
 /// The folder of a codex state dir that holds the standalone installer's
@@ -1358,6 +1405,12 @@ impl JailArgs {
                 out.extend([OsString::from(flag), path.clone().into_os_string()]);
             }
         }
+        if self.spec.net_bind == NetBind::Open {
+            out.extend([OsString::from("--net-bind"), OsString::from("open")]);
+        }
+        if self.spec.rlimits == Rlimits::Toolchain {
+            out.extend([OsString::from("--rlimits"), OsString::from("toolchain")]);
+        }
         out.extend([OsString::from("--"), self.program.clone().into_os_string()]);
         out.extend(self.argv.iter().cloned());
         out
@@ -1379,6 +1432,20 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
         if flag == "--min-abi" {
             let abi = value.to_str().and_then(|v| v.parse().ok());
             min_abi = Some(abi.ok_or(ArgError(ARG_BAD_ABI))?);
+            continue;
+        }
+        if flag == "--net-bind" {
+            match value.to_str() {
+                Some("open") => spec.net_bind = NetBind::Open,
+                _ => return Err(ArgError(ARG_BAD_NET_BIND)),
+            }
+            continue;
+        }
+        if flag == "--rlimits" {
+            match value.to_str() {
+                Some("toolchain") => spec.rlimits = Rlimits::Toolchain,
+                _ => return Err(ArgError(ARG_BAD_RLIMITS)),
+            }
             continue;
         }
         let list = match flag.to_str() {
