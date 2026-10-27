@@ -776,3 +776,35 @@ async fn the_download_dir_is_created_private() {
         .mode();
     assert_eq!(mode & 0o777, 0o700);
 }
+
+/// Writes an executable `<dir>/llama-server`.
+fn put_server(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let file = dir.join("llama-server");
+    std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    file
+}
+
+// Spec (chat-engines, Owned binary spawned / System binary preferred): the
+// owned folder is on the PATH from the start; a forced detection finds the
+// binary once it exists, loses it when it is gone, and a system one wins.
+#[test]
+fn detection_follows_the_owned_folder_and_prefers_a_system_binary() {
+    let (data, system) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let search = install::with_owned_path(
+        &std::env::join_paths([system.path()]).unwrap(),
+        Some(data.path()),
+    );
+    let find = || crate::runtime::ai_detect::find_on_path("llama-server", &search);
+    assert_eq!(find(), None);
+    let owned = put_server(&install::current_dir(data.path()));
+    assert_eq!(find(), Some(owned.clone()));
+    assert!(install::is_owned(&owned, data.path()));
+    let system_binary = put_server(system.path());
+    assert_eq!(find(), Some(system_binary));
+    std::fs::remove_dir_all(system.path()).unwrap();
+    std::fs::remove_dir_all(install::current_dir(data.path())).unwrap();
+    assert_eq!(find(), None);
+}

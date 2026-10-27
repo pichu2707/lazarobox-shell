@@ -4,6 +4,7 @@
 //! the install needs and when a newer build is worth a notice. Everything
 //! here is pure; the runtime downloads, verifies, extracts and activates.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -258,6 +259,31 @@ pub fn is_owned(binary: &Path, data_home: &Path) -> bool {
         .components()
         .all(|c| !matches!(c, Component::ParentDir | Component::CurDir));
     plain && binary.starts_with(owned_root(data_home)) && binary != owned_root(data_home)
+}
+
+/// `<owned root>/current`: the symlink to the active tag, whose
+/// `llama-server` is found when this folder is on the `PATH`.
+pub fn current_dir(data_home: &Path) -> PathBuf {
+    owned_root(data_home).join("current")
+}
+
+/// `path` with the owned `current/` folder appended as the LAST entry, once,
+/// so a system `llama-server` found earlier wins. Without a data home, or
+/// when the entry is already there, `path` comes back unchanged. The lookup
+/// happens when a binary is searched for, so the folder's content appearing
+/// or vanishing after an install or a remove needs no refresh of the `PATH`.
+pub fn with_owned_path(path: &OsStr, data_home: Option<&Path>) -> OsString {
+    let Some(data_home) = data_home else {
+        return path.to_owned();
+    };
+    let current = current_dir(data_home);
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if entries.contains(&current) {
+        return path.to_owned();
+    }
+    entries.retain(|entry| !entry.as_os_str().is_empty() || !path.is_empty());
+    entries.push(current);
+    std::env::join_paths(entries).unwrap_or_else(|_| path.to_owned())
 }
 
 #[cfg(test)]
@@ -638,5 +664,38 @@ mod tests {
         ] {
             assert!(check_member(name, top).is_err(), "{name:?}");
         }
+    }
+
+    fn entries(path: &std::ffi::OsStr) -> Vec<PathBuf> {
+        std::env::split_paths(path).collect()
+    }
+
+    // Spec (chat-engines, System binary preferred): the owned folder is the
+    // LAST entry, so a system `llama-server` found earlier wins.
+    #[test]
+    fn the_owned_folder_is_appended_as_the_last_path_entry() {
+        let path = std::ffi::OsString::from("/usr/bin:/opt/bin");
+        let out = with_owned_path(&path, Some(Path::new("/data")));
+        assert_eq!(
+            entries(&out),
+            [
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/opt/bin"),
+                PathBuf::from("/data/lazarobox/llama.cpp/current"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_owned_folder_is_added_once_and_only_with_a_data_home() {
+        let path = std::ffi::OsString::from("/usr/bin");
+        assert_eq!(with_owned_path(&path, None), path);
+        let once = with_owned_path(&path, Some(Path::new("/data")));
+        assert_eq!(with_owned_path(&once, Some(Path::new("/data"))), once);
+        let empty = with_owned_path(std::ffi::OsStr::new(""), Some(Path::new("/data")));
+        assert_eq!(
+            entries(&empty),
+            [PathBuf::from("/data/lazarobox/llama.cpp/current")]
+        );
     }
 }

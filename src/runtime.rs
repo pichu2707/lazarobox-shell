@@ -268,7 +268,15 @@ pub async fn run() -> io::Result<()> {
     let path = login_path
         .await
         .unwrap_or_else(|_| login_path::sanitize(&process_path));
-    let cli_env = chat::CliEnv::from_env(jail).with_path(path);
+    let cli_env = chat::CliEnv::from_env(jail);
+    // The owned llama.cpp install, last: a system `llama-server` wins. Its
+    // folder is looked at on each lookup, so an install or a remove needs
+    // only a forced detection, not a new `PATH`.
+    let path = crate::core::ai::install::with_owned_path(
+        &path,
+        cli_env.data.as_deref().and_then(std::path::Path::parent),
+    );
+    let cli_env = cli_env.with_path(path);
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
