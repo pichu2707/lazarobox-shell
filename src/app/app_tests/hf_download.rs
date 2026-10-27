@@ -37,6 +37,7 @@ fn stopped_llamacpp() -> Detection {
             .collect(),
         local_models: vec![PathBuf::from("/m/b.gguf")],
         data_home: None,
+        vulkan_icd: false,
     }
 }
 
@@ -56,7 +57,7 @@ pub(super) fn cursor_label(a: &App) -> String {
         .expect("a picker cursor")
 }
 
-fn goto_pick(a: &mut App, label: &str) {
+pub(super) fn goto_pick(a: &mut App, label: &str) {
     for _ in 0..30 {
         if cursor_label(a) == label {
             return;

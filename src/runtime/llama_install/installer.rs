@@ -4,7 +4,9 @@
 //! or install at a time; a cancel stops the download that runs.
 
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{Fetched, activate, archive_path, download_verified, resolve};
 use crate::app::AppEvent;
-use crate::core::ai::install::{self, Platform, Release};
+use crate::core::ai::install::{self, Platform, Release, Variant};
 use crate::core::ai::picker::{InstallAsk, InstallReply as Reply};
 use crate::runtime::hf::Curl;
 
@@ -53,6 +55,9 @@ fn has_icd_in(dirs: &[&Path]) -> bool {
 /// Builds the curl of one request: the GitHub API (`true`) or the download
 /// host.
 type MakeCurl = Arc<dyn Fn(bool) -> Curl + Send + Sync>;
+
+/// Stops the managed llama-server (if one runs) and returns once it is gone.
+pub type StopFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The cancel of the download that runs, shared with its slot.
 type CancelSlot = Arc<Mutex<Option<oneshot::Sender<()>>>>;
@@ -95,6 +100,9 @@ pub struct Installer {
     /// The cancel of the download that runs.
     cancel: CancelSlot,
     busy: Arc<AtomicBool>,
+    /// Run before the owned install is deleted: the managed server may be
+    /// running from it.
+    stop: StopFn,
 }
 
 impl Installer {
@@ -113,7 +121,18 @@ impl Installer {
             events,
             cancel: Arc::new(Mutex::new(None)),
             busy: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(|| Box::pin(async {})),
         }
+    }
+
+    /// Sets what stops the managed llama-server before a remove deletes it.
+    pub fn with_stop(mut self, stop: StopFn) -> Self {
+        self.set_stop(stop);
+        self
+    }
+
+    fn set_stop(&mut self, stop: StopFn) {
+        self.stop = stop;
     }
 
     /// Tests: every request goes through the curl `make` builds.
@@ -137,6 +156,8 @@ impl Installer {
             }
             InstallAsk::Download(id, release) => self.download(id, release),
             InstallAsk::Install(id, release) => self.install(id, release),
+            InstallAsk::Remove(id, binary) => self.remove(id, binary),
+            InstallAsk::CheckNewer => self.check_newer(),
             InstallAsk::Cancel => {
                 let stop = self.cancel.lock().ok().and_then(|mut cancel| cancel.take());
                 if let Some(stop) = stop {
@@ -178,6 +199,73 @@ impl Installer {
     fn root(&self) -> Result<PathBuf, String> {
         let home = self.data_home.as_deref().ok_or(NO_HOME)?;
         Ok(install::owned_root(home))
+    }
+
+    /// Deletes the owned install `binary` belongs to; the runtime refuses a
+    /// system binary.
+    fn remove(&mut self, id: u64, binary: PathBuf) {
+        let Some(slot) = self.slot(id) else { return };
+        let home = self.data_home.clone().ok_or(NO_HOME);
+        let stop = Arc::clone(&self.stop);
+        self.spawn(id, Some(slot), async move {
+            let home = home?;
+            // Only an owned install goes, so only then is the server (which
+            // runs from it) stopped; a system binary stays as it is.
+            if install::is_owned(&binary, &home) {
+                stop().await;
+            }
+            activate::remove(&binary, &home)
+                .await
+                .map(|()| Reply::Removed)
+        });
+    }
+
+    /// One lookup of the newest release of the installed build (Vulkan when
+    /// that is what was installed); a newer tag than the installed one goes
+    /// out as a notice. Every failure (offline, rate limit, no install) is
+    /// silent, and nothing is downloaded. No slot: it changes no disk. While
+    /// an install or a remove runs the notice is dropped, and the installed
+    /// tag is read again right before it goes out.
+    fn check_newer(&self) {
+        let Some(root) = self.data_home.as_deref().map(install::owned_root) else {
+            return;
+        };
+        let Some(installed) = activate::current_tag(&root) else {
+            return;
+        };
+        let vulkan = activate::installed_vulkan(&root)
+            && install::variants(Platform::CURRENT, true).contains(&Variant::Vulkan);
+        let variant = if vulkan {
+            Variant::Vulkan
+        } else {
+            match install::variants(Platform::CURRENT, false).first().copied() {
+                Some(variant) => variant,
+                None => return,
+            }
+        };
+        let (curl, events, busy) = (
+            (self.make)(true),
+            self.events.clone(),
+            Arc::clone(&self.busy),
+        );
+        tokio::spawn(async move {
+            let Ok(release) = resolve(&curl, Platform::CURRENT, variant).await else {
+                return;
+            };
+            if busy.load(Ordering::Acquire)
+                || activate::current_tag(&root).as_deref() != Some(&installed)
+            {
+                return;
+            }
+            if install::is_newer(&installed, &release.tag) {
+                let build = if vulkan { " (Vulkan build)" } else { "" };
+                let notice = format!(
+                    "llama.cpp {}{build} is available (installed {installed}): open llamacpp in the AI tab to install it",
+                    release.tag
+                );
+                let _ = events.send(AppEvent::InstallNewer(notice)).await;
+            }
+        });
     }
 
     fn download(&mut self, id: u64, release: Release) {

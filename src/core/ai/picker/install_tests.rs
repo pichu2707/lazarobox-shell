@@ -19,8 +19,11 @@ fn release() -> Release {
 /// The id of the request in flight.
 fn id_of(w: &Wizard) -> u64 {
     match w.asking().expect("a request in flight") {
-        InstallAsk::Resolve(id, _) | InstallAsk::Download(id, _) | InstallAsk::Install(id, _) => id,
-        InstallAsk::Cancel => panic!("cancel has no id"),
+        InstallAsk::Resolve(id, _)
+        | InstallAsk::Download(id, _)
+        | InstallAsk::Install(id, _)
+        | InstallAsk::Remove(id, _) => id,
+        InstallAsk::Cancel | InstallAsk::CheckNewer => panic!("no id"),
     }
 }
 
@@ -580,4 +583,14 @@ fn progress_of_another_request_is_ignored_and_never_resizes_the_release() {
         panic!("not downloading");
     };
     assert_eq!(shown.size, release().size);
+}
+
+// Remove stops a running managed server first, and the prompt says so.
+#[test]
+fn the_remove_prompt_says_a_running_managed_server_is_stopped_first() {
+    let w = Wizard::remove(std::path::PathBuf::from(
+        "/h/lazarobox/llama.cpp/current/llama-server",
+    ));
+    let text = labels(&w).join(" ");
+    assert!(text.contains("stopped first"), "{text}");
 }

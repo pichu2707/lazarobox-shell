@@ -541,7 +541,7 @@ pub async fn run() -> io::Result<()> {
                 chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
                 chat_tx,
             )
-            .with_live(live)
+            .with_live(live.clone())
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
             // `<data>/run`. Without a private folder every turn runs as text.
             .with_tools(
@@ -573,15 +573,31 @@ pub async fn run() -> io::Result<()> {
         // The install wizard's steps: curl, gh and tar from the same PATH,
         // into the owned folder under the data home. They answer on the
         // Hub's channel.
-        .with_installer(llama_install::installer::Installer::new(
-            cli_env.path.clone(),
-            cli_env
-                .data
-                .as_deref()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf),
-            hub_tx,
-        ));
+        .with_installer(
+            llama_install::installer::Installer::new(
+                cli_env.path.clone(),
+                cli_env
+                    .data
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf),
+                hub_tx,
+            )
+            // A remove stops the managed server first: it may run from the
+            // files that are about to go. It is not retired, so a later
+            // install makes the next turn start it again.
+            .with_stop(Arc::new({
+                let live = live.clone();
+                move || {
+                    let live = live.clone();
+                    Box::pin(async move {
+                        if let Some(managed) = live.managed() {
+                            managed.shutdown().await;
+                        }
+                    })
+                }
+            })),
+        );
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,

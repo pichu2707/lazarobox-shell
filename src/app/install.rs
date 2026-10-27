@@ -5,9 +5,23 @@
 //! the install changed what is on the disk.
 
 use super::{App, Effect};
-use crate::core::ai::picker::InstallReply;
+use crate::core::ai::install;
+use crate::core::ai::picker::{InstallAsk, InstallReply};
 
 impl App {
+    /// The effects of an install ask. The newer build check goes out once per
+    /// run, and never when `[updates] check = false`: the runtime would make
+    /// a network call the user turned off.
+    pub(super) fn install_effects(&mut self, ask: InstallAsk) -> Vec<Effect> {
+        if ask == InstallAsk::CheckNewer {
+            if !install::should_check_newer(self.config.update_check, self.newer_checked) {
+                return Vec::new();
+            }
+            self.newer_checked = true;
+        }
+        vec![Effect::Install(ask)]
+    }
+
     /// The bytes on disk of the archive that downloads.
     pub(super) fn on_install_progress(&mut self, id: u64, done: u64) -> Vec<Effect> {
         if let Some(menu) = self.menu.as_mut() {
@@ -18,20 +32,20 @@ impl App {
     }
 
     /// The result of install request `id`. The wizard drops one that is not
-    /// the request in flight; a finished install makes the engines be
-    /// detected again either way, since it changed the disk even when
+    /// the request in flight; a finished install or remove makes the
+    /// engines be detected again either way, since it changed the disk even when
     /// nobody waits for it.
     pub(super) fn on_install_reply(
         &mut self,
         id: u64,
         answer: Result<InstallReply, String>,
     ) -> Vec<Effect> {
-        let installed = matches!(answer, Ok(InstallReply::Installed));
+        let changed = matches!(answer, Ok(InstallReply::Installed | InstallReply::Removed));
         if let Some(menu) = self.menu.as_mut() {
             menu.install_reply(id, answer);
             self.dirty = true;
         }
-        if !installed {
+        if !changed {
             return Vec::new();
         }
         let effects = self.request_forced_detection();
@@ -39,7 +53,18 @@ impl App {
         effects
     }
 
-    /// Why the archive's attestation was skipped: a footer notice.
+    /// A newer build exists: shown only when the footer says nothing else,
+    /// so it never covers a warning or another notice.
+    pub(super) fn on_install_newer(&mut self, notice: String) -> Vec<Effect> {
+        if self.notice.is_none() {
+            self.notice = Some(notice);
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    /// A notice about the install: why the archive's attestation was skipped,
+    /// or that a newer build exists. Shown in the footer.
     pub(super) fn on_install_warning(&mut self, warning: String) -> Vec<Effect> {
         self.notice = Some(warning);
         self.dirty = true;
