@@ -60,12 +60,12 @@ Chain strategy: stacked-to-main
 
 ## PR4: Extract, activate, remove (needs PR2, PR3)
 
-- [ ] 4.1 RED: fixture tarballs: valid, `../` member, absolute member/symlink, `..` symlink, extra top dir, bare-name symlink ok, ownership not preserved, tar missing.
-- [ ] 4.2 GREEN: `tar -tzf`/`-xzf` + Rust walk in `llama_install.rs` (~130).
-- [ ] 4.3 RED: fake `llama-server` script: version pass/fail (failure keeps previous install, removes tag dir), layout `<tag>/`+`current`, XDG fallback, prune keeps previous tag (A1), lock refusal, stale staging sweep, remove deletes owned dir only.
-- [ ] 4.4 GREEN: activate (atomic symlink swap), prune, flock, remove (~120).
-- [ ] 4.5 RED: PATH plug-in: owned appended last, none changes nothing, forced re-detection finds/loses binary, system wins.
-- [ ] 4.6 GREEN: `src/runtime.rs` (l.266-270) append `current` to login PATH (~80).
+- [x] 4.1 RED: fixture tarballs: valid, `../` member, absolute member/symlink, `..` symlink, extra top dir, bare-name symlink ok, ownership not preserved, tar missing.
+- [x] 4.2 GREEN: `tar -tzf`/`-xzf` + Rust walk in `llama_install.rs` (~130).
+- [x] 4.3 RED: fake `llama-server` script: version pass/fail (failure keeps previous install, removes tag dir), layout `<tag>/`+`current`, XDG fallback, prune keeps previous tag (A1), lock refusal, stale staging sweep, remove deletes owned dir only.
+- [x] 4.4 GREEN: activate (atomic symlink swap), prune, flock, remove (~120).
+- [x] 4.5 RED: PATH plug-in: owned appended last, none changes nothing, forced re-detection finds/loses binary, system wins.
+- [x] 4.6 GREEN: `src/runtime.rs` (l.266-270) append `current` to login PATH (~80).
 
 ## PR5: Wizard state machine (needs PR2)
 

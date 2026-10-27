@@ -143,3 +143,44 @@ Notes for later PRs:
 - Follow-up: `--signer-workflow ggml-org/llama.cpp/.github/workflows/release.yml` is NOT
   added: that path is not confirmed in the repo docs or notes. Verify upstream's release
   workflow path before pinning it.
+## PR4: Extract, activate, remove, PATH (tasks 4.1-4.6)
+
+Commits (on feat/llama-server-install-pr3):
+- feat(ai): append the owned llama.cpp folder last on the PATH
+- feat(ai): unpack, activate and remove the llama.cpp install
+
+Implemented:
+- `core/ai/install.rs`: `current_dir`, `with_owned_path(path, data_home)` (appended once, last).
+  `runtime.rs` applies it to the login PATH before `CliEnv::with_path` (D6).
+- `runtime/llama_install/unpack.rs`: `find_tar`, `extract(tar, archive, staging, top)`: `tar -tzf`
+  (LC_ALL=C, no TAR_OPTIONS) judged by `check_member` (cap 10k), `tar -tzvf --numeric-owner`
+  first char (only `- d l h`; `h` target via `check_hardlink_target`), `tar -xzf -C --no-same-owner`,
+  then a Rust walk (`symlink_metadata`): one top dir, files/dirs/bare-name existing symlinks,
+  no setuid/setgid, and an inode/nlink census that refuses any file linked outside the tree.
+- `runtime/llama_install/activate.rs`: `install(root, release, archive, path)`, `remove(binary,
+  data_home)`, `flock` on `.lock` (LOCKED), stale `.staging-*` sweep, version check
+  (`run_capped`, 5 s), atomic `current.new` rename, prune keeping the previous tag (A1).
+- PR3 review requirement (archive swap): install refuses a symlink at the archive path, opens it
+  `O_NOFOLLOW`, copies it into the 0700 staging dir while hashing exactly the copied bytes against
+  `release.sha256`/`size`, and extracts only the copy.
+
+TDD evidence:
+
+| Task | RED (observed) | GREEN |
+|------|----------------|-------|
+| 4.5/4.6 | with a stub `with_owned_path` returning the input: 2 tests FAILED | 28 install tests pass |
+| 4.1/4.2 | `cargo test --lib llama_install::unpack`: E0425 `extract`, `find_tar`, `NO_TAR`, `MAX_ENTRIES` | 15 passed |
+| 4.3/4.4 | process deviation: `activate.rs` was written before its tests; compensated with mutation checks: digest check off -> swap test FAILS; prune off -> prune test FAILS; version check off -> 3 tests FAIL; symlink check off -> symlink test FAILS | 16 passed |
+
+Notes:
+- Hardlinks: the verbose listing is parsed only for its first character (numeric owner keeps the
+  fields digits), but a crafted name could still fool " link to " parsing, so the walk's nlink
+  census is the authoritative defence; both stay.
+- GNU tar run as a normal user drops setuid bits itself; the walk refuses them when root keeps them.
+- Hostile members (`..`, absolute, escaping symlink, outside hardlink, device) are built with a
+  hand-written ustar writer in the tests, so no root is needed. Tests need `tar` and `gzip`.
+- A free `flock` can look taken while another thread's fork holds the fd copy before exec:
+  `lock` looks 5 times 25 ms apart before reporting LOCKED (found as a flaky test).
+- Spec scenario "Layout after install" fixed to D5 (`<tag>/llama-server`).
+- For PR6: call `activate::install(owned_root(data_home), release, archive, login_path)` after
+  `download_verified`, then emit `Detect{force:true}`; `activate::remove(binary, data_home)`.
