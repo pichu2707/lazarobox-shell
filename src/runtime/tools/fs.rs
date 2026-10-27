@@ -268,10 +268,15 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     let rel = real
         .strip_prefix(roots.home())
         .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
-        // No safe open on this platform: the tool cannot work at all.
-        std::io::ErrorKind::Unsupported => Failure::Unreadable,
-        _ => Failure::Refused,
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        // No safe open on this platform: the tool cannot work at all. An OS
+        // error of that kind is about the file (macOS opens a socket with
+        // `EOPNOTSUPP`), so it is refused like any other.
+        if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+            Failure::Unreadable
+        } else {
+            Failure::Refused
+        }
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
