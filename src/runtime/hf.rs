@@ -252,7 +252,16 @@ async fn error_line(child: &mut Child) -> String {
 
 /// The GGUF repos a search finds.
 pub async fn search(curl: &Curl, text: &str) -> Result<Vec<RepoHit>, String> {
-    match curl.get(&hf::search_path(text)).await? {
+    repos(curl, &hf::search_path(text)).await
+}
+
+/// The most downloaded text-generation GGUF repos.
+pub async fn popular(curl: &Curl) -> Result<Vec<RepoHit>, String> {
+    repos(curl, &hf::popular_path()).await
+}
+
+async fn repos(curl: &Curl, path: &str) -> Result<Vec<RepoHit>, String> {
+    match curl.get(path).await? {
         (200, body) => hf::parse_search(&body),
         (code, _) => Err(format!("Hugging Face request failed: HTTP {code}")),
     }
@@ -645,6 +654,15 @@ fn read_token_file(path: &Path) -> Option<String> {
     Some(text)
 }
 
+/// The repos of a search or of the popular list, with this machine's
+/// memory, so the picker can tell what fits.
+fn repos_found(hits: Vec<RepoHit>) -> Answer {
+    Answer::Repos {
+        hits,
+        ram: total_ram(),
+    }
+}
+
 /// What the Files screen shows of `files`: where a download goes, the room
 /// there and what each choice still needs.
 fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
@@ -670,7 +688,21 @@ fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
         free,
         missing,
         files,
+        ram: total_ram(),
     }
+}
+
+/// The memory of this machine, in bytes, when the system says.
+pub fn total_ram() -> Option<u64> {
+    // SAFETY: sysconf only reads system values.
+    let (pages, size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    let (pages, size) = (u64::try_from(pages).ok()?, u64::try_from(size).ok()?);
+    pages.checked_mul(size).filter(|&ram| ram > 0)
 }
 
 /// Builds the curl of one request, carrying this token.
@@ -770,7 +802,8 @@ impl Hub {
         tokio::spawn(async move {
             let curl = curl();
             let answer = match &ask {
-                Ask::Search(text) => search(&curl, text).await.map(Answer::Repos),
+                Ask::Search(text) => search(&curl, text).await.map(repos_found),
+                Ask::Popular => popular(&curl).await.map(repos_found),
                 Ask::Files(id) => repo_files(&curl, id)
                     .await
                     .map(|files| Answer::Files(Box::new(listing(hub.as_deref(), files)))),
@@ -872,6 +905,23 @@ mod hub_tests {
                 Err(NO_CURL.to_owned())
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn a_popular_request_without_curl_replies_with_its_message() {
+        let (hub, mut rx) = worker(None);
+        hub.ask(Ask::Popular);
+        assert_eq!(
+            rx.recv().await,
+            Some(AppEvent::HubReply(Ask::Popular, Err(NO_CURL.to_owned())))
+        );
+    }
+
+    // Spec (hf-popular S2): the memory of this machine is read.
+    #[test]
+    fn the_memory_of_this_machine_is_known() {
+        let ram = total_ram().expect("the memory is known");
+        assert!(ram >= 256 * 1024 * 1024, "{ram}");
     }
 
     #[tokio::test]

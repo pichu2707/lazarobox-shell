@@ -4,7 +4,8 @@
 
 ### Requirement: Hub requests
 Every request of this capability MUST go through the system `curl`, run by name from the `PATH` with no shell, with `-q`, `--silent`, `--show-error`, `--proto =https` and `--proto-redir =https`. It MUST be sent only to `https://huggingface.co` (API requests never follow redirects; downloads follow them with `--location`). It is sent only while the user is in the download flow of config-menu. The API requests are:
-- search: `/api/models?search=<text>&filter=gguf&sort=downloads&limit=20`;
+- search: `/api/models?search=<text>&filter=gguf&sort=downloads&limit=20&expand[]=gguf&expand[]=downloads` (the brackets percent-encoded); `gguf.total` is the parameter count;
+- popular (hf-popular): `/api/models?filter=gguf&pipeline_tag=text-generation&sort=downloads&limit=100&expand[]=gguf&expand[]=downloads`, sent only when the user enters the Hugging Face screens;
 - repo: `/api/models/<owner>/<repo>`, which gives the commit (`sha`), `gated` and `cardData`;
 - files: `/api/models/<owner>/<repo>/tree/<commit>?recursive=true`, which gives each file's `path`, `size` and `lfs.oid`.
 

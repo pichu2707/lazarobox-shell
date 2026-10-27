@@ -1644,11 +1644,12 @@ impl MenuState {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => ai.edit_with(|p, d, e| p.step(true, d, e)),
             KeyCode::Char('k') | KeyCode::Up => ai.edit_with(|p, d, e| p.step(false, d, e)),
-            KeyCode::Enter if !repeat => {
-                if let Outcome::Copy(text) = ai.drive(Picker::enter) {
-                    return MenuCommand::Copy(text);
-                }
-            }
+            KeyCode::Enter if !repeat => match ai.drive(Picker::enter) {
+                Outcome::Copy(text) => return MenuCommand::Copy(text),
+                // The Hugging Face entry row asks for the popular models.
+                Outcome::Ask(ask) => return MenuCommand::HubAsk(ask),
+                _ => {}
+            },
             KeyCode::Char('y') if !repeat => {
                 if let Outcome::Copy(text) = ai.drive(|p, d, e| p.copy(d, e)) {
                     return MenuCommand::Copy(text);

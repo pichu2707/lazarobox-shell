@@ -24,7 +24,8 @@ const GB: u64 = 1_000_000_000;
 fn a_search_reply_lists_repos_with_their_downloads() {
     let body = r#"[
         {"id":"Qwen/Qwen2.5-0.5B-Instruct-GGUF","downloads":335444,"tags":["gguf"]},
-        {"id":"bartowski/x-GGUF","downloads":19},
+        {"id":"bartowski/x-GGUF","downloads":19,"gguf":{"total":4022468096,"architecture":"qwen3"}},
+        {"id":"o/no-total","downloads":7,"gguf":{"architecture":"llama"}},
         {"id":"../evil","downloads":5},
         {"downloads":1}
     ]"#;
@@ -33,11 +34,18 @@ fn a_search_reply_lists_repos_with_their_downloads() {
         Ok(vec![
             RepoHit {
                 id: "Qwen/Qwen2.5-0.5B-Instruct-GGUF".into(),
-                downloads: 335_444
+                downloads: 335_444,
+                params: None,
             },
             RepoHit {
                 id: "bartowski/x-GGUF".into(),
-                downloads: 19
+                downloads: 19,
+                params: Some(4_022_468_096),
+            },
+            RepoHit {
+                id: "o/no-total".into(),
+                downloads: 7,
+                params: None,
             },
         ])
     );
@@ -240,7 +248,13 @@ fn a_repo_id_is_owner_slash_name() {
 fn the_search_text_is_percent_encoded() {
     assert_eq!(
         search_path("qwen 0.5b&x=1"),
-        "/api/models?search=qwen%200.5b%26x%3D1&filter=gguf&sort=downloads&limit=20"
+        "/api/models?search=qwen%200.5b%26x%3D1&filter=gguf&sort=downloads&limit=20\
+         &expand%5B%5D=gguf&expand%5B%5D=downloads"
+    );
+    assert_eq!(
+        popular_path(),
+        "/api/models?filter=gguf&pipeline_tag=text-generation&sort=downloads&limit=100\
+         &expand%5B%5D=gguf&expand%5B%5D=downloads"
     );
     assert_eq!(repo_path("o/r"), "/api/models/o/r");
     assert_eq!(
@@ -424,4 +438,16 @@ fn a_secret_is_never_shown_by_debug() {
     assert_eq!(secret.chars(), 6);
     secret.clear();
     assert_eq!((secret.expose(), secret.chars()), ("", 0));
+}
+
+// Spec (hf-popular S2): a model is sized from its parameters, about Q4_K_M,
+// and fits when it takes at most 70% of the memory.
+#[test]
+fn a_model_is_sized_from_its_parameters_and_fits_in_seventy_percent_of_the_memory() {
+    assert_eq!(model_bytes(8_000_000_000), 5_000_000_000);
+    assert_eq!(model_bytes(u64::MAX), u64::MAX / 8 * 5);
+    let ram = 8 * GB;
+    assert!(fits(5_600_000_000, ram));
+    assert!(!fits(5_600_000_001, ram));
+    assert!(!fits(model_bytes(70_000_000_000), ram));
 }

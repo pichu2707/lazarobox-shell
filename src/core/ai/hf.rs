@@ -19,13 +19,36 @@ pub const HUB: &str = "https://huggingface.co";
 pub const UNREADABLE: &str = "Hugging Face request failed: unreadable reply";
 
 /// How many repos a search lists.
-const SEARCH_LIMIT: usize = 20;
+pub(crate) const SEARCH_LIMIT: usize = 20;
+
+/// How many popular repos are asked for: the ones too big for this PC are
+/// left out after, so more are asked than a search lists.
+const POPULAR_LIMIT: usize = 100;
+
+/// Bits per parameter of the size estimate: about Q4_K_M, the usual pick.
+const ESTIMATE_BITS: u64 = 5;
+
+/// The share of the memory, in percent, a model may take: the rest is for
+/// the system, the context and the app.
+const FIT_PERCENT: u64 = 70;
 
 /// A repo found by a search.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RepoHit {
     pub id: String,
     pub downloads: u64,
+    /// The parameters of its model, as the Hub read them from the GGUF.
+    pub params: Option<u64>,
+}
+
+/// The bytes of a model of `params` parameters, about Q4_K_M.
+pub fn model_bytes(params: u64) -> u64 {
+    params / 8 * ESTIMATE_BITS
+}
+
+/// Whether a model of `bytes` fits a machine with `ram` bytes of memory.
+pub fn fits(bytes: u64, ram: u64) -> bool {
+    u128::from(bytes) * 100 <= u128::from(ram) * u128::from(FIT_PERCENT)
 }
 
 /// What the Hub says about a repo: the commit its files are read at, its
@@ -127,12 +150,18 @@ pub enum Ask {
     Search(String),
     /// The files of a valid repo id.
     Files(String),
+    /// The most downloaded text-generation GGUF repos.
+    Popular,
 }
 
 /// What the runtime found for an [`Ask`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Answer {
-    Repos(Vec<RepoHit>),
+    /// The repos found, with this machine's memory when known.
+    Repos {
+        hits: Vec<RepoHit>,
+        ram: Option<u64>,
+    },
     Files(Box<Listing>),
 }
 
@@ -145,6 +174,8 @@ pub struct Listing {
     pub hub: Option<PathBuf>,
     /// The bytes free on the hub cache's filesystem, when known.
     pub free: Option<u64>,
+    /// This machine's memory, when known.
+    pub ram: Option<u64>,
     /// The bytes each choice still needs, in choice order: a partial file
     /// counts as far as it goes.
     pub missing: Vec<u64>,
@@ -185,7 +216,7 @@ pub struct TokenEnv {
 }
 
 /// The repos of a search reply, the ones with a valid id, at most
-/// [`SEARCH_LIMIT`].
+/// [`POPULAR_LIMIT`].
 pub fn parse_search(body: &str) -> Result<Vec<RepoHit>, String> {
     let Ok(Value::Array(items)) = serde_json::from_str(body) else {
         return Err(UNREADABLE.to_owned());
@@ -197,9 +228,13 @@ pub fn parse_search(body: &str) -> Result<Vec<RepoHit>, String> {
             Some(RepoHit {
                 id: id.to_owned(),
                 downloads: item.get("downloads").and_then(Value::as_u64).unwrap_or(0),
+                params: item
+                    .get("gguf")
+                    .and_then(|gguf| gguf.get("total"))
+                    .and_then(Value::as_u64),
             })
         })
-        .take(SEARCH_LIMIT)
+        .take(POPULAR_LIMIT)
         .collect())
 }
 
@@ -432,11 +467,24 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// What a search reply also brings: the GGUF facts (parameters) and the
+/// downloads (asked for by name once a field is).
+const EXPAND: &str = "&expand%5B%5D=gguf&expand%5B%5D=downloads";
+
 /// The search request for `text`: GGUF repos, the most downloaded first.
 pub fn search_path(text: &str) -> String {
     format!(
-        "/api/models?search={}&filter=gguf&sort=downloads&limit={SEARCH_LIMIT}",
+        "/api/models?search={}&filter=gguf&sort=downloads&limit={SEARCH_LIMIT}{EXPAND}",
         encode(text)
+    )
+}
+
+/// The popular request: text-generation GGUF repos, the most downloaded
+/// first.
+pub fn popular_path() -> String {
+    format!(
+        "/api/models?filter=gguf&pipeline_tag=text-generation&sort=downloads\
+         &limit={POPULAR_LIMIT}{EXPAND}"
     )
 }
 

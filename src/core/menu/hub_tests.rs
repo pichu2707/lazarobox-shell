@@ -36,13 +36,49 @@ fn at_llamacpp(m: &mut MenuState) {
     send(m, key(KeyCode::Enter));
 }
 
-/// The Query level of a fresh menu.
-fn at_query() -> MenuState {
+/// The memory of the machine in these tests.
+const RAM: Option<u64> = Some(8 * GB);
+
+/// Enter on the entry row of a fresh menu: the popular models asked for.
+fn at_popular_ask() -> MenuState {
     let mut m = llamacpp_menu();
     at_llamacpp(&mut m);
     goto_pick(&mut m, HF_ROW);
-    assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::HubAsk(Ask::Popular)
+    );
     m
+}
+
+/// The popular list answered with `hits` on a machine with `ram`.
+fn at_popular(hits: Vec<RepoHit>, ram: Option<u64>) -> MenuState {
+    let mut m = at_popular_ask();
+    m.hub_reply(Ask::Popular, Ok(Answer::Repos { hits, ram }));
+    m
+}
+
+/// The Query level: Esc on an empty popular list.
+fn at_query() -> MenuState {
+    let mut m = at_popular(Vec::new(), RAM);
+    assert_eq!(send(&mut m, key(KeyCode::Esc)), MenuCommand::None);
+    m
+}
+
+fn hit(id: &str, downloads: u64, params: Option<u64>) -> RepoHit {
+    RepoHit {
+        id: id.to_owned(),
+        downloads,
+        params,
+    }
+}
+
+fn title(m: &MenuState) -> String {
+    m.ai.as_ref()
+        .and_then(|ai| ai.picker())
+        .and_then(|p| p.hub())
+        .map(|hub| hub.title())
+        .expect("a Hugging Face screen")
 }
 
 fn type_text(m: &mut MenuState, text: &str) {
@@ -79,16 +115,7 @@ fn pick_labels(m: &MenuState) -> Vec<String> {
 }
 
 fn hits() -> Vec<RepoHit> {
-    vec![
-        RepoHit {
-            id: "o/small".to_owned(),
-            downloads: 10,
-        },
-        RepoHit {
-            id: "o/a".to_owned(),
-            downloads: 1200,
-        },
-    ]
+    vec![hit("o/small", 10, None), hit("o/a", 1200, None)]
 }
 
 fn file(path: &str, size: u64) -> HubFile {
@@ -116,6 +143,7 @@ fn listing(free: u64) -> Listing {
         files,
         hub: Some(PathBuf::from("/home/u/.cache/huggingface/hub")),
         free: Some(free),
+        ram: None,
     }
 }
 
@@ -134,6 +162,139 @@ fn at_confirm(free: u64) -> MenuState {
     assert_eq!(cursor_label(&m), "Q4_K_M  4.0 GB  a-Q4_K_M.gguf");
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
     m
+}
+
+// Spec (hf-popular S1): Enter on the row asks for the popular models; no
+// typing is needed.
+#[test]
+fn enter_on_the_row_asks_for_the_popular_models() {
+    let m = at_popular_ask();
+    assert_eq!(hint(&m), "asking Hugging Face…");
+}
+
+// Spec (hf-popular S2, S3): the list holds what fits this PC, the most
+// downloaded first, sized; what does not fit or has no size is left out.
+#[test]
+fn the_popular_list_keeps_what_fits_this_pc_most_downloaded_first() {
+    let mut m = at_popular(
+        vec![
+            hit("o/huge", 9_000, Some(70_000_000_000)),
+            hit("o/one-b", 50, Some(1_000_000_000)),
+            hit("o/unknown", 8_000, None),
+            hit("o/four-b", 700, Some(4_000_000_000)),
+        ],
+        RAM,
+    );
+    assert_eq!(
+        pick_labels(&m),
+        ["o/four-b  700 ↓  ~2.5 GB", "o/one-b  50 ↓  ~625 MB"]
+    );
+    assert_eq!(cursor_label(&m), "o/four-b  700 ↓  ~2.5 GB");
+    assert_eq!(title(&m), "Hugging Face: most downloaded for this PC");
+    assert_eq!(hint(&m), "j/k move · Enter choose · Esc search");
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::HubAsk(Ask::Files("o/four-b".to_owned()))
+    );
+}
+
+#[test]
+fn a_popular_list_with_nothing_that_fits_says_so() {
+    let m = at_popular(vec![hit("o/huge", 9, Some(70_000_000_000))], RAM);
+    assert_eq!(
+        m.rows(&Config::default())
+            .into_iter()
+            .filter_map(|r| match r {
+                Row::Pick { label, .. } => Some(label),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["no popular model fits this PC; Esc to search"]
+    );
+}
+
+// Spec (hf-popular S1): the search stays, one Esc away.
+#[test]
+fn esc_on_the_popular_list_opens_the_search_field() {
+    let mut m = at_popular(vec![hit("o/one-b", 50, Some(1_000_000_000))], RAM);
+    assert_eq!(send(&mut m, key(KeyCode::Esc)), MenuCommand::None);
+    assert_eq!(field(&m), Some(String::new()));
+    assert_eq!(hint(&m), "Enter search · Esc back");
+}
+
+// With the memory unknown nothing is hidden or marked.
+#[test]
+fn an_unknown_memory_hides_and_marks_nothing() {
+    let m = at_popular(
+        vec![
+            hit("o/huge", 9_000, Some(70_000_000_000)),
+            hit("o/unknown", 8_000, None),
+        ],
+        None,
+    );
+    assert_eq!(
+        pick_labels(&m),
+        ["o/huge  9000 ↓  ~43.8 GB", "o/unknown  8000 ↓"]
+    );
+}
+
+// Spec (hf-popular S3): a typed search shows everything and marks what does
+// not fit.
+#[test]
+fn a_search_marks_what_is_too_big_for_this_pc() {
+    let mut m = at_query();
+    type_text(&mut m, "qwen");
+    send(&mut m, key(KeyCode::Enter));
+    m.hub_reply(
+        Ask::Search("qwen".to_owned()),
+        Ok(Answer::Repos {
+            hits: vec![
+                hit("o/huge", 9_000, Some(70_000_000_000)),
+                hit("o/four-b", 700, Some(4_000_000_000)),
+                hit("o/unknown", 8, None),
+            ],
+            ram: RAM,
+        }),
+    );
+    assert_eq!(
+        pick_labels(&m),
+        [
+            "o/huge  9000 ↓  ~43.8 GB · too big for this PC",
+            "o/four-b  700 ↓  ~2.5 GB",
+            "o/unknown  8 ↓",
+        ]
+    );
+    assert_eq!(hint(&m), "j/k move · Enter choose · Esc back");
+}
+
+// Spec (hf-popular S3): the files too big for this PC are marked.
+#[test]
+fn files_too_big_for_this_pc_are_marked() {
+    let mut m = at_query();
+    m.on_paste("o/a");
+    send(&mut m, key(KeyCode::Enter));
+    m.hub_reply(
+        Ask::Files("o/a".to_owned()),
+        Ok(Answer::Files(Box::new(Listing {
+            ram: RAM,
+            ..listing(100 * GB)
+        }))),
+    );
+    assert_eq!(
+        pick_labels(&m)[1..],
+        [
+            "Q4_K_M  4.0 GB  a-Q4_K_M.gguf",
+            "Q8_0  8.0 GB  a-q8_0.gguf · too big for this PC",
+        ]
+    );
+}
+
+#[test]
+fn a_failed_popular_request_keeps_the_search_field() {
+    let mut m = at_popular_ask();
+    m.hub_reply(Ask::Popular, Err("offline".to_owned()));
+    assert_eq!(m.footer(), Footer::Error("offline"));
+    assert_eq!(field(&m), Some(String::new()));
 }
 
 #[test]
@@ -185,7 +346,10 @@ fn search_then_pick_shows_the_confirmation_and_downloads_nothing() {
     );
     m.hub_reply(
         Ask::Search("qwen 0.5b".to_owned()),
-        Ok(Answer::Repos(hits())),
+        Ok(Answer::Repos {
+            hits: hits(),
+            ram: RAM,
+        }),
     );
     assert_eq!(pick_labels(&m), ["o/a  1200 ↓", "o/small  10 ↓"]);
     assert_eq!(hint(&m), "j/k move · Enter choose · Esc back");
@@ -233,7 +397,13 @@ fn no_result_and_no_files_read_as_info_rows() {
     let mut m = at_query();
     type_text(&mut m, "zzz");
     send(&mut m, key(KeyCode::Enter));
-    m.hub_reply(Ask::Search("zzz".to_owned()), Ok(Answer::Repos(Vec::new())));
+    m.hub_reply(
+        Ask::Search("zzz".to_owned()),
+        Ok(Answer::Repos {
+            hits: Vec::new(),
+            ram: RAM,
+        }),
+    );
     assert_eq!(pick_labels(&m), ["no GGUF models found for \"zzz\""]);
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
 
@@ -330,7 +500,13 @@ fn a_reply_for_a_level_the_user_left_is_dropped() {
     let mut m = at_query();
     type_text(&mut m, "qwen");
     send(&mut m, key(KeyCode::Enter));
-    m.hub_reply(Ask::Search("qwen".to_owned()), Ok(Answer::Repos(hits())));
+    m.hub_reply(
+        Ask::Search("qwen".to_owned()),
+        Ok(Answer::Repos {
+            hits: hits(),
+            ram: RAM,
+        }),
+    );
     send(&mut m, key(KeyCode::Enter));
     send(&mut m, key(KeyCode::Esc));
     // Back on the Query level, with its text.
@@ -357,7 +533,13 @@ fn keys_other_than_esc_are_ignored_while_asking() {
     // Esc leaves the level, and the reply that comes later is dropped.
     send(&mut m, key(KeyCode::Esc));
     assert_eq!(cursor_label(&m), HF_ROW);
-    m.hub_reply(Ask::Search("qwen".to_owned()), Ok(Answer::Repos(hits())));
+    m.hub_reply(
+        Ask::Search("qwen".to_owned()),
+        Ok(Answer::Repos {
+            hits: hits(),
+            ram: RAM,
+        }),
+    );
     assert_eq!(cursor_label(&m), HF_ROW);
 }
 
