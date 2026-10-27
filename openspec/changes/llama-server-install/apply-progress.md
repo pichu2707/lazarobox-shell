@@ -266,3 +266,18 @@ wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. En
 - Footer uses `Wizard::hint()` (covers `asks_cancel` / `HINT_CANCELLING`); "Copied" cue wins on the plan.
 - Snapshots: `src/ui/components/menu/tests/install.rs` incl. MIN_WIDTH (copy/labels clip with an ellipsis at 24 cols).
 - PR4 review API change (async `remove`, "already installed" refusal) needs no change here: PR6 never calls `remove`; the refusal arrives as `Err` and shows as a wizard failure.
+
+### PR6 review fixes
+
+- Request ids are process-wide (`static LAST_ID: AtomicU64` in `picker/install.rs`): two wizards never
+  issue the same id, so a late reply of a closed wizard is ignored by the next one.
+- A panicking installer step runs as an inner `tokio::spawn`; on `JoinError` the reply is
+  `Err(CRASHED)` ("install step crashed") with the original id and the slot is freed.
+- Closing the menu while the archive downloads emits `Effect::Install(InstallAsk::Cancel)`
+  (`App::close_menu`, via `Wizard::downloading`). The slot owns the cancel sender and clears it when the
+  task ends; the BUSY path never touches it. BUSY reads "another install step is still running".
+- `AppEvent::InstallProgress` carries the request `id`; progress of any other request is ignored and
+  progress never overwrites `release.size`.
+- The two timing tests were made deterministic: the cancel and busy tests wait for the server to log
+  the request (no fixed sleep). 10 runs of the installer tests: 13/13 green each time.
+- RED observed by mutation of each fix (ids, panic, cancel clearing, close-menu cancel, progress id).
