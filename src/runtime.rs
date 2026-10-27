@@ -31,6 +31,7 @@ pub mod desktop;
 pub mod engram;
 pub mod feedback;
 pub mod gguf;
+pub mod gh;
 pub mod hf;
 pub mod jail;
 pub mod jobs;

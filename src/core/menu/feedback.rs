@@ -33,6 +33,8 @@ pub const HINT_TEXT: &str = "Tab next · Ctrl+S copy · Ctrl+O open · Esc back"
 pub const HINT_ATTACH: &str = "Space attach · Ctrl+S copy · Ctrl+O open · Esc";
 /// The footer once the link is copied.
 pub const HINT_DONE: &str = "Esc back";
+/// The footer columns a message of `gh` is cut to.
+const FOOTER_WIDTH: usize = 48;
 
 /// What the form says once the link is opened in the browser.
 pub const OPENED: [&str; 2] = [
@@ -55,6 +57,8 @@ const DESCRIPTION_ROWS: usize = 6;
 
 /// Where new issues are opened.
 const NEW_ISSUE: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/new");
+/// Where every GitHub link starts.
+const GITHUB: &str = "https://github.com/";
 
 /// What is being sent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,6 +83,74 @@ impl Kind {
             Kind::Idea => ("idea.yml", "idea"),
         }
     }
+}
+
+/// The issue Ctrl+S sends: `gh issue create --repo <repo> --title <title>
+/// --body-file -` with the body on stdin, and one `--label` per label.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Issue {
+    /// `<owner>/<repo>`.
+    pub repo: String,
+    pub title: String,
+    pub body: String,
+    /// Asked for; GitHub keeps them only for users with write access.
+    pub labels: Vec<String>,
+}
+
+/// What became of a send, from the runtime.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SendReply {
+    /// Created: the issue's link.
+    Sent(String),
+    /// `gh` failed: its message, raw (the form sanitizes it).
+    Failed(String),
+    /// `gh` is not installed or not logged in.
+    NoGh,
+}
+
+/// `message` of `gh` as one footer line: escape sequences and control
+/// characters dropped, blanks folded, cut to the footer width.
+pub fn gh_message(message: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // A CSI sequence ends at its final byte, `@` to `~`.
+            if chars.clone().next() == Some('[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        plain.push(if c.is_control() { ' ' } else { c });
+    }
+    let words = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() {
+        return "gh failed".to_owned();
+    }
+    let line = format!("gh: {words}");
+    if line.chars().count() <= FOOTER_WIDTH {
+        return line;
+    }
+    let mut cut: String = line.chars().take(FOOTER_WIDTH - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// The created issue's link from what `gh` printed: exactly one line,
+/// `https://github.com/<repo>/issues/<number>`; anything else is `None`.
+pub fn issue_url(stdout: &str, repo: &str) -> Option<String> {
+    let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+    let rest = line.strip_prefix(GITHUB)?;
+    let (owner_repo, number) = rest.rsplit_once("/issues/")?;
+    let ok = owner_repo.eq_ignore_ascii_case(repo)
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| line.to_owned())
 }
 
 /// What lazarobox knows of where it runs. Never a path, a name or a key.
