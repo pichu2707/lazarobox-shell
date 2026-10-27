@@ -27,7 +27,7 @@ use crate::{
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
-            Call, ToolError,
+            Call, Locality, ToolError,
             allow::{Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
@@ -49,6 +49,8 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
+/// Removed by X-d2 with the check in [`plan`].
+const CLOUD: &str = "commands run only with a local model for now";
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
@@ -142,6 +144,11 @@ pub(super) async fn plan(
     let (Some(key), Call::RunCommand { args }) = (scope.stage_key, call) else {
         return Err(refusal_text(ToolError::UnknownTool));
     };
+    // REMOVED BY X-d2: delete this check and `CLOUD` when the `.env` notice
+    // lands. Until then the output of a command never goes to a provider.
+    if scope.locality == Locality::Cloud {
+        return Err(CLOUD);
+    }
     if !host.exec.jailed() {
         return Err(NO_JAIL);
     }
@@ -447,7 +454,7 @@ pub(super) fn find(tool: Program, root: &Path, path: Option<&OsStr>) -> Option<P
 /// What the run did to the watched git places, as text for the model: the
 /// names are the program's, so they sit inside the data wrapper. This is the
 /// one place that reads an integrity kind.
-fn changes_note(changes: &[Change], nonce: &str) -> Option<String> {
+pub(super) fn changes_note(changes: &[Change], nonce: &str) -> Option<String> {
     if changes.is_empty() {
         return None;
     }

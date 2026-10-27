@@ -260,6 +260,27 @@ async fn an_argument_with_a_control_character_is_refused() {
     }
 }
 
+// A command's output can carry secrets and would go to the provider: until the
+// `.env` notice (X-d2) lands, commands run only with a local model.
+#[tokio::test]
+async fn a_cloud_chat_is_refused_before_it_asks() {
+    let w = world();
+    let asks = Asks::new(Decision::Sent);
+    let (tx, _rx) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Cloud, w.proj.clone());
+    scope.approver = asks.clone();
+    scope.families = exec_set();
+    scope.stage_key = Some(key());
+    let out = w
+        .host
+        .dispatch(scope)
+        .call(command("cargo", &["test"], None))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(out.text, "commands run only with a local model for now");
+    assert!(asks.asked().is_empty());
+}
+
 // Scenario "Unproposed staged changes".
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
@@ -798,4 +819,45 @@ async fn a_package_json_edited_after_the_question_is_not_run() {
         out.text
     );
     assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// --- the note about the watched git places ---
+
+fn change(
+    kind: crate::runtime::tools::integrity::Kind,
+    path: &str,
+) -> crate::runtime::tools::integrity::Change {
+    crate::runtime::tools::integrity::Change {
+        path: PathBuf::from(path),
+        kind,
+        before: None,
+        after: None,
+        mode: (None, None),
+    }
+}
+
+// A place that could not be read is not "unchanged": the note says to treat
+// the project as tainted, and lists only what was actually compared.
+#[test]
+fn an_unchecked_place_says_the_project_may_be_tainted() {
+    use crate::runtime::tools::integrity::Kind;
+    let note = exec::changes_note(&[change(Kind::Unchecked, ".git")], "n0nce").unwrap();
+    assert!(
+        note.contains("could not verify git hooks and config"),
+        "{note}"
+    );
+    assert!(note.contains("tainted"), "{note}");
+    assert!(!note.contains("changed during the run"), "{note}");
+
+    let both = exec::changes_note(
+        &[
+            change(Kind::Unchecked, ".git"),
+            change(Kind::Changed, ".git/config"),
+        ],
+        "n0nce",
+    )
+    .unwrap();
+    assert!(both.contains("tainted"), "{both}");
+    assert!(both.contains("changed .git/config"), "{both}");
+    assert_eq!(exec::changes_note(&[], "n0nce"), None);
 }
