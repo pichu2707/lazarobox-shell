@@ -268,6 +268,16 @@ pub fn availability(
     availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
+/// [`availability`] for the engine another task resolves to.
+pub fn availability_for(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+) -> Availability {
+    availability_of(task, cfg, detection, jail, GATED_OFF, &has_adapter)
+}
+
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
 const GATED_OFF: &[&str] = &[];
 
@@ -284,7 +294,18 @@ pub fn availability_with(
     gated_off: &[&str],
     adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
-    let (assignment, _) = cfg.resolve(Task::Chat);
+    availability_of(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
+}
+
+fn availability_of(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+    gated_off: &[&str],
+    adapter_exists: &dyn Fn(&str) -> bool,
+) -> Availability {
+    let (assignment, _) = cfg.resolve(task);
     let Some(engine) = assignment.engine else {
         return Availability::Unassigned;
     };
