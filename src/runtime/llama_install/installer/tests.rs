@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -295,6 +296,43 @@ async fn remove_deletes_the_owned_install_and_replies_under_the_same_id() {
     assert!(!install::owned_root(home.path()).exists());
 }
 
+/// Makes `installer` count the stops of the managed server; with `root` it
+/// also notes whether the owned folder still existed when the stop ran.
+fn stop_counter(
+    installer: &mut Installer,
+    root: Option<(PathBuf, Arc<AtomicBool>)>,
+) -> Arc<AtomicUsize> {
+    let stops = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&stops);
+    installer.set_stop(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        if let Some((root, existed)) = &root {
+            existed.store(root.exists(), Ordering::SeqCst);
+        }
+        Box::pin(async {})
+    }));
+    stops
+}
+
+// Remove stops the managed server before the files go.
+#[tokio::test]
+async fn remove_stops_the_managed_server_before_deleting() {
+    let (home, binary) = owned_home("b9000");
+    let (mut installer, mut rx) = installer("http://127.0.0.1:1", Some(home.path()));
+    let existed = Arc::new(AtomicBool::new(false));
+    let root = install::owned_root(home.path());
+    let stops = stop_counter(&mut installer, Some((root.clone(), Arc::clone(&existed))));
+    installer.ask(InstallAsk::Remove(4, binary));
+    let (_, _, answer) = reply_of(&mut rx).await;
+    assert_eq!(answer, Ok(Reply::Removed));
+    assert_eq!(stops.load(Ordering::SeqCst), 1);
+    assert!(
+        existed.load(Ordering::SeqCst),
+        "stopped while the files still existed"
+    );
+    assert!(!root.exists());
+}
+
 // Spec (Remove deletes owned only): a system binary is never touched.
 #[tokio::test]
 async fn remove_refuses_a_binary_outside_the_owned_folder() {
@@ -303,11 +341,17 @@ async fn remove_refuses_a_binary_outside_the_owned_folder() {
     let binary = system.path().join("llama-server");
     std::fs::write(&binary, b"x").unwrap();
     let (mut installer, mut rx) = installer("http://127.0.0.1:1", Some(home.path()));
+    let stops = stop_counter(&mut installer, None);
     installer.ask(InstallAsk::Remove(2, binary.clone()));
     let (_, id, answer) = reply_of(&mut rx).await;
     assert_eq!(id, 2);
     assert!(answer.is_err(), "{answer:?}");
     assert!(binary.exists());
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        0,
+        "a system binary stops nothing"
+    );
     assert!(install::owned_root(home.path()).exists());
 }
 
@@ -343,7 +387,7 @@ async fn a_newer_build_becomes_a_notice() {
     let (home, _) = owned_home("b9000");
     let (mut installer, mut rx) = installer(&base, Some(home.path()));
     installer.ask(InstallAsk::CheckNewer);
-    let AppEvent::InstallWarning(notice) = next(&mut rx).await else {
+    let AppEvent::InstallNewer(notice) = next(&mut rx).await else {
         panic!("expected a notice");
     };
     assert!(
@@ -389,4 +433,66 @@ async fn the_newer_check_asks_nothing_without_an_owned_install() {
         seen.lock().unwrap().is_empty(),
         "no request without an install"
     );
+}
+
+/// The releases list holding only the Vulkan build of `tag`.
+fn vulkan_releases_of(tag: &str) -> String {
+    let asset = asset_name(tag, Platform::CURRENT, Variant::Vulkan).expect("a vulkan build here");
+    format!(
+        r#"[{{"tag_name":"{tag}","assets":[{{"name":"{asset}","size":1234,"digest":"sha256:{}"}}]}}]"#,
+        "a".repeat(64)
+    )
+}
+
+// A Vulkan install is compared with the newest Vulkan build, and the notice says so.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_vulkan_install_is_checked_against_the_vulkan_build() {
+    need_curl!();
+    let body = vulkan_releases_of("b9100");
+    let (base, _) = serve(Box::new(move |_| ok(&body)));
+    let (home, _) = owned_home("b9000");
+    std::fs::write(install::owned_root(home.path()).join("variant"), "vulkan").unwrap();
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    let AppEvent::InstallNewer(notice) = next(&mut rx).await else {
+        panic!("expected a notice");
+    };
+    assert!(
+        notice.contains("b9100") && notice.contains("Vulkan"),
+        "{notice}"
+    );
+}
+
+// No notice while an install or a remove runs: the tag it names is about to change.
+#[tokio::test]
+async fn the_newer_check_is_dropped_while_a_step_runs() {
+    need_curl!();
+    let body = releases_of("b9100");
+    let (base, _) = serve(Box::new(move |_| ok(&body)));
+    let (home, _) = owned_home("b9000");
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    let _slot = installer.slot(1).expect("the slot is free");
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await);
+}
+
+// The installed tag is read again right before the notice goes out.
+#[tokio::test]
+async fn the_newer_notice_is_dropped_when_the_install_changed_meanwhile() {
+    need_curl!();
+    let body = releases_of("b9100");
+    let (home, _) = owned_home("b9000");
+    let root = install::owned_root(home.path());
+    std::fs::create_dir_all(root.join("b9100")).unwrap();
+    let flip = root.clone();
+    let (base, _) = serve(Box::new(move |_| {
+        // The install lands while the lookup is in flight.
+        let _ = std::fs::remove_file(flip.join("current"));
+        let _ = std::os::unix::fs::symlink("b9100", flip.join("current"));
+        ok(&body)
+    }));
+    let (mut installer, mut rx) = installer(&base, Some(home.path()));
+    installer.ask(InstallAsk::CheckNewer);
+    assert!(quiet(&mut rx).await);
 }

@@ -584,3 +584,13 @@ fn progress_of_another_request_is_ignored_and_never_resizes_the_release() {
     };
     assert_eq!(shown.size, release().size);
 }
+
+// Remove stops a running managed server first, and the prompt says so.
+#[test]
+fn the_remove_prompt_says_a_running_managed_server_is_stopped_first() {
+    let w = Wizard::remove(std::path::PathBuf::from(
+        "/h/lazarobox/llama.cpp/current/llama-server",
+    ));
+    let text = labels(&w).join(" ");
+    assert!(text.contains("stopped first"), "{text}");
+}

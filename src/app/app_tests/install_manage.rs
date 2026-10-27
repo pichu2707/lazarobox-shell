@@ -116,3 +116,20 @@ fn declining_remove_asks_nothing() {
     // Back on the model level, where the row is still offered.
     goto_pick(&mut a, REMOVE_ROW);
 }
+
+// A newer-build notice never replaces what the footer already says.
+#[test]
+fn a_newer_notice_never_overwrites_an_existing_notice() {
+    let mut a = app();
+    a.update(AppEvent::InstallNewer(
+        "llama.cpp b9100 is available".to_owned(),
+    ));
+    assert_eq!(a.notice(), Some("llama.cpp b9100 is available"));
+    a.update(AppEvent::InstallNewer(
+        "llama.cpp b9200 is available".to_owned(),
+    ));
+    assert_eq!(a.notice(), Some("llama.cpp b9100 is available"));
+    // An attestation warning is about the install in hand: it does replace.
+    a.update(AppEvent::InstallWarning("gh is not installed".to_owned()));
+    assert_eq!(a.notice(), Some("gh is not installed"));
+}

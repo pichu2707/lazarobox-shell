@@ -461,3 +461,18 @@ async fn a_lock_held_by_another_process_is_respected() {
     assert_eq!(outcome.as_deref(), Some(LOCKED));
     assert!(lock(&root).is_ok());
 }
+
+// The build that was installed is recorded next to `current`, and a plain
+// install after a Vulkan one clears it.
+#[tokio::test]
+async fn install_records_whether_the_build_is_vulkan() {
+    need_tar!();
+    let (_data, root) = owned();
+    assert!(!installed_vulkan(&root));
+    let (archive, mut release) = download(&root, "b9000", OK);
+    release.asset = "llama-b9000-bin-ubuntu-vulkan-x64.tar.gz".to_owned();
+    install(&root, &release, &archive, &path()).await.unwrap();
+    assert!(installed_vulkan(&root));
+    put(&root, "b9100", OK).await.unwrap();
+    assert!(!installed_vulkan(&root));
+}

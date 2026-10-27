@@ -291,6 +291,7 @@ impl Wizard {
                 "remove the llama.cpp install of lazarobox?".to_owned(),
                 "every downloaded build is deleted; a llama-server of your own is not touched"
                     .to_owned(),
+                "a running managed server is stopped first".to_owned(),
             ]),
             Screen::Removing => lines(vec!["removing…".to_owned()]),
             Screen::Removed => lines(vec!["the llama.cpp install was removed".to_owned()]),

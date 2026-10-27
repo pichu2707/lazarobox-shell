@@ -228,9 +228,11 @@ pub enum AppEvent {
     /// The result of the install step the wizard asked for; it names the
     /// request it answers.
     InstallReply(u64, Result<InstallReply, String>),
-    /// A notice about the install (an attestation that was not verified, a
-    /// newer build): shown, not swallowed.
+    /// A notice about the install (an attestation that was not verified):
+    /// shown, not swallowed.
     InstallWarning(String),
+    /// A newer llama.cpp build exists; shown unless a notice is already up.
+    InstallNewer(String),
     /// What the runtime found for `Effect::HfAccount`.
     HfAccount(AccountReply),
     /// What became of `Effect::SendIssue`.
@@ -1707,6 +1709,7 @@ impl App {
             AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
             AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
+            AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {

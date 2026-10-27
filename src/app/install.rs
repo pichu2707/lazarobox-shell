@@ -5,6 +5,7 @@
 //! the install changed what is on the disk.
 
 use super::{App, Effect};
+use crate::core::ai::install;
 use crate::core::ai::picker::{InstallAsk, InstallReply};
 
 impl App {
@@ -13,7 +14,7 @@ impl App {
     /// a network call the user turned off.
     pub(super) fn install_effects(&mut self, ask: InstallAsk) -> Vec<Effect> {
         if ask == InstallAsk::CheckNewer {
-            if self.newer_checked || !self.config.update_check {
+            if !install::should_check_newer(self.config.update_check, self.newer_checked) {
                 return Vec::new();
             }
             self.newer_checked = true;
@@ -50,6 +51,16 @@ impl App {
         let effects = self.request_forced_detection();
         self.sync_checking();
         effects
+    }
+
+    /// A newer build exists: shown only when the footer says nothing else,
+    /// so it never covers a warning or another notice.
+    pub(super) fn on_install_newer(&mut self, notice: String) -> Vec<Effect> {
+        if self.notice.is_none() {
+            self.notice = Some(notice);
+            self.dirty = true;
+        }
+        Vec::new()
     }
 
     /// A notice about the install: why the archive's attestation was skipped,
