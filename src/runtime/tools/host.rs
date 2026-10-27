@@ -321,6 +321,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut ask = None;
     let mut sealed = None;
     let mut approves = None;
+    let mut pinned = None;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
             // A cloud read asks with the path as it will be opened: resolved,
@@ -363,7 +364,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             }
             // A command is judged before it asks: a refusal never opens a prompt.
             (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
-                Ok(_) => ask = ask_for(valid, locality),
+                Ok(plan) => {
+                    ask = ask_for(valid, locality);
+                    if let Some(ApprovalAsk::Exec { script, .. }) = ask.as_mut() {
+                        script.clone_from(&plan.pin.as_ref().and_then(|pin| pin.shown.clone()));
+                    }
+                    pinned = plan.pin;
+                }
                 Err(why) => checked = Err(why.into()),
             },
             // A batch is sealed before the ask: the user reviews what was sealed.
@@ -496,7 +503,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 },
                 // Only after `y`: the sandbox starts here and nowhere else.
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
-                    exec::run(&host, &scope, &call).await
+                    exec::run(&host, &scope, &call, pinned.take()).await
                 }
                 (Decision::Sent | Decision::Typed(_), call) => {
                     files::run(&host, &scope, call).await

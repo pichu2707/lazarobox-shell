@@ -941,6 +941,7 @@ fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
         program: program.into(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         cwd: cwd.into(),
+        script: None,
     }
 }
 
@@ -955,12 +956,71 @@ fn a_command_asks_for_y_in_auto_mode_and_shows_the_program_the_arguments_and_the
     assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
     assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
     let prompt = a.approval_prompt(id2()).unwrap();
-    assert_eq!(prompt.command, "cargo test -p x");
-    assert!(prompt.target.contains("crates/x"), "{prompt:?}");
+    assert_eq!(prompt.command, "cargo test -p x\nin crates/x");
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
     announce(&mut a, turn, 2, exec("go", &["test"], "."));
     assert_eq!(
         a.update(key('n')),
         vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}
+
+fn shown(ask: ApprovalAsk) -> crate::core::ai::chat::approval::ApprovalPrompt {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, ask);
+    a.approval_prompt(id2()).unwrap()
+}
+
+// What is shown is what the program receives: an argument that is empty or has
+// a space or a quote shows quoted, so two arguments never read as one.
+#[test]
+fn an_argument_with_a_space_a_quote_or_nothing_is_shown_quoted() {
+    let ask = exec(
+        "cargo",
+        &["test", "--", "x y", "", "it's", "a\"b", "plain-1"],
+        ".",
+    );
+    assert_eq!(
+        shown(ask).command,
+        "cargo test -- 'x y' '' 'it'\\''s' 'a\"b' plain-1\nin ."
+    );
+}
+
+#[test]
+fn a_folder_with_a_space_is_shown_quoted_too() {
+    assert_eq!(
+        shown(exec("go", &["test"], "my dir")).command,
+        "go test\nin 'my dir'"
+    );
+}
+
+#[test]
+fn the_script_a_package_manager_will_run_is_shown_under_the_command() {
+    let ask = ApprovalAsk::Exec {
+        program: "npm".into(),
+        args: vec!["run".into(), "build".into()],
+        cwd: ".".into(),
+        script: Some("prebuild: rm -rf dist\nbuild: tsc".into()),
+    };
+    assert_eq!(
+        shown(ask).command,
+        "npm run build\nin .\nscript prebuild: rm -rf dist\nscript build: tsc"
+    );
+}
+
+// The folder is part of the text `fits` checks, so a pane too small to show it
+// all does not let `y` through (it used to sit in a clipped head row).
+#[test]
+fn a_long_folder_is_checked_by_fits_and_not_clipped() {
+    use crate::core::ai::chat::approval_rows::{Part, fits, parts};
+    let cwd = format!("{}/deep", "d".repeat(150));
+    let prompt = shown(exec("cargo", &["test"], &cwd));
+    assert!(!fits(&prompt, 20, 12));
+    assert!(fits(&prompt, 80, 12));
+    let rows = parts(&prompt, 80, 12);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, Part::Command(t) if t.contains("deep"))),
+        "{rows:?}"
     );
 }

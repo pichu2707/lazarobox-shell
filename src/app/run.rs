@@ -465,16 +465,32 @@ impl App {
             // The program, arguments and folder are what will run, and the host
             // refused text that would not show as it is. X-d2 adds the network
             // and `.env` notice.
-            ApprovalAsk::Exec { program, args, cwd } => Some(ApprovalPrompt {
-                target: format!("run a command in the sandbox, in {cwd}"),
-                command: std::iter::once(program.as_str())
+            ApprovalAsk::Exec {
+                program,
+                args,
+                cwd,
+                script,
+            } => {
+                // One logical line per fact, so the folder and the script are
+                // rows `fits` checks, not a clipped head. Arguments are quoted
+                // where the text alone would read as another argv.
+                let words: Vec<String> = std::iter::once(program.as_str())
                     .chain(args.iter().map(String::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                keys: EXTERNAL_KEYS,
-                armed,
-                why: None,
-            }),
+                    .map(display_word)
+                    .collect();
+                let mut command = format!("{}\nin {}", words.join(" "), display_word(cwd));
+                for line in script.iter().flat_map(|text| text.split('\n')) {
+                    command.push_str("\nscript ");
+                    command.push_str(line);
+                }
+                Some(ApprovalPrompt {
+                    target: "run a command in the sandbox".to_owned(),
+                    command,
+                    keys: EXTERNAL_KEYS,
+                    armed,
+                    why: None,
+                })
+            }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
@@ -501,5 +517,20 @@ impl App {
             ),
             None => format!("run in pane {number}"),
         })
+    }
+}
+
+/// `word` as a shell would need it written to be one word, for display only:
+/// quoted when it is empty or has a space, a quote or another character a
+/// shell reads. Nothing is run through a shell.
+fn display_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && !word
+            .chars()
+            .any(|c| c.is_whitespace() || "'\"\\$`".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }

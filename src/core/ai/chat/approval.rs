@@ -87,11 +87,15 @@ pub enum ApprovalAsk {
     /// Run `program` with `args` in the sandbox, in `cwd` (relative to the
     /// root, `.` for the root). All three are exactly what will run: the host
     /// refuses a call whose text would not show as it is. Never routed by the
-    /// approval mode: every mode asks.
+    /// approval mode: every mode asks. `script` is the body of the
+    /// `package.json` script a `npm`/`yarn`/`pnpm` command will run (the
+    /// manager reads it when it runs), as sanitized lines the host fills in;
+    /// [`ask_for`] leaves it `None`.
     Exec {
         program: String,
         args: Vec<String>,
         cwd: String,
+        script: Option<String>,
     },
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
@@ -139,6 +143,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 program: program.to_owned(),
                 args: args.into_iter().map(str::to_owned).collect(),
                 cwd: cwd.unwrap_or(".").to_owned(),
+                script: None,
             })
         }
         // A user tool always asks, on any engine and in any approval mode:
@@ -202,6 +207,16 @@ fn flat(text: &str, cap: usize) -> (String, usize) {
     let mut cut: String = line.chars().take(cap).collect();
     cut.push('\u{2026}');
     (cut, total - cap)
+}
+
+/// The most characters of one script body an ask shows.
+pub const SCRIPT_SHOWN: usize = 200;
+
+/// `name: body` of a `package.json` script, as one sanitized line with the
+/// body cut (visibly) at [`SCRIPT_SHOWN`] characters. The body is the
+/// project's text, so it is cleaned like any text from outside.
+pub fn script_line(name: &str, body: &str) -> String {
+    format!("{}: {}", shown_name(name), flat(body, SCRIPT_SHOWN).0)
 }
 
 /// A name from a server, as one sanitized line, cut with an ellipsis.
@@ -1350,10 +1365,22 @@ mod tests {
                         program: "cargo".into(),
                         args: vec!["test".into(), "-p".into(), "x y".into()],
                         cwd: shown.into(),
+                        script: None,
                     })
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_script_line_is_one_clean_line_cut_visibly() {
+        assert_eq!(script_line("test", "jest\n  --ci"), "test: jest --ci");
+        let hostile = script_line("t\u{1b}[31m", "a\u{1b}[2Jb\u{202e}c");
+        assert!(hostile.chars().all(|c| !c.is_control()), "{hostile:?}");
+        assert!(!hostile.contains('\u{202e}'), "{hostile:?}");
+        let long = script_line("build", &"x".repeat(500));
+        assert!(long.ends_with('\u{2026}'), "{long}");
+        assert_eq!(long.chars().count(), "build: ".len() + SCRIPT_SHOWN + 1);
     }
 
     #[test]

