@@ -794,3 +794,29 @@ API for X-d1:
 - `Job.unreported: Unreported` (shared handle, `Clone`): keep a clone, call `unreported.drain()` after a cancelled run and treat the result like `Ran.changes`. A run that finishes never pushes.
 - `arg0` is set by `run_jailed` from `Job.tool.name()` (`cargo`, `go`, ...): X-d1 passes `Layout.program` as the canonical path and needs nothing else. This closes the OPEN risk of Batch 21 (`~/.cargo/bin/cargo` canonicalizing to rustup). `$RUSTUP_HOME` stays in `rx`.
 - Limit: the drop snapshot is taken right after the group is signalled, so a write in the instant between the signal and the death can be missed.
+
+
+## X-c3 review fixes, round 2
+
+Principle (orchestrator decision): the integrity check FAILS CLOSED. Git's config parser is not re-implemented: the plain subset is read exactly, and anything else marks the run as tainted. Strict TDD: the new tests were run against the previous code first (20 integrity tests red; the deep-tree scratch test aborted with a stack overflow; the drop test timed out; the env test failed) and then went green.
+
+| # | Fix | Where |
+|---|-----|-------|
+| 1 | Configs are read for parsing with their own cap (`CONFIG_CAP` 1 MiB), not `TEXT_CAP`; over it the run is unchecked | `integrity.rs` |
+| 2 | Strict-subset reader: `[core] hooksPath = x` on one line, `[Core] HooksPath` (case-insensitive), `[section "sub"]`, `[section.sub]`, `#`/`;` comments, a quoted value. Tainted: a backslash continuation anywhere, a stray CR or NUL, invalid UTF-8, a header it does not understand, inner or unbalanced quotes or a backslash in the value of a key it reads, `~` or `%(prefix)`, an empty path, a bare `hooksPath` | `integrity.rs` |
+| 3 | Include and submodule depth 6 -> 10 (git's limit); deeper is unchecked | `integrity.rs` |
+| 4 | A watched folder (`.git/hooks`, `.git/modules`, a module entry, a `hooksPath` folder) that is a link or a file is recorded as an item; a link to a folder inside the root is followed, so its hooks are watched | `integrity.rs` |
+| 5 | `core.hooksPath` equal to the root (`.`, or the root's absolute path) watches git's hook names in the root; a `hooksPath` folder that does not exist yet is watched through its lexical path | `integrity.rs` |
+| 6 | A linked hook or config also records its target when it resolves inside the root; a linked config is parsed from the target content (relative includes tried against both folders); a config link that leads outside the root is unchecked | `integrity.rs` |
+| 7 | A relative `core.hooksPath` is resolved against the git dir's `core.worktree` when set; for a submodule git dir with no `core.worktree` it is unchecked; a worktree outside the root leaves nothing to watch | `integrity.rs` |
+| 8 | Bounds per snapshot: 4096 items and 256 MiB hashed (`Limits`, `snapshot_with` for tests); past them the rest is not read and the run is unchecked. Folders are counted while iterating (stop collecting past the threshold, stop counting at 100000) | `integrity.rs` |
+| 9 | `make_removable` is an explicit-stack walk (`walk`), bounded to depth 4096 and 1,000,000 entries | `scratch.rs` |
+| 10 | The drop-time snapshot and the scratch cleanup of a dropped run run on detached `std::thread`s; the finished-run path takes its after-snapshot and removes the folders in `spawn_blocking`. `Unreported` may fill shortly AFTER the drop | `runner.rs` |
+| 11 | `safe_path` canonicalizes `root` once | `core/ai/toolchain/env.rs` |
+
+Notes: a path cannot be longer than `PATH_MAX` (4096), so the deep-tree scratch tests use 1500 levels (about 3000 characters) on a 64 KiB thread stack, where one frame per level would overflow, instead of 5000 levels. Items 4-6 resolve a path by `canonicalize` when it exists and by a lexical walk that refuses to cross a link when it does not.
+
+API changes for X-d1:
+- `Kind::Crowded` is now `Kind::Unchecked` (still `Copy`): `after` holds the reason text ("hooks dir has N entries", "config not understood: line 3: line continuation", "more watched places than the bound allows", ...). Show it as "could not verify git hooks/config after this run", with no diff and no revert. It is reported on every run, whatever changed, and also when only the before-snapshot was unchecked.
+- `Unreported` may fill shortly after a cancelled `run_jailed`, not at the drop: drain it again later (before a commit or push). If the thread cannot start, a `Kind::Unchecked` change is pushed.
+- No other signature changed (`snapshot`, `compare`, `Change`, `Ran`, `Job`).

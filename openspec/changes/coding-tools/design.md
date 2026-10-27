@@ -214,3 +214,7 @@ No data migration. New `[ai.tools]` booleans default to false, and older builds 
 - [ ] The Ollama path collapses duplicate JSON keys before parse (stream.rs:328). The review shows the final content, so this cannot bypass the review; P0 should still add the raw-key check.
 - [ ] macOS `run_command` (user decision needed): the toolchain jail needs Seatbelt support for `rwx` (allow `file-write*` and `process-exec` in one subpath, plus toolchain roots), BindTcp and rlimits. X-c1 refuses `rwx` on macOS (`ExecFault::Macos`, `SbplError::Rwx`) and X-d1 already refuses a run without a jail; a macOS slice is not planned.
 - [ ] pytest installed with `pip --user` needs read access to its site-packages (for example `~/.local/lib/python3.x`), which the spec does not grant; only the program file or its venv is `rx`. Check with a manual run in X-c3 or Z.
+
+## Follow-up notes
+
+- **Stronger alternative (integrity check, X-c3):** deny writes to `.git/config`, `.git/hooks`, `.gitmodules` and an existing in-root `core.hooksPath` inside the jail (`rw_except`), turning detection into prevention. The detector (`integrity.rs`) stays as the fail-closed net for what the deny list cannot name (a `hooksPath` created later, an include chain, a submodule's git dir).
