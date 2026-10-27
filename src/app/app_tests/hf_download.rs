@@ -36,6 +36,7 @@ fn stopped_llamacpp() -> Detection {
             })
             .collect(),
         local_models: vec![PathBuf::from("/m/b.gguf")],
+        data_home: None,
     }
 }
 

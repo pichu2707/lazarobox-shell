@@ -53,6 +53,7 @@ fn filled(opener: bool) -> App {
             diagnostics: Diagnostics::default(),
         }],
         local_models: Vec::new(),
+        data_home: None,
     });
     a.update(ctrl_space());
     a.update(key('m'));

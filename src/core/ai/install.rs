@@ -110,9 +110,9 @@ pub fn tag_number(tag: &str) -> Option<u64> {
 
 /// Picks the newest `b<digits>` release of the GitHub releases list `json`
 /// whose archive (`asset_of(tag)`) is attached. Tags compare by number, not
-/// text. The chosen release must carry a well-formed `sha256:` digest: a
-/// missing or malformed one is an error, never a reason to take an older
-/// release.
+/// text. The chosen release must carry a well-formed `sha256:` digest and a
+/// positive size (the disk check needs it): a missing or malformed one is an
+/// error, never a reason to take an older release.
 pub fn pick_release(
     json: &str,
     asset_of: impl Fn(&str) -> Option<String>,
@@ -151,7 +151,11 @@ pub fn pick_release(
         let sha256 = digest
             .and_then(parse_digest)
             .ok_or_else(|| format!("release {tag} has no usable sha256 digest for {wanted}"))?;
-        let size = asset.get("size").and_then(Value::as_u64).unwrap_or(0);
+        let size = asset
+            .get("size")
+            .and_then(Value::as_u64)
+            .filter(|size| *size > 0)
+            .ok_or_else(|| format!("release {tag} has no usable size for {wanted}"))?;
         best = Some((
             number,
             Release {
@@ -175,7 +179,8 @@ fn parse_digest(digest: &str) -> Option<String> {
 
 /// Whether the archive member `name` is acceptable: it is the top directory
 /// `top` or lies under it, with no absolute path, no `..` component, no
-/// control character and no `\`.
+/// control character, no `\`, and no empty or `.` component (one trailing
+/// `/` is fine: a directory entry).
 pub fn check_member(name: &str, top: &str) -> Result<(), String> {
     let bad = |why: &str| Err(format!("unsafe archive member {name:?}: {why}"));
     if name.chars().any(|c| c.is_control() || c == '\\') {
@@ -184,7 +189,11 @@ pub fn check_member(name: &str, top: &str) -> Result<(), String> {
     if name.starts_with('/') {
         return bad("absolute path");
     }
-    if name.split('/').any(|part| part == "..") {
+    let body = name.strip_suffix('/').unwrap_or(name);
+    if body.split('/').any(|part| part.is_empty() || part == ".") {
+        return bad("empty or `.` component");
+    }
+    if body.split('/').any(|part| part == "..") {
         return bad("`..` component");
     }
     match name.strip_prefix(top) {
@@ -207,6 +216,13 @@ pub fn check_link_target(target: &str) -> Result<(), String> {
     } else {
         Err(format!("unsafe symlink target {target:?}"))
     }
+}
+
+/// Whether a hardlink may point at `target`. Tar names a hardlink's target
+/// from the archive root (`llama-b9000/lib/x`), not from the link's own
+/// directory, so it must be an acceptable member itself.
+pub fn check_hardlink_target(target: &str, top: &str) -> Result<(), String> {
+    check_member(target, top).map_err(|_| format!("unsafe hardlink target {target:?}"))
 }
 
 /// How much free space the install needs: five times the archive (the
@@ -234,14 +250,14 @@ pub fn owned_root(data_home: &Path) -> PathBuf {
     data_home.join("lazarobox").join("llama.cpp")
 }
 
-/// Whether `binary` lives inside an owned install (`.../lazarobox/llama.cpp/...`),
-/// as opposed to a system `llama-server`.
-pub fn is_owned(binary: &Path) -> bool {
-    let parts: Vec<_> = binary.components().collect();
-    parts.windows(2).any(|pair| {
-        matches!(pair, [Component::Normal(a), Component::Normal(b)]
-            if *a == "lazarobox" && *b == "llama.cpp")
-    })
+/// Whether `binary` lives inside the owned install of `data_home`, as
+/// opposed to a system `llama-server`: it starts with [`owned_root`] and has
+/// no `..` or `.` component that could climb out of it. Purely lexical.
+pub fn is_owned(binary: &Path, data_home: &Path) -> bool {
+    let plain = binary
+        .components()
+        .all(|c| !matches!(c, Component::ParentDir | Component::CurDir));
+    plain && binary.starts_with(owned_root(data_home)) && binary != owned_root(data_home)
 }
 
 #[cfg(test)]
@@ -473,8 +489,154 @@ mod tests {
     fn owned_binaries_are_told_from_system_ones() {
         let root = owned_root(Path::new("/home/u/.local/share"));
         assert_eq!(root, Path::new("/home/u/.local/share/lazarobox/llama.cpp"));
-        assert!(is_owned(&root.join("current/llama-server")));
-        assert!(!is_owned(Path::new("/usr/bin/llama-server")));
-        assert!(!is_owned(Path::new("/opt/lazarobox/other/llama-server")));
+        let data = Path::new("/home/u/.local/share");
+        assert!(is_owned(&root.join("current/llama-server"), data));
+        assert!(!is_owned(Path::new("/usr/bin/llama-server"), data));
+        assert!(!is_owned(
+            Path::new("/opt/lazarobox/other/llama-server"),
+            data
+        ));
+    }
+
+    #[test]
+    fn spoofed_owned_paths_are_not_owned() {
+        let data = Path::new("/home/u/.local/share");
+        for spoof in [
+            "/opt/lazarobox/llama.cpp/bin/llama-server",
+            "/home/u/lazarobox/llama.cpp/x/../../../../usr/bin/llama-server",
+            "/home/u/.local/share/lazarobox/llama.cpp/../../../../../usr/bin/llama-server",
+            "/home/u/.local/share/lazarobox/llama.cpp-evil/llama-server",
+            "/home/u/.local/share/lazarobox/llama.cpp",
+            "/other/home/.local/share/lazarobox/llama.cpp/current/llama-server",
+            "lazarobox/llama.cpp/current/llama-server",
+            "./lazarobox/llama.cpp/current/llama-server",
+        ] {
+            assert!(!is_owned(Path::new(spoof), data), "{spoof}");
+        }
+        assert!(is_owned(
+            Path::new("/home/u/.local/share/lazarobox/llama.cpp/b9000/llama-b9000/llama-server"),
+            data
+        ));
+    }
+
+    #[test]
+    fn a_missing_zero_or_odd_size_aborts_like_a_bad_digest() {
+        let bad_sizes = [
+            None,
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!("1234")),
+            Some(serde_json::json!(-5)),
+            Some(serde_json::json!(1.5)),
+            Some(Value::Null),
+        ];
+        for bad in bad_sizes {
+            let mut rel = with_cpu("b9000", Some(digest('a')));
+            match &bad {
+                Some(v) => rel["assets"][0]["size"] = v.clone(),
+                None => {
+                    rel["assets"][0].as_object_mut().unwrap().remove("size");
+                }
+            }
+            let err = pick_release(&json_of(vec![rel]), cpu).unwrap_err();
+            assert!(err.contains("size"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_bad_size_never_falls_back_to_an_older_release() {
+        let mut newer = with_cpu("b9100", Some(digest('b')));
+        newer["assets"][0]["size"] = serde_json::json!(0);
+        let json = json_of(vec![with_cpu("b9000", Some(digest('a'))), newer]);
+        assert!(pick_release(&json, cpu).is_err());
+    }
+
+    #[test]
+    fn hardlinks_name_a_member_from_the_archive_root() {
+        let top = "llama-b9000";
+        assert_eq!(
+            check_hardlink_target("llama-b9000/lib/libllama.so", top),
+            Ok(())
+        );
+        assert_eq!(
+            check_hardlink_target("llama-b9000/llama-server", top),
+            Ok(())
+        );
+        for target in [
+            "",
+            "libllama.so",
+            "lib/libllama.so",
+            "../llama-b9000/x",
+            "llama-b9000/../x",
+            "/etc/passwd",
+            "other/x",
+            "llama-b9000evil/x",
+            "llama-b9000//x",
+            "llama-b9000/a\nb",
+            "llama-b9000/a\\b",
+        ] {
+            assert!(check_hardlink_target(target, top).is_err(), "{target:?}");
+        }
+    }
+
+    #[test]
+    fn a_symlink_target_with_a_slash_is_still_refused() {
+        assert!(check_link_target("llama-b9000/lib/x").is_err());
+    }
+
+    #[test]
+    fn digests_must_be_exactly_64_hex() {
+        let long = format!("sha256:{}", "a".repeat(65));
+        let junk = format!("sha256:{}!", "a".repeat(64));
+        let tail = format!("sha256:{} ", "a".repeat(64));
+        let short = format!("sha256:{}", "a".repeat(63));
+        for bad in [
+            long,
+            junk,
+            tail,
+            short,
+            "sha256:".to_owned(),
+            "SHA256:".to_owned() + &"a".repeat(64),
+        ] {
+            let json = json_of(vec![with_cpu("b9000", Some(bad.clone()))]);
+            assert!(pick_release(&json, cpu).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_prerelease_is_selected_when_it_is_the_newest() {
+        let mut pre = with_cpu("b9100", Some(digest('b')));
+        pre["prerelease"] = Value::Bool(true);
+        let json = json_of(vec![with_cpu("b9000", Some(digest('a'))), pre]);
+        assert_eq!(pick_release(&json, cpu).unwrap().tag, "b9100");
+    }
+
+    #[test]
+    fn a_tag_that_overflows_is_skipped() {
+        let huge = "b99999999999999999999999";
+        assert_eq!(tag_number(huge), None);
+        let json = json_of(vec![
+            with_cpu(huge, Some(digest('b'))),
+            with_cpu("b9000", Some(digest('a'))),
+        ]);
+        assert_eq!(pick_release(&json, cpu).unwrap().tag, "b9000");
+        assert_eq!(tag_number("b"), None);
+        assert_eq!(tag_number("b+5"), None);
+    }
+
+    #[test]
+    fn members_with_empty_or_dot_components_are_rejected() {
+        let top = "llama-b9000";
+        for name in [
+            "llama-b9000//x",
+            "llama-b9000/x//y",
+            "llama-b9000//",
+            "./llama-b9000/x",
+            "llama-b9000/./x",
+            "llama-b9000/x/.",
+            "llama-b9000/a\0b",
+            "//llama-b9000/x",
+        ] {
+            assert!(check_member(name, top).is_err(), "{name:?}");
+        }
     }
 }

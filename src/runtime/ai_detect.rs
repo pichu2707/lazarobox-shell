@@ -524,6 +524,12 @@ pub async fn detect_all(
     let lister = Lister { env, cache, force };
     let mut detection = detect_in(&ports.catalog(), &env.path, Some(lister)).await;
     detection.local_models = local_models(&detection, model_dirs).await;
+    // `env.data` is `<data home>/lazarobox`.
+    detection.data_home = env
+        .data
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
     detection
 }
 

@@ -43,11 +43,29 @@ Status: 6/6 tasks done (2.1-2.6).
 
 Deviations / notes for later PRs:
 - `Os` is reused from `core::ai::jail`; `Arch` is new in `install.rs`.
-- `is_owned` recognises `.../lazarobox/llama.cpp/...` by path components (no data_home
-  needed in the pure core).
+- `is_owned` was first a substring match on components; replaced in the review fixes below.
 - Design D5 renames the staging top dir to `<tag>/` (so `current/llama-server` is on PATH);
   the spec layout scenario says `<tag>/llama-<tag>/llama-server`. PR4 should follow D5 and
   fix the scenario text.
 - `pick_release` aborts (Err) when the newest release holding the asset has a missing or
   malformed digest, instead of silently taking an older release.
 - Tests and implementation for 2.1-2.4 were written together (RED not observed separately).
+
+### PR2 review fixes
+
+- `is_owned(binary, data_home)`: no `..`/`.` component and `starts_with(owned_root(data_home))`
+  (the root itself is not a binary). Spoofs `/opt/lazarobox/llama.cpp/...` and `..` climbs are
+  rejected. `Detection.data_home: Option<PathBuf>` (set in `detect_all` from `env.data.parent()`)
+  feeds the picker; `start_command(id, port, binary, data_home)` (signature change). No data
+  home known means nothing is owned (bare `llama-server`).
+- `pick_release`: a missing, zero or non-numeric asset `size` is an error like a bad digest
+  (never falls back to an older release).
+- `check_hardlink_target(target, top)` (new): tar hardlink targets are archive-root-relative, so
+  it reuses `check_member`. `check_link_target` stays for symlinks (bare sibling names).
+- `check_member` fails closed on empty (`//`) and `.` components (one trailing `/` allowed).
+- `start_command` quotes only an owned path; non-UTF-8 or control-character paths fall back to
+  bare `llama-server`.
+- Tests: spoofs, 65/64+junk/empty/short digests, prerelease selected, tag overflow skipped,
+  `//`, `./`, NUL members, `$`/backtick/control-char/non-UTF-8 paths; `one()` no longer forces
+  `binary: None` (binary assertions restored via `state_on_path`).
+- Strict TDD: RED observed (13 failing tests) before the implementation.

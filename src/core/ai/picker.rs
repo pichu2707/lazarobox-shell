@@ -443,7 +443,7 @@ fn listed_models(
                     .iter()
                     .find(|s| s.id == engine)
                     .and_then(|s| s.binary.as_deref());
-                let command = start_command(engine, port, binary)?;
+                let command = start_command(engine, port, binary, detection.data_home.as_deref())?;
                 Some(format!(
                     "{engine} not running on 127.0.0.1:{port} · start it, then press r: {command}"
                 ))
@@ -1675,6 +1675,7 @@ mod tests {
         Detection {
             engines: vec![state("llamacpp", Status::NotRunning, &[])],
             local_models: models.iter().map(std::path::PathBuf::from).collect(),
+            data_home: None,
         }
     }
 
@@ -1805,6 +1806,7 @@ mod tests {
         let d = Detection {
             engines: vec![state("llamacpp", Status::Available, &["/m/x.gguf"])],
             local_models: vec!["/m/a.gguf".into(), "/m/b.gguf".into()],
+            data_home: None,
         };
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
@@ -1839,6 +1841,7 @@ mod tests {
         let d = Detection {
             engines: vec![state("llamacpp", Status::Available, &["served"])],
             local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
+            data_home: None,
         };
         let rows = model_rows(
             "llamacpp",
@@ -1901,12 +1904,9 @@ mod tests {
         assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
         let mut stopped = state("llamacpp", Status::NotRunning, &[]);
         stopped.binary = Some("/h/lazarobox/llama.cpp/current/llama-server".into());
-        let rows = model_rows(
-            "llamacpp",
-            Target::Task(Task::Chat),
-            &draft,
-            Some(&detection(vec![stopped])),
-        );
+        let mut found = detection(vec![stopped]);
+        found.data_home = Some("/h".into());
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&found));
         let text: String = rows
             .iter()
             .filter_map(|r| match &r.key {
