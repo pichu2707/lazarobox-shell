@@ -794,3 +794,112 @@ fn arg0_is_the_name_the_program_runs_as_not_its_path() {
     let out = run(&named);
     assert_eq!(stdout(&out).trim(), "cargo", "{}", stderr(&out));
 }
+
+#[test]
+fn a_git_commit_in_the_real_jail_cannot_write_outside_its_grants() {
+    use lazarobox_shell::{
+        core::ai::tools::git as pure,
+        runtime::tools::{
+            git::{Ctx, open, run as git_run},
+            runner::Unreported,
+        },
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    if !jail_available() {
+        return;
+    }
+    let Some(git) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|d| d.join("git"))
+            .find_map(|c| fs::canonicalize(c).ok())
+    }) else {
+        eprintln!("skipped: git is not installed");
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME").and_then(|h| fs::canonicalize(h).ok()) else {
+        eprintln!("skipped: $HOME is not usable");
+        return;
+    };
+    // A root under $HOME (a root in /tmp is refused as broad).
+    let Ok(dir) = tempfile::tempdir_in(&home) else {
+        eprintln!("skipped: $HOME is not writable");
+        return;
+    };
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("proj");
+    fs::create_dir(&root).unwrap();
+    let sh = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    };
+    sh(&["init", "-q"]);
+    sh(&["config", "user.name", "Repo Dev"]);
+    sh(&["config", "user.email", "dev@example.com"]);
+    fs::write(root.join("a.txt"), "one\n").unwrap();
+    sh(&["add", "."]);
+    sh(&["commit", "-q", "-m", "first"]);
+
+    // A pre-commit hook that writes inside the root (allowed) and next to it,
+    // outside every grant (denied by Landlock).
+    let outside = base.join("outside");
+    let inside = root.join("inside");
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\necho ok > {}\necho leak > {} 2>/dev/null\nexit 0\n",
+            inside.display(),
+            outside.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("a.txt"), "two\n").unwrap();
+
+    let ctx = Ctx {
+        helper: canon(env!("CARGO_BIN_EXE_lazarobox-shell")),
+        git,
+        home,
+        root: root.clone(),
+        scratch_parent: base.join("tmp"),
+        timeout: std::time::Duration::from_secs(60),
+        unreported: Unreported::default(),
+    };
+    let read = |name: &str| std::env::var_os(name);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let opened = open(&ctx, &read).await.expect("preflight");
+        let add = pure::add_argv(&opened.dir, &["a.txt"]).unwrap();
+        let added = git_run(&ctx, &opened, add, false, &read).await.unwrap();
+        assert_eq!(
+            added.done.ended.exit,
+            Some(0),
+            "{}",
+            added.done.capture.text()
+        );
+        let who = opened.identity.clone().unwrap();
+        let commit = pure::commit_argv(&opened.dir, &who, "second").unwrap();
+        let ran = git_run(&ctx, &opened, commit, false, &read).await.unwrap();
+        assert_eq!(ran.done.ended.exit, Some(0), "{}", ran.done.capture.text());
+    });
+    assert!(
+        inside.exists(),
+        "the hook ran in the jail and may write the root"
+    );
+    assert!(
+        !outside.exists(),
+        "a write outside the grants must be denied"
+    );
+    let log = Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "second");
+}

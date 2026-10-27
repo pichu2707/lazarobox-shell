@@ -501,6 +501,7 @@ fn the_drop_does_not_wait_for_the_snapshot_and_the_sink_fills_after() {
     std::fs::write(fx.root.join(".git/hooks/pre-commit"), "x").unwrap();
     let guard = AfterOnDrop {
         root: fx.root.clone(),
+        extra: Vec::new(),
         before: Some(before),
         unreported: unreported.clone(),
     };

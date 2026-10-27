@@ -149,6 +149,33 @@ pub fn snapshot(root: &Path) -> Snapshot {
     snapshot_with(root, LIMITS)
 }
 
+/// [`snapshot`] of `root`, plus the git dirs in `extra` (absolute, outside the
+/// root): each one's `config`, `config.worktree`, `hooks/*` and submodules,
+/// read through a beneath-open of that dir. Their places are keyed by absolute
+/// path, so they never clash with the root's relative ones.
+pub fn snapshot_with_git_dirs(root: &Path, extra: &[PathBuf]) -> Snapshot {
+    let mut all = snapshot(root);
+    for dir in extra {
+        let mut watch = Watch {
+            root: dir.clone(),
+            real: fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()),
+            seen: BTreeSet::new(),
+            snap: Snapshot::default(),
+            limits: LIMITS,
+            bytes: 0,
+            exhausted: false,
+        };
+        watch.git_dir(Path::new(""), 0, false);
+        for (path, item) in watch.snap.items {
+            all.items.insert(dir.join(path), item);
+        }
+        for (path, why) in watch.snap.unchecked {
+            all.unchecked.insert(dir.join(path), why);
+        }
+    }
+    all
+}
+
 fn snapshot_with(root: &Path, limits: Limits) -> Snapshot {
     let mut watch = Watch {
         root: root.to_path_buf(),

@@ -15,7 +15,8 @@ use crate::core::ai::toolchain::{Layout, Vars};
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::git::{self as pure, GitError};
 use crate::core::ai::tools::run::{Capture, Ended};
-use crate::runtime::tools::runner::Done;
+use crate::runtime::tools::integrity::Kind;
+use crate::runtime::tools::runner::{Done, Unreported};
 
 const HOME: &str = "/home/u";
 const ROOT: &str = "/home/u/proj";
@@ -319,6 +320,7 @@ fn repo() -> Option<Repo> {
         root: root.clone(),
         scratch_parent: base.join("tmp"),
         timeout: Duration::from_secs(30),
+        unreported: Unreported::default(),
     };
     let repo = Repo {
         _dir: dir,
@@ -333,6 +335,11 @@ fn repo() -> Option<Repo> {
     sh(&repo.root, &["add", "."]);
     sh(&repo.root, &["commit", "-q", "-m", "first"]);
     Some(repo)
+}
+
+/// A test that cannot run says so (a silent pass would read as coverage).
+fn skipped() {
+    eprintln!("skipped: git or a usable $HOME is missing");
 }
 
 fn sh(cwd: &Path, args: &[&str]) {
@@ -355,7 +362,7 @@ fn real(name: &str) -> Option<OsString> {
 
 #[tokio::test]
 async fn the_preflight_finds_the_git_dirs_and_the_repo_identity() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     let opened = open(&repo.ctx, &real).await.unwrap();
     let want = repo.root.join(".git");
     assert_eq!(
@@ -371,7 +378,7 @@ async fn the_preflight_finds_the_git_dirs_and_the_repo_identity() {
 
 #[tokio::test]
 async fn an_invalid_or_missing_identity_is_a_fixed_error_and_the_hooks_path_is_read() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     sh(&repo.root, &["config", "user.email", "no-at-sign"]);
     sh(&repo.root, &["config", "core.hooksPath", ".githooks"]);
     let opened = open(&repo.ctx, &real).await.unwrap();
@@ -381,7 +388,7 @@ async fn an_invalid_or_missing_identity_is_a_fixed_error_and_the_hooks_path_is_r
 
 #[tokio::test]
 async fn a_linked_worktree_gets_its_own_git_dir_and_the_common_one_for_hooks() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     let wt = repo.base.join("wt");
     sh(&repo.root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
     let mut ctx = repo.ctx.clone();
@@ -402,7 +409,7 @@ async fn a_linked_worktree_gets_its_own_git_dir_and_the_common_one_for_hooks() {
 
 #[tokio::test]
 async fn a_planted_fsmonitor_and_external_diff_never_run() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     let marker = repo.base.join("marker");
     let script = repo.base.join("plant.sh");
     std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
@@ -440,7 +447,7 @@ async fn a_planted_fsmonitor_and_external_diff_never_run() {
 
 #[tokio::test]
 async fn a_commit_goes_through_with_the_repo_identity() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     std::fs::write(repo.root.join("a.txt"), "two\n").unwrap();
     let opened = open(&repo.ctx, &real).await.unwrap();
     let add = pure::add_argv(&opened.dir, &["a.txt"]).unwrap();
@@ -470,11 +477,213 @@ async fn a_commit_goes_through_with_the_repo_identity() {
 
 #[tokio::test]
 async fn the_pointer_dirs_of_a_linked_worktree_are_read_from_its_git_file() {
-    let Some(repo) = repo() else { return };
+    let Some(repo) = repo() else { return skipped() };
     let wt = repo.base.join("wt");
     sh(&repo.root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
-    let found = pointer_dirs(&wt);
+    let found = pointer_dirs(&wt).unwrap();
     let common = repo.root.join(".git");
     assert_eq!(found, [common.join("worktrees/wt"), common]);
-    assert!(pointer_dirs(&repo.root).is_empty());
+    assert!(pointer_dirs(&repo.root).unwrap().is_empty());
+}
+
+// --- review fixes: a planted `.git` file ---
+
+fn plant_git_file(base: &Path, name: &str, target: &Path) -> PathBuf {
+    let evil = base.join(name);
+    std::fs::create_dir(&evil).unwrap();
+    std::fs::write(evil.join(".git"), format!("gitdir: {}\n", target.display())).unwrap();
+    evil
+}
+
+#[tokio::test]
+async fn a_git_file_that_points_at_another_repo_is_refused() {
+    let Some(repo) = repo() else { return skipped() };
+    let evil = plant_git_file(&repo.base, "evil", &repo.root.join(".git"));
+    let mut ctx = repo.ctx.clone();
+    ctx.root = evil;
+    assert!(matches!(pointer_dirs(&ctx.root), Err(Fault::Dir)));
+    assert!(matches!(open(&ctx, &real).await, Err(Fault::Dir)));
+}
+
+#[tokio::test]
+async fn a_git_file_that_points_at_the_worktree_of_another_checkout_is_refused() {
+    let Some(repo) = repo() else { return skipped() };
+    let wt = repo.base.join("wt");
+    sh(&repo.root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    // A real linked git dir, but its back-link names `wt`, not the root here.
+    let linked = repo.root.join(".git/worktrees/wt");
+    let evil = plant_git_file(&repo.base, "evil", &linked);
+    assert!(matches!(pointer_dirs(&evil), Err(Fault::Dir)));
+    // And a forged back-link is not enough: the git dir is not a worktree of
+    // the common dir it names.
+    let fake = repo.base.join("fake-git");
+    std::fs::create_dir(&fake).unwrap();
+    std::fs::write(
+        fake.join("commondir"),
+        repo.root.join(".git").to_str().unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        fake.join("gitdir"),
+        format!("{}\n", evil.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(evil.join(".git"), format!("gitdir: {}\n", fake.display())).unwrap();
+    assert!(matches!(pointer_dirs(&evil), Err(Fault::Dir)));
+}
+
+#[tokio::test]
+async fn a_git_file_that_is_a_link_or_too_big_is_refused_without_reading_it() {
+    let Some(repo) = repo() else { return skipped() };
+    let linked = repo.base.join("linked");
+    std::fs::create_dir(&linked).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", linked.join(".git")).unwrap();
+    let big = repo.base.join("big");
+    std::fs::create_dir(&big).unwrap();
+    std::fs::write(big.join(".git"), vec![b'a'; 1024 * 1024]).unwrap();
+    for root in [linked, big] {
+        let got = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || pointer_dirs(&root)),
+        )
+        .await
+        .expect("it must not read without bound")
+        .unwrap();
+        assert!(matches!(got, Err(Fault::Dir)));
+    }
+}
+
+// --- review fixes: the integrity check around a git run ---
+
+fn hook(dir: &Path, name: &str, body: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+async fn add_and_commit(ctx: &Ctx, opened: &super::Repo) -> (Ran, Ran) {
+    let add = pure::add_argv(&opened.dir, &["a.txt"]).unwrap();
+    let added = run(ctx, opened, add, false, &real).await.unwrap();
+    let who = opened.identity.clone().unwrap();
+    let commit = pure::commit_argv(&opened.dir, &who, "second").unwrap();
+    let committed = run(ctx, opened, commit, false, &real).await.unwrap();
+    (added, committed)
+}
+
+#[tokio::test]
+async fn a_hook_that_writes_another_hook_during_a_commit_is_reported() {
+    let Some(repo) = repo() else { return skipped() };
+    hook(
+        &repo.root.join(".git/hooks"),
+        "pre-commit",
+        "echo planted > .git/hooks/pre-push",
+    );
+    std::fs::write(repo.root.join("a.txt"), "two\n").unwrap();
+    let opened = open(&repo.ctx, &real).await.unwrap();
+    let (added, committed) = add_and_commit(&repo.ctx, &opened).await;
+    assert!(added.changes.is_empty(), "{:?}", added.changes);
+    assert_eq!(committed.done.ended.exit, Some(0));
+    let found: Vec<_> = committed
+        .changes
+        .iter()
+        .map(|c| (c.path.clone(), c.kind))
+        .collect();
+    assert_eq!(found, [(p(".git/hooks/pre-push"), Kind::Added)]);
+}
+
+#[tokio::test]
+async fn a_hook_that_writes_in_the_common_dir_of_a_linked_worktree_is_reported() {
+    let Some(repo) = repo() else { return skipped() };
+    let wt = repo.base.join("wt");
+    sh(&repo.root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    let common = repo.root.join(".git");
+    let planted = common.join("hooks/pre-push");
+    hook(
+        &common.join("hooks"),
+        "pre-commit",
+        &format!("echo planted > {}", planted.display()),
+    );
+    let mut ctx = repo.ctx.clone();
+    ctx.root = wt.clone();
+    std::fs::write(wt.join("a.txt"), "two\n").unwrap();
+    let opened = open(&ctx, &real).await.unwrap();
+    let (_, committed) = add_and_commit(&ctx, &opened).await;
+    assert_eq!(committed.done.ended.exit, Some(0));
+    assert!(
+        committed
+            .changes
+            .iter()
+            .any(|c| c.path == planted && c.kind == Kind::Added),
+        "{:?}",
+        committed.changes
+    );
+}
+
+// --- review fixes: the unjailed `git config` ---
+
+fn script_ctx(body: &str, timeout: Duration) -> (tempfile::TempDir, Ctx) {
+    let dir = tempfile::tempdir().unwrap();
+    let git = dir.path().join("git");
+    std::fs::write(&git, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ctx = Ctx {
+        helper: dir.path().join("helper"),
+        git,
+        home: dir.path().to_path_buf(),
+        root: dir.path().to_path_buf(),
+        scratch_parent: dir.path().join("tmp"),
+        timeout,
+        unreported: Unreported::default(),
+    };
+    (dir, ctx)
+}
+
+#[tokio::test]
+async fn a_git_config_that_fails_times_out_or_is_cut_is_a_preflight_fault() {
+    let second = Duration::from_secs(10);
+    for body in ["exit 2", "exit 128", "kill -9 $$"] {
+        let (_dir, ctx) = script_ctx(body, second);
+        assert!(
+            matches!(config(&ctx, &real).await, Err(Fault::Preflight)),
+            "{body}"
+        );
+    }
+    let (_dir, ctx) = script_ctx("sleep 30", Duration::from_millis(200));
+    assert!(matches!(config(&ctx, &real).await, Err(Fault::Preflight)));
+    let (_dir, ctx) = script_ctx("head -c 10000000 /dev/zero", second);
+    assert!(matches!(config(&ctx, &real).await, Err(Fault::Preflight)));
+}
+
+#[tokio::test]
+async fn a_git_config_that_finds_nothing_is_an_unset_identity_and_a_value_is_read() {
+    let (_dir, ctx) = script_ctx("exit 1", Duration::from_secs(10));
+    let (identity, hooks) = config(&ctx, &real).await.unwrap();
+    assert_eq!((identity, hooks), (Err(GitError::Identity), String::new()));
+    let (_dir, ctx) = script_ctx(
+        "printf 'user.name\\nA\\0user.email\\na@b.c\\0'",
+        Duration::from_secs(10),
+    );
+    let (identity, _) = config(&ctx, &real).await.unwrap();
+    assert_eq!(identity, Ok(pure::Identity::new("A", "a@b.c").unwrap()));
+}
+
+#[tokio::test]
+async fn git_config_gets_the_path_without_project_entries() {
+    let (_dir, ctx) = script_ctx(
+        "printf '%s' \"$PATH\" > \"$PWD/seen\"; exit 1",
+        Duration::from_secs(10),
+    );
+    let path = |name: &str| match name {
+        "PATH" => Some(OsString::from(format!(
+            "/usr/bin:{}/bin:relative",
+            ctx.root.display()
+        ))),
+        _ => None,
+    };
+    let _ = config(&ctx, &path).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(ctx.root.join("seen")).unwrap(),
+        "/usr/bin"
+    );
 }

@@ -101,15 +101,31 @@ impl Unreported {
 /// instant between the signal and the death can still be missed (a
 /// documented limit). The result reaches [`Job::unreported`] when the thread
 /// is done.
-struct AfterOnDrop {
+pub(crate) struct AfterOnDrop {
     root: PathBuf,
+    /// Git dirs outside the root that are watched too (a linked worktree's).
+    extra: Vec<PathBuf>,
     before: Option<integrity::Snapshot>,
     unreported: Unreported,
 }
 
 impl AfterOnDrop {
+    pub(crate) fn new(
+        root: PathBuf,
+        extra: Vec<PathBuf>,
+        before: integrity::Snapshot,
+        unreported: Unreported,
+    ) -> Self {
+        Self {
+            root,
+            extra,
+            before: Some(before),
+            unreported,
+        }
+    }
+
     /// The "before", for a run that takes its own "after".
-    fn disarm(&mut self) -> integrity::Snapshot {
+    pub(crate) fn disarm(&mut self) -> integrity::Snapshot {
         self.before.take().unwrap_or_default()
     }
 }
@@ -119,12 +135,13 @@ impl Drop for AfterOnDrop {
         let Some(before) = self.before.take() else {
             return;
         };
-        let root = self.root.clone();
+        let (root, extra) = (self.root.clone(), self.extra.clone());
         let sink = self.unreported.clone();
         let spawned = std::thread::Builder::new()
             .name("lbx-after-snapshot".to_owned())
             .spawn(move || {
-                let changes = integrity::compare(&before, &integrity::snapshot(&root));
+                let changes =
+                    integrity::compare(&before, &integrity::snapshot_with_git_dirs(&root, &extra));
                 if !changes.is_empty() {
                     sink.push(changes);
                 }
@@ -216,11 +233,12 @@ pub async fn run_jailed(
         program: job.program,
         argv: job.argv,
     };
-    let mut guard = AfterOnDrop {
-        before: Some(watched(&job.root).await),
-        root: job.root.clone(),
-        unreported: job.unreported,
-    };
+    let mut guard = AfterOnDrop::new(
+        job.root.clone(),
+        Vec::new(),
+        watched(&job.root, &[]).await,
+        job.unreported,
+    );
     let done = spawn_core(Run {
         program: job.helper,
         argv: args.render(),
@@ -229,7 +247,7 @@ pub async fn run_jailed(
         timeout: job.timeout,
     })
     .await?;
-    let after = watched(&job.root).await;
+    let after = watched(&job.root, &[]).await;
     let changes = integrity::compare(&guard.disarm(), &after);
     let folders = cleanup.take();
     let leftovers = tokio::task::spawn_blocking(move || {
@@ -247,10 +265,10 @@ pub async fn run_jailed(
     })
 }
 
-/// [`integrity::snapshot`] off the event loop.
-async fn watched(root: &Path) -> integrity::Snapshot {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || integrity::snapshot(&root))
+/// [`integrity::snapshot_with_git_dirs`] off the event loop.
+pub(crate) async fn watched(root: &Path, extra: &[PathBuf]) -> integrity::Snapshot {
+    let (root, extra) = (root.to_path_buf(), extra.to_vec());
+    tokio::task::spawn_blocking(move || integrity::snapshot_with_git_dirs(&root, &extra))
         .await
         .unwrap_or_default()
 }

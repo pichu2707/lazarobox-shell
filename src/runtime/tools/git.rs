@@ -10,7 +10,7 @@
 //! 2.32 or newer, as `GIT_CONFIG_GLOBAL` needs.
 
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,7 +19,9 @@ use crate::core::ai::toolchain::env::scrub;
 use crate::core::ai::toolchain::{Layout, Refusal, Vars, toolchain_spec};
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::git::{self as pure, GitDir, GitError, Identity};
-use crate::runtime::tools::runner::{Done, Run, spawn_core};
+use crate::runtime::tools::integrity::{self, Change};
+use crate::runtime::tools::open::open_beneath;
+use crate::runtime::tools::runner::{AfterOnDrop, Done, Run, Unreported, spawn_core, watched};
 use crate::runtime::tools::scratch::Scratch;
 
 type Read<'a> = &'a (dyn Fn(&str) -> Option<OsString> + Sync);
@@ -37,14 +39,21 @@ pub struct Ctx {
     /// Where each run's private `TMPDIR` is made.
     pub scratch_parent: PathBuf,
     pub timeout: Duration,
+    /// Where the changes of a git run that is dropped before it ends go (see
+    /// [`Unreported`]). Keep a clone and drain it after each call.
+    pub unreported: Unreported,
 }
 
 /// Why a git run could not start. Short and content-free.
 #[derive(Debug)]
 pub enum Fault {
-    /// The jail rules were refused (git outside a known place, broad root).
-    Spec,
-    /// A git dir is broad, next to an execute place or not a clean path.
+    /// The jail rules were refused (this git path outside a known system
+    /// place, a broad root). git must live in a system place such as
+    /// `/usr/bin`: a user-installed git is refused by design.
+    Spec(PathBuf),
+    /// A git dir is broad, next to an execute place, not a clean path, or a
+    /// repository outside the root that is not a genuine linked worktree of
+    /// it (a planted `.git` file, an unreadable or oversized pointer file).
     Dir,
     /// The environment holds a git variable it must not.
     Env,
@@ -87,6 +96,10 @@ pub struct Ran {
     pub done: Done,
     /// What of the private folder could not be removed.
     pub leftovers: Vec<PathBuf>,
+    /// The watched places (hooks, config) the run changed, in the root and in
+    /// a linked worktree's git dirs (absolute paths there). X-c3 semantics,
+    /// as in the runner's `Ran`; empty for the read-only preflight calls.
+    pub changes: Vec<Change>,
 }
 
 /// The rules for one git run: the toolchain rules without caches, no
@@ -195,24 +208,74 @@ pub fn version_ok(text: &str) -> bool {
     }
 }
 
+/// The most a pointer file (`.git`, `commondir`, `gitdir`) may hold.
+const POINTER_CAP: u64 = 4096;
+
+/// A small text file read without blocking or following a link: a regular
+/// file of at most [`POINTER_CAP`] bytes. `None` when it is absent.
+fn read_small(path: &Path) -> Result<Option<String>, Fault> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(Fault::Dir);
+    };
+    // No link is followed in any component; the type and size are those of the
+    // opened file, so nothing can swap in between.
+    let file = match open_beneath(parent, Path::new(name), false) {
+        Ok(fd) => std::fs::File::from(fd),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Fault::Dir),
+    };
+    let meta = file.metadata().map_err(|_| Fault::Dir)?;
+    if !meta.is_file() || meta.len() > POINTER_CAP {
+        return Err(Fault::Dir);
+    }
+    let mut text = String::new();
+    file.take(POINTER_CAP)
+        .read_to_string(&mut text)
+        .map_err(|_| Fault::Dir)?;
+    Ok(Some(text))
+}
+
 /// Where a linked worktree's `.git` file points: its git dir and the common
-/// dir that holds. Empty for a plain repo, and for a dir under the root.
-pub fn pointer_dirs(root: &Path) -> Vec<PathBuf> {
-    let Ok(text) = std::fs::read_to_string(root.join(".git")) else {
-        return Vec::new();
+/// dir that holds. Empty for a plain repo and for dirs under the root. A git
+/// dir outside the root is accepted only when it is a genuine linked worktree
+/// of this root: it sits directly under `<common>/worktrees/`, its `commondir`
+/// names that common dir and its `gitdir` back-link names `<root>/.git`.
+/// Anything else (a planted pointer at another repo) is [`Fault::Dir`].
+/// Blocking (small, bounded reads): call it off the async runtime.
+pub fn pointer_dirs(root: &Path) -> Result<Vec<PathBuf>, Fault> {
+    let dot = root.join(".git");
+    match std::fs::symlink_metadata(&dot) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(Fault::Dir),
+        Ok(meta) if meta.is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+    }
+    let Some(text) = read_small(&dot)? else {
+        return Ok(Vec::new());
     };
     let Some(target) = text.lines().next().and_then(|l| l.strip_prefix("gitdir:")) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let Ok(git_dir) = std::fs::canonicalize(root.join(target.trim())) else {
-        return Vec::new();
+    let canon = |p: PathBuf| std::fs::canonicalize(p).map_err(|_| Fault::Dir);
+    let real_root = canon(root.to_path_buf())?;
+    let git_dir = canon(root.join(target.trim()))?;
+    let common = match read_small(&git_dir.join("commondir"))? {
+        Some(rel) => Some(canon(git_dir.join(rel.trim()))?),
+        None => None,
     };
-    let common = std::fs::read_to_string(git_dir.join("commondir"))
-        .ok()
-        .and_then(|rel| std::fs::canonicalize(git_dir.join(rel.trim())).ok());
-    let mut found = vec![git_dir];
-    found.extend(common);
-    found
+    let shared = common.clone().unwrap_or_else(|| git_dir.clone());
+    if git_dir.starts_with(&real_root) && shared.starts_with(&real_root) {
+        return Ok(Vec::new());
+    }
+    let common = common.ok_or(Fault::Dir)?;
+    if git_dir.parent() != Some(&common.join("worktrees")) {
+        return Err(Fault::Dir);
+    }
+    let back = read_small(&git_dir.join("gitdir"))?.ok_or(Fault::Dir)?;
+    if canon(git_dir.join(back.trim()))? != real_root.join(".git") {
+        return Err(Fault::Dir);
+    }
+    Ok(vec![git_dir, common])
 }
 
 /// One jailed git call: a private `TMPDIR`, the cleared environment, the
@@ -223,10 +286,13 @@ async fn jailed(
     argv: Vec<String>,
     read_verb: bool,
     read: Read<'_>,
+    watch: bool,
 ) -> Result<Ran, Fault> {
     let scratch = Scratch::unique(&ctx.scratch_parent, "git")?;
     let layout = Layout {
-        // The placeholder only picks the program places: git is in a system one.
+        // The placeholder only picks the program places (the toolchain's rx
+        // set), not what runs: git must be in one of those system places, and a
+        // git anywhere else is refused by design (`Fault::Spec` names it).
         tool: Program::Cargo,
         home: ctx.home.clone(),
         root: ctx.root.clone(),
@@ -239,7 +305,8 @@ async fn jailed(
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| ctx.home.join(".config"));
     let resolve = |p: &Path| std::fs::canonicalize(p).ok();
-    let spec = jail_spec(&layout, &resolve, dirs, &xdg).map_err(|_| Fault::Spec)?;
+    let spec =
+        jail_spec(&layout, &resolve, dirs, &xdg).map_err(|_| Fault::Spec(ctx.git.clone()))?;
     let env = git_env(read, &ctx.root, scratch.path(), read_verb)?;
     let args = JailArgs {
         min_abi: None,
@@ -247,6 +314,27 @@ async fn jailed(
         spec,
         program: ctx.git.clone(),
         argv: argv.into_iter().map(OsString::from).collect(),
+    };
+    // Hooks and filter drivers run in the jail and can write the git dirs:
+    // look at the watched places before and after, like the runner does.
+    let extra: Vec<PathBuf> = if watch {
+        dirs.rw
+            .iter()
+            .filter(|d| !d.starts_with(&ctx.root))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut guard = if watch {
+        Some(AfterOnDrop::new(
+            ctx.root.clone(),
+            extra.clone(),
+            watched(&ctx.root, &extra).await,
+            ctx.unreported.clone(),
+        ))
+    } else {
+        None
     };
     let done = spawn_core(Run {
         program: ctx.helper.clone(),
@@ -256,9 +344,17 @@ async fn jailed(
         timeout: ctx.timeout,
     })
     .await?;
+    let changes = match guard.as_mut() {
+        Some(guard) => {
+            let after = watched(&ctx.root, &extra).await;
+            integrity::compare(&guard.disarm(), &after)
+        }
+        None => Vec::new(),
+    };
     Ok(Ran {
         done,
         leftovers: scratch.finish(),
+        changes,
     })
 }
 
@@ -270,7 +366,7 @@ pub async fn run(
     read_verb: bool,
     read: Read<'_>,
 ) -> Result<Ran, Fault> {
-    jailed(ctx, &repo.dirs, argv, read_verb, read).await
+    jailed(ctx, &repo.dirs, argv, read_verb, read, true).await
 }
 
 /// The text of a finished call, when it ended well.
@@ -282,11 +378,12 @@ fn ok_text(done: &Done) -> Option<String> {
 /// The preflight: git version, the two git dirs, the identity and the
 /// configured hooks path. Nothing is written.
 pub async fn open(ctx: &Ctx, read: Read<'_>) -> Result<Repo, Fault> {
-    let reach = Dirs {
-        ro: pointer_dirs(&ctx.root),
-        rw: Vec::new(),
-    };
-    let version = jailed(ctx, &reach, vec!["--version".into()], true, read).await?;
+    let root = ctx.root.clone();
+    let ro = tokio::task::spawn_blocking(move || pointer_dirs(&root))
+        .await
+        .map_err(|e| Fault::Io(io::Error::other(e)))??;
+    let reach = Dirs { ro, rw: Vec::new() };
+    let version = jailed(ctx, &reach, vec!["--version".into()], true, read, false).await?;
     if !ok_text(&version.done).is_some_and(|t| version_ok(&t)) {
         return Err(Fault::Version);
     }
@@ -296,13 +393,26 @@ pub async fn open(ctx: &Ctx, read: Read<'_>) -> Result<Repo, Fault> {
         "--absolute-git-dir",
         "--git-common-dir",
     ];
-    let found = jailed(ctx, &reach, argv.map(String::from).to_vec(), true, read).await?;
+    let found = jailed(
+        ctx,
+        &reach,
+        argv.map(String::from).to_vec(),
+        true,
+        read,
+        false,
+    )
+    .await?;
     let text = ok_text(&found.done).ok_or(Fault::Preflight)?;
     let [git_dir, common] = text.lines().collect::<Vec<_>>()[..] else {
         return Err(Fault::Preflight);
     };
     let canon = |p: &str| std::fs::canonicalize(p).map_err(|_| Fault::Dir);
     let (git_dir, common) = (canon(git_dir)?, canon(common)?);
+    // Git must report only dirs the pointer check vouched for (or the root's).
+    let vouched = |d: &Path| d.starts_with(&ctx.root) || reach.ro.iter().any(|r| r == d);
+    if !vouched(&git_dir) || !vouched(&common) {
+        return Err(Fault::Dir);
+    }
     let name = |p: &Path| p.to_str().map(str::to_owned).ok_or(Fault::Dir);
     let dir = GitDir::new(&name(&git_dir)?, &name(&common)?).map_err(|_| Fault::Dir)?;
     let mut rw = vec![git_dir];
@@ -323,10 +433,16 @@ pub async fn open(ctx: &Ctx, read: Read<'_>) -> Result<Repo, Fault> {
 /// value wins); `git config` only reads, and the values are validated by
 /// [`Identity::new`] before they go anywhere.
 async fn config(ctx: &Ctx, read: Read<'_>) -> Result<(Result<Identity, GitError>, String), Fault> {
-    let mut env: Vec<(OsString, OsString)> = ["PATH", "HOME", "XDG_CONFIG_HOME"]
-        .iter()
-        .filter_map(|n| read(n).map(|v| (OsString::from(n), v)))
+    // PATH goes through the same filter as a jailed run's (no project entry).
+    let mut env: Vec<(OsString, OsString)> = scrub(read, &ctx.root, &ctx.scratch_parent)
+        .into_iter()
+        .filter(|(name, _)| name == "PATH")
         .collect();
+    env.extend(
+        ["HOME", "XDG_CONFIG_HOME"]
+            .iter()
+            .filter_map(|n| read(n).map(|v| (OsString::from(n), v))),
+    );
     env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
     env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
     let done = spawn_core(Run {
@@ -344,7 +460,12 @@ async fn config(ctx: &Ctx, read: Read<'_>) -> Result<(Result<Identity, GitError>
         timeout: ctx.timeout,
     })
     .await?;
-    // Exit 1 is "no such key": an unset identity, not a failure.
+    // Exit 1 is "no such key": an unset identity, not a failure. Any other
+    // end, a timeout or a cut capture would be read as "unset": refuse it.
+    let ended = &done.ended;
+    if !matches!(ended.exit, Some(0 | 1)) || ended.timed_out || done.capture.truncated() {
+        return Err(Fault::Preflight);
+    }
     let bytes = done.capture.bytes();
     let text = String::from_utf8_lossy(&bytes);
     let (mut name, mut email, mut hooks) = (String::new(), String::new(), String::new());
