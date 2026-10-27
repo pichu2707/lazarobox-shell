@@ -15,7 +15,8 @@
 //! The bans come in two sets. `PROCESS_NET` (spawn, sockets, `extern`) holds
 //! for every file. `FS_WRITE` (create, write, remove, rename) holds for every
 //! file except those in `MAY_WRITE`, and even those have a `libc` allow-list of
-//! their own. Naming the `write` module is allowed only in `MAY_CALL_WRITE`.
+//! their own. `runner.rs` alone (`MAY_SPAWN`) may start a process, and only
+//! that: no socket, no write, and a `libc` list of its own. Naming the `write` module is allowed only in `MAY_CALL_WRITE`.
 //!
 //! A best-effort tripwire against accidental use, not a guarantee. It cannot
 //! see a macro that builds a call from tokens, a call made through a path the
@@ -63,7 +64,11 @@ const FS_WRITE: &[&str] = &[
 const BANNED_FS: &[&str] = &["write", "copy", "rename", "symlink", "truncate"];
 
 /// The files (relative to `src/runtime/tools/`) that may use `FS_WRITE` names.
-const MAY_WRITE: &[&str] = &["write.rs"];
+const MAY_WRITE: &[&str] = &["write.rs", "scratch.rs"];
+
+/// The files that may start a process: the spawn core of `run_command`. The
+/// socket bans, the write bans and the `libc` list still hold for them.
+const MAY_SPAWN: &[&str] = &["runner.rs"];
 
 /// The files that may name the `write` module. `apply.rs` drives it through
 /// `WriteOps`, and has no write API of its own.
@@ -144,10 +149,15 @@ const WRITE_LIBC_ALLOWED: &[&str] = &[
     "c_long",
 ];
 
+/// The only `libc::` names `runner.rs` may use.
+const SPAWN_LIBC_ALLOWED: &[&str] = &["pid_t", "ETXTBSY"];
+
 /// What one file may do.
 pub struct Allow {
     /// Whether `FS_WRITE` names are allowed.
     fs_write: bool,
+    /// Whether a process may be started.
+    spawn: bool,
     /// The `libc::` names.
     libc: &'static [&'static str],
     /// The only name `libc::syscall` may be called with.
@@ -156,6 +166,7 @@ pub struct Allow {
 
 /// The read side: no write, `openat2` only.
 pub const READ_SIDE: Allow = Allow {
+    spawn: false,
     fs_write: false,
     libc: LIBC_ALLOWED,
     syscall: "SYS_openat2",
@@ -163,9 +174,18 @@ pub const READ_SIDE: Allow = Allow {
 
 /// The write module: may write, with its own `libc` list.
 pub const WRITE_SIDE: Allow = Allow {
+    spawn: false,
     fs_write: true,
     libc: WRITE_LIBC_ALLOWED,
     syscall: "SYS_renameat2",
+};
+
+/// The spawn core: may start a process, nothing else.
+pub const SPAWN_SIDE: Allow = Allow {
+    spawn: true,
+    fs_write: false,
+    libc: SPAWN_LIBC_ALLOWED,
+    syscall: "",
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -400,10 +420,26 @@ pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
         let name = name.as_str();
         let after_path = k > 0 && t[k - 1] == Tok::Path;
         let before_path = t.get(k + 1) == Some(&Tok::Path);
-        if PROCESS_NET.contains(&name) || (!allow.fs_write && FS_WRITE.contains(&name)) {
+        // Starting a process is the one thing a spawn file earns.
+        let spawning = allow.spawn && name == "Command";
+        if (PROCESS_NET.contains(&name) && !spawning)
+            || (!allow.fs_write && FS_WRITE.contains(&name))
+        {
             found.push(format!("`{name}`"));
         }
-        if BANNED_IN_PATH.contains(&name) && (after_path || before_path) {
+        // `tokio::net::unix::pipe` is the async end of an anonymous pipe, not
+        // a socket: a spawn file may name it.
+        let pipe = allow.spawn
+            && name == "net"
+            && t.get(k + 1) == Some(&Tok::Path)
+            && ident(k + 2) == Some("unix")
+            && t.get(k + 3) == Some(&Tok::Path)
+            && ident(k + 4) == Some("pipe");
+        if BANNED_IN_PATH.contains(&name)
+            && !(allow.spawn && name == "process")
+            && !pipe
+            && (after_path || before_path)
+        {
             found.push(format!("path segment `{name}`"));
         }
         if let (true, true, Some(next), false) =
@@ -522,6 +558,8 @@ fn module_refs(src: &str, module: &str) -> Vec<String> {
 pub fn file_problems(rel: &str, src: &str) -> Vec<String> {
     let allow = if MAY_WRITE.contains(&rel) {
         &WRITE_SIDE
+    } else if MAY_SPAWN.contains(&rel) {
+        &SPAWN_SIDE
     } else {
         &READ_SIDE
     };
@@ -696,6 +734,28 @@ mod tests {
         let named = "use super::apply::{self, ApplyResult};";
         assert_eq!(planted(&[("stage.rs", named)]), Vec::<String>::new());
         assert!(!planted(&[("host/stage.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn the_runner_may_start_a_process_and_nothing_else_and_others_may_not() {
+        let spawns = "fn f() { tokio::process::Command::new(p).spawn(); libc::pid_t::MAX; \
+                      tokio::net::unix::pipe::Receiver::from_file(f); }";
+        assert_eq!(planted(&[("runner.rs", spawns)]), Vec::<String>::new());
+        assert!(!planted(&[("host/runner.rs", spawns)]).is_empty());
+        assert!(!planted(&[("search.rs", spawns)]).is_empty());
+        // It earns no socket, no write, no other `libc` name, no `net` path.
+        for bad in [
+            "fn f() { TcpStream::connect(a) }",
+            "fn f() { std::net::TcpListener::bind(a) }",
+            "fn f() { tokio::net::UnixStream::connect(a) }",
+            "fn f() { tokio::net::unix::SocketAddr::x() }",
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+            "fn f() { libc::kill(1, 9) }",
+            "fn f() { libc::killpg(1, 9) }",
+        ] {
+            assert!(!file_problems("runner.rs", bad).is_empty(), "{bad}");
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod fs;
 pub mod host;
 pub mod open;
 pub mod pending;
+pub mod runner;
 pub mod search;
 pub mod stage;
 pub mod staged;
