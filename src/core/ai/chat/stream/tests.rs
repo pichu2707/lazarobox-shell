@@ -1099,3 +1099,54 @@ fn the_accumulated_bytes_are_capped_and_no_call_is_released() {
     assert_eq!(events, [failed(TOO_LONG)]);
     assert!(calls.is_empty());
 }
+
+// llamacpp-tools T1.6: the recorded b11935 replies.
+const CALL_F1: &str =
+    include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-call.sse");
+const ANSWER_F2: &str =
+    include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-result.sse");
+
+#[test]
+fn the_recorded_tool_call_decodes_to_one_request_at_every_split_point() {
+    let bytes = CALL_F1.as_bytes();
+    let check = |chunks: &[&[u8]], at: usize| {
+        let (events, calls) = oa_run(chunks);
+        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(
+            calls,
+            [ToolRequest {
+                name: "find_dir".into(),
+                id: Some("JEDIAQavkL8v8oW7odZMfLsZ7CM6ZgAq".into()),
+                index: Some(0),
+                arguments: serde_json::json!({"query": "src"}),
+                call: Ok(Call::FindDir {
+                    query: "src".into()
+                }),
+            }],
+            "cut at {at}"
+        );
+    };
+    check(&[bytes], 0);
+    for at in (0..=bytes.len()).step_by(7) {
+        let (a, b) = bytes.split_at(at);
+        check(&[a, b], at);
+    }
+}
+
+#[test]
+fn the_recorded_answer_streams_text_and_holds_no_call() {
+    let (events, calls) = oa_run(&[ANSWER_F2.as_bytes()]);
+    assert!(calls.is_empty());
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Delta(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.starts_with("I found a couple of directories named `src`"),
+        "{text}"
+    );
+}
