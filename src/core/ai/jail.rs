@@ -11,6 +11,7 @@
 //! itself inside the jail.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
@@ -29,6 +30,15 @@ pub const NOT_ENFORCED_EXIT: i32 = 125;
 /// The line (start of a stderr line) the helper prints with that status. A CLI
 /// can exit 125 on its own, so the status alone is not proof of a jail error.
 pub const NOT_ENFORCED_MARKER: &str = "lazarobox-jail: jail not enforced";
+
+/// The variable that names the descriptor the helper reports "jail not
+/// enforced" on, for a parent that cannot trust the program's own output (a
+/// program can print the marker and exit 125 itself). The descriptor is
+/// closed by the `exec` of the program, so only the helper can write to it.
+pub const STATUS_FD_VAR: &str = "LAZAROBOX_JAIL_STATUS_FD";
+
+/// The descriptor number the parent hands the status pipe on.
+pub const STATUS_FD: i32 = 3;
 
 /// First argument of the re-exec'd binary that selects the helper.
 pub const SUBCOMMAND: &str = "__jail-exec";
@@ -88,6 +98,20 @@ impl SeatbeltFault {
 pub enum JailSupport {
     Available { backend: Backend, abi: u32 },
     Unavailable(JailOff),
+}
+
+impl JailSupport {
+    /// Whether `run_command` may run here: only the Landlock jail confines a
+    /// toolchain run (design D18), not the macOS one.
+    pub fn runs_commands(self) -> bool {
+        matches!(
+            self,
+            Self::Available {
+                backend: Backend::Landlock,
+                ..
+            }
+        )
+    }
 }
 
 /// Why this system cannot jail a CLI at all.
@@ -248,7 +272,10 @@ const ARG_UNKNOWN_FLAG: &str = "unknown flag";
 const ARG_RELATIVE_RULE: &str = "rule paths must be absolute";
 const ARG_NO_PROGRAM: &str = "no program after `--`";
 const ARG_RELATIVE_PROGRAM: &str = "the program must be an absolute path";
-const ARG_REASONS: [&str; 7] = [
+const ARG_BAD_NET_BIND: &str = "--net-bind takes only `open`";
+const ARG_BAD_RLIMITS: &str = "--rlimits takes only `toolchain`";
+const ARG_BAD_ARG0: &str = "--arg0 takes a plain name";
+const ARG_REASONS: [&str; 10] = [
     ARG_NO_SEPARATOR,
     ARG_NO_VALUE,
     ARG_BAD_ABI,
@@ -256,12 +283,19 @@ const ARG_REASONS: [&str; 7] = [
     ARG_RELATIVE_RULE,
     ARG_NO_PROGRAM,
     ARG_RELATIVE_PROGRAM,
+    ARG_BAD_NET_BIND,
+    ARG_BAD_RLIMITS,
+    ARG_BAD_ARG0,
 ];
 
 /// The macOS helper's other fixed texts (`runtime::jail::seatbelt`).
 pub const MIN_ABI_REASON: &str = "--min-abi is Linux only";
 pub const PROFILE_REASON: &str = "the macOS profile could not be built";
 pub const EXEC_FAILED_REASON: &str = "/usr/bin/sandbox-exec could not be started";
+/// The helper's refusal of an `rwx` root that fails [`JailSpec::check_exec`].
+pub const RWX_REASON: &str = "the rwx root is not allowed";
+/// The helper could not set a resource limit.
+pub const RLIMIT_REASON: &str = "a resource limit could not be set";
 
 /// The reasons the helper can print that are safe to show, as the user will
 /// read them. The helper builds them from numbers and fixed text; everything
@@ -279,10 +313,16 @@ fn known_helper_reason(said: &str) -> Option<String> {
     if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
         return Some(JailOff::NoLandlock(abi).text());
     }
-    if let Some(fixed) = [MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON]
-        .into_iter()
-        .chain(ARG_REASONS)
-        .find(|text| *text == said)
+    if let Some(fixed) = [
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+        RLIMIT_REASON,
+    ]
+    .into_iter()
+    .chain(ARG_REASONS)
+    .find(|text| *text == said)
     {
         return Some(fixed.to_owned());
     }
@@ -1008,6 +1048,46 @@ pub struct JailSpec {
     /// can carve them out (a later `deny file-write*` beats the allow);
     /// Landlock cannot, so Linux never gets one.
     pub rw_except: Vec<PathBuf>,
+    pub net_bind: NetBind,
+    pub rlimits: Rlimits,
+}
+
+/// Whether the jailed program may listen on TCP (Landlock ABI 4+; below that
+/// nothing is mediated). Closed unless a toolchain run asks for a dev server.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NetBind {
+    #[default]
+    Closed,
+    Open,
+}
+
+/// The resource limits the helper sets before `exec`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rlimits {
+    #[default]
+    None,
+    Toolchain,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limit {
+    Core,
+    FileSize,
+    CpuSeconds,
+}
+
+impl Rlimits {
+    /// Each limit with the value used for both its soft and hard bound.
+    pub fn limits(self) -> &'static [(Limit, u64)] {
+        match self {
+            Rlimits::None => &[],
+            Rlimits::Toolchain => &[
+                (Limit::Core, 0),
+                (Limit::FileSize, 4 << 30),
+                (Limit::CpuSeconds, 1200),
+            ],
+        }
+    }
 }
 
 /// The folder of a codex state dir that holds the standalone installer's
@@ -1321,6 +1401,12 @@ impl JailSpec {
 pub struct JailArgs {
     /// Test-only: refuse to run below this ABI (exit 125).
     pub min_abi: Option<u32>,
+    /// The name the program sees as its own (`argv[0]`), when it is not its
+    /// path: a proxy like `cargo` is a link to `rustup`, which picks what to
+    /// do from the name it is run as. A plain name, set from a fixed list by
+    /// the caller, never from model input. Linux only: `sandbox-exec` starts
+    /// the program itself, so on macOS the program runs under its path.
+    pub arg0: Option<OsString>,
     pub spec: JailSpec,
     pub program: PathBuf,
     pub argv: Vec<OsString>,
@@ -1337,7 +1423,11 @@ impl JailArgs {
         if let Some(abi) = self.min_abi {
             out.extend([OsString::from("--min-abi"), OsString::from(abi.to_string())]);
         }
+        if let Some(name) = &self.arg0 {
+            out.extend([OsString::from("--arg0"), name.clone()]);
+        }
         let lists = [
+            ("--rwx", &self.spec.rwx),
             ("--rx", &self.spec.rx),
             ("--ro", &self.spec.ro),
             ("--rw", &self.spec.rw),
@@ -1350,6 +1440,12 @@ impl JailArgs {
                 out.extend([OsString::from(flag), path.clone().into_os_string()]);
             }
         }
+        if self.spec.net_bind == NetBind::Open {
+            out.extend([OsString::from("--net-bind"), OsString::from("open")]);
+        }
+        if self.spec.rlimits == Rlimits::Toolchain {
+            out.extend([OsString::from("--rlimits"), OsString::from("toolchain")]);
+        }
         out.extend([OsString::from("--"), self.program.clone().into_os_string()]);
         out.extend(self.argv.iter().cloned());
         out
@@ -1361,6 +1457,7 @@ impl JailArgs {
 pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     let mut spec = JailSpec::default();
     let mut min_abi = None;
+    let mut arg0 = None;
     let mut it = args.iter();
     loop {
         let flag = it.next().ok_or(ArgError(ARG_NO_SEPARATOR))?;
@@ -1373,7 +1470,30 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
             min_abi = Some(abi.ok_or(ArgError(ARG_BAD_ABI))?);
             continue;
         }
+        if flag == "--arg0" {
+            let bytes = value.as_bytes();
+            if bytes.is_empty() || bytes.contains(&b'/') || bytes.contains(&0) {
+                return Err(ArgError(ARG_BAD_ARG0));
+            }
+            arg0 = Some(value.clone());
+            continue;
+        }
+        if flag == "--net-bind" {
+            match value.to_str() {
+                Some("open") => spec.net_bind = NetBind::Open,
+                _ => return Err(ArgError(ARG_BAD_NET_BIND)),
+            }
+            continue;
+        }
+        if flag == "--rlimits" {
+            match value.to_str() {
+                Some("toolchain") => spec.rlimits = Rlimits::Toolchain,
+                _ => return Err(ArgError(ARG_BAD_RLIMITS)),
+            }
+            continue;
+        }
         let list = match flag.to_str() {
+            Some("--rwx") => &mut spec.rwx,
             Some("--rx") => &mut spec.rx,
             Some("--ro") => &mut spec.ro,
             Some("--rw") => &mut spec.rw,
@@ -1394,6 +1514,7 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     }
     Ok(JailArgs {
         min_abi,
+        arg0,
         spec,
         program,
         argv: it.cloned().collect(),

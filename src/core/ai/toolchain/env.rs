@@ -55,9 +55,19 @@ pub fn scrub(
 }
 
 /// `raw` without its relative and project entries; `None` when none is left.
+/// An entry is judged by where it really leads: a link that points into the
+/// project is a project entry. The entry itself is kept as it was written.
 fn safe_path(raw: &OsString, root: &Path) -> Option<OsString> {
+    // The root without a link in it, once: an entry's real path is compared
+    // with it, so a root given through a link still catches its own entries.
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let kept: Vec<PathBuf> = std::env::split_paths(raw)
-        .filter(|entry| entry.is_absolute() && !entry.starts_with(root))
+        .filter(|entry| {
+            entry.is_absolute()
+                && !entry.starts_with(root)
+                && !entry.starts_with(&real_root)
+                && !std::fs::canonicalize(entry).is_ok_and(|real| real.starts_with(&real_root))
+        })
         .collect();
     if kept.is_empty() {
         return None;

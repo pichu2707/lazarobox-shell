@@ -10,6 +10,32 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `run_command` asks before every command, in every approval mode, and the
+  prompt now says what the user is approving: the timeout, that the network
+  is on and a test can read and send out the project's `.env`, that the output
+  goes to the model (and, on a cloud engine, to its provider), which project
+  files the program runs (`build.rs`, `package.json` scripts, `conftest.py`,
+  `go.mod`), and, for `npm`, `yarn` or `pnpm` `install` and `ci`, that the
+  install scripts of the project and its dependencies run, with the project's
+  own lifecycle scripts shown. The notice is part of what must fit on screen
+  before `y` answers. Cloud engines can now run commands (Linux only).
+- The Exec row of the AI menu reads `on · needs Linux sandbox` when the system
+  has no Landlock jail.
+- Arguments with shell characters (`; | & < > ( ) * ? # ~ { } !`) show quoted
+  in the prompt.
+- A cancelled run that touched git hooks or config is told in the next
+  command prompt of that chat, and still reaches the model.
+
+### Fixed
+
+- `npm`, `yarn` and `pnpm` `test` and `run` are refused outside the folder that
+  has the `package.json` (a manager would read a parent one that nothing
+  showed).
+- A run that fails after it started now reports the git hooks and config it
+  changed instead of dropping them.
+
 ## [0.27.0] - 2026-10-27
 
 ### Added

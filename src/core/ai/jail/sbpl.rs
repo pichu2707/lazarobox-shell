@@ -11,7 +11,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use super::JailSpec;
+use super::{JailSpec, NetBind, Rlimits};
 
 /// The longest path accepted, in bytes (`PATH_MAX`).
 pub const PATH_MAX: usize = 1024;
@@ -43,8 +43,9 @@ pub enum SbplError {
     Unnormalized(PathBuf),
     /// The spec holds more than [`MAX_PARAMS`] paths.
     TooMany(usize),
-    /// The spec has an `rwx` root. Seatbelt does not run toolchains yet, so
-    /// there is no profile for it and it fails closed.
+    /// The spec has an `rwx` root, an open TCP bind or toolchain rlimits.
+    /// Seatbelt does not run toolchains yet, so there is no profile for it and
+    /// it fails closed.
     Rwx,
 }
 
@@ -143,7 +144,8 @@ fn pinned_dirs(spec: &JailSpec) -> Vec<PathBuf> {
 /// `rw_files` match by `literal`. `rw_except` folders are denied writing after
 /// all the allows.
 pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
-    if !spec.rwx.is_empty() {
+    if !spec.rwx.is_empty() || spec.net_bind == NetBind::Open || spec.rlimits == Rlimits::Toolchain
+    {
         return Err(SbplError::Rwx);
     }
     let pinned = pinned_dirs(spec);
