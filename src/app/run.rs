@@ -465,6 +465,15 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // The path was made one clean line when asked.
+            ApprovalAsk::GitDiff { staged, path } => Some(ApprovalPrompt {
+                target: "send a diff of your repository to the engine".to_owned(),
+                command: format!("git diff{} {path}", if *staged { " --staged" } else { "" }),
+                keys: READ_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The program, arguments and folder are what will run, and the host
             // refused text that would not show as it is. The notice is part of
             // what is approved, so the pane must fit it (it is not `why`).

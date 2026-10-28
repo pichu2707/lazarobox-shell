@@ -159,6 +159,7 @@ impl App {
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
+            | ApprovalAsk::GitDiff { .. }
             | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;

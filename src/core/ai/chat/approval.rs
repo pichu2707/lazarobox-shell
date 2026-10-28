@@ -119,6 +119,11 @@ pub enum ApprovalAsk {
         /// watched git places, as one sanitized line the host fills in.
         earlier: Option<String>,
     },
+    /// Show the diff of the repository to the engine: file text leaves the
+    /// machine, so a cloud engine asks (`git_status` and `git_log` return
+    /// names and subjects only and never ask). `path` is `.` for the whole
+    /// tree, as one clean line. Never routed by the approval mode.
+    GitDiff { staged: bool, path: String },
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
@@ -209,6 +214,15 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 earlier: None,
             })
         }
+        // The diff holds file text, so it goes to a cloud provider only after
+        // the user's `y`; on a local engine it runs free.
+        Call::GitDiff { staged, path } if locality == Locality::Cloud => {
+            let path = flat(path.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::GitDiff {
+                staged: *staged,
+                path: if path.is_empty() { ".".into() } else { path },
+            })
+        }
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
         Call::External {
@@ -238,7 +252,10 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::CreateDir { .. }
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
-        | Call::ProposeBatch => None,
+        | Call::ProposeBatch
+        | Call::GitStatus
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. } => None,
     }
 }
 
@@ -1589,6 +1606,72 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    // Spec (git-tools, Read verbs): `git_status` and `git_log` run free;
+    // `git_diff` shows file text, so it asks on a cloud engine only.
+    #[test]
+    fn git_diff_asks_on_a_cloud_engine_and_the_other_read_verbs_never_do() {
+        let diff = Call::GitDiff {
+            staged: true,
+            path: Some("src/a.rs".into()),
+        };
+        assert_eq!(ask_for(&diff, Locality::Local), None);
+        assert_eq!(
+            ask_for(&diff, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: true,
+                path: "src/a.rs".into()
+            })
+        );
+        let whole = Call::GitDiff {
+            staged: false,
+            path: None,
+        };
+        assert_eq!(
+            ask_for(&whole, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: false,
+                path: ".".into()
+            })
+        );
+        let log = Call::GitLog {
+            max_count: None,
+            path: None,
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(ask_for(&Call::GitStatus, locality), None);
+            assert_eq!(ask_for(&log, locality), None);
+        }
+    }
+
+    #[test]
+    fn a_git_diff_path_is_shown_as_one_clean_line() {
+        let call = Call::GitDiff {
+            staged: false,
+            path: Some("a\n\u{202e}b".into()),
+        };
+        let Some(ApprovalAsk::GitDiff { path, .. }) = ask_for(&call, Locality::Cloud) else {
+            panic!("no ask");
+        };
+        assert!(
+            path.chars().all(|c| !c.is_control() && c != '\u{202e}'),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn a_git_diff_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::GitDiff {
+            staged: false,
+            path: ".".into(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+            assert_eq!(answers_itself(&ask, mode), None);
         }
     }
 
