@@ -56,6 +56,9 @@ const STAGE_TOO_LARGE: &str = "the staged diff is too large to review; stage les
 const STAGED_CHANGED: &str = "the staged changes changed after the question; ask again";
 /// How long one read verb may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a commit may take: its hooks may run linters.
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
+const NOT_CHECKED: &str = "the commit could not be checked against the reviewed changes";
 
 /// An opened repository: the run context and what the preflight found.
 struct Opened {
@@ -181,11 +184,23 @@ async fn plan_commit(
     opened.repo.identity.clone().map_err(GitError::reason)?;
     let diff = staged_diff(&opened).await?;
     let hooks = pure::hooks_notice(&opened.repo.dir, &opened.repo.configured_hooks);
+    let hooks_dir = opened.repo.dir.hooks();
+    let running = tokio::task::spawn_blocking(move || running_hooks(&hooks_dir))
+        .await
+        .map_err(|_| COULD_NOT)?;
     Ok(ApprovalAsk::Commit(Arc::new(CommitReview::new(
         message,
         hooks.as_deref(),
+        &running,
         &diff,
     ))))
+}
+
+/// The commit hooks that exist and are executable in the pinned hooks folder.
+fn running_hooks(dir: &str) -> Vec<&'static str> {
+    (pure::COMMIT_HOOKS.into_iter())
+        .filter(|name| executable(&Path::new(dir).join(name)).is_some())
+        .collect()
 }
 
 /// Runs an approved (or free) verb: judged again, then the jail. `reviewed`
@@ -226,7 +241,12 @@ async fn add(
     let ended = &ran.done.ended;
     let ok = ended.exit == Some(0) && !ended.timed_out;
     let text = if ok { "staged" } else { FAILED };
-    Ok(finish(&opened, ran, ok, text.to_owned(), "git add", nonce))
+    let result = if ok {
+        (ToolStatus::Ok, "git add")
+    } else {
+        (ToolStatus::Error, FAILED)
+    };
+    Ok(finish(&opened, ran, result, text.to_owned(), nonce))
 }
 
 /// The approved commit: only if the index is what the user read.
@@ -240,32 +260,88 @@ async fn commit(
     let Some(ApprovalAsk::Commit(reviewed)) = reviewed else {
         return Err(COULD_NOT);
     };
-    let opened = open(host, scope).await?;
+    let mut opened = open(host, scope).await?;
+    opened.ctx.timeout = COMMIT_TIMEOUT;
     let who = opened.repo.identity.clone().map_err(GitError::reason)?;
     if !reviewed.same_staged(&staged_diff(&opened).await?) {
         return Err(STAGED_CHANGED);
     }
+    // The tree the user read, recorded before any hook can change the index.
+    let before = text_of(&opened, pure::write_tree_argv(&opened.repo.dir), false).await;
+    let before = before.ok_or(FAILED)?.trim().to_owned();
     let argv = pure::commit_argv(&opened.repo.dir, &who, message).map_err(GitError::reason)?;
     let ran = exec(&opened, argv, false).await?;
     let ended = &ran.done.ended;
     let ok = ended.exit == Some(0) && !ended.timed_out;
     // The output holds the hooks' words: data, wrapped like any other.
     let body = label::wrap(nonce, &ran.done.capture.text());
-    let text = if ok {
-        body
-    } else {
-        format!("{FAILED}\n{body}")
+    if !ok {
+        let text = format!("{FAILED}\n{body}");
+        return Ok(finish(
+            &opened,
+            ran,
+            (ToolStatus::Error, FAILED),
+            text,
+            nonce,
+        ));
+    }
+    // Warn, never undo (user decision 2026-10-28): a hook may have changed
+    // what was committed after the review.
+    let Some(drift) = drift_of(&opened, &before).await else {
+        return Ok(finish(
+            &opened,
+            ran,
+            (ToolStatus::Ok, "git commit"),
+            body,
+            nonce,
+        ));
     };
-    Ok(finish(&opened, ran, ok, text, "git commit", nonce))
+    let text = format!("{}\n{body}", redact(&drift.0).text);
+    let summary = if drift.1 {
+        "commit differs from the reviewed changes; a secret path was committed"
+    } else {
+        "commit differs from the reviewed changes"
+    };
+    Ok(finish(
+        &opened,
+        ran,
+        (ToolStatus::Error, summary),
+        text,
+        nonce,
+    ))
+}
+
+/// The text of a git run that ended well, or `None`.
+async fn text_of(opened: &Opened, argv: Vec<String>, read_verb: bool) -> Option<String> {
+    let ran = exec(opened, argv, read_verb).await.ok()?;
+    match runtime::status_output(&ran.done) {
+        Output::Text(raw) => Some(raw),
+        _ => None,
+    }
+}
+
+/// How the commit just made differs from the reviewed tree: the notice and
+/// whether a secret path is in it, or `None` when it is the reviewed tree.
+async fn drift_of(opened: &Opened, before: &str) -> Option<(String, bool)> {
+    let dir = &opened.repo.dir;
+    let after = text_of(opened, pure::head_tree_argv(dir), true).await;
+    let after = after.as_deref().map(str::trim);
+    if after == Some(before) {
+        return None;
+    }
+    let listing = match after.and_then(|a| pure::tree_diff_argv(dir, before, a)) {
+        Some(argv) => text_of(opened, argv, true).await,
+        None => None,
+    };
+    Some(listing.map_or((NOT_CHECKED.to_owned(), false), |l| pure::drift_notice(&l)))
 }
 
 /// The result of a write verb, with the watched places it changed.
 fn finish(
     opened: &Opened,
     ran: Ran,
-    ok: bool,
+    (status, summary): (ToolStatus, &str),
     mut text: String,
-    label: &str,
     nonce: &str,
 ) -> (Outcome, ToolStatus, String) {
     let mut changes = ran.changes;
@@ -273,11 +349,6 @@ fn finish(
     if let Some(note) = super::exec::changes_note(&changes, nonce) {
         text.push_str(&note);
     }
-    let (status, summary) = if ok {
-        (ToolStatus::Ok, label)
-    } else {
-        (ToolStatus::Error, FAILED)
-    };
     ended(status, text, summary)
 }
 

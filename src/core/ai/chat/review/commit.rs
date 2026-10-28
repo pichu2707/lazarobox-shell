@@ -32,8 +32,9 @@ impl fmt::Debug for CommitReview {
 }
 
 impl CommitReview {
-    /// `hooks` is the notice about a `core.hooksPath` set elsewhere.
-    pub fn new(message: &str, hooks: Option<&str>, diff: &[u8]) -> Self {
+    /// `hooks` is the notice about a `core.hooksPath` set elsewhere; `running`
+    /// names the hooks the commit will run (none: the review says so).
+    pub fn new(message: &str, hooks: Option<&str>, running: &[&str], diff: &[u8]) -> Self {
         let mut doc = ReviewDoc {
             id: NEXT_DOC.fetch_add(1, Ordering::Relaxed),
             lines: Vec::new(),
@@ -46,6 +47,12 @@ impl CommitReview {
         push(&mut body, LineKind::Warning, SIGNING_NOTICE.to_owned());
         if let Some(hooks) = hooks {
             push(&mut body, LineKind::Warning, escape(hooks).into_owned());
+        }
+        if running.is_empty() {
+            push(&mut body, LineKind::Note, "no hooks will run".to_owned());
+        } else {
+            let line = format!("hooks that will run: {}", running.join(", "));
+            push(&mut body, LineKind::Warning, line);
         }
         push(&mut body, LineKind::File, "commit message".to_owned());
         for line in message.lines() {
@@ -125,7 +132,7 @@ mod tests {
     // Spec (git-tools, commit: Review shows message and diff).
     #[test]
     fn the_review_holds_the_message_the_signing_notice_and_the_diff() {
-        let review = CommitReview::new("fix: a\n\nbody line", None, DIFF.as_bytes());
+        let review = CommitReview::new("fix: a\n\nbody line", None, &[], DIFF.as_bytes());
         let rows = rows(&review);
         assert_eq!(rows[0], (LineKind::Summary, "1 file, +1 -1".to_owned()));
         assert!(has(
@@ -146,11 +153,27 @@ mod tests {
         assert!(review.review().doc().reviewable());
     }
 
+    // The review says which hooks will run, or that none will.
+    #[test]
+    fn the_review_lists_the_hooks_that_will_run_or_says_none_will() {
+        let none = CommitReview::new("m", None, &[], DIFF.as_bytes());
+        assert!(has(&rows(&none), LineKind::Note, "no hooks will run"));
+        let some = CommitReview::new("m", None, &["pre-commit", "commit-msg"], DIFF.as_bytes());
+        let rows = rows(&some);
+        assert!(has(
+            &rows,
+            LineKind::Warning,
+            "hooks that will run: pre-commit, commit-msg"
+        ));
+        assert!(!has(&rows, LineKind::Note, "no hooks will run"));
+    }
+
     #[test]
     fn a_hooks_notice_is_a_warning_row() {
         let review = CommitReview::new(
             "m",
             Some("this repo sets core.hooksPath to x"),
+            &[],
             DIFF.as_bytes(),
         );
         assert!(has(&rows(&review), LineKind::Warning, "core.hooksPath"));
@@ -160,7 +183,7 @@ mod tests {
     #[test]
     fn control_and_bidi_characters_in_the_message_and_the_diff_are_escaped() {
         let diff = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+a\u{1b}[2Jb\u{202e}c\n";
-        let review = CommitReview::new("m\u{1b}[31m", None, diff.as_bytes());
+        let review = CommitReview::new("m\u{1b}[31m", None, &[], diff.as_bytes());
         for (_, text) in rows(&review) {
             assert!(
                 !text.chars().any(|c| c.is_control() || c == '\u{202e}'),
@@ -173,20 +196,20 @@ mod tests {
 
     #[test]
     fn a_review_with_no_diff_cannot_be_approved() {
-        let review = CommitReview::new("m", None, b"");
+        let review = CommitReview::new("m", None, &[], b"");
         assert!(!review.review().doc().reviewable());
     }
 
     #[test]
     fn the_commit_compares_the_staged_diff_byte_for_byte() {
-        let review = CommitReview::new("m", None, DIFF.as_bytes());
+        let review = CommitReview::new("m", None, &[], DIFF.as_bytes());
         assert!(review.same_staged(DIFF.as_bytes()));
         assert!(!review.same_staged(DIFF.replace("new", "newer").as_bytes()));
     }
 
     #[test]
     fn debug_prints_counts_and_never_the_text() {
-        let review = CommitReview::new("secret message", None, DIFF.as_bytes());
+        let review = CommitReview::new("secret message", None, &[], DIFF.as_bytes());
         let text = format!("{review:?}");
         assert!(
             !text.contains("secret message") && !text.contains("old"),
