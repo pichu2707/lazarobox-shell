@@ -916,3 +916,69 @@ async fn the_commit_is_refused_on_a_staged_env_until_the_index_is_clean() {
     assert_eq!(yes.asked().len(), 1);
     assert!(history(&w.proj).starts_with("feat: two"));
 }
+
+/// The rows of the review a commit asked with, as (kind, text).
+fn review_rows(ask: &ApprovalAsk) -> Vec<(crate::core::ai::chat::review::LineKind, String)> {
+    let ApprovalAsk::Commit(review) = ask else {
+        panic!("{ask:?}");
+    };
+    review
+        .review()
+        .doc()
+        .lines()
+        .iter()
+        .map(|l| (l.kind, l.text_for_review_renderer_only().to_owned()))
+        .collect()
+}
+
+// Review blind spot: `-diff` in .gitattributes makes git print "Binary files
+// differ" for the file; the review must still show the lines it commits.
+#[tokio::test]
+async fn a_file_marked_not_diffable_is_still_shown_line_by_line_in_the_review() {
+    use crate::core::ai::chat::review::LineKind;
+    let Some(w) = repo_world() else { return };
+    std::fs::write(w.proj.join(".gitattributes"), "notes.dat -diff\n").unwrap();
+    std::fs::write(w.proj.join("notes.dat"), "hidden line\n").unwrap();
+    sh(&w.proj, &["add", ".gitattributes", "notes.dat"]);
+    let asks = Asks::new(Decision::Denied("declined"));
+    turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: data"))
+        .await;
+    let asked = asks.asked();
+    let rows = review_rows(&asked[0]);
+    let shown = |t: &str| rows.iter().any(|(k, x)| *k == LineKind::Added && x == t);
+    assert!(shown("+hidden line"), "{rows:?}");
+}
+
+// Review blind spot: `ignore = all` in .gitmodules hides a submodule pointer
+// bump from `git diff`; it is a change the commit records, so it must show,
+// and a bump alone is not "nothing staged".
+#[tokio::test]
+async fn a_submodule_bump_hidden_by_gitmodules_is_in_the_review() {
+    let Some(w) = repo_world() else { return };
+    let modules = "[submodule \"sub\"]\n\tpath = sub\n\turl = ./elsewhere\n\tignore = all\n";
+    std::fs::write(w.proj.join(".gitmodules"), modules).unwrap();
+    sh(&w.proj, &["add", ".gitmodules"]);
+    sh(&w.proj, &["commit", "-q", "-m", "modules"]);
+    let sha = "1234567890123456789012345678901234567890";
+    sh(
+        &w.proj,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sha},sub"),
+        ],
+    );
+    let asks = Asks::new(Decision::Denied("declined"));
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("chore: bump sub"))
+        .await;
+    assert!(!out.text.contains("nothing is staged"), "{out:?}");
+    let asked = asks.asked();
+    let rows = review_rows(&asked[0]);
+    assert!(
+        rows.iter().any(|(_, t)| t.contains("Subproject commit")),
+        "{rows:?}"
+    );
+}

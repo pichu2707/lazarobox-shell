@@ -384,6 +384,7 @@ pub fn index_names_argv(dir: &GitDir) -> Vec<String> {
             "-z",
             "--no-renames",
             "--no-ext-diff",
+            "--ignore-submodules=none",
             "--",
             ".",
         ]
@@ -404,8 +405,9 @@ pub fn staged_has_secret(listing: &str) -> bool {
 
 /// The diff the commit review shows: the whole index against `HEAD`, with
 /// nothing left out (no secret exclude, because [`staged_has_secret`] has
-/// refused a secret already; no `--ignore-submodules`, so a changed submodule
-/// pointer is shown).
+/// refused a secret already; `--ignore-submodules=none` beats a `.gitmodules`
+/// `ignore = all`, and `--text` beats a `-diff` attribute, so neither hides a
+/// change the commit records).
 pub fn review_diff_argv(dir: &GitDir) -> Vec<String> {
     let mut argv = base(dir);
     argv.extend(
@@ -414,6 +416,8 @@ pub fn review_diff_argv(dir: &GitDir) -> Vec<String> {
             "--cached",
             "--no-ext-diff",
             "--no-textconv",
+            "--text",
+            "--ignore-submodules=none",
             "--no-color",
             "--",
             ".",
@@ -488,15 +492,14 @@ mod tests {
         assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
     }
 
-    // The review shows what the commit records: a submodule pointer change
-    // is not hidden, and the diff has no external program or textconv.
+    // The review argv hardening: no external program, no textconv, no color.
+    // What it must not hide is proved on a real repo (host git tests).
     #[test]
-    fn the_commit_diff_hides_nothing_the_commit_records() {
+    fn the_commit_diff_has_no_program_and_every_verb_has_the_hardening() {
         let argv = review_diff_argv(&gd());
         for word in ["--cached", "--no-ext-diff", "--no-textconv", "--no-color"] {
             assert!(has(&argv, word), "{word}");
         }
-        assert!(!argv.iter().any(|a| a.starts_with("--ignore-submodules")));
         assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
         for setting in HARDENING {
             assert!(pair(&argv, setting), "{setting}");
