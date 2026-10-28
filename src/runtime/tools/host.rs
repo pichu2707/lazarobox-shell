@@ -349,6 +349,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut sealed = None;
     let mut approves = None;
     let mut pinned = None;
+    let mut reviewed = None;
     // How an answer of the approval mode is taken: only as the facts this
     // ask carried allow.
     let mut unprompted = Unprompted::Never;
@@ -415,6 +416,15 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         exec::fill(&host, &plan, ask);
                     }
                     pinned = plan.pin;
+                }
+                Err(why) => checked = Err(why.into()),
+            },
+            // A git verb is judged before it asks: a refusal opens no prompt. An
+            // add or a commit builds its own ask (a commit keeps it to compare).
+            (call, locality) if call.uses_git() => match git::plan(&host, &scope, call).await {
+                Ok(planned) => {
+                    reviewed = planned.clone();
+                    ask = planned.or_else(|| ask_for(call, locality));
                 }
                 Err(why) => checked = Err(why.into()),
             },
@@ -562,6 +572,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
                     exec::run(&host, &scope, &call, pinned.take()).await
                 }
+                // Only after `y` on a cloud engine, at once on a local one.
+                (Decision::Sent, call) if call.uses_git() => {
+                    git::run(&host, &scope, &call, reviewed.take()).await
+                }
                 // The approval mode answers only a read or a search, never
                 // for the user: nothing is added to the reads the user
                 // allowed, and only what the ask allowed runs. A read it let
@@ -600,6 +614,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 mod exec;
 mod files;
 mod gate;
+mod git;
 mod orphan;
 
 #[cfg(test)]
@@ -610,5 +625,7 @@ mod external_tests;
 mod files_tests;
 #[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod git_tests;
 #[cfg(test)]
 mod tests;

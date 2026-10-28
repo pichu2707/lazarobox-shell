@@ -291,6 +291,11 @@ pub fn execute_within(
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
         | Call::RunCommand { .. }
+        | Call::GitStatus
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        | Call::GitAdd { .. }
+        | Call::GitCommit { .. }
         | Call::ProposeBatch => Err(Failure::NotReadTool),
     }
 }

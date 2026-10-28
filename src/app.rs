@@ -7934,6 +7934,7 @@ mod app_tests {
 
     /// The review view of a proposed write batch.
     mod batch_review;
+    mod commit_review;
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;

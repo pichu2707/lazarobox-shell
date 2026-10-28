@@ -159,6 +159,9 @@ impl App {
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
+            | ApprovalAsk::GitDiff { .. }
+            | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
@@ -188,6 +191,7 @@ impl App {
         let armed_at = (self.clock)() + ask.arm_delay();
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
+            ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
             _ => None,
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {

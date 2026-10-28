@@ -101,7 +101,11 @@ pub(super) fn lock_set<T>(set: &Mutex<T>) -> MutexGuard<'_, T> {
 /// tool. The parse already refuses it; this is the second check.
 pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
     let offered = scope.families.contains(Family::Write) && scope.stage_key.is_some();
-    if (call.is_write() && !offered) || (call.is_exec() && !scope.families.contains(Family::Exec)) {
+    if (call.is_write() && !offered)
+        || (call.is_exec() && !scope.families.contains(Family::Exec))
+        || (call.is_git() && !scope.families.contains(Family::Git))
+        || (call.is_git_write() && !scope.families.contains(Family::GitWrite))
+    {
         return Err(refusal_text(ToolError::UnknownTool));
     }
     Ok(())

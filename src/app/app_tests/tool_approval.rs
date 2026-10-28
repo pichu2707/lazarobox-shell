@@ -1563,3 +1563,48 @@ mod root_reads {
         }
     }
 }
+
+// Spec (git-tools, Read verbs): a git diff on a cloud engine waits for `y` in
+// every mode and the prompt says what is sent.
+#[test]
+fn a_git_diff_prompts_in_every_approval_mode_and_shows_what_is_sent() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = ApprovalAsk::GitDiff {
+            staged: true,
+            path: "src/a.rs".into(),
+        };
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(prompt.command, "git diff --staged src/a.rs", "{mode:?}");
+        assert!(prompt.target.contains("engine"), "{mode:?}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// Spec (git-tools, add): a one-line prompt with the paths, in every mode; `y`
+// answers it once the prompt fits.
+#[test]
+fn a_git_add_prompts_in_every_approval_mode_with_the_paths_and_the_count() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = ApprovalAsk::GitAdd {
+            paths: "src/a.rs b.rs".into(),
+            files: Some(2),
+        };
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(
+            prompt.command, "git add src/a.rs b.rs (2 files)",
+            "{mode:?}"
+        );
+        assert!(prompt.target.contains("index"), "{mode:?}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
