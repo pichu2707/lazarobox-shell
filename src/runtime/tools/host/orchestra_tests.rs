@@ -27,7 +27,7 @@ use crate::core::{
             tools::{MAX_PROMPT_BYTES, OrchCall, WAIT_MAX_SECS},
             worker::ErrorClass,
         },
-        tools::{paths::SecretRoots, summary::SUMMARY_CAP},
+        tools::{Lines, paths::SecretRoots, summary::SUMMARY_CAP},
     },
     layout::PaneId,
 };
@@ -93,7 +93,7 @@ fn worker(
     handle: Arc<dyn Orchestra>,
 ) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
     let (mut scope, rx) = scope(locality, home);
-    scope.toolset = Toolset::ReadOnly.families();
+    scope.families = Toolset::ReadOnly.families();
     scope.read_scope = Some(WorkerScope {
         handle,
         run: RunId(1),
@@ -108,7 +108,7 @@ fn orchestrator(
     handle: Option<Arc<dyn Orchestra>>,
 ) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
     let (mut scope, rx) = scope(Locality::Cloud, home);
-    scope.toolset = Toolset::Orchestrator.families();
+    scope.families = Toolset::Orchestrator.families();
     scope.orchestra = handle;
     (scope, rx)
 }
@@ -511,6 +511,52 @@ async fn a_scoped_read_opens_exactly_the_returned_path_and_judges_it_again() {
                 (ToolStatus::Error, "path not available")
             );
         }
+    }
+}
+
+// Obligation (6c88355, main's `read_file` paging): a scoped read is paged
+// like a chat read, and the window opens no way around the scope's checks:
+// a returned secret, link out, hard link or `.git/config` is still refused.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_scoped_read_is_paged_and_keeps_its_refusals() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let numbered: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(home.join("dev/app/long.rs"), numbered).unwrap();
+    std::fs::create_dir_all(home.join("dev/app/.git")).unwrap();
+    std::fs::write(home.join("dev/app/.git/config"), "[remote]\n").unwrap();
+    let paged = Call::ReadFile {
+        path: "~/dev/app/a.rs".into(),
+        lines: Some(Lines { start: 10, max: 3 }),
+    };
+    let handle = Arc::new(Hands(home.join("dev/app/long.rs")));
+    let (scope, mut rx) = worker(Locality::Cloud, &home, handle);
+    let out = host.dispatch(scope).call(paged.clone()).await;
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!((ask, status), (None, ToolStatus::Ok));
+    assert!(out.text.contains("line 10\nline 11\nline 12\n"), "{out:?}");
+    assert!(
+        !out.text.contains("line 9\n") && !out.text.contains("line 13\n"),
+        "{out:?}"
+    );
+    for returned in [
+        ".ssh/id",
+        "dev/app/link",
+        "dev/app/hard",
+        "dev/app/.git/config",
+    ] {
+        let handle = Arc::new(Hands(home.join(returned)));
+        let (scope, mut rx) = worker(Locality::Cloud, &home, handle);
+        let out = host.dispatch(scope).call(paged.clone()).await;
+        let (_, ask, status, _) = pair(&events(&mut rx));
+        assert_eq!((ask, status), (None, ToolStatus::Error), "{returned}");
+        assert_eq!(
+            (out.is_error, out.text.as_str()),
+            (true, "path not available"),
+            "{returned}"
+        );
     }
 }
 

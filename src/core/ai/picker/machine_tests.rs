@@ -3,6 +3,7 @@ use crate::core::ai::EngineState;
 
 pub(super) fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| m.to_string()).collect(),
@@ -19,6 +20,7 @@ pub(super) fn det(ollama_models: &[&str]) -> Detection {
             state("lmstudio", Status::NotRunning, &[]),
             state("claude", Status::Available, &[]),
         ],
+        ..Default::default()
     }
 }
 
@@ -237,6 +239,7 @@ fn enter_on_an_engine_without_a_chat_adapter_stays_on_the_engines_level() {
             state("ollama", Status::Available, &["a"]),
             state("opencode", Status::Available, &[]),
         ],
+        ..Default::default()
     };
     let draft = AiConfig::default();
     let mut p = Picker::open(Target::Task(Task::Chat), &draft, Some(&d));
@@ -251,6 +254,7 @@ fn enter_on_an_engine_without_a_chat_adapter_stays_on_the_engines_level() {
 fn a_server_that_is_not_running_opens_its_level_and_enter_copies_the_start_note() {
     let d = Detection {
         engines: vec![state("vllm", Status::NotRunning, &[])],
+        ..Default::default()
     };
     let draft = AiConfig::default();
     let mut p = Picker::open(Target::Task(Task::Chat), &draft, Some(&d));
@@ -269,4 +273,24 @@ fn a_server_that_is_not_running_opens_its_level_and_enter_copies_the_start_note(
                 vllm serve <model> --host 127.0.0.1 --port 8000";
     assert!(matches!(&rows[0].key, PickKey::Note { text: t, .. } if t == text));
     assert_eq!(p.enter(&draft, Some(&d)), Outcome::Copy(text.to_owned()));
+}
+
+#[test]
+fn a_stopped_managed_llama_server_opens_its_level_and_enter_picks_its_model() {
+    let d = Detection {
+        engines: vec![state("llamacpp", Status::NotRunning, &[])],
+        ..Default::default()
+    };
+    let draft = AiConfig::default().with_managed(crate::core::ai::config::ManagedServer {
+        model: std::path::PathBuf::from("/m/qwen.gguf"),
+    });
+    let mut p = Picker::open(Target::Task(Task::Chat), &draft, Some(&d));
+    let rows = p.rows(&draft, Some(&d));
+    p.cursor = index_of(&rows, engine_key("llamacpp"));
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
+    p.cursor = 0;
+    assert_eq!(
+        p.enter(&draft, Some(&d)),
+        Outcome::Commit(assigned("llamacpp", "/m/qwen.gguf"))
+    );
 }

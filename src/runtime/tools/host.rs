@@ -22,10 +22,12 @@
 //! dispatch inside `chat::scoped`. The host catches nothing itself.
 
 use std::{
+    borrow::Cow,
+    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -34,7 +36,7 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, OrchHandle, ToolEnv, WorkerScope, run};
+use super::{Limits, OrchHandle, ToolEnv, WorkerScope, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
@@ -43,11 +45,14 @@ use crate::{
         },
         orchestra::tools::{OrchCall, WAIT_MAX_SECS},
         tools::{
-            Call, Locality, ToolError, command, label,
+            Call, Locality, ToolError, command,
+            edit::EditError,
+            label,
             mcp::refusal_text,
             paths::display_target,
             registry::FamilySet,
             report::{self, RunReport},
+            stage::StageKey,
             summary::clip,
         },
     },
@@ -100,8 +105,15 @@ pub struct TurnScope {
     pub external: Slot,
     /// The built-in families this turn offers, and so may call: the same set
     /// as its tool list (D7). A chat's is its request's; a worker's or the
-    /// orchestrator's is its `Toolset`'s.
-    pub toolset: FamilySet,
+    /// orchestrator's is its `Toolset`'s. The write family is checked again
+    /// here: a call the parse should have refused is refused as unknown.
+    pub families: FamilySet,
+    /// Whose batch the write tools fill, and whose staged changes the read
+    /// tools show. `None` for a turn that cannot stage.
+    pub stage_key: Option<StageKey>,
+    /// The paths (as shown) the user allowed a read or an edit of in this
+    /// turn: a later `edit_file` of one does not ask again.
+    pub allowed: Mutex<HashSet<String>>,
     /// The run manager of an orchestrator turn. Without it an orchestration
     /// call is an unknown tool (D3).
     pub orchestra: Option<OrchHandle>,
@@ -120,21 +132,26 @@ impl TurnScope {
             origin,
             approver: Arc::new(Unwired),
             external: Slot::default(),
-            toolset: FamilySet::LEGACY,
+            families: FamilySet::LEGACY,
+            stage_key: None,
+            allowed: Mutex::default(),
             orchestra: None,
             read_scope: None,
         }
     }
 
     /// Whether this turn may call `call` (D7, the filter's second place after
-    /// the tool list): its family is in the toolset, an orchestration call
-    /// has a run manager to go to (D3), and a user server tool is only ever a
-    /// chat's: a worker or the orchestrator is offered none.
+    /// the tool list): an orchestration call has a run manager to go to (D3);
+    /// a worker's or the orchestrator's call has its family in the turn's
+    /// families, and a user server tool is only ever a chat's. A chat turn's
+    /// families are checked where they always were: the write and exec gate
+    /// (`files::gate`).
     fn offers(&self, call: &Call) -> bool {
+        let orchestrated = self.orchestra.is_some() || self.read_scope.is_some();
         match (call, call.family()) {
             (Call::Orchestra(_), _) if self.orchestra.is_none() => false,
-            (_, Some(family)) => self.toolset.contains(family),
-            (_, None) => self.orchestra.is_none() && self.read_scope.is_none(),
+            (_, Some(family)) => !orchestrated || self.families.contains(family),
+            (_, None) => !orchestrated,
         }
     }
 }
@@ -146,6 +163,10 @@ pub struct ToolHost {
     xdg_data_home: Option<OsString>,
     limits: Limits,
     next: AtomicU64,
+    /// The staged batches of every chat: in memory, never saved.
+    stages: Arc<Mutex<Stages>>,
+    /// Who may run a command now, and what the sandbox is.
+    exec: exec::Exec,
 }
 
 impl ToolHost {
@@ -171,10 +192,12 @@ impl ToolHost {
             xdg_data_home,
             limits,
             next: AtomicU64::new(1),
+            stages: Arc::default(),
+            exec: exec::Exec::system(),
         })
     }
 
-    /// What a read tool of a turn with this `origin` runs with.
+    /// What a call may see, for the chat whose origin directory is `origin`.
     fn env(&self, origin: &Path) -> ToolEnv {
         ToolEnv {
             home: self.home.clone(),
@@ -347,20 +370,25 @@ async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatu
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let mut checked = match &call {
+    let mut checked: Result<Call, Cow<'static, str>> = match &call {
         // What the turn does not offer is refused as the parse refuses it.
-        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool)),
+        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
             })
-            .map_err(|refusal| refusal.reason()),
-        other => Ok(other.clone()),
+            .map_err(|refusal| refusal.reason().into()),
+        other => files::gate(&scope, other)
+            .map(|()| other.clone())
+            .map_err(Cow::from),
     };
     let mut ask = None;
     // A worker read inside its run's scope: the real path to open and the
     // secret roots that judged it.
     let mut scoped = None;
+    let mut sealed = None;
+    let mut approves = None;
+    let mut pinned = None;
     if let Ok(valid) = &checked {
         let home = host.home.as_deref().map(Path::new);
         let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
@@ -380,7 +408,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                                 label: worker.label.clone(),
                             })
                         }
-                        None => checked = Err(UNSHOWABLE),
+                        None => checked = Err(UNSHOWABLE.into()),
                     }
                 }
             }
@@ -388,6 +416,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // and only when the display shows it unchanged.
             (Call::ReadFile { path, lines }, Locality::Cloud, None) => match shown(path) {
                 Some(shown) => {
+                    approves = Some(shown.clone());
                     ask = ask_for(
                         &Call::ReadFile {
                             path: shown,
@@ -396,7 +425,45 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         Locality::Cloud,
                     )
                 }
-                None => checked = Err(UNSHOWABLE),
+                None => checked = Err(UNSHOWABLE.into()),
+            },
+            // An edit that can only fail is refused before it asks. A missing
+            // or ambiguous `old` still asks: it too tells whether a text occurs.
+            (Call::EditFile { old, .. }, Locality::Cloud, _) if old.is_empty() => {
+                checked = Err(EditError::EmptyOld.to_string().into());
+            }
+            // An edit of a file asks like a read of it, once per file per turn.
+            (Call::EditFile { path, .. }, Locality::Cloud, _) => match shown(path) {
+                Some(shown) => {
+                    if !files::lock_set(&scope.allowed).contains(&shown) {
+                        ask = Some(ApprovalAsk::Read {
+                            path: shown.clone(),
+                        });
+                    }
+                    approves = Some(shown);
+                }
+                None => checked = Err(UNSHOWABLE.into()),
+            },
+            // A command is judged before it asks: a refusal never opens a prompt.
+            (Call::RunCommand { .. }, locality, _) => {
+                match exec::plan(&host, &scope, valid).await {
+                    Ok(plan) => {
+                        ask = ask_for(valid, locality);
+                        if let Some(ask) = ask.as_mut() {
+                            exec::fill(&host, &plan, ask);
+                        }
+                        pinned = plan.pin;
+                    }
+                    Err(why) => checked = Err(why.into()),
+                }
+            }
+            // A batch is sealed before the ask: the user reviews what was sealed.
+            (Call::ProposeBatch, _, _) => match files::seal(&host, &scope).await {
+                Ok((batch, review)) => {
+                    ask = Some(ApprovalAsk::Batch(review));
+                    sealed = Some(batch);
+                }
+                Err(why) => checked = Err(why.into()),
             },
             (valid, locality, _) => ask = ask_for(valid, locality),
         }
@@ -430,6 +497,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     if scope.events.send(announce).await.is_err() {
         return gone();
     }
+    // From here the user may see the ask: a batch dropped now is an orphan.
+    if let Some(batch) = sealed.as_mut() {
+        batch.announced();
+    }
     // Only an announced call owes a result.
     let owed = Owed {
         id,
@@ -437,14 +508,25 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
 
     let (outcome, status, summary) = match checked {
-        Err(reason) => ended(ToolStatus::Error, reason.to_owned(), reason),
+        Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
         Ok(call) => {
             let answer = match pending {
                 Some(pending) => pending.await,
                 None => Decision::Sent.into(),
             };
+            // Resumed, so not dropped by a cancel: from here the batch is
+            // kept only where `answered` says so, and no early return below
+            // can leave an orphan.
+            if let Some(batch) = sealed.as_mut() {
+                batch.resumed();
+            }
             let decision = match answer {
-                Answer::Decided(decision) => decision,
+                Answer::Decided(decision) => {
+                    if let (Some(shown), Decision::Sent) = (approves, decision) {
+                        files::lock_set(&scope.allowed).insert(shown);
+                    }
+                    decision
+                }
                 // Only a run is ever given a report.
                 Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
                     let (outcome, status, summary) = ended(
@@ -462,6 +544,9 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
             };
             match (decision, call) {
+                (decision, Call::ProposeBatch) => {
+                    files::answered(&host, &scope, sealed.take(), decision).await
+                }
                 (Decision::Denied(reason), _) => {
                     ended(ToolStatus::Denied, format!("denied: {reason}"), reason)
                 }
@@ -508,25 +593,29 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         ended(ToolStatus::Error, reason.to_owned(), reason)
                     }
                 },
-                (Decision::Sent | Decision::Typed(_), call) => {
-                    let limits = host.limits.clone();
-                    let done = match scoped {
-                        // Exactly what the scope allowed: resolving the
-                        // request again would reopen the race it closed.
-                        Some((roots, real)) => super::read_in_scope(roots, real, limits).await,
-                        None => run(call, host.env(&scope.origin), limits).await,
-                    };
-                    match done {
-                        Ok(text) => {
-                            let summary = format!("{} bytes", text.len());
-                            ended(ToolStatus::Ok, text, &summary)
-                        }
-                        Err(failure) => {
-                            let reason = failure.message();
-                            ended(ToolStatus::Error, reason.to_owned(), reason)
+                // Only after `y`: the sandbox starts here and nowhere else.
+                (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    exec::run(&host, &scope, &call, pinned.take()).await
+                }
+                (Decision::Sent | Decision::Typed(_), call) => match (scoped, &call) {
+                    // Exactly what the scope allowed, paged like any read:
+                    // resolving the request again would reopen the race it
+                    // closed.
+                    (Some((roots, real)), Call::ReadFile { lines, .. }) => {
+                        let limits = host.limits.clone();
+                        match super::read_in_scope(roots, real, *lines, limits).await {
+                            Ok(text) => {
+                                let summary = format!("{} bytes", text.len());
+                                ended(ToolStatus::Ok, text, &summary)
+                            }
+                            Err(failure) => {
+                                let reason = failure.message();
+                                ended(ToolStatus::Error, reason.to_owned(), reason)
+                            }
                         }
                     }
-                }
+                    _ => files::run(&host, &scope, call).await,
+                },
             }
         }
     };
@@ -534,8 +623,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+mod exec;
+mod files;
+mod gate;
+mod orphan;
+
+#[cfg(test)]
+mod exec_tests;
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod files_tests;
+#[cfg(test)]
+mod gate_tests;
 #[cfg(test)]
 mod orchestra_tests;
 #[cfg(test)]

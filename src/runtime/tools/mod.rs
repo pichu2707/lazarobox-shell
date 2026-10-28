@@ -1,14 +1,23 @@
 //! Runtime of the read tools: runs a validated call off the event loop and
 //! wraps what it returns as untrusted data.
 
+pub mod apply;
 pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
+pub mod integrity;
 pub mod open;
 pub mod orchestra;
 pub mod pending;
+pub mod runner;
+pub mod scratch;
+pub mod search;
+pub mod stage;
+pub mod staged;
+pub mod write;
 
 use std::{
     path::PathBuf,
@@ -19,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-use crate::core::ai::tools::{Call, label, paths::SecretRoots};
+use crate::core::ai::tools::{Call, Lines, label, paths::SecretRoots};
 pub use approver::Waits;
 pub use fs::{Failure, Limits, ToolEnv};
 pub use host::{Approver, ToolHost, TurnScope, Unwired};
@@ -49,7 +58,8 @@ impl Drop for CancelOnDrop {
 
 /// Extra time past `Limits::time` before the caller gives up on the thread.
 const GRACE: Duration = if cfg!(test) {
-    Duration::from_millis(30)
+    // Room for a busy CI runner to start the blocking thread.
+    Duration::from_millis(150)
 } else {
     Duration::from_millis(500)
 };
@@ -69,8 +79,18 @@ const GRACE: Duration = if cfg!(test) {
 /// already blocked (a hung open on a dead mount) cannot be interrupted and may
 /// still pin one blocking thread until the kernel returns.
 pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Failure> {
+    run_over(call, env, limits, None).await
+}
+
+/// [`run`] that also shows the staged changes of `view`, marked as pending.
+pub async fn run_over(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+) -> Result<String, Failure> {
     off_loop(limits, move |limits, cancel| {
-        fs::execute_with(&call, &env, limits, cancel)
+        fs::execute_over(&call, &env, limits, cancel, view.as_ref())
     })
     .await
 }
@@ -78,15 +98,16 @@ pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Fai
 /// Reads exactly `real`, a worker read its run's scope allowed (D6), under
 /// the `roots` it was judged with: never the request resolved again. The
 /// opened file must be `real` and pass the roots once more, and `real` is
-/// under a scope root, so the file read is under it too. Bounded and wrapped
-/// as [`run`] is.
+/// under a scope root, so the file read is under it too. `window` pages it
+/// as a chat read is paged. Bounded and wrapped as [`run`] is.
 pub async fn read_in_scope(
     roots: SecretRoots,
     real: PathBuf,
+    window: Option<Lines>,
     limits: Limits,
 ) -> Result<String, Failure> {
     off_loop(limits, move |limits, _| {
-        fs::read_real(&roots, &real, limits)
+        fs::read_real(&roots, &real, window, limits)
     })
     .await
 }
@@ -132,8 +153,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    // `Duration` serves the Linux-only tests.
-    #![cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+    // `Duration` serves the tests that need the file tools.
+    #![cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_imports)
+    )]
     use super::*;
     use std::{
         sync::{
@@ -172,8 +196,8 @@ mod tests {
         (dir, home)
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_result_is_wrapped_with_a_fresh_nonce_per_call() {
         let (_dir, home) = home();
@@ -211,8 +235,8 @@ mod tests {
         );
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
         let (_dir, home) = home();
@@ -241,8 +265,8 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
         let (_dir, home) = home();
@@ -264,8 +288,8 @@ mod tests {
         }
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {
         let (_dir, home) = home();

@@ -24,13 +24,14 @@ use futures::future::join_all;
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    Detection, Engine, Kind, Probe, ServerPorts,
+    Detection, Engine, Kind, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
     parse::sanitize,
     reduce,
     sanitize::redact_tokens,
+    window,
 };
 
 /// Room for the status line and headers above the 1 MiB body cap.
@@ -519,9 +520,61 @@ pub async fn detect_all(
     cache: &ListingCache,
     force: bool,
     ports: &ServerPorts,
+    model_dirs: &[PathBuf],
 ) -> Detection {
     let lister = Lister { env, cache, force };
-    detect_in(&ports.catalog(), &env.path, Some(lister)).await
+    let mut detection = detect_in(&ports.catalog(), &env.path, Some(lister)).await;
+    // `env.data` is `<data home>/lazarobox`.
+    detection.data_home = env
+        .data
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
+    // The two do not wait on each other: the model scan is off the executor
+    // and the `/props` probe is on the network.
+    let (models, windows) = tokio::join!(
+        local_models(&detection, model_dirs),
+        windows(&detection, ports)
+    );
+    detection.local_models = models;
+    detection.windows = windows;
+    detection
+}
+
+/// The context windows of the servers that are up and say theirs: a running
+/// llama-server's `n_ctx` (`GET /props`). Ollama is left out: its window sits
+/// behind a POST (`/api/show`), which this GET-only probe does not make.
+async fn windows(detection: &Detection, ports: &ServerPorts) -> Vec<(&'static str, usize)> {
+    let up = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "llamacpp" && s.status == Status::Available);
+    let Some(port) = ports.port("llamacpp").filter(|_| up) else {
+        return Vec::new();
+    };
+    match http_get(port, "/props").await {
+        Some((200, body)) => window::llamacpp_n_ctx(&body)
+            .map(|n| vec![("llamacpp", n)])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The llama.cpp model files in `dirs`, looked for only when llama-server is
+/// installed: without it there is nothing to load them with.
+async fn local_models(detection: &Detection, dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let installed = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "llamacpp" && s.status != Status::NotInstalled);
+    if !installed || dirs.is_empty() {
+        return Vec::new();
+    }
+    let dirs = dirs.to_vec();
+    tokio::task::spawn_blocking(move || super::gguf::find(&dirs))
+        .await
+        .unwrap_or_default()
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -545,11 +598,11 @@ pub fn spawn_detection(
     cache: Arc<ListingCache>,
     force: bool,
     ports: ServerPorts,
+    model_dirs: Arc<[PathBuf]>,
 ) {
-    spawn_detection_of(
-        tx,
-        async move { detect_all(&env, &cache, force, &ports).await },
-    );
+    spawn_detection_of(tx, async move {
+        detect_all(&env, &cache, force, &ports, &model_dirs).await
+    });
 }
 
 /// Why the jailed CLI `id`, found at `file`, would run without its jail.
@@ -568,7 +621,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
     match target.kind {
         Kind::Server { port, path, .. } => Probe::Server {
             id: target.id,
-            on_path: found.is_some(),
+            binary: found,
             reply: http_get(port, path).await,
         },
         Kind::Cli => {
@@ -614,6 +667,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let one = Detection {
             engines: vec![state("codex", Status::Available, &["default"], None)],
+            ..Default::default()
         };
         let sent = one.clone();
         spawn_detection_of(tx, async move { sent });
@@ -1427,7 +1481,7 @@ mod tests {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default()).await;
+        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default(), &[]).await;
         let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
         assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
     }
@@ -1443,17 +1497,72 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports).await;
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::Available);
         assert_eq!(llamacpp.models, ["m"]);
         let seen = requests.lock().unwrap();
-        assert_eq!(seen.len(), 1);
+        // The detection, then the window of the server it found.
+        assert_eq!(seen.len(), 2);
         assert!(
             seen[0].starts_with(b"GET /v1/models HTTP/1."),
             "{:?}",
             String::from_utf8_lossy(&seen[0])
         );
+        assert!(
+            seen[1].starts_with(b"GET /props HTTP/1."),
+            "{:?}",
+            String::from_utf8_lossy(&seen[1])
+        );
+    }
+
+    // chat-memory S1: a running llama-server's `n_ctx` is the window.
+    #[tokio::test]
+    async fn a_running_llama_server_reports_its_context_window() {
+        let body = r#"{"data":[{"id":"m","owned_by":"llamacpp"}],"default_generation_settings":{"n_ctx":8192}}"#;
+        let reply = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (port, _) = fake_server(Some(reply.into_bytes())).await;
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        assert_eq!(d.window("llamacpp"), Some(8_192));
+        assert_eq!(d.window("ollama"), None);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_is_not_running_has_no_window_and_costs_no_request() {
+        let (port, requests) = fake_server(None).await;
+        // Nothing listens on the port the Ollama row would use, and the
+        // silent fake never answers llamacpp's detection.
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        assert_eq!(d.window("llamacpp"), None);
+        assert_eq!(requests.lock().unwrap().len(), 1, "only the detection");
+    }
+
+    // Spec S2: the local models are listed only when llama-server is there.
+    #[tokio::test]
+    async fn an_installed_llama_server_brings_the_local_models() {
+        let (port, _) = fake_server(None).await;
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let models = tempfile::tempdir().unwrap();
+        fs::write(models.path().join("qwen.gguf"), b"GGUF").unwrap();
+        let dirs = [models.path().to_path_buf()];
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        assert_eq!(d.local_models, Vec::<PathBuf>::new(), "no llama-server");
+        write_script(&lab.bin, "llama-server", "exit 0", 0o755);
+        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
+        assert_eq!(llamacpp.status, Status::NotRunning);
+        assert_eq!(d.local_models, [models.path().join("qwen.gguf")]);
     }
 
     #[tokio::test]
@@ -1867,6 +1976,7 @@ mod tests {
 
     fn state(id: &'static str, status: Status, models: &[&str], v: Option<&str>) -> EngineState {
         EngineState {
+            binary: None,
             id,
             status,
             models: models.iter().map(ToString::to_string).collect(),
@@ -1950,13 +2060,17 @@ mod tests {
         }
     }
 
-    fn expected(ollama: EngineState) -> Detection {
+    fn expected(ollama: EngineState, bin: &Path) -> Detection {
+        let found = |state: EngineState| EngineState {
+            binary: Some(bin.join(state.id)),
+            ..state
+        };
         Detection {
             engines: vec![
-                ollama,
+                found(ollama),
                 state("lmstudio", Status::Available, &["gemma-3-4b"], None),
                 state("llamacpp", Status::Available, &["m.gguf"], None),
-                state("vllm", Status::NotRunning, &[], None),
+                found(state("vllm", Status::NotRunning, &[], None)),
                 state("claude", Status::Available, &["default"], None),
                 state(
                     "codex",
@@ -1967,6 +2081,7 @@ mod tests {
                 state("gemini", Status::Available, &["default"], None),
                 state("opencode", Status::NotInstalled, &[], None),
             ],
+            ..Default::default()
         }
     }
 
@@ -1983,7 +2098,7 @@ mod tests {
         );
         assert_eq!(
             (detection, started.elapsed() < Duration::from_millis(2500)),
-            (expected(ollama), true)
+            (expected(ollama, f._dir.path()), true)
         );
         for (port, path, requests) in &f.servers {
             let get = format!(
@@ -2004,7 +2119,10 @@ mod tests {
         assert_eq!(
             (detection, started.elapsed() < Duration::from_millis(2500)),
             (
-                expected(state("ollama", Status::NotRunning, &[], None)),
+                expected(
+                    state("ollama", Status::NotRunning, &[], None),
+                    f._dir.path()
+                ),
                 true
             )
         );

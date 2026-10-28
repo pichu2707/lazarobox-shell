@@ -6,16 +6,22 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::core::ai::{
-    chat::engine::CallId,
+    chat::{
+        engine::CallId,
+        review::{self, BatchReview},
+        review_view::ReviewView,
+    },
     config::{ApprovalMode, Task},
     sanitize::clean,
     tools::{
-        Call, Locality,
+        Call, Locality, allow,
         command::Refusal,
         exec::{self, Fallback, SafeCommand},
     },
@@ -37,6 +43,11 @@ fn next_id() -> u64 {
         })
         .unwrap_or(u64::MAX)
 }
+
+/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
+/// user was already typing cannot answer it. The review of a batch waits
+/// longer; see [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
@@ -66,18 +77,58 @@ pub enum ApprovalAsk {
     /// A worker's read outside its run's scope: `path` as in `Read`, and the
     /// worker's `label` (see [`worker_label`]). It asks on every engine.
     WorkerRead { path: String, label: String },
+    /// Search the text of the files under `dir` (the root when `.`) for
+    /// `pattern`, and send the matching lines to the engine. Both are one
+    /// sanitized line.
+    Search { pattern: String, dir: String },
     /// Call a tool of a user-declared MCP server.
     External {
         server: String,
         tool: String,
         args: String,
     },
+    /// Run `program` with `args` in the sandbox, in `cwd` (relative to the
+    /// root, `.` for the root). All three are exactly what will run: the host
+    /// refuses a call whose text would not show as it is. Never routed by the
+    /// approval mode: every mode asks. `script` is the body of the
+    /// `package.json` script a `npm`/`yarn`/`pnpm` command will run (the
+    /// manager reads it when it runs), as sanitized lines the host fills in;
+    /// [`ask_for`] leaves it `None`.
+    Exec {
+        program: String,
+        args: Vec<String>,
+        cwd: String,
+        script: Option<String>,
+        /// The seconds the run may take, as the host will enforce them.
+        /// [`ask_for`] puts the default; the host fills in the clamped value.
+        timeout_secs: u64,
+        /// The engine is a cloud one: its provider sees the output.
+        cloud: bool,
+        /// What a run of this chat that was cancelled left changed in the
+        /// watched git places, as one sanitized line the host fills in.
+        earlier: Option<String>,
+    },
+    /// Write a proposed batch of files. The user reads it in the review view;
+    /// it is never routed by the approval mode, so no mode approves it.
+    Batch(Arc<BatchReview>),
+}
+
+impl ApprovalAsk {
+    /// How long after it opens the keys start to answer this ask: the review
+    /// of a batch waits longer than any other ask, because the user has to
+    /// read it first.
+    pub fn arm_delay(&self) -> Duration {
+        match self {
+            Self::Batch(_) => review::ARM_DELAY,
+            _ => ASK_ARM_DELAY,
+        }
+    }
 }
 
 /// Which calls wait for the user's answer before they run (D17).
-/// `run_in_pane` always does. `read_file` does on a cloud engine, because the
-/// text it returns goes to the provider, and runs free on a local one. The
-/// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud
+/// engine, because the text they return goes to the provider, and run free on a
+/// local one. The directory tools never ask. The mode of the chat (ask or auto-type, D18) is
 /// not an input: the app applies it to the ask this returns.
 ///
 /// The path of a read ask is shown as it is: the caller passes the target
@@ -93,6 +144,24 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
+        // An edit answers whether a text occurs in the file, so on a cloud
+        // engine it asks like a read of that file (and routes like one).
+        Call::EditFile { path, .. } if locality == Locality::Cloud => {
+            Some(ApprovalAsk::Read { path: path.clone() })
+        }
+        // A command always asks, on any engine and in any approval mode.
+        Call::RunCommand { .. } => {
+            let (program, args, cwd) = call.command()?;
+            Some(ApprovalAsk::Exec {
+                program: program.to_owned(),
+                args: args.into_iter().map(str::to_owned).collect(),
+                cwd: cwd.unwrap_or(".").to_owned(),
+                script: None,
+                timeout_secs: u64::try_from(allow::TIMEOUT_DEFAULT).unwrap_or(120),
+                cloud: locality == Locality::Cloud,
+                earlier: None,
+            })
+        }
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
         Call::External {
@@ -102,10 +171,27 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             tool: shown_name(tool),
             args: shown_args(args),
         }),
-        // An orchestration call touches nothing of the user's: it never asks.
+        Call::Grep { pattern, dir } if locality == Locality::Cloud => {
+            let dir = flat(dir.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::Search {
+                pattern: flat(pattern, SEARCH_SHOWN).0,
+                // A blank folder is the root, as no folder is.
+                dir: if dir.is_empty() { ".".into() } else { dir },
+            })
+        }
+        // `glob` returns names only and, like the directory tools, never asks.
+        // Staging touches no disk and asks nothing: the host builds the batch
+        // ask itself when `propose_batch` seals the batch. An orchestration
+        // call touches nothing of the user's: it never asks.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
+        | Call::Glob { .. }
+        | Call::Grep { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::ProposeBatch
         | Call::Orchestra(_) => None,
     }
 }
@@ -115,6 +201,9 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
 pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
     format!("{} {}>{}", kind.id(), shown_name(engine), shown_name(model))
 }
+
+/// The most characters of a search ask's pattern or folder that are shown.
+const SEARCH_SHOWN: usize = 512;
 
 /// The most characters of a user tool's argument values an ask shows, shared
 /// fairly between the keys.
@@ -142,6 +231,59 @@ fn flat(text: &str, cap: usize) -> (String, usize) {
     let mut cut: String = line.chars().take(cap).collect();
     cut.push('\u{2026}');
     (cut, total - cap)
+}
+
+/// What a command prompt must say before the user answers: the timeout, that
+/// the network is on and a test can read `.env`, where the output goes, which
+/// project files the program runs (tier B) and, for an install, that the
+/// scripts of the dependencies run too. One line per fact.
+pub fn exec_notice(
+    program: &str,
+    args: &[String],
+    timeout_secs: u64,
+    cloud: bool,
+    earlier: Option<&str>,
+) -> String {
+    let mut lines = vec![format!(
+        "timeout {timeout_secs} s · network is on · a test can read .env and send it out"
+    )];
+    lines.push(
+        if cloud {
+            "the output goes to the model and to its cloud provider: .env text or tokens in logs"
+        } else {
+            "the output goes to the model"
+        }
+        .to_owned(),
+    );
+    if let Some(files) = allow::runs_files(program) {
+        lines.push(format!("runs project code: {files}"));
+    }
+    if allow::installs(program, args) {
+        if allow::skips_scripts(args) {
+            lines.push("install scripts are skipped".to_owned());
+        } else {
+            lines.push(
+                "runs the install scripts of the project and, depending on the package \
+                 manager, its dependencies"
+                    .to_owned(),
+            );
+            lines.push("`--ignore-scripts` skips them".to_owned());
+        }
+    }
+    if let Some(earlier) = earlier {
+        lines.push(earlier.to_owned());
+    }
+    lines.join("\n")
+}
+
+/// The most characters of one script body an ask shows.
+pub const SCRIPT_SHOWN: usize = 200;
+
+/// `name: body` of a `package.json` script, as one sanitized line with the
+/// body cut (visibly) at [`SCRIPT_SHOWN`] characters. The body is the
+/// project's text, so it is cleaned like any text from outside.
+pub fn script_line(name: &str, body: &str) -> String {
+    format!("{}: {}", shown_name(name), flat(body, SCRIPT_SHOWN).0)
 }
 
 /// A name from a server, as one sanitized line, cut with an ellipsis.
@@ -429,12 +571,18 @@ pub struct ApprovalPrompt {
     pub armed: bool,
     /// Why a `run` command was not run directly, as one line.
     pub why: Option<String>,
+    /// Facts the user must see before answering, one per line. Unlike `why`
+    /// this is not advice: the prompt is answerable only while all of it is
+    /// on screen.
+    pub notice: Option<String>,
 }
 
 /// The keys of a run prompt.
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
+/// The keys of a search prompt.
+pub const SEARCH_KEYS: &str = "y search · n deny";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
@@ -442,6 +590,9 @@ pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
+    /// approval, however that ends.
+    review: Option<ReviewView>,
 }
 
 impl Approvals {
@@ -481,6 +632,7 @@ impl Approvals {
             return Err(Refusal::new(ANOTHER_PENDING));
         }
         let id = next_id();
+        self.review = None;
         self.pending = Some(Approval {
             id,
             ask,
@@ -501,6 +653,7 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take().map(|approval| (approval, reply))
     }
 
@@ -511,7 +664,32 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take()
+    }
+
+    /// The review view of the pending batch, if it is one.
+    pub fn review(&self) -> Option<&ReviewView> {
+        self.review.as_ref()
+    }
+
+    pub fn review_mut(&mut self) -> Option<&mut ReviewView> {
+        self.review.as_mut()
+    }
+
+    /// The pane is `size` now: the rows are laid out again, none counts as
+    /// seen until a frame draws it.
+    pub fn fit_review(&mut self, size: (usize, usize)) {
+        if let Some(view) = self.review.as_mut() {
+            view.fit(size);
+        }
+    }
+
+    /// Attaches the view to the pending approval.
+    pub fn set_review(&mut self, view: ReviewView) {
+        if self.pending.is_some() {
+            self.review = Some(view);
+        }
     }
 }
 
@@ -968,6 +1146,12 @@ mod tests {
         for locality in [Locality::Local, Locality::Cloud] {
             assert_eq!(ask_for(&find, locality), None);
             assert_eq!(ask_for(&list, locality), None);
+            // Spec (agent-tools): glob runs without approval on every engine.
+            let glob = Call::Glob {
+                pattern: "**/*.rs".into(),
+                dir: None,
+            };
+            assert_eq!(ask_for(&glob, locality), None);
             assert_eq!(
                 ask_for(&run, locality),
                 Some(ApprovalAsk::Run {
@@ -982,6 +1166,102 @@ mod tests {
                 path: "~/a.txt".into()
             })
         );
+    }
+
+    // Spec (code-write, edit_file staging): on a cloud engine an edit asks
+    // like a read of the same file, because its answers say what the file
+    // holds; on a local one it never asks. It routes like a read in every mode.
+    #[test]
+    fn a_cloud_edit_asks_like_a_read_and_routes_like_one() {
+        let edit = Call::EditFile {
+            path: "~/a.txt".into(),
+            old: "SECRET-OLD".into(),
+            new: "SECRET-NEW".into(),
+        };
+        let read = Call::ReadFile {
+            path: "~/a.txt".into(),
+            lines: None,
+        };
+        assert_eq!(ask_for(&edit, Locality::Local), None);
+        let ask = ask_for(&edit, Locality::Cloud).expect("a cloud edit asks");
+        assert_eq!(ask, ask_for(&read, Locality::Cloud).unwrap());
+        assert!(!format!("{ask:?}").contains("SECRET"));
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                let read_ask = ask_for(&read, Locality::Cloud).unwrap();
+                assert_eq!(
+                    route(&ask, origin, mode, FREE),
+                    route(&read_ask, origin, mode, FREE),
+                    "{mode:?}"
+                );
+            }
+        }
+    }
+
+    fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {
+        ApprovalAsk::Search {
+            pattern: pattern.into(),
+            dir: dir.into(),
+        }
+    }
+
+    // Spec (agent-tools, approval model): grep asks on Cloud, runs free on Local.
+    #[test]
+    fn grep_asks_on_cloud_with_pattern_and_path_and_runs_free_on_local() {
+        let whole = Call::Grep {
+            pattern: "fn main".into(),
+            dir: None,
+        };
+        let narrowed = Call::Grep {
+            pattern: "TODO".into(),
+            dir: Some("src/core".into()),
+        };
+        assert_eq!(ask_for(&whole, Locality::Local), None);
+        assert_eq!(ask_for(&narrowed, Locality::Local), None);
+        assert_eq!(
+            ask_for(&whole, Locality::Cloud),
+            Some(search_ask("fn main", "."))
+        );
+        assert_eq!(
+            ask_for(&narrowed, Locality::Cloud),
+            Some(search_ask("TODO", "src/core"))
+        );
+    }
+
+    // The model chooses both strings: the label shows them as one clean line.
+    #[test]
+    fn a_search_ask_shows_clean_one_line_text() {
+        let call = Call::Grep {
+            pattern: "a\u{1b}[31mb\nc".into(),
+            dir: Some("x\ny".into()),
+        };
+        let Some(ApprovalAsk::Search { pattern, dir }) = ask_for(&call, Locality::Cloud) else {
+            panic!("a cloud grep must ask");
+        };
+        assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));
+    }
+
+    // An empty folder is the root, as `None` is: the label never shows nothing.
+    #[test]
+    fn an_empty_search_folder_is_shown_as_the_root() {
+        for dir in [None, Some(""), Some("  ")] {
+            let call = Call::Grep {
+                pattern: "x".into(),
+                dir: dir.map(Into::into),
+            };
+            assert_eq!(ask_for(&call, Locality::Cloud), Some(search_ask("x", ".")));
+        }
+    }
+
+    // Spec (agent-tools): no auto approval; a search ask is `Prompt` in every mode.
+    #[test]
+    fn a_search_ask_prompts_in_every_mode() {
+        let ask = search_ask("x", ".");
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+        }
     }
 
     fn run(command: &str) -> ApprovalAsk {
@@ -1168,6 +1448,167 @@ mod tests {
                 })
             );
         }
+    }
+
+    // Spec (command-runner, Approval on every command): a run always asks, on
+    // either locality, and shows the program, the arguments and the folder.
+    #[test]
+    fn a_run_command_call_always_asks_with_program_arguments_and_folder() {
+        let call = |cwd: Option<&str>| {
+            let mut args = serde_json::json!({"program": "cargo", "args": ["test", "-p", "x y"]});
+            if let Some(cwd) = cwd {
+                args["cwd"] = cwd.into();
+            }
+            Call::RunCommand { args }
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            for (cwd, shown) in [(None, "."), (Some("crates/x"), "crates/x")] {
+                assert_eq!(
+                    ask_for(&call(cwd), locality),
+                    Some(ApprovalAsk::Exec {
+                        program: "cargo".into(),
+                        args: vec!["test".into(), "-p".into(), "x y".into()],
+                        cwd: shown.into(),
+                        script: None,
+                        timeout_secs: 120,
+                        cloud: locality == Locality::Cloud,
+                        earlier: None,
+                    })
+                );
+            }
+        }
+    }
+
+    fn words(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    // Spec (command-runner, Approval on every command): the prompt says that
+    // network is on, that a test can read `.env`, and that the output goes to
+    // the model.
+    #[test]
+    fn the_notice_names_the_timeout_the_network_the_env_file_and_the_model() {
+        let notice = exec_notice("cargo", &words(&["test"]), 45, false, None);
+        assert!(notice.contains("timeout 45 s"), "{notice}");
+        assert!(notice.contains("network is on"), "{notice}");
+        assert!(notice.contains(".env"), "{notice}");
+        assert!(notice.contains("output goes to the model"), "{notice}");
+        assert!(!notice.contains("provider"), "{notice}");
+    }
+
+    #[test]
+    fn on_a_cloud_engine_the_notice_says_the_provider_sees_the_output() {
+        let notice = exec_notice("cargo", &words(&["test"]), 120, true, None);
+        assert!(notice.contains("provider"), "{notice}");
+        assert!(notice.contains("tokens in logs"), "{notice}");
+    }
+
+    // Tier B (design D12): the files a command runs are named.
+    #[test]
+    fn the_notice_warns_about_the_build_files_each_program_runs() {
+        for (program, file) in [
+            ("cargo", "build.rs"),
+            ("npm", "package.json"),
+            ("yarn", "package.json"),
+            ("pnpm", "package.json"),
+            ("pytest", "conftest.py"),
+            ("go", "go.mod"),
+        ] {
+            let notice = exec_notice(program, &words(&["test"]), 120, false, None);
+            assert!(notice.contains(file), "{program}: {notice}");
+        }
+    }
+
+    #[test]
+    fn an_install_says_it_runs_the_scripts_and_maybe_those_of_the_dependencies() {
+        for verb in ["install", "ci"] {
+            let notice = exec_notice("npm", &words(&[verb]), 120, false, None);
+            assert!(
+                notice.contains(
+                    "runs the install scripts of the project and, depending on the package \
+                     manager, its dependencies"
+                ),
+                "{notice}"
+            );
+            assert!(notice.contains("`--ignore-scripts` skips them"), "{notice}");
+        }
+        let test = exec_notice("npm", &words(&["test"]), 120, false, None);
+        assert!(!test.contains("install scripts"), "{test}");
+    }
+
+    #[test]
+    fn an_install_with_ignore_scripts_says_they_are_skipped() {
+        let notice = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(notice.contains("install scripts are skipped"), "{notice}");
+        assert!(!notice.contains("dependencies"), "{notice}");
+        let again = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts", "--no-ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(!again.contains("are skipped"), "{again}");
+    }
+
+    #[test]
+    fn the_notice_names_the_config_file_each_manager_reads() {
+        for (program, file, other) in [
+            ("npm", ".npmrc", ".yarnrc.yml"),
+            ("pnpm", ".npmrc", ".yarnrc.yml"),
+            ("yarn", ".yarnrc.yml", ".npmrc"),
+        ] {
+            let notice = exec_notice(program, &words(&["test"]), 120, false, None);
+            assert!(notice.contains(file), "{program}: {notice}");
+            assert!(!notice.contains(other), "{program}: {notice}");
+        }
+    }
+
+    #[test]
+    fn an_exec_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::Exec {
+            program: "cargo".into(),
+            args: words(&["test"]),
+            cwd: ".".into(),
+            script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+        }
+    }
+
+    #[test]
+    fn an_earlier_cancelled_run_that_changed_git_files_is_told() {
+        let notice = exec_notice(
+            "go",
+            &words(&["test"]),
+            120,
+            false,
+            Some("changed .git/config"),
+        );
+        assert!(notice.contains("changed .git/config"), "{notice}");
+    }
+
+    #[test]
+    fn a_script_line_is_one_clean_line_cut_visibly() {
+        assert_eq!(script_line("test", "jest\n  --ci"), "test: jest --ci");
+        let hostile = script_line("t\u{1b}[31m", "a\u{1b}[2Jb\u{202e}c");
+        assert!(hostile.chars().all(|c| !c.is_control()), "{hostile:?}");
+        assert!(!hostile.contains('\u{202e}'), "{hostile:?}");
+        let long = script_line("build", &"x".repeat(500));
+        assert!(long.ends_with('\u{2026}'), "{long}");
+        assert_eq!(long.chars().count(), "build: ".len() + SCRIPT_SHOWN + 1);
     }
 
     #[test]

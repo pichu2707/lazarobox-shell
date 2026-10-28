@@ -13,17 +13,23 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
+            review::BatchEvent,
             store::{StoreCmd, StoreReply},
+            wrap::text_width,
         },
-        config::{AiConfig, NotifyMode, Profile, Task},
+        config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
+        gguf,
+        hf::{AccountAsk, AccountReply, Answer, Ask, End, Job, TokenFacts},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
-        tools::report::RunReport,
+        picker::{InstallAsk, InstallReply},
+        tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -45,10 +51,14 @@ use crate::core::{
 mod auto_run;
 mod chat;
 mod chat_copy;
+mod compact;
 mod context;
 mod history;
+mod hub;
+mod install;
 mod notes;
 mod offer;
+mod review;
 mod run;
 mod scroll;
 mod summary;
@@ -69,6 +79,9 @@ const SCROLLBACK_LINES: usize = 10_000;
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
+/// The notice once the llama-server a menu save turned on answers.
+const MANAGED_READY: &str = "llama-server is ready";
+
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
 /// Notice of the summary key on a pane that is not a chat.
 const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
@@ -165,6 +178,12 @@ pub enum AppEvent {
     /// The background update check answered (or the cache was read): the
     /// newer version to announce, if any. Never carries an action.
     UpdateChecked(Option<String>),
+    /// What still runs in the panes (see `Effect::ListRunning`): one
+    /// command per job, for the quit prompt.
+    StillRunning(Vec<String>),
+    /// The llama-server this lazarobox started is answering another
+    /// lazarobox (see `Effect::ListRunning`): quitting cuts that reply.
+    ServerAnswersOthers,
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -184,6 +203,43 @@ pub enum AppEvent {
     WindowFocus(bool),
     /// What the notification test did (a footer line), from the runtime.
     NotifyTested(String),
+    /// How the start of the llama-server a menu save turned on went: the
+    /// error is the one reason, already safe to show.
+    ManagedStarted(Result<(), String>),
+    /// What happened to the batch of chat `.0` outside a model turn (close,
+    /// orphan review, apply, discard).
+    Batch(PaneId, BatchEvent),
+    /// The Hub answered `Effect::HubAsk` (or the request failed, with its
+    /// message). It names the request it answers.
+    HubReply(Ask, Result<Answer, String>),
+    /// The bytes on disk of the running Hugging Face download, and its total.
+    DownloadProgress {
+        done: u64,
+        total: u64,
+    },
+    /// The running Hugging Face download ended.
+    DownloadEnd(End),
+    /// The bytes on disk of the llama-server archive that downloads, for the
+    /// request `id`.
+    InstallProgress {
+        id: u64,
+        done: u64,
+        total: u64,
+    },
+    /// The result of the install step the wizard asked for; it names the
+    /// request it answers.
+    InstallReply(u64, Result<InstallReply, String>),
+    /// A notice about the install (an attestation that was not verified):
+    /// shown, not swallowed.
+    InstallWarning(String),
+    /// A newer llama.cpp build exists; shown unless a notice is already up.
+    InstallNewer(String),
+    /// What the runtime found for `Effect::HfAccount`.
+    HfAccount(AccountReply),
+    /// What became of `Effect::SendIssue`.
+    IssueSent(crate::core::menu::feedback::SendReply),
+    /// The opener of `Effect::OpenUrl` failed on this link.
+    OpenFailed(String),
 }
 
 /// How the menu closed.
@@ -209,11 +265,21 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Open this link in the browser through the host's opener. Only emitted
+    /// when the runtime said it has one (see [`App::with_opener`]).
+    OpenUrl(String),
+    /// Send the Feedback issue with the user's `gh` (open-links S4), off
+    /// the loop; the runtime answers with one `AppEvent::IssueSent`. Only
+    /// emitted on the user's Ctrl+S, one at a time.
+    SendIssue(Box<crate::core::menu::feedback::Issue>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
     /// when a recent one is cached (the menu's `r`).
     RedetectEngines,
+    /// Ask crates.io for the latest version now, whatever the cache says (the
+    /// Updates row's `r`); the runtime answers with one `UpdateChecked`.
+    CheckUpdate,
     /// Start one chat turn for a pane. Events of the turn come back tagged
     /// with `turn`.
     ChatSend {
@@ -221,6 +287,15 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start a background compaction run for a pane: not a turn of the chat,
+    /// so it touches neither the pane's tool session nor its servers.
+    ChatCompact {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop the background compaction run of a pane and nothing else.
+    ChatCompactCancel(PaneId),
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
@@ -283,6 +358,22 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Chat `.0` closed: discard its staged batch. The runtime answers with
+    /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
+    BatchClose(PaneId),
+    /// Review the batch a turn of chat `.0` left behind; the runtime answers
+    /// with `AppEvent::Batch(.., Review(..))` when there is one.
+    BatchReview(PaneId),
+    /// Apply the orphan `id` of chat `pane` after the user's `y`.
+    BatchApply {
+        pane: PaneId,
+        id: BatchId,
+    },
+    /// Discard the orphan `id` of chat `pane`.
+    BatchDiscard {
+        pane: PaneId,
+        id: BatchId,
+    },
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
@@ -316,11 +407,51 @@ pub enum Effect {
         mode: NotifyMode,
         sound: bool,
     },
+    /// Start lazarobox's own llama-server with `model` on `port`, replacing
+    /// the one it managed. Emitted when a menu save turns it on or changes its
+    /// model; the runtime answers with `AppEvent::ManagedStarted`.
+    StartManaged {
+        model: PathBuf,
+        port: u16,
+    },
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
+    /// How long the managed llama-server may sit unused now (a menu save
+    /// changed it); `None` never stops it.
+    ManagedIdle(Option<Duration>),
+    /// Ask the Hub, from the picker's Hugging Face screens; the runtime
+    /// answers with one `AppEvent::HubReply`.
+    HubAsk(Ask),
+    /// Start this Hugging Face download. Emitted only while none runs; the
+    /// runtime reports `AppEvent::DownloadProgress` and one
+    /// `AppEvent::DownloadEnd`.
+    Download(Box<Job>),
+    /// Stop the running Hugging Face download; its partial file stays.
+    CancelDownload,
+    /// Run one step of the llama-server install wizard, or the newer build
+    /// check; the runtime answers
+    /// with `AppEvent::InstallReply` (and `InstallProgress` while it
+    /// downloads).
+    Install(InstallAsk),
+    /// Connect, check or disconnect the Hugging Face account of the menu's
+    /// `Hugging Face` row; the runtime answers with one
+    /// `AppEvent::HfAccount`.
+    HfAccount(AccountAsk),
+    /// Name the jobs still running in the panes, for the quit prompt; the
+    /// runtime answers with one `AppEvent::StillRunning`, and with
+    /// `AppEvent::ServerAnswersOthers` when its llama-server is answering
+    /// another lazarobox.
+    ListRunning,
     Quit,
 }
+
+/// Display columns of one job named by the quit prompt.
+const JOB_NAME_MAX: usize = 24;
+
+/// How the quit prompt names a llama-server this lazarobox started that is
+/// answering another lazarobox.
+const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
@@ -572,6 +703,15 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The privacy notice of the rolling summary was shown in this run.
+    summary_notice_shown: bool,
+    /// A quiet save (the rolling summary) failed and the user was told.
+    summary_failure_shown: bool,
+    /// What still runs in the panes, named by the open quit prompt.
+    still_running: Vec<String>,
+    /// Whether the open quit prompt also names the llama-server, answering
+    /// another lazarobox now.
+    serving_others: bool,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
@@ -623,6 +763,17 @@ pub struct App {
     /// ever learns that a token is present, never its value. The default says
     /// no.
     token_check: fn() -> bool,
+    /// What the runtime finds of the Hugging Face tokens (`HF_TOKEN` set, a
+    /// token file saved), read when the menu opens; never a token. The
+    /// default finds none.
+    hf_tokens: fn() -> TokenFacts,
+    /// What the Feedback form attaches about this host (the runtime probe).
+    host: crate::core::menu::feedback::Facts,
+    /// The host has a program that opens links in the browser.
+    opener: bool,
+    /// The Hugging Face account of the saved token, once a connect or a
+    /// check found it in this session.
+    hf_account: Option<String>,
     /// What each delete in flight from a conversation list does with the
     /// notes of its conversation (see `history::NoteChoice`).
     note_choices: Vec<(PaneId, i64, history::NoteChoice)>,
@@ -661,6 +812,10 @@ pub struct App {
     /// its messages are saved through `Effect::Store`. Off by default, so a
     /// build without a store thread behaves as a plain chat.
     history: bool,
+    /// The Hugging Face download that runs; one at a time.
+    download: Option<crate::core::ai::picker::Running>,
+    /// The newer llama.cpp build check ran this run: it asks GitHub once.
+    newer_checked: bool,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -691,6 +846,10 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            summary_notice_shown: false,
+            summary_failure_shown: false,
+            still_running: Vec::new(),
+            serving_others: false,
             update: None,
             install_env: None,
             cargo_check: |_| false,
@@ -713,6 +872,14 @@ impl App {
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
+            hf_tokens: TokenFacts::default,
+            host: crate::core::menu::feedback::Facts {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                os: std::env::consts::OS.to_owned(),
+                ..Default::default()
+            },
+            opener: false,
+            hf_account: None,
             note_choices: Vec::new(),
             engines: None,
             detecting: false,
@@ -728,6 +895,8 @@ impl App {
             offer_pane: None,
             no_server: None,
             history: false,
+            download: None,
+            newer_checked: false,
         }
     }
 
@@ -823,6 +992,26 @@ impl App {
     /// it no token counts as present.
     pub fn with_token_check(mut self, token_check: fn() -> bool) -> Self {
         self.token_check = token_check;
+        self
+    }
+
+    /// Injects what the runtime found of this host, for the Feedback form.
+    pub fn with_host(mut self, host: crate::core::menu::feedback::Facts) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// Injects whether the runtime found a program that opens links in the
+    /// browser; without one the menu copies its links instead.
+    pub fn with_opener(mut self, opener: bool) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    /// Injects what the runtime finds of the Hugging Face tokens, read each
+    /// time the menu opens.
+    pub fn with_hf_tokens(mut self, hf_tokens: fn() -> TokenFacts) -> Self {
+        self.hf_tokens = hf_tokens;
         self
     }
 
@@ -940,6 +1129,37 @@ impl App {
 
     pub fn input(&self) -> InputMode {
         self.input
+    }
+
+    /// The statusline label when it says more than [`InputMode::label`]: the
+    /// quit prompt naming what still runs in the panes, in at most `room`
+    /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
+    /// columns; fewer when they do not fit, then only how many.
+    pub fn status_label(&self, room: usize) -> Option<String> {
+        let running: Vec<&str> = self
+            .still_running
+            .iter()
+            .map(String::as_str)
+            .chain(self.serving_others.then_some(SHARED_SERVER))
+            .collect();
+        if self.input != InputMode::Confirm(Confirm::Quit) || running.is_empty() {
+            return None;
+        }
+        let total = running.len();
+        let named = (1..=total.min(3)).rev().map(|shown| {
+            let names: Vec<String> = running[..shown]
+                .iter()
+                .map(|name| fit(name, JOB_NAME_MAX))
+                .collect();
+            let more = match total - shown {
+                0 => String::new(),
+                n => format!(" +{n} more"),
+            };
+            format!("Quit? still running: {}{more} (y/n)", names.join(", "))
+        });
+        named
+            .chain([format!("Quit? {total} still running (y/n)")])
+            .find(|label| text_width(label) <= room)
     }
 
     /// The open menu, if any.
@@ -1470,9 +1690,52 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // Only the open quit prompt shows it; a late answer is dropped.
+            AppEvent::StillRunning(names) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running = names;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::StillRunning(_) => Vec::new(),
+            AppEvent::ServerAnswersOthers if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.serving_others = true;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::ServerAnswersOthers => Vec::new(),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::ManagedStarted(started) => {
+                self.dirty = true;
+                match started {
+                    Ok(()) => {
+                        self.notice = Some(MANAGED_READY.to_owned());
+                        vec![Effect::RedetectEngines]
+                    }
+                    Err(reason) => {
+                        self.notice = Some(reason);
+                        Vec::new()
+                    }
+                }
+            }
+            AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
+            AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
+            AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
+            AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
+            AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
+            AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
+            AppEvent::HfAccount(reply) => self.on_account_reply(reply),
+            AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::IssueSent(reply) => match self.menu.as_mut() {
+                Some(menu) => {
+                    let command = menu.feedback_reply(reply);
+                    self.dirty = true;
+                    self.on_menu_command(command)
+                }
+                None => Vec::new(),
+            },
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1484,6 +1747,7 @@ impl App {
                 self.window_focused = focused;
                 Vec::new()
             }
+            AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1581,7 +1845,18 @@ impl App {
             MenuState::open(&self.config)
                 .with_ai(self.ai.clone(), self.engines.clone())
                 .with_update(self.update.clone())
-                .with_installed(self.installed.clone()),
+                .with_installed(self.installed.clone())
+                .with_download(self.download.clone())
+                .with_hf((self.hf_tokens)(), self.hf_account.clone())
+                .with_opener(self.opener)
+                .with_sandbox(self.jail.runs_commands())
+                .with_feedback(crate::core::menu::feedback::Facts {
+                    engines: self
+                        .engines
+                        .as_ref()
+                        .map(crate::core::menu::feedback::engines),
+                    ..self.host.clone()
+                }),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -1601,10 +1876,18 @@ impl App {
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
+        let mut saved_over = None;
+        let mut stop_download = false;
         if let Some(menu) = self.menu.take() {
+            // The wizard goes with the menu: its download must not run on.
+            stop_download = menu.install_downloading();
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
-                Outcome::Saved => self.ai = menu.ai_draft(),
+                Outcome::Saved => {
+                    saved_over =
+                        Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
+                    self.ai = menu.ai_draft();
+                }
             }
             if !self.ai.memory.active() {
                 self.memory_turned_off();
@@ -1616,7 +1899,33 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
+        if stop_download {
+            effects.push(Effect::Install(InstallAsk::Cancel));
+        }
+        // Last, so its notice is the one shown.
+        if let Some((before, idle)) = saved_over {
+            let now = self.ai.managed_options().idle();
+            if now != idle {
+                effects.push(Effect::ManagedIdle(now));
+            }
+            effects.extend(self.start_managed(before.as_ref()));
+        }
         effects
+    }
+
+    /// The start of the managed llama-server when the saved config turned it
+    /// on or changed its model since `before`, with its notice.
+    fn start_managed(&mut self, before: Option<&ManagedServer>) -> Option<Effect> {
+        let server = self.ai.managed().filter(|now| Some(*now) != before)?;
+        let port = self.ai.servers().port("llamacpp")?;
+        self.notice = Some(format!(
+            "starting llama-server with {}…",
+            gguf::label(&server.model)
+        ));
+        Some(Effect::StartManaged {
+            model: server.model.clone(),
+            port,
+        })
     }
 
     /// Brings the host mouse capture in line with `config.mouse`: one effect
@@ -1643,7 +1952,13 @@ impl App {
             return Vec::new();
         };
         menu.set_term(self.term.0, self.term.1);
-        match menu.on_key(key, repeat, &mut self.config) {
+        let command = menu.on_key(key, repeat, &mut self.config);
+        self.on_menu_command(command)
+    }
+
+    /// What the app does for a menu key or click.
+    fn on_menu_command(&mut self, command: MenuCommand) -> Vec<Effect> {
+        match command {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
@@ -1654,7 +1969,20 @@ impl App {
             }
             MenuCommand::Copy(text) => self.copy_from_menu(&text),
             MenuCommand::Update => self.on_update_command(),
+            MenuCommand::CheckUpdate => vec![Effect::CheckUpdate],
             MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
+            MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
+            MenuCommand::Download(job) => self.start_download(job),
+            MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::Install(ask) => self.install_effects(ask),
+            MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
+            MenuCommand::Open(url) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_copied("Opened in your browser".to_owned());
+                }
+                vec![Effect::OpenUrl(url)]
+            }
+            MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
             MenuCommand::None => Vec::new(),
         }
     }
@@ -1677,6 +2005,25 @@ impl App {
             mode,
             sound: plays_sound(mode, sound),
         }]
+    }
+
+    /// The browser did not open `url`: the link is copied instead and the
+    /// footer says why; links are copied from now on.
+    fn on_open_failed(&mut self, url: &str) -> Vec<Effect> {
+        self.opener = false;
+        let Some(menu) = self.menu.as_mut() else {
+            self.notice = Some("The browser did not open".to_owned());
+            return Vec::new();
+        };
+        menu.open_failed();
+        self.dirty = true;
+        let effects = self.copy_from_menu(url);
+        if !effects.is_empty()
+            && let Some(menu) = self.menu.as_mut()
+        {
+            menu.set_copied("The browser did not open: link copied".to_owned());
+        }
+        effects
     }
 
     fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
@@ -1782,6 +2129,14 @@ impl App {
             ) => InputMode::Terminal,
         };
         match step {
+            // The quit prompt names what still runs in the panes.
+            Step::Run(
+                PrefixAction::RequestQuit | PrefixAction::ClosePane | PrefixAction::CloseTab,
+            ) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running.clear();
+                self.serving_others = false;
+                vec![Effect::ListRunning]
+            }
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
@@ -2078,6 +2433,10 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A compaction run is not a turn: the pane stays idle meanwhile.
+        if chat.is_compaction_turn(turn) {
+            return self.on_compaction(id, event);
+        }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
         // (a delta that ends the turn) count as `Error`.
@@ -2086,6 +2445,14 @@ impl App {
             _ => Ended::Error,
         };
         let tool = ToolEvent::of(&event);
+        // A llama-server that fails may be gone or restarted with another
+        // window: detect again, so the next turn is sized by what it says now.
+        let llamacpp_failed = live
+            && chat.stream_engine() == "llamacpp"
+            && matches!(
+                event,
+                StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
+            );
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -2096,6 +2463,12 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if finished && how == Ended::Done {
+            effects.extend(self.start_compaction(id));
+        }
+        if llamacpp_failed {
+            effects.extend(self.request_detection());
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -2203,6 +2576,7 @@ impl App {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 chat.rewrap(usize::from(old_cols), usize::from(cols), rows);
             }
+            self.refit_review(id);
         }
         self.sync_copy();
         effects
@@ -2270,7 +2644,10 @@ impl App {
         let session = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .is_some_and(ChatState::tool_session);
-        Self::stop_chat(id, session)
+        // A cancel keeps a batch as an orphan; a close discards it.
+        let mut effects = Self::stop_chat(id, session);
+        effects.push(Effect::BatchClose(id));
+        effects
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -2850,7 +3227,7 @@ mod app_tests {
     #[test]
     fn prefix_q_asks_for_confirmation() {
         let mut a = in_prefix();
-        assert_eq!(a.update(key('q')), vec![]);
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -2956,7 +3333,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Prefix);
 
         let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
-        assert_eq!(a.update(shift_q), vec![]);
+        assert_eq!(a.update(shift_q), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -2965,6 +3342,140 @@ mod app_tests {
         let mut a = in_prefix();
         a.update(key('q'));
         assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    /// Room for any quit prompt label.
+    const WIDE: usize = 200;
+
+    fn names(list: &[&str]) -> AppEvent {
+        AppEvent::StillRunning(list.iter().map(|n| (*n).to_owned()).collect())
+    }
+
+    // Spec S7: the quit prompt asks the runtime what still runs in the panes.
+    #[test]
+    fn asking_to_quit_asks_what_still_runs() {
+        let mut a = in_prefix();
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        // Nothing listed yet, or nothing runs: the plain prompt.
+        assert_eq!(a.status_label(WIDE), None);
+        a.update(names(&[]));
+        assert_eq!(a.status_label(WIDE), None);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_what_still_runs() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev"]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec S13 (managed-llama-server-followups): "avisarle cuando vaya a
+    // cerrar": the llama-server this lazarobox started, answering another
+    // lazarobox, is named after the jobs, once, whatever the order.
+    #[test]
+    fn the_quit_prompt_names_a_shared_llama_server_that_is_answering() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(names(&["sleep 77"]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, llama-server (shared) (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn a_shared_llama_server_alone_is_named() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: llama-server (shared) (y/n)")
+        );
+    }
+
+    // Spec S13: an answer that comes after the prompt closed is dropped, and
+    // the next prompt asks again.
+    #[test]
+    fn a_late_shared_server_answer_is_dropped() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(key('n'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(ctrl_space());
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.status_label(WIDE), None);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_three_jobs_at_most_and_shortens_long_ones() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[
+            "a",
+            "python -m http.server --bind 127.0.0.1 8000",
+            "c",
+            "d",
+            "e",
+        ]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: a, python -m http.server -…, c +2 more (y/n)")
+        );
+    }
+
+    #[test]
+    fn closing_the_last_pane_or_tab_asks_what_still_runs_too() {
+        for group in ['w', 't'] {
+            let mut a = launched(80, 25);
+            a.update(ctrl_space());
+            a.update(key(group));
+            let close = if group == 'w' { 'q' } else { 'c' };
+            assert_eq!(a.update(key(close)), vec![Effect::ListRunning], "{group}");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        }
+    }
+
+    #[test]
+    fn a_narrow_quit_prompt_names_fewer_jobs_then_only_how_many() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev", "cargo watch"]));
+        let label = |room| a.status_label(room);
+        assert_eq!(
+            label(60).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev +1 more (y/n)")
+        );
+        assert_eq!(
+            label(45).as_deref(),
+            Some("Quit? still running: sleep 77 +2 more (y/n)")
+        );
+        assert_eq!(label(30).as_deref(), Some("Quit? 3 still running (y/n)"));
+        assert_eq!(label(10), None);
+    }
+
+    #[test]
+    fn a_list_that_comes_after_the_prompt_is_ignored() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(key('n'));
+        a.update(names(&["sleep 77"]));
+        assert_eq!(a.status_label(WIDE), None);
+        // A new prompt does not show the old list before its own arrives.
+        a.update(ctrl_space());
+        a.update(key('q'));
+        assert_eq!(a.status_label(WIDE), None);
     }
 
     #[test]
@@ -6448,6 +6959,7 @@ mod app_tests {
             engines: CATALOG
                 .iter()
                 .map(|e| crate::core::ai::EngineState {
+                    binary: None,
                     id: e.id,
                     status,
                     models: Vec::new(),
@@ -6456,6 +6968,7 @@ mod app_tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -6586,6 +7099,7 @@ mod app_tests {
                 .map(|e| {
                     let (status, models) = engine(e.id);
                     EngineState {
+                        binary: None,
                         id: e.id,
                         status,
                         models: models.into_iter().map(str::to_owned).collect(),
@@ -6595,6 +7109,7 @@ mod app_tests {
                     }
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -7403,6 +7918,9 @@ mod app_tests {
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
 
+    /// The review view of a proposed write batch.
+    mod batch_review;
+
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
@@ -7434,11 +7952,17 @@ mod app_tests {
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;
 
+    /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
+    mod managed_start;
+
     /// Save as note (engram-memory M7b).
     mod chat_notes;
 
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
+
+    /// Rolling compaction of the history (chat-memory S3, S4, S8).
+    mod chat_compact;
 
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
@@ -7457,6 +7981,25 @@ mod app_tests {
 
     /// Copying the reason behind a degraded engine from the AI picker.
     mod menu_copy;
+
+    /// A Hugging Face download from the llamacpp picker (config-menu).
+    mod hf_download;
+
+    /// The Hugging Face account row of the AI tab (config-menu).
+    mod hf_account;
+
+    /// The llama-server install wizard of the llamacpp picker
+    /// (llama-server-install).
+    mod install;
+
+    /// The manage rows of llamacpp: remove and the newer build notice.
+    mod install_manage;
+
+    /// The Feedback row of the Settings tab (config-menu).
+    mod feedback;
+
+    /// A left click on a link line of the open menu (open-links S2).
+    mod menu_click;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
@@ -7544,9 +8087,56 @@ mod app_tests {
                 vec![
                     Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
                     Effect::ChatCancel(chat_id()),
+                    Effect::BatchClose(chat_id()),
                 ]
             );
             assert_eq!(a.focused(), PaneId::FIRST);
+        }
+
+        // Spec (chat-pane, Closing discards a batch): the notice names the
+        // entries the close discarded.
+        #[test]
+        fn a_closed_chat_that_lost_a_batch_shows_a_notice_with_the_count() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(2)));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(1)));
+            assert_eq!(a.notice(), Some("discarded 1 staged entry"));
+        }
+
+        // Spec (code-write, Orphan): the model hears of a user-side answer on
+        // its next turn, in the system text of that request.
+        #[test]
+        fn a_user_side_answer_to_an_orphan_is_told_to_the_model_on_its_next_turn() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let told = "The user discarded the batch you left staged (2 entries).";
+            a.update(AppEvent::Batch(
+                chat_id(),
+                BatchEvent::Done {
+                    shown: "discarded 2 staged entries".into(),
+                    told: Some(told.into()),
+                },
+            ));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            let effects = a.chat_send(chat_id(), "carry on");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(request.system.ends_with(told), "{}", request.system);
+            // Once: the turn after it hears nothing more.
+            a.update(AppEvent::Chat(
+                chat_id(),
+                1,
+                StreamEvent::Done(crate::core::ai::chat::engine::Finish::Stop),
+            ));
+            let effects = a.chat_send(chat_id(), "and then");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(!request.system.contains(told));
         }
 
         #[test]
@@ -7742,7 +8332,10 @@ mod app_tests {
             assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
             press(&mut a, "wq");
             assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
         }
 
         // 1.4: the UI asks for a view, not for an emulator.
@@ -8162,10 +8755,13 @@ mod app_tests {
         }
 
         #[test]
-        fn quitting_asks_the_runtime_to_stop_and_emits_no_per_chat_effect() {
+        fn quitting_asks_the_runtime_to_stop_and_emits_only_the_batch_close() {
             let mut a = streaming();
             press(&mut a, "q");
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
             // The runtime stops every turn on Quit; the state stays readable.
             assert_eq!(
                 chat_of(&a, chat_id()).phase(),

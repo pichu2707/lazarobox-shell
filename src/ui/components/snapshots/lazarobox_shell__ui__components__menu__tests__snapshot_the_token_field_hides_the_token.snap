@@ -1,0 +1,29 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Hugging Face account                                       │
+│ ••••••                                                     │
+│ paste a Hugging Face token                                 │
+│ create a read token at:                                    │
+│ https://huggingface.co/settings/tokens/new?tokenType=read  │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ Enter connect · Ctrl+O copy link · Ctrl+U clear · Esc back │
+└────────────────────────────────────────────────────────────┘

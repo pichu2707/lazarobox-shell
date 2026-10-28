@@ -230,6 +230,12 @@ impl ChatState {
         self.profile = profile;
         self.set_tags(&tags);
         self.tags_edited = false;
+        // The summary belongs to the conversation that left: it must not reach
+        // this one, and a run still in flight for the old one is dropped.
+        if self.compaction.running() {
+            self.turn += 1;
+        }
+        self.compaction.reset();
         self.store = super::store::PaneStore::open(conversation);
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

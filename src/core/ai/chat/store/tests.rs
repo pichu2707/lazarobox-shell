@@ -40,6 +40,7 @@ fn created(conversation: i64) -> StoreReply {
         conversation,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     }
 }
 
@@ -199,6 +200,7 @@ fn a_reply_for_another_pane_changes_nothing() {
         conversation: 5,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     };
     store.on_reply(pane(), &reply);
     assert_eq!(store.conversation(), None);
@@ -279,6 +281,7 @@ fn a_reply_gives_its_lines_and_other_replies_none() {
         conversation: 1,
         evicted: true,
         evicted_notes: 2,
+        created_at: 1_000,
     };
     assert_eq!(
         eviction_lines_of(&evicted),

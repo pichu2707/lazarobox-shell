@@ -57,12 +57,23 @@ On shutdown the disable sequence `\x1b[?1006l\x1b[?1000l` MUST be written on eve
 - THEN Kitty native selection works
 
 ### Requirement: Events handled
-Only vertical wheel events (wheel up, wheel down) MUST be handled. Every other mouse event (button press, release, drag, motion, horizontal wheel) MUST be ignored: no effect, no state change, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
+Only vertical wheel events (wheel up, wheel down) and a left press in MENU on a link line MUST be handled. In MENU, a left press on the line of the Hugging Face token field that shows `https://huggingface.co/settings/tokens/new?tokenType=read` MUST do what Ctrl+O does there (config-menu, Hugging Face account row); a left press anywhere else in MENU MUST do nothing, and MUST NOT move the selection. The press is found on the row where the popup draws it: the renderer and the hit-test MUST share one layout, and on the one-line fallback nothing is clickable. Every other mouse event (a left press outside MENU, another button, release, drag, motion, horizontal wheel) MUST be ignored: no effect, no state change, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
 
 #### Scenario: Non-wheel events ignored
 - GIVEN TERMINAL with a shell pane under the pointer
 - WHEN a left press, a release, a drag and a motion event arrive
 - THEN no effect is emitted and no state changes
+
+#### Scenario: A left press on the token link opens it [auto]
+- GIVEN MENU with the Hugging Face token field open, on a host with an opener
+- WHEN a left press arrives on the line that shows `https://huggingface.co/settings/tokens/new?tokenType=read`
+- THEN the link is opened in the browser, the field stays open and the footer reads `Opened in your browser`
+- AND with no opener the link is copied instead
+
+#### Scenario: Other presses in MENU ignored [auto]
+- GIVEN MENU (the rows, the token field, or the Feedback form)
+- WHEN a left press arrives on any other row, the tab bar, the border or outside the popup, or another button is pressed on the link line
+- THEN no effect is emitted, the selection and the footer are unchanged
 
 #### Scenario: Horizontal wheel ignored
 - GIVEN TERMINAL

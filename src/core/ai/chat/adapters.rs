@@ -256,14 +256,12 @@ fn ollama_body(request: &ChatRequest) -> Vec<u8> {
     ollama_round_body(request, &[], false)
 }
 
-/// The request after `rounds` of tool calls. `tools` says whether to offer the
-/// registry (the loop passes `false` for the retry on a model that rejects
-/// tools). Each round adds the assistant message with its `tool_calls`, then
-/// one `role: "tool"` message per call carrying `tool_name`.
-pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+/// The messages every chat body starts with: the system text (when there is
+/// any), then the history. Shared by every OpenAI-shaped and Ollama body.
+fn base_messages(request: &ChatRequest) -> Vec<Value> {
     let system = system_text(request);
     let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
-    let mut messages: Vec<Value> = system
+    system
         .into_iter()
         .chain(request.messages.iter().map(|m| {
             let role = match m.role {
@@ -272,7 +270,32 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             };
             json!({"role": role, "content": m.content})
         }))
-        .collect();
+        .collect()
+}
+
+/// The registry as the `tools` array both wires send; empty when the request
+/// has no tools on or nothing to offer.
+fn offered_tools(request: &ChatRequest) -> Vec<Value> {
+    let external = match &request.tools {
+        Tools::On { external, .. } => external.external(),
+        Tools::Off => Vec::new(),
+    };
+    registry_with(&external, request.families)
+        .into_iter()
+        .map(|t| {
+            json!({"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.schema,
+            }})
+        })
+        .collect()
+}
+
+/// The request after `rounds` of tool calls. `tools` says whether to offer the
+/// registry (the loop passes `false` for the retry on a model that rejects
+/// tools). Each round adds the assistant message with its `tool_calls`, then
+/// one `role: "tool"` message per call carrying `tool_name`.
+pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+    let mut messages = base_messages(request);
     for round in rounds {
         let calls: Vec<Value> = round
             .exchanges
@@ -303,24 +326,85 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             message
         }));
     }
+    finish_body(request, messages, tools)
+}
+
+/// The id of call `n` of round `round` (both from 0) when the server sent
+/// none. One helper feeds the assistant entry and its tool message, so the
+/// two always match.
+fn call_id(round: usize, n: usize) -> String {
+    format!("call_{round}_{n}")
+}
+
+/// The id for call `n` of round `round`: the server's when it is new to the
+/// body, else a synthesized one that no earlier id uses (a server may repeat
+/// ids, and `echo` can cut two long ones to the same prefix).
+fn unique_id(
+    used: &mut std::collections::HashSet<String>,
+    server: Option<&str>,
+    round: usize,
+    n: usize,
+) -> String {
+    let mut id = server.map_or_else(String::new, str::to_owned);
+    let mut tries = 0;
+    while id.is_empty() || used.contains(&id) {
+        id = call_id(round, n);
+        if tries > 0 {
+            id = format!("{id}_{tries}");
+        }
+        tries += 1;
+    }
+    used.insert(id.clone());
+    id
+}
+
+/// The request after `rounds` of tool calls on the OpenAI wire (llama.cpp):
+/// the assistant message holds `tool_calls` with string arguments, then one
+/// `role: "tool"` message per call carrying its `tool_call_id`. No reasoning
+/// is echoed, and no `parallel_tool_calls` or `tool_choice` is set.
+pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+    let mut messages = base_messages(request);
+    let mut used = std::collections::HashSet::new();
+    for (r, round) in rounds.iter().enumerate() {
+        let ids: Vec<String> = (round.exchanges.iter().enumerate())
+            .map(|(n, x)| unique_id(&mut used, x.id.as_deref(), r, n))
+            .collect();
+        let calls: Vec<Value> = round
+            .exchanges
+            .iter()
+            .zip(&ids)
+            .map(|(x, id)| {
+                let function = json!({"name": x.name, "arguments": x.arguments.to_string()});
+                json!({"id": id, "type": "function", "function": function})
+            })
+            .collect();
+        messages.push(json!({"role": "assistant", "content": round.text, "tool_calls": calls}));
+        messages.extend(
+            round
+                .exchanges
+                .iter()
+                .zip(&ids)
+                .map(|(x, id)| json!({"role": "tool", "tool_call_id": id, "content": x.result})),
+        );
+    }
+    finish_body(request, messages, tools)
+}
+
+/// The body both round wires end with: model, messages, stream flag and, when
+/// asked, the registry.
+fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
     if tools {
-        let external = match &request.tools {
-            Tools::On { external, .. } => external.external(),
-            Tools::Off => Vec::new(),
-        };
-        body["tools"] = registry_with(&external, request.families)
-            .into_iter()
-            .map(|t| {
-                json!({"type": "function", "function": {
-                    "name": t.name, "description": t.description, "parameters": t.schema,
-                }})
-            })
-            .collect();
+        // An empty list would read as "no tools" to some models and as an
+        // error to others: with nothing to offer the key is left out.
+        let offered = offered_tools(request);
+        if !offered.is_empty() {
+            body["tools"] = Value::Array(offered);
+        }
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }

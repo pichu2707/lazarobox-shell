@@ -10,7 +10,6 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     ffi::OsString,
-    fs::FileType,
     io::Read,
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -27,15 +26,20 @@ use crate::{
             memory::redact::redact,
             sanitize::clean,
             tools::{
-                Call,
-                paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
+                Call, Lines,
+                paths::{
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                },
             },
         },
         config::config_path,
     },
     runtime::{
         chat_store::resolve_path,
-        tools::open::{fd_path, open_beneath},
+        tools::{
+            open::{fd_path, open_beneath},
+            staged::{MARKER, StagedView, plain},
+        },
     },
 };
 
@@ -95,6 +99,8 @@ pub enum Failure {
     TimedOut,
     EmptyQuery,
     NotReadTool,
+    /// A `grep` pattern that is too long or not a valid expression.
+    BadPattern,
 }
 
 impl Failure {
@@ -107,6 +113,7 @@ impl Failure {
             Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
+            Failure::BadPattern => "the pattern is not a valid expression",
         }
     }
 }
@@ -114,6 +121,13 @@ impl Failure {
 /// Returned when the read window holds one run of text with no whitespace to
 /// cut at (minified JSON, base64): showing any of it could show half a secret.
 pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read window]";
+
+/// Said after a `read_file` window when lines follow it; the line number of
+/// the next window completes it.
+pub const MORE_MARKER_PREFIX: &str = "[more lines follow: next start_line";
+
+/// Bytes of a file a window read looks at, to find its lines.
+const PAGE_SCAN: usize = 1024 * 1024;
 
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
@@ -132,19 +146,32 @@ pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
 
+/// Said after a `read_file` window that reaches the end of the scanned head
+/// of a file larger than the scan limit: more text exists, but not reachable.
+pub const SCAN_MARKER: &str = "[truncated: the rest of the file is past the scan limit]";
+
 /// When a walk must stop: its wall-time deadline or the caller's cancel flag.
 /// Checked per entry and before each `canonicalize`, so a cancelled or late
 /// call stops touching the disk. A syscall already blocked (a hung open on a
 /// dead mount) cannot be interrupted and can still pin one blocking thread.
-struct Budget<'a> {
+pub(super) struct Budget<'a> {
     deadline: Instant,
     cancel: &'a AtomicBool,
     #[cfg(test)]
     entry_delay: Duration,
 }
 
-impl Budget<'_> {
-    fn spent(&self) -> bool {
+impl<'a> Budget<'a> {
+    pub(super) fn new(limits: &Limits, cancel: &'a AtomicBool) -> Self {
+        Budget {
+            deadline: Instant::now() + limits.time,
+            cancel,
+            #[cfg(test)]
+            entry_delay: limits.entry_delay,
+        }
+    }
+
+    pub(super) fn spent(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
     }
 }
@@ -171,22 +198,43 @@ pub fn execute_with(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
+    execute_over(call, env, limits, cancel, None)
+}
+
+/// [`execute_with`] that also shows the staged changes in `view` (marked as
+/// pending). With `None` it is exactly [`execute_with`]. With a view, text
+/// that comes from the disk can no longer forge the marker.
+pub fn execute_over(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
-    let budget = Budget {
-        deadline: Instant::now() + limits.time,
-        cancel,
-        #[cfg(test)]
-        entry_delay: limits.entry_delay,
-    };
+    let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, .. } => read_file(&roots, env, path, limits),
-        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
-        Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
+        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits, view),
+        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
+        Call::FindDir { query } => find_dir(&roots, &budget, query, limits).map(plain),
+        // Whether `grep` may run is decided before this, by `ask_for`; `glob`
+        // names files only and needs no approval.
+        Call::Glob { pattern, dir } => {
+            super::search::glob_over(pattern, dir.as_deref(), env, limits, cancel, view)
+        }
+        Call::Grep { pattern, dir } => {
+            super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
+        }
         // A user tool runs on its own server and an orchestration call goes
         // to the run manager: neither runs here.
-        Call::RunInPane { .. } | Call::External { .. } | Call::Orchestra(_) => {
-            Err(Failure::NotReadTool)
-        }
+        Call::RunInPane { .. }
+        | Call::External { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::RunCommand { .. }
+        | Call::ProposeBatch
+        | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }
 
@@ -223,10 +271,15 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     let rel = real
         .strip_prefix(roots.home())
         .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
-        // No safe open on this platform: the tool cannot work at all.
-        std::io::ErrorKind::Unsupported => Failure::Unreadable,
-        _ => Failure::Refused,
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        // No safe open on this platform: the tool cannot work at all. An OS
+        // error of that kind is about the file (macOS opens a socket with
+        // `EOPNOTSUPP`), so it is refused like any other.
+        if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+            Failure::Unreadable
+        } else {
+            Failure::Refused
+        }
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
@@ -238,23 +291,40 @@ fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
     path: &str,
+    window: Option<Lines>,
     limits: &Limits,
+    view: Option<&StagedView>,
 ) -> Result<String, Failure> {
+    // A staged text goes through the same cut, clean and redaction as a file.
+    if let Some(text) = view.and_then(|v| v.file(roots, &env.origin, path)) {
+        let bytes = text.as_bytes().to_vec();
+        let body = match window {
+            Some(window) => window_text(bytes, window, limits),
+            None => head_text(bytes, limits),
+        }?;
+        return Ok(format!("{MARKER}\n{body}"));
+    }
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
-    read_real(roots, &real, limits)
+    read_real(roots, &real, window, limits)
 }
 
 /// Reads the file at `real`, a path already resolved and judged with
 /// `roots`: opened with no link followed, proven to be that path and judged
-/// again ([`open_checked`]). A worker read inside its run's scope comes here
-/// with the path the scope returned, so the request is never resolved again.
+/// again ([`open_checked`]), and paged by `window` like any read. A worker
+/// read inside its run's scope comes here with the path the scope returned,
+/// so the request is never resolved again.
 pub(crate) fn read_real(
     roots: &SecretRoots,
     real: &Path,
+    window: Option<Lines>,
     limits: &Limits,
 ) -> Result<String, Failure> {
+    // Judged on the real path, so a link to it is refused too.
+    if is_git_config(real) {
+        return Err(Failure::Refused);
+    }
     let file = std::fs::File::from(open_checked(roots, real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
@@ -266,6 +336,15 @@ pub(crate) fn read_real(
     if meta.nlink() > 1 {
         return Err(Failure::Refused);
     }
+    match window {
+        Some(window) => read_window(file, window, limits),
+        None => read_head(file, limits),
+    }
+    .map(plain)
+}
+
+/// The start of an opened file, as far as the read cap allows.
+fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
     // Read a margin past the cap: a secret that straddles the cap must be
     // redacted whole, and only then is the text cut.
     let window = limits.read_bytes + REDACT_MARGIN;
@@ -273,22 +352,18 @@ pub(crate) fn read_real(
     file.take(window as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
+    head_text(bytes, limits)
+}
+
+/// The start of `bytes` (a file, or a staged text) as far as the cap allows.
+fn head_text(mut bytes: Vec<u8>, limits: &Limits) -> Result<String, Failure> {
+    let window = limits.read_bytes + REDACT_MARGIN;
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
     let more = bytes.len() > window;
     bytes.truncate(window);
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        // A character split by the window is the only decoding error allowed.
-        Err(error) if more && error.utf8_error().error_len().is_none() => {
-            let valid = error.utf8_error().valid_up_to();
-            let mut bytes = error.into_bytes();
-            bytes.truncate(valid);
-            String::from_utf8(bytes).map_err(|_| Failure::NotText)?
-        }
-        Err(_) => return Err(Failure::NotText),
-    };
+    let text = decode(bytes, more)?;
     // Clean first: a zero-width or control character inside a token would
     // otherwise hide it from the redaction.
     let mut out = redact(&clean(&text)).text;
@@ -302,14 +377,7 @@ pub(crate) fn read_real(
             return Ok(NO_CUT_MARKER.to_owned());
         }
     }
-    let cut = more || out.len() > limits.read_bytes;
-    if out.len() > limits.read_bytes {
-        let mut end = limits.read_bytes;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
-    }
+    let cut = cap(&mut out, limits.read_bytes) || more;
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
@@ -317,16 +385,134 @@ pub(crate) fn read_real(
     Ok(out)
 }
 
+/// UTF-8 text from `bytes`. When the read was cut (`more`), a character split
+/// by the cut is the only decoding error allowed.
+fn decode(bytes: Vec<u8>, more: bool) -> Result<String, Failure> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(error) if more && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| Failure::NotText)
+        }
+        Err(_) => Err(Failure::NotText),
+    }
+}
+
+/// Cuts `out` to at most `max` bytes on a character boundary. Whether it cut.
+fn cap(out: &mut String, max: usize) -> bool {
+    if out.len() <= max {
+        return false;
+    }
+    let mut end = max;
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    true
+}
+
+/// `window.max` lines from line `window.start` of an opened file. The head
+/// of the file (up to [`PAGE_SCAN`]) is cleaned and redacted as a whole
+/// BEFORE it is cut into lines, so a secret that spans lines is seen whole.
+/// Line numbers count the lines of that cleaned text.
+fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<String, Failure> {
+    let mut bytes = Vec::new();
+    file.take(PAGE_SCAN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure::Unreadable)?;
+    window_text(bytes, window, limits)
+}
+
+/// [`read_window`] over the bytes themselves.
+fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<String, Failure> {
+    if bytes.contains(&0) {
+        return Err(Failure::NotText);
+    }
+    let scan_cut = bytes.len() > PAGE_SCAN;
+    bytes.truncate(PAGE_SCAN);
+    let text = redact(&clean(&decode(bytes, scan_cut)?)).text;
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    // A scan that stopped mid-line holds a partial last line: never show it.
+    if scan_cut && lines.last().is_some_and(|line| !line.ends_with('\n')) {
+        lines.pop();
+    }
+    let from = (window.start as usize).saturating_sub(1);
+    if from >= lines.len() {
+        return Ok(if scan_cut {
+            "[empty window: the file is larger than the scan limit]".to_owned()
+        } else {
+            format!("[empty window: the file has {} lines]", lines.len())
+        });
+    }
+    let mut end = lines.len().min(from.saturating_add(window.max as usize));
+    // Cut at the last whole line that fits the read cap, so the next window
+    // can start right after it.
+    let mut size = 0usize;
+    let fits = lines[from..end]
+        .iter()
+        .take_while(|line| {
+            size += line.len();
+            size <= limits.read_bytes
+        })
+        .count();
+    let mut out;
+    if fits == 0 {
+        // One line alone is over the cap: cut it, there is no whole line to end on.
+        out = lines[from].to_owned();
+        cap(&mut out, limits.read_bytes);
+        out.push('\n');
+        out.push_str(READ_MARKER);
+        return Ok(out);
+    }
+    end = from + fits;
+    out = lines[from..end].concat();
+    if end < lines.len() {
+        out.push_str(&format!("{MORE_MARKER_PREFIX} {}]", end + 1));
+    } else if scan_cut {
+        // What follows lies past the scan: a next start_line could not read it.
+        out.push_str(SCAN_MARKER);
+    }
+    Ok(out)
+}
+
+/// What a directory entry is, as far as the tools care. A symlink is its own
+/// kind: it is reported as such, never followed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Kind {
+    Dir,
+    File,
+    Link,
+    Other,
+    /// The type could not be told (macOS `DT_UNKNOWN` and a failed `fstatat`):
+    /// never shown, never entered.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Unknown,
+}
+
+impl Kind {
+    pub(super) fn is_dir(self) -> bool {
+        self == Kind::Dir
+    }
+    pub(super) fn is_file(self) -> bool {
+        self == Kind::File
+    }
+    pub(super) fn is_symlink(self) -> bool {
+        self == Kind::Link
+    }
+}
+
 /// The entries of an open directory, at most `max` of them, and whether more
-/// were left. Read through `/proc/self/fd`, so it is the opened directory and
-/// not a path that is listed. A symlink is reported as such, never followed.
-fn entries(
+/// were left. Read through the descriptor itself (see `read_dir_fd`), so it is
+/// the opened directory and not a path that is listed. A symlink is reported as
+/// such, never followed.
+pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
-) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
-    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-        .map_err(|_| Failure::Unreadable)?;
+) -> Result<(Vec<(OsString, Kind)>, bool), Failure> {
+    let dir = read_dir_fd(fd).map_err(|_| Failure::Unreadable)?;
     let mut out = Vec::new();
     for entry in dir {
         if out.len() == max || budget.spent() {
@@ -334,19 +520,141 @@ fn entries(
         }
         #[cfg(test)]
         std::thread::sleep(budget.entry_delay);
-        let entry = entry.map_err(|_| Failure::Unreadable)?;
-        out.push((
-            entry.file_name(),
-            entry.file_type().map_err(|_| Failure::Unreadable)?,
-        ));
+        out.push(entry.map_err(|_| Failure::Unreadable)?);
     }
     Ok((out, false))
 }
 
+/// Linux: the descriptor is listed through `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
+    Ok(dir.map(|entry| {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let kind = if kind.is_dir() {
+            Kind::Dir
+        } else if kind.is_file() {
+            Kind::File
+        } else if kind.is_symlink() {
+            Kind::Link
+        } else {
+            Kind::Other
+        };
+        Ok((entry.file_name(), kind))
+    }))
+}
+
+/// macOS: `fdopendir` on a duplicate of the descriptor. Written without a macOS
+/// compiler at hand: keep it small.
+#[cfg(target_os = "macos")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+    struct Dir(*mut libc::DIR);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `fdopendir` and is closed once, here.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+    impl Iterator for Dir {
+        type Item = std::io::Result<(OsString, Kind)>;
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                // SAFETY: `readdir` returns NULL at the end or on an error, told
+                // apart by `errno`; the entry is read before the next call.
+                let entry = unsafe {
+                    *libc::__error() = 0;
+                    libc::readdir(self.0)
+                };
+                if entry.is_null() {
+                    // SAFETY: `__error` points at this thread's `errno`.
+                    return match unsafe { *libc::__error() } {
+                        0 => None,
+                        errno => Some(Err(std::io::Error::from_raw_os_error(errno))),
+                    };
+                }
+                // SAFETY: a non-NULL entry has a NUL-terminated `d_name`.
+                let (name, d_type) = unsafe {
+                    let entry = &*entry;
+                    (
+                        CStr::from_ptr(entry.d_name.as_ptr()).to_bytes(),
+                        entry.d_type,
+                    )
+                };
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                let kind = match d_type {
+                    libc::DT_DIR => Kind::Dir,
+                    libc::DT_REG => Kind::File,
+                    libc::DT_LNK => Kind::Link,
+                    // SAFETY: `self.0` is the open stream.
+                    libc::DT_UNKNOWN => kind_at(unsafe { libc::dirfd(self.0) }, name),
+                    _ => Kind::Other,
+                };
+                return Some(Ok((OsStr::from_bytes(name).to_os_string(), kind)));
+            }
+        }
+    }
+
+    // SAFETY: `fcntl` takes no pointer here; a failed duplicate is -1. The
+    // duplicate keeps close-on-exec, which a plain `dup` would drop.
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: on success `fdopendir` owns `copy`; on failure it is still ours.
+    let dir = unsafe { libc::fdopendir(copy) };
+    if dir.is_null() {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: `copy` is a descriptor this function owns.
+        unsafe { libc::close(copy) };
+        return Err(error);
+    }
+    // The duplicate shares its offset with `fd`: start from the top.
+    // SAFETY: `dir` is a valid open stream.
+    unsafe { libc::rewinddir(dir) };
+    Ok(Dir(dir))
+}
+
+/// The kind of `name` in the folder `dirfd`, from `fstatat` without following a
+/// link. Any failure is `Unknown`, which `visible` hides.
+#[cfg(any(target_os = "macos", test))]
+fn kind_at(dirfd: i32, name: &[u8]) -> Kind {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return Kind::Unknown;
+    };
+    // SAFETY: `stat` is plain data; `fstatat` fills it when it returns 0.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is NUL-terminated and `st` is a valid out pointer.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    if rc != 0 {
+        return Kind::Unknown;
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => Kind::Dir,
+        libc::S_IFREG => Kind::File,
+        libc::S_IFLNK => Kind::Link,
+        _ => Kind::Other,
+    }
+}
+
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
 /// dangling one is hidden.
-fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind: FileType) -> bool {
-    if is_excluded_name(&name.to_string_lossy()) {
+pub(super) fn visible(
+    roots: &SecretRoots,
+    budget: &Budget,
+    dir: &Path,
+    name: &OsStr,
+    kind: Kind,
+) -> bool {
+    if kind == Kind::Unknown || is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
     let full = dir.join(name);
@@ -364,14 +672,14 @@ fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind:
 /// listed nor matched, and a folder with one is not entered. Showing it as
 /// `[REDACTED]`, or matching a query against the raw name, would tell the
 /// model which prefixes of a key exist.
-fn redaction_changes(name: &OsStr) -> bool {
+pub(super) fn redaction_changes(name: &OsStr) -> bool {
     let line = one_line(name);
     redact(&line).text != line
 }
 
 /// A name that fits on one line: escapes and bidi marks are gone, and so is
 /// every remaining control character.
-fn one_line(name: &OsStr) -> String {
+pub(super) fn one_line(name: &OsStr) -> String {
     clean(&name.to_string_lossy())
         .chars()
         .map(|c| if c.is_control() { '?' } else { c })
@@ -384,14 +692,24 @@ fn list_dir(
     env: &ToolEnv,
     path: &str,
     limits: &Limits,
+    view: Option<&StagedView>,
 ) -> Result<String, Failure> {
-    let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
-        return Err(Failure::Refused);
+    // A folder only the batch makes (no disk yet) has no real path to resolve.
+    let virtual_dir = view.and_then(|v| v.dir(roots, &env.origin, path));
+    let (real, fd) = match (resolve(roots, &env.origin, path), virtual_dir) {
+        (PathVerdict::Allowed(real), _) => {
+            let fd = open_checked(roots, &real, true)?;
+            (real, Some(fd))
+        }
+        (_, Some(real)) => (real, None),
+        _ => return Err(Failure::Refused),
     };
-    let fd = open_checked(roots, &real, true)?;
-    let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
+    let (found, scan_cut) = match &fd {
+        Some(fd) => entries(fd, limits.visited, budget)?,
+        None => (Vec::new(), false),
+    };
     let mut omitted = false;
-    let mut shown: Vec<(String, char)> = found
+    let mut shown: Vec<(String, char, bool)> = found
         .iter()
         .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
         .filter(|(name, _)| {
@@ -409,15 +727,34 @@ fn list_dir(
             } else {
                 '?'
             };
-            (one_line(name), tag)
+            (plain(one_line(name)), tag, false)
         })
         .collect();
+    // Names the batch adds. One already on disk keeps its row: only its
+    // content is staged.
+    for (name, is_dir) in view.map(|v| v.children(&real)).unwrap_or_default() {
+        let known = found.iter().any(|(n, _)| *n == name);
+        if known {
+            continue;
+        }
+        let hidden = is_excluded_name(&name.to_string_lossy())
+            || !roots.judge_real(&real.join(&name))
+            || redaction_changes(&name);
+        if hidden {
+            omitted = true;
+            continue;
+        }
+        shown.push((one_line(&name), if is_dir { 'd' } else { 'f' }, true));
+    }
     shown.sort();
     let cut = scan_cut || shown.len() > limits.list_entries;
     shown.truncate(limits.list_entries);
     let mut lines: Vec<String> = shown
         .into_iter()
-        .map(|(name, tag)| format!("{tag} {name}"))
+        .map(|(name, tag, pending)| match pending {
+            true => format!("{tag} {name} {MARKER}"),
+            false => format!("{tag} {name}"),
+        })
         .collect();
     if lines.is_empty() && !cut && !omitted {
         lines.push("(empty)".into());
@@ -520,10 +857,10 @@ fn find_dir(
     Ok(out)
 }
 
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// Needs the file tools: they open files below HOME without a link, Linux and macOS.
 // `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -742,6 +1079,139 @@ mod tests {
         assert!(out.contains("name = x"));
     }
 
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("line {n}\n")).collect()
+    }
+
+    fn page(env: &ToolEnv, path: &str, start: u32, max: u32, limits: &Limits) -> String {
+        let call = Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start, max }),
+        };
+        execute(&call, env, limits).unwrap()
+    }
+
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_returns_the_requested_lines_and_says_more_follow() {
+        let f = fixture();
+        fs::write(f.home.join("long"), numbered(500)).unwrap();
+        let out = page(&env(&f.home), "~/long", 100, 20, &Limits::default());
+        let want: String = (100..120).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(out, format!("{want}{MORE_MARKER_PREFIX} 120]"));
+        // The last window has nothing after it: no marker.
+        let tail = page(&env(&f.home), "~/long", 491, 20, &Limits::default());
+        let want: String = (491..=500).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(tail, want);
+    }
+
+    // Spec (code-search, read_file paging): Past the end.
+    #[test]
+    fn a_start_past_the_end_is_an_empty_window_with_a_note() {
+        let f = fixture();
+        fs::write(f.home.join("ten"), numbered(10)).unwrap();
+        let out = page(&env(&f.home), "~/ten", 50, 20, &Limits::default());
+        assert_eq!(out, "[empty window: the file has 10 lines]");
+        // One past the last line is also empty; the last line is not.
+        let edge = page(&env(&f.home), "~/ten", 11, 5, &Limits::default());
+        assert_eq!(edge, "[empty window: the file has 10 lines]");
+        assert_eq!(
+            page(&env(&f.home), "~/ten", 10, 5, &Limits::default()),
+            "line 10\n"
+        );
+    }
+
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_ending_at_the_scan_limit_does_not_offer_an_unreadable_start() {
+        let f = fixture();
+        let mut text = String::new();
+        while text.len() < PAGE_SCAN + 100 {
+            text.push_str("0123456789\n");
+        }
+        fs::write(f.home.join("huge"), &text).unwrap();
+        let lines_scanned = PAGE_SCAN / 11;
+        let out = page(
+            &env(&f.home),
+            "~/huge",
+            lines_scanned as u32 - 1,
+            100,
+            &Limits::default(),
+        );
+        assert!(out.ends_with(SCAN_MARKER), "{out:?}");
+        assert!(!out.contains(MORE_MARKER_PREFIX), "{out:?}");
+    }
+
+    #[test]
+    fn a_window_is_redacted_and_bounded_by_the_read_cap() {
+        let f = fixture();
+        fs::write(
+            f.home.join("conf"),
+            "a\nkey = sk-abcDEF1234567890\nname = x\n",
+        )
+        .unwrap();
+        let out = page(&env(&f.home), "~/conf", 2, 2, &Limits::default());
+        assert!(!out.contains("sk-abcDEF1234567890"), "{out}");
+        assert!(out.contains("name = x"), "{out}");
+        fs::write(f.home.join("wide"), numbered(500)).unwrap();
+        let limits = Limits {
+            read_bytes: 20,
+            ..Limits::default()
+        };
+        let out = page(&env(&f.home), "~/wide", 1, 100, &limits);
+        // Cut at a whole line, and the next window starts right after it.
+        assert_eq!(out, format!("line 1\nline 2\n{MORE_MARKER_PREFIX} 3]"));
+        let next = page(&env(&f.home), "~/wide", 3, 100, &limits);
+        assert_eq!(next, format!("line 3\nline 4\n{MORE_MARKER_PREFIX} 5]"));
+        // A single line over the cap has no whole-line cut: the cap marker stays.
+        fs::write(f.home.join("one"), format!("{}\nnext\n", "w".repeat(50))).unwrap();
+        let out = page(&env(&f.home), "~/one", 1, 5, &limits);
+        assert_eq!(out, format!("{}\n{READ_MARKER}", "w".repeat(20)));
+    }
+
+    #[test]
+    fn a_paged_read_still_refuses_binary_and_secret_files() {
+        let f = fixture();
+        fs::write(f.home.join("bin"), b"a\0b\n").unwrap();
+        let call = |path: &str| Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start: 1, max: 5 }),
+        };
+        let run = |path: &str| execute(&call(path), &env(&f.home), &Limits::default());
+        assert_eq!(run("~/bin"), Err(Failure::NotText));
+        assert_eq!(run("~/.ssh/id"), Err(Failure::Refused));
+    }
+
+    // Spec (code-write, Deny rules): reads of `.git/config` are refused.
+    #[test]
+    fn git_config_files_are_refused_with_the_standard_text() {
+        let f = fixture();
+        let git = f.home.join("dev/app/.git");
+        fs::create_dir_all(git.join("modules/sub")).unwrap();
+        for file in ["config", "config.worktree", "modules/sub/config"] {
+            fs::write(git.join(file), "[remote]\nurl = https://x\n").unwrap();
+        }
+        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir_all(f.home.join("dev/app/src")).unwrap();
+        fs::write(f.home.join("dev/app/src/config"), "ok\n").unwrap();
+        symlink(git.join("config"), f.home.join("dev/app/alias")).unwrap();
+        let e = env(&f.home);
+        for path in [
+            "~/dev/app/.git/config",
+            "~/dev/app/.git/config.worktree",
+            "~/dev/app/.git/modules/sub/config",
+            "~/dev/app/alias",
+        ] {
+            let err = read(&e, path).unwrap_err();
+            assert_eq!((err, err.message()), (Failure::Refused, REFUSED), "{path}");
+        }
+        assert_eq!(
+            read(&e, "~/dev/app/.git/HEAD").unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
+    }
+
     #[test]
     fn a_hard_link_to_a_secret_is_refused() {
         let f = fixture();
@@ -829,6 +1299,33 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_unknown_kind_is_never_visible() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        let cancel = AtomicBool::new(false);
+        let budget = Budget::new(&Limits::default(), &cancel);
+        let dir = f.home.join("dev/app");
+        let name = OsStr::new("main.rs");
+        assert!(visible(&roots, &budget, &dir, name, Kind::File));
+        assert!(visible(&roots, &budget, &dir, name, Kind::Other));
+        assert!(!visible(&roots, &budget, &dir, name, Kind::Unknown));
+    }
+
+    #[test]
+    fn kind_at_tells_dir_file_and_link_without_following_and_fails_closed() {
+        let f = fixture();
+        let dir = std::fs::File::open(f.home.join("dev/app")).unwrap();
+        symlink("main.rs", f.home.join("dev/app/ln")).unwrap();
+        let at = |name: &str| kind_at(dir.as_raw_fd(), name.as_bytes());
+        assert_eq!(at("main.rs"), Kind::File);
+        assert_eq!(at("ln"), Kind::Link);
+        assert_eq!(at("missing"), Kind::Unknown);
+        assert_eq!(at("bad\0name"), Kind::Unknown);
+        let parent = std::fs::File::open(f.home.join("dev")).unwrap();
+        assert_eq!(kind_at(parent.as_raw_fd(), b"app"), Kind::Dir);
+    }
+
+    #[test]
     fn a_window_with_no_safe_cut_point_says_so_instead_of_an_empty_body() {
         let f = fixture();
         // Minified JSON or base64: one long line, no whitespace to cut at.
@@ -910,6 +1407,22 @@ mod tests {
         symlink(f.home.join("nowhere"), dev.join("dangling")).unwrap();
         let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
         assert_eq!(out, "f a.txt\nd app\nl ok-link\nd zeta");
+    }
+
+    #[test]
+    fn a_leftover_write_temp_is_not_listed_found_or_read() {
+        let f = fixture();
+        let dev = f.home.join("dev");
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        fs::write(dev.join(temp), "half written").unwrap();
+        fs::create_dir_all(dev.join("lbx-keep")).unwrap();
+        fs::create_dir_all(dev.join("lbx-up/.lbx-fedcba9876543210fedcba9876543210.tmp")).unwrap();
+        let e = env(&f.home);
+        let listed = list(&e, "~/dev", &Limits::default()).unwrap();
+        assert_eq!(listed, "d app\nd lbx-keep\nd lbx-up");
+        assert_eq!(read(&e, &format!("~/dev/{temp}")), Err(Failure::Refused));
+        let found = find(&e, "lbx", &Limits::default()).unwrap();
+        assert_eq!(found, "~/dev/lbx-keep\n~/dev/lbx-up");
     }
 
     #[test]
@@ -1099,6 +1612,33 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
         assert_eq!(out, Err(Failure::NotReadTool));
+    }
+
+    // Spec (agent-tools, approval model): `execute_with` never asks; asking is
+    // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn grep_and_glob_are_dispatched_through_execute_with() {
+        let f = fixture();
+        let cancel = AtomicBool::new(false);
+        let run = |call: Call| execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
+        let grep = |pattern: &str, dir: Option<&str>| Call::Grep {
+            pattern: pattern.into(),
+            dir: dir.map(Into::into),
+        };
+        let out = run(grep("fn main", None)).unwrap();
+        assert!(out.starts_with("dev/app/main.rs:1:fn main() {}"), "{out}");
+        assert_eq!(
+            run(grep("fn main", Some("dev"))).unwrap(),
+            "dev/app/main.rs:1:fn main() {}"
+        );
+        let glob = Call::Glob {
+            pattern: "**/*.rs".into(),
+            dir: None,
+        };
+        assert_eq!(run(glob).unwrap(), "dev/app/main.rs");
+        assert_eq!(run(grep("(", None)), Err(Failure::BadPattern));
     }
 
     #[test]

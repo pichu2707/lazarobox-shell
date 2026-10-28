@@ -1,0 +1,40 @@
+name: Idea or goal
+description: Something lazarobox could build or improve.
+labels: ["idea"]
+projects: ["pichu2707/17"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas gather on the project's Goals board. From lazarobox itself, **Menu ▸ Feedback** opens this form.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Something new
+        - An improvement to something that exists
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What lazarobox would do, and how you would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: The problem it solves, or what it makes easier.
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional. Where you would use it.
+      render: text
+    validations:
+      required: false

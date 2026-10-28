@@ -1,0 +1,77 @@
+name: macOS quick
+
+# A fast, manual macOS run for work that cannot be tested on Linux.
+#
+#   gh workflow run macos-quick.yml --ref <branch> \
+#     -f filter='tools::open' -f os=macos-14
+#
+# It runs only the tests that match `filter` (all of them when empty), plus
+# the Seatbelt integration tests when `jail` is true. With `debug` true it
+# opens an SSH session into the runner (tmate) when a step fails, reachable
+# only with the GitHub SSH keys of the user who started the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner image
+        type: choice
+        options: [macos-14, macos-15-intel]
+        default: macos-14
+      filter:
+        description: Test name filter for the library tests (empty runs all)
+        type: string
+        default: ""
+      jail:
+        description: Also run the Seatbelt integration tests (tests/jail_macos.rs)
+        type: boolean
+        default: false
+      debug:
+        description: Open an SSH session into the runner if a step fails
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-quick-${{ github.ref }}-${{ inputs.os }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: macOS quick (${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@d86e0fa8f147d6539442c26a61ebba8becc19489 # 1.96.0
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo test --locked --lib --no-run
+
+      - name: Library tests
+        env:
+          FILTER: ${{ inputs.filter }}
+        run: cargo test --locked --lib -- --nocapture "$FILTER"
+
+      - name: Seatbelt integration tests
+        if: ${{ inputs.jail }}
+        run: cargo test --locked --test jail_macos -- --nocapture
+
+      - name: SSH into the runner
+        if: ${{ failure() && inputs.debug }}
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+        with:
+          limit-access-to-actor: true
+          detached: false
+        timeout-minutes: 30
