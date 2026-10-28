@@ -383,6 +383,11 @@ pub const MAX_RUN_FALLBACKS: u8 = 3;
 pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
 /// Why a path check refuses a command: the one refusal that counts toward the pause.
 pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
+/// Why a command that leaves the chat's folder asks: a path it acts on, or
+/// the pane's directory, is elsewhere. Asking is no fault of the model.
+pub const OUTSIDE_ROOT: &str = "the command reaches outside the chat's folder";
+/// Why every command of a cloud chat asks when its folder is HOME or `/`.
+pub const BROAD_ROOT: &str = "the chat's folder is your home or /";
 pub const PAUSED: &str = "auto-run paused for this turn";
 pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// Why a command that the grammar accepts still takes the prompt: the pane
@@ -894,7 +899,7 @@ mod tests {
 
     #[test]
     fn auto_and_ask_never_produce_a_run() {
-        for ask in ["cd x", "ls", "pwd", "mkdir -p a"] {
+        for ask in ["cd x", "ls", "pwd", "mkdir -p a", "rg foo", "git status"] {
             for mode in [ApprovalMode::Auto, ApprovalMode::Ask] {
                 let ask = ask_of(ask);
                 let route = route(&ask, Origin::Tool, mode, FREE);
@@ -976,7 +981,7 @@ mod tests {
             panic!("{got:?}")
         };
         assert_eq!((fallback.at, fallback.why), (3..4, "shell metacharacter"));
-        let ask = ask_of("git status");
+        let ask = ask_of("cargo build");
         let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
         assert_eq!(why(&got), Some("not a safe command"));
     }
@@ -1087,7 +1092,7 @@ mod tests {
             assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
         }
         // A command off the grammar still names the grammar, not the pane.
-        let off = ask_of("git status");
+        let off = ask_of("cargo build");
         let busy = AutoCtx {
             executing: true,
             ..FREE
@@ -1104,7 +1109,7 @@ mod tests {
             reason_line(&fallback, text)
         };
         assert_eq!(line("cd a && ls"), "shell metacharacter: `&&`");
-        assert_eq!(line("git status"), "not a safe command: `git`");
+        assert_eq!(line("cargo build"), "not a safe command: `cargo`");
         assert_eq!(line("ls -R src"), "flag not allowed: `-R`");
         // Nothing to name: no token, or a token that is only a space.
         assert_eq!(line("ls "), "trailing space");
@@ -1153,7 +1158,7 @@ mod tests {
             matches!(&got, Route::Prompt(Some(f)) if counts_toward_pause(f))
         };
         assert!(counted("ls *"));
-        assert!(counted("git status"));
+        assert!(counted("cargo build"));
         for ctx in [
             AutoCtx {
                 paused: true,

@@ -4,10 +4,13 @@
 
 use super::tool_approval::{announce, announce_now, decision, live, pending, result, run};
 use super::*;
-use crate::app::RunEvent;
+use crate::app::{RunEvent, RunScope};
 use crate::core::ai::{
     chat::{
-        approval::{FOCUSED, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS, NO_CWD, TOO_MANY},
+        approval::{
+            BROAD_ROOT, FOCUSED, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS, NO_CWD,
+            OUTSIDE_ROOT, TOO_MANY,
+        },
         engine::{CallId, Decision, ToolStatus},
     },
     config::ApprovalMode,
@@ -37,6 +40,16 @@ fn check(turn: u64, call: u64, command: &str) -> Effect {
         turn,
         call: CallId(call),
         command: command.to_owned(),
+        scope: live_scope(),
+    }
+}
+
+/// What the check of the `live()` chat judges against: its origin folder and
+/// its local engine.
+fn live_scope() -> RunScope {
+    RunScope {
+        root: LAUNCH.into(),
+        cloud: false,
     }
 }
 
@@ -116,15 +129,15 @@ fn a_second_call_to_the_same_pane_in_a_batch_prompts() {
 #[test]
 fn an_off_list_command_prompts_and_y_types_without_enter() {
     let (mut a, turn) = run_live();
-    assert_eq!(announce(&mut a, turn, 1, run("git status")), vec![]);
-    assert_eq!(why(&a).as_deref(), Some("not a safe command: `git`"));
+    assert_eq!(announce(&mut a, turn, 1, run("cargo build")), vec![]);
+    assert_eq!(why(&a).as_deref(), Some("not a safe command: `cargo`"));
     assert_eq!(slot(&a), None);
     assert_eq!(chat_of(&a).auto_typed(), 0);
     let effects = a.update(key('y'));
     assert_eq!(
         effects,
         vec![
-            Effect::WritePty(PaneId::FIRST, b"git status".to_vec()),
+            Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
             super::tool_approval::decision(turn, 1, Decision::Sent)
         ]
     );
@@ -133,6 +146,138 @@ fn an_off_list_command_prompts_and_y_types_without_enter() {
             assert!(!bytes.contains(&b'\r') && !bytes.ends_with(b"\n"));
         }
     }
+}
+
+// S1: search and navigation go to the check like `cd` and `ls`, with no
+// prompt; what they read comes back as the run's output.
+#[test]
+fn a_search_command_goes_to_the_check_without_a_prompt() {
+    for command in [
+        "rg -n foo src",
+        "grep -rn foo src",
+        "find . -name Cargo.toml",
+    ] {
+        let (mut a, turn) = run_live();
+        assert_eq!(
+            announce(&mut a, turn, 1, run(command)),
+            vec![check(turn, 1, command)],
+            "{command}"
+        );
+        assert_eq!(pending(&a), None, "{command}: no prompt opens");
+        assert_eq!(chat_of(&a).auto_typed(), 1, "{command}");
+    }
+}
+
+// S3, L20: `mkdir` and every command that is not search or navigation ask;
+// `y` types it and leaves the Enter to the user.
+#[test]
+fn mkdir_and_a_build_ask_and_y_leaves_the_enter_to_the_user() {
+    for (command, reason) in [
+        ("mkdir x", "not a safe command: `mkdir`"),
+        ("mkdir -p a/b", "not a safe command: `mkdir`"),
+        ("npm test", "not a safe command: `npm`"),
+        ("git push", "not a safe command: `git`"),
+    ] {
+        let (mut a, turn) = run_live();
+        assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
+        assert_eq!(why(&a).as_deref(), Some(reason));
+        assert_eq!(slot(&a), None);
+        assert_eq!(
+            a.update(key('y')),
+            vec![
+                Effect::WritePty(PaneId::FIRST, command.as_bytes().to_vec()),
+                super::tool_approval::decision(turn, 1, Decision::Sent)
+            ],
+            "{command}"
+        );
+    }
+}
+
+// A search flag that would write or run a program is no search: it asks.
+#[test]
+fn a_search_that_could_write_or_run_a_program_asks() {
+    for (command, reason) in [
+        ("find . -delete", "flag not allowed: `-delete`"),
+        ("find . -exec rm", "flag not allowed: `-exec`"),
+        ("rg --pre=cat foo", "flag not allowed: `--pre=cat`"),
+    ] {
+        let (mut a, turn) = run_live();
+        assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
+        assert_eq!(why(&a).as_deref(), Some(reason));
+        assert_eq!(slot(&a), None);
+    }
+}
+
+// L22, L14: a check that finds the command outside the chat's folder, or a
+// cloud chat under HOME or `/`, opens the prompt with the reason; so does a
+// searched folder too large to check, an rg walk that cannot read a folder,
+// or an rg whose ignore files hold an exception (T2b, T2c). Asking is not the
+// model's fault: it never pauses the run.
+#[test]
+fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
+    use crate::runtime::{TOO_LARGE, UNCHECKED, UNIGNORED};
+    for reason in [OUTSIDE_ROOT, BROAD_ROOT, TOO_LARGE, UNCHECKED, UNIGNORED] {
+        let (mut a, turn) = run_live();
+        for call in 1..=MAX_RUN_FALLBACKS as u64 {
+            announce(&mut a, turn, call, run("ls /srv"));
+            assert_eq!(refused(&mut a, call, reason), vec![]);
+            assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run("ls /srv")));
+            assert_eq!(why(&a).as_deref(), Some(reason));
+            result(&mut a, turn, call, ToolStatus::Denied);
+        }
+        assert!(!chat_of(&a).run_paused(), "{reason}");
+    }
+}
+
+// L32: git always asks, as at the baseline (86cf948): the grammar does not
+// take it, the prompt names `git`, nothing is checked or run, and each one
+// counts toward the pause like any command off the list.
+#[test]
+fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
+    let (mut a, turn) = run_live();
+    for (call, command) in [(1, "git status"), (2, "git log --oneline"), (3, "git diff")] {
+        assert_eq!(
+            announce(&mut a, turn, call, run(command)),
+            vec![],
+            "{command}"
+        );
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
+        assert_eq!(why(&a).as_deref(), Some("not a safe command: `git`"));
+        assert_eq!(slot(&a), None);
+        result(&mut a, turn, call, ToolStatus::Denied);
+    }
+    assert_eq!(MAX_RUN_FALLBACKS, 3);
+    assert!(chat_of(&a).run_paused());
+}
+
+// The scope of the check: the chat's origin folder (or `/`), and cloud
+// unless the catalog knows the engine as local.
+#[test]
+fn the_scope_of_a_check_is_the_chat_root_and_the_engine_locality() {
+    use crate::app::auto_run::run_scope;
+    let root = std::path::Path::new("/home/u/proj");
+    assert_eq!(
+        run_scope(Some(root), "ollama"),
+        RunScope {
+            root: root.into(),
+            cloud: false
+        }
+    );
+    assert_eq!(
+        run_scope(Some(root), "claude"),
+        RunScope {
+            root: root.into(),
+            cloud: true
+        }
+    );
+    assert_eq!(
+        run_scope(None, "no-such-engine"),
+        RunScope {
+            root: "/".into(),
+            cloud: true
+        }
+    );
 }
 
 // S3.7: no real cwd, no run.
@@ -180,7 +325,7 @@ fn three_grammar_fallbacks_pause_the_run_but_a_limit_does_not_count() {
     );
     result(&mut a, turn, 5, ToolStatus::Ok);
 
-    for (call, command) in [(6, "ls *"), (7, "cd ~/.ssh;"), (8, "git log")] {
+    for (call, command) in [(6, "ls *"), (7, "cd ~/.ssh;"), (8, "npm test")] {
         assert_eq!(announce(&mut a, turn, call, run(command)), vec![]);
         result(&mut a, turn, call, ToolStatus::Denied);
     }
@@ -380,7 +525,7 @@ fn y_and_auto_never_press_enter() {
 
     // `run`: an off-list command and `y`.
     let (mut a, turn) = run_live();
-    announce(&mut a, turn, 1, run("git status"));
+    announce(&mut a, turn, 1, run("cargo build"));
     assert!(!carries_enter(&a.update(key('y'))));
 }
 
@@ -404,7 +549,7 @@ fn a_run_that_was_not_written_opens_the_prompt_with_the_reason_and_is_no_fallbac
 fn a_finished_run_clears_the_fallbacks_that_came_before() {
     let (mut a, turn) = run_live();
     let fall = |a: &mut App, call| {
-        announce(a, turn, call, run("git status"));
+        announce(a, turn, call, run("cargo build"));
         result(a, turn, call, ToolStatus::Denied);
     };
     fall(&mut a, 1);
@@ -774,7 +919,7 @@ fn only_policy_refusals_pause_the_run() {
 fn a_run_that_was_not_written_does_not_reset_the_pause() {
     let (mut a, turn) = run_live();
     let fall = |a: &mut App, call| {
-        announce(a, turn, call, run("git status"));
+        announce(a, turn, call, run("cargo build"));
         result(a, turn, call, ToolStatus::Denied);
     };
     fall(&mut a, 1);

@@ -416,7 +416,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (salvo en `run`, ver más abajo): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -437,16 +437,42 @@ Residual risks (design D18), so you can decide if auto is for you:
 
 #### Modo `run`
 
-En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lista corta y segura escribe el comando **y pulsa Enter**, espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe, sin Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe; tú pulsas Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
-**Lista segura.** Un único comando, con palabras separadas por un solo espacio, de entre `cd`, `pwd`, `ls`, `tree` y `mkdir`:
+![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
-- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos) y `mkdir` (`-p`, de 1 a 4 rutas).
+![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
+
+![mkdir pide confirmación; con y solo se escribe en el panel y tú pulsas Enter](docs/assets/run-mkdir.gif)
+
+**Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
+
+**Pregunta.** La confirmación dice el motivo:
+
+- Cualquier otro comando, `git` y `mkdir` incluidos (``not a safe command: `git` ``), o uno que la gramática de abajo no admite.
+- Una ruta, o el directorio del panel, fuera de la carpeta del chat (`the command reaches outside the chat's folder`).
+- Con un motor en la nube, todo comando cuando la carpeta del chat es `$HOME`, `/` o una carpeta que contiene `$HOME`, también a través de un enlace simbólico (`the chat's folder is your home or /`). Con un motor local esta regla no se aplica.
+- Un `grep -r` sobre una carpeta con más de 5000 entradas, o un `rg` que leería más de 5000 (`the folder is too large to check`). Para `rg` la comprobación recorre la carpeta con el mismo recorrido de ripgrep: salta los ocultos y lo que ignoran `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, las exclusiones globales de git y los archivos de ignorados de las carpetas superiores, y respeta `--max-depth`; así un `target/` o un `node_modules/` ignorado no cuenta para ese límite. Aun así, lo que hay en las carpetas ignoradas (sin entrar en las ocultas) se juzga igual, por si el `rg` instalado entra en ellas. Con `-t` o `-T` también juzga los archivos ocultos, porque un tipo puede incluirlos (`rg -t sh` lee `.bashrc`).
+- Un `rg` cuando las exclusiones globales de git, o un `.ignore`, `.rgignore`, `.gitignore` o `.git/info/exclude` de una carpeta de debajo, ignorada o no, o de una superior, tienen una línea `!`, que podría hacerle leer archivos ocultos: el `rg` instalado puede aplicar esos archivos de otra forma que la comprobación (`an ignore file may let the search read hidden files`).
+- Un `rg` cuyo recorrido encuentra una carpeta o un archivo de ignorados que no se puede leer, o más de 100 000 entradas contando las ignoradas (`a folder in the search cannot be checked`).
+
+**Nunca corre solo.** Pregunta con `a path in the command is not allowed to run directly`:
+
+- Una ruta sensible (ver «Which paths the read tools refuse»), también si se llega a ella por un enlace simbólico.
+- Un `find`, `grep -r` o `rg` sobre una carpeta que contiene una carpeta de secretos (`~/.ssh`, `~/.gnupg`, credenciales…).
+- Un `grep -r` o un `rg` que leería un archivo sensible por su nombre o su posición (`.env`, `.git/config`…), y un `grep` o `rg` al que se le da uno de esos archivos o un `.git/config`.
+
+**Gramática.** Un único comando de hasta 8 palabras separadas por un solo espacio:
+
+- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos).
+- `grep` (flags `i n l c w v F E H h s o x r`, `-A`/`-B`/`-C`/`-m <n>`, un patrón y al menos una ruta; sin `-R` ni `-f`).
+- `rg` (flags `i s S n N l c w v F x H o`, `-A`/`-B`/`-C`/`-m <n>`, `-t`/`-T <tipo>`, `--max-depth <n>` y algunas opciones largas (`--ignore-case`, `--count`, `--no-heading`…); sin `--hidden`, `--no-ignore`, `-u`, `-L`, `--pre` ni `-z`).
+- `find` (`-name`, `-iname`, `-type f|d|l`, `-maxdepth`, `-mindepth`; sin `-exec`, `-delete`, `-fprint`, `-ok` ni `-L`).
 - Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
-- Las rutas pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
-- Solo las rutas de `mkdir` y `tree` deben resolverse dentro de `$HOME`. Con todos los verbos salvo `cd` se comprueba siempre el directorio actual del panel; para `tree` debe estar dentro de `$HOME` aunque se le dé una ruta. `cd` y `ls` pueden ir a cualquier sitio (`cd /tmp`, `ls /etc`), salvo las carpetas de secretos (`~/.ssh`, `~/.gnupg`, credenciales…), también si se llega a ellas por un enlace simbólico. Lo que no cumpla esto, o no exista, pregunta y la confirmación dice por qué.
-- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
-- Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
+- Las rutas y los patrones pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
+- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni otras opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
+
+**Panel libre y pausa.** El panel debe estar sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8; si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos pausan el modo `run` hasta el final del turno. Solo cuentan los de gramática y los de ruta no permitida (`a path in the command is not allowed to run directly`); salir de la carpeta, una carpeta amplia, demasiado grande o que no se puede comprobar, un archivo de ignorados con una línea `!` y el estado del panel (ocupado, foco, línea a medias…) no cuentan. El contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo.
 
 **Lecturas y búsquedas.** En `run`, `grep` (que solo busca dentro de la carpeta del chat) y `read_file` de un archivo dentro de la carpeta del chat corren sin confirmación, también con motores en la nube, y su resultado va al modelo. La ruta se juzga sobre la ruta real: un enlace simbólico dentro de la carpeta que apunta fuera cuenta como fuera, y la propia lectura vuelve a juzgarla sobre el archivo que abre, sin seguir enlaces, así que un enlace cambiado en el último momento no saca la lectura de la carpeta. Si la carpeta del chat es `$HOME` o `/` (o una carpeta que contiene `$HOME`), nada se lee solo: con un motor en la nube cada lectura y cada `grep` piden confirmación, y con uno local las lecturas siguen como en `ask`. Leer un archivo fuera de la carpeta del chat pide confirmación con cualquier motor, también con uno local; si esa ruta no se puede mostrar tal cual se abriría (demasiado larga, con caracteres invisibles o de control), se deniega con `path cannot be shown safely`, porque ninguna confirmación podría aprobarla. Las rutas sensibles (ver «Which paths the read tools refuse») se siguen rechazando como siempre, sin preguntar y sin leerse. Una lectura que corre sola no cuenta como tu `y`: un `edit_file` posterior del mismo archivo sigue pidiendo confirmación. `edit_file`, `run_command`, las escrituras y las herramientas de usuario no cambian, y en `ask` y `auto` las lecturas y búsquedas siguen como antes.
 
@@ -468,7 +494,7 @@ Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `a
 - Entre la comprobación de la ruta y la escritura hay una ventana en la que un enlace simbólico puede cambiarse (TOCTOU). Se comprueba de nuevo justo antes de escribir, pero no se elimina.
 - Continuación del prompt (PS2): si dejaste abierta una comilla, un `$(`, un heredoc o un bucle, o una línea que acaba en `\`, `&&`, `|`, `do` o `then`, el comando del modelo puede unirse a lo tuyo. Las palabras entre comillas son texto inerte y lazarobox rechaza texto con comillas sin cerrar, pero el caso en que lo cierras tú no se detecta hasta tener marcas de prompt (OSC 133).
 - Una línea de prompt que se cuele en la salida, como se dijo arriba.
-- Fuera de `$HOME`, `cd` y `ls` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos. Los montajes bind no se detectan.
+- `ls`, `tree` y `find` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos; `grep` y `rg` envían al modelo las líneas que encuentran. Con un motor local y la carpeta del chat en `$HOME` o `/`, esto vale para toda esa carpeta. Los montajes bind no se detectan.
 - El locale se lee del entorno de lazarobox; un archivo rc que lo cambie después no se ve.
 - Todo lo que dice `auto` sobre líneas a medias, `read`/`select` y programas que reaccionan sin Enter sigue valiendo.
 

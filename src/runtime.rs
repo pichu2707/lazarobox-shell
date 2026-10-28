@@ -46,6 +46,9 @@ pub mod prompts;
 #[cfg(test)]
 pub(crate) mod refused_port;
 mod run_check;
+/// The check's reasons that never count toward the pause, for the app tests.
+#[cfg(test)]
+pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
 pub mod tools;
 pub mod update;
 pub mod watch;
@@ -1576,11 +1579,14 @@ impl Panes {
                     target,
                     call,
                     command,
+                    scope,
                     ..
                 } => {
                     let cwd = self.handles.get(&target).and_then(|pty| pty.cwd());
                     match (cwd, self.run_checks.as_ref()) {
-                        (Some(cwd), Some(checks)) => checks.start(target, call, cwd, command),
+                        (Some(cwd), Some(checks)) => {
+                            checks.start(target, call, cwd, command, scope);
+                        }
                         _ => feedback.push(AppEvent::Run(
                             target,
                             RunEvent::Refused {
@@ -4451,12 +4457,21 @@ mod tests {
     }
 
     fn check_effect(target: u32, call: u64, command: &str) -> Effect {
+        check_effect_in(target, call, command, std::path::Path::new("/"))
+    }
+
+    /// The check of a local chat whose root is `root`.
+    fn check_effect_in(target: u32, call: u64, command: &str, root: &std::path::Path) -> Effect {
         Effect::CheckRun {
             chat: id(9),
             target: id(target),
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
             command: command.to_owned(),
+            scope: crate::app::RunScope {
+                root: root.to_path_buf(),
+                cloud: false,
+            },
         }
     }
 
@@ -4492,6 +4507,53 @@ mod tests {
                     call: CallId(7),
                     cwd: home.join("dev"),
                     cd_target: None,
+                }
+            ))
+        );
+    }
+
+    // L22: the chat's root travels with the effect: the same `ls` that runs
+    // in the root asks when the root is elsewhere.
+    #[tokio::test]
+    async fn a_check_run_judges_the_paths_against_the_root_of_the_chat() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::{approval::OUTSIDE_ROOT, engine::CallId};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        for sub in ["dev", "other"] {
+            std::fs::create_dir_all(home.join(sub)).unwrap();
+        }
+        let env = crate::runtime::tools::ToolEnv {
+            home: Some(home.clone().into()),
+            ..run_check::process_env()
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_run_checks(run_check::Checker::new(env, tx));
+        let pty = FakePty {
+            cwd: Some(home.join("dev")),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        panes.apply(vec![check_effect_in(1, 7, "ls", &home.join("dev"))]);
+        assert!(matches!(
+            rx.recv().await,
+            Some((
+                _,
+                RunEvent::Checked {
+                    call: CallId(7),
+                    ..
+                }
+            ))
+        ));
+        panes.apply(vec![check_effect_in(1, 8, "ls", &home.join("other"))]);
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                id(1),
+                RunEvent::Refused {
+                    call: CallId(8),
+                    reason: OUTSIDE_ROOT,
                 }
             ))
         );
