@@ -69,18 +69,20 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             PaneView::Chat(chat) => {
                 let guidance = app.chat_guidance(id);
                 let approval = app.approval_prompt(id);
+                let marks = (id == focused).then(|| app.chat_copy_marks()).flatten();
                 let chat_view = ChatView::new(chat, theme)
                     .now(app.now())
                     .guidance(guidance.as_deref())
-                    .approval(approval.as_ref());
-                // The composer owns the real cursor of a focused chat; MENU
+                    .approval(approval.as_ref())
+                    .copy(marks);
+                // The composer owns the real cursor of a focused chat, and the
+                // COPY cursor on the transcript replaces it in chat COPY. MENU
                 // hides it like it hides a shell's.
-                // Chat COPY scrolls the transcript and edits nothing: no cursor.
-                let cursor = (id == focused
-                    && app.menu().is_none()
-                    && !matches!(app.input(), InputMode::ChatCopy(_)))
-                .then(|| chat_view.cursor(area))
-                .flatten();
+                let chat_copy = matches!(app.input(), InputMode::ChatCopy(_));
+                let cursor =
+                    (id == focused && app.menu().is_none() && (!chat_copy || marks.is_some()))
+                        .then(|| chat_view.cursor(area))
+                        .flatten();
                 let review = chat_view.review_shown();
                 frame.render_widget(chat_view, area);
                 // The review hides the transcript the badge speaks of.

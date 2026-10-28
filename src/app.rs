@@ -105,7 +105,8 @@ pub enum InputMode {
     Prefix,
     /// Read-only scrollback navigation.
     Copy(CopyState),
-    /// Line scrolling of a chat transcript; the view stays in the chat.
+    /// A cursor and a selection over a chat transcript; the view stays in
+    /// the chat.
     ChatCopy(ChatCopy),
     /// A group is open (WINDOW, TAB, GO, BUFFER); the next key picks its binding.
     Group(&'static Group),
@@ -1230,10 +1231,12 @@ impl App {
 
     /// The kind of the active selection, for the statusline marker.
     pub fn copy_selection_kind(&self) -> Option<SelectionKind> {
-        let InputMode::Copy(state) = &self.input else {
-            return None;
+        let selection = match &self.input {
+            InputMode::Copy(state) => state.selection,
+            InputMode::ChatCopy(chat) => chat.state.selection,
+            _ => None,
         };
-        state.selection.map(|s| s.kind)
+        selection.map(|s| s.kind)
     }
 
     /// What the focused pane offers to copy mode.
@@ -2029,21 +2032,39 @@ impl App {
     }
 
     fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
-        let Some(menu) = self.menu.as_mut() else {
+        if self.menu.is_none() {
             return Vec::new();
+        }
+        // The menu footer says why; the notice keeps what it had.
+        let kept = self.notice.clone();
+        let effects = self.copy_to_clipboard(text);
+        let said = self.notice.clone().unwrap_or_default();
+        let Some(menu) = self.menu.as_mut() else {
+            return effects;
         };
+        if effects.is_empty() {
+            self.notice = kept;
+            menu.set_error("Too large to copy".to_string());
+        } else {
+            menu.set_copied(said);
+        }
+        effects
+    }
+
+    /// Puts `text` on the host clipboard (OSC 52) and says so in the notice:
+    /// `Copied N characters`, or `Selection too large to copy` and nothing
+    /// sent when it does not fit in one sequence.
+    pub(super) fn copy_to_clipboard(&mut self, text: &str) -> Vec<Effect> {
         match osc52(text) {
             Ok(sequence) => {
-                let said = match text.chars().count() {
+                self.notice = Some(match text.chars().count() {
                     1 => "Copied 1 character".to_string(),
                     n => format!("Copied {n} characters"),
-                };
-                menu.set_copied(said.clone());
-                self.notice = Some(said);
+                });
                 vec![Effect::SetClipboard(sequence)]
             }
             Err(TooLarge) => {
-                menu.set_error("Too large to copy".to_string());
+                self.notice = Some("Selection too large to copy".to_string());
                 Vec::new()
             }
         }
@@ -2581,6 +2602,7 @@ impl App {
             self.refit_review(id);
         }
         self.sync_copy();
+        self.sync_chat_copy();
         effects
     }
 
@@ -2699,31 +2721,21 @@ impl App {
             self.input = InputMode::Copy(state);
             return Vec::new();
         };
-        let pane = self.copy_pane_mut();
-        let text = join(&pane.read_lines(span));
+        let text = join(&self.copy_pane_mut().read_lines(span));
         if text.is_empty() {
             // An empty OSC 52 would clobber the clipboard.
             self.notice = Some("Nothing to copy".to_string());
             self.input = InputMode::Copy(state);
             return Vec::new();
         }
-        match osc52(&text) {
-            Ok(sequence) => {
-                pane.set_scrollback(0);
-                let count = text.chars().count();
-                self.notice = Some(match count {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                self.input = InputMode::Terminal;
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
-                self.notice = Some("Selection too large to copy".to_string());
-                self.input = InputMode::Copy(state);
-                Vec::new()
-            }
+        let effects = self.copy_to_clipboard(&text);
+        if effects.is_empty() {
+            self.input = InputMode::Copy(state);
+        } else {
+            self.copy_pane_mut().set_scrollback(0);
+            self.input = InputMode::Terminal;
         }
+        effects
     }
 
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
