@@ -14,8 +14,12 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::approval::{ApprovalAsk, NOT_ALLOWED, Route},
+    chat::{
+        approval::{ApprovalAsk, NOT_ALLOWED, Route},
+        engine::locality,
+    },
     tools::{
+        Locality,
         capture::capture,
         report::{cwd_result, system_line},
         settle::{Anchor, End, Probe, Settle},
@@ -71,6 +75,25 @@ impl RunSlot {
     }
 }
 
+/// What the check of a run judges the paths against: the chat's root (its
+/// origin folder, `/` when unknown, as the tools read it) and whether the
+/// engine is a cloud one. An engine outside the catalog counts as cloud.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RunScope {
+    pub root: PathBuf,
+    pub cloud: bool,
+}
+
+/// The scope of a run for a chat opened from `origin` whose turn runs on
+/// `engine`: the root the tools read against (`/` when the origin is
+/// unknown), and cloud unless the catalog says the engine is local.
+pub(super) fn run_scope(origin: Option<&Path>, engine: &str) -> RunScope {
+    RunScope {
+        root: origin.map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
+        cloud: locality(engine) != Some(Locality::Local),
+    }
+}
+
 /// What the runtime says about the check of a run.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RunEvent {
@@ -120,8 +143,10 @@ impl App {
         target: PaneId,
         command: &str,
     ) -> Vec<Effect> {
+        let mut scope = run_scope(None, "");
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.note_auto_typed();
+            scope = run_scope(chat.origin_cwd(), chat.stream_engine());
         }
         if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
             pty.run = Some(RunSlot {
@@ -138,6 +163,7 @@ impl App {
             turn,
             call,
             command: command.to_owned(),
+            scope,
         }]
     }
 

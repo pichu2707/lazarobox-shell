@@ -66,7 +66,7 @@ mod tags;
 mod tool;
 
 use auto_run::RunSlot;
-pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent};
+pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent, RunScope};
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
@@ -346,14 +346,16 @@ pub enum Effect {
     },
     /// Chat `chat` routed a model's safe command for the shell pane `target`
     /// to a run (design D21): the runtime reads the pane's real directory,
-    /// checks the paths of `command` off the UI thread and answers with one
-    /// `AppEvent::Run`. Nothing is written.
+    /// checks the paths of `command` off the UI thread, against the chat's
+    /// root and engine in `scope`, and answers with one `AppEvent::Run`.
+    /// Nothing is written.
     CheckRun {
         chat: PaneId,
         target: PaneId,
         turn: u64,
         call: CallId,
         command: String,
+        scope: RunScope,
     },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.

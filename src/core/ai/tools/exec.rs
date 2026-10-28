@@ -1,7 +1,11 @@
 //! The grammar of the commands that `run` mode may type AND execute.
 //!
-//! Allow-list, no deny-list: `cd`, `pwd`, `ls`, `tree` and `mkdir`, with the
-//! flags of [`SPECS`] and at most [`MAX_WORDS`] words. A word is unquoted
+//! Allow-list, no deny-list: navigation (`cd`, `pwd`, `ls`, `tree`) and
+//! search (`grep`, `rg`, `find`, `git status|log|diff`), each with only the
+//! flags of [`SPECS`] or [`GIT_SPECS`], and at most [`MAX_WORDS`] words. No
+//! verb writes, and no allowed flag runs another program or writes a file
+//! (`find -exec`/`-delete`/`-fprint`, `rg --pre`/`-z`, `git -c`/`--output`/
+//! `--ext-diff` are not in the lists). A word is unquoted
 //! (ASCII letters and digits, Latin letters U+00C0..=U+024F without the
 //! multiplication and division signs, and ``. _ / @ % + : , = ~ -``; a `~`
 //! only leads a word) or a whole
@@ -21,6 +25,10 @@ use std::ops::Range;
 use super::command::{MAX_COMMAND_BYTES, is_invisible};
 use super::paths::Want;
 use crate::core::ai::sanitize::is_format;
+
+/// Why a git argument does not run on its own: it names a revision, not a
+/// path. The model did nothing wrong, so it never counts toward the pause.
+pub const REVISION: &str = "a git argument is a revision, not an existing path";
 
 /// The most words (the verb included) in a runnable command.
 pub const MAX_WORDS: usize = 8;
@@ -61,42 +69,203 @@ pub enum Verb {
     Pwd,
     Ls,
     Tree,
-    Mkdir,
+    Grep,
+    Rg,
+    Find,
+    /// `git status`, `git log` or `git diff`.
+    Git,
 }
 
-/// What a verb accepts: bundled short flags, whether `-L <n>` is allowed, and
-/// how many path arguments.
+/// What the word after a flag of [`Spec::valued`] must be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Value {
+    /// One or two digits (`tree -L`).
+    Depth,
+    /// One to three digits.
+    Number,
+    /// Any word that does not start with a dash.
+    Name,
+    /// `f`, `d` or `l` (`find -type`).
+    Kind,
+}
+
+/// What a verb accepts.
 struct Spec {
     name: &'static str,
     verb: Verb,
+    /// Short flags that may be bundled (`-la`).
     flags: &'static [u8],
-    depth: bool,
+    /// Whole flag words (`--oneline`).
+    long: &'static [&'static str],
+    /// Flags that take the next word as their value.
+    valued: &'static [(&'static str, Value)],
+    /// The first word that is not a flag is a pattern, not a path.
+    pattern: bool,
+    /// How many path arguments.
     paths: Range<usize>,
 }
 
-const fn spec(
-    name: &'static str,
-    verb: Verb,
-    flags: &'static [u8],
-    depth: bool,
-    paths: Range<usize>,
-) -> Spec {
-    Spec {
-        name,
-        verb,
-        flags,
-        depth,
-        paths,
-    }
-}
+const NONE: Spec = Spec {
+    name: "",
+    verb: Verb::Pwd,
+    flags: b"",
+    long: &[],
+    valued: &[],
+    pattern: false,
+    paths: 0..MAX_WORDS,
+};
 
-const SPECS: [Spec; 5] = [
-    spec("cd", Verb::Cd, b"", false, 0..2),
-    spec("pwd", Verb::Pwd, b"", false, 0..1),
-    spec("ls", Verb::Ls, b"lahtr1", false, 0..5),
-    spec("tree", Verb::Tree, b"d", true, 0..2),
-    spec("mkdir", Verb::Mkdir, b"p", false, 1..5),
+/// The context flags of `grep` and `rg`, and the match cap.
+const CONTEXT: [(&str, Value); 4] = [
+    ("-A", Value::Number),
+    ("-B", Value::Number),
+    ("-C", Value::Number),
+    ("-m", Value::Number),
 ];
+
+const SPECS: [Spec; 7] = [
+    Spec {
+        name: "cd",
+        verb: Verb::Cd,
+        paths: 0..2,
+        ..NONE
+    },
+    Spec {
+        name: "pwd",
+        verb: Verb::Pwd,
+        paths: 0..1,
+        ..NONE
+    },
+    Spec {
+        name: "ls",
+        verb: Verb::Ls,
+        flags: b"lahtr1",
+        paths: 0..5,
+        ..NONE
+    },
+    Spec {
+        name: "tree",
+        verb: Verb::Tree,
+        flags: b"d",
+        valued: &[("-L", Value::Depth)],
+        paths: 0..2,
+        ..NONE
+    },
+    // No `-R` (it follows links below) and no `-f` (patterns from a file).
+    // A path is required: without one, grep reads the terminal and waits.
+    Spec {
+        name: "grep",
+        verb: Verb::Grep,
+        flags: b"inlcwvFEHhsoxr",
+        valued: &CONTEXT,
+        pattern: true,
+        paths: 1..MAX_WORDS,
+        ..NONE
+    },
+    // No `--pre`, `-z` (both run programs), `-L`, `-u`, `--hidden` or
+    // `--no-ignore` (they widen what is read), `-f` or `-r`.
+    Spec {
+        name: "rg",
+        verb: Verb::Rg,
+        flags: b"isSnNlcwvFxHo",
+        long: &[
+            "--ignore-case",
+            "--smart-case",
+            "--line-number",
+            "--count",
+            "--files-with-matches",
+            "--fixed-strings",
+            "--word-regexp",
+            "--no-heading",
+        ],
+        valued: &[
+            CONTEXT[0],
+            CONTEXT[1],
+            CONTEXT[2],
+            CONTEXT[3],
+            ("-t", Value::Name),
+            ("-T", Value::Name),
+            ("--max-depth", Value::Number),
+        ],
+        pattern: true,
+        ..NONE
+    },
+    // Tests and depth only: no action (`-exec`, `-delete`, `-fprint`, `-ok`)
+    // and no `-L`.
+    Spec {
+        name: "find",
+        verb: Verb::Find,
+        valued: &[
+            ("-name", Value::Name),
+            ("-iname", Value::Name),
+            ("-type", Value::Kind),
+            ("-maxdepth", Value::Number),
+            ("-mindepth", Value::Number),
+        ],
+        ..NONE
+    },
+];
+
+/// The git subcommands, after `git` and an optional `--no-pager`. No global
+/// option other than that one: `-c`, `-C`, `--exec-path`, `--git-dir` and
+/// `--paginate` are refused as the subcommand.
+const GIT_SPECS: [Spec; 3] = [
+    Spec {
+        name: "status",
+        verb: Verb::Git,
+        flags: b"sb",
+        long: &["--short", "--branch", "--porcelain"],
+        ..NONE
+    },
+    Spec {
+        name: "log",
+        verb: Verb::Git,
+        flags: b"p",
+        long: &[
+            "--oneline",
+            "--stat",
+            "--graph",
+            "--decorate",
+            "--all",
+            "--patch",
+            "--name-only",
+            "--name-status",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+        valued: &[("-n", Value::Number)],
+        ..NONE
+    },
+    Spec {
+        name: "diff",
+        verb: Verb::Git,
+        long: &[
+            "--stat",
+            "--shortstat",
+            "--cached",
+            "--staged",
+            "--name-only",
+            "--name-status",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+        ..NONE
+    },
+];
+
+/// What a word of an accepted command is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+    /// The verb, `--no-pager` and a git subcommand.
+    Verb,
+    Flag,
+    /// The word after a valued flag.
+    Value,
+    Pattern,
+    Path,
+}
 
 /// Why a command is not run directly: the byte span of the offending token
 /// and a short reason. The reason never carries the text.
@@ -113,6 +282,7 @@ pub struct SafeCommand<'a> {
     verb: Verb,
     /// Every word; a quoted one is held without its quotes.
     words: [&'a str; MAX_WORDS],
+    roles: [Role; MAX_WORDS],
     len: usize,
 }
 
@@ -125,54 +295,90 @@ impl<'a> SafeCommand<'a> {
         self.verb
     }
 
-    /// Every path the command touches and how: the shell's cwd first (for
-    /// every verb except `cd`, because `ls`, `tree`, `pwd` and a relative
-    /// `mkdir` act on it), then the arguments, or `~` for a bare `cd`.
-    pub fn targets(&self) -> Targets<'a> {
-        Targets { cmd: *self, at: 0 }
+    /// Every path the command touches and how: the shell's cwd first (every
+    /// verb but `cd` resolves against it), then the path arguments, or `~`
+    /// for a bare `cd`. The pattern of a search and the values of flags are
+    /// no paths.
+    pub fn targets(&self) -> impl Iterator<Item = Target<'a>> + use<'a> {
+        let (roles, words) = (self.roles, self.words);
+        let paths = (0..self.len).filter(move |&k| roles[k] == Role::Path);
+        let none = paths.clone().next().is_none();
+        let recursive = (1..self.len).any(|k| {
+            self.roles[k] == Role::Flag && !self.words[k].starts_with("--") && {
+                self.words[k].contains('r')
+            }
+        });
+        // What the arguments are for: names only, or the text of files.
+        let (want, searched) = match self.verb {
+            Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Find => (Want::Existing, false),
+            Verb::Tree | Verb::Git => (Want::Home, false),
+            Verb::Grep => (Want::Home, recursive),
+            Verb::Rg => (Want::Home, true),
+        };
+        // The pane's directory: what a command with no path acts on. Git
+        // always reads the repository it is in; `pwd` reads no file and goes
+        // nowhere, so it runs wherever the pane is.
+        let acts = (none && self.verb != Verb::Pwd) || self.verb == Verb::Git;
+        let cwd = match (self.verb, none) {
+            (Verb::Cd, true) => Some(Target::new("~", want, true, false)),
+            (Verb::Cd, false) => None,
+            (Verb::Tree, _) => Some(Target::new(".", want, none, false)),
+            _ if acts => Some(Target::new(".", want, true, none && searched)),
+            _ => Some(Target::new(".", Want::Existing, false, false)),
+        };
+        cwd.into_iter()
+            .chain(paths.map(move |k| Target::new(words[k], want, true, searched)))
     }
 }
 
-/// The iterator of [`SafeCommand::targets`].
-pub struct Targets<'a> {
-    cmd: SafeCommand<'a>,
-    at: usize,
+/// One path a [`SafeCommand`] touches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Target<'a> {
+    /// As written, without quotes.
+    pub input: &'a str,
+    pub want: Want,
+    /// The command acts on it: it must stay in the chat's root.
+    pub confined: bool,
+    /// A search reads the files below it (a folder is walked).
+    pub searched: bool,
 }
 
-impl<'a> Iterator for Targets<'a> {
-    type Item = (&'a str, Want);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let cmd = &self.cmd;
-        if self.at == 0 {
-            self.at = 1;
-            match (cmd.verb, cmd.len) {
-                (Verb::Cd, 1) => return Some(("~", Want::Existing)),
-                (Verb::Cd, _) => {}
-                (Verb::Tree, _) => return Some((".", Want::Home)),
-                _ => return Some((".", Want::Existing)),
-            }
+impl<'a> Target<'a> {
+    fn new(input: &'a str, want: Want, confined: bool, searched: bool) -> Self {
+        Self {
+            input,
+            want,
+            confined,
+            searched,
         }
-        let want = match cmd.verb {
-            Verb::Mkdir => Want::New,
-            Verb::Tree => Want::Home,
-            _ => Want::Existing,
-        };
-        while self.at < cmd.len {
-            let word = cmd.words[self.at];
-            self.at += 1;
-            match word {
-                "-L" => self.at += 1,
-                w if w.starts_with('-') => {}
-                w => return Some((w, want)),
-            }
-        }
-        None
     }
 }
 
 /// Decides whether `text` may run without a prompt, in one pass.
 pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
+    read(text).map_err(|fallback| revision(text, fallback))
+}
+
+/// A git argument the grammar refuses for its `~` or `^` (`HEAD~1`,
+/// `main^`) names a revision: it falls back with [`REVISION`], which is no
+/// fault of the model. Any other fallback is kept as it is.
+fn revision(text: &str, fallback: Fallback) -> Fallback {
+    let token = text.get(fallback.at.clone()).unwrap_or("");
+    let rejected = matches!(
+        fallback.why,
+        "~ only starts a word" | "character not allowed"
+    );
+    if text.starts_with("git ") && rejected && token.contains(['~', '^']) {
+        Fallback {
+            why: REVISION,
+            ..fallback
+        }
+    } else {
+        fallback
+    }
+}
+
+fn read(text: &str) -> Result<SafeCommand<'_>, Fallback> {
     let bytes = text.as_bytes();
     if bytes.len() > MAX_COMMAND_BYTES {
         return Err(fallback(MAX_COMMAND_BYTES..bytes.len(), "command too long"));
@@ -313,7 +519,8 @@ fn check_quoted(content: &str, closed: bool) -> Option<&'static str> {
     }
 }
 
-/// Checks the verb, its flags and the number of paths.
+/// Checks the verb, its flags and their values, the pattern and the number
+/// of paths.
 fn finish<'a>(
     text: &'a str,
     words: [&'a str; MAX_WORDS],
@@ -323,43 +530,85 @@ fn finish<'a>(
         let start = w.as_ptr() as usize - text.as_ptr() as usize;
         start..start + w.len()
     };
-    let Some(spec) = SPECS.iter().find(|spec| spec.name == words[0]) else {
-        let why = if words[0].contains('=') {
-            "environment assignment"
-        } else {
-            "not a safe command"
+    let mut roles = [Role::Verb; MAX_WORDS];
+    let (spec, mut k) = if words[0] == "git" {
+        let k = 1 + usize::from(len > 1 && words[1] == "--no-pager");
+        if k >= len {
+            return Err(fallback(at(words[0]), "missing argument"));
+        }
+        let Some(spec) = GIT_SPECS.iter().find(|spec| spec.name == words[k]) else {
+            return Err(fallback(at(words[k]), "not a safe git command"));
         };
-        return Err(fallback(at(words[0]), why));
+        (spec, k + 1)
+    } else {
+        let Some(spec) = SPECS.iter().find(|spec| spec.name == words[0]) else {
+            let why = if words[0].contains('=') {
+                "environment assignment"
+            } else {
+                "not a safe command"
+            };
+            return Err(fallback(at(words[0]), why));
+        };
+        (spec, 1)
     };
-    let (mut paths, mut k) = (0, 1);
+    let (mut paths, mut pattern) = (0, false);
     while k < len {
         let word = words[k];
+        roles[k] = Role::Flag;
         k += 1;
-        if let Some(flags) = word.strip_prefix('-') {
-            if spec.depth && word == "-L" {
-                let depth = words[..len].get(k).filter(|d| (1..=2).contains(&d.len()));
-                if !depth.is_some_and(|d| d.bytes().all(|b| b.is_ascii_digit())) {
-                    return Err(fallback(at(word), "-L needs a depth of 1 or 2 digits"));
-                }
-                k += 1;
-            } else if !flags.bytes().all(|b| spec.flags.contains(&b)) {
+        if let Some(&(_, value)) = spec.valued.iter().find(|(flag, _)| *flag == word) {
+            let next = words[..len].get(k).copied();
+            if let Some(why) = bad_value(value, next) {
+                return Err(fallback(at(word), why));
+            }
+            roles[k] = Role::Value;
+            k += 1;
+        } else if word.starts_with("--") {
+            if !spec.long.contains(&word) {
                 return Err(fallback(at(word), "flag not allowed"));
             }
+        } else if let Some(flags) = word.strip_prefix('-') {
+            if !flags.bytes().all(|b| spec.flags.contains(&b)) {
+                return Err(fallback(at(word), "flag not allowed"));
+            }
+        } else if spec.pattern && !pattern {
+            roles[k - 1] = Role::Pattern;
+            pattern = true;
         } else {
+            roles[k - 1] = Role::Path;
             paths += 1;
         }
     }
     match paths {
+        _ if spec.pattern && !pattern => Err(fallback(at(words[0]), "missing argument")),
         n if n < spec.paths.start => Err(fallback(at(words[0]), "missing argument")),
         n if !spec.paths.contains(&n) => Err(fallback(at(words[0]), "too many arguments")),
         _ => Ok(SafeCommand {
             text,
             verb: spec.verb,
             words,
+            roles,
             len,
         }),
     }
 }
+
+/// Why the word after a valued flag is not what it takes; `None` when it is.
+/// A value never starts with a dash, so no flag hides behind one.
+fn bad_value(value: Value, next: Option<&str>) -> Option<&'static str> {
+    let digits =
+        |n: &str, most| (1..=most).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit());
+    let next = next.unwrap_or("");
+    match value {
+        Value::Depth if !digits(next, 2) => Some("-L needs a depth of 1 or 2 digits"),
+        Value::Number if !digits(next, 3) => Some("the flag needs a number"),
+        Value::Name if next.is_empty() || next.starts_with('-') => Some("the flag needs a value"),
+        Value::Kind if !matches!(next, "f" | "d" | "l") => Some("-type needs f, d or l"),
+        _ => None,
+    }
+}
+
+pub mod git_config;
 
 #[cfg(test)]
 mod tests;

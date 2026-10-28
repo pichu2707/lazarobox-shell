@@ -381,11 +381,11 @@ fn a_paste_and_the_prefix_literal_end_the_run_as_user_typed() {
 fn text_typed_by_y_into_the_pane_of_a_running_run_ends_it() {
     let (mut a, turn) = written("ls", None);
     let t0 = now();
-    announce(&mut a, turn, 2, run("git status"));
+    announce(&mut a, turn, 2, run("cargo build"));
     NOW_MS.with(|n| n.set(n.get() + 1_000));
     let effects = a.update(key('y'));
     assert!(
-        effects.contains(&Effect::WritePty(SHELL, b"git status".to_vec())),
+        effects.contains(&Effect::WritePty(SHELL, b"cargo build".to_vec())),
         "{effects:?}"
     );
     assert_eq!(
@@ -501,10 +501,10 @@ fn a_settled_run_reports_the_lines_it_printed() {
 
 #[test]
 fn a_silent_run_reports_an_empty_output() {
-    let (mut a, _) = at_prompt("mkdir x");
+    let (mut a, _) = at_prompt("rg zz");
     let t0 = now();
     at(t0 + 10);
-    shell_output(&mut a, b"mkdir x\r\n$ ");
+    shell_output(&mut a, b"rg zz\r\n$ ");
     let got = report_of(&probe_at(&mut a, 300, t0));
     assert_eq!(got.output.as_deref(), Some(""));
 }
