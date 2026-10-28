@@ -979,3 +979,28 @@ Known gaps: no `git_status`/`git_log` ask on Cloud (see above); no concurrency g
 - Status and log use the full `redact` (same as the diff), not `redact_tokens`. Test: `password=` and `api_key=` in a commit subject.
 - Test hygiene: `sh()` drops `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and an explicit identity. The `cfg(target_os = "linux")` on the staged-batch test was dropped (module is unix-only and the test uses no Linux API; it passes).
 - TDD: the redaction test was observed RED against `redact_tokens` before the fix.
+
+## Batch: slice G-d (host git add and commit + CommitReview, PR 29, branch feat/coding-tools-gd, base feat/coding-tools-gc)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Gd.1 `git_add`: `Call::GitAdd`, `GitWrite` tool defs, one-line `ApprovalAsk::GitAdd`, host plan (path refusals before the ask, dry run count) and run | done | feat(tools): add and commit through git_add and git_commit with a reviewed commit |
+| Gd.2 `git_commit`: `ApprovalAsk::Commit(Arc<CommitReview>)`, review rows, index secret check, staged diff pin, unsigned, hooks in the jail | done | same commit |
+| Gd.3 end-to-end in a temp repo: commit refused on a staged `.env` (also as a rename away from a tracked one) | done | same commit |
+
+Seam: all logic is in `runtime/tools/host/git.rs` (`plan` now returns `Option<ApprovalAsk>`; `run` takes the reviewed ask), `core/ai/chat/review/commit.rs` (new child of `review`, so it builds `ReviewDoc` rows) and the pure argv in `core/ai/tools/git.rs`. `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 11 lines): `let mut reviewed`, the git arm now `call.uses_git()` and stores the planned ask, the decision arm passes `reviewed.take()`. `files::gate` gained the `GitWrite` condition (one line). `Call::uses_git()` and `is_git_write()` are new.
+
+Decisions / deviations (needing the user's eye):
+- The add overlay shows the paths and the FILE COUNT of a dry run, not a diffstat (+/-). Reason: untracked files have no diff; the count is the exact list git would stage after the secret excludes. Flagged for the user; a numstat sum is an easy follow-up.
+- No review-view fallback for `git_add`: a prompt that does not fit blocks `y` (existing `fits` rule) and an add whose paths do not show whole in 400 characters is refused before the prompt ("add fewer").
+- `git_commit` is refused before the ask on: empty/oversized/control-char message, unusable repo identity, nothing staged, a secret path in the INDEX (`diff --cached --name-only -z --no-renames`, so a rename away from a tracked `.env` counts), a staged diff the capture cut. A staged diff of the secret-excluded kind is therefore never shown or hidden: the commit does not happen.
+- The review diff does NOT pass `--ignore-submodules`, so a staged gitlink change is shown (the read verbs keep `all`).
+- After `y` the host rebuilds the staged diff and compares it to the reviewed bytes (`CommitReview::same_staged`); a change gives "the staged changes changed after the question; ask again".
+- A workers' turn has no `stage_key`, so `git_add`/`git_commit` are refused as unknown tools there (the orchestrator chain still has to make worker scopes keep `stage_key = None`).
+- The rejection line says "commit rejected: N files, +a -b".
+- The `run` step no longer re-checks the `path` of diff/log itself: `diff_argv`/`log_argv` check it (same refusal).
+- The hook-in-jail scenario is proven by construction (commit goes through `runtime::run`, the same jailed path as the read verbs, with rw only on the git dirs); the host tests use the stand-in helper, so they prove that hooks run from the pinned folder, that a failing hook blocks the commit, that its output is wrapped data and that a repo `core.hooksPath` is not run.
+
+TDD evidence: Gd.1 RED seen as 6 failing host tests (unknown tools / no ask) after the `Call` and registry types existed, and a failing parse test (`MissingArgument` on a list-first tool) that drove the `parse_built_in` fix. The pure argv helpers and `CommitReview` were RED as compile errors only. For the commit host path the code was written before its tests, so mutation checks were run on the finished code: removing the index secret check fails `a_commit_is_refused_when_the_index_holds_a_secret_path`; replacing the staged-diff comparison fails `a_commit_is_refused_when_the_index_changed_after_the_question`; disabling the cut-diff refusal fails `a_staged_diff_too_large_to_review_is_refused_before_the_prompt`; flipping `commit.gpgsign=false` fails the unsigned and `core.hooksPath` tests; dropping `Commit` from the generic-approve guard in `app/run.rs` fails `a_generic_approve_never_answers_a_commit`.
+
+Size: about 560 production lines added (adds+deletes about 598), over the 450 estimate; tests are about 700 more.
