@@ -58,7 +58,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | Ready (spike a seam first) |
 | 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | Ready (spike a seam first) |
 | 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | Done (branch feat/coding-tools-gc) |
-| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | Ready (spike a seam first) |
+| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | Done (apply), ~560 production lines |
 | 30 | M5-b docs for run + git, threat model, CHANGELOG | ~300 | G-d branch | Ready after #29 |
 
 Likely `size:exception`: W-e4 (high), then T, P0a, W-e2, X-c3, G-d, X-c1, W-f, W-h, X-d1 (medium; decide with real numbers). Every other PR is expected between 300 and 450 and should be split further if a work-unit commit crosses 300.
@@ -281,14 +281,14 @@ Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
 
 ### G-d: add and commit (PR 29, ~450, host.rs slice: spike a seam first)
 Spec: git-tools "add", "commit", "Two toggles".
-- [ ] Gd.1 RED: `git_add` refuses secret names; one-line overlay (paths + diffstat) or the review view when it does not fit; GitWrite gate. ~170.
-- [ ] Gd.2 RED: `git_commit`: `CommitReview` (message, full `--cached` diff, notice "signing disabled for this commit"), `-c commit.gpgsign=false`, no AI trailer, refused when the index holds a secret path, hooks run in the jail. ~200.
-- [ ] Gd.3 RED: end-to-end in a temp repo: the commit is refused on a staged `.env`. ~80.
+- [x] Gd.1 RED: `git_add` refuses secret names; one-line overlay (paths + diffstat) or the review view when it does not fit; GitWrite gate. ~170.
+- [x] Gd.2 RED: `git_commit`: `CommitReview` (message, full `--cached` diff, notice "signing disabled for this commit"), `-c commit.gpgsign=false`, no AI trailer, refused when the index holds a secret path, hooks run in the jail. ~200.
+- [x] Gd.3 RED: end-to-end in a temp repo: the commit is refused on a staged `.env`. ~80.
 
 ## Phase M5: docs
 
 - [x] M5a (PR 25, ~300) README sections for search, write, toggles, the review keys (Ctrl+G) and a threat-model section for staging/apply. Docs only; verify with `cargo test` (doc tests) and a link check. CHANGELOG entries for 0.19 and 0.20.
-- [ ] M5b (PR 30, ~300) README for run and git, the threat model (allow-list bounds the verb, network on, `.env` exfiltration, UNIX socket residual risk, daemonizing grandchildren), CHANGELOG for 0.21 and 0.22.
+- [x] M5b (PR 30, ~300) README for run and git, the threat model (allow-list bounds the verb, network on, `.env` exfiltration, UNIX socket residual risk, daemonizing grandchildren), CHANGELOG for 0.21 and 0.22.
 
 ## Closing tasks (after the chain is merged)
 

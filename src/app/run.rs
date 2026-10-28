@@ -157,7 +157,10 @@ impl App {
         chat.set_orphan(None);
         // A tool call has its own result row, and a batch review its notice;
         // only the user's own action leaves a line behind.
-        let batch = matches!(approval.ask(), ApprovalAsk::Batch(_));
+        let batch = matches!(
+            approval.ask(),
+            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_)
+        );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
@@ -190,7 +193,12 @@ impl App {
         let is_batch = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .and_then(|chat| chat.approvals().pending())
-            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Batch(_)));
+            .is_some_and(|approval| {
+                matches!(
+                    approval.ask(),
+                    ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_)
+                )
+            });
         // Defence in depth: a batch is answered only by its review, behind the
         // coverage gate.
         if is_batch {
@@ -474,6 +482,22 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // The paths were made one clean line when asked, and the host
+            // refused an add whose paths would not show whole.
+            ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {
+                target: "stage files in your repository's index".to_owned(),
+                command: match files {
+                    Some(n) => format!(
+                        "git add {paths} ({n} file{})",
+                        if *n == 1 { "" } else { "s" }
+                    ),
+                    None => format!("git add {paths}"),
+                },
+                keys: EXTERNAL_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The program, arguments and folder are what will run, and the host
             // refused text that would not show as it is. The notice is part of
             // what is approved, so the pane must fit it (it is not `why`).
@@ -514,7 +538,7 @@ impl App {
                 })
             }
             // The review view draws a batch; it has no overlay.
-            ApprovalAsk::Batch(_) => None,
+            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {
