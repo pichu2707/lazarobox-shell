@@ -559,7 +559,8 @@ async fn an_add_whose_paths_would_not_show_whole_is_refused_before_the_prompt() 
     assert!(asks.asked().is_empty());
 }
 
-// Scenario "Unproposed batch" for the write verbs too.
+// Scenario "Unproposed batch" for the write verbs too. Linux only, as above.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_add_with_staged_changes_must_propose_them_first() {
     let w = bare_world(LANDLOCK);
