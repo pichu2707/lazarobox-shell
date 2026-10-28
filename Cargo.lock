@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "lazarobox-shell"
-version = "0.18.0"
+version = "0.28.0"
 dependencies = [
  "crossterm",
  "futures",
@@ -751,8 +751,11 @@ dependencies = [
  "libc",
  "portable-pty",
  "ratatui",
+ "regex",
  "rusqlite",
  "serde_json",
+ "sha2",
+ "similar",
  "tempfile",
  "tokio",
  "toml",

@@ -35,16 +35,18 @@ jobs:
           - name: macOS (Intel x86_64)
             os: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The toolchain is pinned so that a new Rust release cannot break CI
       # without a code change; bumping it is a deliberate PR. The MSRV
       # (`rust-version` in Cargo.toml) is checked by the `msrv` job below.
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@d86e0fa8f147d6539442c26a61ebba8becc19489 # 1.96.0
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
         if: runner.os == 'Linux'
@@ -126,9 +128,12 @@ jobs:
   # blocks a merge: a geo block, rate limit or Cloudflare challenge is an
   # annotated skip in the test, and `continue-on-error` covers the rest. The
   # version is the one the #180 tester runs. The `check` job does not install
-  # codex, so its plain `cargo test` skips this test there.
+  # codex, so its plain `cargo test` skips this test there. It runs on pushes
+  # to main only: macOS runners queue for long on every PR, and a job that
+  # never blocks a merge is not worth that wait.
   real-cli-macos:
     name: Real codex (${{ matrix.name }})
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     continue-on-error: true
@@ -141,11 +146,13 @@ jobs:
           - name: macOS (Intel x86_64)
             os: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@d86e0fa8f147d6539442c26a61ebba8becc19489 # 1.96.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install codex
         run: npm install --global @openai/codex@0.153.4 --ignore-scripts
@@ -169,11 +176,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check
         run: cargo check --locked --all-targets

@@ -10,6 +10,7 @@ fn codex(models_why: Option<&str>, jail: Option<&str>) -> Detection {
     codex.diagnostics.jail = jail.map(str::to_owned);
     Detection {
         engines: vec![codex],
+        ..Default::default()
     }
 }
 
@@ -156,6 +157,7 @@ fn y_on_an_engine_row_that_is_not_available_copies_nothing() {
     gone.diagnostics.jail = Some(LONG.to_owned());
     let d = Detection {
         engines: vec![gone],
+        ..Default::default()
     };
     let mut draft = AiConfig::default();
     draft.set(

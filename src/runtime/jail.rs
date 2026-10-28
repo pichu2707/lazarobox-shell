@@ -9,7 +9,9 @@ use std::ffi::OsString;
 
 use std::path::{Path, PathBuf};
 
-use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER};
+use crate::core::ai::jail::{
+    JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER, STATUS_FD, STATUS_FD_VAR,
+};
 
 #[cfg(any(target_os = "macos", test))]
 mod seatbelt;
@@ -52,10 +54,12 @@ pub fn resolve(path: &Path) -> Option<PathBuf> {
 /// the process image is replaced and this never returns; it returns the exit
 /// status only when the program did not run.
 pub fn exec_main(args: &[OsString]) -> i32 {
+    let status = take_status();
     match imp::exec(args) {
         Ok(never) => match never {},
         Err(Failure::NotEnforced(why)) => {
             eprintln!("{NOT_ENFORCED_MARKER}: {why}");
+            report(status, &format!("{NOT_ENFORCED_MARKER}: {why}\n"));
             NOT_ENFORCED_EXIT
         }
         Err(Failure::Exec(program, error)) => {
@@ -63,6 +67,39 @@ pub fn exec_main(args: &[OsString]) -> i32 {
             EXEC_FAILED
         }
     }
+}
+
+/// The status descriptor a parent handed over, if it did: the one place the
+/// helper can say "jail not enforced" that the program cannot forge, because
+/// the descriptor is closed by the `exec` of the program. The variable is
+/// removed so the program never sees it.
+fn take_status() -> Option<libc::c_int> {
+    let named = std::env::var_os(STATUS_FD_VAR)?;
+    // SAFETY: the helper is single-threaded here, before any thread starts.
+    unsafe { std::env::remove_var(STATUS_FD_VAR) };
+    // Only the agreed number: an arbitrary one could name any descriptor.
+    if named.to_str().and_then(|n| n.parse::<libc::c_int>().ok()) != Some(STATUS_FD) {
+        return None;
+    }
+    // SAFETY: `fcntl` on a number is memory-safe; a bad one is an error.
+    unsafe {
+        let flags = libc::fcntl(STATUS_FD, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(STATUS_FD, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+            return None;
+        }
+    }
+    Some(STATUS_FD)
+}
+
+/// Writes `line` on the status descriptor, if there is one.
+fn report(status: Option<libc::c_int>, line: &str) {
+    let Some(fd) = status else {
+        return;
+    };
+    // SAFETY: the buffer is valid for its length. A short or failed write
+    // leaves the parent with no report, which it reads as "enforced": the
+    // helper's exit status and stderr still say what happened.
+    unsafe { libc::write(fd, line.as_ptr().cast(), line.len()) };
 }
 
 /// Why the helper did not run the program.
@@ -92,7 +129,10 @@ mod imp {
 
     use super::Failure;
     use crate::core::ai::jail::JailSupport;
-    use crate::core::ai::jail::{JailArgs, JailSpec, MIN_ABI, parse_args, support_from_abi};
+    use crate::core::ai::jail::{
+        JailArgs, JailSpec, Limit, MIN_ABI, NetBind, Os, RLIMIT_REASON, RWX_REASON, parse_args,
+        support_from_abi,
+    };
 
     /// `landlock_create_ruleset` has the same number on every architecture.
     const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
@@ -132,16 +172,67 @@ mod imp {
         if let JailSupport::Unavailable(off) = support_from_abi(abi) {
             return Err(Failure::NotEnforced(off.text()));
         }
+        check_rwx(&job.spec).map_err(|_| Failure::NotEnforced(RWX_REASON.to_owned()))?;
+        set_limits(&job.spec).map_err(Failure::NotEnforced)?;
         enforce(&job.spec, abi).map_err(Failure::NotEnforced)?;
         launch(&job)
     }
 
+    /// The `rwx` root must pass `check_exec` (with `$HOME` in both of its
+    /// spellings, so a broad root is refused) and be its own canonical path:
+    /// a root that is a link would grant its target, not what was checked.
+    fn check_rwx(spec: &JailSpec) -> Result<(), ()> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let real = home.as_deref().and_then(|h| fs::canonicalize(h).ok());
+        let homes: Vec<&Path> = home.iter().chain(&real).map(PathBuf::as_path).collect();
+        spec.check_exec(Os::Linux, &homes).map_err(|_| ())?;
+        for root in &spec.rwx {
+            if fs::canonicalize(root).ok().as_deref() != Some(root.as_path()) {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     fn launch(job: &JailArgs) -> Result<Infallible, Failure> {
-        let error = Command::new(&job.program)
-            .arg0(&job.program)
-            .args(&job.argv)
-            .exec();
+        // A proxy decides what to run from the name it is started as.
+        let name = job.arg0.as_deref().unwrap_or(job.program.as_os_str());
+        let error = Command::new(&job.program).arg0(name).args(&job.argv).exec();
         Err(Failure::Exec(job.program.display().to_string(), error))
+    }
+
+    /// Sets the spec's resource limits (soft and hard) on this process, so the
+    /// program inherits them through `exec`.
+    fn set_limits(spec: &JailSpec) -> Result<(), String> {
+        for (limit, value) in spec.rlimits.limits() {
+            let resource = match limit {
+                Limit::Core => libc::RLIMIT_CORE,
+                Limit::FileSize => libc::RLIMIT_FSIZE,
+                Limit::CpuSeconds => libc::RLIMIT_CPU,
+            };
+            // A value this platform cannot hold is an error, never "no limit".
+            let value = libc::rlim_t::try_from(*value).map_err(|_| RLIMIT_REASON.to_owned())?;
+            let mut current = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `current` is a valid struct that outlives the call.
+            if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+                return Err(RLIMIT_REASON.to_owned());
+            }
+            // A hard limit the parent already lowered stays: raising it is
+            // EPERM, and the lower bound is the stricter one anyway.
+            let value = value.min(current.rlim_max);
+            let rlim = libc::rlimit {
+                rlim_cur: value,
+                rlim_max: value,
+            };
+            // SAFETY: `rlim` is a valid, initialized struct that outlives the call.
+            if unsafe { libc::setrlimit(resource, &rlim) } != 0 {
+                return Err(RLIMIT_REASON.to_owned());
+            }
+        }
+        Ok(())
     }
 
     /// Builds the ruleset with every filesystem right of the probed ABI as a
@@ -159,9 +250,10 @@ mod imp {
                 .scope(Scope::from_all(abi_v))
                 .map_err(|e| e.to_string())?;
         }
-        if abi >= NET_ABI {
+        if abi >= NET_ABI && spec.net_bind == NetBind::Closed {
             // Handled with no rule at all: nothing may listen on TCP, while
             // outgoing connect (not handled) stays open for the CLIs' APIs.
+            // A toolchain run (`net_bind` open) leaves bind unhandled.
             ruleset = ruleset
                 .handle_access(AccessNet::BindTcp)
                 .map_err(|e| e.to_string())?;
@@ -184,12 +276,16 @@ mod imp {
     }
 
     /// Each path with the rights its rule kind grants. Execute is only ever
-    /// part of an `rx` rule (R29).
+    /// part of an `rx` rule or the one `rwx` root (R29).
     fn rules(spec: &JailSpec, abi: ABI) -> Result<Vec<(PathBuf, BitFlags<AccessFs>)>, String> {
         let read_dir = AccessFs::ReadFile | AccessFs::ReadDir;
         let read_write_dir = AccessFs::from_all(abi) & !BitFlags::from(AccessFs::Execute);
         let read_write_file = AccessFs::from_file(abi) & !BitFlags::from(AccessFs::Execute);
-        let mut out = Vec::new();
+        let mut out: Vec<_> = spec
+            .rwx
+            .iter()
+            .map(|p| (p.clone(), AccessFs::from_all(abi)))
+            .collect();
         for path in &spec.rx {
             let access = if is_dir(path)? {
                 read_dir | AccessFs::Execute

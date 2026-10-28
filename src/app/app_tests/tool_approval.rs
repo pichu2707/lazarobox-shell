@@ -10,6 +10,10 @@ use crate::core::ai::chat::{
     approval::{ANOTHER_PENDING, ApprovalAsk, Origin},
     engine::{CallId, Decision, Finish, StreamEvent, ToolStatus, Tools},
 };
+use crate::core::ai::{
+    config::ToolToggle,
+    tools::registry::{Family, FamilySet},
+};
 
 pub(super) fn chat(a: &App, id: PaneId) -> &ChatState {
     super::run_pane::chat(a, id)
@@ -418,6 +422,47 @@ fn y_on_a_user_tool_answers_sent_and_n_denies_without_a_pty() {
     );
 }
 
+fn search(pattern: &str, dir: &str) -> ApprovalAsk {
+    ApprovalAsk::Search {
+        pattern: pattern.into(),
+        dir: dir.into(),
+    }
+}
+
+// Spec (code-search, grep): the prompt shows the pattern and where it looks.
+#[test]
+fn a_search_ask_shows_the_pattern_and_the_path() {
+    let (mut a, turn) = live();
+    assert_eq!(
+        announce(&mut a, turn, 1, search("fn main", ".")),
+        Vec::new()
+    );
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "search fn main in .");
+    assert!(prompt.keys.contains("y search"), "{prompt:?}");
+    let (mut b, turn) = live();
+    announce(&mut b, turn, 1, search("TODO", "src/core"));
+    assert_eq!(
+        b.approval_prompt(id2()).unwrap().command,
+        "search TODO in src/core"
+    );
+}
+
+#[test]
+fn y_on_a_search_answers_sent_and_n_denies_and_auto_mode_still_asks() {
+    let (mut a, turn) = live();
+    super::tool_run::chat_mut(&mut a)
+        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    assert_eq!(announce(&mut a, turn, 1, search("x", ".")), Vec::new());
+    assert_eq!(pending(&a).map(|(ask, _)| ask), Some(search("x", ".")));
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    announce(&mut a, turn, 2, search("y", "."));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}
+
 // D18: the approval mode is for `run_in_pane` only; a user tool never types
 // or approves by itself.
 #[test]
@@ -530,6 +575,45 @@ fn a_turn_of_a_verified_engine_carries_tools_and_the_origin() {
             mcp: None,
         }
     );
+}
+
+/// Sends one turn from a chat whose engine offers tools, with `ai`.
+fn families_of_a_turn(ai: AiConfig) -> FamilySet {
+    families_of_a_turn_on(ai, &["ollama"])
+}
+
+/// Sends one turn from a chat, with `ai` and the engines verified for tools.
+fn families_of_a_turn_on(ai: AiConfig, engines: &'static [&'static str]) -> FamilySet {
+    let mut a = launched(80, 25).with_ai(ai).with_tool_engines(engines);
+    press(&mut a, "c");
+    super::run_pane::answer(&mut a, id2(), "hi");
+    a.update(key('q'));
+    let effects = a.update(plain(KeyCode::Enter));
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    request.families
+}
+
+#[test]
+fn a_turn_offers_the_families_of_the_toggles() {
+    assert_eq!(families_of_a_turn(ollama()), FamilySet::LEGACY);
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Search, true);
+    ai.set_toggle(ToolToggle::GitWrite, true);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY
+            .with(Family::Search)
+            .with(Family::GitWrite)
+    );
+}
+
+#[test]
+fn a_turn_without_tools_offers_no_coding_family() {
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Exec, true);
+    assert_eq!(families_of_a_turn_on(ai, &[]), FamilySet::LEGACY);
 }
 
 #[test]
@@ -761,7 +845,7 @@ fn turning_tools_on_or_a_chat_without_a_session_ends_nothing() {
 
 mod guard {
     use super::*;
-    use crate::app::tool::ARM_DELAY;
+    use crate::core::ai::chat::approval::ASK_ARM_DELAY as ARM_DELAY;
 
     fn ms(d: std::time::Duration) -> u64 {
         u64::try_from(d.as_millis()).unwrap()
@@ -848,6 +932,245 @@ mod guard {
         assert!(
             matches!(effects.as_slice(), [Effect::WritePty(..)]),
             "{effects:?}"
+        );
+    }
+}
+
+fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
+    ApprovalAsk::Exec {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        cwd: cwd.into(),
+        script: None,
+        timeout_secs: 120,
+        cloud: false,
+        earlier: None,
+    }
+}
+
+// Spec (command-runner, Approval on every command): a command asks for `y` in
+// every mode, shows what will run and where, and nothing is typed.
+#[test]
+fn a_command_asks_for_y_in_auto_mode_and_shows_the_program_the_arguments_and_the_folder() {
+    let (mut a, turn) = live();
+    super::tool_run::chat_mut(&mut a)
+        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    let ask = exec("cargo", &["test", "-p", "x"], "crates/x");
+    assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+    assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "cargo test -p x\nin crates/x");
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    announce(&mut a, turn, 2, exec("go", &["test"], "."));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}
+
+fn shown(ask: ApprovalAsk) -> crate::core::ai::chat::approval::ApprovalPrompt {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, ask);
+    a.approval_prompt(id2()).unwrap()
+}
+
+// What is shown is what the program receives: an argument that is empty or has
+// a space or a quote shows quoted, so two arguments never read as one.
+#[test]
+fn an_argument_with_a_space_a_quote_or_nothing_is_shown_quoted() {
+    let ask = exec(
+        "cargo",
+        &["test", "--", "x y", "", "it's", "a\"b", "plain-1"],
+        ".",
+    );
+    assert_eq!(
+        shown(ask).command,
+        "cargo test -- 'x y' '' 'it'\\''s' 'a\"b' plain-1\nin ."
+    );
+}
+
+#[test]
+fn a_folder_with_a_space_is_shown_quoted_too() {
+    assert_eq!(
+        shown(exec("go", &["test"], "my dir")).command,
+        "go test\nin 'my dir'"
+    );
+}
+
+#[test]
+fn the_script_a_package_manager_will_run_is_shown_under_the_command() {
+    let ask = ApprovalAsk::Exec {
+        program: "npm".into(),
+        args: vec!["run".into(), "build".into()],
+        cwd: ".".into(),
+        script: Some("prebuild: rm -rf dist\nbuild: tsc".into()),
+        timeout_secs: 120,
+        cloud: false,
+        earlier: None,
+    };
+    assert_eq!(
+        shown(ask).command,
+        "npm run build\nin .\nscript prebuild: rm -rf dist\nscript build: tsc"
+    );
+}
+
+// The folder is part of the text `fits` checks, so a pane too small to show it
+// all does not let `y` through (it used to sit in a clipped head row).
+#[test]
+fn a_long_folder_is_checked_by_fits_and_not_clipped() {
+    use crate::core::ai::chat::approval_rows::{Part, fits, parts};
+    let cwd = format!("{}/deep", "d".repeat(150));
+    let prompt = shown(exec("cargo", &["test"], &cwd));
+    assert!(!fits(&prompt, 20, 12));
+    assert!(fits(&prompt, 80, 12));
+    let rows = parts(&prompt, 80, 12);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, Part::Command(t) if t.contains("deep"))),
+        "{rows:?}"
+    );
+}
+
+// Spec (command-runner, Approval on every command): the prompt shows the
+// network and `.env` notice, whatever the approval mode.
+#[test]
+fn the_prompt_carries_the_notice_and_nothing_hides_it_from_fits() {
+    use crate::core::ai::chat::approval_rows::{Part, fits, parts};
+    let prompt = shown(exec("cargo", &["test"], "."));
+    let notice = prompt
+        .notice
+        .clone()
+        .expect("a command prompt has a notice");
+    assert!(
+        notice.contains(".env") && notice.contains("network is on"),
+        "{notice}"
+    );
+    assert!(fits(&prompt, 100, 20));
+    // A pane too short for the command AND the notice does not let `y` through.
+    assert!(!fits(&prompt, 100, 5));
+    let rows = parts(&prompt, 100, 20);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, Part::Notice(t) if t.contains(".env"))),
+        "{rows:?}"
+    );
+}
+
+// The notice is on screen whatever the approval mode: every mode asks.
+#[test]
+fn a_command_prompts_with_the_notice_in_every_approval_mode() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        assert_eq!(
+            announce(&mut a, turn, 1, exec("cargo", &["test"], ".")),
+            Vec::new()
+        );
+        let prompt = a.approval_prompt(id2()).unwrap();
+        let notice = prompt.notice.expect("a notice");
+        assert!(notice.contains("network is on"), "{mode:?}: {notice}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// The host caps the earlier-run line at 240 columns whatever the paths are
+// (see `exec_tests`); a line of that size must leave the prompt answerable in
+// a normal pane.
+#[test]
+fn a_prompt_with_a_capped_earlier_run_line_still_fits_a_normal_pane() {
+    use crate::core::ai::chat::approval_rows::fits;
+    let mut ask = exec("npm", &["install"], ".");
+    if let ApprovalAsk::Exec { earlier, .. } = &mut ask {
+        *earlier = Some("p".repeat(240));
+    }
+    let prompt = shown(ask);
+    assert!(fits(&prompt, 100, 30), "{:?}", prompt.notice);
+    assert!(fits(&prompt, 80, 30), "{:?}", prompt.notice);
+}
+
+#[test]
+fn a_cloud_command_prompt_names_the_provider() {
+    let mut ask = exec("cargo", &["test"], ".");
+    if let ApprovalAsk::Exec { cloud, .. } = &mut ask {
+        *cloud = true;
+    }
+    let notice = shown(ask).notice.unwrap();
+    assert!(notice.contains("provider"), "{notice}");
+}
+
+#[test]
+fn the_prompt_shows_the_timeout_of_the_run() {
+    let mut ask = exec("go", &["test"], ".");
+    if let ApprovalAsk::Exec { timeout_secs, .. } = &mut ask {
+        *timeout_secs = 600;
+    }
+    assert!(shown(ask).notice.unwrap().contains("timeout 600 s"));
+}
+
+#[test]
+fn an_argument_a_shell_would_read_is_shown_quoted() {
+    for arg in [
+        ";", "a|b", "a&b", "<x", "(x)", "*", "a?", "#c", "~", "{a,b}", "!x", "[a]", "a]", "^x",
+    ] {
+        let shown = shown(exec("cargo", &["test", arg], ".")).command;
+        assert!(
+            shown.starts_with(&format!("cargo test '{arg}'")),
+            "{arg}: {shown}"
+        );
+    }
+}
+
+fn exec_row(a: &App) -> Option<String> {
+    use crate::core::menu::Row;
+    a.menu
+        .as_ref()?
+        .all_rows(&a.config)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::Item {
+                label: "Exec",
+                value: Some(value),
+                ..
+            } => Some(value.into_owned()),
+            _ => None,
+        })
+}
+
+fn menu_with_exec_on(jail: crate::core::ai::jail::JailSupport) -> App {
+    use crate::core::ai::config::ToolToggle;
+    let mut ai = crate::core::ai::config::AiConfig::default();
+    ai.set_toggle(ToolToggle::Exec, true);
+    let mut a = App::new(80, 25).with_ai(ai).with_jail(jail);
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(' '),
+        KeyModifiers::CONTROL,
+    )));
+    a.update(key('m'));
+    a
+}
+
+// Design D18: the menu row says what the refusal will say.
+#[test]
+fn the_exec_row_says_why_when_the_system_has_no_landlock_jail() {
+    use crate::core::ai::jail::{Backend, JailOff, JailSupport};
+    let landlock = JailSupport::Available {
+        backend: Backend::Landlock,
+        abi: 4,
+    };
+    assert_eq!(
+        exec_row(&menu_with_exec_on(landlock)).as_deref(),
+        Some("on")
+    );
+    for off in [
+        JailSupport::Unavailable(JailOff::NoLandlock(2)),
+        JailSupport::Unavailable(JailOff::NoBackend),
+        JailSupport::Unavailable(JailOff::NotProbed),
+    ] {
+        assert_eq!(
+            exec_row(&menu_with_exec_on(off)).as_deref(),
+            Some("on · needs Linux sandbox"),
+            "{off:?}"
         );
     }
 }

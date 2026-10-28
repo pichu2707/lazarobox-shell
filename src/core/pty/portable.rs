@@ -471,6 +471,41 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// The pid in `job=<pid>` of the shell's output (the tty echo of the
+    /// command line has `job=$!`, no digits). Only a whole line counts: the
+    /// output can arrive in pieces, and `job=1` of `job=1234` is not pid 1.
+    fn job_pid(seen: &str) -> Option<u32> {
+        seen.split("job=")
+            .filter_map(|rest| {
+                let digits = &rest[..rest.find(|c: char| !c.is_ascii_digit())?];
+                rest[digits.len()..]
+                    .starts_with(['\r', '\n'])
+                    .then_some(())?;
+                digits.parse::<u32>().ok()
+            })
+            .next()
+    }
+
+    /// The parent pid of `pid`, from `/proc/<pid>/stat`.
+    fn parent_of(pid: u32) -> Option<u32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit(')')
+            .next()?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    }
+
+    // The output can arrive in pieces: `job=1` of `job=1234` is not pid 1.
+    #[test]
+    fn job_pid_waits_for_the_end_of_the_line() {
+        assert_eq!(job_pid("$ set +m; sleep 20 & echo job=$!\r\n"), None);
+        assert_eq!(job_pid("echo job=$!\r\njob=1"), None);
+        assert_eq!(job_pid("echo job=$!\r\njob=1234\r"), Some(1234));
+        assert_eq!(job_pid("echo job=$!\r\njob=1234\r\n$ "), Some(1234));
+    }
+
     // Spec: quit leaves no orphan, background jobs included.
     #[test]
     fn drop_kills_background_jobs() {
@@ -482,20 +517,18 @@ mod tests {
         let mut seen = String::new();
         let job = loop {
             seen.push_str(&wait_for(&rx, "\n"));
-            let parsed = seen
-                .split("job=")
-                .filter_map(|rest| {
-                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                    digits.parse::<u32>().ok()
-                })
-                .next();
-            match parsed {
+            match job_pid(&seen) {
                 Some(job) => break job,
                 None if Instant::now() > deadline => panic!("no job pid in {seen:?}"),
                 None => {}
             }
         };
         assert!(is_alive(job));
+        assert_eq!(
+            parent_of(job),
+            pty.pid(),
+            "job={job} is not the shell's child"
+        );
         drop(pty);
         let deadline = Instant::now() + TIMEOUT;
         while is_alive(job) && Instant::now() < deadline {

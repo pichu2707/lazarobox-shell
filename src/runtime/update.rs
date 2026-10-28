@@ -280,6 +280,24 @@ pub fn spawn_refresh(
         .spawn(job);
 }
 
+/// The menu's `r`: one check now, whatever the cache says, answered through
+/// `reply` like the start-up one. Without a cache location there is nothing to
+/// check against, so the answer (nothing new) comes at once.
+pub fn check_now(
+    cache: Option<PathBuf>,
+    now: u64,
+    current: &'static str,
+    fetcher: impl Fetcher,
+    reply: mpsc::Sender<Option<String>>,
+) {
+    match cache {
+        Some(path) => spawn_refresh(path, now, current, fetcher, reply),
+        None => {
+            let _ = reply.try_send(None);
+        }
+    }
+}
+
 /// The start-up entry: what to show now, and, when a check is due, the
 /// background request whose answer comes through `reply`. Disabled or without
 /// a cache location it does nothing and shows nothing.

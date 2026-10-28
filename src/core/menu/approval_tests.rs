@@ -45,15 +45,18 @@ fn approval_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is right after Tools, ahead of
-// the `Orchestrator` gate, and is found by its kind.
+// Spec (agent-tools, config menu): the row follows Tools and the five family
+// rows, ahead of the `Orchestrator` gate and `Hugging Face` (config-menu,
+// Hugging Face account row), and is found by its kind.
 #[test]
-fn the_approval_row_follows_tools_and_is_found_by_kind() {
+fn the_approval_row_precedes_hugging_face_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let row = &items[items.len() - 2];
-    assert_eq!(row.label, "Approval");
-    assert!(matches!(row.kind, ItemKind::Approval));
-    assert_eq!(items[items.len() - 3].label, "Tools");
+    let approval = &items[items.len() - 3];
+    assert_eq!(approval.label, "Approval");
+    assert!(matches!(approval.kind, ItemKind::Approval));
+    assert_eq!(items[items.len() - 2].label, "Orchestrator");
+    assert_eq!(items[items.len() - 1].label, "Hugging Face");
+    assert_eq!(items[items.len() - 4].label, "Git write");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Approval))
@@ -62,15 +65,17 @@ fn the_approval_row_follows_tools_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_ai_tab_holds_thirteen_rows() {
-    assert_eq!(AI_SECTION.items.len(), 13);
+fn the_ai_tab_holds_nineteen_rows() {
+    assert_eq!(AI_SECTION.items.len(), 19);
 }
 
 #[test]
-fn navigation_goes_tools_approval_gate_then_wraps_to_the_first_ai_row() {
+fn navigation_goes_family_rows_approval_gate_hugging_face_then_wraps_to_the_first_ai_row() {
     let mut m = on_approval(ApprovalMode::Ask);
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Orchestrator");
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Hugging Face");
     press(&mut m, 'j');
     assert_eq!(
         selected_label(&m),
@@ -78,11 +83,13 @@ fn navigation_goes_tools_approval_gate_then_wraps_to_the_first_ai_row() {
         "wraps inside the AI tab"
     );
     press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Hugging Face");
+    press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Tools");
+    assert_eq!(selected_label(&m), "Git write");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Approval");
     assert_eq!(m.active_tab(), 1);
@@ -194,8 +201,7 @@ fn the_edit_is_the_approval_key_alone_and_only_when_changed() {
 fn the_approval_edit_comes_right_after_the_tools_edit() {
     let mut m = on_approval(ApprovalMode::Ask);
     press(&mut m, 'l');
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Tools");
+    m.goto("Tools");
     press(&mut m, 'l');
     let edits = m.edits(&Config::default());
     assert_eq!(edits.len(), 2);

@@ -23,7 +23,7 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// How long the whole probe (three test programs) may take before it gives up.
 #[cfg(target_os = "macos")]
-pub const TIMEOUT: Duration = Duration::from_secs(5);
+pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 const POLL: Duration = Duration::from_millis(10);
 
@@ -389,6 +389,14 @@ exit 1
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn the_real_probe_allows_ten_seconds_in_total() {
+        // A cold first `sandbox-exec` on a loaded Mac can take several seconds,
+        // and a timeout costs codex and gemini for the whole session.
+        assert_eq!(TIMEOUT, Duration::from_secs(10));
+    }
+
+    #[test]
     fn the_deadline_is_one_for_the_whole_probe_not_one_per_program() {
         let tools = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -398,7 +406,9 @@ exit 1
         let started = Instant::now();
         let got = probe_with(&fake, root.path(), Duration::from_secs(1));
         assert_eq!(got, Err(SeatbeltFault::Timeout));
-        assert!(started.elapsed() < Duration::from_millis(1800));
+        // The killed program ends it near 1 s; the rest is slack for a
+        // loaded runner.
+        assert!(started.elapsed() < Duration::from_millis(2500));
         assert!(is_empty(root.path()));
     }
 

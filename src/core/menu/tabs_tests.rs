@@ -6,16 +6,18 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 6] = [
+const SETTINGS: [&str; 8] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
+    "Feedback",
 ];
 
-const AI: [&str; 13] = [
+const AI: [&str; 19] = [
     "Set all tasks",
     "general",
     "code",
@@ -27,8 +29,14 @@ const AI: [&str; 13] = [
     "Context",
     "Memory",
     "Tools",
+    "Search",
+    "Write",
+    "Exec",
+    "Git",
+    "Git write",
     "Approval",
     "Orchestrator",
+    "Hugging Face",
 ];
 
 fn with_mods(m: &mut MenuState, code: KeyCode, mods: KeyModifiers, repeat: bool) -> MenuCommand {
@@ -180,13 +188,13 @@ fn j_and_k_wrap_inside_the_settings_tab() {
     );
     assert_eq!(m.active_tab(), 0);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Updates", "wraps back");
+    assert_eq!(selected_label(&m), "Feedback", "wraps back");
     let up = KeyCode::Up;
     let down = KeyCode::Down;
     send(&mut m, key(down));
     assert_eq!(selected_label(&m), "Statusline position");
     send(&mut m, key(up));
-    assert_eq!(selected_label(&m), "Updates");
+    assert_eq!(selected_label(&m), "Feedback");
 }
 
 #[test]
@@ -203,7 +211,7 @@ fn j_and_k_wrap_inside_the_ai_tab() {
     assert_eq!(selected_label(&m), "Set all tasks", "wraps, no crossing");
     assert_eq!(m.active_tab(), 1);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Orchestrator");
+    assert_eq!(selected_label(&m), "Hugging Face");
     assert_eq!(m.active_tab(), 1);
 }
 
@@ -402,7 +410,7 @@ fn view_heights() -> Vec<usize> {
     let mut m = menu(None, None, Some(machine())).with_update(Some("9.9.9".into()));
     heights.push(m.rows(&cfg).len() + 1 + NOTE_ROWS);
     tab(&mut m);
-    heights.push(m.rows(&cfg).len());
+    heights.push(m.rows(&cfg).len() + CAUTION_ROWS);
     // The picker: engines and models of a long list.
     let mut p = menu(Some("ollama"), None, Some(big));
     open(&mut p, "code");
@@ -429,15 +437,17 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
         Some(VIEW_BODY),
         "{heights:?}"
     );
-    // The AI tab (one row per item) is taller than the picker (a title and
-    // its window, 1 + `picker::VIEW`), so it binds.
-    assert_eq!(VIEW_BODY, AI_SECTION.items.len(), "the AI tab binds");
+    assert_eq!(
+        VIEW_BODY,
+        AI_SECTION.items.len() + CAUTION_ROWS,
+        "the AI tab and its caution row bind"
+    );
 }
 
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 14);
+    assert_eq!(MENU_BODY, 21);
 }
 
 #[test]
@@ -447,13 +457,13 @@ fn the_warning_has_warning_rows_lines() {
 }
 
 #[test]
-fn the_warning_fits_from_24_by_17() {
+fn the_warning_fits_from_24_by_24() {
     let mut m = warned();
-    m.set_term(MIN_WIDTH, 17);
+    m.set_term(MIN_WIDTH, 24);
     assert!(m.fits_warning());
-    m.set_term(MIN_WIDTH, 16);
+    m.set_term(MIN_WIDTH, 23);
     assert!(!m.fits_warning());
-    m.set_term(MIN_WIDTH - 1, 17);
+    m.set_term(MIN_WIDTH - 1, 24);
     assert!(!m.fits_warning());
 }
 
@@ -466,7 +476,7 @@ fn the_no_ai_menu_keeps_its_single_tab_layout() {
         Row::Title("Settings".into()),
         "titles stay with one tab"
     );
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
 }
 
 #[test]

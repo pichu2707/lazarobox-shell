@@ -88,6 +88,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
     }
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -95,6 +96,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     if known_cwd {
         press(&mut a, "c");
@@ -486,6 +488,7 @@ fn save_cmd(n: u64, session: Option<&str>, title: &str, content: &str) -> Effect
             title: title.into(),
             content: content.into(),
         },
+        topic_key: None,
     })
 }
 
@@ -785,6 +788,7 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -792,6 +796,7 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     press(&mut a, "c");
     a.update(AppEvent::PromptReady(
@@ -841,6 +846,7 @@ fn created(conversation: i64, evicted: bool, evicted_notes: u32) -> AppEvent {
         conversation,
         evicted,
         evicted_notes,
+        created_at: 1_000,
     })
 }
 
@@ -981,6 +987,7 @@ fn store_replies_for_a_pane_that_is_gone_change_nothing() {
             conversation: 1,
             evicted: true,
             evicted_notes: 3,
+            created_at: 1_000,
         },
         StoreReply::LinkFailed {
             pane: gone,
@@ -1096,7 +1103,10 @@ fn closing_the_pane_ends_the_session_with_the_note_titles() {
 fn quitting_ends_the_session_before_the_quit() {
     let mut a = wrote_two();
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end("Notes: A; B"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![end("Notes: A; B"), Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
@@ -1122,7 +1132,10 @@ fn a_chat_that_never_wrote_sends_no_end() {
     );
     let mut b = with_answer(true, "x");
     press(&mut b, "q");
-    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        b.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
