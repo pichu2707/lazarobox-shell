@@ -1013,3 +1013,9 @@ Size: about 560 production lines added (adds+deletes about 598), over the 450 es
 - An add path with a quote is refused before the prompt (`GitError::Quote`, also `add_line` returns `None`).
 - `git commit` runs with a 120 s timeout (`COMMIT_TIMEOUT`); read verbs keep 30 s.
 - `host.rs` untouched.
+
+## M5-b (PR 30) - documentation
+
+- README (Spanish): "La carpeta del chat" (how the chat folder is chosen), the Git section (tools, toggles, prompts, commit review, post-commit warning), a threat model for run_command and git, and the stale "not yet offered" lines removed.
+- CHANGELOG: git tools and the README additions under Unreleased (run_command already shipped in 0.28.0; no 0.21/0.22 sections invented).
+- No code changes. `cargo test --doc` passes.

@@ -288,7 +288,7 @@ Spec: git-tools "add", "commit", "Two toggles".
 ## Phase M5: docs
 
 - [x] M5a (PR 25, ~300) README sections for search, write, toggles, the review keys (Ctrl+G) and a threat-model section for staging/apply. Docs only; verify with `cargo test` (doc tests) and a link check. CHANGELOG entries for 0.19 and 0.20.
-- [ ] M5b (PR 30, ~300) README for run and git, the threat model (allow-list bounds the verb, network on, `.env` exfiltration, UNIX socket residual risk, daemonizing grandchildren), CHANGELOG for 0.21 and 0.22.
+- [x] M5b (PR 30, ~300) README for run and git, the threat model (allow-list bounds the verb, network on, `.env` exfiltration, UNIX socket residual risk, daemonizing grandchildren), CHANGELOG for 0.21 and 0.22.
 
 ## Closing tasks (after the chain is merged)
 
