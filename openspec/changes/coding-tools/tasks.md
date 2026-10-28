@@ -57,7 +57,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 25 | M5-a docs for search + write (0.19/0.20) | ~300 | W-h branch | Ready after #24 |
 | 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | Ready (spike a seam first) |
 | 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | Ready (spike a seam first) |
-| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | Ready (spike a seam first) |
+| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | Done (branch feat/coding-tools-gc) |
 | 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | Ready (spike a seam first) |
 | 30 | M5-b docs for run + git, threat model, CHANGELOG | ~300 | G-d branch | Ready after #29 |
 
@@ -276,8 +276,8 @@ Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
 - [x] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
 
 ### G-c: host git read verbs (PR 28, ~300, host.rs slice: spike a seam first)
-- [ ] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.
-- [ ] Gc.2 RED: `ApprovalAsk::GitDiff`, host wiring, Git family gate. ~150.
+- [x] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.
+- [x] Gc.2 RED: `ApprovalAsk::GitDiff`, host wiring, Git family gate. ~150.
 
 ### G-d: add and commit (PR 29, ~450, host.rs slice: spike a seam first)
 Spec: git-tools "add", "commit", "Two toggles".

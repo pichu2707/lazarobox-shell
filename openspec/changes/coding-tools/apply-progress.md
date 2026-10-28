@@ -948,3 +948,25 @@ TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2
 | 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
 
 TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.
+
+## Batch: slice G-c (host git read verbs + GitDiff ask, PR 28, branch feat/coding-tools-gc, base main)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Gc.2 core: `Call::{GitStatus,GitDiff,GitLog}`, three `ToolDef`s in the `Git` family (Access::Read), `ApprovalAsk::GitDiff`, `ask_for` (diff asks on Cloud only), app prompt arm | done | feat(tools): offer git_status, git_diff and git_log in the Git family and ask for a cloud diff |
+| Gc.1 host: refusals before the ask (family, jail, root, staged batch), run after `y` through `git::open` + `git::run`, output shaped and wrapped | done | feat(tools): run git status, diff and log in the sandbox and gate them like other reads |
+
+Seam: all logic lives in the new `runtime/tools/host/git.rs` (child of `host`). `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 10 lines): one pre-ask arm `(call, locality) if call.is_git()` (`git::plan`, a refusal sets `checked = Err`, success asks with `ask_for`), one decision arm `(Decision::Sent, call) if call.is_git()` -> `git::run`, `mod git;` and the test module. `files::gate` gained the Git family check (one condition). `exec.rs`: `jailed`, `staged`, `scratch_parent` became `pub(super)` and the root policy was extracted to `root_of` (shared by `inspect` and git).
+
+Design points:
+- Spec vs design conflict: the spec text says every read verb needs `y` on a Cloud engine, while the design table and the task say only `git_diff` does (status and log return names and subjects). The task and design were followed (`git_status`/`git_log` never ask). If the user wants the spec text, it is one `ask_for` arm each plus a prompt variant.
+- `parse_built_in` takes the first-argument text only when that argument is required, so tools whose first arg is optional (`git_diff`, `git_log`) parse with all args absent.
+- `git_log` `max_count` is an `Int` clamped to `1..=50` by the table; `git_diff` `staged` is a `Bool`. `path` is checked by `diff_argv`/`log_argv` (secret, `.git`, escape) after the question, so a refused path costs a prompt on Cloud. Candidate follow-up: refuse in `plan` before asking.
+- Result: status and log go through `status_output` (cut = error "too large to list", never half-parsed), `render_*`, `redact_tokens`, then `label::wrap`; a diff uses `Capture::text` (clean, cut, redacted) and `(no changes)` when empty. A non-zero exit is an error "git failed". Changes to watched git places during the run (a filter driver) are appended via `exec::changes_note`.
+- The read verbs take no `RunGate` claim: they are short, read-only and may overlap a command of the same chat.
+- Fault texts are fixed (`NO_GIT`, `NOT_A_REPO`, `TOO_OLD`, `REPO_REFUSED`, `COULD_NOT`); a git outside a system place says so.
+- Tests need a git in a system place (the jail refuses any other) and skip with a stderr line otherwise; the staged-batch test is `cfg(linux)` like the exec one. The jail helper is a stand-in script.
+
+TDD evidence: core RED = `E0599` on `Call::GitStatus/GitDiff/GitLog`, `ApprovalAsk::GitDiff`, `is_git` (16 errors); after GREEN one test failed with `MissingArgument` (optional first arg) and drove the `parse_built_in` fix. Host RED = 7 of 9 tests failing with the verbs unknown to the host (the other two passed trivially on the old error path); GREEN = all 10. The app prompt test and the refused-path test passed at first run (written with/after the arm).
+
+Known gaps: no `git_status`/`git_log` ask on Cloud (see above); no concurrency gate for reads; `git` is looked up on the scrubbed process PATH (a GUI launch may lack Homebrew paths, which the jail refuses anyway).
