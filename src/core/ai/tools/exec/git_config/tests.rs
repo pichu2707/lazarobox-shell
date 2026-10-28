@@ -26,6 +26,30 @@ fn a_key_that_runs_a_program_is_found() {
     }
 }
 
+// `git log` verifies signatures with a program the config names.
+#[test]
+fn a_signature_check_or_a_gpg_program_is_found() {
+    for text in [
+        "[log]\n\tshowSignature = true",
+        "[log]\n\tshowsignature",
+        "[log]\n\tshowSignature = yes",
+        "[gpg]\n\tprogram = ./x",
+        "[gpg \"openpgp\"]\n\tprogram = ./x",
+        "[gpg \"x509\"]\n\tprogram = ./x",
+        "[gpg \"ssh\"]\n\tprogram = ./x",
+    ] {
+        assert!(runs(text), "{text:?}");
+    }
+    for text in [
+        "[log]\n\tshowSignature = false",
+        "[log]\n\tshowSignature = off",
+        "[log]\n\tdecorate = short",
+        "[gpg]\n\tformat = ssh",
+    ] {
+        assert!(!runs(text), "{text:?}");
+    }
+}
+
 #[test]
 fn a_clean_config_runs_nothing() {
     for text in [

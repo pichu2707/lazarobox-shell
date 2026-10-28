@@ -732,6 +732,21 @@ mod tests {
         }
     }
 
+    // `log.showSignature` makes `git log` run the gpg program the config
+    // names.
+    #[test]
+    fn git_log_asks_when_the_repository_config_checks_signatures() {
+        let f = fixture();
+        project(&f);
+        git_config(
+            &f,
+            "[log]\n\tshowSignature = true\n[gpg]\n\tprogram = ./sign\n",
+        );
+        assert_eq!(reason(&git_in_proj(&f, "git log")), Some(GIT_CONFIG_RUNS));
+        git_config(&f, "[log]\n\tshowSignature = false\n");
+        assert!(checked(&git_in_proj(&f, "git log")));
+    }
+
     // A file the config includes is read too; one that cannot be read or
     // parsed asks.
     #[test]

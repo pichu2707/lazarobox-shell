@@ -17,7 +17,9 @@ pub struct Unparsed;
 /// Reads one config file's text. The keys that make `git status`, `git log`
 /// or `git diff` run a program: `core.fsmonitor`, `core.pager`, any
 /// `pager.*`, `diff.external`, `diff.<driver>.textconv` and `.command`, and
-/// `filter.<driver>.clean`, `.process` and `.smudge`, whatever their value.
+/// `filter.<driver>.clean`, `.process` and `.smudge`, `gpg.program` and
+/// `gpg.<format>.program`, whatever their value, and `log.showSignature`
+/// unless it is false.
 /// Section and key names compare case-insensitively, the legacy
 /// `[section.sub]` header included. A line this scan cannot read for sure
 /// (a key outside a section, a broken header or key name, an escape or a
@@ -45,14 +47,16 @@ pub fn scan(text: &str) -> Result<Scan, Unparsed> {
             return Err(Unparsed);
         }
         let key = key.to_ascii_lowercase();
-        out.runs_program |= matches!(
-            (name.as_str(), sub, key.as_str()),
-            ("core", false, "fsmonitor" | "pager")
-                | ("pager", _, _)
-                | ("diff", false, "external")
-                | ("diff", true, "textconv" | "command")
-                | ("filter", true, "clean" | "process" | "smudge")
-        );
+        out.runs_program |=
+            matches!(
+                (name.as_str(), sub, key.as_str()),
+                ("core", false, "fsmonitor" | "pager")
+                    | ("pager", _, _)
+                    | ("diff", false, "external")
+                    | ("diff", true, "textconv" | "command")
+                    | ("filter", true, "clean" | "process" | "smudge")
+                    | ("gpg", _, "program")
+            ) || (name == "log" && !sub && key == "showsignature" && !is_false(value));
         if matches!(
             (name.as_str(), sub, key.as_str()),
             ("include", false, "path") | ("includeif", true, "path")
@@ -97,6 +101,16 @@ fn header(rest: &str) -> Result<((String, bool), &str), Unparsed> {
         None => (inner, false),
     };
     Ok(((name.to_ascii_lowercase(), sub), after))
+}
+
+/// Whether a boolean value is plainly false; anything else counts as true.
+fn is_false(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.split(['#', ';']).next().unwrap_or("").trim();
+        ["false", "no", "off", "0", ""]
+            .iter()
+            .any(|f| v.eq_ignore_ascii_case(f))
+    })
 }
 
 /// A section or key name: ASCII letters, digits and `-`, starting with a
