@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::transcript::Scroll;
 use crate::core::{
-    copy::{CopyCommand, CopyMotion, CopyState, Geometry, Point},
+    copy::{CopyCommand, CopyMotion, CopyState, Geometry, LineSpan, Point},
     prefix::PREFIX_KEY,
 };
 
@@ -42,6 +42,13 @@ pub fn geometry(total: usize, rows: usize, cols: u16) -> Geometry {
         rows: u16::try_from(shown).unwrap_or(u16::MAX),
         cols,
     }
+}
+
+/// What chat COPY paints over the transcript, in transcript lines.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ChatMarks {
+    pub cursor: Point,
+    pub span: Option<LineSpan>,
 }
 
 /// Lines below the view of a transcript of `geo` shown at `scroll`.
