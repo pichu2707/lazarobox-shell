@@ -50,9 +50,31 @@ fn on_updates(update: Option<&str>, env: Option<InstallEnv>) -> App {
 fn to_updates_row(a: &mut App) {
     a.update(ctrl_space());
     a.update(key('m'));
-    for _ in 0..5 {
-        a.update(key('j'));
-    }
+    // The row above Feedback, the last of the Settings tab: `k` from the
+    // first wraps to Feedback, one more reaches Updates.
+    a.update(key('k'));
+    a.update(key('k'));
+    assert!(
+        selected_label(a).ends_with("Updates"),
+        "the cursor is on Updates"
+    );
+}
+
+/// The label of the selected menu row.
+fn selected_label(a: &App) -> &'static str {
+    a.menu()
+        .unwrap()
+        .rows(a.config())
+        .into_iter()
+        .find_map(|row| match row {
+            crate::core::menu::Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(label),
+            _ => None,
+        })
+        .expect("a selected row")
 }
 
 fn spawned(effects: &[Effect]) -> Vec<(&PaneId, &SpawnSpec)> {
@@ -172,9 +194,11 @@ fn closing_for_the_install_treats_an_unsaved_draft_as_esc_does() {
     let mut enter_app = fresh();
     enter_app.update(key('l'));
     assert_ne!(*enter_app.config(), original);
-    for _ in 0..5 {
-        enter_app.update(key('j'));
-    }
+    // From the first row `k` wraps to Feedback, the last one; one more
+    // reaches Updates.
+    enter_app.update(key('k'));
+    enter_app.update(key('k'));
+    assert!(selected_label(&enter_app).ends_with("Updates"));
     let effects = enter_app.update(enter());
     assert_eq!(spawned(&effects).len(), 1, "{effects:?}");
     assert_eq!(*enter_app.config(), *esc_app.config(), "same as Esc");
@@ -477,4 +501,14 @@ fn a_child_that_ends_without_a_status_is_a_failure_and_the_pane_stays() {
     assert!(flat(&a, id).contains("The update stopped unexpectedly"));
     assert_eq!(a.notice(), Some(no_status_text().as_str()));
     assert_eq!(a.status_update(), Some("0.15.4"), "still not installed");
+}
+
+// Spec: r on the Updates row checks crates.io now.
+#[test]
+fn r_on_the_updates_row_asks_the_runtime_for_a_check() {
+    let mut a = on_updates(None, None);
+    assert_eq!(a.update(key('r')), vec![Effect::CheckUpdate]);
+    a.update(AppEvent::UpdateChecked(Some("0.16.0".into())));
+    assert_eq!(a.status_update(), Some("0.16.0"));
+    assert!(a.menu().unwrap().update_note().is_some());
 }

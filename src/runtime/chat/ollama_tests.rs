@@ -38,14 +38,14 @@ use crate::{
     },
 };
 
-const OK_HEAD: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+pub(super) const OK_HEAD: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
 
-fn pane(n: u32) -> PaneId {
+pub(super) fn pane(n: u32) -> PaneId {
     PaneId::for_test(n)
 }
 
 #[derive(Clone)]
-enum Step {
+pub(super) enum Step {
     Reply(Vec<u8>),
     /// Reads the request, then answers nothing and keeps the connection.
     Hang,
@@ -53,17 +53,17 @@ enum Step {
     Delay(u64, Vec<u8>),
 }
 
-fn lines(values: &[Value]) -> Step {
+pub(super) fn lines(values: &[Value]) -> Step {
     let body: String = values.iter().map(|v| format!("{v}\n")).collect();
     Step::Reply(format!("{OK_HEAD}{body}").into_bytes())
 }
 
-fn end_line() -> Value {
+pub(super) fn end_line() -> Value {
     json!({"message": {"content": ""}, "done": true, "done_reason": "stop"})
 }
 
 /// A reply that calls one tool.
-fn calls(name: &str, arguments: Value) -> Step {
+pub(super) fn calls(name: &str, arguments: Value) -> Step {
     lines(&[
         json!({"message": {"content": "", "tool_calls": [
             {"function": {"name": name, "arguments": arguments}}
@@ -85,14 +85,14 @@ fn calls_many(list: &[(&str, Value)]) -> Step {
 }
 
 /// A reply with plain text.
-fn text(content: &str) -> Step {
+pub(super) fn text(content: &str) -> Step {
     lines(&[
         json!({"message": {"content": content}, "done": false}),
         end_line(),
     ])
 }
 
-fn status(code: u16, body: &str) -> Step {
+pub(super) fn status(code: u16, body: &str) -> Step {
     Step::Reply(
         format!(
             "HTTP/1.1 {code} X\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
@@ -102,38 +102,47 @@ fn status(code: u16, body: &str) -> Step {
     )
 }
 
-struct Fake {
-    port: u16,
-    bodies: Arc<Mutex<Vec<Value>>>,
-    connections: Arc<AtomicUsize>,
+pub(super) struct Fake {
+    pub(super) port: u16,
+    pub(super) bodies: Arc<Mutex<Vec<Value>>>,
+    /// The request target of each request, in order.
+    pub(super) paths: Arc<Mutex<Vec<String>>>,
+    pub(super) connections: Arc<AtomicUsize>,
     /// A `Hang` step read its request.
-    hung: Arc<Notify>,
+    pub(super) hung: Arc<Notify>,
     /// The client closed a hung connection.
-    closed: Arc<Notify>,
+    pub(super) closed: Arc<Notify>,
 }
 
 impl Fake {
-    fn bodies(&self) -> Vec<Value> {
+    pub(super) fn bodies(&self) -> Vec<Value> {
         self.bodies.lock().unwrap().clone()
+    }
+
+    pub(super) fn paths(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
     }
 }
 
-async fn fake(steps: Vec<Step>) -> Fake {
+pub(super) async fn fake(steps: Vec<Step>) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let fake = Fake {
         port: listener.local_addr().unwrap().port(),
         bodies: Arc::default(),
+        paths: Arc::default(),
         connections: Arc::default(),
         hung: Arc::default(),
         closed: Arc::default(),
     };
     let (bodies, connections) = (fake.bodies.clone(), fake.connections.clone());
+    let paths = fake.paths.clone();
     let (hung, closed) = (fake.hung.clone(), fake.closed.clone());
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             let n = connections.fetch_add(1, Ordering::SeqCst);
             let step = steps[n.min(steps.len() - 1)].clone();
             let (bodies, hung, closed) = (bodies.clone(), hung.clone(), closed.clone());
+            let paths = paths.clone();
             tokio::spawn(async move {
                 let mut raw = Vec::new();
                 let mut buf = [0u8; 8192];
@@ -158,6 +167,8 @@ async fn fake(steps: Vec<Step>) -> Fake {
                         Ok(n) => raw.extend_from_slice(&buf[..n]),
                     }
                 }
+                let target = head.split_whitespace().nth(1).unwrap_or_default();
+                paths.lock().unwrap().push(target.to_owned());
                 bodies
                     .lock()
                     .unwrap()
@@ -184,15 +195,15 @@ async fn fake(steps: Vec<Step>) -> Fake {
     fake
 }
 
-struct Lab {
-    _dir: tempfile::TempDir,
-    home: PathBuf,
-    host: Arc<ToolHost>,
-    chats: Chats,
-    rx: mpsc::Receiver<Tagged>,
+pub(super) struct Lab {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) home: PathBuf,
+    pub(super) host: Arc<ToolHost>,
+    pub(super) chats: Chats,
+    pub(super) rx: mpsc::Receiver<Tagged>,
 }
 
-fn lab(port: u16) -> Lab {
+pub(super) fn lab(port: u16) -> Lab {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().canonicalize().unwrap().join("home");
     std::fs::create_dir_all(home.join("dev/curso-rust")).unwrap();
@@ -210,7 +221,7 @@ fn lab(port: u16) -> Lab {
     }
 }
 
-fn ask(lab: &Lab, tools: bool) -> ChatRequest {
+pub(super) fn ask(lab: &Lab, tools: bool) -> ChatRequest {
     let mut req = tests::request("be brief");
     req.messages = vec![ChatMessage {
         role: Role::User,
@@ -226,7 +237,7 @@ fn ask(lab: &Lab, tools: bool) -> ChatRequest {
     req
 }
 
-async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
+pub(super) async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
     timeout(Duration::from_secs(10), rx.recv())
         .await
         .expect("an event within 10 s")
@@ -234,7 +245,7 @@ async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
 }
 
 /// Events up to and including the final one.
-async fn finish(rx: &mut mpsc::Receiver<Tagged>) -> Vec<StreamEvent> {
+pub(super) async fn finish(rx: &mut mpsc::Receiver<Tagged>) -> Vec<StreamEvent> {
     let mut events = Vec::new();
     loop {
         let (_, _, event) = next(rx).await;
@@ -246,7 +257,9 @@ async fn finish(rx: &mut mpsc::Receiver<Tagged>) -> Vec<StreamEvent> {
     }
 }
 
-async fn next_call(rx: &mut mpsc::Receiver<Tagged>) -> (u64, CallId, Option<ApprovalAsk>) {
+pub(super) async fn next_call(
+    rx: &mut mpsc::Receiver<Tagged>,
+) -> (u64, CallId, Option<ApprovalAsk>) {
     loop {
         if let (_, turn, StreamEvent::ToolCall { id, approval, .. }) = next(rx).await {
             return (turn, id, approval.map(|ask| *ask));
@@ -254,7 +267,7 @@ async fn next_call(rx: &mut mpsc::Receiver<Tagged>) -> (u64, CallId, Option<Appr
     }
 }
 
-fn tool_calls(events: &[StreamEvent]) -> usize {
+pub(super) fn tool_calls(events: &[StreamEvent]) -> usize {
     events
         .iter()
         .filter(|e| matches!(e, StreamEvent::ToolCall { .. }))
@@ -416,6 +429,40 @@ async fn the_round_cap_ends_the_turn_with_a_system_line_and_idle() {
     assert_eq!(events[n - 1], done());
 }
 
+// Spec (chat-engines): the cap is 8 rounds, and 24 once a coding family is on.
+#[test]
+fn the_round_limit_follows_the_coding_families() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    assert_eq!(ollama::max_rounds(FamilySet::LEGACY), 8);
+    assert_eq!(ollama::max_rounds(FamilySet::EMPTY), 8);
+    for family in [
+        Family::Search,
+        Family::Write,
+        Family::Exec,
+        Family::Git,
+        Family::GitWrite,
+    ] {
+        assert_eq!(
+            ollama::max_rounds(FamilySet::LEGACY.with(family)),
+            24,
+            "{family:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_coding_family_raises_the_round_cap_of_a_turn() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let fake = fake(vec![calls("find_dir", json!({"query": "curso"}))]).await;
+    let mut lab = lab(fake.port);
+    let mut request = ask(&lab, true);
+    request.families = FamilySet::LEGACY.with(Family::Search);
+    lab.chats.send(pane(1), 1, request);
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 24);
+    assert_eq!(tool_calls(&events), 23);
+}
+
 // Cancel -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -520,6 +567,27 @@ async fn the_retry_is_made_once_and_only_for_a_400() {
     assert!(
         matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 500"))
     );
+}
+
+// The fallback of Ollama stays a plain 400, with no notice: a 5xx that names
+// tools or jinja is an ordinary error there.
+#[tokio::test]
+async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice() {
+    let server_error = fake(vec![status(500, "tools param requires --jinja flag")]).await;
+    let mut lab_a = lab(server_error.port);
+    lab_a.chats.send(pane(1), 1, ask(&lab_a, true));
+    let events = finish(&mut lab_a.rx).await;
+    assert_eq!(server_error.bodies().len(), 1, "no retry");
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 500"))
+    );
+    assert!(!events.iter().any(|e| matches!(e, StreamEvent::Notice(_))));
+
+    let rejected = fake(vec![status(400, "no tools"), text("plain")]).await;
+    let mut lab_b = lab(rejected.port);
+    lab_b.chats.send(pane(1), 1, ask(&lab_b, true));
+    let events = finish(&mut lab_b.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("plain".into()), done()]);
 }
 
 // Approvals --------------------------------------------------------------------
@@ -699,7 +767,7 @@ async fn the_answer_cap_covers_the_whole_turn_and_stops_the_loop() {
     assert_eq!(tool_calls(&events), 0);
 }
 
-fn direct(
+pub(super) fn direct(
     lab: &Lab,
 ) -> (
     mpsc::Sender<StreamEvent>,

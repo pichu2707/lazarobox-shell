@@ -2,8 +2,16 @@
 //! system can confine a CLI, and exactly which paths a confined CLI may
 //! touch. Everything here is pure; the probe and the helper that applies the
 //! rules live in `runtime::jail`.
+//!
+//! On macOS a program that can be run must not be writable (Seatbelt unions
+//! its rules), so a layout whose binary sits in the writable state dir is
+//! refused. The one exception is codex's standalone install under
+//! `<state>/packages`: that folder is carved out of the state dir's write
+//! grant ([`JailSpec::rw_except`]), so codex runs there but cannot update
+//! itself inside the jail.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
@@ -22,6 +30,15 @@ pub const NOT_ENFORCED_EXIT: i32 = 125;
 /// The line (start of a stderr line) the helper prints with that status. A CLI
 /// can exit 125 on its own, so the status alone is not proof of a jail error.
 pub const NOT_ENFORCED_MARKER: &str = "lazarobox-jail: jail not enforced";
+
+/// The variable that names the descriptor the helper reports "jail not
+/// enforced" on, for a parent that cannot trust the program's own output (a
+/// program can print the marker and exit 125 itself). The descriptor is
+/// closed by the `exec` of the program, so only the helper can write to it.
+pub const STATUS_FD_VAR: &str = "LAZAROBOX_JAIL_STATUS_FD";
+
+/// The descriptor number the parent hands the status pipe on.
+pub const STATUS_FD: i32 = 3;
 
 /// First argument of the re-exec'd binary that selects the helper.
 pub const SUBCOMMAND: &str = "__jail-exec";
@@ -81,6 +98,20 @@ impl SeatbeltFault {
 pub enum JailSupport {
     Available { backend: Backend, abi: u32 },
     Unavailable(JailOff),
+}
+
+impl JailSupport {
+    /// Whether `run_command` may run here: only the Landlock jail confines a
+    /// toolchain run (design D18), not the macOS one.
+    pub fn runs_commands(self) -> bool {
+        matches!(
+            self,
+            Self::Available {
+                backend: Backend::Landlock,
+                ..
+            }
+        )
+    }
 }
 
 /// Why this system cannot jail a CLI at all.
@@ -241,7 +272,10 @@ const ARG_UNKNOWN_FLAG: &str = "unknown flag";
 const ARG_RELATIVE_RULE: &str = "rule paths must be absolute";
 const ARG_NO_PROGRAM: &str = "no program after `--`";
 const ARG_RELATIVE_PROGRAM: &str = "the program must be an absolute path";
-const ARG_REASONS: [&str; 7] = [
+const ARG_BAD_NET_BIND: &str = "--net-bind takes only `open`";
+const ARG_BAD_RLIMITS: &str = "--rlimits takes only `toolchain`";
+const ARG_BAD_ARG0: &str = "--arg0 takes a plain name";
+const ARG_REASONS: [&str; 10] = [
     ARG_NO_SEPARATOR,
     ARG_NO_VALUE,
     ARG_BAD_ABI,
@@ -249,12 +283,19 @@ const ARG_REASONS: [&str; 7] = [
     ARG_RELATIVE_RULE,
     ARG_NO_PROGRAM,
     ARG_RELATIVE_PROGRAM,
+    ARG_BAD_NET_BIND,
+    ARG_BAD_RLIMITS,
+    ARG_BAD_ARG0,
 ];
 
 /// The macOS helper's other fixed texts (`runtime::jail::seatbelt`).
 pub const MIN_ABI_REASON: &str = "--min-abi is Linux only";
 pub const PROFILE_REASON: &str = "the macOS profile could not be built";
 pub const EXEC_FAILED_REASON: &str = "/usr/bin/sandbox-exec could not be started";
+/// The helper's refusal of an `rwx` root that fails [`JailSpec::check_exec`].
+pub const RWX_REASON: &str = "the rwx root is not allowed";
+/// The helper could not set a resource limit.
+pub const RLIMIT_REASON: &str = "a resource limit could not be set";
 
 /// The reasons the helper can print that are safe to show, as the user will
 /// read them. The helper builds them from numbers and fixed text; everything
@@ -272,10 +313,16 @@ fn known_helper_reason(said: &str) -> Option<String> {
     if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
         return Some(JailOff::NoLandlock(abi).text());
     }
-    if let Some(fixed) = [MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON]
-        .into_iter()
-        .chain(ARG_REASONS)
-        .find(|text| *text == said)
+    if let Some(fixed) = [
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+        RLIMIT_REASON,
+    ]
+    .into_iter()
+    .chain(ARG_REASONS)
+    .find(|text| *text == said)
     {
         return Some(fixed.to_owned());
     }
@@ -732,7 +779,7 @@ const BROAD_MACOS: &[&str] = &[
 /// otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
 /// most systems, which is why it is not listed. `/lib` and `/lib64` are
 /// libraries (and links to `/usr/lib`).
-const LINUX_RO: [&str; 7] = [
+pub(crate) const LINUX_RO: [&str; 7] = [
     "/usr/lib",
     "/usr/share",
     "/lib",
@@ -743,17 +790,17 @@ const LINUX_RO: [&str; 7] = [
 ];
 
 /// Every system but macOS: `/proc` files that runtimes read for the CPU and memory count.
-const LINUX_RO_FILES: [&str; 3] = ["/proc/cpuinfo", "/proc/meminfo", "/proc/stat"];
+pub(crate) const LINUX_RO_FILES: [&str; 3] = ["/proc/cpuinfo", "/proc/meminfo", "/proc/stat"];
 
 /// Device files every system gives a jailed CLI: randomness, read-only.
-const DEV_RO_FILES: [&str; 2] = ["/dev/urandom", "/dev/random"];
+pub(crate) const DEV_RO_FILES: [&str; 2] = ["/dev/urandom", "/dev/random"];
 
 /// The device file every system gives a jailed CLI to write to.
-const DEV_RW_FILE: &str = "/dev/null";
+pub(crate) const DEV_RW_FILE: &str = "/dev/null";
 
 /// Files under `/etc` that name resolution and TLS clocks need, and that a
 /// distribution may link to another place.
-const ETC_LINKS: [&str; 4] = [
+pub(crate) const ETC_LINKS: [&str; 4] = [
     "/etc/resolv.conf",
     "/etc/hosts",
     "/etc/nsswitch.conf",
@@ -852,45 +899,70 @@ pub(crate) fn is_scratch(path: &Path) -> bool {
 /// Whether granting `path` to `cli` would open far more than its own files:
 /// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
 /// tool's credential folder, a shared data folder of `$HOME` or a system or
-/// mount folder.
+/// mount folder. On macOS the letter case does not count, as on its default
+/// file system: `~/library/keychains` is the keychain folder.
 fn too_broad(path: &Path, homes: &[&Path], cli: Cli, os: Os) -> bool {
     let macos: &[&str] = if os == Os::Macos { BROAD_MACOS } else { &[] };
+    let path = &fold(path, os);
     is_scratch(path)
-        || BROAD.iter().chain(macos).any(|b| path == Path::new(b))
+        || BROAD
+            .iter()
+            .chain(macos)
+            .any(|b| *path == fold(Path::new(b), os))
         || homes
             .iter()
-            .any(|home| too_broad_for_home(path, home, cli, os))
+            .any(|home| too_broad_for_home(path, &fold(home, os), cli, os))
 }
 
+/// Whether a project root or toolchain folder is a broad place, for any CLI's
+/// credential folder: `$HOME` or above it, a scratch folder, a system folder,
+/// or a credential folder of any CLI. Linux rules; `homes` holds both
+/// spellings of `$HOME`.
+pub(crate) fn broad_place(path: &Path, homes: &[&Path]) -> bool {
+    [Cli::Claude, Cli::Codex, Cli::Gemini]
+        .into_iter()
+        .any(|cli| too_broad(path, homes, cli, Os::Linux))
+}
+
+/// `path` in lower case on macOS, where the file system ignores letter case;
+/// unchanged elsewhere. Both sides of a comparison go through it.
+fn fold(path: &Path, os: Os) -> PathBuf {
+    match os {
+        Os::Macos => PathBuf::from(path.to_string_lossy().to_lowercase()),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `path` and `home` are already [`fold`]ed.
 fn too_broad_for_home(path: &Path, home: &Path, cli: Cli, os: Os) -> bool {
     let (credentials, shared): (&[&str], &[&str]) = if os == Os::Macos {
         (CREDENTIAL_DIRS_MACOS, SHARED_IN_HOME_MACOS)
     } else {
         (&[], &[])
     };
+    let at = |dir: &str| fold(&home.join(dir), os);
     home.starts_with(path)
-        || path.starts_with(home.join(".ssh"))
-        || path.starts_with(home.join(".gnupg"))
+        || path.starts_with(at(".ssh"))
+        || path.starts_with(at(".gnupg"))
         || CREDENTIAL_DIRS
             .iter()
             .chain(credentials)
             .filter(|d| **d != cli.own_dir())
-            .any(|d| path.starts_with(home.join(d)))
-        || SHARED_IN_HOME
-            .iter()
-            .chain(shared)
-            .any(|d| path == home.join(d))
+            .any(|d| path.starts_with(at(d)))
+        || SHARED_IN_HOME.iter().chain(shared).any(|d| path == at(d))
         || (os == Os::Macos && in_library_not_allowed(path, home))
 }
 
 /// Whether `path` is at or under `~/Library` and not at or under an allowed
-/// place. The credential folders are checked apart, so they stay refused even
-/// if an allowed place ever overlapped one.
+/// place, without letter case (`path` and `home` are [`fold`]ed). The
+/// credential folders are checked apart, so they stay refused even if an
+/// allowed place ever overlapped one.
 fn in_library_not_allowed(path: &Path, home: &Path) -> bool {
-    path.starts_with(home.join(LIBRARY_MACOS))
+    let at = |dir: &str| fold(&home.join(dir), Os::Macos);
+    path.starts_with(at(LIBRARY_MACOS))
         && !LIBRARY_ALLOWED_MACOS
             .iter()
-            .any(|allowed| path.starts_with(home.join(allowed)))
+            .any(|allowed| path.starts_with(at(allowed)))
 }
 
 /// Why a layout cannot be jailed.
@@ -906,7 +978,7 @@ pub enum SpecError {
     Overlap { rx: PathBuf, rw: PathBuf },
 }
 
-fn is_canonical_form(path: &Path) -> bool {
+pub(crate) fn is_canonical_form(path: &Path) -> bool {
     path.is_absolute()
         && !path
             .as_os_str()
@@ -962,15 +1034,67 @@ pub struct ShimGrant {
 /// The paths a jailed CLI may use.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct JailSpec {
+    /// Read, write and execute: the one project root of a toolchain run
+    /// (`target/`, `node_modules/` and `.venv` live in it). Empty for every
+    /// CLI spec. Execute may appear only here and in `rx` (R29).
+    pub rwx: Vec<PathBuf>,
     /// Read and execute: single files, or the CLI's own package folder.
     pub rx: Vec<PathBuf>,
     pub ro: Vec<PathBuf>,
     pub rw: Vec<PathBuf>,
     pub ro_files: Vec<PathBuf>,
     pub rw_files: Vec<PathBuf>,
+    /// Folders inside an `rw` one that stay read-only. Only the macOS profile
+    /// can carve them out (a later `deny file-write*` beats the allow);
+    /// Landlock cannot, so Linux never gets one.
+    pub rw_except: Vec<PathBuf>,
+    pub net_bind: NetBind,
+    pub rlimits: Rlimits,
 }
 
-fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
+/// Whether the jailed program may listen on TCP (Landlock ABI 4+; below that
+/// nothing is mediated). Closed unless a toolchain run asks for a dev server.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NetBind {
+    #[default]
+    Closed,
+    Open,
+}
+
+/// The resource limits the helper sets before `exec`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rlimits {
+    #[default]
+    None,
+    Toolchain,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limit {
+    Core,
+    FileSize,
+    CpuSeconds,
+}
+
+impl Rlimits {
+    /// Each limit with the value used for both its soft and hard bound.
+    pub fn limits(self) -> &'static [(Limit, u64)] {
+        match self {
+            Rlimits::None => &[],
+            Rlimits::Toolchain => &[
+                (Limit::Core, 0),
+                (Limit::FileSize, 4 << 30),
+                (Limit::CpuSeconds, 1200),
+            ],
+        }
+    }
+}
+
+/// The folder of a codex state dir that holds the standalone installer's
+/// binaries (`packages/standalone/releases/<version>/bin`).
+const CODEX_PACKAGES: &str = "packages";
+
+pub(crate) fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
     if !list.contains(&path) {
         list.push(path);
     }
@@ -1072,6 +1196,12 @@ pub fn jail_spec_for(
         Cli::Gemini => (layout.home.join(".gemini"), None),
     };
     let state = resolved(state);
+    // Only a real folder inside the state dir can be carved out: a link, or
+    // one that resolves elsewhere, would put the exception outside every rw
+    // dir, and its name could be replaced by the jail.
+    let packages = (layout.cli == Cli::Codex)
+        .then(|| state.join(CODEX_PACKAGES))
+        .filter(|packages| resolved(packages.clone()) == *packages);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
         if too_broad(path, &homes, layout.cli, os) {
@@ -1105,6 +1235,17 @@ pub fn jail_spec_for(
     }
     push_unique(&mut spec.rw, state);
     push_unique(&mut spec.rw, layout.tmp.clone());
+    // Codex's standalone installer keeps the binary inside the state dir. That
+    // folder stays readable and executable, but never writable: a CLI that
+    // could rewrite its own binary would escape on the next run. Only added
+    // when the CLI itself (not a helper) lives there, so other layouts keep the same
+    // profile, and only on macOS, the one system that can carve it out.
+    if os == Os::Macos
+        && let Some(packages) = packages
+        && layout.binary.starts_with(&packages)
+    {
+        push_unique(&mut spec.rw_except, packages);
+    }
     if os != Os::Macos {
         spec.ro_files.extend(LINUX_RO_FILES.map(PathBuf::from));
     }
@@ -1140,34 +1281,114 @@ pub fn jail_spec_for(
         push_unique(&mut spec.rw_files, shim.socket.clone());
     }
     if os == Os::Macos
-        && let Some((rx, rw)) = writable_executable(&spec)
+        && let Some((rx, rw)) = writable_executable(&spec, os)
     {
         return Err(SpecError::Overlap { rx, rw });
     }
     Ok(spec)
 }
 
-/// The first execute path that is equal to, under or over a writable one.
-fn writable_executable(spec: &JailSpec) -> Option<(PathBuf, PathBuf)> {
-    spec.rx.iter().find_map(|rx| {
-        spec.rw
+/// The first write exception that is not a strict descendant of an `rw`
+/// folder. The profile pins the folders above an exception, and that only makes
+/// sense when an `rw` folder holds it.
+#[cfg(test)]
+pub(crate) fn except_outside_rw(spec: &JailSpec) -> Option<PathBuf> {
+    spec.rw_except
+        .iter()
+        .find(|e| !spec.rw.iter().any(|w| *e != w && e.starts_with(w)))
+        .cloned()
+}
+
+/// The first execute path (`rx` or the `rwx` root) that is equal to, under or
+/// over a writable one, without letter case on macOS (see [`fold`]). An execute
+/// path under a write exception that is itself inside that writable folder is not writable, so it
+/// does not count; a writable file never gets that, and neither does a program
+/// over the folder.
+pub(crate) fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
+    // The exemption compares exactly: on a case-sensitive file system a case
+    // variant of the exception is another, writable folder the deny misses.
+    let excepted = |rx: &Path, rw: &Path| {
+        spec.rw_except
             .iter()
-            .chain(&spec.rw_files)
-            .find(|rw| rx.starts_with(rw) || rw.starts_with(rx))
-            .map(|rw| (rx.clone(), rw.clone()))
+            .any(|e| e.starts_with(rw) && rx.starts_with(e))
+    };
+    spec.rx.iter().chain(&spec.rwx).find_map(|rx| {
+        let x = fold(rx, os);
+        let in_dir = spec.rw.iter().find(|rw| {
+            let w = fold(rw, os);
+            (x.starts_with(&w) && !excepted(rx, rw)) || w.starts_with(&x)
+        });
+        let in_file = || {
+            spec.rw_files.iter().find(|rw| {
+                let w = fold(rw, os);
+                x.starts_with(&w) || w.starts_with(&x)
+            })
+        };
+        in_dir.or_else(in_file).map(|rw| (rx.clone(), rw.clone()))
     })
 }
 
+/// Why a spec breaks the execute rule (R29: execute only in `rx` or in the
+/// single `rwx` root).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ExecFault {
+    /// More than one `rwx` root.
+    ManyRwx(usize),
+    /// The `rwx` root is not absolute or holds a `.` or `..` segment.
+    NotCanonical(PathBuf),
+    /// The `rwx` root is `/`, `$HOME`, a system or credential folder or
+    /// another broad place: it would run and write far more than a project.
+    TooBroad(PathBuf),
+    /// Seatbelt does not render `rwx` yet: `run_command` is Linux only.
+    Macos,
+    /// An execute path (`rx` or `rwx`) is equal to, under or over a writable
+    /// one: what the program writes there it could then run (R29).
+    WritableExec { rx: PathBuf, rw: PathBuf },
+}
+
 impl JailSpec {
+    /// Every path the jailed program may execute from: `rx`, then the `rwx`
+    /// root. No other class carries the execute right.
+    pub fn exec_paths(&self) -> Vec<PathBuf> {
+        self.rx.iter().chain(&self.rwx).cloned().collect()
+    }
+
+    /// Checks the `rwx` class. A CLI spec has none and always passes. On macOS
+    /// an `rwx` root is refused until the Seatbelt renderer grants toolchains.
+    /// `homes` holds both spellings of `$HOME`, for the broad-place rule.
+    pub fn check_exec(&self, os: Os, homes: &[&Path]) -> Result<(), ExecFault> {
+        let Some(root) = self.rwx.first() else {
+            return Ok(());
+        };
+        if os == Os::Macos {
+            return Err(ExecFault::Macos);
+        }
+        if self.rwx.len() > 1 {
+            return Err(ExecFault::ManyRwx(self.rwx.len()));
+        }
+        if !is_canonical_form(root) {
+            return Err(ExecFault::NotCanonical(root.clone()));
+        }
+        if root.parent().is_none() || broad_place(root, homes) {
+            return Err(ExecFault::TooBroad(root.clone()));
+        }
+        if let Some((rx, rw)) = writable_executable(self, os) {
+            return Err(ExecFault::WritableExec { rx, rw });
+        }
+        Ok(())
+    }
+
     /// Keeps only the paths for which `exists` is true: a missing folder gets
     /// no rule, and the CLI then reports its own login error.
     pub fn retain_existing(mut self, exists: impl Fn(&Path) -> bool) -> Self {
         for list in [
+            &mut self.rwx,
             &mut self.rx,
             &mut self.ro,
             &mut self.rw,
             &mut self.ro_files,
             &mut self.rw_files,
+            &mut self.rw_except,
         ] {
             list.retain(|p| exists(p));
         }
@@ -1180,6 +1401,12 @@ impl JailSpec {
 pub struct JailArgs {
     /// Test-only: refuse to run below this ABI (exit 125).
     pub min_abi: Option<u32>,
+    /// The name the program sees as its own (`argv[0]`), when it is not its
+    /// path: a proxy like `cargo` is a link to `rustup`, which picks what to
+    /// do from the name it is run as. A plain name, set from a fixed list by
+    /// the caller, never from model input. Linux only: `sandbox-exec` starts
+    /// the program itself, so on macOS the program runs under its path.
+    pub arg0: Option<OsString>,
     pub spec: JailSpec,
     pub program: PathBuf,
     pub argv: Vec<OsString>,
@@ -1196,17 +1423,28 @@ impl JailArgs {
         if let Some(abi) = self.min_abi {
             out.extend([OsString::from("--min-abi"), OsString::from(abi.to_string())]);
         }
+        if let Some(name) = &self.arg0 {
+            out.extend([OsString::from("--arg0"), name.clone()]);
+        }
         let lists = [
+            ("--rwx", &self.spec.rwx),
             ("--rx", &self.spec.rx),
             ("--ro", &self.spec.ro),
             ("--rw", &self.spec.rw),
             ("--ro-file", &self.spec.ro_files),
             ("--rw-file", &self.spec.rw_files),
+            ("--rw-except", &self.spec.rw_except),
         ];
         for (flag, paths) in lists {
             for path in paths {
                 out.extend([OsString::from(flag), path.clone().into_os_string()]);
             }
+        }
+        if self.spec.net_bind == NetBind::Open {
+            out.extend([OsString::from("--net-bind"), OsString::from("open")]);
+        }
+        if self.spec.rlimits == Rlimits::Toolchain {
+            out.extend([OsString::from("--rlimits"), OsString::from("toolchain")]);
         }
         out.extend([OsString::from("--"), self.program.clone().into_os_string()]);
         out.extend(self.argv.iter().cloned());
@@ -1219,6 +1457,7 @@ impl JailArgs {
 pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     let mut spec = JailSpec::default();
     let mut min_abi = None;
+    let mut arg0 = None;
     let mut it = args.iter();
     loop {
         let flag = it.next().ok_or(ArgError(ARG_NO_SEPARATOR))?;
@@ -1231,12 +1470,36 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
             min_abi = Some(abi.ok_or(ArgError(ARG_BAD_ABI))?);
             continue;
         }
+        if flag == "--arg0" {
+            let bytes = value.as_bytes();
+            if bytes.is_empty() || bytes.contains(&b'/') || bytes.contains(&0) {
+                return Err(ArgError(ARG_BAD_ARG0));
+            }
+            arg0 = Some(value.clone());
+            continue;
+        }
+        if flag == "--net-bind" {
+            match value.to_str() {
+                Some("open") => spec.net_bind = NetBind::Open,
+                _ => return Err(ArgError(ARG_BAD_NET_BIND)),
+            }
+            continue;
+        }
+        if flag == "--rlimits" {
+            match value.to_str() {
+                Some("toolchain") => spec.rlimits = Rlimits::Toolchain,
+                _ => return Err(ArgError(ARG_BAD_RLIMITS)),
+            }
+            continue;
+        }
         let list = match flag.to_str() {
+            Some("--rwx") => &mut spec.rwx,
             Some("--rx") => &mut spec.rx,
             Some("--ro") => &mut spec.ro,
             Some("--rw") => &mut spec.rw,
             Some("--ro-file") => &mut spec.ro_files,
             Some("--rw-file") => &mut spec.rw_files,
+            Some("--rw-except") => &mut spec.rw_except,
             _ => return Err(ArgError(ARG_UNKNOWN_FLAG)),
         };
         let path = PathBuf::from(value);
@@ -1251,6 +1514,7 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     }
     Ok(JailArgs {
         min_abi,
+        arg0,
         spec,
         program,
         argv: it.cloned().collect(),
