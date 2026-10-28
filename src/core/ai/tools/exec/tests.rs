@@ -227,6 +227,31 @@ fn the_fallback_names_the_token_and_the_reason() {
     assert_eq!(why("ls a^b"), "character not allowed");
 }
 
+// T2b: a lone `-` is stdin for grep and rg, which would wait on the terminal.
+// It falls back for every verb, naming the dash and never its text.
+#[test]
+fn a_lone_dash_falls_back_for_every_verb() {
+    for text in [
+        "cd -",
+        "pwd -",
+        "ls -",
+        "ls -la -",
+        "tree -",
+        "tree -L 2 -",
+        "grep foo -",
+        "grep -rn foo src -",
+        "rg foo -",
+        "rg -n foo -",
+        "find -",
+        "find . -name x -",
+    ] {
+        let f = parse(text).expect_err(text);
+        assert_eq!(&text[f.at.clone()], "-", "{text}");
+        assert_eq!(f.why, "a bare dash is not a path", "{text}");
+    }
+    assert_eq!(why("rg foo '-'"), "quoted word starts with a dash");
+}
+
 fn targets(text: &str) -> Vec<(&str, Want)> {
     (parse(text).unwrap().targets())
         .map(|t| (t.input, t.want))
@@ -308,13 +333,28 @@ fn targets_say_what_the_root_and_the_search_walk_judge() {
         roles("grep -rn foo src"),
         [(".", Existing, false, false), ("src", Home, true, true)]
     );
-    assert_eq!(roles("find"), [(".", Existing, true, false)]);
+    // T2b: find lists the names below what it walks, so a secret root
+    // there counts like for a search.
+    assert_eq!(roles("find"), [(".", Existing, true, true)]);
     assert_eq!(
         roles("find src -name Cargo.toml -type f -maxdepth 2"),
+        [(".", Existing, false, false), ("src", Existing, true, true)]
+    );
+    assert_eq!(
+        roles("find ~ -maxdepth 2"),
+        [(".", Existing, false, false), ("~", Existing, true, true)]
+    );
+    // `-r` makes only grep walk: `ls -r` reverses the order.
+    assert_eq!(
+        roles("ls -r src"),
         [
             (".", Existing, false, false),
             ("src", Existing, true, false)
         ]
+    );
+    assert_eq!(
+        roles("grep -r foo src"),
+        [(".", Existing, false, false), ("src", Home, true, true)]
     );
 }
 

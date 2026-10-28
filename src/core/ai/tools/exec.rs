@@ -89,7 +89,7 @@ struct Spec {
     verb: Verb,
     /// Short flags that may be bundled (`-la`).
     flags: &'static [u8],
-    /// Whole flag words (`--oneline`).
+    /// Whole flag words (`--line-number`).
     long: &'static [&'static str],
     /// Flags that take the next word as their value.
     valued: &'static [(&'static str, Value)],
@@ -99,7 +99,10 @@ struct Spec {
     paths: Range<usize>,
 }
 
-const NONE: Spec = Spec {
+/// The defaults every spec in [`SPECS`] starts from and overrides: no flag,
+/// no pattern, and up to [`MAX_WORDS`] paths. `name` and `verb` are
+/// placeholders; every spec sets its own.
+const BASE: Spec = Spec {
     name: "",
     verb: Verb::Pwd,
     flags: b"",
@@ -122,20 +125,20 @@ const SPECS: [Spec; 7] = [
         name: "cd",
         verb: Verb::Cd,
         paths: 0..2,
-        ..NONE
+        ..BASE
     },
     Spec {
         name: "pwd",
         verb: Verb::Pwd,
         paths: 0..1,
-        ..NONE
+        ..BASE
     },
     Spec {
         name: "ls",
         verb: Verb::Ls,
         flags: b"lahtr1",
         paths: 0..5,
-        ..NONE
+        ..BASE
     },
     Spec {
         name: "tree",
@@ -143,7 +146,7 @@ const SPECS: [Spec; 7] = [
         flags: b"d",
         valued: &[("-L", Value::Depth)],
         paths: 0..2,
-        ..NONE
+        ..BASE
     },
     // No `-R` (it follows links below) and no `-f` (patterns from a file).
     // A path is required: without one, grep reads the terminal and waits.
@@ -154,7 +157,7 @@ const SPECS: [Spec; 7] = [
         valued: &CONTEXT,
         pattern: true,
         paths: 1..MAX_WORDS,
-        ..NONE
+        ..BASE
     },
     // No `--pre`, `-z` (both run programs), `-L`, `-u`, `--hidden` or
     // `--no-ignore` (they widen what is read), `-f` or `-r`.
@@ -182,7 +185,7 @@ const SPECS: [Spec; 7] = [
             ("--max-depth", Value::Number),
         ],
         pattern: true,
-        ..NONE
+        paths: 0..MAX_WORDS,
     },
     // Tests and depth only: no action (`-exec`, `-delete`, `-fprint`, `-ok`)
     // and no `-L`.
@@ -196,7 +199,8 @@ const SPECS: [Spec; 7] = [
             ("-maxdepth", Value::Number),
             ("-mindepth", Value::Number),
         ],
-        ..NONE
+        paths: 0..MAX_WORDS,
+        ..BASE
     },
 ];
 
@@ -247,14 +251,19 @@ impl<'a> SafeCommand<'a> {
         let (roles, words) = (self.roles, self.words);
         let paths = (0..self.len).filter(move |&k| roles[k] == Role::Path);
         let none = paths.clone().next().is_none();
-        let recursive = (1..self.len).any(|k| {
-            self.roles[k] == Role::Flag && !self.words[k].starts_with("--") && {
-                self.words[k].contains('r')
-            }
-        });
-        // What the arguments are for: names only, or the text of files.
+        // Only grep reads `-r` (walk the folders): other verbs give the letter
+        // another meaning (`ls -r` reverses), and rg always walks.
+        let recursive = self.verb == Verb::Grep
+            && (1..self.len).any(|k| {
+                self.roles[k] == Role::Flag
+                    && !self.words[k].starts_with("--")
+                    && self.words[k].contains('r')
+            });
+        // What the arguments are for: names only, or the text of files. find
+        // walks too: it lists the names below what it is given.
         let (want, searched) = match self.verb {
-            Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Find => (Want::Existing, false),
+            Verb::Cd | Verb::Pwd | Verb::Ls => (Want::Existing, false),
+            Verb::Find => (Want::Existing, true),
             Verb::Tree => (Want::Home, false),
             Verb::Grep => (Want::Home, recursive),
             Verb::Rg => (Want::Home, true),
@@ -282,7 +291,8 @@ pub struct Target<'a> {
     pub want: Want,
     /// The command acts on it: it must stay in the chat's root.
     pub confined: bool,
-    /// A search reads the files below it (a folder is walked).
+    /// A folder is walked: a search reads the files below it, `find` lists
+    /// their names.
     pub searched: bool,
 }
 
@@ -477,6 +487,11 @@ fn finish<'a>(
                 return Err(fallback(at(word), "flag not allowed"));
             }
         } else if let Some(flags) = word.strip_prefix('-') {
+            // A lone `-` is stdin for grep and rg, never an empty bundle of
+            // flags (`check_word` refuses it first; this keeps it refused).
+            if flags.is_empty() {
+                return Err(fallback(at(word), "a bare dash is not a path"));
+            }
             if !flags.bytes().all(|b| spec.flags.contains(&b)) {
                 return Err(fallback(at(word), "flag not allowed"));
             }

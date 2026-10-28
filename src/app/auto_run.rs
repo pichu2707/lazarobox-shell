@@ -143,7 +143,12 @@ impl App {
         target: PaneId,
         command: &str,
     ) -> Vec<Effect> {
-        let mut scope = run_scope(None, "");
+        // Without the chat's state, fail closed: a cloud chat rooted at `/`
+        // makes every check ask (BROAD_ROOT).
+        let mut scope = RunScope {
+            root: PathBuf::from("/"),
+            cloud: true,
+        };
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.note_auto_typed();
             scope = run_scope(chat.origin_cwd(), chat.stream_engine());

@@ -210,11 +210,14 @@ fn a_search_that_could_write_or_run_a_program_asks() {
 }
 
 // L22, L14: a check that finds the command outside the chat's folder, or a
-// cloud chat under HOME or `/`, opens the prompt with the reason. Asking is
-// not the model's fault: it never pauses the run.
+// cloud chat under HOME or `/`, opens the prompt with the reason; so does a
+// searched folder too large to check (T2b). Asking is not the model's fault:
+// it never pauses the run.
 #[test]
 fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
-    for reason in [OUTSIDE_ROOT, BROAD_ROOT] {
+    // `runtime::run_check::TOO_LARGE`, private to the runtime.
+    const TOO_LARGE: &str = "the folder is too large to check";
+    for reason in [OUTSIDE_ROOT, BROAD_ROOT, TOO_LARGE] {
         let (mut a, turn) = run_live();
         for call in 1..=MAX_RUN_FALLBACKS as u64 {
             announce(&mut a, turn, call, run("ls /srv"));

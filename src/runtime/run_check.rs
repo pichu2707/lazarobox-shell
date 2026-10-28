@@ -31,10 +31,10 @@ use crate::{
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const TIMED_OUT: &str = "the path check did not finish in time";
 const NO_ROOTS: &str = "the secret locations cannot be read";
-/// Why a recursive search does not run on its own: its folder holds more
-/// entries than the check looks at.
+/// Why a search does not run on its own: its folder holds more entries than
+/// the check looks at.
 pub const TOO_LARGE: &str = "the folder is too large to check";
-/// The most entries the check of a recursive `grep` looks at.
+/// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
 
 /// What the check reads from the process: the same environment the read tools
@@ -84,10 +84,13 @@ impl Checker {
 /// real directory it goes to.
 ///
 /// In order: a cloud chat whose root is HOME or `/` runs nothing on its own
-/// ([`BROAD_ROOT`]); a refused path, or a search that would read a sensitive
-/// file below the folder it walks, is [`NOT_ALLOWED`]; a path the command
-/// acts on outside the root is [`OUTSIDE_ROOT`]. Each one opens the prompt;
-/// only [`NOT_ALLOWED`] counts toward the pause.
+/// ([`BROAD_ROOT`]); then, path by path, a refused path, a walk (`find` or a
+/// search) that reaches a secret root, or a search that would read a
+/// sensitive file below the folder it walks, is [`NOT_ALLOWED`], and a
+/// searched folder with more than [`MAX_SEARCHED`] entries is [`TOO_LARGE`];
+/// last, a path the command acts on outside the root is [`OUTSIDE_ROOT`].
+/// Each one opens the prompt; only [`NOT_ALLOWED`] counts toward the pause,
+/// [`TOO_LARGE`] does not.
 pub fn check(
     env: &ToolEnv,
     call: CallId,
@@ -119,7 +122,7 @@ pub fn check(
         if target.confined && !real.starts_with(&root) {
             outside = true;
         } else if target.searched
-            && let Err(reason) = searchable(&roots, &real, safe.verb() == Verb::Grep)
+            && let Err(reason) = searchable(&roots, &real, safe.verb())
         {
             return refused(reason);
         }
@@ -137,18 +140,26 @@ pub fn check(
     }
 }
 
-/// Whether a search may read the files below `real`, a resolved path: no
-/// secret root lies below it, and, for `grep -r`, which reads hidden files
-/// too, no entry it would read is sensitive by name, position or as a git
-/// setting. `rg` skips hidden entries by default and its flags that read them
-/// are not allowed, so only the secret roots are looked for. Links are not
-/// followed, as neither tool follows them below its arguments. A folder with
-/// more than [`MAX_SEARCHED`] entries is not looked through.
-fn searchable(roots: &SecretRoots, real: &Path, hidden: bool) -> Result<(), &'static str> {
+/// Whether `verb` may walk `real`, a resolved path, on its own. No secret
+/// root may lie at or below it: `find` would list its names, a search would
+/// read its files. `find` lists names only, so an ordinary name such as
+/// `.env` does not stop it. A search also reads every file it walks, so none
+/// may be sensitive by name, position or as a git setting: `grep -r` reads
+/// hidden entries too; `rg` skips them by default (its flags that read them
+/// are not allowed), so hidden entries below `real` are not looked at, but
+/// the plain names inside a hidden folder it is given are. Links are not
+/// followed, as no verb follows them below its arguments. A folder with more
+/// than [`MAX_SEARCHED`] entries is not looked through.
+fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'static str> {
     if roots.holds_root(real) {
         return Err(NOT_ALLOWED);
     }
-    if !hidden || !real.is_dir() {
+    let hidden = match verb {
+        Verb::Grep => true,
+        Verb::Rg => false,
+        Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => return Ok(()),
+    };
+    if !real.is_dir() {
         return Ok(());
     }
     let (mut queue, mut seen) = (vec![real.to_path_buf()], 0usize);
@@ -162,6 +173,9 @@ fn searchable(roots: &SecretRoots, real: &Path, hidden: bool) -> Result<(), &'st
                 return Err(TOO_LARGE);
             }
             let (path, name) = (entry.path(), entry.file_name());
+            if !hidden && name.as_encoded_bytes().starts_with(b".") {
+                continue;
+            }
             let sensitive = is_excluded_name(&name.to_string_lossy())
                 || is_git_config(&path)
                 || !roots.judge_real(&path);
@@ -671,6 +685,93 @@ mod tests {
             "dev/big",
             "grep foo 1"
         )));
+        // T2b: rg walks the same folder before it runs, under the same cap.
+        assert_eq!(
+            reason(&run_in(&f, "dev/big", false, "dev/big", "rg foo")),
+            Some(TOO_LARGE)
+        );
+        assert!(checked(&run_in(
+            &f, "dev/big", false, "dev/big", "rg foo 1"
+        )));
+    }
+
+    // T2b: rg skips hidden entries but reads every other file below what it
+    // searches. Given a hidden folder, it reads the plain names inside it:
+    // `.git/config` may hold a credential, so the search asks (NOT_ALLOWED,
+    // the refusal that counts toward the pause).
+    #[test]
+    fn an_rg_search_that_would_read_a_secret_named_file_asks() {
+        let f = fixture();
+        project(&f);
+        for (cwd, command) in [
+            ("dev/proj", "rg url .git"),
+            ("dev/proj", "rg -n url src .git"),
+            ("dev/proj/.git", "rg url"),
+        ] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/proj", false, cwd, command)),
+                Some(NOT_ALLOWED),
+                "{command} in {cwd}"
+            );
+        }
+        // Without the git setting the same folder holds nothing secret.
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            false,
+            "dev/proj",
+            "rg url .git/hooks"
+        )));
+    }
+
+    // T2b: find lists the names below what it walks: a secret root there,
+    // `~/.ssh` here, asks (NOT_ALLOWED), as for grep and rg.
+    #[test]
+    fn find_over_a_secret_root_asks() {
+        let f = fixture();
+        project(&f);
+        for (cwd, command) in [
+            ("", "find . -name x"),
+            ("", "find"),
+            ("dev/proj", "find ~ -maxdepth 2"),
+            ("dev", "find .. -type f"),
+        ] {
+            let event = check(
+                &env(Some(&f.home)),
+                CallId(4),
+                f.home.join(cwd),
+                command,
+                &scope(&f.home, false),
+            );
+            assert_eq!(reason(&event), Some(NOT_ALLOWED), "{command} in {cwd:?}");
+        }
+    }
+
+    // T2b keeps: a plain rg search, a find inside a project, even over a
+    // `.env` it only names, and grep -r as before.
+    #[test]
+    fn plain_searches_inside_a_project_still_run() {
+        let f = fixture();
+        project(&f);
+        fs::write(f.home.join("dev/proj/README.md"), "url").unwrap();
+        for command in [
+            "rg url",
+            "rg -n url src web",
+            "find . -name main.rs",
+            "find web -name .env",
+            "find . -type f -maxdepth 3",
+            "grep -rn fn src",
+        ] {
+            let event = run_in(&f, "dev/proj", false, "dev/proj", command);
+            assert!(checked(&event), "{command}: {event:?}");
+        }
+        for command in ["grep -r TOKEN web", "grep -r url ."] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
     }
 
     // L14: under a root that is HOME or `/`, nothing a cloud engine sends
