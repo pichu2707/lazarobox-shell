@@ -1013,3 +1013,9 @@ Size: about 560 production lines added (adds+deletes about 598), over the 450 es
 - An add path with a quote is refused before the prompt (`GitError::Quote`, also `add_line` returns `None`).
 - `git commit` runs with a 120 s timeout (`COMMIT_TIMEOUT`); read verbs keep 30 s.
 - `host.rs` untouched.
+
+### G-d2 round 2 (fix agent)
+- COMMIT_HOOKS now also lists reference-transaction and post-index-change; empty case reads "no commit hooks found" (row, snapshot, tests, spec, design).
+- Failed commit: a jailed write-tree is compared with the reviewed tree; a changed index appends a notice (secret staged named, never undone).
+- Reviewed write-tree is taken before the same_staged recheck (TOCTOU). drift_notice cuts each path at 120 chars.
+- Documented limits: only HEAD's tree compared; other refs / same-tree HEAD moves / commit-msg edits not detected.
