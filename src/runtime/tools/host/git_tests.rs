@@ -982,3 +982,16 @@ async fn a_submodule_bump_hidden_by_gitmodules_is_in_the_review() {
         "{rows:?}"
     );
 }
+
+// A quote in a path would make the quoted prompt ambiguous (`'a b'` could be
+// two paths or one): refused before the prompt opens, with a fixed reason.
+#[tokio::test]
+async fn an_add_path_with_a_quote_is_refused_before_the_prompt() {
+    let Some(w) = repo_world() else { return };
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(add(&["'a", "b'"]))
+        .await;
+    assert!(out.is_error && out.text.contains("quote"), "{out:?}");
+    assert!(asks.asked().is_empty());
+}

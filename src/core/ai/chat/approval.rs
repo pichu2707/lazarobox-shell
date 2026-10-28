@@ -296,6 +296,9 @@ fn joined_paths(paths: &[String]) -> String {
 /// would be cut or changed: the host refuses such an add before it asks,
 /// because `y` must approve exactly the paths that are staged.
 pub fn add_line(paths: &[String]) -> Option<String> {
+    if paths.iter().any(|p| p.contains('\'')) {
+        return None;
+    }
     let joined = joined_paths(paths);
     let (line, cut) = flat(&joined, GIT_ADD_SHOWN);
     (cut == 0 && line == joined && !line.is_empty()).then_some(line)
@@ -1725,6 +1728,11 @@ mod tests {
             "spaces are not collapsed"
         );
         assert_eq!(add_line(&[]), None);
+        assert_eq!(
+            add_line(&paths(&["'a", "b'"])),
+            None,
+            "a quote makes the quoting ambiguous"
+        );
     }
 
     // The commit asks through the review the host builds; `ask_for` alone

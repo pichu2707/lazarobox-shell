@@ -51,6 +51,9 @@ pub enum GitError {
     Path,
     /// `add` with no path, or with more than [`MAX_ADD_PATHS`].
     PathCount,
+    /// An add path with a quote: the prompt quotes paths, so it would be
+    /// ambiguous.
+    Quote,
     /// A commit message that is empty, too long, or holds a control or bidi
     /// character.
     Message,
@@ -67,6 +70,7 @@ impl GitError {
         match self {
             Self::Path => "path not available",
             Self::PathCount => "give between 1 and 64 paths",
+            Self::Quote => "a path with a quote cannot be shown clearly in the question",
             Self::Message => "invalid commit message",
             Self::GitDir => "invalid git dir",
             Self::Identity => "invalid commit identity",
@@ -350,12 +354,18 @@ pub fn add_dry_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitErro
 }
 
 /// Whether the paths of an add are allowed: between 1 and
-/// [`MAX_ADD_PATHS`], each one inside the root and not a secret or `.git`.
+/// [`MAX_ADD_PATHS`], each one inside the root, with no quote (the prompt
+/// quotes paths) and not a secret or `.git`.
 pub fn check_add(paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() || paths.len() > MAX_ADD_PATHS {
         return Err(GitError::PathCount);
     }
-    paths.iter().try_for_each(|path| check(path))
+    paths.iter().try_for_each(|path| {
+        if path.contains('\'') {
+            return Err(GitError::Quote);
+        }
+        check(path)
+    })
 }
 
 fn add_with(dir: &GitDir, paths: &[&str], dry: bool) -> Result<Vec<String>, GitError> {
