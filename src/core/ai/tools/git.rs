@@ -466,11 +466,13 @@ pub fn commit_argv(dir: &GitDir, who: &Identity, message: &str) -> Result<Vec<St
 }
 
 /// The hooks a commit can run, in the order git runs them.
-pub const COMMIT_HOOKS: [&str; 4] = [
+pub const COMMIT_HOOKS: [&str; 6] = [
     "pre-commit",
     "prepare-commit-msg",
     "commit-msg",
     "post-commit",
+    "reference-transaction",
+    "post-index-change",
 ];
 
 /// Said when the commit made is not the one the user reviewed.
@@ -478,6 +480,24 @@ pub const DRIFT: &str = "the commit differs from the reviewed changes";
 
 /// The most differing paths a [`drift_notice`] names.
 const DRIFT_SHOWN: usize = 10;
+
+/// The most characters of one path a [`drift_notice`] shows.
+const DRIFT_PATH: usize = 120;
+
+/// Said when a commit failed but its hooks changed the index.
+pub const INDEX_CHANGED: &str = "the index was changed during the failed commit";
+
+/// What a failed commit that changed the index says; nothing was undone.
+pub fn index_notice(secret: bool) -> String {
+    let mut text = format!("{INDEX_CHANGED}; nothing was undone");
+    if secret {
+        text.push_str("; a secret path is now staged");
+    }
+    text.push_str(
+        ". The user can check it with `git status` and unstage with `git restore --staged`.",
+    );
+    text
+}
 
 /// The tree of the index, written to the object store: what the user's
 /// review stands for, recorded before the commit runs its hooks.
@@ -532,7 +552,13 @@ pub fn drift_notice(listing: &str) -> (String, bool) {
             if secret_path(n) {
                 "<secret path>".to_owned()
             } else {
-                tidy(n)
+                let name = tidy(n);
+                if name.chars().count() > DRIFT_PATH {
+                    let cut: String = name.chars().take(DRIFT_PATH).collect();
+                    format!("{cut}…")
+                } else {
+                    name
+                }
             }
         })
         .collect();
@@ -626,6 +652,14 @@ mod tests {
         let (text, _) = drift_notice(&many);
         assert!(text.contains("f9.rs") && !text.contains("f10.rs"), "{text}");
         assert!(text.contains("and 5 more"), "{text}");
+    }
+
+    #[test]
+    fn a_long_drift_path_is_cut() {
+        let long = format!("{}\0", "a".repeat(500));
+        let (text, _) = drift_notice(&long);
+        assert!(text.len() < 400, "{text}");
+        assert!(text.contains('…'), "{text}");
     }
 
     #[test]

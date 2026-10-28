@@ -49,7 +49,11 @@ impl CommitReview {
             push(&mut body, LineKind::Warning, escape(hooks).into_owned());
         }
         if running.is_empty() {
-            push(&mut body, LineKind::Note, "no hooks will run".to_owned());
+            push(
+                &mut body,
+                LineKind::Note,
+                "no commit hooks found".to_owned(),
+            );
         } else {
             let line = format!("hooks that will run: {}", running.join(", "));
             push(&mut body, LineKind::Warning, line);
@@ -157,7 +161,7 @@ mod tests {
     #[test]
     fn the_review_lists_the_hooks_that_will_run_or_says_none_will() {
         let none = CommitReview::new("m", None, &[], DIFF.as_bytes());
-        assert!(has(&rows(&none), LineKind::Note, "no hooks will run"));
+        assert!(has(&rows(&none), LineKind::Note, "no commit hooks found"));
         let some = CommitReview::new("m", None, &["pre-commit", "commit-msg"], DIFF.as_bytes());
         let rows = rows(&some);
         assert!(has(
@@ -165,7 +169,7 @@ mod tests {
             LineKind::Warning,
             "hooks that will run: pre-commit, commit-msg"
         ));
-        assert!(!has(&rows, LineKind::Note, "no hooks will run"));
+        assert!(!has(&rows, LineKind::Note, "no commit hooks found"));
     }
 
     #[test]
