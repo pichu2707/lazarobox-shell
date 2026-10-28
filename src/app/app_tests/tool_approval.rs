@@ -1350,7 +1350,12 @@ mod root_reads {
         assert!(out.text.contains("inside the root"), "{out:?}");
         let (prompted, out) = ask.call(edit("src/notes.txt"), 'n', |_| {}).await;
         assert_eq!(prompted, None);
-        assert!(!out.is_error, "{out:?}");
+        // Staging reads the disk through the safe write primitives, which
+        // exist on Linux only (macOS refuses by design), so only Linux can
+        // stage the edit once no prompt stands in the way.
+        if cfg!(target_os = "linux") {
+            assert!(!out.is_error, "{out:?}");
+        }
     }
 
     // `ask` is unchanged for a local read outside the root whose path is too

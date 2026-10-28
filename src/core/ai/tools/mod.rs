@@ -400,7 +400,7 @@ const BUILT_INS: [ToolDef; 11] = [
     },
     ToolDef {
         name: "run_in_pane",
-        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
+        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree, find, grep or rg with plain or quoted paths (no &&, ;, |, $, * or redirections) can run directly inside the chat's folder when the user allows it. Anything else, git and mkdir included, waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself; any change needs a command the user reviews and runs.",
         access: Access::Write,
         family: Family::Pane,
         args: &[text("command")],
@@ -683,13 +683,13 @@ mod tests {
         for needle in [
             "only typed or typed and run",
             "carries the output of a command that ran, which may be \"not available\"",
-            "cd, pwd, ls, tree or mkdir",
+            "cd, pwd, ls, tree, find, grep or rg with",
             "plain or quoted paths",
-            "no &&, ;, |, $ or redirections",
-            "can run directly when the user allows it",
-            "anything else waits for the user to approve it and press Enter",
+            "no &&, ;, |, $, * or redirections",
+            "can run directly inside the chat's folder when the user allows it",
+            "Anything else, git and mkdir included, waits for the user to approve it and press Enter",
             "one simple command per call",
-            "You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
+            "You cannot change files yourself; any change needs a command the user reviews and runs.",
         ] {
             assert!(run.description.contains(needle), "{needle}");
         }

@@ -309,7 +309,7 @@ impl App {
         chat.set_approval_mode(mode);
         chat.push_system_line(match mode {
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
-            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, mkdir, searches and reads inside the chat's folder run at once and their output goes to the model; reads outside it and other commands ask)".to_owned(),
+            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),
         });
         self.dirty = true;
