@@ -970,3 +970,12 @@ Design points:
 TDD evidence: core RED = `E0599` on `Call::GitStatus/GitDiff/GitLog`, `ApprovalAsk::GitDiff`, `is_git` (16 errors); after GREEN one test failed with `MissingArgument` (optional first arg) and drove the `parse_built_in` fix. Host RED = 7 of 9 tests failing with the verbs unknown to the host (the other two passed trivially on the old error path); GREEN = all 10. The app prompt test and the refused-path test passed at first run (written with/after the arm).
 
 Known gaps: no `git_status`/`git_log` ask on Cloud (see above); no concurrency gate for reads; `git` is looked up on the scrubbed process PATH (a GUI launch may lack Homebrew paths, which the jail refuses anyway).
+
+## G-c review fixes (judgment day)
+- Spec and design amended (user decision 2026-10-28): on Cloud only `git_diff` asks; `git_status` and `git_log` run free. Code unchanged for this point.
+- `git::plan` now takes the call and runs the pure `check` (now `pub(crate)`) on the `path` of `git_diff`/`git_log`, so a refused path (secret, `.git`, `..`, empty) opens no prompt. `host.rs` edit: one argument.
+- `find_git` keeps only git binaries whose real path is under `SYSTEM_RX`; a user-installed git first on PATH no longer hides a system one.
+- New `Fault::Root` (from `Refusal::Root`/`Never` via `spec_fault`) maps to `REPO_REFUSED`; only `Fault::Spec` maps to `NO_GIT`.
+- Status and log use the full `redact` (same as the diff), not `redact_tokens`. Test: `password=` and `api_key=` in a commit subject.
+- Test hygiene: `sh()` drops `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and an explicit identity. The `cfg(target_os = "linux")` on the staged-batch test was dropped (module is unix-only and the test uses no Linux API; it passes).
+- TDD: the redaction test was observed RED against `redact_tokens` before the fix.
