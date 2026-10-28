@@ -4380,6 +4380,8 @@ mod tests {
         use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
         let ask = ApprovalAsk::Read {
             path: String::new(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
+            cloud: true,
         };
         let waits = panes.chats.as_ref().unwrap().waits();
         waits

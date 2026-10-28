@@ -520,7 +520,7 @@ fn lines(a: &App) -> Vec<String> {
         .collect()
 }
 
-const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)";
+const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, mkdir, searches and reads inside the chat's folder run at once and their output goes to the model; reads outside it and other commands ask)";
 
 // Spec (modal-input): `a` cycles ask, auto, run, ask, with one system line per
 // mode and nothing written to a PTY.

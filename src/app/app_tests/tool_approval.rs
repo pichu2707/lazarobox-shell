@@ -26,9 +26,7 @@ pub(super) fn run(command: &str) -> ApprovalAsk {
 }
 
 pub(super) fn read(path: &str) -> ApprovalAsk {
-    ApprovalAsk::Read {
-        path: path.to_owned(),
-    }
+    ApprovalAsk::read(path)
 }
 
 /// A shell (pane 1), a focused chat (pane 2) and a turn in flight.
@@ -426,6 +424,7 @@ fn search(pattern: &str, dir: &str) -> ApprovalAsk {
     ApprovalAsk::Search {
         pattern: pattern.into(),
         dir: dir.into(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
     }
 }
 
@@ -1172,5 +1171,390 @@ fn the_exec_row_says_why_when_the_system_has_no_landlock_jail() {
             Some("on · needs Linux sandbox"),
             "{off:?}"
         );
+    }
+}
+
+// -- `run` mode: reads in the chat's root and searches go without a prompt ----
+
+/// The two halves of a read or search together: a real host whose chat root
+/// is `proj` under a temp HOME, and the app of `live`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod root_reads {
+    use super::*;
+    use crate::core::ai::{
+        chat::approval::UNSHOWABLE,
+        config::ApprovalMode,
+        tools::{
+            Call, Locality,
+            paths::REFUSED,
+            registry::{Family, FamilySet},
+            stage::StageKey,
+        },
+    };
+    use crate::runtime::{
+        mcp::Outcome,
+        tools::{Limits, Pending, ToolHost, TurnScope, Waits},
+    };
+
+    /// A HOME with the chat's root `proj` in it: a file inside the root, one
+    /// outside it, a link in the root that leads outside it, and two
+    /// sensitive files (one in the root, one under `~/.ssh`).
+    fn home() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        let root = home.join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(root.join("src/notes.txt"), "inside the root\n").unwrap();
+        std::fs::write(home.join("outside.txt"), "outside the root\n").unwrap();
+        std::fs::write(root.join(".env"), "TOKEN=inside-secret\n").unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "ssh-secret\n").unwrap();
+        std::os::unix::fs::symlink(home.join("outside.txt"), root.join("link.txt")).unwrap();
+        (dir, home, root)
+    }
+
+    fn read(path: &str) -> Call {
+        Call::ReadFile {
+            path: path.into(),
+            lines: None,
+        }
+    }
+
+    fn grep(pattern: &str) -> Call {
+        Call::Grep {
+            pattern: pattern.into(),
+            dir: None,
+        }
+    }
+
+    /// One turn of a `locality` engine in a chat in `mode`, against a real
+    /// host whose chat root is `proj`, with the write family on so an edit
+    /// can stage.
+    struct Lab {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        a: App,
+        turn: u64,
+        waits: std::sync::Arc<Waits>,
+        rx: tokio::sync::mpsc::Receiver<StreamEvent>,
+        dispatch: std::sync::Arc<dyn crate::runtime::mcp::Dispatch>,
+    }
+
+    fn lab(mode: ApprovalMode, locality: Locality) -> Lab {
+        lab_in(mode, locality, |_, root| root.to_path_buf())
+    }
+
+    /// [`lab`] with the chat's root chosen from HOME and `proj`.
+    fn lab_in(mode: ApprovalMode, locality: Locality, at: fn(&Path, &Path) -> PathBuf) -> Lab {
+        let (dir, home, root) = home();
+        let root = at(&home, &root);
+        let (mut a, turn) = live();
+        super::super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let waits = Waits::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut scope = TurnScope::new(tx, locality, root);
+        scope.approver = waits.approver(id2(), turn, Pending::new());
+        scope.families = FamilySet::LEGACY.with(Family::Write);
+        scope.stage_key = Some(StageKey::Pane(id2()));
+        let host = ToolHost::new(Some(home.clone().into()), None, None, Limits::default());
+        Lab {
+            _dir: dir,
+            home,
+            a,
+            turn,
+            waits,
+            rx,
+            dispatch: host.dispatch(scope),
+        }
+    }
+
+    impl Lab {
+        /// Runs `call`: the host announces it, `between` runs, the app routes
+        /// it, and a prompt the app opens is answered with `answer`. Returns
+        /// the ask the prompt showed, if one opened, and what the model was
+        /// told.
+        async fn call(
+            &mut self,
+            call: Call,
+            answer: char,
+            between: impl FnOnce(&Path),
+        ) -> (Option<ApprovalAsk>, Outcome) {
+            let (a, turn) = (&mut self.a, self.turn);
+            let task = tokio::spawn(self.dispatch.call(call));
+            let announced = self.rx.recv().await.unwrap();
+            assert!(matches!(announced, StreamEvent::ToolCall { .. }));
+            between(&self.home);
+            let mut effects = a.update(AppEvent::Chat(id2(), turn, announced));
+            let prompted = pending(a).map(|(ask, _)| ask);
+            if prompted.is_some() {
+                assert!(!task.is_finished(), "nothing runs before the answer");
+                NOW_MS.with(|n| n.set(n.get() + 1_000));
+                effects.extend(a.update(key(answer)));
+            }
+            for effect in effects {
+                if let Effect::ToolDecision {
+                    pane,
+                    turn,
+                    call,
+                    decision,
+                } = effect
+                {
+                    assert!(self.waits.decide(pane, turn, call, decision));
+                }
+            }
+            let out = task.await.unwrap();
+            let result = self.rx.recv().await.unwrap();
+            assert!(matches!(result, StreamEvent::ToolResult { .. }));
+            a.update(AppEvent::Chat(id2(), turn, result));
+            assert!(pending(a).is_none());
+            (prompted, out)
+        }
+    }
+
+    /// One call in a fresh turn, a prompt answered `n`.
+    async fn drive(
+        mode: ApprovalMode,
+        locality: Locality,
+        call: Call,
+    ) -> (Option<ApprovalAsk>, Outcome) {
+        lab(mode, locality).call(call, 'n', |_| {}).await
+    }
+
+    fn edit(path: &str) -> Call {
+        Call::EditFile {
+            path: path.into(),
+            old: "inside".into(),
+            new: "changed".into(),
+        }
+    }
+
+    // S4 (a write asks): a read that `run` let go is not the user's `y`, so a
+    // later edit of the same file still asks; in `ask`, the user's `y` on the
+    // read still lets the edit go, as before.
+    #[tokio::test]
+    async fn a_read_run_mode_let_go_does_not_allow_a_later_edit() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let (prompted, out) = run.call(read("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.text.contains("inside the root"), "{out:?}");
+        let (prompted, out) = run.call(edit("src/notes.txt"), 'n', |_| {}).await;
+        assert!(
+            matches!(prompted, Some(ApprovalAsk::Read { .. })),
+            "{prompted:?}"
+        );
+        assert_eq!(out.text, "denied: the user declined");
+
+        let mut ask = lab(ApprovalMode::Ask, Locality::Cloud);
+        let (prompted, out) = ask.call(read("src/notes.txt"), 'y', |_| {}).await;
+        assert!(prompted.is_some());
+        assert!(out.text.contains("inside the root"), "{out:?}");
+        let (prompted, out) = ask.call(edit("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(!out.is_error, "{out:?}");
+    }
+
+    // `ask` is unchanged for a local read outside the root whose path is too
+    // long to show: it still runs free, with no prompt.
+    #[tokio::test]
+    async fn ask_mode_still_runs_a_local_read_outside_the_root_that_cannot_be_shown() {
+        let name = format!("{}.txt", "a".repeat(130));
+        let mut ask = lab(ApprovalMode::Ask, Locality::Local);
+        std::fs::write(ask.home.join(&name), "a long name outside").unwrap();
+        let (prompted, out) = ask.call(read(&format!("~/{name}")), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(!out.is_error, "{out:?}");
+        assert!(out.text.contains("a long name outside"), "{out:?}");
+    }
+
+    // A file in the root swapped for a link to outside it between the ask and
+    // the answer: the read `run` let go is judged again and reads nothing.
+    #[tokio::test]
+    async fn a_read_swapped_for_a_link_outside_the_root_after_the_ask_reads_nothing() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let (prompted, out) = run
+            .call(read("src/notes.txt"), 'n', |home| {
+                let file = home.join("proj/src/notes.txt");
+                std::fs::remove_file(&file).unwrap();
+                std::os::unix::fs::symlink(home.join("outside.txt"), &file).unwrap();
+            })
+            .await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // S2: a non-sensitive read inside the chat's root runs unasked in `run`,
+    // on a cloud engine too, and its text reaches the model.
+    #[tokio::test]
+    async fn run_mode_reads_a_file_in_the_root_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in ["src/notes.txt", "~/proj/src/notes.txt"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert_eq!(prompted, None, "{locality:?} {path}");
+                assert!(!out.is_error, "{out:?}");
+                assert!(out.text.contains("inside the root"), "{out:?}");
+            }
+        }
+    }
+
+    // S1 (grep tool): a search of the root runs unasked in `run`, on a cloud
+    // engine too, and the matching lines reach the model.
+    #[tokio::test]
+    async fn run_mode_greps_the_root_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            let (prompted, out) = drive(ApprovalMode::Run, locality, grep("inside the")).await;
+            assert_eq!(prompted, None, "{locality:?}");
+            assert!(!out.is_error, "{out:?}");
+            assert!(
+                out.text.contains("src/notes.txt:1:inside the root"),
+                "{out:?}"
+            );
+        }
+    }
+
+    // S2: a non-sensitive read outside the root asks in `run`, on every
+    // engine, and a link in the root that leads outside it is judged by where
+    // it leads. Nothing is read before the answer, and `n` reads nothing.
+    #[tokio::test]
+    async fn run_mode_asks_before_a_read_outside_the_root() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in ["~/outside.txt", "../outside.txt", "link.txt"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert!(
+                    matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                    "{locality:?} {path}: {prompted:?}"
+                );
+                assert!(out.is_error, "{out:?}");
+                assert_eq!(out.text, "denied: the user declined");
+            }
+        }
+    }
+
+    // S2 (Q2): a sensitive path is refused as before, in the root or not: no
+    // prompt, nothing read, the same refusal text as any hidden path.
+    #[tokio::test]
+    async fn run_mode_refuses_a_sensitive_path_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in [".env", "~/.ssh/id_rsa"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert_eq!(prompted, None, "{locality:?} {path}");
+                assert!(out.is_error, "{out:?}");
+                assert_eq!(out.text, REFUSED);
+                assert!(!out.text.contains("secret"));
+            }
+        }
+    }
+
+    /// The two roots too broad to keep a read in: HOME and `/`.
+    const BROAD: [fn(&Path, &Path) -> PathBuf; 2] =
+        [|home, _| home.to_path_buf(), |_, _| PathBuf::from("/")];
+
+    // S2 (L14): a chat whose root is HOME or `/` reads nothing on its own in
+    // `run`: a non-sensitive read asks, and `n` reads nothing. A sensitive
+    // path is still refused with no prompt. A local engine reads as in every
+    // mode, with no prompt: nothing leaves the machine.
+    #[tokio::test]
+    async fn run_mode_asks_before_every_read_under_a_broad_root() {
+        for at in BROAD {
+            let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, at);
+            let (prompted, out) = lab.call(read("~/proj/src/notes.txt"), 'n', |_| {}).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                "{prompted:?}"
+            );
+            assert_eq!(out.text, "denied: the user declined");
+            let (prompted, out) = lab.call(read("~/.ssh/id_rsa"), 'n', |_| {}).await;
+            assert_eq!(prompted, None);
+            assert_eq!(out.text, REFUSED);
+            let mut local = lab_in(ApprovalMode::Run, Locality::Local, at);
+            let (prompted, out) = local.call(read("~/proj/src/notes.txt"), 'n', |_| {}).await;
+            assert_eq!(prompted, None);
+            assert!(out.text.contains("inside the root"), "{out:?}");
+        }
+    }
+
+    // S2 (L14): a search of a root that is HOME or `/` asks in `run`.
+    #[tokio::test]
+    async fn run_mode_asks_before_a_grep_under_a_broad_root() {
+        for at in BROAD {
+            let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, at);
+            let (prompted, out) = lab.call(grep("inside the"), 'n', |_| {}).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Search { .. })),
+                "{prompted:?}"
+            );
+            assert_eq!(out.text, "denied: the user declined");
+        }
+    }
+
+    // S2 (L14): a read the mode answers because its path was refused opens
+    // nothing, even when the file appears before the read: under a root of
+    // HOME it would otherwise read any file in HOME with no prompt.
+    #[tokio::test]
+    async fn run_mode_reads_nothing_of_a_refused_path_that_appears_before_the_read() {
+        let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, |home, _| {
+            home.to_path_buf()
+        });
+        let home = lab.home.clone();
+        let late = home.join("late.txt");
+        crate::runtime::tools::fs::hooks::before_read(&home, move || {
+            std::fs::write(&late, "late content\n").unwrap();
+        });
+        let (prompted, out) = lab.call(read("~/late.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // A file in the root swapped for a link to outside it after every check
+    // the host makes before the read, just before the read judges its path:
+    // the read `run` let go is kept in the root by the read itself.
+    #[tokio::test]
+    async fn a_read_swapped_for_a_link_just_before_it_opens_reads_nothing() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let home = run.home.clone();
+        crate::runtime::tools::fs::hooks::before_read(&home.join("proj"), move || {
+            let file = home.join("proj/src/notes.txt");
+            std::fs::remove_file(&file).unwrap();
+            std::os::unix::fs::symlink(home.join("outside.txt"), &file).unwrap();
+        });
+        let (prompted, out) = run.call(read("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(!out.text.contains("outside the root"), "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // `run` denies a local read outside the root whose path cannot be shown:
+    // no prompt may approve it, and nothing is read.
+    #[tokio::test]
+    async fn run_mode_denies_a_local_read_outside_the_root_that_cannot_be_shown() {
+        let name = format!("{}.txt", "a".repeat(130));
+        let mut run = lab(ApprovalMode::Run, Locality::Local);
+        std::fs::write(run.home.join(&name), "a long name outside").unwrap();
+        let (prompted, out) = run.call(read(&format!("~/{name}")), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, format!("denied: {UNSHOWABLE}"));
+    }
+
+    // `ask` and `auto` are unchanged: a cloud read in the root and a cloud
+    // search still prompt, and a local read outside the root still runs.
+    #[tokio::test]
+    async fn ask_and_auto_modes_keep_the_read_and_search_prompts() {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
+            let (prompted, _) = drive(mode, Locality::Cloud, read("src/notes.txt")).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                "{mode:?}: {prompted:?}"
+            );
+            let (prompted, _) = drive(mode, Locality::Cloud, grep("inside the")).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Search { .. })),
+                "{mode:?}: {prompted:?}"
+            );
+            let (prompted, out) = drive(mode, Locality::Local, read("~/outside.txt")).await;
+            assert_eq!(prompted, None, "{mode:?}");
+            assert!(out.text.contains("outside the root"), "{out:?}");
+        }
     }
 }
