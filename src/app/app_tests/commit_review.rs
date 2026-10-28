@@ -24,6 +24,7 @@ fn commit_of(rows: usize) -> ApprovalAsk {
     ApprovalAsk::Commit(Arc::new(CommitReview::new(
         "feat: x",
         None,
+        &[],
         diff.as_bytes(),
     )))
 }

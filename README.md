@@ -328,6 +328,13 @@ Teclas dentro del chat:
 | `PageUp` / `PageDown`  | Desplaza la conversación                            |
 | `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
 
+**La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
+
+- Es la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Queda fija mientras dure el chat: un `cd` posterior en un shell no la mueve, y todavía no hay forma de cambiarla (un futuro `/cd` está en el [issue #394](https://github.com/pichu2707/lazarobox-shell/issues/394)).
+- Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
+- Con un motor en la nube y la carpeta del chat en `$HOME` o en `/`, todo comando se rechaza (`the chat's folder is your home or /`).
+- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`. Haz `cd` al proyecto en un panel de shell y abre el chat desde ahí, o fija la carpeta en el lanzador con `Path=` o con `sh -c 'cd … && exec lazarobox-shell'`.
+
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
 **Aviso al terminar:** `notify` en `[ai]` (o la fila Notify de la sección Settings del menú, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
@@ -642,8 +649,8 @@ enabled = true
 search = true      # glob, grep y la lectura por ventanas de read_file
 write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
-git = false        # interruptor de las operaciones de git de solo lectura (aún no se ofrecen al modelo)
-git_write = false  # interruptor de las operaciones de git que escriben (aún no se ofrecen al modelo)
+git = false        # git_status, git_diff, git_log (solo lectura)
+git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
 ```
 
 La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
@@ -716,7 +723,44 @@ Se rechazan las opciones que cambian de dónde se lee la configuración o el des
 - **Un comando a la vez por chat y dos en total en la aplicación.** Un segundo comando espera o se rechaza con `a command is already running in this chat` o `too many commands are running; try again later`.
 - **`npm`, `yarn` y `pnpm` (`test`, `run`, `install` y `ci`) solo desde la carpeta que contiene `package.json`.** Si no, se rechazan, para que un gestor no lea un `package.json` de una carpeta superior que nadie ha mostrado.
 - **Ganchos y configuración de git.** Antes y después de cada ejecución, lazarobox compara los ganchos (_hooks_) y la configuración de git. Si el comando los cambió, el resultado lo dice (`git hooks or config changed during the run (not reverted)`) y **no los revierte**. Si no se puede verificar el estado (una carpeta con demasiadas entradas, una configuración que no se entiende, un límite superado), el resultado indica `could not verify git hooks and config after this run` y el modelo debe tratar el proyecto como posiblemente contaminado y avisarte. Lo mismo ocurre con una ejecución cancelada o que falla después de arrancar: el aviso llega en el siguiente comando de ese chat.
-- **Las operaciones de git (`git`, `git_write`) aún no se ofrecen al modelo.** Los interruptores existen en la configuración y en el menú, pero hoy no añaden ninguna herramienta.
+- **Las operaciones de git** (`git`, `git_write`) se describen en la sección siguiente.
+
+#### Git: `git_status`, `git_diff`, `git_log`, `git_add` y `git_commit`
+
+Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git = true`) ofrece las tres de lectura y **Git write** (`git_write = true`) ofrece `git_add` y `git_commit`. No existe ninguna otra operación (ni `push`, `pull`, `checkout`, `reset`, `rebase`...) ni una lista libre de argumentos, y un _worker_ del orquestador nunca puede hacer commit. Linux solamente; `git` debe estar en un lugar del sistema.
+
+| Herramienta  | Qué hace                                                                 | ¿Pregunta?                                   |
+| :----------- | :----------------------------------------------------------------------- | :------------------------------------------- |
+| `git_status` | Estado acotado y ya analizado.                                           | Motor local: no. Nube: no.                   |
+| `git_log`    | Hasta 20 entradas por defecto (máximo 50), con formato fijo.             | Motor local: no. Nube: no.                   |
+| `git_diff`   | Diff del árbol de trabajo o del índice, acotado.                         | Motor local: no. **Nube: sí**, antes de ejecutar. |
+| `git_add`    | Añade al índice las rutas indicadas.                                     | Siempre.                                     |
+| `git_commit` | Crea el commit tras la revisión a panel completo.                        | Siempre, en todos los motores.               |
+
+**Lectura.** Los nombres de secretos (`.env`, `.npmrc`...) se excluyen por _pathspec_, así que un `.env` rastreado y modificado no aparece en el diff ni en el log, y toda la salida se censura y se entrega como dato no fiable. Se rechazan mientras haya un lote de escritura preparado o propuesto, y una ruta rechazada no abre ningún aviso.
+
+**`git_add`.** Una línea de aviso con las rutas y el número de ficheros. Si las rutas no caben enteras en esa línea, o alguna contiene `'`, se rechaza (no hay revisión alternativa). Nunca añade secretos ni nada dentro de `.git/`, ni siquiera con una carpeta o `.`.
+
+**`git_commit`.** Abre una revisión a panel completo, igual en todos los motores, con:
+
+- el mensaje;
+- el aviso `signing disabled for this commit` (el commit se crea sin firmar y sin _trailer_);
+- los ganchos (_hooks_) que se van a ejecutar, que corren dentro de la jaula;
+- todo el diff del índice, con `--text`.
+
+Se rechaza si hay un secreto en el índice o si el diff queda cortado. Como en un lote de escritura, `y` solo aprueba si has visto todo lo que debe caber. Tras `y`, lazarobox vuelve a comprobar el índice byte a byte; si cambió, no hay commit. El commit tiene un límite de 120 s.
+
+Después del commit, lazarobox compara el árbol que se ha confirmado con el que revisaste. Si difieren (un gancho puede cambiar ficheros), **avisa y no deshace nada**, y sugiere `git reset --soft HEAD~1`. Límite conocido: un gancho `commit-msg` que edite el mensaje no se detecta.
+
+#### Modelo de amenazas de `run_command` y de git
+
+- **La lista de programas acota el verbo, no lo que hace el programa.** `cargo test`, `npm run <script>`, `pytest` o `go test` ejecutan código del proyecto: un `build.rs`, un script de `package.json`, un `conftest.py`. Lo que ves en el aviso es la orden; lo que corre es todo lo que esa orden arrastra.
+- **La red está activa.** Un programa que corre dentro de la jaula puede leer el `.env` del proyecto (la jaula lo permite) y enviarlo fuera. El aviso lo dice cada vez; no hay «permitir siempre».
+- **Residuo: sockets UNIX.** Landlock no cubre la conexión a un socket UNIX existente (un agente de claves, un demonio de Docker accesible). Lo que sea alcanzable desde el proceso, lo es también para el comando.
+- **Procesos nietos que se desacoplan.** El proceso se vigila como grupo y se mata al terminar el tiempo, pero un nieto que se desacopla (_daemonizing_) en un grupo propio puede sobrevivir al comando.
+- **Los ganchos pueden cambiar un commit después de aprobarlo.** Se detecta (comparación del árbol confirmado con el revisado, aviso y `git reset --soft HEAD~1`), pero no se impide.
+- **Un modelo con Exec puede escribir `.git/hooks`.** Se detecta con las instantáneas de integridad antes y después de cada ejecución (`git hooks or config changed during the run (not reverted)`), pero no se impide ni se revierte. Revisa siempre los ganchos que muestra la revisión del commit.
+- **Git no carga tu configuración.** Los ganchos solo se leen del `.git/hooks` del propio repositorio, el commit no se firma y la identidad se pasa explícitamente.
 
 ### Tools with Ollama
 

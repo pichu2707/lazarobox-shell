@@ -334,6 +334,7 @@ fn a_commit_review_shows_the_notice_the_message_and_the_staged_diff() {
     let commit = Arc::new(CommitReview::new(
         "feat: new\n\nWhy it changes.",
         None,
+        &[],
         diff.as_bytes(),
     ));
     let mut chat = ChatState::new(None);

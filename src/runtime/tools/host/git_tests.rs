@@ -995,3 +995,168 @@ async fn an_add_path_with_a_quote_is_refused_before_the_prompt() {
     assert!(out.is_error && out.text.contains("quote"), "{out:?}");
     assert!(asks.asked().is_empty());
 }
+
+fn hook(w: &World, name: &str, script: &str) {
+    let hook = w.proj.join(".git/hooks").join(name);
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// User decision 2026-10-28: a commit that is not what was reviewed is
+// reported (warn), never undone. A pre-commit hook that force-stages a secret
+// is the worst case: the result and the row say so, nothing is reset.
+#[tokio::test]
+async fn a_hook_that_stages_a_secret_makes_the_result_a_warning_and_resets_nothing() {
+    let Some(w) = staged_world() else { return };
+    hook(
+        &w,
+        "pre-commit",
+        "echo 'TOKEN=hunter2' > .env\ngit add -f .env",
+    );
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    let text = &out.text;
+    assert!(
+        text.contains("the commit differs from the reviewed changes"),
+        "{text}"
+    );
+    assert!(text.contains("a secret path was committed"), "{text}");
+    assert!(text.contains("git reset --soft HEAD~1"), "{text}");
+    assert!(text.contains("git update-ref -d HEAD"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
+    // The notice masks the name (git's own wrapped output is the commit's).
+    let notice = text.split("<untrusted-tool-output").next().unwrap();
+    assert!(
+        !notice.contains(".env"),
+        "the secret name is masked: {text}"
+    );
+    // Never undone by lazarobox.
+    assert!(history(&w.proj).starts_with("feat: two"));
+    assert!(raw_head(&w.proj).len() > 10);
+}
+
+// The same for a harmless extra file: listed by name, no secret claim.
+#[tokio::test]
+async fn a_hook_that_stages_another_file_is_reported_by_name() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "pre-commit", "echo x > extra.txt\ngit add extra.txt");
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(
+        out.text
+            .contains("the commit differs from the reviewed changes"),
+        "{out:?}"
+    );
+    assert!(out.text.contains("extra.txt"), "{out:?}");
+    assert!(!out.text.contains("secret path"), "{out:?}");
+    assert!(history(&w.proj).starts_with("feat: two"));
+}
+
+// A hook that changes nothing is a plain success.
+#[tokio::test]
+async fn a_hook_that_changes_nothing_leaves_a_plain_success() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "pre-commit", "echo checked");
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(!out.text.contains("differs"), "{out:?}");
+}
+
+// The review names the hooks the commit will run, or says none will.
+#[tokio::test]
+async fn the_commit_review_lists_the_hooks_that_will_run() {
+    let Some(w) = staged_world() else { return };
+    let ask = |w: &World| {
+        let asks = Asks::new(Decision::Denied("declined"));
+        let call = turn(w, Locality::Local, asks.clone(), write_set()).call(commit("feat: two"));
+        (asks, call)
+    };
+    let (asks, call) = ask(&w);
+    call.await;
+    let rows = review_rows(&asks.asked()[0]);
+    assert!(
+        rows.iter().any(|(_, t)| t == "no commit hooks found"),
+        "{rows:?}"
+    );
+
+    hook(&w, "pre-commit", "exit 0");
+    hook(&w, "commit-msg", "exit 0");
+    std::fs::set_permissions(
+        w.proj.join(".git/hooks/commit-msg"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let (asks, call) = ask(&w);
+    call.await;
+    let rows = review_rows(&asks.asked()[0]);
+    assert!(
+        rows.iter()
+            .any(|(_, t)| t == "hooks that will run: pre-commit"),
+        "{rows:?}"
+    );
+}
+
+// git commit also runs reference-transaction: the review lists it.
+#[tokio::test]
+async fn the_commit_review_lists_the_reference_transaction_hook() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "reference-transaction", "exit 0");
+    let asks = Asks::new(Decision::Denied("declined"));
+    turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: two"))
+        .await;
+    let rows = review_rows(&asks.asked()[0]);
+    assert!(
+        rows.iter()
+            .any(|(_, t)| t == "hooks that will run: reference-transaction"),
+        "{rows:?}"
+    );
+}
+
+// A commit that fails after its hook staged a secret still changed the
+// index: the result says so (names masked), and nothing is undone.
+#[tokio::test]
+async fn a_failed_commit_that_changed_the_index_is_reported() {
+    let Some(w) = staged_world() else { return };
+    hook(
+        &w,
+        "pre-commit",
+        "echo 'TOKEN=hunter2' > .env\ngit add -f .env\nexit 1",
+    );
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    let notice = out.text.split("<untrusted-tool-output").next().unwrap();
+    assert!(notice.contains("the index was changed"), "{}", out.text);
+    assert!(
+        notice.contains("a secret path is now staged"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("hunter2"), "{}", out.text);
+}
+
+// A failed commit that left the index alone adds no notice.
+#[tokio::test]
+async fn a_failed_commit_that_left_the_index_alone_adds_no_notice() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "pre-commit", "exit 1");
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(!out.text.contains("the index was changed"), "{}", out.text);
+}

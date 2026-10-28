@@ -115,7 +115,7 @@ impl GitDir {
         }
     }
 
-    fn hooks(&self) -> String {
+    pub fn hooks(&self) -> String {
         format!("{}/hooks", self.common)
     }
 }
@@ -465,6 +465,119 @@ pub fn commit_argv(dir: &GitDir, who: &Identity, message: &str) -> Result<Vec<St
     Ok(argv)
 }
 
+/// The hooks a commit can run, in the order git runs them.
+pub const COMMIT_HOOKS: [&str; 6] = [
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "reference-transaction",
+    "post-index-change",
+];
+
+/// Said when the commit made is not the one the user reviewed.
+pub const DRIFT: &str = "the commit differs from the reviewed changes";
+
+/// The most differing paths a [`drift_notice`] names.
+const DRIFT_SHOWN: usize = 10;
+
+/// The most characters of one path a [`drift_notice`] shows.
+const DRIFT_PATH: usize = 120;
+
+/// Said when a commit failed but its hooks changed the index.
+pub const INDEX_CHANGED: &str = "the index was changed during the failed commit";
+
+/// What a failed commit that changed the index says; nothing was undone.
+pub fn index_notice(secret: bool) -> String {
+    let mut text = format!("{INDEX_CHANGED}; nothing was undone");
+    if secret {
+        text.push_str("; a secret path is now staged");
+    }
+    text.push_str(
+        ". The user can check it with `git status` and unstage with `git restore --staged`.",
+    );
+    text
+}
+
+/// The tree of the index, written to the object store: what the user's
+/// review stands for, recorded before the commit runs its hooks.
+pub fn write_tree_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.push("write-tree".to_owned());
+    argv
+}
+
+/// The tree of the commit just made.
+pub fn head_tree_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(["rev-parse", "HEAD^{tree}"].map(str::to_owned));
+    argv
+}
+
+/// The paths where two trees differ, NUL separated, nothing left out. `None`
+/// unless both are object names (never an option).
+pub fn tree_diff_argv(dir: &GitDir, before: &str, after: &str) -> Option<Vec<String>> {
+    let name = |t: &str| (40..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit());
+    if !(name(before) && name(after)) {
+        return None;
+    }
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+            before,
+            after,
+        ]
+        .map(str::to_owned),
+    );
+    Some(argv)
+}
+
+/// What a commit that differs from the reviewed one tells the model and the
+/// user, from the `-z` listing of [`tree_diff_argv`], and whether a secret
+/// path was committed. Names are one clean line and a secret name is masked.
+/// The commit is never undone: the way back is only suggested.
+pub fn drift_notice(listing: &str) -> (String, bool) {
+    let names: Vec<&str> = listing.split('\0').filter(|n| !n.is_empty()).collect();
+    let secret = names.iter().any(|n| secret_path(n));
+    let shown: Vec<String> = names
+        .iter()
+        .take(DRIFT_SHOWN)
+        .map(|n| {
+            if secret_path(n) {
+                "<secret path>".to_owned()
+            } else {
+                let name = tidy(n);
+                if name.chars().count() > DRIFT_PATH {
+                    let cut: String = name.chars().take(DRIFT_PATH).collect();
+                    format!("{cut}…")
+                } else {
+                    name
+                }
+            }
+        })
+        .collect();
+    let more = names.len().saturating_sub(DRIFT_SHOWN);
+    let mut text = format!("{DRIFT}: {}", shown.join(", "));
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text.push_str(". The commit WAS made and nothing was undone");
+    if secret {
+        text.push_str("; a secret path was committed");
+    }
+    text.push_str(
+        ". To take it back the user can run `git reset --soft HEAD~1` \
+         (for a first commit, `git update-ref -d HEAD`).",
+    );
+    (text, secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +627,58 @@ mod tests {
         for setting in HARDENING {
             assert!(pair(&argv, setting), "{setting}");
         }
+    }
+
+    // User decision 2026-10-28: a commit that differs from the reviewed one is
+    // reported, never undone. Secret names are masked, names are one clean
+    // line, and the way back is suggested for a root commit too.
+    #[test]
+    fn a_drift_notice_lists_clean_names_masks_secrets_and_suggests_the_way_back() {
+        let (text, secret) = drift_notice("b.rs\0x\u{1b}y.rs\0");
+        assert!(!secret);
+        assert!(text.starts_with(DRIFT), "{text}");
+        assert!(text.contains("b.rs") && text.contains("x?y.rs"), "{text}");
+        assert!(text.contains("git reset --soft HEAD~1"), "{text}");
+        assert!(text.contains("git update-ref -d HEAD"), "{text}");
+        assert!(!text.contains("secret path"), "{text}");
+
+        let (text, secret) = drift_notice("b.rs\0config/.env\0.ssh/id_rsa\0");
+        assert!(secret);
+        assert!(text.contains("a secret path was committed"), "{text}");
+        assert!(!text.contains(".env") && !text.contains("id_rsa"), "{text}");
+        assert!(text.contains("b.rs"), "{text}");
+
+        let many: String = (0..15).map(|n| format!("f{n}.rs\0")).collect();
+        let (text, _) = drift_notice(&many);
+        assert!(text.contains("f9.rs") && !text.contains("f10.rs"), "{text}");
+        assert!(text.contains("and 5 more"), "{text}");
+    }
+
+    #[test]
+    fn a_long_drift_path_is_cut() {
+        let long = format!("{}\0", "a".repeat(500));
+        let (text, _) = drift_notice(&long);
+        assert!(text.len() < 400, "{text}");
+        assert!(text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn the_tree_checks_take_only_object_names() {
+        let tree = "a".repeat(40);
+        let diff = tree_diff_argv(&gd(), &tree, &tree).unwrap();
+        for word in [
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+        ] {
+            assert!(has(&diff, word), "{word}");
+        }
+        assert!(tree_diff_argv(&gd(), "--output=x", &tree).is_none());
+        assert!(tree_diff_argv(&gd(), &tree, "HEAD").is_none());
+        assert!(has(&write_tree_argv(&gd()), "write-tree"));
+        assert!(has(&head_tree_argv(&gd()), "HEAD^{tree}"));
     }
 
     #[test]

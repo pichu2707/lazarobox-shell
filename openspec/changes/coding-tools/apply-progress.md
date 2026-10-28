@@ -994,7 +994,7 @@ Decisions / deviations (needing the user's eye):
 - The add overlay shows the paths and the FILE COUNT of a dry run, not a diffstat (+/-). Reason: untracked files have no diff; the count is the exact list git would stage after the secret excludes. Flagged for the user; a numstat sum is an easy follow-up.
 - No review-view fallback for `git_add`: a prompt that does not fit blocks `y` (existing `fits` rule) and an add whose paths do not show whole in 400 characters is refused before the prompt ("add fewer").
 - `git_commit` is refused before the ask on: empty/oversized/control-char message, unusable repo identity, nothing staged, a secret path in the INDEX (`diff --cached --name-only -z --no-renames`, so a rename away from a tracked `.env` counts), a staged diff the capture cut. A staged diff of the secret-excluded kind is therefore never shown or hidden: the commit does not happen.
-- The review diff does NOT pass `--ignore-submodules`, so a staged gitlink change is shown (the read verbs keep `all`).
+- The review diff passes `--ignore-submodules=none` (superseded in the G-d review fixes below: it was only omitting the flag, which `.gitmodules` `ignore = all` defeated).
 - After `y` the host rebuilds the staged diff and compares it to the reviewed bytes (`CommitReview::same_staged`); a change gives "the staged changes changed after the question; ask again".
 - A workers' turn has no `stage_key`, so `git_add`/`git_commit` are refused as unknown tools there (the orchestrator chain still has to make worker scopes keep `stage_key = None`).
 - The rejection line says "commit rejected: N files, +a -b".
@@ -1004,3 +1004,24 @@ Decisions / deviations (needing the user's eye):
 TDD evidence: Gd.1 RED seen as 6 failing host tests (unknown tools / no ask) after the `Call` and registry types existed, and a failing parse test (`MissingArgument` on a list-first tool) that drove the `parse_built_in` fix. The pure argv helpers and `CommitReview` were RED as compile errors only. For the commit host path the code was written before its tests, so mutation checks were run on the finished code: removing the index secret check fails `a_commit_is_refused_when_the_index_holds_a_secret_path`; replacing the staged-diff comparison fails `a_commit_is_refused_when_the_index_changed_after_the_question`; disabling the cut-diff refusal fails `a_staged_diff_too_large_to_review_is_refused_before_the_prompt`; flipping `commit.gpgsign=false` fails the unsigned and `core.hooksPath` tests; dropping `Commit` from the generic-approve guard in `app/run.rs` fails `a_generic_approve_never_answers_a_commit`.
 
 Size: about 560 production lines added (adds+deletes about 598), over the 450 estimate; tests are about 700 more.
+
+### G-d review fixes (2026-10-28, both judges confirmed)
+
+- Review blind spots: `review_diff_argv` adds `--text` and `--ignore-submodules=none`; `index_names_argv` adds `--ignore-submodules=none`. The weak argv-absence test was replaced by two real-git host tests (`.gitattributes` `-diff`; `.gitmodules` `ignore = all` with a staged gitlink bump). Both were RED (binary rows; "nothing is staged") before the fix.
+- Post-commit verification (USER DECISION 2026-10-28: warn, never undo): `write-tree` before the commit, `HEAD^{tree}` after, `diff-tree` between the two for the paths, `drift_notice` (pure, secret names masked, capped at 10 names) for the text. The outcome is an error (no `ToolStatus::Warning` exists) whose summary reaches the row. Nothing is ever reset. Tests: a pre-commit hook that `git add -f .env` (secret reported, HEAD kept), a hook that restages another file (named, no secret claim), a harmless hook (plain success). Only the tree is compared, not the message (a `commit-msg` hook edit is not detected: the whitespace cleanup would have to be re-implemented).
+- `CommitReview::new` takes the running hooks and shows "hooks that will run: ..." (warning) or "no hooks will run" (note); the 60x20 snapshot changed by that line.
+- An add path with a quote is refused before the prompt (`GitError::Quote`, also `add_line` returns `None`).
+- `git commit` runs with a 120 s timeout (`COMMIT_TIMEOUT`); read verbs keep 30 s.
+- `host.rs` untouched.
+
+### G-d2 round 2 (fix agent)
+- COMMIT_HOOKS now also lists reference-transaction and post-index-change; empty case reads "no commit hooks found" (row, snapshot, tests, spec, design).
+- Failed commit: a jailed write-tree is compared with the reviewed tree; a changed index appends a notice (secret staged named, never undone).
+- Reviewed write-tree is taken before the same_staged recheck (TOCTOU). drift_notice cuts each path at 120 chars.
+- Documented limits: only HEAD's tree compared; other refs / same-tree HEAD moves / commit-msg edits not detected.
+
+## M5-b (PR 30) - documentation
+
+- README (Spanish): "La carpeta del chat" (how the chat folder is chosen), the Git section (tools, toggles, prompts, commit review, post-commit warning), a threat model for run_command and git, and the stale "not yet offered" lines removed.
+- CHANGELOG: git tools and the README additions under Unreleased (run_command already shipped in 0.28.0; no 0.21/0.22 sections invented).
+- No code changes. `cargo test --doc` passes.
