@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, gitignore::Gitignore};
 use tokio::{sync::mpsc, time::timeout};
 
 use crate::{
@@ -41,6 +41,11 @@ pub const MAX_SEARCHED: usize = 5_000;
 /// Why an `rg` does not run on its own: a folder or an ignore file below
 /// what it searches cannot be read, so what it would read is not known.
 pub const UNCHECKED: &str = "a folder in the search cannot be checked";
+/// Why an `rg` does not run on its own: an ignore file it may read has a
+/// `!` line, which can make it read hidden files. The installed `rg` may
+/// apply its ignore files apart from the walker of the check, so any such
+/// line asks, whatever the walker yields.
+pub const UNIGNORED: &str = "an ignore file may let the search read hidden files";
 
 /// What the check reads from the process: the same environment the read tools
 /// judge paths by.
@@ -93,11 +98,12 @@ impl Checker {
 /// search is given, a walk (`find` or a search) that reaches a secret root,
 /// or a search that would read a sensitive file below the folder it walks,
 /// is [`NOT_ALLOWED`], a searched folder with more than [`MAX_SEARCHED`]
-/// entries is [`TOO_LARGE`], and an `rg` whose walk meets a folder or an
-/// ignore file it cannot read is [`UNCHECKED`]; last, a path the command
+/// entries is [`TOO_LARGE`], an `rg` whose walk meets a folder or an ignore
+/// file it cannot read is [`UNCHECKED`], and an `rg` that may read an
+/// ignore file with a `!` line is [`UNIGNORED`]; last, a path the command
 /// acts on outside the root is [`OUTSIDE_ROOT`]. Each one opens the prompt;
-/// only [`NOT_ALLOWED`] counts toward the pause, [`TOO_LARGE`] and
-/// [`UNCHECKED`] do not.
+/// only [`NOT_ALLOWED`] counts toward the pause, [`TOO_LARGE`],
+/// [`UNCHECKED`] and [`UNIGNORED`] do not.
 pub fn check(
     env: &ToolEnv,
     call: CallId,
@@ -120,10 +126,7 @@ pub fn check(
     if scope.cloud && roots.home().starts_with(&root) {
         return refused(BROAD_ROOT);
     }
-    let depth = match safe.verb() {
-        Verb::Rg => max_depth(safe.as_str()),
-        _ => None,
-    };
+    let rg = RgFlags::of(safe.as_str());
     let (mut cd_target, mut outside) = (None, false);
     for target in safe.targets() {
         let PathVerdict::Allowed(real) = resolve_exec(&roots, &cwd, target.input, target.want)
@@ -139,7 +142,7 @@ pub fn check(
         if target.confined && !real.starts_with(&root) {
             outside = true;
         } else if target.searched
-            && let Err(reason) = searchable(&roots, &real, safe.verb(), depth)
+            && let Err(reason) = searchable(&roots, &real, safe.verb(), rg)
         {
             return refused(reason);
         }
@@ -163,14 +166,14 @@ pub fn check(
 /// `.env` does not stop it. A search also reads every file it walks, so none
 /// may be sensitive by name, position or as a git setting: `grep -r` reads
 /// every entry, hidden ones too; `rg` reads what its own walker yields (see
-/// [`rg_walk`]), down to `depth` when the command bounds it. Links are not
+/// [`rg_walk`]), as its flags in `rg` bound it. Links are not
 /// followed, as no verb follows them below its arguments. More than
 /// [`MAX_SEARCHED`] entries are not looked through.
 fn searchable(
     roots: &SecretRoots,
     real: &Path,
     verb: Verb,
-    depth: Option<usize>,
+    rg: RgFlags,
 ) -> Result<(), &'static str> {
     if roots.holds_root(real) {
         return Err(NOT_ALLOWED);
@@ -180,7 +183,7 @@ fn searchable(
     }
     match verb {
         Verb::Grep => grep_walk(roots, real),
-        Verb::Rg => rg_walk(roots, real, depth),
+        Verb::Rg => rg_walk(roots, real, rg),
         Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => Ok(()),
     }
 }
@@ -221,15 +224,32 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
 /// default, so it yields what `rg` would read: hidden entries skipped;
 /// `.ignore`, `.rgignore`, `.gitignore`, `.git/info/exclude`, the global git
 /// excludes and the ignore files of the folders above all honoured, a
-/// `.gitignore` only inside a git repository; links not followed. A `!` line
-/// that lets a hidden file back in makes the walker yield it, so it is judged
-/// like any other. A folder or an ignore file it cannot read is
-/// [`UNCHECKED`]. File types (`-t`, `-T`) are not applied: their
-/// definitions may differ between this walker and the `rg` installed, and
-/// walking more is safe.
-fn rg_walk(roots: &SecretRoots, real: &Path, depth: Option<usize>) -> Result<(), &'static str> {
+/// `.gitignore` only inside a git repository; links not followed; down to
+/// the command's `--max-depth`. A folder or an ignore file it cannot read is
+/// [`UNCHECKED`].
+///
+/// The installed `rg` may be older than this walker and apply some ignore
+/// patterns apart from it, so the walker is not trusted to know which
+/// hidden file a `!` line lets back in: any `!` line in the global excludes,
+/// in the ignore files of the folders above `real` or in those of a folder
+/// the walk visits is [`UNIGNORED`]. A type (`-t`, `-T`) can let a hidden
+/// file back in too (`rg -t sh` reads `.bashrc`), and this walker's type
+/// definitions may differ from the installed `rg`'s, so with a type every
+/// hidden file is judged as well; hidden folders stay skipped, as a type
+/// never matches a folder.
+fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static str> {
+    let (global, error) = Gitignore::global();
+    if error.is_some() {
+        return Err(UNCHECKED);
+    }
+    if global.num_whitelists() > 0 {
+        return Err(UNIGNORED);
+    }
+    for dir in real.ancestors().skip(1) {
+        unignored(dir)?;
+    }
     let mut walk = WalkBuilder::new(real);
-    walk.hidden(true)
+    walk.hidden(!rg.typed)
         .parents(true)
         .ignore(true)
         .git_ignore(true)
@@ -238,7 +258,13 @@ fn rg_walk(roots: &SecretRoots, real: &Path, depth: Option<usize>) -> Result<(),
         .require_git(true)
         .follow_links(false)
         .add_custom_ignore_filename(".rgignore")
-        .max_depth(depth);
+        .max_depth(rg.depth);
+    if rg.typed {
+        walk.filter_entry(|entry| {
+            let folder = entry.file_type().is_some_and(|kind| kind.is_dir());
+            entry.depth() == 0 || !folder || !entry.file_name().as_encoded_bytes().starts_with(b".")
+        });
+    }
     let mut seen = 0usize;
     for entry in walk.build() {
         let Ok(entry) = entry else {
@@ -246,6 +272,9 @@ fn rg_walk(roots: &SecretRoots, real: &Path, depth: Option<usize>) -> Result<(),
         };
         if entry.error().is_some() {
             return Err(UNCHECKED);
+        }
+        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            unignored(entry.path())?;
         }
         // The folder itself was judged as a path of the command.
         if entry.depth() == 0 {
@@ -262,12 +291,78 @@ fn rg_walk(roots: &SecretRoots, real: &Path, depth: Option<usize>) -> Result<(),
     Ok(())
 }
 
-/// The value of the last `--max-depth` of an `rg` command the grammar
-/// accepted, as `rg` takes the last one; `None` when there is none or it
-/// does not read as a number (an unbounded walk is the safe side). The
-/// grammar keeps a quoted word whole, with no quote inside, and never lets
-/// one start with a dash, so the flag is always a whole unquoted word.
-fn max_depth(command: &str) -> Option<usize> {
+/// The ignore files `rg` reads in a folder, as paths below it.
+const IGNORE_FILES: [&str; 4] = [".ignore", ".rgignore", ".gitignore", ".git/info/exclude"];
+/// The longest ignore file the check reads; a longer one is [`UNCHECKED`].
+const MAX_IGNORE_BYTES: u64 = 1 << 20;
+
+/// [`UNIGNORED`] when an ignore file `rg` reads in `dir` holds an
+/// exception: a line that starts with `!` after optional spaces. One that
+/// cannot be read or is too long is [`UNCHECKED`] (fail closed); a missing
+/// one, or one that is no regular file, is fine, as `rg` reads neither.
+fn unignored(dir: &Path) -> Result<(), &'static str> {
+    for name in IGNORE_FILES {
+        let path = dir.join(name);
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => continue,
+                _ => return Err(UNCHECKED),
+            },
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.len() > MAX_IGNORE_BYTES {
+            return Err(UNCHECKED);
+        }
+        let text = std::fs::read(&path).map_err(|_| UNCHECKED)?;
+        let exception = text
+            .split(|&b| b == b'\n')
+            .any(|line| line.trim_ascii_start().starts_with(b"!"));
+        if exception {
+            return Err(UNIGNORED);
+        }
+    }
+    Ok(())
+}
+
+/// The flags of an `rg` command that change what it reads.
+#[derive(Clone, Copy, Default)]
+struct RgFlags {
+    /// The value of the last `--max-depth`, as `rg` takes the last one;
+    /// `None` when there is none or it does not read as a number (an
+    /// unbounded walk is the safe side).
+    depth: Option<usize>,
+    /// A `-t` or `-T` is given.
+    typed: bool,
+}
+
+impl RgFlags {
+    /// The flags of `command`, a command the grammar accepted. The grammar
+    /// keeps a quoted word whole, with no quote inside, and never lets one
+    /// start with a dash, so a flag is always a whole unquoted word, and no
+    /// allowed bundle of short flags holds `t` or `T`. For any other verb
+    /// the flags are not read.
+    fn of(command: &str) -> Self {
+        let words = words(command);
+        if words.first() != Some(&"rg") {
+            return Self::default();
+        }
+        let depth = words
+            .iter()
+            .rposition(|&word| word == "--max-depth")
+            .and_then(|at| words.get(at + 1))
+            .and_then(|value| value.trim_matches(['\'', '"']).parse().ok());
+        let typed = words.iter().any(|&word| word == "-t" || word == "-T");
+        Self { depth, typed }
+    }
+}
+
+/// The words of a command the grammar accepted, quoted ones with their
+/// quotes: words are split by one space, and a quoted word runs to its
+/// closing quote.
+fn words(command: &str) -> Vec<&str> {
     let bytes = command.as_bytes();
     let (mut words, mut i) = (Vec::new(), 0);
     while i < bytes.len() {
@@ -284,9 +379,7 @@ fn max_depth(command: &str) -> Option<usize> {
         words.push(&command[i..end.min(bytes.len())]);
         i = end + 1;
     }
-    let at = words.iter().rposition(|&word| word == "--max-depth")?;
-    let value = words.get(at + 1)?.trim_matches(['\'', '"']);
-    value.parse().ok()
+    words
 }
 
 /// Runs `work` on the blocking pool for at most `bound`. A check that is too
@@ -889,12 +982,12 @@ mod tests {
         )));
     }
 
-    // T2c: rg's own walker decides what it reads. A `!` line in an ignore
-    // file makes rg read a hidden file it would skip; the walker yields it,
-    // so a sensitive one is refused (NOT_ALLOWED). The ignore files of the
-    // folders above count too.
+    // T2c-fix: a `!` line in an ignore file can make rg read a hidden file
+    // it would skip, and the installed rg may apply the ignore files apart
+    // from the walker, so any `!` line asks (UNIGNORED, which never counts
+    // toward the pause). The ignore files of the folders above count too.
     #[test]
-    fn an_ignore_file_with_an_exception_makes_rg_read_the_hidden_file() {
+    fn an_ignore_file_with_an_exception_makes_rg_ask() {
         for (file, text) in [
             (".ignore", "!.env\n"),
             (".rgignore", "target/\n!web/.env\n"),
@@ -908,7 +1001,7 @@ mod tests {
             for command in ["rg url", "rg -n url web"] {
                 assert_eq!(
                     reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
-                    Some(NOT_ALLOWED),
+                    Some(UNIGNORED),
                     "{command} with {file}"
                 );
             }
@@ -921,6 +1014,95 @@ mod tests {
                 "grep -rn url src"
             )));
         }
+    }
+
+    /// A git repository at `home/<at>` for the version-skew cases.
+    fn repo(f: &Fixture, at: &str, files: &[(&str, &str)]) {
+        let dir = f.home.join(at);
+        git_folder(&dir.join(".git"), PLAIN_CONFIG);
+        for (path, text) in files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+    }
+
+    // T2c-fix (L16 repro): rg 14.1.0 searching from `pkg/` skips the parent
+    // slash pattern that the walker applies, so it reads `a/.env` through
+    // the `!` line. The `!` line asks, whatever the installed rg does.
+    #[test]
+    fn a_whitelist_below_a_parent_slash_pattern_asks() {
+        let f = fixture();
+        repo(
+            &f,
+            "dev/L16",
+            &[
+                (".ignore", "pkg/*/.env*\n"),
+                ("pkg/a/.gitignore", "!.env\n"),
+                ("pkg/a/.env", "T=1\n"),
+            ],
+        );
+        assert_eq!(
+            reason(&run_in(&f, "dev/L16", false, "dev/L16/pkg", "rg foo")),
+            Some(UNIGNORED)
+        );
+    }
+
+    // T2c-fix: the same skew with a root `.rgignore`, from `sub/` and with
+    // `sub` given from the root.
+    #[test]
+    fn a_whitelist_below_a_root_rgignore_pattern_asks() {
+        let f = fixture();
+        repo(
+            &f,
+            "dev/R",
+            &[
+                (".rgignore", "sub/keep/.env\n"),
+                ("sub/keep/.gitignore", "!.env\n"),
+                ("sub/keep/.env", "T=1\n"),
+            ],
+        );
+        for (cwd, command) in [("dev/R/sub", "rg foo"), ("dev/R", "rg foo sub")] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/R", false, cwd, command)),
+                Some(UNIGNORED),
+                "{command} in {cwd}"
+            );
+        }
+    }
+
+    // T2c-fix: a type glob lets hidden files back in (`rg -t sh` reads
+    // `.bashrc`), so with `-t` or `-T` the hidden files are judged too; the
+    // hidden folders stay skipped, as types never match a folder.
+    #[test]
+    fn rg_with_a_type_judges_hidden_files() {
+        let f = fixture();
+        project(&f);
+        fs::write(f.home.join("dev/proj/.zsh_history"), "ls\n").unwrap();
+        for command in ["rg -t sh foo", "rg -T rust foo", "rg -t sh foo web"] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
+        // No hidden file below `src`, and `.git` is still not walked.
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            false,
+            "dev/proj",
+            "rg -t rust foo src"
+        )));
+        fs::remove_file(f.home.join("dev/proj/.zsh_history")).unwrap();
+        fs::remove_file(f.home.join("dev/proj/web/.env")).unwrap();
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            false,
+            "dev/proj",
+            "rg -t rust foo"
+        )));
     }
 
     // T2c: what rg ignores is not looked at: a gitignored `target/` larger
@@ -1030,7 +1212,7 @@ mod tests {
         let run = || run_in(&f, "dev/proj", false, "dev/proj", "rg url");
         assert!(checked(&run()), "before the global excludes");
         fs::write(root.join("xdg/git/ignore"), "!.env\n").unwrap();
-        assert_eq!(reason(&run()), Some(NOT_ALLOWED));
+        assert_eq!(reason(&run()), Some(UNIGNORED));
     }
 
     // T2b keeps: ignore files without an exception leave rg running, with a
