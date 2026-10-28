@@ -9,6 +9,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -18,6 +19,10 @@ use super::{
 };
 use crate::{
     core::ai::{
+        chat::{
+            approval::{ApprovalAsk, add_line},
+            review::CommitReview,
+        },
         memory::redact::redact,
         toolchain::{SYSTEM_RX, env::scrub},
         tools::{
@@ -29,7 +34,7 @@ use crate::{
         },
     },
     runtime::tools::{
-        git::{self as runtime, Ctx, Fault, Output},
+        git::{self as runtime, Ctx, Fault, Output, Ran},
         new_nonce,
     },
 };
@@ -42,19 +47,34 @@ const TOO_OLD: &str = "git is too old (2.32 is needed) or its environment is not
 pub(super) const REPO_REFUSED: &str = "the repository location is not available";
 const TOO_LARGE: &str = "the output is too large to list";
 const FAILED: &str = "git failed";
+const TOO_MANY_PATHS: &str = "too many or too long paths to show in the question; add fewer";
+const NO_MATCH: &str = "no file matches those paths";
+const NOTHING_STAGED: &str = "nothing is staged";
+const SECRET_STAGED: &str =
+    "the index holds a file that looks like a secret; the user must unstage it";
+const STAGE_TOO_LARGE: &str = "the staged diff is too large to review; stage less";
+const STAGED_CHANGED: &str = "the staged changes changed after the question; ask again";
 /// How long one read verb may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Judges a call before it asks. Reads the disk (the root) and the batch store.
-pub(super) async fn plan(
-    host: &ToolHost,
-    scope: &TurnScope,
-    call: &Call,
-) -> Result<(), &'static str> {
-    // A path the model names is refused here, so a refusal opens no prompt.
-    if let Call::GitDiff { path: Some(p), .. } | Call::GitLog { path: Some(p), .. } = call {
-        pure::check(p).map_err(GitError::reason)?;
-    }
+/// An opened repository: the run context and what the preflight found.
+struct Opened {
+    ctx: Ctx,
+    repo: runtime::Repo,
+    read: super::exec::Reader,
+    unreported: crate::runtime::tools::runner::Unreported,
+}
+
+/// Runs one argv in the repo's jail.
+async fn exec(opened: &Opened, argv: Vec<String>, read_verb: bool) -> Result<Ran, &'static str> {
+    runtime::run(&opened.ctx, &opened.repo, argv, read_verb, &*opened.read)
+        .await
+        .map_err(fault_text)
+}
+
+/// What every git verb needs before it can ask: a chat that can stage, a jail,
+/// a root the path guard allows and no batch waiting.
+async fn ready(host: &ToolHost, scope: &TurnScope) -> Result<(), &'static str> {
     let Some(key) = scope.stage_key else {
         return Err(refusal_text(ToolError::UnknownTool));
     };
@@ -74,29 +94,195 @@ pub(super) async fn plan(
     .map_err(|_| COULD_NOT)?
 }
 
-/// Runs an approved (or free) read verb: judged again, then the jail.
+/// Judges a call before it asks. Reads the disk (the root) and the batch
+/// store. An add or a commit also looks at the repository and returns the ask
+/// the user answers (`None` for a read verb: the caller asks by locality).
+pub(super) async fn plan(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+) -> Result<Option<ApprovalAsk>, &'static str> {
+    // A path the model names is refused here, so a refusal opens no prompt.
+    match call {
+        Call::GitDiff { path: Some(p), .. } | Call::GitLog { path: Some(p), .. } => {
+            pure::check(p).map_err(GitError::reason)?;
+        }
+        Call::GitAdd { paths } => {
+            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            pure::check_add(&refs).map_err(GitError::reason)?;
+        }
+        Call::GitCommit { message } => pure::check_message(message).map_err(GitError::reason)?,
+        _ => {}
+    }
+    ready(host, scope).await?;
+    match call {
+        Call::GitAdd { paths } => plan_add(host, scope, paths).await.map(Some),
+        Call::GitCommit { message } => plan_commit(host, scope, message).await.map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// The ask of an add: the paths as the prompt shows them whole, and how many
+/// files a dry run says would be staged (the secret excludes apply).
+async fn plan_add(
+    host: &ToolHost,
+    scope: &TurnScope,
+    paths: &[String],
+) -> Result<ApprovalAsk, &'static str> {
+    let shown = add_line(paths).ok_or(TOO_MANY_PATHS)?;
+    let opened = open(host, scope).await?;
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let dry = pure::add_dry_argv(&opened.repo.dir, &refs).map_err(GitError::reason)?;
+    let ran = exec(&opened, dry, true).await?;
+    let files = match runtime::status_output(&ran.done) {
+        Output::Text(raw) => raw.lines().filter(|l| !l.is_empty()).count(),
+        Output::Truncated => return Err(TOO_LARGE),
+        Output::Failed => return Err(NO_MATCH),
+    };
+    if files == 0 {
+        return Err(NO_MATCH);
+    }
+    Ok(ApprovalAsk::GitAdd {
+        paths: shown,
+        files: Some(files),
+    })
+}
+
+/// The staged diff, once the index passed every check (something is staged,
+/// no secret path, nothing cut).
+async fn staged_diff(opened: &Opened) -> Result<Vec<u8>, &'static str> {
+    let names = exec(opened, pure::index_names_argv(&opened.repo.dir), true).await?;
+    match runtime::status_output(&names.done) {
+        Output::Text(raw) if raw.is_empty() => return Err(NOTHING_STAGED),
+        Output::Text(raw) if pure::staged_has_secret(&raw) => return Err(SECRET_STAGED),
+        Output::Text(_) => {}
+        Output::Truncated => return Err(STAGE_TOO_LARGE),
+        Output::Failed => return Err(FAILED),
+    }
+    let diff = exec(opened, pure::review_diff_argv(&opened.repo.dir), true).await?;
+    let ended = &diff.done.ended;
+    if ended.exit != Some(0) || ended.timed_out {
+        return Err(FAILED);
+    }
+    if diff.done.capture.truncated() {
+        return Err(STAGE_TOO_LARGE);
+    }
+    Ok(diff.done.capture.bytes())
+}
+
+/// The ask of a commit: the message, the signing notice and the whole staged
+/// diff in the review view. Nothing is committed yet.
+async fn plan_commit(
+    host: &ToolHost,
+    scope: &TurnScope,
+    message: &str,
+) -> Result<ApprovalAsk, &'static str> {
+    let opened = open(host, scope).await?;
+    opened.repo.identity.clone().map_err(GitError::reason)?;
+    let diff = staged_diff(&opened).await?;
+    let hooks = pure::hooks_notice(&opened.repo.dir, &opened.repo.configured_hooks);
+    Ok(ApprovalAsk::Commit(Arc::new(CommitReview::new(
+        message,
+        hooks.as_deref(),
+        &diff,
+    ))))
+}
+
+/// Runs an approved (or free) verb: judged again, then the jail. `reviewed`
+/// is the ask the user answered, for a commit to compare with the index.
 pub(super) async fn run(
     host: &ToolHost,
     scope: &TurnScope,
     call: &Call,
+    reviewed: Option<ApprovalAsk>,
 ) -> (Outcome, ToolStatus, String) {
     let fail = |why: &str| ended(ToolStatus::Error, why.to_owned(), why);
     // Without a nonce the output cannot be wrapped, so nothing may start.
     let Some(nonce) = new_nonce() else {
         return fail(COULD_NOT);
     };
-    if let Err(why) = plan(host, scope, call).await {
+    if let Err(why) = ready(host, scope).await {
         return fail(why);
     }
-    go(host, scope, call, &nonce).await.unwrap_or_else(fail)
+    let result = match call {
+        Call::GitAdd { paths } => add(host, scope, paths, &nonce).await,
+        Call::GitCommit { message } => commit(host, scope, message, reviewed, &nonce).await,
+        _ => go(host, scope, call, &nonce).await,
+    };
+    result.unwrap_or_else(fail)
 }
 
-async fn go(
+/// The approved add: stages the paths, secrets excluded.
+async fn add(
     host: &ToolHost,
     scope: &TurnScope,
-    call: &Call,
+    paths: &[String],
     nonce: &str,
 ) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let opened = open(host, scope).await?;
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let argv = pure::add_argv(&opened.repo.dir, &refs).map_err(GitError::reason)?;
+    let ran = exec(&opened, argv, false).await?;
+    let ended = &ran.done.ended;
+    let ok = ended.exit == Some(0) && !ended.timed_out;
+    let text = if ok { "staged" } else { FAILED };
+    Ok(finish(&opened, ran, ok, text.to_owned(), "git add", nonce))
+}
+
+/// The approved commit: only if the index is what the user read.
+async fn commit(
+    host: &ToolHost,
+    scope: &TurnScope,
+    message: &str,
+    reviewed: Option<ApprovalAsk>,
+    nonce: &str,
+) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let Some(ApprovalAsk::Commit(reviewed)) = reviewed else {
+        return Err(COULD_NOT);
+    };
+    let opened = open(host, scope).await?;
+    let who = opened.repo.identity.clone().map_err(GitError::reason)?;
+    if !reviewed.same_staged(&staged_diff(&opened).await?) {
+        return Err(STAGED_CHANGED);
+    }
+    let argv = pure::commit_argv(&opened.repo.dir, &who, message).map_err(GitError::reason)?;
+    let ran = exec(&opened, argv, false).await?;
+    let ended = &ran.done.ended;
+    let ok = ended.exit == Some(0) && !ended.timed_out;
+    // The output holds the hooks' words: data, wrapped like any other.
+    let body = label::wrap(nonce, &ran.done.capture.text());
+    let text = if ok {
+        body
+    } else {
+        format!("{FAILED}\n{body}")
+    };
+    Ok(finish(&opened, ran, ok, text, "git commit", nonce))
+}
+
+/// The result of a write verb, with the watched places it changed.
+fn finish(
+    opened: &Opened,
+    ran: Ran,
+    ok: bool,
+    mut text: String,
+    label: &str,
+    nonce: &str,
+) -> (Outcome, ToolStatus, String) {
+    let mut changes = ran.changes;
+    changes.extend(opened.unreported.drain());
+    if let Some(note) = super::exec::changes_note(&changes, nonce) {
+        text.push_str(&note);
+    }
+    let (status, summary) = if ok {
+        (ToolStatus::Ok, label)
+    } else {
+        (ToolStatus::Error, FAILED)
+    };
+    ended(status, text, summary)
+}
+
+/// The preflight of a chat's repository: the run context and what git says.
+async fn open(host: &ToolHost, scope: &TurnScope) -> Result<Opened, &'static str> {
     let key = scope.stage_key.ok_or(COULD_NOT)?;
     let helper = host.exec.helper.clone().ok_or(COULD_NOT)?;
     let parent = scratch_parent(host).ok_or(COULD_NOT)?;
@@ -116,6 +302,22 @@ async fn go(
         .map_err(|_| COULD_NOT)??
     };
     let repo = runtime::open(&ctx, &*read).await.map_err(fault_text)?;
+    Ok(Opened {
+        ctx,
+        repo,
+        read,
+        unreported,
+    })
+}
+
+async fn go(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+    nonce: &str,
+) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let opened = open(host, scope).await?;
+    let repo = &opened.repo;
     let (argv, label) = match call {
         Call::GitStatus => (Ok(pure::status_argv(&repo.dir)), "git status"),
         Call::GitDiff { staged, path } => (
@@ -129,11 +331,9 @@ async fn go(
         _ => return Err(refusal_text(ToolError::UnknownTool)),
     };
     let argv = argv.map_err(|why: GitError| why.reason())?;
-    let ran = runtime::run(&ctx, &repo, argv, true, &*read)
-        .await
-        .map_err(fault_text)?;
+    let ran = exec(&opened, argv, true).await?;
     let mut changes = ran.changes;
-    changes.extend(unreported.drain());
+    changes.extend(opened.unreported.drain());
     let body = match call {
         Call::GitDiff { .. } => diff_text(&ran.done),
         _ => listing(call, &ran.done),

@@ -341,18 +341,86 @@ pub fn log_argv(
 
 /// `git add` of literal paths.
 pub fn add_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitError> {
+    add_with(dir, paths, false)
+}
+
+/// The same add as a dry run: it lists what would be staged and stages nothing.
+pub fn add_dry_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitError> {
+    add_with(dir, paths, true)
+}
+
+/// Whether the paths of an add are allowed: between 1 and
+/// [`MAX_ADD_PATHS`], each one inside the root and not a secret or `.git`.
+pub fn check_add(paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() || paths.len() > MAX_ADD_PATHS {
         return Err(GitError::PathCount);
     }
-    for path in paths {
-        check(path)?;
-    }
+    paths.iter().try_for_each(|path| check(path))
+}
+
+fn add_with(dir: &GitDir, paths: &[&str], dry: bool) -> Result<Vec<String>, GitError> {
+    check_add(paths)?;
     let mut argv = base(dir);
-    argv.extend(["add", "--"].map(str::to_owned));
+    argv.push("add".to_owned());
+    if dry {
+        argv.push("--dry-run".to_owned());
+    }
+    argv.push("--".to_owned());
     argv.extend(paths.iter().map(|path| literal(path)));
     // A folder or `.` would stage the secrets below it: exclude them too.
     argv.extend(excludes());
     Ok(argv)
+}
+
+/// The names the index would commit, NUL separated, with no secret exclude
+/// and no rename pairing: a renamed secret shows under both names.
+pub fn index_names_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--",
+            ".",
+        ]
+        .map(str::to_owned),
+    );
+    argv
+}
+
+/// Whether the `-z` listing of [`index_names_argv`] holds a secret name or a
+/// path inside a secret folder: the commit is then refused, so the review
+/// (which cannot show a secret) stays the whole truth.
+pub fn staged_has_secret(listing: &str) -> bool {
+    listing
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .any(secret_path)
+}
+
+/// The diff the commit review shows: the whole index against `HEAD`, with
+/// nothing left out (no secret exclude, because [`staged_has_secret`] has
+/// refused a secret already; no `--ignore-submodules`, so a changed submodule
+/// pointer is shown).
+pub fn review_diff_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            ".",
+        ]
+        .map(str::to_owned),
+    );
+    argv
 }
 
 /// Whether a commit message is allowed: not empty, bounded, and free of
@@ -401,6 +469,48 @@ mod tests {
 
     fn pair(argv: &[String], key: &str) -> bool {
         argv.windows(2).any(|w| w[0] == "-c" && w[1] == key)
+    }
+
+    // Spec (git-tools, commit): the index is checked for secret paths, not
+    // only the add arguments; a rename counts under both of its names.
+    #[test]
+    fn a_staged_secret_path_is_found_in_the_index_listing() {
+        assert!(staged_has_secret(".env\0a.rs\0"));
+        assert!(staged_has_secret("a.rs\0config/.ENV.local\0"));
+        assert!(staged_has_secret("a.rs\0.ssh/id_rsa\0"));
+        assert!(!staged_has_secret("a.rs\0src/env.rs\0"));
+        assert!(!staged_has_secret(""));
+        let argv = index_names_argv(&gd());
+        for word in ["--cached", "--name-only", "-z", "--no-renames"] {
+            assert!(has(&argv, word), "{word}");
+        }
+        // No exclude: the listing must show the secret it looks for.
+        assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
+    }
+
+    // The review shows what the commit records: a submodule pointer change
+    // is not hidden, and the diff has no external program or textconv.
+    #[test]
+    fn the_commit_diff_hides_nothing_the_commit_records() {
+        let argv = review_diff_argv(&gd());
+        for word in ["--cached", "--no-ext-diff", "--no-textconv", "--no-color"] {
+            assert!(has(&argv, word), "{word}");
+        }
+        assert!(!argv.iter().any(|a| a.starts_with("--ignore-submodules")));
+        assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
+        for setting in HARDENING {
+            assert!(pair(&argv, setting), "{setting}");
+        }
+    }
+
+    #[test]
+    fn the_add_preview_is_the_add_with_a_dry_run() {
+        let real = add_argv(&gd(), &["src", "a.rs"]).unwrap();
+        let dry = add_dry_argv(&gd(), &["src", "a.rs"]).unwrap();
+        assert!(!has(&real, "--dry-run") && has(&dry, "--dry-run"));
+        let without: Vec<&String> = dry.iter().filter(|a| *a != "--dry-run").collect();
+        assert_eq!(without, real.iter().collect::<Vec<_>>());
+        assert_eq!(add_dry_argv(&gd(), &[".env"]), Err(GitError::Path));
     }
 
     #[test]

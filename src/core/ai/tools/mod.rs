@@ -142,6 +142,16 @@ pub enum Call {
         max_count: Option<u64>,
         path: Option<String>,
     },
+    /// Stages the named paths in the repository's index. `paths` are the
+    /// model's text; the host judges them before it asks.
+    GitAdd {
+        paths: Vec<String>,
+    },
+    /// Records the index as a commit. `message` is the model's text: the user
+    /// reads it in the review, and it stays out of debug output.
+    GitCommit {
+        message: String,
+    },
     /// A tool of a user MCP server. It is always a write tool: every call
     /// needs the user's `y`. `name` is the qualified name the model used;
     /// `server` and `tool` come from the lookup (`servers::Qualified`), never
@@ -203,6 +213,11 @@ impl std::fmt::Debug for Call {
                 .field("max_count", max_count)
                 .field("path", path)
                 .finish(),
+            Call::GitAdd { paths } => f.debug_struct("GitAdd").field("paths", paths).finish(),
+            Call::GitCommit { message } => f
+                .debug_struct("GitCommit")
+                .field("message_len", &message.len())
+                .finish(),
             Call::External {
                 name,
                 server,
@@ -238,6 +253,8 @@ impl Call {
             Call::GitStatus => "git_status",
             Call::GitDiff { .. } => "git_diff",
             Call::GitLog { .. } => "git_log",
+            Call::GitAdd { .. } => "git_add",
+            Call::GitCommit { .. } => "git_commit",
         }
     }
 
@@ -247,6 +264,16 @@ impl Call {
             self,
             Call::GitStatus | Call::GitDiff { .. } | Call::GitLog { .. }
         )
+    }
+
+    /// Whether the call is any of the five git verbs.
+    pub fn uses_git(&self) -> bool {
+        self.is_git() || self.is_git_write()
+    }
+
+    /// Whether the call belongs to the GitWrite family (add and commit).
+    pub fn is_git_write(&self) -> bool {
+        matches!(self, Call::GitAdd { .. } | Call::GitCommit { .. })
     }
 
     /// Whether the call belongs to the Exec family.
@@ -295,6 +322,8 @@ impl Call {
             Call::GitDiff { path, .. } | Call::GitLog { path, .. } => {
                 Cow::Borrowed(path.as_deref().unwrap_or_default())
             }
+            Call::GitAdd { paths } => Cow::Owned(paths.join(" ")),
+            Call::GitCommit { message } => Cow::Borrowed(message),
             Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
                 Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
                 None => Cow::Borrowed(pattern),
@@ -350,7 +379,7 @@ const fn field(name: &'static str, max: usize) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 14] = [
+const BUILT_INS: [ToolDef; 16] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -522,6 +551,35 @@ const BUILT_INS: [ToolDef; 14] = [
             OPTIONAL_PATH,
         ],
     },
+    ToolDef {
+        name: "git_add",
+        description: "Stage files of the repository at the chat's root for a commit. `paths` are root-relative files or folders (at most 64); a folder or `.` never stages files that look like secrets, and a secret name or a path inside `.git` is refused. The user approves every add. Refused while a batch is staged: propose_batch first.",
+        access: Access::Write,
+        family: Family::GitWrite,
+        args: &[ArgDef {
+            name: "paths",
+            kind: ArgKind::StrList {
+                items: git::MAX_ADD_PATHS,
+                each: MAX_ARG_BYTES,
+            },
+            required: true,
+            gate: None,
+        }],
+    },
+    ToolDef {
+        name: "git_commit",
+        description: "Commit what is staged, with `message`. The user reads the message and the whole staged diff and must approve it. Signing is disabled for the commit and no trailer is added. A commit with nothing staged, or with a file that looks like a secret staged, is refused. Refused while a batch is staged: propose_batch first.",
+        access: Access::Write,
+        family: Family::GitWrite,
+        args: &[ArgDef {
+            name: "message",
+            kind: ArgKind::Str {
+                max: git::MAX_MESSAGE_BYTES,
+            },
+            required: true,
+            gate: None,
+        }],
+    },
 ];
 
 /// The optional `path` of a git read verb.
@@ -605,6 +663,8 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
         Some(first) if !first.required => String::new(),
         Some(first) => match parsed.get(first.name) {
             Some(ArgValue::Str(text)) => text.clone(),
+            // A list is read by its own arm (`git_add`).
+            Some(ArgValue::List(_)) => String::new(),
             _ => return Err(ToolError::MissingArgument),
         },
     };
@@ -658,6 +718,13 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             },
             path: optional(&parsed, "path"),
         }),
+        "git_add" => Ok(Call::GitAdd {
+            paths: match parsed.get("paths") {
+                Some(ArgValue::List(list)) => list.clone(),
+                _ => Vec::new(),
+            },
+        }),
+        "git_commit" => Ok(Call::GitCommit { message: text }),
         // Unreachable: the name was found in `BUILT_INS` above and every
         // built-in has an arm. Kept so a new built-in cannot become a
         // `run_in_pane` by falling through.
@@ -1736,6 +1803,66 @@ mod tests {
         assert!(call.is_git() && !call.is_write() && !call.is_exec());
         assert_eq!((call.name(), &*call.argument()), ("git_diff", "a.rs"));
         assert!(Call::GitStatus.is_git());
+    }
+
+    fn git_write_set() -> FamilySet {
+        FamilySet::LEGACY.with(Family::GitWrite)
+    }
+
+    // Spec (git-tools, Two toggles): add and commit belong to `GitWrite` and to
+    // nothing else; they are write tools.
+    #[test]
+    fn add_and_commit_are_offered_only_with_git_write_on() {
+        for set in [FamilySet::LEGACY, git_set(), exec_set()] {
+            let listed = registry_with(&[], set);
+            for name in ["git_add", "git_commit"] {
+                assert!(!names(&listed).contains(&name), "{name}");
+            }
+            assert_eq!(
+                parse_write("git_commit", json!({"message": "m"}), set),
+                Err(ToolError::UnknownTool)
+            );
+        }
+        let listed = registry_with(&[], git_write_set());
+        for name in ["git_add", "git_commit"] {
+            let tool = listed.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(tool.access, Access::Write, "{name}");
+        }
+        assert!(!names(&listed).contains(&"git_status"));
+    }
+
+    #[test]
+    fn add_and_commit_parse_into_their_calls() {
+        let parse = |name, args| parse_write(name, args, git_write_set());
+        let add = parse("git_add", json!({"paths": ["src/a.rs", "b.rs"]})).unwrap();
+        assert_eq!(
+            add,
+            Call::GitAdd {
+                paths: vec!["src/a.rs".into(), "b.rs".into()]
+            }
+        );
+        assert!(add.is_git_write() && !add.is_git() && !add.is_write());
+        assert_eq!((add.name(), &*add.argument()), ("git_add", "src/a.rs b.rs"));
+        let commit = parse("git_commit", json!({"message": "fix: x\n\nbody"})).unwrap();
+        assert_eq!(
+            commit,
+            Call::GitCommit {
+                message: "fix: x\n\nbody".into()
+            }
+        );
+        assert!(commit.is_git_write());
+        assert_eq!(commit.name(), "git_commit");
+        assert_eq!(parse("git_add", json!({})), Err(ToolError::MissingArgument));
+        assert_eq!(
+            parse("git_add", json!({"paths": "a"})),
+            Err(ToolError::WrongType)
+        );
+        assert_eq!(
+            parse("git_commit", json!({"message": "m", "amend": true})),
+            Err(ToolError::ExtraArgument)
+        );
+        // The message is the model's text: it stays out of the debug output.
+        assert!(!format!("{commit:?}").contains("body"));
     }
 
     // Spec (git-tools, Verb boundary): no other verb exists, even with every

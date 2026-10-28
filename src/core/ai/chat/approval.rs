@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::core::ai::{
     chat::{
         engine::{CallId, Decision},
-        review::{self, BatchReview},
+        review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
     },
     config::ApprovalMode,
@@ -124,6 +124,15 @@ pub enum ApprovalAsk {
     /// names and subjects only and never ask). `path` is `.` for the whole
     /// tree, as one clean line. Never routed by the approval mode.
     GitDiff { staged: bool, path: String },
+    /// Stage `paths` in the index (one clean line, as the user will read it).
+    /// `files` is how many files a dry run says would be staged; the host
+    /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
+    /// approval mode: every mode asks.
+    GitAdd { paths: String, files: Option<usize> },
+    /// Record the index as a commit. The user reads the message, the signing
+    /// notice and the whole staged diff in the review view; it is never routed
+    /// by the approval mode, so no mode approves it.
+    Commit(Arc<CommitReview>),
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
@@ -171,7 +180,7 @@ impl ApprovalAsk {
     /// read it first.
     pub fn arm_delay(&self) -> Duration {
         match self {
-            Self::Batch(_) => review::ARM_DELAY,
+            Self::Batch(_) | Self::Commit(_) => review::ARM_DELAY,
             _ => ASK_ARM_DELAY,
         }
     }
@@ -223,6 +232,11 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 path: if path.is_empty() { ".".into() } else { path },
             })
         }
+        // An add changes the index: it always asks, on any engine and mode.
+        Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
+            paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
+            files: None,
+        }),
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
         Call::External {
@@ -255,8 +269,36 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::ProposeBatch
         | Call::GitStatus
         | Call::GitDiff { .. }
-        | Call::GitLog { .. } => None,
+        | Call::GitLog { .. }
+        // The host reads the index and builds the commit review itself.
+        | Call::GitCommit { .. } => None,
     }
+}
+
+/// The most characters of the paths of an add that its prompt shows. The host
+/// refuses an add whose paths are longer, so the prompt never hides one.
+pub const GIT_ADD_SHOWN: usize = 400;
+
+/// The paths of an add as the prompt writes them: a path with whitespace is
+/// quoted, so two paths never read as one.
+fn joined_paths(paths: &[String]) -> String {
+    let word = |p: &String| {
+        if p.contains(char::is_whitespace) {
+            format!("'{p}'")
+        } else {
+            p.clone()
+        }
+    };
+    paths.iter().map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// The paths of an add as the prompt will show them, or `None` when the line
+/// would be cut or changed: the host refuses such an add before it asks,
+/// because `y` must approve exactly the paths that are staged.
+pub fn add_line(paths: &[String]) -> Option<String> {
+    let joined = joined_paths(paths);
+    let (line, cut) = flat(&joined, GIT_ADD_SHOWN);
+    (cut == 0 && line == joined && !line.is_empty()).then_some(line)
 }
 
 /// The most characters of a search ask's pattern or folder that are shown.
@@ -1644,6 +1686,56 @@ mod tests {
             assert_eq!(ask_for(&Call::GitStatus, locality), None);
             assert_eq!(ask_for(&log, locality), None);
         }
+    }
+
+    // Spec (git-tools, add): every engine asks for an add, with the paths as
+    // one line; a path with a space is quoted so two never read as one.
+    #[test]
+    fn an_add_asks_on_every_engine_with_the_paths_on_one_line() {
+        let add = Call::GitAdd {
+            paths: vec!["src/a.rs".into(), "my notes.md".into()],
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&add, locality),
+                Some(ApprovalAsk::GitAdd {
+                    paths: "src/a.rs 'my notes.md'".into(),
+                    files: None
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_paths_of_an_add_that_would_not_show_whole_have_no_line() {
+        let paths = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            add_line(&paths(&["a.rs", "b.rs"])).as_deref(),
+            Some("a.rs b.rs")
+        );
+        assert_eq!(add_line(&paths(&[&"a".repeat(GIT_ADD_SHOWN + 1)])), None);
+        assert_eq!(
+            add_line(&paths(&["a\nb"])),
+            None,
+            "a newline is not one line"
+        );
+        assert_eq!(
+            add_line(&paths(&["a  b"])),
+            None,
+            "spaces are not collapsed"
+        );
+        assert_eq!(add_line(&[]), None);
+    }
+
+    // The commit asks through the review the host builds; `ask_for` alone
+    // gives no ask, which the host never takes for a free run (it always
+    // fills one in or refuses).
+    #[test]
+    fn a_commit_has_no_ask_of_its_own_in_ask_for() {
+        let commit = Call::GitCommit {
+            message: "m".into(),
+        };
+        assert_eq!(ask_for(&commit, Locality::Cloud), None);
     }
 
     #[test]

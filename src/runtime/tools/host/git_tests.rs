@@ -124,6 +124,31 @@ fn turn(
     w.host.dispatch(scope)
 }
 
+fn write_set() -> FamilySet {
+    git_set().with(Family::GitWrite)
+}
+
+fn add(paths: &[&str]) -> Call {
+    Call::GitAdd {
+        paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+    }
+}
+
+/// What the index holds, as `git diff --cached --name-only` says.
+fn indexed(cwd: &Path) -> String {
+    let out = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 fn diff() -> Call {
     Call::GitDiff {
         staged: false,
@@ -404,4 +429,487 @@ fn a_git_outside_the_system_places_is_not_picked() {
             "{found:?}"
         );
     }
+}
+
+// Scenario "Defaults" / "Two toggles": with `GitWrite` off, add and commit are
+// unknown tools, even with `Git` on.
+#[tokio::test]
+async fn without_the_git_write_family_add_and_commit_are_unknown_tools() {
+    let w = bare_world(LANDLOCK);
+    for call in [
+        add(&["a.txt"]),
+        Call::GitCommit {
+            message: "m".into(),
+        },
+    ] {
+        let asks = Asks::new(Decision::Sent);
+        let out = turn(&w, Locality::Local, asks.clone(), git_set())
+            .call(call)
+            .await;
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(
+            out.text,
+            crate::core::ai::tools::mcp::refusal_text(
+                crate::core::ai::tools::ToolError::UnknownTool
+            )
+        );
+        assert!(asks.asked().is_empty());
+    }
+}
+
+// Scenario "Secret refused": the refusal comes before any prompt.
+#[tokio::test]
+async fn an_add_of_a_secret_or_a_git_path_is_refused_before_the_prompt() {
+    let Some(w) = repo_world() else { return };
+    let refusal = GitError::Path.reason();
+    for path in [
+        ".env",
+        "src/.env.local",
+        ".git/config",
+        "../outside",
+        "",
+        ".ssh/id_rsa",
+    ] {
+        let asks = Asks::new(Decision::Sent);
+        let out = turn(&w, Locality::Local, asks.clone(), write_set())
+            .call(add(&["a.txt", path]))
+            .await;
+        assert!(out.is_error && out.text == refusal, "{path:?}: {out:?}");
+        assert!(asks.asked().is_empty(), "{path:?}");
+    }
+    assert_eq!(indexed(&w.proj), "");
+    let none = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(add(&[]))
+        .await;
+    assert!(
+        none.is_error && none.text == GitError::PathCount.reason(),
+        "{none:?}"
+    );
+}
+
+// Scenario "Add a file": every engine and mode asks, nothing is staged before
+// `y`, and a declined add changes nothing.
+#[tokio::test]
+async fn an_add_asks_with_the_paths_and_stages_only_after_y() {
+    let Some(w) = repo_world() else { return };
+    std::fs::write(w.proj.join("b.txt"), "b\n").unwrap();
+    for locality in [Locality::Local, Locality::Cloud] {
+        let no = Asks::new(Decision::Denied("the user declined"));
+        let out = turn(&w, locality, no.clone(), write_set())
+            .call(add(&["b.txt"]))
+            .await;
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(
+            no.asked(),
+            vec![ApprovalAsk::GitAdd {
+                paths: "b.txt".into(),
+                files: Some(1)
+            }]
+        );
+        assert_eq!(indexed(&w.proj), "", "{locality:?}");
+    }
+    let unprompted = Asks::new(Decision::Unprompted);
+    let out = turn(&w, Locality::Local, unprompted, write_set())
+        .call(add(&["b.txt"]))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(indexed(&w.proj), "");
+
+    let yes = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, yes.clone(), write_set())
+        .call(add(&["b.txt"]))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(indexed(&w.proj), "b.txt\n");
+}
+
+// A folder or `.` never stages the secret files below it.
+#[tokio::test]
+async fn adding_a_folder_leaves_the_secret_files_below_it_out() {
+    let Some(w) = repo_world() else { return };
+    std::fs::create_dir_all(w.proj.join("src")).unwrap();
+    std::fs::write(w.proj.join("src/m.rs"), "m\n").unwrap();
+    std::fs::write(w.proj.join("src/.env"), "TOKEN=x\n").unwrap();
+    std::fs::write(w.proj.join(".env"), "TOKEN=y\n").unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(add(&["."]))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(indexed(&w.proj), "src/m.rs\n");
+    // The prompt counted the files that would be staged, secrets out.
+    assert!(matches!(
+        asks.asked()[..],
+        [ApprovalAsk::GitAdd { files: Some(1), .. }]
+    ));
+}
+
+// Paths the prompt could not show whole are refused before it opens.
+#[tokio::test]
+async fn an_add_whose_paths_would_not_show_whole_is_refused_before_the_prompt() {
+    let Some(w) = repo_world() else { return };
+    let long = "a".repeat(450);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(add(&[&long]))
+        .await;
+    assert!(out.is_error && out.text.contains("fewer"), "{out:?}");
+    assert!(asks.asked().is_empty());
+}
+
+// Scenario "Unproposed batch" for the write verbs too.
+#[tokio::test]
+async fn an_add_with_staged_changes_must_propose_them_first() {
+    let w = bare_world(LANDLOCK);
+    let asks = Asks::new(Decision::Sent);
+    let d = turn(&w, Locality::Local, asks.clone(), write_set());
+    let staged = d
+        .call(Call::WriteFile {
+            path: "b.txt".into(),
+            content: "x".into(),
+        })
+        .await;
+    assert!(!staged.is_error, "{staged:?}");
+    for call in [
+        add(&["b.txt"]),
+        Call::GitCommit {
+            message: "m".into(),
+        },
+    ] {
+        let out = d.call(call).await;
+        assert!(
+            out.is_error && out.text.contains("propose them first"),
+            "{out:?}"
+        );
+    }
+    assert!(asks.asked().is_empty());
+}
+
+// Spec "Verb boundary": a worker turn has no stage key and cannot commit.
+#[tokio::test]
+async fn a_turn_that_cannot_stage_cannot_add_or_commit() {
+    let w = bare_world(LANDLOCK);
+    for call in [
+        add(&["a.txt"]),
+        Call::GitCommit {
+            message: "m".into(),
+        },
+    ] {
+        let (tx, rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut rx = rx;
+            while rx.recv().await.is_some() {}
+        });
+        let asks = Asks::new(Decision::Sent);
+        let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+        scope.approver = asks.clone();
+        scope.families = write_set();
+        let out = w.host.dispatch(scope).call(call).await;
+        assert!(out.is_error, "{out:?}");
+        assert!(asks.asked().is_empty());
+    }
+}
+
+fn commit(message: &str) -> Call {
+    Call::GitCommit {
+        message: message.into(),
+    }
+}
+
+/// The commits of the repo, newest first, as full messages.
+fn history(cwd: &Path) -> String {
+    let out = Command::new("git")
+        .args(["log", "--format=%B%x00"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn raw_head(cwd: &Path) -> String {
+    let out = Command::new("git")
+        .args(["cat-file", "-p", "HEAD"])
+        .env_remove("GIT_DIR")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn staged_world() -> Option<World> {
+    let w = repo_world()?;
+    std::fs::write(w.proj.join("a.txt"), "two\n").unwrap();
+    sh(&w.proj, &["add", "a.txt"]);
+    Some(w)
+}
+
+// Scenario "Review shows message and diff": every engine asks with the review
+// view; nothing is committed before `y`, and a declined or unprompted answer
+// leaves the history as it was.
+#[tokio::test]
+async fn a_commit_asks_with_the_review_and_commits_nothing_before_y() {
+    let Some(w) = staged_world() else { return };
+    for locality in [Locality::Local, Locality::Cloud] {
+        let no = Asks::new(Decision::Denied("declined"));
+        let out = turn(&w, locality, no.clone(), write_set())
+            .call(commit("feat: two"))
+            .await;
+        assert!(out.is_error && out.text.contains("declined"), "{out:?}");
+        let asked = no.asked();
+        let [ApprovalAsk::Commit(review)] = &asked[..] else {
+            panic!("{asked:?}");
+        };
+        assert_eq!(review.review().counts(), "1 file, +1 -1");
+        assert!(!history(&w.proj).contains("feat: two"), "{locality:?}");
+    }
+    let unprompted = Asks::new(Decision::Unprompted);
+    let out = turn(&w, Locality::Local, unprompted, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(!history(&w.proj).contains("feat: two"));
+}
+
+// Scenario "Signing disabled" plus "no AI trailer": the message is recorded
+// verbatim, unsigned even when the repo asks to sign, with the repo identity.
+#[tokio::test]
+async fn an_approved_commit_is_verbatim_unsigned_and_has_no_trailer() {
+    let Some(w) = staged_world() else { return };
+    sh(&w.proj, &["config", "commit.gpgsign", "true"]);
+    sh(&w.proj, &["config", "gpg.program", "/bin/false"]);
+    let message = "feat: two\n\nThe body.";
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit(message))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+    assert_eq!(
+        history(&w.proj).split('\0').next().unwrap().trim_end(),
+        message
+    );
+    let head = raw_head(&w.proj);
+    assert!(!head.contains("gpgsig"), "{head}");
+    assert!(head.contains("author Repo Dev <dev@example.com>"), "{head}");
+    assert!(
+        !head.contains("Co-Authored-By") && !head.contains("Claude"),
+        "{head}"
+    );
+}
+
+// Scenario "Nothing staged": an error result and no review opens.
+#[tokio::test]
+async fn a_commit_with_nothing_staged_is_an_error_without_a_review() {
+    let Some(w) = repo_world() else { return };
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: nothing"))
+        .await;
+    assert!(out.is_error && out.text == "nothing is staged", "{out:?}");
+    assert!(asks.asked().is_empty());
+}
+
+// Design: refused when the index holds a secret-listed path, however it got
+// there (here by the user's own `git add -f`), so the review stays honest.
+#[tokio::test]
+async fn a_commit_is_refused_when_the_index_holds_a_secret_path() {
+    let Some(w) = staged_world() else { return };
+    std::fs::write(w.proj.join(".env"), "TOKEN=hunter2\n").unwrap();
+    sh(&w.proj, &["add", "-f", ".env"]);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: oops"))
+        .await;
+    assert!(
+        out.is_error && out.text.contains("looks like a secret"),
+        "{out:?}"
+    );
+    assert!(!out.text.contains("hunter2"));
+    assert!(asks.asked().is_empty());
+    assert!(!history(&w.proj).contains("feat: oops"));
+}
+
+// A message the review cannot show faithfully is refused before the prompt.
+#[tokio::test]
+async fn a_message_with_control_characters_or_none_is_refused_before_the_prompt() {
+    let Some(w) = staged_world() else { return };
+    for message in ["", "   ", "a\u{1b}[2Jb", "a\u{202e}b"] {
+        let asks = Asks::new(Decision::Sent);
+        let out = turn(&w, Locality::Local, asks.clone(), write_set())
+            .call(commit(message))
+            .await;
+        assert!(
+            out.is_error && out.text == GitError::Message.reason(),
+            "{message:?}: {out:?}"
+        );
+        assert!(asks.asked().is_empty());
+    }
+}
+
+// The user approves what the review showed: an index that changed after the
+// question is refused after `y`.
+#[tokio::test]
+async fn a_commit_is_refused_when_the_index_changed_after_the_question() {
+    use super::{Answer, Approver};
+    struct Racy(PathBuf);
+    impl Approver for Racy {
+        fn ask(
+            &self,
+            _: crate::core::ai::chat::engine::CallId,
+            _: &ApprovalAsk,
+        ) -> futures::future::BoxFuture<'static, Answer> {
+            std::fs::write(self.0.join("late.txt"), "late\n").unwrap();
+            sh(&self.0, &["add", "late.txt"]);
+            futures::future::ready(Decision::Sent.into()).boxed()
+        }
+    }
+    let Some(w) = staged_world() else { return };
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while rx.recv().await.is_some() {}
+    });
+    let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+    scope.approver = Arc::new(Racy(w.proj.clone()));
+    scope.families = write_set();
+    scope.stage_key = Some(key());
+    let out = w.host.dispatch(scope).call(commit("feat: two")).await;
+    assert!(
+        out.is_error && out.text.contains("changed after the question"),
+        "{out:?}"
+    );
+    assert!(!history(&w.proj).contains("feat: two"));
+}
+
+// Scenario "Hook is jailed", host side: the hooks run (the real jail is the
+// runtime's), a failing one stops the commit, and what it prints is data.
+#[tokio::test]
+async fn a_failing_pre_commit_hook_stops_the_commit_and_its_output_is_data() {
+    let Some(w) = staged_world() else { return };
+    let hook = w.proj.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'hook says no'\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error && out.text.contains("hook says no"), "{out:?}");
+    assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+    assert!(!history(&w.proj).contains("feat: two"));
+}
+
+// A repo that sets its own hooks folder cannot make the commit run it: the
+// pinned `<git-dir>/hooks` is the only one.
+#[tokio::test]
+async fn a_hooks_path_set_by_the_repo_config_is_not_run() {
+    let Some(w) = staged_world() else { return };
+    let evil = w.proj.join("evil");
+    std::fs::create_dir_all(&evil).unwrap();
+    let hook = evil.join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\ntouch \"$PWD/ran-evil\"\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sh(&w.proj, &["config", "core.hooksPath", "evil"]);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(!w.proj.join("ran-evil").exists());
+    let asked = asks.asked();
+    let [ApprovalAsk::Commit(review)] = &asked[..] else {
+        panic!("{asked:?}");
+    };
+    assert!(review.review().doc().reviewable());
+}
+
+// A repo whose identity git would refuse to use is a fixed error, not a
+// commit under another name.
+#[tokio::test]
+async fn a_commit_without_a_usable_identity_is_refused_before_the_prompt() {
+    let Some(w) = staged_world() else { return };
+    sh(&w.proj, &["config", "user.email", "not-an-email"]);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(
+        out.is_error && out.text == GitError::Identity.reason(),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+}
+
+// A diff that was cut cannot be reviewed whole: no prompt, no commit.
+#[tokio::test]
+async fn a_staged_diff_too_large_to_review_is_refused_before_the_prompt() {
+    let Some(w) = staged_world() else { return };
+    let big: String = (0..40_000).map(|n| format!("line number {n}\n")).collect();
+    std::fs::write(w.proj.join("big.txt"), big).unwrap();
+    sh(&w.proj, &["add", "big.txt"]);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: big"))
+        .await;
+    assert!(
+        out.is_error && out.text.contains("too large to review"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+}
+
+// Gd.3, end to end in a temp repo (spec "Verb boundary", design "Git" tests):
+// the model cannot stage a secret, a secret the user staged by hand (or as a
+// rename away from a tracked secret) stops the commit before any prompt, and
+// once the index is clean the same commit goes through.
+#[tokio::test]
+async fn the_commit_is_refused_on_a_staged_env_until_the_index_is_clean() {
+    let Some(w) = repo_world() else { return };
+    let d = |asks: &Arc<Asks>| turn(&w, Locality::Local, asks.clone(), write_set());
+    std::fs::write(w.proj.join("a.txt"), "two\n").unwrap();
+    std::fs::write(w.proj.join(".env"), "TOKEN=hunter2\n").unwrap();
+
+    // The model: `.` stages a.txt and leaves .env; naming .env is refused.
+    let asks = Asks::new(Decision::Sent);
+    assert!(!d(&asks).call(add(&["."])).await.is_error);
+    assert_eq!(indexed(&w.proj), "a.txt\n");
+    assert!(d(&asks).call(add(&[".env"])).await.is_error);
+
+    // The user stages .env by hand: the commit stops before the question.
+    sh(&w.proj, &["add", "-f", ".env"]);
+    let asks = Asks::new(Decision::Sent);
+    let out = d(&asks).call(commit("feat: two")).await;
+    assert!(
+        out.is_error && out.text.contains("looks like a secret"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty() && !history(&w.proj).contains("feat: two"));
+
+    // A tracked secret renamed away shows under its old name too.
+    sh(&w.proj, &["reset", "-q"]);
+    sh(&w.proj, &["add", "-f", ".env"]);
+    sh(&w.proj, &["commit", "-q", "-m", "track env"]);
+    sh(&w.proj, &["mv", ".env", "config.txt"]);
+    let out = d(&asks).call(commit("feat: rename")).await;
+    assert!(
+        out.is_error && out.text.contains("looks like a secret"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+
+    // The user cleans the index: the same commit is asked and recorded.
+    sh(&w.proj, &["reset", "-q"]);
+    sh(&w.proj, &["add", "a.txt"]);
+    let yes = Asks::new(Decision::Sent);
+    let out = d(&yes).call(commit("feat: two")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(yes.asked().len(), 1);
+    assert!(history(&w.proj).starts_with("feat: two"));
 }

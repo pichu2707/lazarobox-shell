@@ -23,6 +23,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod commit;
+pub use commit::CommitReview;
+
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
 use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
