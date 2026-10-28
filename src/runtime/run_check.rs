@@ -36,6 +36,9 @@ const NO_ROOTS: &str = "the secret locations cannot be read";
 pub const TOO_LARGE: &str = "the folder is too large to check";
 /// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
+/// Why an `rg` does not run on its own: an ignore file it reads has a `!`
+/// line, which can make it read hidden files the check does not look at.
+pub const UNIGNORED: &str = "an ignore file may let the search read hidden files";
 
 /// What the check reads from the process: the same environment the read tools
 /// judge paths by.
@@ -84,13 +87,14 @@ impl Checker {
 /// real directory it goes to.
 ///
 /// In order: a cloud chat whose root is HOME or `/` runs nothing on its own
-/// ([`BROAD_ROOT`]); then, path by path, a refused path, a walk (`find` or a
-/// search) that reaches a secret root, or a search that would read a
-/// sensitive file below the folder it walks, is [`NOT_ALLOWED`], and a
-/// searched folder with more than [`MAX_SEARCHED`] entries is [`TOO_LARGE`];
-/// last, a path the command acts on outside the root is [`OUTSIDE_ROOT`].
-/// Each one opens the prompt; only [`NOT_ALLOWED`] counts toward the pause,
-/// [`TOO_LARGE`] does not.
+/// ([`BROAD_ROOT`]); then, path by path, a refused path, a git setting a
+/// search is given, a walk (`find` or a search) that reaches a secret root,
+/// or a search that would read a sensitive file below the folder it walks,
+/// is [`NOT_ALLOWED`], a searched folder with more than [`MAX_SEARCHED`]
+/// entries is [`TOO_LARGE`], and an `rg` whose ignore files hold a `!` line
+/// is [`UNIGNORED`]; last, a path the command acts on outside the root is
+/// [`OUTSIDE_ROOT`]. Each one opens the prompt; only [`NOT_ALLOWED`] counts
+/// toward the pause, [`TOO_LARGE`] and [`UNIGNORED`] do not.
 pub fn check(
     env: &ToolEnv,
     call: CallId,
@@ -119,6 +123,12 @@ pub fn check(
         else {
             return refused(NOT_ALLOWED);
         };
+        // A search reads a file it is given like a read does: a git setting
+        // is refused, by the name it is given or the file it reaches.
+        let reads = matches!(safe.verb(), Verb::Grep | Verb::Rg);
+        if reads && (is_git_config(Path::new(target.input)) || is_git_config(&real)) {
+            return refused(NOT_ALLOWED);
+        }
         if target.confined && !real.starts_with(&root) {
             outside = true;
         } else if target.searched
@@ -147,9 +157,11 @@ pub fn check(
 /// may be sensitive by name, position or as a git setting: `grep -r` reads
 /// hidden entries too; `rg` skips them by default (its flags that read them
 /// are not allowed), so hidden entries below `real` are not looked at, but
-/// the plain names inside a hidden folder it is given are. Links are not
-/// followed, as no verb follows them below its arguments. A folder with more
-/// than [`MAX_SEARCHED`] entries is not looked through.
+/// the plain names inside a hidden folder it is given are. A `!` line in an
+/// ignore file `rg` reads, in a walked folder or one above `real`, can make
+/// it read hidden files anyway, so that search is [`UNIGNORED`]. Links are
+/// not followed, as no verb follows them below its arguments. A folder with
+/// more than [`MAX_SEARCHED`] entries is not looked through.
 fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'static str> {
     if roots.holds_root(real) {
         return Err(NOT_ALLOWED);
@@ -162,8 +174,14 @@ fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'stat
     if !real.is_dir() {
         return Ok(());
     }
+    if !hidden && real.ancestors().skip(1).any(unignores) {
+        return Err(UNIGNORED);
+    }
     let (mut queue, mut seen) = (vec![real.to_path_buf()], 0usize);
     while let Some(dir) = queue.pop() {
+        if !hidden && unignores(&dir) {
+            return Err(UNIGNORED);
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -188,6 +206,35 @@ fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'stat
         }
     }
     Ok(())
+}
+
+/// The ignore files `rg` reads in a folder, as paths below it.
+const IGNORE_FILES: [&str; 4] = [".ignore", ".rgignore", ".gitignore", ".git/info/exclude"];
+/// The longest ignore file the check reads; a longer one counts as holding
+/// an exception.
+const MAX_IGNORE_BYTES: u64 = 1 << 20;
+
+/// Whether an ignore file `rg` reads in `dir` holds an exception: a line
+/// that starts with `!` after optional spaces, which can make `rg` read a
+/// hidden file. One that cannot be read or is too long counts as holding
+/// one (fail closed); a missing one, or one that is no regular file, does
+/// not, as `rg` reads neither.
+fn unignores(dir: &Path) -> bool {
+    IGNORE_FILES.iter().any(|name| {
+        let path = dir.join(name);
+        match std::fs::metadata(&path) {
+            Err(error) => !matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ),
+            Ok(meta) if !meta.is_file() => false,
+            Ok(meta) if meta.len() > MAX_IGNORE_BYTES => true,
+            Ok(_) => std::fs::read(&path).map_or(true, |text| {
+                text.split(|&b| b == b'\n')
+                    .any(|line| line.trim_ascii_start().starts_with(b"!"))
+            }),
+        }
+    })
 }
 
 /// Runs `work` on the blocking pool for at most `bound`. A check that is too
@@ -744,6 +791,97 @@ mod tests {
                 &scope(&f.home, false),
             );
             assert_eq!(reason(&event), Some(NOT_ALLOWED), "{command} in {cwd:?}");
+        }
+    }
+
+    // T2b (A2): an explicit file a search reads is judged like a read: a git
+    // setting is NOT_ALLOWED, by name or through a link.
+    #[test]
+    fn a_search_of_an_explicit_git_setting_is_refused() {
+        let f = fixture();
+        project(&f);
+        let proj = f.home.join("dev/proj");
+        std::os::unix::fs::symlink(proj.join(".git/config"), proj.join("cfg")).unwrap();
+        std::os::unix::fs::symlink(proj.join(".git"), proj.join("g")).unwrap();
+        for command in [
+            "rg url .git/config",
+            "grep url .git/config",
+            "rg url cfg",
+            "grep -n url cfg",
+            "grep url g/config",
+            "rg url src g/config",
+        ] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            reason(&run_in(
+                &f,
+                "dev/proj",
+                false,
+                "dev/proj/.git",
+                "grep url config"
+            )),
+            Some(NOT_ALLOWED)
+        );
+        // Other files in the git folder are no setting.
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            false,
+            "dev/proj",
+            "grep ref .git/HEAD"
+        )));
+    }
+
+    // T2b (A1): a `!` line in an ignore file can make rg read a hidden file
+    // the walk skips, so the search asks (UNIGNORED, which never counts
+    // toward the pause). The ignore files of the folders above count too.
+    #[test]
+    fn an_ignore_file_with_an_exception_makes_rg_ask() {
+        for (file, text) in [
+            (".ignore", "!.env\n"),
+            (".rgignore", "target/\n!web/.env\n"),
+            (".gitignore", "  !.env\n"),
+            (".git/info/exclude", "!.env\n"),
+        ] {
+            let f = fixture();
+            project(&f);
+            fs::create_dir_all(f.home.join("dev/proj/.git/info")).unwrap();
+            fs::write(f.home.join("dev/proj").join(file), text).unwrap();
+            for command in ["rg url", "rg -n url web"] {
+                assert_eq!(
+                    reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
+                    Some(UNIGNORED),
+                    "{command} with {file}"
+                );
+            }
+            // grep reads no ignore file and keeps its own rule.
+            assert!(checked(&run_in(
+                &f,
+                "dev/proj",
+                false,
+                "dev/proj",
+                "grep -rn url src"
+            )));
+        }
+    }
+
+    // T2b keeps: ignore files without an exception leave rg running, with a
+    // hidden `.env` in the tree.
+    #[test]
+    fn an_ignore_file_without_an_exception_keeps_rg_running() {
+        let f = fixture();
+        project(&f);
+        for (file, text) in [(".ignore", "target/\n"), (".gitignore", "*.log\n# !no\n")] {
+            fs::write(f.home.join("dev/proj").join(file), text).unwrap();
+        }
+        for command in ["rg url", "rg -n url web"] {
+            let event = run_in(&f, "dev/proj", false, "dev/proj", command);
+            assert!(checked(&event), "{command}: {event:?}");
         }
     }
 
