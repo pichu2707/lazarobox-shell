@@ -3,10 +3,12 @@
 //! on the blocking pool under a bound; a failure or timeout is a refusal.
 
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use ignore::WalkBuilder;
 use tokio::{sync::mpsc, time::timeout};
 
 use crate::{
@@ -36,9 +38,9 @@ const NO_ROOTS: &str = "the secret locations cannot be read";
 pub const TOO_LARGE: &str = "the folder is too large to check";
 /// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
-/// Why an `rg` does not run on its own: an ignore file it reads has a `!`
-/// line, which can make it read hidden files the check does not look at.
-pub const UNIGNORED: &str = "an ignore file may let the search read hidden files";
+/// Why an `rg` does not run on its own: a folder or an ignore file below
+/// what it searches cannot be read, so what it would read is not known.
+pub const UNCHECKED: &str = "a folder in the search cannot be checked";
 
 /// What the check reads from the process: the same environment the read tools
 /// judge paths by.
@@ -91,10 +93,11 @@ impl Checker {
 /// search is given, a walk (`find` or a search) that reaches a secret root,
 /// or a search that would read a sensitive file below the folder it walks,
 /// is [`NOT_ALLOWED`], a searched folder with more than [`MAX_SEARCHED`]
-/// entries is [`TOO_LARGE`], and an `rg` whose ignore files hold a `!` line
-/// is [`UNIGNORED`]; last, a path the command acts on outside the root is
-/// [`OUTSIDE_ROOT`]. Each one opens the prompt; only [`NOT_ALLOWED`] counts
-/// toward the pause, [`TOO_LARGE`] and [`UNIGNORED`] do not.
+/// entries is [`TOO_LARGE`], and an `rg` whose walk meets a folder or an
+/// ignore file it cannot read is [`UNCHECKED`]; last, a path the command
+/// acts on outside the root is [`OUTSIDE_ROOT`]. Each one opens the prompt;
+/// only [`NOT_ALLOWED`] counts toward the pause, [`TOO_LARGE`] and
+/// [`UNCHECKED`] do not.
 pub fn check(
     env: &ToolEnv,
     call: CallId,
@@ -117,6 +120,10 @@ pub fn check(
     if scope.cloud && roots.home().starts_with(&root) {
         return refused(BROAD_ROOT);
     }
+    let depth = match safe.verb() {
+        Verb::Rg => max_depth(safe.as_str()),
+        _ => None,
+    };
     let (mut cd_target, mut outside) = (None, false);
     for target in safe.targets() {
         let PathVerdict::Allowed(real) = resolve_exec(&roots, &cwd, target.input, target.want)
@@ -132,7 +139,7 @@ pub fn check(
         if target.confined && !real.starts_with(&root) {
             outside = true;
         } else if target.searched
-            && let Err(reason) = searchable(&roots, &real, safe.verb())
+            && let Err(reason) = searchable(&roots, &real, safe.verb(), depth)
         {
             return refused(reason);
         }
@@ -155,33 +162,41 @@ pub fn check(
 /// read its files. `find` lists names only, so an ordinary name such as
 /// `.env` does not stop it. A search also reads every file it walks, so none
 /// may be sensitive by name, position or as a git setting: `grep -r` reads
-/// hidden entries too; `rg` skips them by default (its flags that read them
-/// are not allowed), so hidden entries below `real` are not looked at, but
-/// the plain names inside a hidden folder it is given are. A `!` line in an
-/// ignore file `rg` reads, in a walked folder or one above `real`, can make
-/// it read hidden files anyway, so that search is [`UNIGNORED`]. Links are
-/// not followed, as no verb follows them below its arguments. A folder with
-/// more than [`MAX_SEARCHED`] entries is not looked through.
-fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'static str> {
+/// every entry, hidden ones too; `rg` reads what its own walker yields (see
+/// [`rg_walk`]), down to `depth` when the command bounds it. Links are not
+/// followed, as no verb follows them below its arguments. More than
+/// [`MAX_SEARCHED`] entries are not looked through.
+fn searchable(
+    roots: &SecretRoots,
+    real: &Path,
+    verb: Verb,
+    depth: Option<usize>,
+) -> Result<(), &'static str> {
     if roots.holds_root(real) {
         return Err(NOT_ALLOWED);
     }
-    let hidden = match verb {
-        Verb::Grep => true,
-        Verb::Rg => false,
-        Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => return Ok(()),
-    };
     if !real.is_dir() {
         return Ok(());
     }
-    if !hidden && real.ancestors().skip(1).any(unignores) {
-        return Err(UNIGNORED);
+    match verb {
+        Verb::Grep => grep_walk(roots, real),
+        Verb::Rg => rg_walk(roots, real, depth),
+        Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => Ok(()),
     }
+}
+
+/// Whether a search would read something it must not: an entry that is
+/// sensitive by name, by position or as a git setting.
+fn sensitive(roots: &SecretRoots, path: &Path, name: &OsStr) -> bool {
+    is_excluded_name(&name.to_string_lossy()) || is_git_config(path) || !roots.judge_real(path)
+}
+
+/// The walk of `grep -r`: every entry below `real`, hidden ones too, as
+/// grep reads no ignore file. A folder it cannot read is skipped, as grep
+/// cannot read it either.
+fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
     let (mut queue, mut seen) = (vec![real.to_path_buf()], 0usize);
     while let Some(dir) = queue.pop() {
-        if !hidden && unignores(&dir) {
-            return Err(UNIGNORED);
-        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -190,14 +205,8 @@ fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'stat
             if seen > MAX_SEARCHED {
                 return Err(TOO_LARGE);
             }
-            let (path, name) = (entry.path(), entry.file_name());
-            if !hidden && name.as_encoded_bytes().starts_with(b".") {
-                continue;
-            }
-            let sensitive = is_excluded_name(&name.to_string_lossy())
-                || is_git_config(&path)
-                || !roots.judge_real(&path);
-            if sensitive {
+            let path = entry.path();
+            if sensitive(roots, &path, &entry.file_name()) {
                 return Err(NOT_ALLOWED);
             }
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -208,33 +217,76 @@ fn searchable(roots: &SecretRoots, real: &Path, verb: Verb) -> Result<(), &'stat
     Ok(())
 }
 
-/// The ignore files `rg` reads in a folder, as paths below it.
-const IGNORE_FILES: [&str; 4] = [".ignore", ".rgignore", ".gitignore", ".git/info/exclude"];
-/// The longest ignore file the check reads; a longer one counts as holding
-/// an exception.
-const MAX_IGNORE_BYTES: u64 = 1 << 20;
-
-/// Whether an ignore file `rg` reads in `dir` holds an exception: a line
-/// that starts with `!` after optional spaces, which can make `rg` read a
-/// hidden file. One that cannot be read or is too long counts as holding
-/// one (fail closed); a missing one, or one that is no regular file, does
-/// not, as `rg` reads neither.
-fn unignores(dir: &Path) -> bool {
-    IGNORE_FILES.iter().any(|name| {
-        let path = dir.join(name);
-        match std::fs::metadata(&path) {
-            Err(error) => !matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ),
-            Ok(meta) if !meta.is_file() => false,
-            Ok(meta) if meta.len() > MAX_IGNORE_BYTES => true,
-            Ok(_) => std::fs::read(&path).map_or(true, |text| {
-                text.split(|&b| b == b'\n')
-                    .any(|line| line.trim_ascii_start().starts_with(b"!"))
-            }),
+/// The walk of `rg`, with ripgrep's own walker set as `rg` sets it by
+/// default, so it yields what `rg` would read: hidden entries skipped;
+/// `.ignore`, `.rgignore`, `.gitignore`, `.git/info/exclude`, the global git
+/// excludes and the ignore files of the folders above all honoured, a
+/// `.gitignore` only inside a git repository; links not followed. A `!` line
+/// that lets a hidden file back in makes the walker yield it, so it is judged
+/// like any other. A folder or an ignore file it cannot read is
+/// [`UNCHECKED`]. File types (`-t`, `-T`) are not applied: their
+/// definitions may differ between this walker and the `rg` installed, and
+/// walking more is safe.
+fn rg_walk(roots: &SecretRoots, real: &Path, depth: Option<usize>) -> Result<(), &'static str> {
+    let mut walk = WalkBuilder::new(real);
+    walk.hidden(true)
+        .parents(true)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(true)
+        .follow_links(false)
+        .add_custom_ignore_filename(".rgignore")
+        .max_depth(depth);
+    let mut seen = 0usize;
+    for entry in walk.build() {
+        let Ok(entry) = entry else {
+            return Err(UNCHECKED);
+        };
+        if entry.error().is_some() {
+            return Err(UNCHECKED);
         }
-    })
+        // The folder itself was judged as a path of the command.
+        if entry.depth() == 0 {
+            continue;
+        }
+        seen += 1;
+        if seen > MAX_SEARCHED {
+            return Err(TOO_LARGE);
+        }
+        if sensitive(roots, entry.path(), entry.file_name()) {
+            return Err(NOT_ALLOWED);
+        }
+    }
+    Ok(())
+}
+
+/// The value of the last `--max-depth` of an `rg` command the grammar
+/// accepted, as `rg` takes the last one; `None` when there is none or it
+/// does not read as a number (an unbounded walk is the safe side). The
+/// grammar keeps a quoted word whole, with no quote inside, and never lets
+/// one start with a dash, so the flag is always a whole unquoted word.
+fn max_depth(command: &str) -> Option<usize> {
+    let bytes = command.as_bytes();
+    let (mut words, mut i) = (Vec::new(), 0);
+    while i < bytes.len() {
+        let end = match bytes[i] {
+            quote @ (b'\'' | b'"') => bytes[i + 1..]
+                .iter()
+                .position(|&b| b == quote)
+                .map_or(bytes.len(), |n| i + n + 2),
+            _ => bytes[i..]
+                .iter()
+                .position(|&b| b == b' ')
+                .map_or(bytes.len(), |n| i + n),
+        };
+        words.push(&command[i..end.min(bytes.len())]);
+        i = end + 1;
+    }
+    let at = words.iter().rposition(|&word| word == "--max-depth")?;
+    let value = words.get(at + 1)?.trim_matches(['\'', '"']);
+    value.parse().ok()
 }
 
 /// Runs `work` on the blocking pool for at most `bound`. A check that is too
@@ -837,15 +889,16 @@ mod tests {
         )));
     }
 
-    // T2b (A1): a `!` line in an ignore file can make rg read a hidden file
-    // the walk skips, so the search asks (UNIGNORED, which never counts
-    // toward the pause). The ignore files of the folders above count too.
+    // T2c: rg's own walker decides what it reads. A `!` line in an ignore
+    // file makes rg read a hidden file it would skip; the walker yields it,
+    // so a sensitive one is refused (NOT_ALLOWED). The ignore files of the
+    // folders above count too.
     #[test]
-    fn an_ignore_file_with_an_exception_makes_rg_ask() {
+    fn an_ignore_file_with_an_exception_makes_rg_read_the_hidden_file() {
         for (file, text) in [
             (".ignore", "!.env\n"),
             (".rgignore", "target/\n!web/.env\n"),
-            (".gitignore", "  !.env\n"),
+            (".gitignore", "!.env\n"),
             (".git/info/exclude", "!.env\n"),
         ] {
             let f = fixture();
@@ -855,7 +908,7 @@ mod tests {
             for command in ["rg url", "rg -n url web"] {
                 assert_eq!(
                     reason(&run_in(&f, "dev/proj", false, "dev/proj", command)),
-                    Some(UNIGNORED),
+                    Some(NOT_ALLOWED),
                     "{command} with {file}"
                 );
             }
@@ -868,6 +921,116 @@ mod tests {
                 "grep -rn url src"
             )));
         }
+    }
+
+    // T2c: what rg ignores is not looked at: a gitignored `target/` larger
+    // than the cap leaves a plain rg running; grep -r, which reads no ignore
+    // file, still walks it.
+    #[test]
+    fn an_ignored_folder_does_not_count_for_rg() {
+        let f = fixture();
+        project(&f);
+        let target = f.home.join("dev/proj/target");
+        fs::create_dir_all(&target).unwrap();
+        for n in 0..=MAX_SEARCHED {
+            fs::write(target.join(n.to_string()), "").unwrap();
+        }
+        fs::write(f.home.join("dev/proj/.gitignore"), "target/\n").unwrap();
+        for command in ["rg foo", "rg -n foo src web"] {
+            let event = run_in(&f, "dev/proj", false, "dev/proj", command);
+            assert!(checked(&event), "{command}: {event:?}");
+        }
+        assert_eq!(
+            reason(&run_in(
+                &f,
+                "dev/proj",
+                false,
+                "dev/proj",
+                "grep -r foo target"
+            )),
+            Some(TOO_LARGE)
+        );
+    }
+
+    // T2c: `--max-depth` bounds the walk as it bounds rg.
+    #[test]
+    fn rg_max_depth_bounds_the_walk() {
+        let f = fixture();
+        let deep = f.home.join("dev/deep/a");
+        fs::create_dir_all(&deep).unwrap();
+        for n in 0..=MAX_SEARCHED {
+            fs::write(deep.join(n.to_string()), "").unwrap();
+        }
+        let run = |command| run_in(&f, "dev/deep", false, "dev/deep", command);
+        assert!(checked(&run("rg --max-depth 1 foo")));
+        assert!(checked(&run("rg --max-depth 1 foo .")));
+        assert_eq!(reason(&run("rg foo")), Some(TOO_LARGE));
+        assert_eq!(reason(&run("rg --max-depth 2 foo")), Some(TOO_LARGE));
+        // A pattern that only looks like the flag bounds nothing.
+        assert_eq!(reason(&run("rg 'x --max-depth 1' .")), Some(TOO_LARGE));
+    }
+
+    // T2c: a folder the walker cannot read asks (UNCHECKED, which never
+    // counts toward the pause).
+    #[test]
+    fn a_folder_rg_cannot_read_asks() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        project(&f);
+        let locked = f.home.join("dev/proj/src/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read_dir(&locked).is_ok();
+        let event = run_in(&f, "dev/proj", false, "dev/proj", "rg url");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            return; // root reads every folder
+        }
+        assert_eq!(reason(&event), Some(UNCHECKED));
+    }
+
+    /// Set in the child process of
+    /// [`a_global_exclude_with_an_exception_makes_rg_read_the_hidden_file`]:
+    /// the folder its `HOME` and `XDG_CONFIG_HOME` point into.
+    const GLOBAL_CHILD: &str = "LBX_RUN_CHECK_GLOBAL_EXCLUDES";
+
+    // T2c: the global git excludes count like rg reads them. The walker reads
+    // `HOME` and `XDG_CONFIG_HOME` from the process, so the check runs in a
+    // child test process with both pointed at a temporary folder; setting
+    // them here would race with the tests running in parallel.
+    #[test]
+    fn a_global_exclude_with_an_exception_makes_rg_read_the_hidden_file() {
+        let name = "a_global_exclude_with_an_exception_makes_rg_read_the_hidden_file";
+        let Some(root) = std::env::var_os(GLOBAL_CHILD) else {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let test = format!("{}::{name}", module_path!().split_once("::").unwrap().1);
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test.as_str(), "--exact", "--test-threads=1"])
+                .env(GLOBAL_CHILD, &root)
+                .env("HOME", root.join("home"))
+                .env("XDG_CONFIG_HOME", root.join("xdg"))
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{text}{err}");
+            assert!(text.contains("1 passed"), "the child ran no test: {text}");
+            return;
+        };
+        let root = PathBuf::from(root);
+        let f = Fixture {
+            _dir: tempfile::tempdir().unwrap(),
+            home: root.join("home"),
+        };
+        for sub in ["home/dev/app", "home/.ssh", "xdg/git"] {
+            fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        project(&f);
+        let run = || run_in(&f, "dev/proj", false, "dev/proj", "rg url");
+        assert!(checked(&run()), "before the global excludes");
+        fs::write(root.join("xdg/git/ignore"), "!.env\n").unwrap();
+        assert_eq!(reason(&run()), Some(NOT_ALLOWED));
     }
 
     // T2b keeps: ignore files without an exception leave rg running, with a
