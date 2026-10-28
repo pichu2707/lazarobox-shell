@@ -8,7 +8,7 @@ use crate::app::{RunEvent, RunScope};
 use crate::core::ai::{
     chat::{
         approval::{
-            BROAD_ROOT, FOCUSED, GIT_CONFIG_RUNS, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS,
+            BROAD_ROOT, FOCUSED, GIT_NOT_PLAIN, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS,
             NO_CWD, OUTSIDE_ROOT, TOO_MANY,
         },
         engine::{CallId, Decision, ToolStatus},
@@ -221,7 +221,7 @@ fn a_search_that_could_write_or_run_a_program_asks() {
 // the model's fault: it never pauses the run.
 #[test]
 fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
-    for reason in [OUTSIDE_ROOT, BROAD_ROOT, GIT_CONFIG_RUNS, REVISION] {
+    for reason in [OUTSIDE_ROOT, BROAD_ROOT, GIT_NOT_PLAIN, REVISION] {
         let (mut a, turn) = run_live();
         for call in 1..=MAX_RUN_FALLBACKS as u64 {
             announce(&mut a, turn, call, run("ls /srv"));

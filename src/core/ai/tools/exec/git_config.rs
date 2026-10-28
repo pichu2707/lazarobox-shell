@@ -1,113 +1,114 @@
-//! What a repository's own git config sets that would make `git status`,
-//! `git log` or `git diff` run a program. Pure: the caller reads the files.
+//! Whether a repository's own git config holds only settings known to make
+//! `git status`, `git log` and `git diff` run nothing and read nothing
+//! outside the repository. Allow-list: any other key asks. Pure: the caller
+//! reads the files.
 
-/// What one config file says.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct Scan {
-    /// A key that makes status, log or diff run a program is set.
-    pub runs_program: bool,
-    /// The paths of `include.path` and `includeIf.*.path`, as written.
-    pub includes: Vec<String>,
-}
+/// The keys a plain repository may set: what `git init` and `git clone`
+/// write, and a few settings of line endings, identity and defaults. Each is
+/// (section, has a subsection, key), names in lower case.
+const ALLOWED: &[(&str, bool, &str)] = &[
+    ("core", false, "repositoryformatversion"),
+    ("core", false, "filemode"),
+    ("core", false, "logallrefupdates"),
+    ("core", false, "ignorecase"),
+    ("core", false, "precomposeunicode"),
+    ("core", false, "symlinks"),
+    ("core", false, "autocrlf"),
+    ("core", false, "eol"),
+    ("core", false, "safecrlf"),
+    ("remote", true, "url"),
+    ("remote", true, "pushurl"),
+    ("remote", true, "fetch"),
+    ("remote", true, "push"),
+    ("remote", true, "tagopt"),
+    ("remote", true, "prune"),
+    ("branch", true, "remote"),
+    ("branch", true, "merge"),
+    ("branch", true, "rebase"),
+    ("branch", true, "pushremote"),
+    ("user", false, "name"),
+    ("user", false, "email"),
+    ("init", false, "defaultbranch"),
+    ("pull", false, "rebase"),
+    ("push", false, "default"),
+    ("fetch", false, "prune"),
+    ("extensions", false, "objectformat"),
+];
 
-/// The text is not a config this scan can read: the caller asks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Unparsed;
-
-/// Reads one config file's text. The keys that make `git status`, `git log`
-/// or `git diff` run a program: `core.fsmonitor`, `core.pager`, any
-/// `pager.*`, `diff.external`, `diff.<driver>.textconv` and `.command`, and
-/// `filter.<driver>.clean`, `.process` and `.smudge`, `gpg.program` and
-/// `gpg.<format>.program`, whatever their value, and `log.showSignature`
-/// unless it is false.
-/// Section and key names compare case-insensitively, the legacy
-/// `[section.sub]` header included. A line this scan cannot read for sure
-/// (a key outside a section, a broken header or key name, an escape or a
-/// continued line in an include path) is [`Unparsed`]: a key could hide
-/// behind it.
-pub fn scan(text: &str) -> Result<Scan, Unparsed> {
-    let mut out = Scan::default();
+/// Whether `text`, one config file, sets only [`ALLOWED`] keys, with
+/// `core.bare` only false. Anything this scan cannot read for sure is not
+/// plain: a byte order mark, a backslash anywhere (a continued line or an
+/// escape could hide a header or a key), a control character, a key outside
+/// a section, a broken header or key name. An `include` or `includeIf` is
+/// no allowed key either.
+pub fn is_plain(text: &str) -> bool {
+    if text.starts_with('\u{feff}') || text.contains('\\') {
+        return false;
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+    {
+        return false;
+    }
     let mut section: Option<(String, bool)> = None;
     for raw in text.lines() {
         let mut line = raw.trim();
         if let Some(rest) = line.strip_prefix('[') {
-            let (header, after) = header(rest)?;
+            let Some((header, after)) = header(rest) else {
+                return false;
+            };
             section = Some(header);
             line = after.trim();
         }
         if line.is_empty() || line.starts_with(['#', ';']) {
             continue;
         }
-        let (name, sub) = section.as_ref().ok_or(Unparsed)?;
+        let Some((name, sub)) = section.as_ref() else {
+            return false;
+        };
         let (key, value) = match line.split_once('=') {
             Some((key, value)) => (key.trim(), Some(value.trim())),
             None => (line, None),
         };
         if !is_name(key, false) {
-            return Err(Unparsed);
+            return false;
         }
         let key = key.to_ascii_lowercase();
-        out.runs_program |=
-            matches!(
-                (name.as_str(), sub, key.as_str()),
-                ("core", false, "fsmonitor" | "pager")
-                    | ("pager", _, _)
-                    | ("diff", false, "external")
-                    | ("diff", true, "textconv" | "command")
-                    | ("filter", true, "clean" | "process" | "smudge")
-                    | ("gpg", _, "program")
-            ) || (name == "log" && !sub && key == "showsignature" && !is_false(value));
-        if matches!(
-            (name.as_str(), sub, key.as_str()),
-            ("include", false, "path") | ("includeif", true, "path")
-        ) {
-            out.includes.push(path(value.unwrap_or(""))?);
+        let bare_false = name == "core" && !sub && key == "bare" && is_false(value);
+        if !bare_false && !ALLOWED.contains(&(name.as_str(), *sub, key.as_str())) {
+            return false;
         }
     }
-    Ok(out)
+    true
 }
 
 /// The section of a header (`rest` follows its `[`): its name in lower case
 /// and whether it has a subsection, and the text after the `]`.
-fn header(rest: &str) -> Result<((String, bool), &str), Unparsed> {
+fn header(rest: &str) -> Option<((String, bool), &str)> {
     if let Some(quote) = rest.find('"') {
         let name = rest[..quote].trim();
-        let mut chars = rest[quote + 1..].char_indices();
-        let end = loop {
-            match chars.next().ok_or(Unparsed)? {
-                (_, '\\') => {
-                    chars.next().ok_or(Unparsed)?;
-                }
-                (at, '"') => break quote + 1 + at,
-                _ => {}
-            }
-        };
-        let after = rest[end + 1..]
-            .trim_start()
-            .strip_prefix(']')
-            .ok_or(Unparsed)?;
-        if !is_name(name, false) {
-            return Err(Unparsed);
-        }
-        return Ok(((name.to_ascii_lowercase(), true), after));
+        let end = quote + 1 + rest[quote + 1..].find('"')?;
+        let after = rest[end + 1..].trim_start().strip_prefix(']')?;
+        return is_name(name, false).then(|| ((name.to_ascii_lowercase(), true), after));
     }
-    let (inner, after) = rest.split_once(']').ok_or(Unparsed)?;
+    let (inner, after) = rest.split_once(']')?;
     let inner = inner.trim();
     if !is_name(inner, true) {
-        return Err(Unparsed);
+        return None;
     }
     let (name, sub) = match inner.split_once('.') {
         Some((name, _)) => (name, true),
         None => (inner, false),
     };
-    Ok(((name.to_ascii_lowercase(), sub), after))
+    Some(((name.to_ascii_lowercase(), sub), after))
 }
 
-/// Whether a boolean value is plainly false; anything else counts as true.
+/// Whether a boolean value is plainly false.
 fn is_false(value: Option<&str>) -> bool {
     value.is_some_and(|v| {
         let v = v.split(['#', ';']).next().unwrap_or("").trim();
-        ["false", "no", "off", "0", ""]
+        ["false", "no", "off", "0"]
             .iter()
             .any(|f| v.eq_ignore_ascii_case(f))
     })
@@ -120,22 +121,6 @@ fn is_name(name: &str, dotted: bool) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || (dotted && b == b'.'))
-}
-
-/// The value of an include path: unquoted or one whole quoted string, a
-/// trailing comment dropped. An escape or a continued line is [`Unparsed`].
-fn path(value: &str) -> Result<String, Unparsed> {
-    if value.contains('\\') {
-        return Err(Unparsed);
-    }
-    let value = match value.strip_prefix('"') {
-        Some(rest) => rest.split_once('"').ok_or(Unparsed)?.0,
-        None => value.split(['#', ';']).next().unwrap_or("").trim(),
-    };
-    if value.is_empty() {
-        return Err(Unparsed);
-    }
-    Ok(value.to_owned())
 }
 
 #[cfg(test)]

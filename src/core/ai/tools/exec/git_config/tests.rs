@@ -1,93 +1,66 @@
 use super::*;
 
-fn runs(text: &str) -> bool {
-    scan(text).expect(text).runs_program
+// What `git init` and `git clone` write is plain.
+#[test]
+fn what_init_and_clone_write_is_plain() {
+    for text in [
+        "",
+        "# a comment\n; another\n",
+        "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+        "[core]\r\n\tbare = false\r\n",
+        "[remote \"origin\"]\n\turl = git@example.com:a/b.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n",
+        "[remote.origin]\n\turl = x\n",
+        "[user]\n\tname = A\n\temail = a@b.c\n[init]\n\tdefaultBranch = main\n",
+        "[core]\n\tautocrlf = input # a comment\n",
+        "[core] ignorecase = true",
+    ] {
+        assert!(is_plain(text), "{text:?}");
+    }
 }
 
-// Ruling 2: every key that makes status, log or diff run a program.
+// Ruling 2 and L29: every key that is not known harmless asks, the ones
+// that run a program first among them.
 #[test]
-fn a_key_that_runs_a_program_is_found() {
+fn any_other_key_is_not_plain() {
     for text in [
         "[core]\n\tfsmonitor = .git/hooks/x",
         "[core]\n  pager = less",
         "[Core]\nFSMonitor",
+        "[core]\n\thooksPath = /x",
+        "[core]\n\tworktree = /srv",
+        "[core]\n\tbare = true",
+        "[core]\n\tbare",
         "[pager]\n\tlog = sh -c x",
         "[diff]\n\texternal = ./x",
         "[diff \"bin\"]\n\ttextconv = ./x",
-        "[diff \"bin\"]\n\tcommand = ./x",
-        "[diff.bin]\n\ttextconv = ./x",
+        "[diff.bin]\n\tcommand = ./x",
         "[filter \"lfs\"]\n\tclean = ./x",
-        "[filter \"lfs\"]\n\tprocess = ./x",
-        "[filter \"lfs\"]\n\tsmudge = ./x",
-        "[core] fsmonitor = x",
-        "[user]\n\tname = a\n[core]\n\tpager = less",
-    ] {
-        assert!(runs(text), "{text:?}");
-    }
-}
-
-// `git log` verifies signatures with a program the config names.
-#[test]
-fn a_signature_check_or_a_gpg_program_is_found() {
-    for text in [
-        "[log]\n\tshowSignature = true",
-        "[log]\n\tshowsignature",
-        "[log]\n\tshowSignature = yes",
-        "[gpg]\n\tprogram = ./x",
-        "[gpg \"openpgp\"]\n\tprogram = ./x",
-        "[gpg \"x509\"]\n\tprogram = ./x",
-        "[gpg \"ssh\"]\n\tprogram = ./x",
-    ] {
-        assert!(runs(text), "{text:?}");
-    }
-    for text in [
         "[log]\n\tshowSignature = false",
-        "[log]\n\tshowSignature = off",
-        "[log]\n\tdecorate = short",
-        "[gpg]\n\tformat = ssh",
+        "[gpg]\n\tprogram = ./x",
+        "[include]\n\tpath = extra",
+        "[includeIf \"gitdir:/x/\"]\n\tpath = extra",
+        "[user]\n\tsigningkey = x",
+        "[remote \"o\"]\n\tuploadpack = ./x",
     ] {
-        assert!(!runs(text), "{text:?}");
+        assert!(!is_plain(text), "{text:?}");
     }
 }
 
+// B1: a continued line hides a header and a key from a line reader.
 #[test]
-fn a_clean_config_runs_nothing() {
+fn a_continued_line_or_anything_unclear_is_not_plain() {
     for text in [
-        "",
-        "# a comment\n; another\n",
-        "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true",
-        "[remote \"origin\"]\n\turl = git@example.com:a/b.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*",
-        "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main",
-        "[diff]\n\talgorithm = histogram",
-        "[filter \"lfs\"]\n\trequired = true",
-        "[core]\n\tautocrlf = input # trailing comment",
-    ] {
-        assert!(!runs(text), "{text:?}");
-    }
-}
-
-#[test]
-fn includes_are_listed_for_the_caller_to_read() {
-    let got = scan(
-        "[include]\n\tpath = extra.conf\n[includeIf \"gitdir:~/w/\"]\n\tpath = \"/etc/w.conf\"\n[user]\n\tname = a",
-    )
-    .unwrap();
-    assert_eq!(got.includes, ["extra.conf", "/etc/w.conf"]);
-    assert!(!got.runs_program);
-}
-
-// What the scan cannot read for sure is no clean config: the caller asks.
-#[test]
-fn what_cannot_be_parsed_is_refused() {
-    for text in [
+        "[core]\n\tcomment = x \\\n[foo]\n\tfsmonitor = /x/hook\n",
+        "[user]\n\tname = \"a\\\"b\"",
+        "\u{feff}[core]\n\tbare = false",
+        "[core]\n\tbare = false\u{0}",
         "fsmonitor = x",
-        "[core\n\tpager = x",
+        "[core\n\tbare = false",
         "[core]\n\t=x",
-        "[core]\n\tpa ger = x",
-        "[diff \"a]\n\ttextconv = x",
-        "[include]\n\tpath = a\\\n b",
-        "[include]\n\tpath = \"a\\\"b\"",
+        "[core]\n\tbare false = x",
+        "[remote \"a]\n\turl = x",
     ] {
-        assert_eq!(scan(text), Err(Unparsed), "{text:?}");
+        assert!(!is_plain(text), "{text:?}");
     }
 }

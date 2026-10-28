@@ -752,3 +752,49 @@ fn the_token_of_a_quoted_word_runs_to_its_closing_quote() {
     assert_eq!(token("ls \"a\"b c"), "\"a\"b");
     assert_eq!(token("ls \"a\"b"), "\"a\"b");
 }
+
+// The verifier's adversarial list: none of these may run on its own.
+#[test]
+fn grammar_refuses_the_adversarial_list() {
+    let long = format!("ls {}", "a".repeat(5000));
+    for text in [
+        "find . -exec rm {} ;",
+        "find . -exec rm",
+        "find . -delete",
+        "find . -fprint out",
+        "find . -newer x",
+        "find -L .",
+        "rg --pre cat foo",
+        "rg -z foo",
+        "rg -L foo",
+        "rg -uu foo",
+        "rg --hidden foo",
+        "rg -e foo",
+        "rg -A1 foo",
+        "rg --max-depth=1 foo",
+        "rg '-x'",
+        "rg -- -x",
+        "grep -R foo .",
+        "grep -f list .",
+        "grep -e foo .",
+        "git -C x status",
+        "git --git-dir=x status",
+        "git -c a=b status",
+        "git -p log",
+        "git --paginate log",
+        "git log --output=x",
+        "git log --ext-diff",
+        "git log --show-signature",
+        "git log --format=x",
+        "git diff --no-index a b",
+        "cd -",
+        "cd ~root",
+        "ls \u{ff0d}la",
+        "ls \u{fe63}la",
+        "ls a\u{200b}b",
+        "rg \u{ff0d}\u{ff0d}pre foo",
+        long.as_str(),
+    ] {
+        assert!(parse(text).is_err(), "{text:?} must go to the prompt");
+    }
+}
