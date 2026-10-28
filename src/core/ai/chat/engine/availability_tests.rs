@@ -25,6 +25,7 @@ fn cfg(task: Task, engine: Option<&str>, model: Option<&str>) -> AiConfig {
 
 fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -35,7 +36,10 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
 }
 
 fn detected(states: Vec<EngineState>) -> Detection {
-    Detection { engines: states }
+    Detection {
+        engines: states,
+        ..Default::default()
+    }
 }
 
 fn ready(engine: &str, model: Option<&str>) -> Availability {
@@ -383,4 +387,105 @@ fn an_old_looking_version_of_another_cli_is_not_gated() {
         availability(&c, Some(&detected(vec![codex])), JAIL),
         ready("codex", Some("default"))
     );
+}
+
+fn managed_cfg(model: Option<&str>) -> AiConfig {
+    cfg(Task::Chat, Some("llamacpp"), model).with_managed(crate::core::ai::config::ManagedServer {
+        model: "/m/q.gguf".into(),
+    })
+}
+
+// Spec: A managed llama-server starts on the first turn (chat gate).
+#[test]
+fn a_managed_llamacpp_that_is_installed_is_ready_running_or_not() {
+    for status in [Status::NotRunning, Status::Available] {
+        // A running llama-server lists its model by path, never by the
+        // assigned name: llama-server ignores the name anyway.
+        let d = detected(vec![state("llamacpp", status, &["/m/q.gguf"])]);
+        assert_eq!(
+            availability(&managed_cfg(Some("qwen2.5")), Some(&d), JAIL),
+            ready("llamacpp", Some("qwen2.5"))
+        );
+        assert_eq!(
+            availability(&managed_cfg(None), Some(&d), NO_JAIL),
+            ready("llamacpp", Some("/m/q.gguf"))
+        );
+    }
+}
+
+// Spec: A managed llama-server starts on the first turn (not installed).
+#[test]
+fn a_managed_llamacpp_that_is_not_installed_is_still_undetected() {
+    let d = detected(vec![state("llamacpp", Status::NotInstalled, &[])]);
+    assert!(matches!(
+        availability(&managed_cfg(Some("qwen2.5")), Some(&d), JAIL),
+        Availability::Undetected { .. }
+    ));
+}
+
+// Verifier A8: the managed shortcut returns before the jail and gated-off
+// checks. That is right only while neither applies to llamacpp; adding it to
+// either list must move the shortcut after those checks.
+#[test]
+fn the_managed_shortcut_skips_no_check_that_applies_to_llamacpp() {
+    let skipped = "the managed shortcut in availability_with would skip this check";
+    assert!(!JAIL_REQUIRED.contains(&"llamacpp"), "{skipped}");
+    assert!(!GATED_OFF.contains(&"llamacpp"), "{skipped}");
+}
+
+// Spec: A managed llama-server is opt-in (chat gate unchanged without it).
+#[test]
+fn an_unmanaged_llamacpp_that_is_not_running_is_undetected() {
+    let c = cfg(Task::Chat, Some("llamacpp"), Some("qwen2.5"));
+    let d = detected(vec![state("llamacpp", Status::NotRunning, &[])]);
+    assert!(matches!(
+        availability(&c, Some(&d), JAIL),
+        Availability::Undetected { .. }
+    ));
+}
+
+#[test]
+fn another_task_resolves_its_own_engine_and_chat_is_unchanged() {
+    let mut c = cfg(Task::Chat, Some("ollama"), Some("llama3:8b"));
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("tiny".into()),
+        },
+    );
+    let d = detected(vec![state(
+        "ollama",
+        Status::Available,
+        &["llama3:8b", "tiny"],
+    )]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("tiny"))
+    );
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+}
+
+#[test]
+fn an_unassigned_task_inherits_general_and_a_missing_model_is_not_ready() {
+    let mut c = cfg(Task::General, Some("ollama"), Some("llama3:8b"));
+    let d = detected(vec![state("ollama", Status::Available, &["llama3:8b"])]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("gone".into()),
+        },
+    );
+    assert!(matches!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        Availability::ModelMissing { .. }
+    ));
 }

@@ -4,16 +4,24 @@
 
 use std::borrow::Cow;
 
+mod account;
+pub mod feedback;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
     ai::{
         Detection,
-        config::{AiConfig, NotifyMode, Task},
+        config::{AiConfig, NotifyMode, Task, ToolToggle},
+        hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         menu::AiMenu,
-        picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
+        picker::{
+            HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark, NOT_IN_LIST, Outcome,
+            PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
+        },
     },
-    config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
+    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
+    layout::Rect,
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -48,6 +56,9 @@ pub enum ItemKind {
     /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
     /// the AI draft, like [`ItemKind::Notify`].
     Tools,
+    /// One coding-tools family switch (`ai.tools.<key>`): an on/off row over
+    /// the AI draft, found by its toggle and never by position.
+    Family(ToolToggle),
     /// The approval mode of the model's commands (`ai.tools.approval`): an
     /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
     /// and conversation switches, never an open chat or a pending approval.
@@ -55,10 +66,20 @@ pub enum ItemKind {
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
+    /// The idle stop of the managed llama-server
+    /// (`ai.servers.llamacpp.idle_minutes`): 5, 15, 30 min or never over the
+    /// AI draft; a value of the config between them is shown as it is.
+    ManagedIdle,
     /// The running version, and the newer one when the update check found it.
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
     Updates,
+    /// The Hugging Face account: who the saved token belongs to. Enter
+    /// connects one (a masked token field), checks it or disconnects it. It
+    /// never writes a config edit.
+    HfAccount,
+    /// The `Feedback` row of the Settings tab: Enter opens the form.
+    Feedback,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -78,7 +99,7 @@ pub struct MemoryRow {
 impl ItemKind {
     /// Whether the row edits the AI draft, so it needs the AI section.
     const fn needs_ai(&self) -> bool {
-        matches!(self, Self::Notify | Self::NotifySound)
+        matches!(self, Self::Notify | Self::NotifySound | Self::ManagedIdle)
     }
 }
 
@@ -149,16 +170,25 @@ pub static SECTIONS: &[Section] = &[Section {
             kind: ItemKind::NotifySound,
         },
         Item {
+            label: "llama-server idle",
+            kind: ItemKind::ManagedIdle,
+        },
+        Item {
             label: "Updates",
             kind: ItemKind::Updates,
+        },
+        Item {
+            label: "Feedback",
+            kind: ItemKind::Feedback,
         },
     ],
 }];
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools` and
-/// `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
+/// family switches, `Approval` and `Hugging Face`, in that order. `Notify`, `Sound` and
+/// `llama-server idle` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -207,8 +237,32 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Tools,
         },
         Item {
+            label: "Search",
+            kind: ItemKind::Family(ToolToggle::Search),
+        },
+        Item {
+            label: "Write",
+            kind: ItemKind::Family(ToolToggle::Write),
+        },
+        Item {
+            label: "Exec",
+            kind: ItemKind::Family(ToolToggle::Exec),
+        },
+        Item {
+            label: "Git",
+            kind: ItemKind::Family(ToolToggle::Git),
+        },
+        Item {
+            label: "Git write",
+            kind: ItemKind::Family(ToolToggle::GitWrite),
+        },
+        Item {
             label: "Approval",
             kind: ItemKind::Approval,
+        },
+        Item {
+            label: "Hugging Face",
+            kind: ItemKind::HfAccount,
         },
     ],
 };
@@ -222,6 +276,8 @@ pub struct Tab {
     pub needs_ai: bool,
     /// The update note and the `*` of the update live on this tab.
     pub note: bool,
+    /// The tab reserves a row for the caution of the selected row.
+    pub caution: bool,
 }
 
 /// Number of entries of [`TABS`].
@@ -236,12 +292,14 @@ pub static TABS: [Tab; TAB_COUNT] = [
         sections: SECTIONS,
         needs_ai: false,
         note: true,
+        caution: false,
     },
     Tab {
         label: "AI",
         sections: std::slice::from_ref(&AI_SECTION),
         needs_ai: true,
         note: false,
+        caution: true,
     },
 ];
 
@@ -258,9 +316,13 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
-            | ItemKind::Updates => None,
+            | ItemKind::ManagedIdle
+            | ItemKind::Updates
+            | ItemKind::HfAccount
+            | ItemKind::Feedback => None,
         })
 }
 
@@ -268,6 +330,11 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 pub const CHROME: u16 = 4;
 /// The tab bar takes one row at the top of the body when the menu is tabbed.
 pub const TAB_BAR: usize = 1;
+/// The caution under the AI tab for a family that can change files or run code.
+const CAUTION: &str = "Can change files or run code";
+/// Lines of the caution, reserved at the foot of the AI tab so the popup
+/// does not change size when it appears.
+pub const CAUTION_ROWS: usize = 1;
 /// Lines of the update note (see [`MenuState::update_note`]).
 pub const NOTE_ROWS: usize = 2;
 /// The privacy warning: a title, the facts, a blank row and the prompt.
@@ -304,6 +371,9 @@ const fn view_body() -> usize {
         if TABS[tab].note {
             items += 1 + NOTE_ROWS;
         }
+        if TABS[tab].caution {
+            items += CAUTION_ROWS;
+        }
         if items > rows {
             rows = items;
         }
@@ -319,6 +389,79 @@ pub const MIN_WIDTH: u16 = 24;
 /// may lose one). Below it the popup is a one-line fallback.
 pub fn fits_size(width: u16, height: u16, rows: usize) -> bool {
     width >= MIN_WIDTH && usize::from(height) >= rows + usize::from(CHROME) - 1
+}
+
+/// Widest popup wanted without an AI section.
+pub const WANT_WIDTH: u16 = 51;
+/// With the AI section the `r refresh` hint needs eleven more columns.
+pub const WANT_WIDTH_AI: u16 = 62;
+
+/// `want_w` x `want_h` centred in `area`, clamped to the area.
+pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
+    let width = want_w.min(area.width);
+    let height = want_h.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+/// Where the full popup is drawn. The renderer and the click hit-test both
+/// read it, so a click finds the row drawn under it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PopupLayout {
+    /// The box, borders included.
+    pub popup: Rect,
+    /// Inside the borders: the tab bar, the body, the blank row, the footer.
+    pub inner: Rect,
+    /// Body rows: the bar and the tallest view when tabbed, else the rows.
+    pub body: usize,
+    /// Rows of the update note added under a single-tab body.
+    pub extra: usize,
+    /// The screen row of body row 0 (under the tab bar when tabbed).
+    pub first_row: u16,
+}
+
+/// The layout of a popup of `rows` rows on `screen`, or `None` when only
+/// the one-line fallback is drawn. `note` is the update note's line count.
+pub fn popup_layout(
+    screen: Rect,
+    rows: usize,
+    tabbed: bool,
+    ai: bool,
+    note: usize,
+) -> Option<PopupLayout> {
+    // Tabbed, the body is fixed (the bar and the tallest view); with a
+    // single tab it is just the rows, as before tabs existed.
+    let body = if tabbed {
+        MENU_BODY.max(TAB_BAR + rows)
+    } else {
+        rows
+    };
+    if !fits_size(screen.width, screen.height, body) {
+        return None;
+    }
+    let want_width = if ai { WANT_WIDTH_AI } else { WANT_WIDTH };
+    // Tabbed, the update note lives inside the fixed body. Single tab, it
+    // is extra rows: it never makes the popup fall back.
+    let extra = if tabbed { 0 } else { note };
+    let popup = popup_area(screen, want_width, (body + extra) as u16 + CHROME);
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let bar = if tabbed { TAB_BAR as u16 } else { 0 };
+    Some(PopupLayout {
+        popup,
+        inner,
+        body,
+        extra,
+        first_row: inner.y + bar,
+    })
 }
 
 /// What a key did, for the app to act on.
@@ -337,12 +480,35 @@ pub enum MenuCommand {
     /// Enter on the Updates row with a newer version known: the app decides
     /// between installing it and showing the command.
     Update,
+    /// `r` on the Updates row: ask crates.io now, whatever the cache says.
+    /// The answer comes back as a late result of the check.
+    CheckUpdate,
     /// Fire one notification now, with the mode and sound flag shown in the
     /// menu (saved or not), ignoring the focus rule.
     TestNotify {
         mode: NotifyMode,
         sound: bool,
     },
+    /// Send this request to the Hub; the reply comes back through
+    /// [`MenuState::hub_reply`].
+    HubAsk(Ask),
+    /// Run this llama-server install step; the reply comes back through
+    /// [`MenuState::install_reply`].
+    Install(InstallAsk),
+    /// Start this Hugging Face download (`y` on the Confirm screen).
+    Download(Box<Job>),
+    /// Stop the Hugging Face download that runs.
+    CancelDownload,
+    /// Connect, check or disconnect the Hugging Face account; the answer
+    /// comes back through [`MenuState::account_reply`].
+    HfAccount(AccountAsk),
+    /// Open this link in the browser. Only made when the host has an
+    /// opener (see [`MenuState::with_opener`]); without one the link is a
+    /// [`MenuCommand::Copy`].
+    Open(String),
+    /// Send this Feedback issue with `gh`; the answer comes back through
+    /// [`MenuState::feedback_reply`].
+    SendIssue(Box<feedback::Issue>),
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -364,6 +530,9 @@ const WARNING_TEXT: [&str; 7] = [
     "Once saved, this note is not shown again.",
 ];
 const WARNING_PROMPT: &str = "Turn memory on? (y/n)";
+const HINT_FEEDBACK_ROW: &str = "Enter open · j/k move · s save · Esc cancel";
+/// The value of the `Feedback` row.
+const FEEDBACK_VALUE: &str = "bug report or idea";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
 
 /// Why a picker row cannot be chosen: its mark, or the text of an
@@ -431,6 +600,8 @@ pub struct MenuState {
     term: Option<(u16, u16)>,
     /// The newer version the update check found. Only ever shown as text.
     update: Option<String>,
+    /// A check asked with `r` is in flight (the `checking…` cue).
+    checking_update: bool,
     /// The version this binary is, for the Updates row.
     current: String,
     /// The install command is on the footer, ready to copy.
@@ -438,6 +609,35 @@ pub struct MenuState {
     /// The version an install in this run put on disk; the running binary is
     /// still the old one, so the row says so until the restart.
     installed: Option<String>,
+    /// The `Hugging Face` row of the AI tab.
+    account: account::Account,
+    /// What the Feedback form attaches.
+    facts: feedback::Facts,
+    /// The Feedback form, while it is open.
+    feedback: Option<feedback::Feedback>,
+    /// The form is done: the view says what became of it until Esc.
+    feedback_done: Option<Done>,
+    /// The host has a program that opens links in the browser.
+    opener: bool,
+    /// The system has no Landlock jail, so commands will be refused (D18).
+    /// Unknown counts as fine: only the app, which probed, says otherwise.
+    no_sandbox: bool,
+}
+
+/// What became of the Feedback form.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Done {
+    /// Ctrl+O, with no opener: the link was copied.
+    Copied,
+    /// Ctrl+O: the link was opened.
+    Opened,
+    /// Ctrl+S: the issue was created, at this link.
+    Sent(String),
+    /// Ctrl+S found no `gh`: the link was opened instead.
+    NoGhOpened,
+    /// Ctrl+S found no `gh` and the host has no opener: the link was
+    /// copied instead.
+    NoGhCopied,
 }
 
 impl MenuState {
@@ -454,10 +654,236 @@ impl MenuState {
             checking: false,
             term: None,
             update: None,
+            checking_update: false,
             current: RUNNING_VERSION.to_owned(),
             command_shown: None,
             installed: None,
+            account: account::Account::default(),
+            facts: feedback::Facts {
+                version: RUNNING_VERSION.to_owned(),
+                ..feedback::Facts::default()
+            },
+            feedback: None,
+            feedback_done: None,
+            opener: false,
+            no_sandbox: false,
         }
+    }
+
+    /// Whether commands can run on this system: without the Linux sandbox the
+    /// Exec row says so.
+    pub fn with_sandbox(mut self, sandbox: bool) -> Self {
+        self.no_sandbox = !sandbox;
+        self
+    }
+
+    /// Whether the host has a program that opens links in the browser:
+    /// Ctrl+O then opens a link, else it copies it.
+    pub fn with_opener(mut self, opener: bool) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    /// The browser did not open the last link: the Feedback view says it
+    /// was copied instead (the app copies it), and later links are copied.
+    pub fn open_failed(&mut self) {
+        self.opener = false;
+        self.feedback_done = match self.feedback_done.take() {
+            Some(Done::Opened) => Some(Done::Copied),
+            Some(Done::NoGhOpened) => Some(Done::NoGhCopied),
+            done => done,
+        };
+    }
+
+    /// `url` opened when the host can, else copied.
+    fn open_or_copy(&self, url: String) -> MenuCommand {
+        if self.opener {
+            MenuCommand::Open(url)
+        } else {
+            MenuCommand::Copy(url)
+        }
+    }
+
+    /// What the Feedback form attaches: the host and the detected engines.
+    pub fn with_feedback(mut self, facts: feedback::Facts) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Whether the selection is on the `Feedback` row.
+    fn on_feedback_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Feedback))
+    }
+
+    /// Whether the Feedback form, or what became of it, is shown.
+    fn feedback_open(&self) -> bool {
+        self.feedback.is_some() || self.feedback_done.is_some()
+    }
+
+    /// The Feedback view that replaces the rows while it is open.
+    fn feedback_rows(&self) -> Option<Vec<Row>> {
+        let owned = |lines: &[&str]| lines.iter().map(|l| (*l).to_owned()).collect();
+        let lines = match &self.feedback_done {
+            Some(Done::Copied) => owned(&feedback::COPIED),
+            Some(Done::Opened) => owned(&feedback::OPENED),
+            Some(Done::NoGhOpened) => owned(&feedback::NO_GH_OPENED),
+            Some(Done::NoGhCopied) => owned(&feedback::NO_GH_COPIED),
+            Some(Done::Sent(url)) => vec![feedback::SENT.to_owned(), url.clone()],
+            None => self.feedback.as_ref()?.lines(),
+        };
+        let mut rows = vec![Row::Title(Cow::Borrowed("Feedback"))];
+        rows.extend(lines.into_iter().map(|line| Row::Text(Cow::Owned(line))));
+        Some(rows)
+    }
+
+    /// Keys while the Feedback view is open: every one goes to the form;
+    /// once it is done, only Esc (back to the row) does anything, and
+    /// Ctrl+O on a sent issue opens its link.
+    fn on_feedback_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if let Some(done) = &self.feedback_done {
+            if repeat {
+                return MenuCommand::None;
+            }
+            if key.code == KeyCode::Esc {
+                self.feedback_done = None;
+            } else if let Done::Sent(url) = done
+                && key.code == KeyCode::Char('o')
+                && key.modifiers == KeyModifiers::CONTROL
+            {
+                return self.open_or_copy(url.clone());
+            }
+            return MenuCommand::None;
+        }
+        let Some(form) = &mut self.feedback else {
+            return MenuCommand::None;
+        };
+        match form.on_key(key, repeat) {
+            feedback::Outcome::Handled => MenuCommand::None,
+            feedback::Outcome::Close => {
+                self.feedback = None;
+                MenuCommand::None
+            }
+            feedback::Outcome::Send(issue) => MenuCommand::SendIssue(Box::new(issue)),
+            feedback::Outcome::Open(link) => {
+                self.feedback = None;
+                let command = self.open_or_copy(link);
+                self.feedback_done = Some(match command {
+                    MenuCommand::Open(_) => Done::Opened,
+                    _ => Done::Copied,
+                });
+                command
+            }
+        }
+    }
+
+    /// What became of the Feedback issue being sent. A sent issue shows its
+    /// link; a failure keeps the form with the message; without `gh` the
+    /// prefilled page opens instead (copied with no opener). An answer no
+    /// form waits for changes nothing.
+    pub fn feedback_reply(&mut self, reply: feedback::SendReply) -> MenuCommand {
+        let Some(form) = self.feedback.as_mut().filter(|form| form.sending()) else {
+            return MenuCommand::None;
+        };
+        match reply {
+            feedback::SendReply::Sent(url) => {
+                self.feedback = None;
+                self.feedback_done = Some(Done::Sent(url));
+                MenuCommand::None
+            }
+            feedback::SendReply::Failed(message) => {
+                form.failed(&message);
+                MenuCommand::None
+            }
+            feedback::SendReply::NoGh => {
+                let Some(link) = form.fallback() else {
+                    return MenuCommand::None;
+                };
+                self.feedback = None;
+                let command = self.open_or_copy(link);
+                self.feedback_done = Some(match command {
+                    MenuCommand::Open(_) => Done::NoGhOpened,
+                    _ => Done::NoGhCopied,
+                });
+                command
+            }
+        }
+    }
+
+    /// What the runtime found of the Hugging Face tokens when the menu
+    /// opened, and the account known from earlier in this session.
+    pub fn with_hf(mut self, facts: TokenFacts, name: Option<String>) -> Self {
+        self.account = account::Account::new(facts, name);
+        self
+    }
+
+    /// What the runtime found for an account request of the `Hugging Face`
+    /// row; a failure it waited for becomes the footer error.
+    pub fn account_reply(&mut self, reply: AccountReply) {
+        if let Some(message) = self.account.reply(reply) {
+            self.error = Some(message);
+        }
+    }
+
+    /// Whether the selection is on the `Hugging Face` row.
+    fn on_account_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::HfAccount))
+    }
+
+    /// The token field that replaces the rows while it is open: the token
+    /// drawn as one `•` per character, never as typed, and the link to
+    /// create one.
+    fn account_rows(&self) -> Option<Vec<Row>> {
+        let field = self.account.field()?;
+        Some(vec![
+            Row::Title(Cow::Borrowed(account::TOKEN_TITLE)),
+            Row::Field(field),
+            Row::Text(Cow::Borrowed(account::TOKEN_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL_HINT)),
+            Row::Text(Cow::Borrowed(account::TOKEN_URL)),
+        ])
+    }
+
+    /// Keys while the token field is open: every letter is typed, Ctrl+U
+    /// clears, Ctrl+O opens the link to create a token, Enter checks the
+    /// token and Esc goes back to the row (also while the check runs, which
+    /// it stops).
+    fn on_account_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        match key.code {
+            KeyCode::Esc if !repeat => {
+                if let Some(ask) = self.account.close() {
+                    return MenuCommand::HfAccount(ask);
+                }
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => self.account.clear(),
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                if !repeat {
+                    return self.open_or_copy(account::TOKEN_URL.to_owned());
+                }
+            }
+            _ if !plain => {}
+            KeyCode::Char(c) => self.account.type_char(c),
+            KeyCode::Backspace => self.account.backspace(),
+            KeyCode::Enter if !repeat => {
+                if let Some(ask) = self.account.submit() {
+                    return MenuCommand::HfAccount(ask);
+                }
+            }
+            _ => {}
+        }
+        MenuCommand::None
+    }
+
+    /// Keys while `disconnect <name>? (y/n)` waits: only a plain `y`
+    /// disconnects, any other key keeps the token.
+    fn on_account_prompt_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if repeat {
+            return MenuCommand::None;
+        }
+        let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        self.account
+            .answer(yes)
+            .map_or(MenuCommand::None, MenuCommand::HfAccount)
     }
 
     /// Tells the menu a version was installed in this run, if any.
@@ -496,9 +922,26 @@ impl MenuState {
         self
     }
 
-    /// A late result of the update check, while the menu is open.
+    /// A late result of the update check, while the menu is open. It also
+    /// ends a check asked with `r`.
     pub fn set_update(&mut self, update: Option<String>) {
         self.update = update;
+        self.checking_update = false;
+    }
+
+    /// Whether `r` may ask for a check: update checks are on and nothing was
+    /// installed in this run (the running binary is already the old one).
+    fn can_check_update(&self) -> bool {
+        self.original.update_check && self.installed.is_none()
+    }
+
+    /// `r` on the Updates row: one check at a time.
+    fn check_update(&mut self, repeat: bool) -> MenuCommand {
+        if repeat || self.checking_update || !self.can_check_update() {
+            return MenuCommand::None;
+        }
+        self.checking_update = true;
+        MenuCommand::CheckUpdate
     }
 
     /// The lines of the update note, shown on the tab that has the note
@@ -514,10 +957,79 @@ impl MenuState {
         })
     }
 
+    /// The one-line caution of the selected row, for the family switches that
+    /// can change files or run code. Plain text: it takes no key.
+    pub fn caution(&self) -> Option<&'static str> {
+        if self.in_sub_level() {
+            return None;
+        }
+        match self.selected_kind()? {
+            ItemKind::Family(ToolToggle::Write | ToolToggle::Exec | ToolToggle::GitWrite) => {
+                Some(CAUTION)
+            }
+            _ => None,
+        }
+    }
+
     /// The terminal size, given by the app before each key so the menu knows
     /// whether the popup (or only its one-line fallback) is on screen.
     pub fn set_term(&mut self, cols: u16, rows: u16) {
         self.term = Some((cols, rows));
+    }
+
+    /// Where the popup of the current view is drawn on `screen`, or `None`
+    /// on the one-line fallback.
+    pub fn popup_layout(&self, config: &Config, screen: Rect) -> Option<PopupLayout> {
+        let tabbed = self.tab_labels().len() > 1;
+        let note = self.update_note().map_or(0, |lines| lines.len());
+        popup_layout(screen, self.rows(config).len(), tabbed, self.has_ai(), note)
+    }
+
+    /// A left click on the screen cell `(column, row)` of the size given by
+    /// [`Self::set_term`]: on the link line of the token field, or of a
+    /// sent Feedback issue, it does what Ctrl+O does; anywhere else, or on
+    /// the one-line fallback, nothing.
+    pub fn on_click(&self, config: &Config, column: u16, row: u16) -> MenuCommand {
+        let Some((width, height)) = self.term else {
+            return MenuCommand::None;
+        };
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let Some(layout) = self.popup_layout(config, screen) else {
+            return MenuCommand::None;
+        };
+        let inner = layout.inner;
+        let inside = (inner.x..inner.x + inner.width).contains(&column)
+            && (layout.first_row..inner.y + inner.height).contains(&row);
+        if !inside {
+            return MenuCommand::None;
+        }
+        let index = usize::from(row - layout.first_row);
+        match self.link_at(config, index) {
+            Some(url) => self.open_or_copy(url),
+            None => MenuCommand::None,
+        }
+    }
+
+    /// The link drawn on body row `index`, if that row is one: the token
+    /// field's link to create a token, or a sent Feedback issue's link.
+    fn link_at(&self, config: &Config, index: usize) -> Option<String> {
+        let link = if self.account.field().is_some() {
+            account::TOKEN_URL
+        } else if let Some(Done::Sent(url)) = &self.feedback_done {
+            url
+        } else {
+            return None;
+        };
+        let on_link = matches!(
+            self.rows(config).get(index),
+            Some(Row::Text(text)) if text == link
+        );
+        on_link.then(|| link.to_owned())
     }
 
     /// Whether the privacy warning is readable in full: the popup fits the
@@ -525,6 +1037,83 @@ impl MenuState {
     pub fn fits_warning(&self) -> bool {
         self.term
             .is_none_or(|(cols, rows)| fits_size(cols, rows, MENU_BODY))
+    }
+
+    /// The Hugging Face download that runs when the menu opens.
+    pub fn with_download(mut self, download: Option<Running>) -> Self {
+        self.set_download(download);
+        self
+    }
+
+    /// The Hugging Face download that runs, `None` once it ended.
+    pub fn set_download(&mut self, download: Option<Running>) {
+        if let Some(ai) = &mut self.ai {
+            ai.set_download(download);
+        }
+    }
+
+    /// A reply of the Hub. The picker keeps it only while it waits for that
+    /// request; a failure it waited for becomes the footer error.
+    pub fn hub_reply(&mut self, ask: Ask, answer: Result<Answer, String>) {
+        let error = self.ai.as_mut().and_then(|ai| ai.hub_reply(&ask, answer));
+        if let Some(message) = error {
+            self.error = Some(message);
+        }
+    }
+
+    /// The result of install request `id`. The wizard keeps it only while it
+    /// waits for that request.
+    pub fn install_reply(&mut self, id: u64, answer: Result<InstallReply, String>) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_reply(id, answer);
+        }
+    }
+
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_progress(id, done);
+        }
+    }
+
+    /// Whether the open install wizard waits on a download, which closing
+    /// the menu must stop.
+    pub fn install_downloading(&self) -> bool {
+        self.ai.as_ref().is_some_and(AiMenu::install_downloading)
+    }
+
+    /// The request the open install wizard waits on. Tests only.
+    #[cfg(test)]
+    pub fn install_asking(&self) -> Option<crate::core::ai::picker::InstallAsk> {
+        self.ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .and_then(|p| p.install())
+            .and_then(|w| w.asking())
+    }
+
+    /// A frame drew the wizard: its prompts now accept `y`/`n`.
+    pub fn install_arm(&mut self) {
+        if let Some(ai) = &mut self.ai {
+            ai.install_arm();
+        }
+    }
+
+    /// Opens the install wizard over the open picker. Tests only.
+    #[cfg(test)]
+    pub fn open_install_for_test(&mut self, variants: Vec<crate::core::ai::install::Variant>) {
+        if let Some(ai) = &mut self.ai {
+            ai.open_install(variants);
+        }
+    }
+
+    /// Whether the install wizard is open. Tests only.
+    #[cfg(test)]
+    pub fn install_open(&self) -> bool {
+        self.ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .is_some_and(|p| p.install().is_some())
     }
 
     /// Adds the AI section, editing a draft of `ai` against `engines`.
@@ -585,7 +1174,10 @@ impl MenuState {
     /// warning, a picker level or the custom field. The tab keys are inert
     /// there.
     pub fn in_sub_level(&self) -> bool {
-        self.in_warning() || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
+        self.in_warning()
+            || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
+            || self.account.field().is_some()
+            || self.feedback_open()
     }
 
     /// Whether the menu has an AI section.
@@ -618,7 +1210,8 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools` or `Approval`.
+    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools`, a family switch
+    /// or `Approval`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
@@ -628,8 +1221,10 @@ impl MenuState {
                     | ItemKind::Memory(_)
                     | ItemKind::Notify
                     | ItemKind::Tools
+                    | ItemKind::Family(_)
                     | ItemKind::Approval
                     | ItemKind::NotifySound
+                    | ItemKind::ManagedIdle
             )
         )
     }
@@ -702,6 +1297,8 @@ impl MenuState {
             Level::Models { engine } | Level::Custom { engine, .. } => {
                 format!("Model for {row} ({engine})")
             }
+            Level::Hub(hub) => hub.title(),
+            Level::Install(wizard) => wizard.title(),
         };
         if let Some(counter) = picker.counter(all.len()) {
             title = format!("{title} {counter}");
@@ -709,6 +1306,11 @@ impl MenuState {
         let mut rows = vec![Row::Title(Cow::Owned(title))];
         if let Some(text) = picker.text() {
             rows.push(Row::Field(text.to_owned()));
+            return Some(rows);
+        }
+        if let Some(text) = picker.hub().and_then(|hub| hub.text()) {
+            rows.push(Row::Field(text.to_owned()));
+            rows.push(Row::Text(Cow::Borrowed(QUERY_HINT)));
             return Some(rows);
         }
         for index in picker.visible(all.len()) {
@@ -736,9 +1338,13 @@ impl MenuState {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
-            | ItemKind::Updates => None,
+            | ItemKind::ManagedIdle
+            | ItemKind::Updates
+            | ItemKind::HfAccount
+            | ItemKind::Feedback => None,
         }
     }
 
@@ -747,7 +1353,9 @@ impl MenuState {
     fn updates_row(&self, selected: bool) -> Row {
         let (label, value) = match (&self.installed, &self.update) {
             (Some(done), _) => ("Updates", crate::core::update::installed_value(done)),
+            (None, Some(_)) if self.checking_update => ("* Updates", "checking…".to_owned()),
             (None, Some(latest)) => ("* Updates", format!("{latest} available")),
+            (None, None) if self.checking_update => ("Updates", "checking…".to_owned()),
             (None, None) => ("Updates", self.current.clone()),
         };
         Row::Item {
@@ -763,6 +1371,12 @@ impl MenuState {
             return Self::warning_rows();
         }
         if let Some(rows) = self.picker_rows() {
+            return rows;
+        }
+        if let Some(rows) = self.account_rows() {
+            return rows;
+        }
+        if let Some(rows) = self.feedback_rows() {
             return rows;
         }
         let mut rows = Vec::new();
@@ -865,6 +1479,39 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Family(toggle) => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(match (ai.draft().toggle(*toggle), toggle) {
+                                    (false, _) => "off",
+                                    (true, ToolToggle::Exec) if self.no_sandbox => {
+                                        "on · needs Linux sandbox"
+                                    }
+                                    (true, _) => "on",
+                                })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::ManagedIdle => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                match ai.draft().managed_options().idle_minutes {
+                                    0 => Cow::Borrowed("never"),
+                                    minutes => Cow::Owned(format!("{minutes} min")),
+                                }
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Approval => {
                         let row = Row::Item {
                             label: item.label,
@@ -893,6 +1540,26 @@ impl MenuState {
                     }
                     ItemKind::Updates => {
                         let row = self.updates_row(self.selected == Some(index));
+                        index += 1;
+                        row
+                    }
+                    ItemKind::HfAccount => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Owned(self.account.value())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Feedback => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Borrowed(FEEDBACK_VALUE)),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
                         index += 1;
                         row
                     }
@@ -934,6 +1601,15 @@ impl MenuState {
         if self.in_warning() {
             return self.on_warning_key(key, repeat);
         }
+        if self.account.prompt().is_some() {
+            return self.on_account_prompt_key(key, repeat);
+        }
+        if self.account.field().is_some() {
+            return self.on_account_key(key, repeat);
+        }
+        if self.feedback_open() {
+            return self.on_feedback_key(key, repeat);
+        }
         if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
             return self.on_picker_key(key, repeat);
         }
@@ -949,6 +1625,7 @@ impl MenuState {
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
+            KeyCode::Char('r') if self.on_updates_row() => self.check_update(repeat),
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
             KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown.is_some() => {
@@ -962,6 +1639,20 @@ impl MenuState {
                 }
             }
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Char('d') if !repeat && self.on_account_row() => {
+                self.account.forget();
+                MenuCommand::None
+            }
+            KeyCode::Enter if self.on_feedback_row() => {
+                if !repeat {
+                    self.feedback = Some(feedback::Feedback::new(self.facts.clone()));
+                }
+                MenuCommand::None
+            }
+            KeyCode::Enter if self.on_account_row() => match self.account.enter() {
+                Some(ask) if !repeat => MenuCommand::HfAccount(ask),
+                _ => MenuCommand::None,
+            },
             KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
                 MenuCommand::None
             }
@@ -985,6 +1676,23 @@ impl MenuState {
             return MenuCommand::None;
         };
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if ai.picker().is_some_and(Picker::asks_cancel) {
+            // Only a plain `y` cancels; any other key keeps the download.
+            if repeat {
+                return MenuCommand::None;
+            }
+            let yes = plain && key.code == KeyCode::Char('y');
+            return match ai.drive(|p, _, _| p.answer_cancel(yes)) {
+                Outcome::CancelDownload => MenuCommand::CancelDownload,
+                _ => MenuCommand::None,
+            };
+        }
+        if ai.picker().is_some_and(|p| p.hub().is_some()) {
+            return Self::on_hub_key(ai, key, repeat);
+        }
+        if ai.picker().is_some_and(|p| p.install().is_some()) {
+            return Self::on_install_key(ai, key, repeat);
+        }
         // The custom field is checked before the modifier guard: Ctrl+U
         // clears it, and every letter, shortcuts included, is typed.
         if ai.picker().is_some_and(|p| p.text().is_some()) {
@@ -1011,11 +1719,14 @@ impl MenuState {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => ai.edit_with(|p, d, e| p.step(true, d, e)),
             KeyCode::Char('k') | KeyCode::Up => ai.edit_with(|p, d, e| p.step(false, d, e)),
-            KeyCode::Enter if !repeat => {
-                if let Outcome::Copy(text) = ai.drive(Picker::enter) {
-                    return MenuCommand::Copy(text);
-                }
-            }
+            KeyCode::Enter if !repeat => match ai.drive(Picker::enter) {
+                Outcome::Copy(text) => return MenuCommand::Copy(text),
+                // The Hugging Face entry row asks for the popular models.
+                Outcome::Ask(ask) => return MenuCommand::HubAsk(ask),
+                // An owned install asks for the newer build check.
+                Outcome::Install(ask) => return MenuCommand::Install(ask),
+                _ => {}
+            },
             KeyCode::Char('y') if !repeat => {
                 if let Outcome::Copy(text) = ai.drive(|p, d, e| p.copy(d, e)) {
                     return MenuCommand::Copy(text);
@@ -1033,6 +1744,90 @@ impl MenuState {
             _ => {}
         }
         MenuCommand::None
+    }
+
+    /// Keys on the install wizard. Esc goes back one screen (a download asks
+    /// first); `y` and `n` answer the step a screen proposes; Enter chooses
+    /// a build. No key here saves or edits the config.
+    fn on_install_key(ai: &mut AiMenu, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        let outcome = match key.code {
+            KeyCode::Esc if !repeat => ai.drive(Picker::back),
+            _ if !plain => Outcome::Stay,
+            KeyCode::Char('j') | KeyCode::Down => {
+                ai.edit_with(|p, d, e| p.step(true, d, e));
+                Outcome::Stay
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                ai.edit_with(|p, d, e| p.step(false, d, e));
+                Outcome::Stay
+            }
+            _ if repeat => Outcome::Stay,
+            KeyCode::Enter => ai.drive(Picker::enter),
+            KeyCode::Char('y') => ai.drive(|p, d, e| p.install_answer(true, d, e)),
+            KeyCode::Char('n') => ai.drive(|p, d, e| p.install_answer(false, d, e)),
+            _ => Outcome::Stay,
+        };
+        match outcome {
+            Outcome::Install(ask) => MenuCommand::Install(ask),
+            Outcome::Copy(text) => MenuCommand::Copy(text),
+            Outcome::Ask(ask) => MenuCommand::HubAsk(ask),
+            _ => MenuCommand::None,
+        }
+    }
+
+    /// Keys on the Hugging Face screens. Esc goes back one screen, also
+    /// while a request runs; every other key waits for its reply. Only `y`
+    /// on the Confirm screen downloads; no key here saves or edits the
+    /// config.
+    fn on_hub_key(ai: &mut AiMenu, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let Some(hub) = ai.picker().and_then(Picker::hub) else {
+            return MenuCommand::None;
+        };
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if key.code == KeyCode::Esc {
+            if !repeat {
+                ai.drive(Picker::back);
+            }
+            return MenuCommand::None;
+        }
+        if hub.asking().is_some() {
+            return MenuCommand::None;
+        }
+        let outcome = match (hub.screen(), key.code) {
+            (Screen::Query(_), KeyCode::Char('u')) if key.modifiers == KeyModifiers::CONTROL => {
+                ai.edit(Picker::clear_text);
+                Outcome::Stay
+            }
+            _ if !plain => Outcome::Stay,
+            (Screen::Query(_), KeyCode::Char(c)) => {
+                ai.edit(|p| p.type_char(c));
+                Outcome::Stay
+            }
+            (Screen::Query(_), KeyCode::Backspace) => {
+                ai.edit(Picker::backspace);
+                Outcome::Stay
+            }
+            (Screen::Query(_), _) if key.code != KeyCode::Enter => Outcome::Stay,
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
+                ai.edit_with(|p, d, e| p.step(true, d, e));
+                Outcome::Stay
+            }
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
+                ai.edit_with(|p, d, e| p.step(false, d, e));
+                Outcome::Stay
+            }
+            _ if repeat => Outcome::Stay,
+            (_, KeyCode::Enter) => ai.drive(Picker::enter),
+            (Screen::Confirm(_), KeyCode::Char('y')) => ai.drive(Picker::hub_download),
+            (Screen::Confirm(_), KeyCode::Char('n')) => ai.drive(Picker::back),
+            _ => Outcome::Stay,
+        };
+        match outcome {
+            Outcome::Ask(ask) => MenuCommand::HubAsk(ask),
+            Outcome::Download(job) => MenuCommand::Download(job),
+            _ => MenuCommand::None,
+        }
     }
 
     /// Moves to the next (or previous) tab, wrapping. Each tab remembers its
@@ -1085,9 +1880,11 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Tools) => ai.toggle_tools(),
+                    Some(ItemKind::Family(toggle)) => ai.toggle_family(*toggle),
                     Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
+                    Some(ItemKind::ManagedIdle) => ai.cycle_idle(forward),
                     _ => ai.toggle_context(),
                 }
             }
@@ -1187,11 +1984,44 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_tools)
             .map(ConfigEdit::tools_flag);
+        let families = self
+            .ai
+            .iter()
+            .flat_map(AiMenu::changed_toggles)
+            .map(|(toggle, on)| ConfigEdit::toggle(toggle, on));
         let approval = self
             .ai
             .as_ref()
             .and_then(AiMenu::changed_approval)
             .map(ConfigEdit::approval);
+        let idle = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_idle)
+            .map(|minutes| ConfigEdit {
+                table: LLAMACPP_TABLE,
+                key: "idle_minutes",
+                value: Cow::Owned(minutes.to_string()),
+            });
+        let managed = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_managed)
+            .into_iter()
+            .flat_map(|server| {
+                [
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "managed",
+                        value: Cow::Borrowed("true"),
+                    },
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "model",
+                        value: Cow::Owned(server.model.to_string_lossy().into_owned()),
+                    },
+                ]
+            });
         settings
             .chain(tasks)
             .chain(profile)
@@ -1200,12 +2030,24 @@ impl MenuState {
             .chain(notify)
             .chain(sound)
             .chain(tools)
+            .chain(families)
             .chain(approval)
+            .chain(idle)
+            .chain(managed)
             .collect()
     }
 
-    /// A paste: goes to the custom field when it is focused, else ignored.
+    /// A paste: goes to the custom field or the Hugging Face search when
+    /// one is focused, else ignored.
     pub fn on_paste(&mut self, text: &str) {
+        if let Some(form) = &mut self.feedback {
+            form.paste(text);
+            return;
+        }
+        if self.account.field().is_some() {
+            self.account.paste(text);
+            return;
+        }
         if let Some(ai) = &mut self.ai {
             ai.edit(|p| p.paste(text));
         }
@@ -1224,8 +2066,56 @@ impl MenuState {
         if self.in_warning() {
             return Footer::Hint(Cow::Borrowed(HINT_WARNING));
         }
+        if let Some(prompt) = self.account.prompt() {
+            return Footer::Hint(Cow::Owned(prompt));
+        }
+        if self.account.asking() && (self.account.field().is_some() || self.on_account_row()) {
+            return Footer::Hint(Cow::Borrowed(HINT_ASKING));
+        }
+        if self.account.field().is_some() {
+            return Footer::Hint(match (&self.copied, self.opener) {
+                (Some(copied), _) => Cow::Owned(copied.clone()),
+                (None, true) => Cow::Borrowed(account::HINT_TOKEN),
+                (None, false) => Cow::Borrowed(account::HINT_TOKEN_COPY),
+            });
+        }
+        if let Some(done) = &self.feedback_done {
+            return Footer::Hint(match (&self.copied, done, self.opener) {
+                (Some(copied), _, _) => Cow::Owned(copied.clone()),
+                (None, Done::Sent(_), true) => Cow::Borrowed(feedback::HINT_SENT),
+                (None, Done::Sent(_), false) => Cow::Borrowed(feedback::HINT_SENT_COPY),
+                (None, _, _) => Cow::Borrowed(feedback::HINT_DONE),
+            });
+        }
+        if let Some(form) = &self.feedback {
+            return match form.error() {
+                Some(error) => Footer::Error(error),
+                None => Footer::Hint(Cow::Borrowed(form.hint())),
+            };
+        }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
+        if picker.is_some_and(Picker::asks_cancel) {
+            return Footer::Hint(Cow::Borrowed(HINT_CANCEL));
+        }
+        if let Some(wizard) = picker.and_then(Picker::install) {
+            // Copying the manual steps says so until the next key.
+            return Footer::Hint(match &self.copied {
+                Some(copied) => Cow::Owned(copied.clone()),
+                None => Cow::Borrowed(wizard.hint()),
+            });
+        }
+        if let Some(hub) = picker.and_then(Picker::hub) {
+            return match hub.screen() {
+                Screen::Confirm(confirm) if hub.asking().is_none() => {
+                    match confirm.short.as_deref() {
+                        Some(short) => Footer::Error(short),
+                        None => Footer::Hint(Cow::Borrowed(hub.hint())),
+                    }
+                }
+                _ => Footer::Hint(Cow::Borrowed(hub.hint())),
+            };
+        }
         if picker.is_some_and(|p| p.text().is_some()) {
             return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
         }
@@ -1288,6 +2178,8 @@ impl MenuState {
             _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
+            _ if self.on_account_row() => Cow::Borrowed(self.account.hint()),
+            _ if self.on_feedback_row() => Cow::Borrowed(HINT_FEEDBACK_ROW),
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
@@ -1301,10 +2193,18 @@ impl MenuState {
         if let Some(why) = self.command_shown {
             return why.footer().to_owned();
         }
+        if self.checking_update {
+            return "checking crates.io… · j/k move · s save · Esc cancel".to_owned();
+        }
+        let check = if self.can_check_update() {
+            " · r check"
+        } else {
+            ""
+        };
         match (&self.installed, &self.update) {
             (Some(done), _) => format!("Updated to {done} · restart lazarobox to use it"),
-            (None, Some(_)) => "Enter updates · j/k move · s save · Esc cancel".to_owned(),
-            (None, None) => "up to date · j/k move · s save · Esc cancel".to_owned(),
+            (None, Some(_)) => format!("Enter updates{check} · j/k move · s save · Esc cancel"),
+            (None, None) => format!("up to date{check} · j/k move · s save · Esc cancel"),
         }
     }
 
@@ -1440,6 +2340,7 @@ mod tests {
                 row("Tab bar position", Some("top"), false),
                 row("Mouse", Some("on"), false),
                 row("Updates", Some("0.15.3"), false),
+                row("Feedback", Some("bug report or idea"), false),
             ]
         );
     }
@@ -1483,9 +2384,13 @@ mod tests {
             menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(3), "so is the Updates row");
             menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(4), "and the Feedback row");
+            menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(0), "wraps past the last row");
             menu.on_key(&up, false, &mut config);
-            assert_eq!(selected(&menu), Some(3), "wraps before the first row");
+            assert_eq!(selected(&menu), Some(4), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(3));
             menu.on_key(&up, false, &mut config);
             assert_eq!(selected(&menu), Some(2));
             menu.on_key(&up, false, &mut config);
@@ -1655,7 +2560,12 @@ mod tabs_tests;
 mod tools_tests;
 
 #[cfg(test)]
+mod family_tests;
+
+#[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod idle_tests;
 
 #[cfg(test)]
 mod copy_tests;
@@ -1670,6 +2580,12 @@ mod custom_flow_tests;
 
 #[cfg(test)]
 mod reanchor_tests;
+
+#[cfg(test)]
+mod llamacpp_tests;
+
+#[cfg(test)]
+mod llamacpp_probe_tests;
 
 #[cfg(test)]
 mod save_tests;
@@ -1699,3 +2615,15 @@ mod context_tests;
 mod mouse_tests;
 #[cfg(test)]
 mod update_tests;
+
+#[cfg(test)]
+mod hub_tests;
+
+#[cfg(test)]
+mod account_tests;
+
+#[cfg(test)]
+mod feedback_tests;
+
+#[cfg(test)]
+mod feedback_menu_tests;

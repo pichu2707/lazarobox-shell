@@ -1,0 +1,27 @@
+---
+source: src/ui/components/menu/tests/install.rs
+expression: show(&menu)
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Install llama-server: downloading                          │
+│ ↓ 25% llama-b9000-bin-ubuntu-x64.tar.gz                    │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ cancel the download? (y/n)                                 │
+└────────────────────────────────────────────────────────────┘

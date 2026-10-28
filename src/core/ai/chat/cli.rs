@@ -120,7 +120,9 @@ fn rejected_option(stderr: &str) -> Option<&str> {
 
 /// What to tell the user when the CLI `name` rejected an option: it is older
 /// than lazarobox needs. The flag is named only when it is one of ours (a
-/// constant, never text from stderr); any other word is not echoed.
+/// constant, never text from stderr); any other word is not echoed. commander
+/// reports an unknown `--opt=value` as the whole token, so the part before
+/// `=` is what is compared, and the value is never shown.
 ///
 /// The fix is always to update the CLI, never to relax the call. The text-only
 /// options (`--safe-mode`, `--permission-prompts none`, `--tools ""`,
@@ -128,6 +130,7 @@ fn rejected_option(stderr: &str) -> Option<&str> {
 /// without the jail, so none of them is dropped to fit an old CLI.
 fn outdated_cli(name: &str, stderr: &str) -> Option<String> {
     let rejected = rejected_option(stderr)?;
+    let rejected = rejected.split_once('=').map_or(rejected, |(flag, _)| flag);
     let how = if name == "claude" {
         "update it (claude update)"
     } else {

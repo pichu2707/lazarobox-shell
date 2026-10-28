@@ -93,6 +93,19 @@ Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando l
 
 Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
 
+### Al cerrar lazarobox
+
+Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso pequeño en su propia sesión; en Linux `ps` lo muestra como `/proc/self/exe __watch`) que le sobrevive. Cada grupo de procesos que lazarobox arranca (los turnos de claude, codex y gemini, tus servidores MCP, el `llama-server` gestionado y las comprobaciones cortas, como `--version`) se apunta en él, y se borra cuando lazarobox lo recoge. Cuando lazarobox termina, sea como sea (al salir, si se cae, con `kill -9` o al cerrar la pestaña de la terminal; en Linux y en macOS), el vigilante manda `SIGHUP` y `SIGTERM` a los grupos que quedan apuntados, les da 3 s, manda `SIGKILL` a lo que siga vivo y sale.
+
+- **Al salir, lazarobox hace lo mismo él mismo, con suavidad:** en cuanto te devuelve la pantalla manda `SIGHUP` y `SIGTERM` a todo lo que lanzó y solo manda `SIGKILL` a lo que siga en marcha 2 s después, mientras guarda el historial y la memoria. Un programa que termina al recibir la señal no espera nada más; lo que dejó detrás (sus hijos) recibe entonces `SIGKILL`. Un turno que sigue escribiendo su respuesta no se corta antes de esos 2 s. Si cierras la pestaña o matan a lazarobox a mitad de la salida, el vigilante repite la misma secuencia, y ahí también los hijos que dejó un programa tienen esos segundos para terminar.
+- Solo toca un grupo si su proceso líder sigue siendo el que se apuntó (misma hora de arranque) o ya no tiene líder: un pid reutilizado por otro programa nunca recibe la señal.
+- `engram serve` no se apunta nunca: es tu servidor de memoria, lo comparten otras herramientas y sigue en marcha a propósito.
+- Los shells de los paneles no pasan por el vigilante: al cerrarse la terminal de lazarobox reciben `SIGHUP`, como en cualquier terminal. Lo que lanzaste en un panel (`npm run dev &`, `nohup`, `disown`) sigue su curso como en cualquier terminal, pero lazarobox te avisa:
+  - la pregunta de salida lo nombra: `Quit? still running: sleep 77, npm run dev (y/n)` (como mucho tres, y `+N more` para el resto; si la barra es estrecha, solo cuántos). También nombra `llama-server (shared)` si el llama-server gestionado que arrancó está respondiendo a otro lazarobox (ver «llama.cpp gestionado»);
+  - al salir, con la pregunta o con `exit` en el último panel, lo escribe en tu terminal en cuanto te la devuelve, con su grupo de procesos para que puedas pararlo (`kill -- -<grupo>`).
+  - Cuenta también lo de un panel que ya cerraste. Un programa que salió de la sesión del panel (`setsid`) no se nombra.
+- Si el vigilante no puede arrancar, lazarobox funciona igual que antes: al salir para lo que lanzó, pero una caída puede dejarlo en marcha.
+
 ---
 
 ## 📋 Modo COPY
@@ -124,9 +137,27 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Mouse` | Captura del ratón | `mouse` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
+| `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
+| `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
+
+### Feedback: fallos e ideas desde el terminal
+
+`Enter` sobre **Feedback** abre un formulario corto:
+
+- **Kind**: `Bug report` o `Idea or goal` (`←`/`→`).
+- **Title** y **Description** (`Tab` pasa al siguiente campo; en la descripción, `Enter` añade una línea).
+- **Attach the environment** (`Espacio` lo activa o desactiva): la versión de lazarobox, el sistema (y si es WSL), la shell, la terminal (`TERM_PROGRAM`) y los motores de IA detectados con su versión. Se ve entero antes de enviarlo; nunca incluye rutas, nombres de usuario ni claves.
+
+`Ctrl+S` envía el issue a GitHub con tu propio `gh` (`gh issue create`): el de fallos con la etiqueta `bug` o el de ideas con `idea` (las ideas llegan al tablero de Goals del proyecto). El issue sigue la forma de los formularios del repositorio: una sección `### What happened` (o `### The idea`) con la descripción y, si lo adjuntas, `### Environment`. Mientras se envía, el pie dice `Sending to GitHub…`; al terminar, el formulario muestra `Sent:` y el enlace del issue, que se abre con `Ctrl+O` o con un clic. Si `gh` falla, el formulario se queda con todo lo escrito y el pie muestra su mensaje; `Ctrl+S` lo vuelve a intentar. **lazarobox solo envía algo cuando pulsas `Ctrl+S`, y siempre a través de tu sesión de `gh`: no guarda ningún token de GitHub.** GitHub solo conserva las etiquetas si tienes permiso de escritura en el repositorio.
+
+Si `gh` no está instalado o no has iniciado sesión (`gh auth login`), `Ctrl+S` abre en el navegador la página del issue ya rellena y el formulario explica por qué. `Ctrl+O` abre esa misma página directamente, para revisarla y enviarla desde allí (con `xdg-open`; en WSL con `wslview` o `rundll32.exe url.dll,FileProtocolHandler`; en macOS con `open`; si no hay ninguno, copia el enlace al portapapeles con OSC 52).
+
+Antes de enviar nada, el título y la descripción pasan por el mismo filtro de secretos que las notas de memoria; si enmascara algo, el formulario lo muestra (`Secrets were masked; review and press Ctrl+S again`) para que lo revises. Un enlace de más de 8000 caracteres no se puede abrir (`Too long for a link: shorten the description`), pero sí enviar con `Ctrl+S`.
+
+Desde la web, los formularios de issue de GitHub piden los mismos datos.
 
 ---
 
@@ -157,17 +188,19 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 **Cada cuánto.** Al arrancar, en segundo plano, y como máximo una vez cada 24 horas mientras la versión cacheada sea más nueva que la que ejecutas. Entre medias se lee la última respuesta de `update-check.json` en el directorio de datos de lazarobox (`$XDG_DATA_HOME/lazarobox/`, o `~/.local/share/lazarobox/`), así que una actualización conocida se sigue mostrando en cada arranque sin nueva petición. La caché guarda qué versión de lazarobox la escribió (`checked_by`). Si la escribió otra versión (o una antigua, sin ese campo) y su versión más nueva es igual o menor que la que ejecutas, por ejemplo tras actualizar, se comprueba en el siguiente arranque sin esperar 24 h; si la escribió esta misma versión, rige el límite de una vez al día. Límite conocido: si dos versiones de lazarobox comparten el mismo directorio de datos y se usan a la vez, cada arranque de la que no escribió la caché puede hacer una petición (como mucho una por arranque; nunca más de una al día para la misma versión). Una comprobación fallida (sin red, tiempo agotado, error de estado, respuesta ilegible) es silenciosa, conserva la versión nueva ya conocida y se reintenta pasada una hora. Si no se puede escribir la caché (directorio de solo lectura), no se comprueba nada, para no consultar la API en cada arranque. Las versiones preliminares nunca se anuncian.
 
+**Comprobar ahora.** Sobre la fila **Updates**, `r` pregunta a crates.io en ese momento, sin mirar la caché ni el límite de 24 horas. Mientras dura, la fila dice `checking…`; después muestra el resultado como cualquier otra comprobación (y lo guarda en la caché). Una comprobación fallida vuelve en silencio a lo que ya se sabía. Con `check = false`, o tras instalar una versión en esta sesión, `r` no hace nada y el pie no lo ofrece.
+
 ---
 
 ## 🤖 Menú de IA
 
 Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools** y **Approval** (la última). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
-El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: **no se descarga nada**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`.
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. lazarobox solo descarga dos cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»).
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
 
@@ -180,9 +213,43 @@ Si un servidor escucha en otro puerto (por ejemplo, porque el suyo está ocupado
 port = 39080
 ```
 
-Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú no edita esta tabla y la conserva al guardar. El cambio se aplica al reiniciar lazarobox.
+Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
-Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox nunca arranca el servidor por ti.
+Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
+
+**llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
+
+```toml
+[ai.servers.llamacpp]
+managed = true
+model = "/ruta/al/modelo.gguf"
+args = ["-ngl", "99", "-c", "16384"]   # opcional
+idle_minutes = 15                       # opcional: 0 = no pararlo nunca
+```
+
+**Desde el menú, sin editar nada.** Con `llama-server` instalado pero sin responder (o, si ya está gestionado, aunque responda otro `llama-server` en el puerto), el selector de modelos de llamacpp lista, marcados `lazarobox starts it`, los `.gguf` que encuentra en:
+
+- `~/.local/share/llama.cpp/models` (o `$XDG_DATA_HOME/llama.cpp/models`);
+- la caché de llama.cpp: `$LLAMA_CACHE`, o `~/.cache/llama.cpp` (en macOS también `~/Library/Caches/llama.cpp`);
+- la caché de Hugging Face: `$HF_HUB_CACHE`, `$HF_HOME/hub` o `~/.cache/huggingface/hub`.
+
+Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazarobox arranca `llama-server` en ese momento, sin reiniciar: la barra de estado dice `starting llama-server with <archivo>…` y luego `llama-server is ready` o por qué no arrancó. De un modelo dividido (`-00001-of-00003.gguf`) solo aparece la primera parte, que carga las demás; los proyectores de visión (`mmproj`) no aparecen. Sin ningún `.gguf` sigue la nota para arrancarlo a mano. `llama-server` carga un solo modelo: elegir otro para cualquier tarea pasa a él las tareas que usaban el anterior, y al guardar se para el servidor anterior y arranca el nuevo. Si cambias de idea y ninguna tarea se queda con el modelo, no se guarda ni se arranca nada.
+
+- En el selector de modelos, el `model` configurado aparece como `lazarobox starts it` aunque el servidor no esté en marcha, y se puede elegir.
+- Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp (o guardar el menú tras elegir un modelo, arriba) arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
+- Usa el puerto 39281, poco habitual a propósito; `port` lo cambia. Cada modelo tiene su propio servidor: si en ese puerto ya hay otro, lazarobox prueba los siete siguientes (39282-39288).
+- `args` añade argumentos a `llama-server` detrás de los que pone lazarobox, por ejemplo `-ngl 99` (capas en la GPU), `-c 16384` (contexto) o `--jinja`. Cada elemento de la lista es un argumento tal cual, sin pasar por ninguna shell (`"--alias", "mi modelo"` son dos). Solo se configura en el archivo; el menú no lo toca. Si la lista incluye algo que fija lazarobox (`--host`, `--port`, `-m` o `--model`, también como `--port=8080`) o no es una lista de textos, se ignora entera con un aviso al arrancar.
+- Se para solo tras `idle_minutes` minutos sin usarlo (15 por defecto), para liberar la memoria de la GPU; el siguiente mensaje lo arranca otra vez y espera a que cargue el modelo. Un mensaje que aún se está respondiendo nunca se corta: el tiempo cuenta desde que termina. `0` no lo para nunca. En el menú, la fila `llama-server idle` de Settings pasa por `5 min`, `15 min`, `30 min` y `never` (`h`/`l`) y se guarda con `s`; el cambio vale al momento, sin reiniciar. Un valor del archivo fuera de esos pasos (por ejemplo `45`) se muestra tal cual. Un valor incorrecto se cambia por 15 con un aviso al arrancar.
+- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. Si lazarobox se cae o se fuerza su cierre, lo para el vigilante (ver «Al cerrar lazarobox»), también en macOS; en Linux, además, el núcleo lo mata con lazarobox.
+- Si en esos puertos ya hay un `llama-server` listo con el mismo archivo de modelo (otro lazarobox abierto, o uno que arrancaste tú en una terminal), lazarobox lo usa tal cual y no arranca nada. Ese servidor no es suyo: no lo para al salir, por inactividad ni al cambiar de modelo; si desaparece, el siguiente mensaje arranca el propio. Solo usa uno cuyo socket sea de tu usuario, para que otro usuario de la máquina no pueda hacerse pasar por él y leer tus mensajes (en Linux lo mira en `/proc/net/tcp`; en macOS, con `lsof`).
+- Si en un puerto responde otra cosa (otro modelo, un servidor que aún carga, otro programa), lazarobox no lo toca y arranca el suyo en el primer puerto libre: usar otro modelo, más o menos potente, nunca queda bloqueado por el que ya corre. Si los ocho puertos están ocupados, no arranca nada y el chat dice `llama-server not started: no free port on 127.0.0.1 from 39281 to 39288`.
+- Quien arranca un servidor es quien lo para. Mientras responde a otro lazarobox, la parada por inactividad espera y vuelve a contar desde entonces. Al salir, la pregunta lo nombra, `Quit? still running: llama-server (shared) (y/n)`, porque salir corta esa respuesta; el siguiente mensaje del otro arranca un servidor propio. Si en ese momento no responde a nadie, salir no corta nada y no se nombra.
+- Las pestañas y los paneles de un mismo lazarobox comparten su servidor: esto solo pasa entre lazarobox distintos, en otra ventana o en otra pestaña de tu terminal con su propio lazarobox.
+- Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
+- `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.
+- Antes de cada arranque se comprueba que el archivo de `model` existe. Si falta, no se arranca nada y el chat dice `llama-server not started: model file not found: <ruta>`. No se comprueba al cargar la configuración: si el modelo está en un disco que montas más tarde, el siguiente mensaje ya funciona.
+- `llama-server` se busca en el `PATH` de login que ya usa lazarobox (nunca en el directorio actual), así que funciona también si abres lazarobox desde el lanzador del escritorio. El nombre del modelo en la tarea del chat da igual (llama-server lo ignora); sin modelo asignado se envía la ruta.
+- Un valor incorrecto de `managed` o `model` se ignora con un aviso al arrancar, y el servidor no se gestiona.
 
 Límites de esta fase:
 
@@ -190,11 +257,56 @@ Límites de esta fase:
 - Los alias de shell no se detectan: el binario debe estar en el `PATH`.
 - Al arrancar desde un lanzador de escritorio o rofi, el `PATH` suele ser mínimo. lazarobox pregunta una vez a tu shell de login (`$SHELL -l -i -c`; `/bin/sh` si `$SHELL` no está definido) y pone sus carpetas al principio del `PATH`, seguidas de las del proceso que falten, tanto para detectar los CLIs como para lanzarlos en el chat: así se elige el mismo ejecutable que en tu terminal, y una copia antigua en `/usr/local/bin` no tapa la tuya. La shell arranca con el `PATH` del proceso más `/usr/local/bin:/usr/bin:/bin`, para que tus archivos rc (`brew shellenv`, nvm) encuentren `tr`, `readlink` y demás. Si `$SHELL` falla, se prueba una vez `/bin/bash -l -c` (salvo que `$SHELL` ya sea bash; lee los archivos de login pero no `~/.bashrc`); entre las dos consultas comparten un límite total de unos 3 s. Si ambas fallan o tardan demasiado, se usa el `PATH` del proceso tal cual. El entorno del proceso no se modifica. La consulta ejecuta tus archivos rc interactivos al arrancar, así que cualquier demonio que lancen (por ejemplo `ssh-agent`, o un autoarranque de tmux o zellij) también se inicia en ese momento.
 
+### Instalar llama-server (la excepción)
+
+lazarobox no instala programas: detecta los que ya tienes. **`llama-server` es la única excepción**, y solo si tú la pides: con llamacpp en `not installed`, su lista de modelos ofrece `install llama-server…`. Nada se descarga hasta que confirmas cada paso con `y`.
+
+| Tema | Qué hace |
+|------|----------|
+| Qué se descarga | El archivo `llama-<tag>-bin-…tar.gz` de la última versión de [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) que tiene un build para tu sistema. Eliges la variante: CPU, Vulkan (solo en Linux y solo si hay un driver Vulkan instalado) o Metal (macOS). |
+| De dónde | Solo de `github.com/ggml-org/llama.cpp`, con el `curl` del sistema (HTTPS). La URL la construye lazarobox; no se sigue ninguna otra. No se lee ningún token de GitHub. |
+| Cómo se verifica | El sha256 del archivo se compara con el `digest` que publica GitHub; si no coincide, se borra y no se extrae nada. Si `gh` está instalado y con sesión iniciada, se ejecuta además `gh attestation verify` y un fallo detiene la instalación; sin `gh` (o sin sesión) el asistente avisa de que la atestación no se verificó y sigue. Antes de activarlo se ejecuta `llama-server --version`; si falla, no se activa. |
+| Dónde queda | `$XDG_DATA_HOME/lazarobox/llama.cpp/` (por defecto `~/.local/share/lazarobox/llama.cpp/`): una carpeta por versión y `current` apuntando a la activa. Se conserva la versión anterior para volver atrás a mano. |
+| Orden en el `PATH` | La carpeta `current` se añade **al final** del `PATH`: un `llama-server` tuyo (el del sistema) siempre gana. Si ya hay uno, `install llama-server…` no se ofrece. |
+| Avisos de versión | Con una instalación propia, al abrir llamacpp se pregunta una vez por ejecución si hay una versión más nueva (de la misma variante que instalaste, también Vulkan) y, si la hay, el pie lo dice, salvo que ya muestre otro aviso. Nunca se instala sola. No se pregunta con `[updates] check = false`, y sin red no dice nada. |
+| Cómo quitarlo | Con una instalación propia, la lista de llamacpp ofrece `remove the llama.cpp install`: pregunta `y`/`n` y borra `$XDG_DATA_HOME/lazarobox/llama.cpp/` entero. Si el `llama-server` gestionado está en marcha, se para antes de borrar. Nunca toca un `llama-server` del sistema. También puedes borrar esa carpeta a mano. |
+
+Si prefieres hacerlo tú, la fila `I'll do it myself (copy instructions)` copia al portapapeles cómo hacerlo a mano y no descarga nada. Al terminar, el asistente ofrece descargar un modelo de Hugging Face.
+
+### Descargar modelos de Hugging Face
+
+La lista de modelos de llamacpp termina en la fila `download from Hugging Face…`; sin `llama-server` instalado sigue disponible (la descarga solo necesita `curl`) y avisa de que hace falta `llama-server` para ejecutar el modelo. Desde ahí:
+
+1. **Elige un modelo de la lista.** Al entrar se muestran los modelos de texto GGUF más descargados **que caben en la memoria de tu PC**, con su tamaño estimado (`Qwen/Qwen3-4B-GGUF  630088 ↓  ~2.5 GB`): se eligen con `j`/`k` y `Enter`, sin escribir nada. El tamaño se estima con los parámetros del modelo a unos 5 bits por parámetro (como `Q4_K_M`), y un modelo cabe si ocupa como mucho el 70% de la RAM.
+   **O busca.** `Esc` en esa lista abre el campo de búsqueda: escribe un texto para buscar repos GGUF (los más descargados primero) o pega su id, `owner/repo` (por ejemplo `Qwen/Qwen2.5-0.5B-Instruct-GGUF`). Al buscar se muestra todo, y lo que no cabe en tu PC lleva la marca `too big for this PC`.
+2. **Elige el archivo.** Se listan solo los `.gguf` con su cuantización y su tamaño (`Q4_K_M  1.1 GB  …`). Un modelo dividido en partes cuenta como uno, con el tamaño de todas. La primera fila dice la licencia.
+3. **Confirma.** Antes de bajar nada se muestra qué archivo es, su tamaño, el repo, la **licencia y un enlace para leerla**, la carpeta de destino y el espacio libre. Nada se descarga hasta que pulsas `y`; `n` o `Esc` vuelve atrás. Si no hay espacio, lo dice y `y` no hace nada.
+4. **Descarga.** Va en segundo plano, una a la vez. La fila muestra `↓ 42% <archivo> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; lo ya bajado se conserva y, si vuelves a elegir el mismo archivo, sigue donde se quedó. Al terminar se comprueban el tamaño y el sha256 que publica el Hub; un archivo que no coincide se borra.
+5. **Úsalo.** Al terminar, el modelo aparece en la misma lista y, al elegirlo, lo arranca el `llama-server` gestionado (ver «llama.cpp gestionado»).
+
+**Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, borra su carpeta `models--<owner>--<repo>` (o usa `hf cache delete`).
+
+**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
+
+- `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable; `Ctrl+O` lo abre en el navegador, y con `Mouse` activado también basta con hacer clic en esa línea. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada. `Esc` mientras se comprueba la cancela y tampoco guarda el token.
+- El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
+- Con una cuenta conectada, `Enter` ofrece desconectarla (`y/n`), que borra ese archivo. `d` hace lo mismo con cualquier token guardado, aunque no se haya podido comprobar (sin red, o un token que el Hub ya no acepta).
+- Si la variable `HF_TOKEN` está definida, manda sobre el archivo, y la fila lo indica: `token set (HF_TOKEN)`.
+
+**Qué se envía.** Solo cuando estás en este flujo (nunca al arrancar ni en segundo plano), con el `curl` del sistema, solo por HTTPS a `huggingface.co` (las descargas siguen sus redirecciones a su CDN, también solo HTTPS):
+
+- la búsqueda (`/api/models?search=…&filter=gguf`) y, al entrar, la lista de los más descargados (`/api/models?filter=gguf&pipeline_tag=text-generation`);
+- los datos del repo y su lista de archivos;
+- los archivos que confirmas;
+- con una cuenta, la comprobación `/api/whoami-v2`.
+
+El token va en la cabecera `Authorization` y solo a `huggingface.co`; `curl` no lo reenvía al CDN. Como en la comprobación de versiones, `curl` respeta tu proxy y tus certificados y se ignora `~/.curlrc`. Sin `curl` en el `PATH`, el flujo dice `Hugging Face needs curl on the PATH`.
+
 ---
 
 ## 💬 Chat de IA (experimental)
 
-Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`) y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
+Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`), con los servidores locales **llama.cpp** (`llama-server`), **LM Studio** y **vLLM**, que hablan por HTTP con `127.0.0.1`, y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
 
 Teclas dentro del chat:
 
@@ -206,6 +318,7 @@ Teclas dentro del chat:
 | `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
 | `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
 | `PageUp` / `PageDown`  | Desplaza la conversación                            |
+| `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
@@ -251,6 +364,13 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 ```
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
+
+**Compactación del historial:** cuando un chat largo desborda la ventana del modelo, lazarobox resume lo que sale con un modelo y lo envía como bloque inerte en lugar de perderlo. El resumen nunca va a un motor que no hayas elegido: usa la tarea `summarize` solo si la fijas explícitamente en `[ai.tasks.summarize]`; si no, usa el motor y el modelo del chat (nunca el general). Cuesta una llamada extra cada pocos envíos; `[ai.chat] compaction = "off"` la desactiva y queda el aviso de que los mensajes antiguos no se envían (por defecto `"auto"`; cualquier otro valor es un error de configuración).
+
+```toml
+[ai.chat]
+compaction = "off"   # "auto" (por defecto) | "off"
+```
 
 **Privacidad:**
 
@@ -301,7 +421,7 @@ By default every command a model asks to run needs your `y` (`approval = "ask"`)
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
 - `approval = "ask"`, `"auto"` or `"run"` in `[ai.tools]` sets the mode a chat starts with; anything else falls back to `ask` with a notice at startup. The mode of a chat lasts for its conversation: opening another conversation from the list, or starting a new one, goes back to the configured value. The toggle never writes the file, and a changed `config.toml` only reaches panes and conversations opened afterwards.
-- The **Approval** row of the AI menu (the last row of the AI tab, after **Tools**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
+- The **Approval** row of the AI menu (after **Tools**, before **Hugging Face**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
 - The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
 - The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
 - It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
@@ -374,7 +494,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet: <motivo>`. Una instalación que la jaula rechaza no se detecta en el panel: se ve al enviar, como el error `the CLI did not start: its jail could not be enforced: <motivo>`, y en la lista de motores del menú como `no jail: <motivo>`.
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - En sistemas que no son Linux ni macOS no hay jaula. El chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini no arrancan. El mensaje lo indica: `the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat`.
-- **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 5 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
+- **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 10 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
 - **gemini en macOS: todavía no verificado en un Mac real.** Se prueba en CI con CLIs de mentira, pero no con el gemini real. codex se está verificando con un probador (ver `docs/macos-tester-checklist.md`).
 - **claude nunca corre dentro de la jaula en macOS.** Guarda su sesión en el llavero (Keychain) y la jaula se lo impediría; en macOS siempre corre sin jaula, solo con sus opciones de solo texto, aunque la comprobación de la jaula falle. El panel lo avisa con `claude runs without the jail here: claude keeps its macOS Keychain login, so it never runs jailed on macOS` y nunca lo trata como «jaula no disponible».
 
@@ -473,15 +593,101 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. |
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
-| `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes; any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |
+| `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes, also when the CLI reports it with its value (`--model=<name>` names `--model`, never the value); any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |
 | `claude <version> is too old for lazarobox (it needs 2.1.259 or newer); update it: claude update, brew upgrade claude-code, or npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu (Ctrl+Space m, then r)` | The detected claude predates `--permission-prompts none` (2.1.259), so its turn is refused before anything starts. Update claude. In the engine list of the menu the row reads `available · update needed: 2.1.259+`. An unreadable version never blocks. |
+
+### Herramientas de búsqueda y escritura (`[ai.tools]`)
+
+Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
+
+```toml
+[ai.tools]
+enabled = true
+search = true      # glob, grep y la lectura por ventanas de read_file
+write = false      # create_dir, write_file, edit_file, propose_batch
+exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
+git = false        # interruptor de las operaciones de git de solo lectura (aún no se ofrecen al modelo)
+git_write = false  # interruptor de las operaciones de git que escriben (aún no se ofrecen al modelo)
+```
+
+La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+
+#### Búsqueda: `glob` y `grep`
+
+Con `search = true` el modelo recibe dos herramientas, que trabajan dentro de la carpeta de origen del chat:
+
+- `glob` (`pattern`, y opcionalmente `path`) lista los ficheros cuya ruta relativa casa con un patrón (`*`, `?`, `**`, `[a-z]`). Devuelve solo nombres, ordenados y con un máximo de 100. Nunca pregunta, como `list_dir`.
+- `grep` (`pattern`, y opcionalmente `path`) busca una expresión regular en el texto de los ficheros, con un motor de tiempo lineal (sin _look-around_ ni referencias hacia atrás; el patrón admite hasta 512 bytes). Devuelve `ruta:línea:texto`, con un máximo de 100 coincidencias o 20 KiB, y 200 caracteres por línea; el resultado dice cuándo se ha recortado. Con un motor en la nube (claude, codex, gemini) **pide tu `y` en cada llamada**, en cualquier modo de aprobación (`search <patrón> in <carpeta>`); con un motor local se ejecuta sin preguntar.
+- Ambas se saltan los enlaces simbólicos, `.git`, `node_modules`, `target`, `dist`, `build`, `.venv` y `__pycache__`, y los ficheros binarios, no UTF-8 o de más de 1 MiB (en `grep`). Los nombres que parecen secretos se omiten y el resultado lo dice; `grep` compara contra el texto ya censurado, así que un patrón no puede servir para sondear un secreto.
+- `read_file` admite `start_line` y `max_lines` para leer una ventana de un fichero largo, e indica dónde empieza la siguiente.
+- Si hay un lote pendiente de revisar, las tres herramientas ven también los cambios en espera, marcados con `(pending, not on disk)`. El texto de un fichero no puede imitar esa marca.
+
+#### Escritura: lotes con revisión
+
+Con `write = true` el modelo recibe cuatro herramientas. **Ninguna toca el disco** hasta que apruebas el lote:
+
+| Herramienta                    | Qué hace                                                                                       |
+| :----------------------------- | :--------------------------------------------------------------------------------------------- |
+| `create_dir` (`path`)          | Prepara una carpeta nueva.                                                                     |
+| `write_file` (`path`, `content`) | Prepara un fichero entero (hasta 32 KiB): nuevo, o uno existente pequeño que se sustituye.   |
+| `edit_file` (`path`, `old`, `new`) | Prepara el cambio de un texto que aparece exactamente una vez (`old` y `new`, hasta 16 KiB cada uno). Edita la versión preparada si la hay. |
+| `propose_batch`                | Cierra el lote y abre la revisión. Rechaza un lote vacío o de más de 50 entradas o 1 MiB (pide dividirlo). |
+
+El modelo puede preparar cambios a lo largo de varios turnos antes de proponer. Mientras un lote espera tu respuesta no admite más cambios. Un `write_file` sobre un fichero existente solo se acepta si mide hasta 64 KiB y su texto no cambia al censurar secretos; si no, el modelo debe usar `edit_file`.
+
+**La revisión.** Un lote propuesto abre una vista a panel completo dentro del chat: un fichero nuevo muestra su texto, una edición o sustitución muestra su diff y una carpeta nueva muestra su ruta. Un cambio en un fichero de construcción (`Makefile`, `build.rs`, `Cargo.toml`, `package.json`, `*.sh`, flujos de `.github/workflows`, etc.) lleva un aviso visible. La cabecera muestra cuántas líneas has visto y cuántas faltan.
+
+| Tecla                 | Acción                                                                                              |
+| :-------------------- | :-------------------------------------------------------------------------------------------------- |
+| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `y locked` o `y in 0.4s`. |
+| `n` / `Esc`           | Rechaza **todo** el lote: no se escribe nada y el modelo recibe `denied`. También esperan los 800 ms de armado, salvo que el lote no se pueda revisar (demasiado grande), donde `n` actúa de inmediato. |
+| `Ctrl+C`              | Deniega la llamada (`cancelled`) y cancela el turno. El lote se queda como huérfano (ver abajo).    |
+| `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `Home` `End`, rueda | Desplazan la revisión. Saltar con `Home`/`End` no cuenta las líneas que se saltan; solo cuenta lo que se dibuja. |
+
+Es todo o nada: no se aprueba un fichero suelto. Una línea que solo está en un panel oculto, en otra pestaña o fuera de pantalla no cuenta como vista. Si ya hay otra aprobación pendiente, `propose_batch` devuelve `denied` (`another approval is pending`).
+
+**Huérfanos.** Si cancelas el turno (o el CLI agota su tiempo) con un lote preparado o propuesto, el lote **se conserva** en el chat. El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
+
+Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes, con un aviso (`discarded N staged entries`). Nada se guarda: tras reiniciar no queda ningún lote.
+
+#### Modelo de amenazas de la escritura
+
+- **Nada toca el disco antes de `y`.** Preparar, buscar y proponer no crean, cambian ni borran nada; solo el paso de aplicar de un lote aprobado escribe.
+- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, `path not available`, para no revelar si una ruta existe. Las lecturas de `.git/config` también se rechazan.
+- **Reglas de contenido: se rechaza, nunca se limpia.** El texto nuevo no puede tener UTF-8 inválido, caracteres de control, de dirección (_bidi_) o de ancho cero, ni finales de línea CRLF. `edit_file` rechaza un fichero que no sea UTF-8 o tenga CRLF o NUL. Límites: 32 KiB por `write_file`, 16 KiB por campo de `edit_file`, 1 MiB por fichero editado, 50 entradas y 1 MiB por lote.
+- **En motores en la nube, `edit_file` pregunta como `read_file`, una vez por fichero y turno.** Las respuestas de `old`/`diff` (existe, no existe, aparece varias veces) revelan qué contiene un fichero, así que el aviso es el mismo que el de `read_file`; si lo deniegas no se prepara nada. Un `read_file` permitido antes del mismo fichero también cubre la edición; un turno nuevo vuelve a preguntar. Un motor local nunca pregunta.
+- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco.
+- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS`) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
+- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
+- **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
+- Solo Linux: en otras plataformas el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+
+#### Ejecución: `run_command`
+
+Con `exec = true` el modelo recibe `run_command`, que ejecuta un comando de la cadena de herramientas del proyecto. No hay shell: el programa y cada argumento van por separado. Solo se admite una lista cerrada de programas y subcomandos:
+
+| Programa                  | Subcomandos admitidos                                                      |
+| :------------------------ | :------------------------------------------------------------------------- |
+| `cargo`                   | `build`, `check`, `test`, `clippy`, `run`, `doc` y `fmt` (solo con `--check`) |
+| `go`                      | `test`, `vet`, `build`, `run`                                              |
+| `npm`, `yarn`, `pnpm`     | `test`, `run <script>` (solo un script declarado en `package.json`), `install` y `ci` |
+| `pytest`                  | cualquier argumento admitido                                               |
+
+Se rechazan las opciones que cambian de dónde se lee la configuración o el destino (`--config`, `--manifest-path`, `--target-dir`, `--fix`, `-g`, `--registry`, `-modfile`, etc.), las rutas absolutas y los `..`. El tiempo por defecto es de 120 s y el máximo, de 600 s.
+
+- **Cada comando pide tu `y`, en cualquier modo de aprobación** (`ask`, `auto` y `run`). El aviso muestra exactamente qué se ejecuta (los argumentos con caracteres de shell se muestran entre comillas) y una nota con el límite de tiempo, que la red está activa, que un test puede leer el `.env` y enviarlo, que la salida va al modelo (y, con un motor en la nube, también a su proveedor) y qué ficheros del proyecto ejecuta el programa (`build.rs`, scripts de `package.json`, `conftest.py`, `go.mod`...). Para `install` y `ci` de `npm`, `yarn` y `pnpm` avisa además de que se ejecutan los scripts de instalación del proyecto y de sus dependencias, salvo con `--ignore-scripts`. Si el aviso no cabe entero en pantalla, `y` no aprueba: amplía el panel.
+- **Se ejecuta dentro de la jaula Landlock, solo en Linux.** En macOS se rechaza. Si el sistema no tiene jaula, la fila **Exec** del menú de IA dice `on · needs Linux sandbox`.
+- **Un comando a la vez por chat y dos en total en la aplicación.** Un segundo comando espera o se rechaza con `a command is already running in this chat` o `too many commands are running; try again later`.
+- **`npm`, `yarn` y `pnpm` (`test`, `run`, `install` y `ci`) solo desde la carpeta que contiene `package.json`.** Si no, se rechazan, para que un gestor no lea un `package.json` de una carpeta superior que nadie ha mostrado.
+- **Ganchos y configuración de git.** Antes y después de cada ejecución, lazarobox compara los ganchos (_hooks_) y la configuración de git. Si el comando los cambió, el resultado lo dice (`git hooks or config changed during the run (not reverted)`) y **no los revierte**. Si no se puede verificar el estado (una carpeta con demasiadas entradas, una configuración que no se entiende, un límite superado), el resultado indica `could not verify git hooks and config after this run` y el modelo debe tratar el proyecto como posiblemente contaminado y avisarte. Lo mismo ocurre con una ejecución cancelada o que falla después de arrancar: el aviso llega en el siguiente comando de ese chat.
+- **Las operaciones de git (`git`, `git_write`) aún no se ofrecen al modelo.** Los interruptores existen en la configuración y en el menú, pero hoy no añaden ninguna herramienta.
 
 ### Tools with Ollama
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
 
 - Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
-- Un turno hace como máximo 8 peticiones. Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
+- Un turno hace como máximo 8 peticiones (24 si hay activa alguna familia de `[ai.tools]`: búsqueda, escritura...). Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
 - Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
 - Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
 - Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
@@ -555,6 +761,7 @@ Se activa desde el menú de IA (`Ctrl+Espacio` y `m`), que antes muestra una adv
 enabled = true        # por defecto false
 acknowledged = true   # advertencia de privacidad aceptada
 port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
+save_summaries = false  # por defecto false; true guarda el resumen de los chats largos
 ```
 
 **Privacidad (léelo antes de activarla):**
@@ -580,6 +787,8 @@ port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
 La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Encontrar las notas en engram:** el _topic key_ de cada nota empieza por `chat/` (`chat/<tipo>/<título>`), por ejemplo `chat/decision/use-axum`.
+
+**Resumen de los chats largos (opcional):** cuando la compactación del historial resume un chat largo, ese resumen solo va al prompt. Con `save_summaries = true` en `[ai.memory]` se escribe además en engram como **una única nota por conversación** (`chat/<id>-<creación>/summary`, donde `<creación>` es la hora de creación de la conversación, para que el identificador reutilizado de una conversación borrada no pise el resumen de otra), que se actualiza en cada resumen nuevo en lugar de crear otra; pasa por la misma ocultación de secretos que el resto de notas. Los resúmenes guardados **permanecen en engram aunque borres el chat**, hasta que los elimines tú explícitamente. Una conversación **reanudada no actualiza su resumen guardado**: el resumen continuo no se persiste y, tras reanudar, solo cubriría los mensajes posteriores. Sin la opción no se escribe nada de forma automática y, la primera vez que habría guardado un resumen, lazarobox añade una línea al chat (una vez por ejecución) que explica qué se guardaría, dónde y cómo activarlo. Si con la opción activada engram rechaza el guardado, se avisa una vez por ejecución (`could not save the conversation summary to engram: <motivo>`); con la memoria desactivada o engram sin responder no se escribe nada y no hay avisos.
 
 **Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 

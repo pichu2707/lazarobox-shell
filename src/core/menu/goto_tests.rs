@@ -3,12 +3,13 @@
 use super::ai_tests::{machine, menu, selected_label};
 use super::*;
 
-const LABELS: [&str; 17] = [
+const LABELS: [&str; 18] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
     "Set all tasks",
     "general",

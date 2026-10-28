@@ -245,6 +245,25 @@ async fn a_non_200_gives_the_status_and_a_message_of_at_most_200_chars() {
 }
 
 #[tokio::test]
+async fn the_recorded_no_jinja_rejection_keeps_tools_and_jinja_inside_the_cap() {
+    let mut fake = Fake::start().await;
+    fake.send(include_bytes!(
+        "../../../tests/fixtures/llamacpp/no-jinja-tools.http"
+    ));
+    fake.close();
+    let events = turn(fake.port, "/v1/chat/completions", b"{}").await;
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        message,
+        "HTTP 500: {\"error\":{\"code\":500,\"message\":\"tools param requires --jinja flag\",\"type\":\"server_error\"}}"
+    );
+    let at = |w: &str| message.find(w).expect(w);
+    assert!(at("tools") < ERROR_MESSAGE_CAP && at("jinja") < ERROR_MESSAGE_CAP);
+}
+
+#[tokio::test]
 async fn a_non_200_message_is_one_clean_line() {
     let mut fake = Fake::start().await;
     let body = "model\n\x1b[2Jnot\tfound\r\n";

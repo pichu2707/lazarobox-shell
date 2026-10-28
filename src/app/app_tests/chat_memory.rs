@@ -119,6 +119,7 @@ fn opened(memory: bool) -> (App, Vec<Effect>) {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -126,6 +127,7 @@ fn opened(memory: bool) -> (App, Vec<Effect>) {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     let effects = press(&mut a, "c");
     a.update(AppEvent::PromptReady(
@@ -458,6 +460,7 @@ fn after_giving_up_the_chat_streams_and_the_late_project_reply_is_ignored() {
     ));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -465,6 +468,7 @@ fn after_giving_up_the_chat_streams_and_the_late_project_reply_is_ignored() {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     assert_eq!(send(&mut a, "hi").memory, None);
 }

@@ -113,6 +113,13 @@ fn limits_for(call: &Call) -> Limits {
     }
 }
 
+/// What a save writes: the note and its optional caller-supplied topic key.
+#[derive(Clone, Copy)]
+struct Draft<'a> {
+    note: &'a Note,
+    topic_key: Option<&'a str>,
+}
+
 /// The last `/health` verdict. `reason` is `None` while the server is ready.
 struct Probe {
     reason: Option<Reason>,
@@ -216,8 +223,14 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 project,
                 cwd,
                 note,
+                topic_key,
             } => {
-                let reply = match self.save(pane, id, session, &project, &cwd, &note).await {
+                let draft = Draft {
+                    note: &note,
+                    topic_key: topic_key.as_deref(),
+                };
+                let saved = self.save(pane, id, session, &project, &cwd, draft).await;
+                let reply = match saved {
                     Ok(reply) => reply,
                     Err(reason) => MemReply::SaveUnavailable { pane, id, reason },
                 };
@@ -325,6 +338,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             enabled: true,
             acknowledged: true,
             port: self.port,
+            save_summaries: false,
         };
         let reason = self.probe.as_ref().and_then(|p| p.reason.clone());
         let facts = Facts {
@@ -484,7 +498,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
         session: Option<String>,
         project: &str,
         cwd: &str,
-        note: &Note,
+        draft: Draft<'_>,
     ) -> Result<MemReply, Reason> {
         self.ready().await?;
         let failed = |reason: &str| MemReply::SaveFailed {
@@ -500,7 +514,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
         {
             return Ok(failed(&reason));
         }
-        let call = route::save(&session, project, note);
+        let call = route::save(&session, project, draft.note, draft.topic_key);
         let mut reply = self.send(&call).await?;
         if session_missing(reply.status, &reply.body) {
             // The server forgot the session (a restart): register it again and
