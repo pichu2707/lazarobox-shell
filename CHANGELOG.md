@@ -10,8 +10,28 @@ baseline.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-28
+
 ### Added
 
+- Chat COPY mode (`Ctrl+Space [` in a chat pane): `v` and `V` select, `y`
+  copies through OSC 52 (75 000-byte limit, same notice as the shell) and
+  returns to TERMINAL. The text is clean: no drawing prefixes, wrapped lines
+  rejoined, no key hints. `Ctrl+Y` (last answer) and `Ctrl+B` (last code
+  block) also work inside COPY mode.
+- Run mode (`approval = "run"`):
+  - `read_file` and `grep` inside the chat's folder run without asking. The
+    path is confined to the root when the file is opened. A read outside the
+    folder still asks, a sensitive file is still refused, and with a cloud
+    engine every read asks when the chat's folder is `$HOME` or `/`.
+  - Safe pane search commands (`cd`, `pwd`, `ls`, `tree`, `grep`, `rg`,
+    `find`) run without asking while they stay inside the chat's folder.
+    Leaving the folder, a broad root with a cloud engine or an oversized walk
+    asks; reaching a sensitive file, a git config or a secret folder is
+    refused. `rg` is checked with ripgrep's own walker (`ignore` crate).
+- A skill for coding agents to report lazarobox defects to GitHub, with the
+  user's consent, after searching existing issues.
+- README: demo GIFs for panes, COPY mode, the AI menu, history and run mode.
 - Git tools for the chat, behind two toggles that are off by default: `git`
   (`git_status`, `git_diff`, `git_log`) and `git_write` (`git_add`,
   `git_commit`). No other verb exists and no tool takes a free-form argument
@@ -43,6 +63,9 @@ baseline.
 
 - The `git` and `git_write` rows of the AI menu now offer real tools instead
   of only holding the switch.
+- `mkdir` and `git` are no longer on the run-mode allow-list: they always
+  ask.
+- New dependency: `ignore` 0.4.
 
 ## [0.28.0] - 2026-10-28
 
@@ -1312,7 +1335,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0
