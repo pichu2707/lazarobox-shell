@@ -418,6 +418,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 Err(why) => checked = Err(why.into()),
             },
+            // A git read verb is judged before it asks: a refusal opens no prompt.
+            (call, locality) if call.is_git() => match git::plan(&host, &scope).await {
+                Ok(()) => ask = ask_for(call, locality),
+                Err(why) => checked = Err(why.into()),
+            },
             // A batch is sealed before the ask: the user reviews what was sealed.
             (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
                 Ok((batch, review)) => {
@@ -562,6 +567,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
                     exec::run(&host, &scope, &call, pinned.take()).await
                 }
+                // Only after `y` on a cloud engine, at once on a local one.
+                (Decision::Sent, call) if call.is_git() => git::run(&host, &scope, &call).await,
                 // The approval mode answers only a read or a search, never
                 // for the user: nothing is added to the reads the user
                 // allowed, and only what the ask allowed runs. A read it let
@@ -600,6 +607,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 mod exec;
 mod files;
 mod gate;
+mod git;
 mod orphan;
 
 #[cfg(test)]
@@ -610,5 +618,7 @@ mod external_tests;
 mod files_tests;
 #[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod git_tests;
 #[cfg(test)]
 mod tests;
