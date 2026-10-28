@@ -419,7 +419,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 Err(why) => checked = Err(why.into()),
             },
             // A git read verb is judged before it asks: a refusal opens no prompt.
-            (call, locality) if call.is_git() => match git::plan(&host, &scope).await {
+            (call, locality) if call.is_git() => match git::plan(&host, &scope, call).await {
                 Ok(()) => ask = ask_for(call, locality),
                 Err(why) => checked = Err(why.into()),
             },

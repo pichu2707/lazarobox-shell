@@ -10,12 +10,15 @@ use std::process::Command;
 use super::{
     exec::Exec,
     exec_tests::{Asks, LANDLOCK, World, key, world_with},
+    git::{NO_GIT, REPO_REFUSED, fault_text, find_git},
     *,
 };
 use crate::core::ai::{
     jail::{JailOff, JailSupport},
+    tools::git::GitError,
     tools::registry::{Family, FamilySet},
 };
+use crate::runtime::tools::git::{self as runtime, Fault};
 
 const STAND_IN: &str =
     "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
@@ -40,9 +43,19 @@ fn system_git() -> bool {
 }
 
 fn sh(cwd: &Path, args: &[&str]) {
+    // No ambient git state: the test repo is the only one that counts.
     let out = Command::new("git")
         .args(["-c", "commit.gpgsign=false"])
         .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "Repo Dev")
+        .env("GIT_AUTHOR_EMAIL", "dev@example.com")
+        .env("GIT_COMMITTER_NAME", "Repo Dev")
+        .env("GIT_COMMITTER_EMAIL", "dev@example.com")
         .current_dir(cwd)
         .output()
         .unwrap();
@@ -285,7 +298,6 @@ async fn without_a_jail_a_read_verb_is_refused_before_it_asks() {
 
 // Scenario "Unproposed batch" (design: every git tool is refused while this
 // chat has a batch staged or proposed).
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
     let w = bare_world(LANDLOCK);
@@ -309,19 +321,87 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
 }
 
 // Scenario "Tracked secret not printed", by name: a path the model names is
-// refused when it is a secret or inside `.git`, after the question and with
-// nothing run.
+// refused when it is a secret, inside `.git`, escapes the root or is empty.
+// The refusal comes BEFORE the question: no prompt opens and nothing runs.
 #[tokio::test]
-async fn a_diff_of_a_secret_or_git_internal_path_is_refused() {
+async fn a_refused_path_is_refused_before_any_prompt() {
     let Some(w) = repo_world() else { return };
-    for path in [".env", ".git/config", "../outside"] {
-        let asks = Asks::new(Decision::Sent);
-        let call = Call::GitDiff {
-            staged: false,
-            path: Some(path.into()),
-        };
-        let out = turn(&w, Locality::Local, asks, git_set()).call(call).await;
-        assert!(out.is_error, "{path}: {out:?}");
-        assert!(!out.text.contains("untrusted-tool-output"), "{path}");
+    let refusal = GitError::Path.reason();
+    for path in [".env", ".git/config", "../outside", ""] {
+        for call in [
+            Call::GitDiff {
+                staged: false,
+                path: Some(path.into()),
+            },
+            Call::GitLog {
+                max_count: None,
+                path: Some(path.into()),
+            },
+        ] {
+            let asks = Asks::new(Decision::Sent);
+            let out = turn(&w, Locality::Cloud, asks.clone(), git_set())
+                .call(call)
+                .await;
+            assert!(out.is_error, "{path:?}: {out:?}");
+            assert_eq!(out.text, refusal, "{path:?}");
+            assert!(asks.asked().is_empty(), "{path:?}");
+        }
+    }
+}
+
+// A commit subject is redacted like a diff is: the full redactor, not only
+// the token one.
+#[tokio::test]
+async fn a_secret_in_a_commit_subject_is_redacted_in_the_log() {
+    let Some(w) = repo_world() else { return };
+    std::fs::write(w.proj.join("a.txt"), "two\n").unwrap();
+    sh(
+        &w.proj,
+        &["commit", "-q", "-am", "set password=hunter2 api_key=abc123"],
+    );
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, git_set()).call(log()).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.contains("set"), "{out:?}");
+    assert!(!out.text.contains("hunter2"), "{out:?}");
+    assert!(!out.text.contains("abc123"), "{out:?}");
+}
+
+// A root the jail refuses (under /tmp) is a repository-location fault, not a
+// missing git.
+#[test]
+fn a_root_refusal_is_not_reported_as_a_missing_git() {
+    use crate::core::ai::toolchain::Refusal;
+    let git = PathBuf::from("/opt/git");
+    let root = runtime::spec_fault(Refusal::Root("/tmp/x".into()), &git);
+    assert!(matches!(root, Fault::Root), "{root:?}");
+    assert_eq!(fault_text(root), REPO_REFUSED);
+    let never = runtime::spec_fault(Refusal::Never("/home/u/.ssh".into()), &git);
+    assert_eq!(fault_text(never), REPO_REFUSED);
+    let program = runtime::spec_fault(Refusal::Program(git.clone()), &git);
+    assert!(matches!(program, Fault::Spec(_)), "{program:?}");
+    assert_eq!(fault_text(program), NO_GIT);
+}
+
+// A git outside the system places is not a candidate, even first on PATH.
+#[test]
+fn a_git_outside_the_system_places_is_not_picked() {
+    let w = bare_world(LANDLOCK);
+    let dir = w.home.parent().unwrap().join("userbin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake = dir.join("git");
+    std::fs::write(&fake, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(find_git(dir.as_os_str()), None);
+    if system_git() {
+        let both =
+            std::env::join_paths([dir, PathBuf::from("/usr/bin"), PathBuf::from("/bin")]).unwrap();
+        let found = find_git(&both).unwrap();
+        assert!(
+            crate::core::ai::toolchain::SYSTEM_RX
+                .iter()
+                .any(|p| found.starts_with(p)),
+            "{found:?}"
+        );
     }
 }

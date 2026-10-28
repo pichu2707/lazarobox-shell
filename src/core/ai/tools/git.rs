@@ -211,7 +211,7 @@ pub fn excludes() -> Vec<String> {
 
 /// Checks a path given to a verb: relative, below the root, outside `.git`
 /// and not a secret name. Pure: the runtime still resolves it.
-fn check(path: &str) -> Result<(), GitError> {
+pub(crate) fn check(path: &str) -> Result<(), GitError> {
     if path.is_empty() || !clean_line(path) {
         return Err(GitError::Path);
     }

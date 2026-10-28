@@ -18,8 +18,8 @@ use super::{
 };
 use crate::{
     core::ai::{
-        sanitize::redact_tokens,
-        toolchain::env::scrub,
+        memory::redact::redact,
+        toolchain::{SYSTEM_RX, env::scrub},
         tools::{
             Call, ToolError,
             git::{self as pure, GitError},
@@ -36,16 +36,25 @@ use crate::{
 
 const COULD_NOT: &str = "could not run git";
 const NOT_A_REPO: &str = "the project is not a git repository";
-const NO_GIT: &str = "git was not found in a place the sandbox can grant (such as /usr/bin)";
+pub(super) const NO_GIT: &str =
+    "git was not found in a place the sandbox can grant (such as /usr/bin)";
 const TOO_OLD: &str = "git is too old (2.32 is needed) or its environment is not usable";
-const REPO_REFUSED: &str = "the repository location is not available";
+pub(super) const REPO_REFUSED: &str = "the repository location is not available";
 const TOO_LARGE: &str = "the output is too large to list";
 const FAILED: &str = "git failed";
 /// How long one read verb may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Judges a call before it asks. Reads the disk (the root) and the batch store.
-pub(super) async fn plan(host: &ToolHost, scope: &TurnScope) -> Result<(), &'static str> {
+pub(super) async fn plan(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+) -> Result<(), &'static str> {
+    // A path the model names is refused here, so a refusal opens no prompt.
+    if let Call::GitDiff { path: Some(p), .. } | Call::GitLog { path: Some(p), .. } = call {
+        pure::check(p).map_err(GitError::reason)?;
+    }
     let Some(key) = scope.stage_key else {
         return Err(refusal_text(ToolError::UnknownTool));
     };
@@ -76,7 +85,7 @@ pub(super) async fn run(
     let Some(nonce) = new_nonce() else {
         return fail(COULD_NOT);
     };
-    if let Err(why) = plan(host, scope).await {
+    if let Err(why) = plan(host, scope, call).await {
         return fail(why);
     }
     go(host, scope, call, &nonce).await.unwrap_or_else(fail)
@@ -159,11 +168,7 @@ fn context(
     let home = home.and_then(|h| fs::canonicalize(h).ok()).ok_or(REFUSED)?;
     let scrubbed = scrub(read, &root, &parent);
     let path = scrubbed.iter().find(|(name, _)| name == "PATH");
-    let git = path
-        .into_iter()
-        .flat_map(|(_, value)| std::env::split_paths(value))
-        .find_map(|dir| executable(&dir.join("git")))
-        .ok_or(NO_GIT)?;
+    let git = path.and_then(|(_, value)| find_git(value)).ok_or(NO_GIT)?;
     Ok(Ctx {
         helper,
         git,
@@ -175,6 +180,15 @@ fn context(
     })
 }
 
+/// The first executable `git` on a PATH whose real path is in a system place
+/// (the only places the jail grants): a user-installed git first on PATH is
+/// skipped, not picked and then refused.
+pub(super) fn find_git(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter_map(|dir| executable(&dir.join("git")))
+        .find(|real| SYSTEM_RX.iter().any(|place| real.starts_with(place)))
+}
+
 fn executable(candidate: &Path) -> Option<PathBuf> {
     let real = fs::canonicalize(candidate).ok()?;
     let meta = fs::metadata(&real).ok()?;
@@ -182,10 +196,10 @@ fn executable(candidate: &Path) -> Option<PathBuf> {
 }
 
 /// The fixed text of a git fault: never a path or an OS message.
-fn fault_text(fault: Fault) -> &'static str {
+pub(super) fn fault_text(fault: Fault) -> &'static str {
     match fault {
         Fault::Spec(_) => NO_GIT,
-        Fault::Dir => REPO_REFUSED,
+        Fault::Root | Fault::Dir => REPO_REFUSED,
         Fault::Env | Fault::Version => TOO_OLD,
         Fault::Preflight => NOT_A_REPO,
         Fault::Io(_) => COULD_NOT,
@@ -193,7 +207,7 @@ fn fault_text(fault: Fault) -> &'static str {
 }
 
 /// The text of a status or a log: parsed and rendered with clean names, then
-/// redacted. A cut or failed run is an error, never a half-parsed list.
+/// redacted like a diff. A cut or failed run is an error, never a half-parsed list.
 fn listing(
     call: &Call,
     done: &crate::runtime::tools::runner::Done,
@@ -207,7 +221,7 @@ fn listing(
         Call::GitStatus => pure::render_status(&pure::parse_status(&raw)),
         _ => pure::render_log(&pure::parse_log(&raw)),
     };
-    Ok(redact_tokens(&text))
+    Ok(redact(&text).text)
 }
 
 /// The text of a diff: the capture is already cleaned, cut and redacted.
