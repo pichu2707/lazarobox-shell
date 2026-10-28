@@ -1085,7 +1085,7 @@ async fn the_commit_review_lists_the_hooks_that_will_run() {
     call.await;
     let rows = review_rows(&asks.asked()[0]);
     assert!(
-        rows.iter().any(|(_, t)| t == "no hooks will run"),
+        rows.iter().any(|(_, t)| t == "no commit hooks found"),
         "{rows:?}"
     );
 
@@ -1104,4 +1104,59 @@ async fn the_commit_review_lists_the_hooks_that_will_run() {
             .any(|(_, t)| t == "hooks that will run: pre-commit"),
         "{rows:?}"
     );
+}
+
+// git commit also runs reference-transaction: the review lists it.
+#[tokio::test]
+async fn the_commit_review_lists_the_reference_transaction_hook() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "reference-transaction", "exit 0");
+    let asks = Asks::new(Decision::Denied("declined"));
+    turn(&w, Locality::Local, asks.clone(), write_set())
+        .call(commit("feat: two"))
+        .await;
+    let rows = review_rows(&asks.asked()[0]);
+    assert!(
+        rows.iter()
+            .any(|(_, t)| t == "hooks that will run: reference-transaction"),
+        "{rows:?}"
+    );
+}
+
+// A commit that fails after its hook staged a secret still changed the
+// index: the result says so (names masked), and nothing is undone.
+#[tokio::test]
+async fn a_failed_commit_that_changed_the_index_is_reported() {
+    let Some(w) = staged_world() else { return };
+    hook(
+        &w,
+        "pre-commit",
+        "echo 'TOKEN=hunter2' > .env\ngit add -f .env\nexit 1",
+    );
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    let notice = out.text.split("<untrusted-tool-output").next().unwrap();
+    assert!(notice.contains("the index was changed"), "{}", out.text);
+    assert!(
+        notice.contains("a secret path is now staged"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("hunter2"), "{}", out.text);
+}
+
+// A failed commit that left the index alone adds no notice.
+#[tokio::test]
+async fn a_failed_commit_that_left_the_index_alone_adds_no_notice() {
+    let Some(w) = staged_world() else { return };
+    hook(&w, "pre-commit", "exit 1");
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks, write_set())
+        .call(commit("feat: two"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(!out.text.contains("the index was changed"), "{}", out.text);
 }

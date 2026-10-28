@@ -263,12 +263,13 @@ async fn commit(
     let mut opened = open(host, scope).await?;
     opened.ctx.timeout = COMMIT_TIMEOUT;
     let who = opened.repo.identity.clone().map_err(GitError::reason)?;
+    // The tree is taken BEFORE the byte-for-byte recheck, so an index change
+    // between the two cannot become the "reviewed" tree: the recheck sees it.
+    let before = text_of(&opened, pure::write_tree_argv(&opened.repo.dir), false).await;
+    let before = before.ok_or(FAILED)?.trim().to_owned();
     if !reviewed.same_staged(&staged_diff(&opened).await?) {
         return Err(STAGED_CHANGED);
     }
-    // The tree the user read, recorded before any hook can change the index.
-    let before = text_of(&opened, pure::write_tree_argv(&opened.repo.dir), false).await;
-    let before = before.ok_or(FAILED)?.trim().to_owned();
     let argv = pure::commit_argv(&opened.repo.dir, &who, message).map_err(GitError::reason)?;
     let ran = exec(&opened, argv, false).await?;
     let ended = &ran.done.ended;
@@ -276,7 +277,10 @@ async fn commit(
     // The output holds the hooks' words: data, wrapped like any other.
     let body = label::wrap(nonce, &ran.done.capture.text());
     if !ok {
-        let text = format!("{FAILED}\n{body}");
+        let mut text = format!("{FAILED}\n{body}");
+        if let Some(note) = index_drift(&opened, &before).await {
+            text = format!("{FAILED}: {note}\n{body}");
+        }
         return Ok(finish(
             &opened,
             ran,
@@ -318,6 +322,18 @@ async fn text_of(opened: &Opened, argv: Vec<String>, read_verb: bool) -> Option<
         Output::Text(raw) => Some(raw),
         _ => None,
     }
+}
+
+/// The notice for a failed commit whose hooks changed the index, or `None`.
+async fn index_drift(opened: &Opened, before: &str) -> Option<String> {
+    let dir = &opened.repo.dir;
+    let after = text_of(opened, pure::write_tree_argv(dir), false).await?;
+    if after.trim() == before {
+        return None;
+    }
+    let names = text_of(opened, pure::index_names_argv(dir), true).await;
+    let secret = names.is_some_and(|n| pure::staged_has_secret(&n));
+    Some(pure::index_notice(secret))
 }
 
 /// How the commit just made differs from the reviewed tree: the notice and
