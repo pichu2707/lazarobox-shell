@@ -231,8 +231,8 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
 /// The installed `rg` may be older than this walker and apply some ignore
 /// patterns apart from it, so the walker is not trusted to know which
 /// hidden file a `!` line lets back in: any `!` line in the global excludes,
-/// in the ignore files of the folders above `real` or in those of a folder
-/// the walk visits is [`UNIGNORED`]. A type (`-t`, `-T`) can let a hidden
+/// in the ignore files of the folders above `real` or in those of any
+/// folder below it, ignored or not ([`plain_walk`]), is [`UNIGNORED`]. A type (`-t`, `-T`) can let a hidden
 /// file back in too (`rg -t sh` reads `.bashrc`), and this walker's type
 /// definitions may differ from the installed `rg`'s, so with a type every
 /// hidden file is judged as well; hidden folders stay skipped, as a type
@@ -248,6 +248,7 @@ fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static
     for dir in real.ancestors().skip(1) {
         unignored(dir)?;
     }
+    plain_walk(roots, real, rg)?;
     let mut walk = WalkBuilder::new(real);
     walk.hidden(!rg.typed)
         .parents(true)
@@ -273,9 +274,6 @@ fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static
         if entry.error().is_some() {
             return Err(UNCHECKED);
         }
-        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            unignored(entry.path())?;
-        }
         // The folder itself was judged as a path of the command.
         if entry.depth() == 0 {
             continue;
@@ -286,6 +284,47 @@ fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static
         }
         if sensitive(roots, entry.path(), entry.file_name()) {
             return Err(NOT_ALLOWED);
+        }
+    }
+    Ok(())
+}
+
+/// The most entries [`plain_walk`] looks at; more is [`UNCHECKED`].
+const MAX_PLAIN: usize = 100_000;
+
+/// The walk of `rg` without its ignore files: an older installed `rg` may
+/// enter a folder the walker of [`rg_walk`] ignores, so every non-hidden
+/// entry down to the command's `--max-depth` is judged, and so are hidden
+/// files with a type. Hidden folders are skipped, as `rg` skips them
+/// without `--hidden`, and links are not followed. Each folder's ignore
+/// files are read for a `!` line ([`UNIGNORED`]). A folder that cannot be
+/// read, or more than [`MAX_PLAIN`] entries, is [`UNCHECKED`].
+fn plain_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static str> {
+    let (mut queue, mut seen) = (vec![(real.to_path_buf(), 0usize)], 0usize);
+    while let Some((dir, depth)) = queue.pop() {
+        unignored(&dir)?;
+        if rg.depth.is_some_and(|most| depth >= most) {
+            continue;
+        }
+        let entries = std::fs::read_dir(&dir).map_err(|_| UNCHECKED)?;
+        for entry in entries {
+            let entry = entry.map_err(|_| UNCHECKED)?;
+            seen += 1;
+            if seen > MAX_PLAIN {
+                return Err(UNCHECKED);
+            }
+            let (path, name) = (entry.path(), entry.file_name());
+            let folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let hidden = name.as_encoded_bytes().starts_with(b".");
+            if hidden && (folder || !rg.typed) {
+                continue;
+            }
+            if sensitive(roots, &path, &name) {
+                return Err(NOT_ALLOWED);
+            }
+            if folder {
+                queue.push((path, depth + 1));
+            }
         }
     }
     Ok(())
@@ -1069,6 +1108,48 @@ mod tests {
                 "{command} in {cwd}"
             );
         }
+    }
+
+    // R3: a folder the walker ignores may still be entered by the
+    // installed rg, so its ignore files are read too: a `!` line there asks.
+    #[test]
+    fn a_whitelist_inside_an_ignored_folder_asks() {
+        let f = fixture();
+        repo(
+            &f,
+            "dev/P",
+            &[
+                (".ignore", "pkg/*/\n"),
+                ("pkg/a/.gitignore", "!.env\n"),
+                ("pkg/a/.env", "T=1\n"),
+            ],
+        );
+        assert_eq!(
+            reason(&run_in(&f, "dev/P", false, "dev/P", "rg foo")),
+            Some(UNIGNORED)
+        );
+    }
+
+    // R1: what a folder the walker ignores holds is judged too: with a type,
+    // a hidden secret-named file in an ignored `vendor/` is refused.
+    #[test]
+    fn a_sensitive_entry_inside_an_ignored_folder_is_refused() {
+        let f = fixture();
+        repo(
+            &f,
+            "dev/V",
+            &[
+                (".gitignore", "vendor/\n"),
+                ("vendor/lib/.zsh_history", "ls\n"),
+                ("src/main.sh", "echo\n"),
+            ],
+        );
+        assert_eq!(
+            reason(&run_in(&f, "dev/V", false, "dev/V", "rg -t sh foo")),
+            Some(NOT_ALLOWED)
+        );
+        // Without a type rg skips the hidden file, ignored or not.
+        assert!(checked(&run_in(&f, "dev/V", false, "dev/V", "rg foo")));
     }
 
     // T2c-fix: a type glob lets hidden files back in (`rg -t sh` reads
