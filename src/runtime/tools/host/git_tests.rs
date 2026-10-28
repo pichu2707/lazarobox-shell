@@ -297,7 +297,9 @@ async fn without_a_jail_a_read_verb_is_refused_before_it_asks() {
 }
 
 // Scenario "Unproposed batch" (design: every git tool is refused while this
-// chat has a batch staged or proposed).
+// chat has a batch staged or proposed). Linux only: staging a write needs the
+// write tools, which macOS does not have yet (same gate as the exec test).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
     let w = bare_world(LANDLOCK);
