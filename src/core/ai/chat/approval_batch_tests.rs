@@ -134,7 +134,7 @@ fn others() -> Vec<ApprovalAsk> {
         ApprovalAsk::Run {
             command: "ls".into(),
         },
-        ApprovalAsk::Read { path: "~/a".into() },
+        ApprovalAsk::read("~/a"),
         ApprovalAsk::Search {
             pattern: "x".into(),
             dir: ".".into(),

@@ -630,7 +630,7 @@ async fn a_cloud_edit_asks_once_per_file_per_turn() {
     assert!(!first.is_error, "{first:?}");
     let asks = approver.asks();
     assert!(
-        matches!(asks.as_slice(), [ApprovalAsk::Read { path }] if path.ends_with("/b.txt")),
+        matches!(asks.as_slice(), [ApprovalAsk::Read { path, .. }] if path.ends_with("/b.txt")),
         "{asks:?}"
     );
     assert!(!format!("{asks:?}").contains("SECRET"));

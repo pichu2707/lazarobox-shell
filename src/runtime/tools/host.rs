@@ -11,7 +11,10 @@
 //! and never from parsing text. Free calls run at once. A call that needs the
 //! user (see [`ask_for`]) goes to the turn's [`Approver`] first; nothing
 //! about it runs until the answer is `Sent`. Which calls need the user is D17:
-//! the pure [`ask_for`] decides, from the call and the engine's locality.
+//! the pure [`ask_for`] decides, from the call and the engine's locality. A
+//! read also tells its ask where it leads (inside the chat's root or not), and
+//! a local read that leads outside the root asks too; the host never applies
+//! the approval mode, the app does (`approval::answers_itself`).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -35,14 +38,14 @@ use super::{Limits, ToolEnv, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
-            approval::{ApprovalAsk, ask_for},
+            approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
             Call, Locality, command,
             edit::EditError,
             label,
-            paths::display_target,
+            paths::{REFUSED, display_target},
             registry::FamilySet,
             report::{self, RunReport},
             stage::StageKey,
@@ -242,10 +245,6 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
     (Outcome { text, is_error }, status, clip(summary))
 }
 
-/// What a call is told when the path it reads cannot be shown to the user
-/// exactly as it would be opened.
-const UNSHOWABLE: &str = "path cannot be shown safely";
-
 /// What the model is told when its command was typed.
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
                           the user runs it themselves.";
@@ -322,24 +321,43 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut sealed = None;
     let mut approves = None;
     let mut pinned = None;
+    // A read whose ask says it stays in the root (or is refused): when the
+    // approval mode answers it, it must still stay in the root.
+    let mut confined = false;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
-            // A cloud read asks with the path as it will be opened: resolved,
-            // and only when the display shows it unchanged.
-            (Call::ReadFile { path, lines }, Locality::Cloud) => {
-                let home = host.home.as_deref().map(Path::new);
-                match home.and_then(|home| display_target(home, &scope.origin, path)) {
-                    Some(shown) => {
-                        approves = Some(shown.clone());
-                        ask = ask_for(
-                            &Call::ReadFile {
+            // A read asks with the path as it will be opened: resolved, and
+            // only when the display shows it unchanged. The ask carries where
+            // the read leads, for the approval mode. A cloud read always asks;
+            // a local one only when it leads outside the root.
+            (Call::ReadFile { path, .. }, locality) => {
+                let reach = files::reach(&host, &scope, path).await;
+                let cloud = locality == Locality::Cloud;
+                if cloud || reach == Reach::Other {
+                    let home = host.home.as_deref().map(Path::new);
+                    match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                        Some(shown) => {
+                            if cloud {
+                                approves = Some(shown.clone());
+                            }
+                            confined = reach != Reach::Other;
+                            ask = Some(ApprovalAsk::Read {
                                 path: shown,
-                                lines: *lines,
-                            },
-                            Locality::Cloud,
-                        )
+                                reach,
+                                cloud,
+                            });
+                        }
+                        // A local read ran free before `run` asked for it:
+                        // the app decides, with nothing shown.
+                        None if !cloud => {
+                            ask = Some(ApprovalAsk::Read {
+                                path: String::new(),
+                                reach: Reach::Unshowable,
+                                cloud,
+                            });
+                        }
+                        None => checked = Err(UNSHOWABLE.into()),
                     }
-                    None => checked = Err(UNSHOWABLE.into()),
                 }
             }
             // An edit that can only fail is refused before it asks. A missing
@@ -353,9 +371,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 match home.and_then(|home| display_target(home, &scope.origin, path)) {
                     Some(shown) => {
                         if !files::lock_set(&scope.allowed).contains(&shown) {
-                            ask = Some(ApprovalAsk::Read {
-                                path: shown.clone(),
-                            });
+                            ask = Some(ApprovalAsk::read(shown.clone()));
                         }
                         approves = Some(shown);
                     }
@@ -505,6 +521,23 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
                     exec::run(&host, &scope, &call, pinned.take()).await
                 }
+                // The approval mode answers only a read or a search, never
+                // for the user: nothing is added to the reads the user
+                // allowed. A read it let go because it stayed in the root is
+                // judged again now, and refused if it no longer does.
+                (Decision::Unprompted, Call::ReadFile { path, .. })
+                    if confined && !files::stays_in_root(&host, &scope, &path).await =>
+                {
+                    ended(ToolStatus::Error, REFUSED.to_owned(), REFUSED)
+                }
+                (Decision::Unprompted, call @ (Call::ReadFile { .. } | Call::Grep { .. })) => {
+                    files::run(&host, &scope, call).await
+                }
+                (Decision::Unprompted, _) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_APPROVED}"),
+                    NOT_APPROVED,
+                ),
                 (Decision::Sent | Decision::Typed(_), call) => {
                     files::run(&host, &scope, call).await
                 }

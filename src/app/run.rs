@@ -448,7 +448,7 @@ impl App {
                 })
             }
             // The path was resolved and made safe to show before it was asked.
-            ApprovalAsk::Read { path } => Some(ApprovalPrompt {
+            ApprovalAsk::Read { path, .. } => Some(ApprovalPrompt {
                 target: "send a file's text to the engine".to_owned(),
                 command: format!("read {path}"),
                 keys: READ_KEYS,

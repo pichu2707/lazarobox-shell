@@ -17,11 +17,14 @@ use std::{
 use super::{Decision, NOT_APPROVED, Outcome, ToolHost, ToolStatus, TurnScope, ended};
 use crate::{
     core::ai::{
-        chat::review::{BatchReview, ReviewDoc, TOO_LARGE},
+        chat::{
+            approval::Reach,
+            review::{BatchReview, ReviewDoc, TOO_LARGE},
+        },
         tools::{
             Call, ToolError,
             mcp::refusal_text,
-            paths::{REFUSED, SecretRoots, resolve_write},
+            paths::{PathVerdict, REFUSED, SecretRoots, real_target, resolve, resolve_write},
             registry::Family,
             stage::{BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey},
         },
@@ -186,6 +189,52 @@ pub(super) async fn run(
 
 const COULD_NOT: &str = "could not run";
 
+/// Where a read of `input` leads, for its ask: the path guard's verdict, and
+/// whether the real path (every link followed) is inside the real root of the
+/// chat. Read on the blocking pool; a failure is [`Reach::Other`], which
+/// every mode that cares about it prompts for.
+pub(super) async fn reach(host: &ToolHost, scope: &TurnScope, input: &str) -> Reach {
+    let env = host.env(&scope.origin);
+    let input = input.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Ok(roots) = load_roots(&env) else {
+            return Reach::Refused;
+        };
+        match resolve(&roots, &env.origin, &input) {
+            PathVerdict::Refused => Reach::Refused,
+            PathVerdict::Allowed(real) if in_root(&env, &real) => Reach::Root,
+            PathVerdict::Allowed(_) => Reach::Other,
+        }
+    })
+    .await
+    .unwrap_or(Reach::Other)
+}
+
+/// Whether a read the approval mode answered still stays in the chat's root
+/// when it runs: the real path of `input` (every existing link followed, a
+/// missing name appended) is inside the real root. Checked again after the
+/// answer, so a file swapped for a link between the ask and the answer is not
+/// read. Read on the blocking pool; a failure is `false`.
+pub(super) async fn stays_in_root(host: &ToolHost, scope: &TurnScope, input: &str) -> bool {
+    let env = host.env(&scope.origin);
+    let input = input.to_owned();
+    tokio::task::spawn_blocking(move || {
+        load_roots(&env).is_ok_and(|roots| {
+            real_target(&roots, &env.origin, &input).is_some_and(|real| in_root(&env, &real))
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Whether the resolved `real` path is the chat's root or under it, compared
+/// with the root resolved too.
+fn in_root(env: &ToolEnv, real: &Path) -> bool {
+    env.origin
+        .canonicalize()
+        .is_ok_and(|root| real.starts_with(root))
+}
+
 async fn read(
     call: Call,
     env: ToolEnv,
@@ -317,8 +366,11 @@ pub(super) async fn answered(
         Decision::Sent if reviewable => {}
         Decision::Sent => return denied(TOO_LARGE),
         Decision::Denied(reason) => return denied(reason),
-        // A batch is only ever sent or denied, never typed or busy.
-        Decision::Busy(_) | Decision::Typed(_) => return denied(NOT_APPROVED),
+        // A batch is only ever sent or denied by the user, never typed, busy
+        // or answered by the approval mode.
+        Decision::Busy(_) | Decision::Typed(_) | Decision::Unprompted => {
+            return denied(NOT_APPROVED);
+        }
     }
     let env = host.env(&scope.origin);
     let stages = host.stages.clone();

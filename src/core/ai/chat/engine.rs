@@ -160,6 +160,11 @@ pub enum Decision {
     Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
+    /// Allowed by the chat's approval mode, with no prompt: a read or a search
+    /// that `run` lets go (`approval::answers_itself`). Never the user's `y`:
+    /// it allows nothing else in the turn, and the host judges such a read
+    /// again before it opens the file.
+    Unprompted,
 }
 
 /// What a waiting call is finally told: the user's `Decision`, or, for a

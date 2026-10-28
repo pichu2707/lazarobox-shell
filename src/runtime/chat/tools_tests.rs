@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     core::ai::chat::{
-        approval::ApprovalAsk,
+        approval::{ApprovalAsk, Reach},
         engine::{CallId, Decision, Finish, ToolStatus, Tools},
     },
     runtime::tools::{Limits, ToolHost, pending},
@@ -152,6 +152,8 @@ async fn next_result(rx: &mut mpsc::Receiver<Tagged>) -> (PaneId, u64, CallId, T
 fn note(lab: &Lab) -> Option<ApprovalAsk> {
     Some(ApprovalAsk::Read {
         path: lab.home.join("note.txt").to_str().unwrap().into(),
+        reach: Reach::Root,
+        cloud: true,
     })
 }
 

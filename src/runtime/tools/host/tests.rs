@@ -16,7 +16,10 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::{ai::chat::approval::ApprovalAsk, layout::PaneId},
+    core::{
+        ai::chat::approval::{ApprovalAsk, Reach},
+        layout::PaneId,
+    },
     runtime::mcp::Hub,
 };
 
@@ -183,7 +186,9 @@ async fn a_cloud_read_asks_first_and_is_denied_without_an_approver() {
     assert_eq!(
         ask,
         Some(ApprovalAsk::Read {
-            path: home.join("note.txt").to_str().unwrap().into()
+            path: home.join("note.txt").to_str().unwrap().into(),
+            reach: Reach::Root,
+            cloud: true,
         })
     );
     assert_eq!(status, ToolStatus::Denied);
@@ -921,7 +926,11 @@ async fn a_relative_cloud_read_asks_with_the_path_resolved_against_the_origin() 
     let want = home.join("note.txt").to_str().unwrap().to_owned();
     assert_eq!(
         *approver.asked.lock().unwrap(),
-        [ApprovalAsk::Read { path: want }]
+        [ApprovalAsk::Read {
+            path: want,
+            reach: Reach::Root,
+            cloud: true,
+        }]
     );
     let _ = events(&mut rx);
 }
@@ -1001,7 +1010,9 @@ mod answered {
         assert_eq!(
             ask,
             Some(ApprovalAsk::Read {
-                path: path.to_str().unwrap().into()
+                path: path.to_str().unwrap().into(),
+                reach: Reach::Root,
+                cloud: true,
             })
         );
         std::fs::write(&path, "written after the prompt").unwrap();

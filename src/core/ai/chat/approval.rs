@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::core::ai::{
     chat::{
-        engine::CallId,
+        engine::{CallId, Decision},
         review::{self, BatchReview},
         review_view::ReviewView,
     },
@@ -73,7 +73,15 @@ pub enum ApprovalAsk {
     /// Type `command` into a pane. The command is already validated.
     Run { command: String },
     /// Read `path` (sanitized for display) and send its text to the engine.
-    Read { path: String },
+    /// `reach` is where the host found the read leads, and `cloud` whether the
+    /// engine is a cloud one; only the approval mode reads them (see
+    /// [`answers_itself`]). [`ask_for`] puts [`Reach::Other`]; the host fills
+    /// in what it found. The ask an edit opens is always `Other`.
+    Read {
+        path: String,
+        reach: Reach,
+        cloud: bool,
+    },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
     /// sanitized line.
@@ -110,7 +118,39 @@ pub enum ApprovalAsk {
     Batch(Arc<BatchReview>),
 }
 
+/// Where a read leads, as the host found it on the real path (every link
+/// followed) before it asked. A fact for the approval mode, never a verdict:
+/// the read itself judges the path again when it runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Inside the chat's root, and the path guard allows it.
+    Root,
+    /// The path guard refuses it (a sensitive, missing or hidden path): the
+    /// read returns the refusal and opens nothing.
+    Refused,
+    /// Anything else: outside the root, or not judged (the ask of an edit).
+    Other,
+    /// A local read outside the root whose path cannot be shown as it would
+    /// be opened ([`UNSHOWABLE`]): no prompt may approve it, so the ask's
+    /// `path` is empty. `ask` and `auto` let it run as they always have.
+    Unshowable,
+}
+
+/// Why a read whose path cannot be shown exactly as it would be opened is
+/// refused: the user must never approve a path that differs from the one read.
+pub const UNSHOWABLE: &str = "path cannot be shown safely";
+
 impl ApprovalAsk {
+    /// The ask of a read of `path` on a cloud engine, judged by nobody yet:
+    /// every mode prompts for it.
+    pub fn read(path: impl Into<String>) -> Self {
+        Self::Read {
+            path: path.into(),
+            reach: Reach::Other,
+            cloud: true,
+        }
+    }
+
     /// How long after it opens the keys start to answer this ask: the review
     /// of a batch waits longer than any other ask, because the user has to
     /// read it first.
@@ -131,18 +171,20 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
+/// The host also asks for a local read that leads outside the chat's root,
+/// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
     match call {
         Call::RunInPane { command } => Some(ApprovalAsk::Run {
             command: command.clone(),
         }),
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // An edit answers whether a text occurs in the file, so on a cloud
-        // engine it asks like a read of that file (and routes like one).
+        // engine it asks like a read of that file, one no mode answers.
         Call::EditFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // A command always asks, on any engine and in any approval mode.
         Call::RunCommand { .. } => {
@@ -478,6 +520,34 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     }
 }
 
+/// How a chat in `mode` answers a model's read or search ask itself, with
+/// no prompt; `None` opens the prompt. A read or a search let go gets
+/// [`Decision::Unprompted`], which the host never takes for the user's `y`.
+///
+/// In `run`: a search (its walk never leaves the chat's root), and a cloud
+/// read that stays in the root or that the path guard refuses (the read then
+/// returns the refusal). A read that leads outside the root prompts on every
+/// engine, and one whose path cannot be shown is denied, as no prompt may
+/// approve it. In `ask` and `auto`: only a local read outside the root, which
+/// runs free there as it always has; every other ask prompts. A command, a
+/// user tool, a batch and the ask of an edit are never answered here.
+pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
+    let ApprovalAsk::Read { reach, cloud, .. } = ask else {
+        let search = matches!(ask, ApprovalAsk::Search { .. });
+        return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
+    };
+    match (mode, reach, cloud) {
+        (ApprovalMode::Run, Reach::Root | Reach::Refused, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
+        (ApprovalMode::Run, _, _) => None,
+        // The local engine asks only for a read outside the root.
+        (ApprovalMode::Ask | ApprovalMode::Auto, Reach::Other | Reach::Unshowable, false) => {
+            Some(Decision::Unprompted)
+        }
+        (ApprovalMode::Ask | ApprovalMode::Auto, _, _) => None,
+    }
+}
+
 /// Where the request came from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Origin {
@@ -731,7 +801,7 @@ mod tests {
 
     #[test]
     fn ask_mode_and_other_asks_always_prompt() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         let external = ApprovalAsk::External {
             server: "s".into(),
             tool: "t".into(),
@@ -933,7 +1003,7 @@ mod tests {
 
     #[test]
     fn only_a_model_run_can_run() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         for (ask, origin) in [
             (run_ask(), Origin::Block),
             (read.clone(), Origin::Tool),
@@ -1116,9 +1186,7 @@ mod tests {
         assert_eq!(ask_for(&read, Locality::Local), None);
         assert_eq!(
             ask_for(&read, Locality::Cloud),
-            Some(ApprovalAsk::Read {
-                path: "~/a.txt".into()
-            })
+            Some(ApprovalAsk::read("~/a.txt"))
         );
     }
 
@@ -1266,7 +1334,7 @@ mod tests {
         let mut a = Approvals::default();
         a.request(run("one"), Origin::Block).unwrap();
         let err = a
-            .request(ApprovalAsk::Read { path: "/x".into() }, Origin::Tool)
+            .request(ApprovalAsk::read("/x"), Origin::Tool)
             .unwrap_err();
         assert_eq!(err.reason(), "another approval is pending");
         assert_eq!(a.pending().unwrap().ask(), &run("one"));
@@ -1276,7 +1344,7 @@ mod tests {
     fn all_three_asks_can_be_pending() {
         for ask in [
             run("ls"),
-            ApprovalAsk::Read { path: "/x".into() },
+            ApprovalAsk::read("/x"),
             ApprovalAsk::External {
                 server: "s".into(),
                 tool: "t".into(),

@@ -448,6 +448,8 @@ En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lis
 - No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
 - Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
 
+**Lecturas y búsquedas.** En `run`, `grep` (que solo busca dentro de la carpeta del chat) y `read_file` de un archivo dentro de la carpeta del chat corren sin confirmación, también con motores en la nube, y su resultado va al modelo. La ruta se juzga sobre la ruta real: un enlace simbólico dentro de la carpeta que apunta fuera cuenta como fuera, y se comprueba otra vez justo antes de leer. Leer un archivo fuera de la carpeta del chat pide confirmación con cualquier motor, también con uno local. Las rutas sensibles (ver «Which paths the read tools refuse») se siguen rechazando como siempre, sin preguntar y sin leerse. Una lectura que corre sola no cuenta como tu `y`: un `edit_file` posterior del mismo archivo sigue pidiendo confirmación. `edit_file`, `run_command`, las escrituras y las herramientas de usuario no cambian, y en `ask` y `auto` las lecturas y búsquedas siguen como antes.
+
 **Por qué pide confirmación.** La confirmación de un comando que no corrió directamente muestra una línea con el motivo y el trozo que lo causó, por ejemplo ``shell metacharacter: `&&` ``, ``not a safe command: `git` `` o `a command is still running in the pane`. Los caracteres de control, de formato (bidi, espacio de ancho cero) e invisibles se dibujan como `?`. La línea solo aparece si la confirmación tiene una fila libre; el comando completo siempre se muestra.
 
 **Salida que ve el modelo.** El modelo recibe el texto que quedó en pantalla tras el comando, no un flujo de la shell:
@@ -458,7 +460,7 @@ En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lis
 - Si tu prompt ocupa varias líneas, las superiores pueden colarse en la salida que recibe el modelo (se redactan, pero no se detectan).
 - Un programa a pantalla completa, que escribas en el panel mientras corre, o un panel que se cierra, tampoco devuelven salida.
 
-**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
+**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. También se envían, sin preguntar, el texto de los archivos de la carpeta del chat que el modelo lea y las líneas que encuentre con `grep`. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
 
 Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `auto`:
 
