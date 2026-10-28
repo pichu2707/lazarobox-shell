@@ -34,7 +34,7 @@ fn every_builder_call_is_allowed_by_the_route_table() {
         route::context("my proj"),
         route::register_session(SID, "p", "/x").unwrap(),
         route::end_session(SID, "s").unwrap(),
-        route::save(SID, "p", &note),
+        route::save(SID, "p", &note, None),
         route::delete(7, "p"),
     ];
     for verb in [Verb::Get, Verb::Post, Verb::Delete] {

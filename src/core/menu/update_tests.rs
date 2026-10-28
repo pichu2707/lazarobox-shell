@@ -286,3 +286,105 @@ fn a_menu_opened_after_the_install_starts_with_the_installed_value() {
         ("Updates", "0.15.4 installed: restart".to_owned())
     );
 }
+
+// --- r: check now ----------------------------------------------------------
+
+#[test]
+fn r_on_the_updates_row_asks_for_a_check_and_the_row_says_checking() {
+    let mut m = on_updates(None);
+    assert!(
+        footer_text(&m).starts_with("up to date · r check"),
+        "{}",
+        footer_text(&m)
+    );
+    assert_eq!(
+        press_key(&mut m, KeyCode::Char('r')),
+        MenuCommand::CheckUpdate
+    );
+    assert_eq!(updates_row(&m), ("Updates", "checking…".to_owned()));
+    assert!(
+        footer_text(&m).starts_with("checking crates.io"),
+        "{}",
+        footer_text(&m)
+    );
+}
+
+#[test]
+fn r_with_an_update_known_checks_again() {
+    let mut m = on_updates(Some("0.15.4"));
+    assert!(
+        footer_text(&m).starts_with("Enter updates · r check"),
+        "{}",
+        footer_text(&m)
+    );
+    assert_eq!(
+        press_key(&mut m, KeyCode::Char('r')),
+        MenuCommand::CheckUpdate
+    );
+    assert_eq!(updates_row(&m), ("* Updates", "checking…".to_owned()));
+}
+
+#[test]
+fn a_second_r_or_a_held_one_does_not_ask_twice() {
+    let mut m = on_updates(None);
+    let held = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(
+        m.on_key(&held, true, &mut Config::default()),
+        MenuCommand::None
+    );
+    assert_eq!(
+        press_key(&mut m, KeyCode::Char('r')),
+        MenuCommand::CheckUpdate
+    );
+    assert_eq!(press_key(&mut m, KeyCode::Char('r')), MenuCommand::None);
+}
+
+#[test]
+fn the_result_of_the_check_ends_it() {
+    let mut m = on_updates(None);
+    press_key(&mut m, KeyCode::Char('r'));
+    m.set_update(Some("0.15.4".into()));
+    assert_eq!(
+        updates_row(&m),
+        ("* Updates", "0.15.4 available".to_owned())
+    );
+    press_key(&mut m, KeyCode::Char('r'));
+    m.set_update(None);
+    assert_eq!(updates_row(&m), ("Updates", "0.15.3".to_owned()));
+    assert_eq!(
+        press_key(&mut m, KeyCode::Char('r')),
+        MenuCommand::CheckUpdate
+    );
+}
+
+#[test]
+fn r_does_nothing_with_update_checks_off() {
+    let off = Config {
+        update_check: false,
+        ..Config::default()
+    };
+    let mut m = MenuState::open(&off).with_ai(AiConfig::default(), Some(machine()));
+    go_to_updates(&mut m);
+    assert!(!footer_text(&m).contains("r check"), "{}", footer_text(&m));
+    let before = m.clone();
+    let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(m.on_key(&r, false, &mut off.clone()), MenuCommand::None);
+    assert_eq!(m, before);
+}
+
+#[test]
+fn r_does_nothing_after_an_install() {
+    let mut m = on_updates(Some("0.15.4"));
+    m.set_installed(Some("0.15.4".into()));
+    assert_eq!(press_key(&mut m, KeyCode::Char('r')), MenuCommand::None);
+    assert!(!footer_text(&m).contains("r check"), "{}", footer_text(&m));
+}
+
+#[test]
+fn r_on_another_row_of_the_settings_tab_checks_nothing() {
+    let mut m = menu();
+    assert_ne!(
+        press_key(&mut m, KeyCode::Char('r')),
+        MenuCommand::CheckUpdate
+    );
+}

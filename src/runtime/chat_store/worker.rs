@@ -110,7 +110,7 @@ impl Worker {
                 let tags = Tags::new(tag, extras);
                 let made = create(conn, &profile, &tags, &first, &open);
                 Some(match made {
-                    Ok((conversation, gone)) => {
+                    Ok((conversation, created_at, gone)) => {
                         self.failing = false;
                         self.created.insert(pane, conversation);
                         StoreReply::Created {
@@ -118,6 +118,7 @@ impl Worker {
                             conversation,
                             evicted: gone.conversations > 0,
                             evicted_notes: gone.notes,
+                            created_at,
                         }
                     }
                     Err(_) => self.failure(pane),
@@ -386,7 +387,7 @@ fn create(
     tags: &Tags,
     first: &StoredMessage,
     open: &[i64],
-) -> Result<(i64, Evicted), rusqlite::Error> {
+) -> Result<(i64, i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stored: i64 = tx.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?;
     let excess = usize::try_from(stored)
@@ -432,7 +433,7 @@ fn create(
     insert_tags(&tx, id, tags)?;
     insert_message(&tx, id, first, &text, stamp)?;
     tx.commit()?;
-    Ok((id, evicted))
+    Ok((id, stamp, evicted))
 }
 
 /// Writes the project tag and the extras of a conversation that has none.

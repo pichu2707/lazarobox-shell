@@ -21,12 +21,17 @@ use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
 mod external;
+pub mod live;
+pub mod managed;
+
 #[cfg(test)]
 pub(crate) use cli::own_group_is_private;
 pub(crate) use cli::{
     alive_by_comm, ensure_private_dir, jail_note, own_comm, read_comm, run_listing,
     trusted_cargo_path, trusted_real_path,
 };
+pub use live::LiveServers;
+pub use managed::{Lease, Managed};
 
 use self::external::{Externals, Start};
 use super::{
@@ -46,12 +51,14 @@ use crate::core::{
                 Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
             },
             gemini::GeminiDecoder,
+            review::{Badge, BatchEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
+            stage::{BatchId, StageKey},
             summary::clip,
             wiring::{McpWire, Secret},
         },
@@ -313,6 +320,18 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
     adapter_runner_with(port.map_or_else(ServerPorts::default, ServerPorts::every))
 }
 
+/// [`adapter_runner_with`] with the live server state its turns read.
+#[cfg(test)]
+pub(crate) fn adapter_runner_live(live: LiveServers) -> Runner {
+    runner_live(
+        live,
+        CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
+            crate::core::ai::jail::JailOff::NotProbed,
+        )),
+        None,
+    )
+}
+
 /// [`adapter_runner_at`] with one port per server engine.
 #[cfg(test)]
 pub(crate) fn adapter_runner_with(ports: ServerPorts) -> Runner {
@@ -343,12 +362,41 @@ pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>)
 /// the port its engine was detected on (`[ai.servers.<id>] port`, else the
 /// catalog port).
 pub fn runner_with_ports(ports: ServerPorts, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
+    runner_managed(ports, None, cli, tools)
+}
+
+/// [`runner_with_ports`] with the llama-server lazarobox manages, if any: a
+/// llamacpp turn starts it first, and fails with its reason when it cannot.
+pub fn runner_managed(
+    ports: ServerPorts,
+    managed: Option<Arc<Managed>>,
+    cli: CliEnv,
+    tools: Option<Arc<ToolHost>>,
+) -> Runner {
+    runner_live(LiveServers::new(ports, managed), cli, tools)
+}
+
+/// [`runner_managed`] reading the ports and the managed llama-server when
+/// each turn starts, so a server the menu turns on is used at once.
+pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
         let tools = tools.clone();
-        let port = ports.port(&request.engine);
+        let port = live.ports().port(&request.engine);
+        let managed = live.managed().filter(|_| request.engine == "llamacpp");
         Box::pin(async move {
             let _tools = tools;
+            // Held until the turn ends: the idle stop never cuts it.
+            let lease = match managed {
+                Some(managed) => match managed.lease().await {
+                    Ok(lease) => Some(lease),
+                    Err(reason) => {
+                        let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
+                        return;
+                    }
+                },
+                None => None,
+            };
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
@@ -362,12 +410,29 @@ pub fn runner_with_ports(ports: ServerPorts, cli: CliEnv, tools: Option<Arc<Tool
                     path,
                     body,
                 } => {
-                    let port = port.unwrap_or(catalog_port);
+                    // The managed server's port is known once it runs.
+                    let port = lease
+                        .as_ref()
+                        .map(Lease::port)
+                        .or(port)
+                        .unwrap_or(catalog_port);
                     // Only a turn that offers tools has a dispatch to loop on.
                     match (adapter, &request.tools, ollama::current()) {
                         (Adapter::Ollama, Tools::On { .. }, Some(dispatch)) => {
                             ollama::tool_turn(&request, port, dispatch, &Timeouts::SERVER, &tx)
                                 .await
+                        }
+                        (Adapter::Llamacpp, Tools::On { .. }, Some(dispatch)) => {
+                            let profile = ollama::Profile::OpenAi;
+                            ollama::tool_turn_with(
+                                profile,
+                                &request,
+                                port,
+                                dispatch,
+                                &Timeouts::SERVER,
+                                &tx,
+                            )
+                            .await
                         }
                         _ => http_turn(wire, port, path, body, tx).await,
                     }
@@ -500,6 +565,7 @@ async fn run_turn(
     let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
+    let mut listening = true;
     let mut pipe = Pipe::new();
     loop {
         let event = tokio::select! {
@@ -519,9 +585,13 @@ async fn run_turn(
             None => pipe.end_without_final(),
         };
         let ended = pipe.is_over();
+        // Once the app stops listening (lazarobox is quitting), the events
+        // are dropped but the turn keeps running: returning would drop the
+        // adapter and SIGKILL its group before the polite stop is over. Only
+        // `Chats::shutdown` (or the engine ending) stops it then.
         for event in out {
-            if app.send((pane, turn, event)).await.is_err() {
-                return;
+            if listening && app.send((pane, turn, event)).await.is_err() {
+                listening = false;
             }
         }
         if ended {
@@ -555,13 +625,14 @@ struct Tooling {
 /// Whether a turn's engine will get its tools wired (see [`wires_tools`]).
 pub type Wires = Arc<dyn Fn(&ChatRequest) -> bool + Send + Sync>;
 
-/// Whether the tools of `request` reach its engine: a server engine (Ollama)
-/// runs them in-process; a CLI only when it will run jailed. The user's
+/// Whether the tools of `request` reach its engine: a server engine (Ollama,
+/// llama.cpp) runs them in-process; a CLI only when it will run jailed. The user's
 /// servers are started only for such a turn: for a bare CLI the wiring is
 /// dropped, so a server would run, and be announced, for nothing.
+// The llamacpp arm is inert until `MCP_VERIFIED` lists it (PR3).
 pub fn wires_tools(cli: &CliEnv, request: &ChatRequest) -> bool {
     match adapter_for(&request.engine) {
-        Some(Adapter::Ollama) => true,
+        Some(Adapter::Ollama | Adapter::Llamacpp) => true,
         Some(adapter) => match adapter.build(request) {
             Invocation::Process(job) => cli::runs_jailed(cli, &job),
             Invocation::Http { .. } | Invocation::Refused(_) => false,
@@ -597,6 +668,8 @@ pub struct Chats {
     externals: Externals,
     /// The servers of chats that closed, being stopped.
     retiring: Vec<JoinHandle<()>>,
+    /// The llama-server lazarobox started for llamacpp turns, stopped on quit.
+    live: LiveServers,
 }
 
 impl Chats {
@@ -609,7 +682,15 @@ impl Chats {
             tooling: None,
             externals: Externals::default(),
             retiring: Vec::new(),
+            live: LiveServers::default(),
         }
+    }
+
+    /// The live server state the runner's turns read: quitting stops the
+    /// llama-server it manages then.
+    pub fn with_live(mut self, live: LiveServers) -> Self {
+        self.live = live;
+        self
     }
 
     /// The user's MCP servers (`[[ai.mcp.servers]]`, read once at startup),
@@ -630,6 +711,33 @@ impl Chats {
             started: HashMap::new(),
         });
         self
+    }
+
+    /// Starts a background text-only run (a compaction) for `pane`. Unlike
+    /// [`Chats::send`] it is not a turn of the chat: it ends no wait, stops no
+    /// server and replaces no tool session, so a user's tool call or MCP
+    /// server of the pane survives it. A later `send` aborts it.
+    pub fn send_background(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+        self.turns.retain(|_, task| !task.is_finished());
+        if let Some(old) = self.turns.remove(&pane) {
+            old.abort();
+        }
+        let channel = mpsc::channel(TURN_CHANNEL);
+        let task = tokio::spawn(run_turn(
+            self.runner.clone(),
+            self.tx.clone(),
+            Turn {
+                pane,
+                turn,
+                waits: self.waits.clone(),
+                external: None,
+            },
+            request,
+            channel,
+            None,
+            None,
+        ));
+        self.turns.insert(pane, task);
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
@@ -717,9 +825,15 @@ impl Chats {
             approver: self.waits.approver(pane, turn, pending.clone()),
             // Filled by the turn's task once its servers run.
             external: slot.clone(),
+            families: request.families,
+            stage_key: Some(StageKey::Pane(pane)),
+            allowed: Default::default(),
         };
         let dispatch = tooling.host.dispatch(scope);
-        if adapter_for(&request.engine) == Some(Adapter::Ollama) {
+        if matches!(
+            adapter_for(&request.engine),
+            Some(Adapter::Ollama | Adapter::Llamacpp)
+        ) {
             // The pane may have had a CLI session: it must not stay open.
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
@@ -807,7 +921,57 @@ impl Chats {
         self.tooling.as_ref()?.started.get(&pane)
     }
 
+    /// Discards the batch `pane` holds because the chat closed: how many
+    /// entries were lost, `None` when there was nothing worth a notice. Unlike
+    /// [`Chats::cancel`], which leaves a batch as an orphan for the user.
+    pub fn close_batch(&mut self, pane: PaneId) -> Option<usize> {
+        self.tooling
+            .as_ref()?
+            .host
+            .close_batch(StageKey::Pane(pane))
+    }
+
+    /// The batch a turn of `pane` left behind (cancelled, timed out, or never
+    /// proposed), sealed for the user to review. `None` while a turn runs,
+    /// because then the batch is the model's.
+    pub fn review_batch(&self, pane: PaneId) -> Option<BatchEvent> {
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        let host = &self.tooling.as_ref()?.host;
+        let (id, review) = host.review_batch(StageKey::Pane(pane), live)?;
+        Some(BatchEvent::Review(id, review))
+    }
+
+    /// What each chat's pane shows of its batch: staged while a turn of the
+    /// pane runs, an orphan once none does. Empty without tooling, or while
+    /// the store is busy (the next poll shows it).
+    pub fn batch_badges(&self) -> Option<HashMap<PaneId, Badge>> {
+        let tooling = self.tooling.as_ref()?;
+        let live = |pane| self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        tooling.host.badges(live)
+    }
+
+    /// Applies an orphan the user approved; the host refuses it while a turn
+    /// of the pane runs, as it does a review.
+    pub fn apply_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        let StageKey::Pane(pane) = id.key;
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        Some(self.tooling.as_ref()?.host.apply_batch(id, live))
+    }
+
+    /// Discards an orphan the user rejected.
+    pub fn discard_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        Some(self.tooling.as_ref()?.host.discard_batch(id))
+    }
+
     /// Stops the turn of `pane`, if any. Returns at once.
+    /// Stops the background run of `pane` and nothing else (see
+    /// [`Chats::send_background`]).
+    pub fn cancel_background(&mut self, pane: PaneId) {
+        if let Some(task) = self.turns.remove(&pane) {
+            task.abort();
+        }
+    }
+
     pub fn cancel(&mut self, pane: PaneId) {
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();
@@ -825,10 +989,15 @@ impl Chats {
         let sets = self.externals.drain();
         let stops = join_all(sets.iter().map(|set| set.shutdown()));
         let retiring = join_all(self.retiring.drain(..));
-        let _ = timeout(bound, async {
-            tokio::join!(join_all(tasks), stops, retiring)
-        })
-        .await;
+        let managed = self.live.managed();
+        // After the turns: an aborted start drops its server on its own.
+        let turns = async move {
+            join_all(tasks).await;
+            if let Some(managed) = managed {
+                managed.shutdown().await;
+            }
+        };
+        let _ = timeout(bound, async { tokio::join!(turns, stops, retiring) }).await;
     }
 }
 
@@ -836,6 +1005,8 @@ impl Chats {
 mod adapter_tests;
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod llamacpp_tests;
 mod ollama;
 #[cfg(test)]
 mod ollama_tests;

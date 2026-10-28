@@ -1,0 +1,29 @@
+---
+source: src/ui/components/menu/tests/install.rs
+expression: show(&wizard())
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Install llama-server                                       │
+│ CPU build                                                  │
+│ Vulkan build (GPU)                                         │
+│ I'll do it myself (copy instructions)                      │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · Esc back                         │
+└────────────────────────────────────────────────────────────┘

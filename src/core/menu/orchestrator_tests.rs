@@ -34,7 +34,9 @@ fn the_orchestrate_and_gate_rows_read_their_defaults() {
     let at = labels.iter().position(|l| *l == "orchestrate").unwrap();
     assert_eq!(labels[at - 1], "summarize");
     assert_eq!(labels[at + 1], "Profile");
-    assert_eq!(labels.last(), Some(&"Orchestrator"));
+    let gate = labels.iter().position(|l| *l == "Orchestrator").unwrap();
+    assert_eq!(labels[gate - 1], "Approval");
+    assert_eq!(labels.last(), Some(&"Hugging Face"));
 }
 
 // Spec (config-menu): Orchestrator row is the global gate.

@@ -435,3 +435,53 @@ fn the_mode_changes_neither_the_request_nor_the_stored_messages() {
     assert_eq!(ask_request, auto_request);
     assert_eq!(ask.outbox, auto.outbox);
 }
+
+// Spec (code-write, Orphan, close and quit): the model learns of a user-side
+// apply or discard on its next turn, through a line after the system prompt.
+// The line is sent once, is not stored and is kept when a send is refused.
+#[test]
+fn a_told_line_reaches_the_next_request_once_and_is_never_stored() {
+    let mut state = chat();
+    state.tell("The user discarded the batch you left staged (2 entries).".to_owned());
+    let refused = state.send("   ", &ready(), SYSTEM);
+    assert_eq!(
+        refused,
+        SendOutcome::Refused,
+        "a refused send keeps the line"
+    );
+    let (_, request) = sent(&mut state, "go on");
+    assert_eq!(
+        request.system,
+        format!("{SYSTEM}\n\nThe user discarded the batch you left staged (2 entries).")
+    );
+    answered(&mut state, "ok");
+    let (_, again) = sent(&mut state, "and now");
+    assert_eq!(again.system, SYSTEM, "told once");
+    assert!(state.outbox.iter().all(|m| !m.text.contains("discarded")));
+}
+
+// A turn that ends before the engine produced anything (a cancel, a failure at
+// start) did not carry the line to the model: the next request carries it, and
+// still only once. A turn that got an event heard it, so it is not repeated.
+#[test]
+fn a_told_line_survives_a_turn_that_ended_before_any_event() {
+    let line = "The user discarded the batch you left staged (2 entries).";
+    let with_line = format!("{SYSTEM}\n\n{line}");
+    let mut state = chat();
+    state.tell(line.to_owned());
+    let (_, first) = sent(&mut state, "one");
+    assert_eq!(first.system, with_line);
+    state.cancel();
+    let (turn, second) = sent(&mut state, "two");
+    assert_eq!(second.system, with_line, "the cancelled turn lost it");
+    state.apply(
+        turn,
+        StreamEvent::Error(ChatError::Failed("no route".to_owned())),
+    );
+    let (turn, third) = sent(&mut state, "three");
+    assert_eq!(third.system, with_line, "a start error lost it");
+    state.apply(turn, StreamEvent::Delta("hi".to_owned()));
+    state.cancel();
+    let (_, fourth) = sent(&mut state, "four");
+    assert_eq!(fourth.system, SYSTEM, "the model heard it once");
+}

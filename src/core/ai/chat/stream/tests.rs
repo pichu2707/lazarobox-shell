@@ -796,3 +796,418 @@ fn truncated_string_arguments_are_refused_without_a_panic() {
         assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args}");
     }
 }
+
+// Characterization (llamacpp-tools T1.2): the text-only SSE path before the
+// `sse_decode` split. Committed on the old code; the split must not move it.
+#[test]
+fn the_text_sse_parser_pins_finish_reasons_tool_fragments_and_reasoning() {
+    // `length` maps to Finish::Length, anything else to Stop.
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"]),
+        [StreamEvent::Done(Finish::Length)]
+    );
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+    // A bare `[DONE]` ends the stream cleanly, once.
+    assert_eq!(
+        sse(&[b"data: [DONE]\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+    // Tool-call fragments and a reasoning field give no text event, and a delta
+    // carrying both content and a fragment still streams its content.
+    let fragments = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",",
+        "\"function\":{\"name\":\"find_dir\",\"arguments\":\"{\\\"q\\\"\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hm\",\"content\":\"ok\",",
+        "\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    );
+    let want = [delta("ok"), StreamEvent::Done(Finish::Stop)];
+    assert_eq!(sse(&[fragments.as_bytes()]), want);
+    same_at_every_split(fragments, &want, sse);
+    // An empty `choices` array (usage-only chunk) is ignored.
+    assert_eq!(
+        sse(&[b"data: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n\n"]),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+}
+
+#[test]
+fn sse_decode_hands_back_the_json_only_for_a_healthy_payload() {
+    let (events, value) = sse_decode(b"{\"choices\":[{\"delta\":{\"content\":\"a\"}}]}");
+    assert_eq!(events, [delta("a")]);
+    assert_eq!(value.unwrap()["choices"][0]["delta"]["content"], "a");
+    for data in [&b"[DONE]"[..], b"nope", b"{\"error\":\"x\"}"] {
+        assert!(sse_decode(data).1.is_none(), "{data:?}");
+    }
+    assert_eq!(sse_decode(b"[DONE]").0, [StreamEvent::Done(Finish::Stop)]);
+}
+
+#[test]
+fn the_ollama_decoder_gives_its_calls_through_the_shared_trait() {
+    fn drain(decoder: &mut impl ToolCalls) -> Vec<ToolRequest> {
+        decoder.take_calls()
+    }
+    let mut decoder = OllamaToolDecoder::server();
+    let line = b"{\"message\":{\"tool_calls\":[{\"function\":{\"name\":\"find_dir\",\"arguments\":{\"query\":\"x\"}}}]},\"done\":true}\n";
+    decoder.feed(line);
+    decoder.finish();
+    assert_eq!(drain(&mut decoder).len(), 1);
+    assert!(drain(&mut decoder).is_empty(), "drained");
+}
+
+// llamacpp-tools T1.3: the OpenAI tool decoder.
+fn frag(entries: &str) -> String {
+    format!("data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{entries}]}}}}]}}\n\n")
+}
+
+const TOOLS_END: &str =
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+
+fn oa_run(chunks: &[&[u8]]) -> (Vec<StreamEvent>, Vec<ToolRequest>) {
+    let mut decoder = OpenAiToolDecoder::server();
+    let events = run(&mut decoder, chunks);
+    (events, decoder.take_calls())
+}
+
+fn interleaved() -> String {
+    [
+        frag(r#"{"index":0,"id":"a","type":"function","function":{"name":"find_dir","arguments":"{\"query\":"}}"#),
+        frag(r#"{"index":1,"id":"b","type":"function","function":{"name":"list_dir","arguments":"{\"path\":"}}"#),
+        frag(r#"{"index":0,"function":{"arguments":"\"x\"}"}}"#),
+        frag(r#"{"index":1,"function":{"arguments":"\"/a\"}"}}"#),
+        TOOLS_END.to_owned(),
+    ]
+    .concat()
+}
+
+#[test]
+fn fragments_are_accumulated_per_index_at_every_split() {
+    let input = interleaved();
+    let bytes = input.as_bytes();
+    let check = |chunks: &[&[u8]], at: usize| {
+        let (events, calls) = oa_run(chunks);
+        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(calls.len(), 2, "cut at {at}");
+        assert_eq!(calls[0].call, Ok(Call::FindDir { query: "x".into() }));
+        assert_eq!(
+            (calls[0].id.as_deref(), calls[0].index, &calls[0].arguments),
+            (Some("a"), Some(0), &serde_json::json!({"query": "x"}))
+        );
+        assert_eq!(
+            (
+                calls[1].name.as_str(),
+                calls[1].id.as_deref(),
+                calls[1].index
+            ),
+            ("list_dir", Some("b"), Some(1))
+        );
+    };
+    check(&[bytes], 0);
+    for at in 0..=bytes.len() {
+        let (a, b) = bytes.split_at(at);
+        check(&[a, b], at);
+    }
+}
+
+#[test]
+fn a_clean_end_is_a_finish_reason_or_a_bare_done() {
+    let call = frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    );
+    let finish = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+    for end in [finish, "data: [DONE]\n\n"] {
+        let (_, calls) = oa_run(&[format!("{call}{end}").as_bytes()]);
+        assert_eq!(calls.len(), 1, "{end}");
+    }
+}
+
+#[test]
+fn text_before_the_call_still_streams_and_take_calls_drains() {
+    let text = "data: {\"choices\":[{\"delta\":{\"content\":\"Let me look\"}}]}\n\n";
+    let call = frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    );
+    let mut decoder = OpenAiToolDecoder::server();
+    let events = run(
+        &mut decoder,
+        &[format!("{text}{call}{TOOLS_END}").as_bytes()],
+    );
+    assert_eq!(
+        events,
+        [delta("Let me look"), StreamEvent::Done(Finish::Stop)]
+    );
+    assert_eq!(decoder.take_calls().len(), 1);
+    assert!(decoder.take_calls().is_empty(), "drained");
+}
+
+// llamacpp-tools T1.4: only a clean end releases calls.
+fn one_call() -> String {
+    frag(r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#)
+}
+
+#[test]
+fn a_truncated_stream_releases_no_call() {
+    let input = one_call();
+    let (events, calls) = oa_run(&[input.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Error(ChatError::Interrupted)]);
+    assert!(calls.is_empty());
+    // Cut in the middle of the closing event too.
+    let cut = format!("{input}data: {{\"choices\":[{{\"delta\":{{}},\"finish_re");
+    assert!(oa_run(&[cut.as_bytes()]).1.is_empty());
+}
+
+#[test]
+fn an_error_payload_or_malformed_data_releases_no_call() {
+    for tail in ["data: {\"error\":\"boom\"}\n\n", "data: not json\n\n"] {
+        let input = format!("{}{tail}{TOOLS_END}", one_call());
+        let (events, calls) = oa_run(&[input.as_bytes()]);
+        assert!(
+            matches!(events.as_slice(), [StreamEvent::Error(_)]),
+            "{events:?}"
+        );
+        assert!(calls.is_empty(), "{tail}");
+    }
+}
+
+#[test]
+fn nothing_is_released_before_the_end_and_a_late_fragment_is_ignored() {
+    let mut decoder = OpenAiToolDecoder::server();
+    decoder.feed(one_call().as_bytes());
+    assert!(decoder.take_calls().is_empty(), "no end yet");
+    decoder.feed(TOOLS_END.as_bytes());
+    let late = frag(r#"{"index":1,"id":"z","function":{"name":"find_dir","arguments":"{}"}}"#);
+    decoder.feed(late.as_bytes());
+    assert_eq!(
+        decoder.take_calls().len(),
+        1,
+        "the ended stream ignores more"
+    );
+}
+
+// llamacpp-tools T1.5: malformed and bounded input.
+fn oa_calls(parts: &[String]) -> (Vec<StreamEvent>, Vec<ToolRequest>) {
+    let input = format!("{}{TOOLS_END}", parts.concat());
+    oa_run(&[input.as_bytes()])
+}
+
+#[test]
+fn a_call_without_an_id_has_none_and_still_validates() {
+    let (_, calls) = oa_calls(&[frag(
+        r#"{"index":0,"function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    )]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, None);
+    assert!(calls[0].call.is_ok());
+}
+
+#[test]
+fn a_fragment_without_an_index_opens_a_slot_only_with_an_id_or_a_name() {
+    let (_, calls) = oa_calls(&[
+        frag(r#"{"id":"a","function":{"name":"find_dir","arguments":"{\"que"}}"#),
+        frag(r#"{"function":{"arguments":"ry\":\"x\"}"}}"#),
+        frag(r#"{"id":"b","function":{"name":"list_dir","arguments":"{\"path\":\"/a\"}"}}"#),
+        frag(r#"{"function":{"name":"read_file","arguments":"{\"path\":\"/b\"}"}}"#),
+    ]);
+    let seen: Vec<_> = calls
+        .iter()
+        .map(|c| (c.name.as_str(), c.id.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("find_dir", Some("a")),
+            ("list_dir", Some("b")),
+            ("read_file", None)
+        ]
+    );
+    assert!(calls.iter().all(|c| c.call.is_ok()), "{calls:?}");
+    // With nothing to continue, an empty fragment is dropped.
+    let (_, none) = oa_calls(&[frag(r#"{"function":{"arguments":"{}"}}"#)]);
+    assert!(none.is_empty());
+}
+
+#[test]
+fn a_tool_calls_field_of_the_wrong_shape_is_ignored() {
+    let ok =
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#;
+    let wrong = [
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":\"nope\"}}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":{\"index\":0}}}]}\n\n".to_owned(),
+        frag(r#"1,"x",null,[]"#),
+    ];
+    let (events, calls) = oa_calls(&[wrong.concat(), frag(ok)]);
+    assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn a_non_string_name_or_arguments_refuses_only_that_call() {
+    let (_, calls) = oa_calls(&[
+        frag(r#"{"index":0,"id":"a","function":{"name":5,"arguments":"{}"}}"#),
+        frag(r#"{"index":1,"id":"b","function":{"name":"find_dir","arguments":{"query":"x"}}}"#),
+        frag(
+            r#"{"index":2,"id":"c","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+        ),
+    ]);
+    assert_eq!(calls.len(), 3);
+    assert!(calls[0].call.is_err());
+    assert_eq!(calls[1].call, invalid(ToolError::NotAnObject));
+    assert_eq!(calls[1].arguments, serde_json::json!({}));
+    assert!(calls[2].call.is_ok());
+}
+
+#[test]
+fn empty_arguments_become_an_empty_object() {
+    let (_, calls) = oa_calls(&[frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir"}}"#,
+    )]);
+    assert_eq!(calls[0].call, invalid(ToolError::MissingArgument));
+}
+
+#[test]
+fn the_seventeenth_slot_is_one_refusal_and_its_fragments_are_dropped() {
+    let parts: Vec<String> = (0..=MAX_CALLS)
+        .map(|i| {
+            frag(&format!(
+                r#"{{"index":{i},"id":"c{i}","function":{{"name":"find_dir","arguments":"{{\"query\":\"x\"}}"}}}}"#
+            ))
+        })
+        .chain([frag(r#"{"index":16,"function":{"arguments":"more"}}"#)])
+        .collect();
+    let (_, calls) = oa_calls(&parts);
+    assert_eq!(calls.len(), MAX_CALLS + 1);
+    assert!(calls[..MAX_CALLS].iter().all(|c| c.call.is_ok()));
+    assert_eq!(calls[MAX_CALLS].call, Err(CallError::TooMany));
+    assert_eq!(calls[MAX_CALLS].arguments, serde_json::json!({}));
+}
+
+#[test]
+fn the_accumulated_bytes_are_capped_and_no_call_is_released() {
+    let piece = "x".repeat(100_000);
+    let mut parts = vec![frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{"}}"#,
+    )];
+    parts.extend((0..11).map(|_| {
+        frag(&format!(
+            r#"{{"index":0,"function":{{"arguments":"{piece}"}}}}"#
+        ))
+    }));
+    let (events, calls) = oa_calls(&parts);
+    assert_eq!(events, [failed(TOO_LONG)]);
+    assert!(calls.is_empty());
+}
+
+// llamacpp-tools T1.6: the recorded b11935 replies.
+const CALL_F1: &str =
+    include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-call.sse");
+const ANSWER_F2: &str =
+    include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-result.sse");
+
+#[test]
+fn the_recorded_tool_call_decodes_to_one_request_at_every_split_point() {
+    let bytes = CALL_F1.as_bytes();
+    let check = |chunks: &[&[u8]], at: usize| {
+        let (events, calls) = oa_run(chunks);
+        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(
+            calls,
+            [ToolRequest {
+                name: "find_dir".into(),
+                id: Some("JEDIAQavkL8v8oW7odZMfLsZ7CM6ZgAq".into()),
+                index: Some(0),
+                arguments: serde_json::json!({"query": "src"}),
+                call: Ok(Call::FindDir {
+                    query: "src".into()
+                }),
+            }],
+            "cut at {at}"
+        );
+    };
+    check(&[bytes], 0);
+    for at in (0..=bytes.len()).step_by(7) {
+        let (a, b) = bytes.split_at(at);
+        check(&[a, b], at);
+    }
+}
+
+#[test]
+fn the_recorded_answer_streams_text_and_holds_no_call() {
+    let (events, calls) = oa_run(&[ANSWER_F2.as_bytes()]);
+    assert!(calls.is_empty());
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Delta(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.starts_with("I found a couple of directories named `src`"),
+        "{text}"
+    );
+}
+
+// llamacpp-tools PR1 review fixes.
+fn cut_reply(reason: &str) -> String {
+    let end =
+        format!("data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{reason}\"}}]}}\n\n");
+    [
+        frag(r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#),
+        frag(r#"{"index":1,"id":"b","function":{"name":"list_dir","arguments":"{\"pa"}}"#),
+        end,
+        "data: [DONE]\n\n".to_owned(),
+    ]
+    .concat()
+}
+
+#[test]
+fn only_tool_calls_and_stop_end_a_reply_cleanly() {
+    for reason in ["length", "content_filter", "something_new"] {
+        let (events, calls) = oa_run(&[cut_reply(reason).as_bytes()]);
+        assert!(
+            matches!(events.as_slice(), [StreamEvent::Done(_)]),
+            "{reason}"
+        );
+        assert!(calls.is_empty(), "{reason}");
+    }
+    for reason in ["tool_calls", "stop"] {
+        let (_, calls) = oa_run(&[cut_reply(reason).as_bytes()]);
+        assert_eq!(calls.len(), 2, "{reason}");
+    }
+}
+
+#[test]
+fn the_continuations_of_a_dropped_call_do_not_reach_the_last_slot() {
+    let one = r#"{"function":{"name":"find_dir","arguments":"{\"query\":\"a\"}"}}"#;
+    let mut parts: Vec<String> = (0..MAX_CALLS)
+        .map(|i| frag(&one.replacen('{', &format!("{{\"index\":{i},\"id\":\"i{i}\","), 1)))
+        .collect();
+    parts.push(frag(
+        r#"{"index":16,"id":"over","function":{"name":"find_dir","arguments":"{\"query\":"}}"#,
+    ));
+    parts.push(frag(r#"{"function":{"arguments":"\"zzz\"}"}}"#));
+    let (_, calls) = oa_calls(&parts);
+    assert_eq!(calls.len(), MAX_CALLS + 1);
+    assert_eq!(calls[MAX_CALLS].call, Err(CallError::TooMany));
+    assert_eq!(
+        calls[MAX_CALLS - 1].call,
+        Ok(Call::FindDir { query: "a".into() })
+    );
+}
+
+#[test]
+fn a_late_id_after_the_name_is_kept_and_a_choice_without_delta_is_ignored() {
+    let no_delta = "data: {\"choices\":[{}]}\n\n".to_owned();
+    let (_, calls) = oa_calls(&[
+        no_delta,
+        frag(r#"{"index":0,"function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#),
+        frag(r#"{"index":0,"id":"late"}"#),
+    ]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id.as_deref(), Some("late"));
+    assert!(calls[0].call.is_ok());
+}

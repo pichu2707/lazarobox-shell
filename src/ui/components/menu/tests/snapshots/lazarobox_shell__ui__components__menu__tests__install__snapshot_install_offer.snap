@@ -1,0 +1,29 @@
+---
+source: src/ui/components/menu/tests/install.rs
+expression: show(&offer())
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ llama-server installed                                     │
+│ llama-server is ready                                      │
+│ Download a model from Hugging Face?                        │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ y download a model · n close                               │
+└────────────────────────────────────────────────────────────┘
