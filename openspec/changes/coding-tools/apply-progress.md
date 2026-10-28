@@ -1019,3 +1019,9 @@ Size: about 560 production lines added (adds+deletes about 598), over the 450 es
 - Failed commit: a jailed write-tree is compared with the reviewed tree; a changed index appends a notice (secret staged named, never undone).
 - Reviewed write-tree is taken before the same_staged recheck (TOCTOU). drift_notice cuts each path at 120 chars.
 - Documented limits: only HEAD's tree compared; other refs / same-tree HEAD moves / commit-msg edits not detected.
+
+## M5-b (PR 30) - documentation
+
+- README (Spanish): "La carpeta del chat" (how the chat folder is chosen), the Git section (tools, toggles, prompts, commit review, post-commit warning), a threat model for run_command and git, and the stale "not yet offered" lines removed.
+- CHANGELOG: git tools and the README additions under Unreleased (run_command already shipped in 0.28.0; no 0.21/0.22 sections invented).
+- No code changes. `cargo test --doc` passes.

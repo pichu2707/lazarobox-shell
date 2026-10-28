@@ -10,6 +10,40 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Git tools for the chat, behind two toggles that are off by default: `git`
+  (`git_status`, `git_diff`, `git_log`) and `git_write` (`git_add`,
+  `git_commit`). No other verb exists and no tool takes a free-form argument
+  list. Linux only; git must be in a system place.
+  - The read tools exclude secret file names by pathspec, redact the whole
+    output and are refused while a write batch is staged or proposed. A
+    refused path opens no prompt. A local engine never asks; a cloud engine
+    asks only for `git_diff`.
+  - `git_add` shows a one-line prompt with the paths and the file count. Paths
+    that cannot be shown whole, or that contain `'`, are refused.
+  - `git_commit` opens a full-pane review on every engine: the message, a
+    `signing disabled for this commit` notice, the hooks that will run and the
+    whole staged diff (`--text`). The commit is unsigned, has no trailer and
+    runs its hooks inside the jail. It is refused on a secret in the index or
+    a cut diff, and the index is checked byte for byte again after `y`. The
+    commit has a 120 s timeout.
+  - After the commit the committed tree is compared with the reviewed one. A
+    difference (a hook changed files) is reported, never undone, with a
+    `git reset --soft HEAD~1` hint. An edit of the message by a `commit-msg`
+    hook is not detected.
+- README: how the chat's folder is chosen (the focused pane's folder when you
+  open the chat, fixed for its life; CLI engines run in a private folder) and
+  a threat model for `run_command` and git (the allow-list bounds the verb,
+  the network is on, `.env` can be exfiltrated, UNIX sockets stay reachable,
+  daemonizing grandchildren, hooks that change a commit or are written by the
+  model).
+
+### Changed
+
+- The `git` and `git_write` rows of the AI menu now offer real tools instead
+  of only holding the switch.
+
 ## [0.28.0] - 2026-10-28
 
 ### Added
