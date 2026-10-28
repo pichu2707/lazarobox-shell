@@ -220,10 +220,9 @@ fn the_fallback_names_the_token_and_the_reason() {
     assert_eq!(why(""), "empty command");
     assert_eq!(why("mkdir"), "not a safe command");
     assert_eq!(why("grep foo"), "missing argument");
-    // A git revision is no path: it asks, and is no fault of the model.
-    assert_eq!(why("git log HEAD~1"), REVISION);
-    assert_eq!(why("git diff main~2 src"), REVISION);
-    assert_eq!(why("git diff HEAD^"), REVISION);
+    // L32: git is no safe command; its words fall back as at the baseline.
+    assert_eq!(why("git status"), "not a safe command");
+    assert_eq!(why("git log HEAD~1"), "~ only starts a word");
     assert_eq!(why("ls a~b"), "~ only starts a word");
     assert_eq!(why("ls a^b"), "character not allowed");
 }
@@ -317,15 +316,10 @@ fn targets_say_what_the_root_and_the_search_walk_judge() {
             ("src", Existing, true, false)
         ]
     );
-    assert_eq!(roles("git status"), [(".", Home, true, false)]);
-    assert_eq!(
-        roles("git --no-pager diff --stat src"),
-        [(".", Home, true, false), ("src", Home, true, false)]
-    );
 }
 
 // S1: search and navigation run without a prompt in `run` (the paths are
-// judged later): grep, rg, find and git status/log/diff, with an allow-list
+// judged later): grep, rg and find, with an allow-list
 // of flags.
 #[test]
 fn search_commands_parse_as_safe() {
@@ -344,16 +338,6 @@ fn search_commands_parse_as_safe() {
         "find . -name Cargo.toml -type f",
         "find src -maxdepth 2 -mindepth 1 -type d",
         "find . -iname 'read me'",
-        "git status",
-        "git status -sb",
-        "git status --short --branch --porcelain src",
-        "git log",
-        "git --no-pager log --oneline -n 5",
-        "git log --stat --graph --decorate --all -p src",
-        "git log --name-only --name-status --no-color --no-ext-diff --no-textconv",
-        "git diff",
-        "git diff --stat src",
-        "git --no-pager diff --cached --staged --name-only --shortstat",
     ] {
         assert!(runs(text), "{text:?} must run");
     }
@@ -401,24 +385,11 @@ fn writes_executions_and_other_commands_never_parse_as_safe() {
         ("grep -R foo .", "flag not allowed"),
         ("grep -f list x", "flag not allowed"),
         ("grep --include=x foo .", "flag not allowed"),
-        ("git", "missing argument"),
-        ("git --no-pager", "missing argument"),
-        ("git push", "not a safe git command"),
-        ("git commit -m x", "not a safe git command"),
-        ("git config x y", "not a safe git command"),
-        ("git checkout x", "not a safe git command"),
-        ("git -c core.pager=x log", "not a safe git command"),
-        ("git -C x status", "not a safe git command"),
-        ("git --exec-path=x status", "not a safe git command"),
-        ("git --git-dir=x status", "not a safe git command"),
-        ("git --paginate log", "not a safe git command"),
-        ("git diff --output=x", "flag not allowed"),
-        ("git diff --ext-diff", "flag not allowed"),
-        ("git diff --textconv", "flag not allowed"),
-        ("git log --output=x", "flag not allowed"),
-        ("git log -c", "flag not allowed"),
-        ("git status --porcelain=v2", "flag not allowed"),
-        ("git log -n x", "the flag needs a number"),
+        ("git", "not a safe command"),
+        ("git status", "not a safe command"),
+        ("git log --oneline", "not a safe command"),
+        ("git diff", "not a safe command"),
+        ("git push", "not a safe command"),
     ] {
         assert_eq!(why(text), reason, "{text:?}");
     }
@@ -777,6 +748,9 @@ fn grammar_refuses_the_adversarial_list() {
         "grep -R foo .",
         "grep -f list .",
         "grep -e foo .",
+        "git status",
+        "git log --oneline",
+        "git diff",
         "git -C x status",
         "git --git-dir=x status",
         "git -c a=b status",

@@ -386,11 +386,6 @@ pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run direc
 /// Why a command that leaves the chat's folder asks: a path it acts on, or
 /// the pane's directory, is elsewhere. Asking is no fault of the model.
 pub const OUTSIDE_ROOT: &str = "the command reaches outside the chat's folder";
-/// Why a git command asks: it is not in a plain repository (a git folder of
-/// its own with known harmless settings only, no hooks, submodules or
-/// alternates), or that cannot be told for sure. Asking is no fault of the
-/// model.
-pub const GIT_NOT_PLAIN: &str = "git runs on its own only in a plain repository";
 /// Why every command of a cloud chat asks when its folder is HOME or `/`.
 pub const BROAD_ROOT: &str = "the chat's folder is your home or /";
 pub const PAUSED: &str = "auto-run paused for this turn";
@@ -404,19 +399,11 @@ pub const HIDDEN: &str = "the chat's tab is not shown";
 pub const TOO_MANY: &str = "too many commands this turn";
 
 /// Whether a fallback is the model's doing: the reasons of the pane and of
-/// the pause itself, and a git revision, never count toward the pause.
+/// the pause itself never count toward the pause.
 pub fn counts_toward_pause(fallback: &Fallback) -> bool {
     !matches!(
         fallback.why,
-        NO_CWD
-            | PAUSED
-            | NON_UTF8
-            | RUNNING
-            | HALF_TYPED
-            | FOCUSED
-            | HIDDEN
-            | TOO_MANY
-            | exec::REVISION
+        NO_CWD | PAUSED | NON_UTF8 | RUNNING | HALF_TYPED | FOCUSED | HIDDEN | TOO_MANY
     )
 }
 

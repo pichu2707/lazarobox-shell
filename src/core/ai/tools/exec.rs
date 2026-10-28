@@ -1,11 +1,11 @@
 //! The grammar of the commands that `run` mode may type AND execute.
 //!
 //! Allow-list, no deny-list: navigation (`cd`, `pwd`, `ls`, `tree`) and
-//! search (`grep`, `rg`, `find`, `git status|log|diff`), each with only the
-//! flags of [`SPECS`] or [`GIT_SPECS`], and at most [`MAX_WORDS`] words. No
-//! verb writes, and no allowed flag runs another program or writes a file
-//! (`find -exec`/`-delete`/`-fprint`, `rg --pre`/`-z`, `git -c`/`--output`/
-//! `--ext-diff` are not in the lists). A word is unquoted
+//! search (`grep`, `rg`, `find`), each with only the flags of [`SPECS`], and
+//! at most [`MAX_WORDS`] words. No verb writes, and no allowed flag runs
+//! another program or writes a file (`find -exec`/`-delete`/`-fprint` and
+//! `rg --pre`/`-z` are not in the lists). `git` is not a safe command: its
+//! repository can make it run a program (L32). A word is unquoted
 //! (ASCII letters and digits, Latin letters U+00C0..=U+024F without the
 //! multiplication and division signs, and ``. _ / @ % + : , = ~ -``; a `~`
 //! only leads a word) or a whole
@@ -25,10 +25,6 @@ use std::ops::Range;
 use super::command::{MAX_COMMAND_BYTES, is_invisible};
 use super::paths::Want;
 use crate::core::ai::sanitize::is_format;
-
-/// Why a git argument does not run on its own: it names a revision, not a
-/// path. The model did nothing wrong, so it never counts toward the pause.
-pub const REVISION: &str = "a git argument is a revision, not an existing path";
 
 /// The most words (the verb included) in a runnable command.
 pub const MAX_WORDS: usize = 8;
@@ -72,8 +68,6 @@ pub enum Verb {
     Grep,
     Rg,
     Find,
-    /// `git status`, `git log` or `git diff`.
-    Git,
 }
 
 /// What the word after a flag of [`Spec::valued`] must be.
@@ -206,59 +200,9 @@ const SPECS: [Spec; 7] = [
     },
 ];
 
-/// The git subcommands, after `git` and an optional `--no-pager`. No global
-/// option other than that one: `-c`, `-C`, `--exec-path`, `--git-dir` and
-/// `--paginate` are refused as the subcommand.
-const GIT_SPECS: [Spec; 3] = [
-    Spec {
-        name: "status",
-        verb: Verb::Git,
-        flags: b"sb",
-        long: &["--short", "--branch", "--porcelain"],
-        ..NONE
-    },
-    Spec {
-        name: "log",
-        verb: Verb::Git,
-        flags: b"p",
-        long: &[
-            "--oneline",
-            "--stat",
-            "--graph",
-            "--decorate",
-            "--all",
-            "--patch",
-            "--name-only",
-            "--name-status",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-        ],
-        valued: &[("-n", Value::Number)],
-        ..NONE
-    },
-    Spec {
-        name: "diff",
-        verb: Verb::Git,
-        long: &[
-            "--stat",
-            "--shortstat",
-            "--cached",
-            "--staged",
-            "--name-only",
-            "--name-status",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-        ],
-        ..NONE
-    },
-];
-
 /// What a word of an accepted command is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
-    /// The verb, `--no-pager` and a git subcommand.
     Verb,
     Flag,
     /// The word after a valued flag.
@@ -311,14 +255,13 @@ impl<'a> SafeCommand<'a> {
         // What the arguments are for: names only, or the text of files.
         let (want, searched) = match self.verb {
             Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Find => (Want::Existing, false),
-            Verb::Tree | Verb::Git => (Want::Home, false),
+            Verb::Tree => (Want::Home, false),
             Verb::Grep => (Want::Home, recursive),
             Verb::Rg => (Want::Home, true),
         };
-        // The pane's directory: what a command with no path acts on. Git
-        // always reads the repository it is in; `pwd` reads no file and goes
-        // nowhere, so it runs wherever the pane is.
-        let acts = (none && self.verb != Verb::Pwd) || self.verb == Verb::Git;
+        // The pane's directory: what a command with no path acts on. `pwd`
+        // reads no file and goes nowhere, so it runs wherever the pane is.
+        let acts = none && self.verb != Verb::Pwd;
         let cwd = match (self.verb, none) {
             (Verb::Cd, true) => Some(Target::new("~", want, true, false)),
             (Verb::Cd, false) => None,
@@ -356,29 +299,6 @@ impl<'a> Target<'a> {
 
 /// Decides whether `text` may run without a prompt, in one pass.
 pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
-    read(text).map_err(|fallback| revision(text, fallback))
-}
-
-/// A git argument the grammar refuses for its `~` or `^` (`HEAD~1`,
-/// `main^`) names a revision: it falls back with [`REVISION`], which is no
-/// fault of the model. Any other fallback is kept as it is.
-fn revision(text: &str, fallback: Fallback) -> Fallback {
-    let token = text.get(fallback.at.clone()).unwrap_or("");
-    let rejected = matches!(
-        fallback.why,
-        "~ only starts a word" | "character not allowed"
-    );
-    if text.starts_with("git ") && rejected && token.contains(['~', '^']) {
-        Fallback {
-            why: REVISION,
-            ..fallback
-        }
-    } else {
-        fallback
-    }
-}
-
-fn read(text: &str) -> Result<SafeCommand<'_>, Fallback> {
     let bytes = text.as_bytes();
     if bytes.len() > MAX_COMMAND_BYTES {
         return Err(fallback(MAX_COMMAND_BYTES..bytes.len(), "command too long"));
@@ -531,26 +451,15 @@ fn finish<'a>(
         start..start + w.len()
     };
     let mut roles = [Role::Verb; MAX_WORDS];
-    let (spec, mut k) = if words[0] == "git" {
-        let k = 1 + usize::from(len > 1 && words[1] == "--no-pager");
-        if k >= len {
-            return Err(fallback(at(words[0]), "missing argument"));
-        }
-        let Some(spec) = GIT_SPECS.iter().find(|spec| spec.name == words[k]) else {
-            return Err(fallback(at(words[k]), "not a safe git command"));
+    let Some(spec) = SPECS.iter().find(|spec| spec.name == words[0]) else {
+        let why = if words[0].contains('=') {
+            "environment assignment"
+        } else {
+            "not a safe command"
         };
-        (spec, k + 1)
-    } else {
-        let Some(spec) = SPECS.iter().find(|spec| spec.name == words[0]) else {
-            let why = if words[0].contains('=') {
-                "environment assignment"
-            } else {
-                "not a safe command"
-            };
-            return Err(fallback(at(words[0]), why));
-        };
-        (spec, 1)
+        return Err(fallback(at(words[0]), why));
     };
+    let mut k = 1;
     let (mut paths, mut pattern) = (0, false);
     while k < len {
         let word = words[k];
@@ -607,8 +516,6 @@ fn bad_value(value: Value, next: Option<&str>) -> Option<&'static str> {
         _ => None,
     }
 }
-
-pub mod git_config;
 
 #[cfg(test)]
 mod tests;

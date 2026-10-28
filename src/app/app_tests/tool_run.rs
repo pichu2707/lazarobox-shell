@@ -8,13 +8,12 @@ use crate::app::{RunEvent, RunScope};
 use crate::core::ai::{
     chat::{
         approval::{
-            BROAD_ROOT, FOCUSED, GIT_NOT_PLAIN, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS,
-            NO_CWD, OUTSIDE_ROOT, TOO_MANY,
+            BROAD_ROOT, FOCUSED, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS, NO_CWD,
+            OUTSIDE_ROOT, TOO_MANY,
         },
         engine::{CallId, Decision, ToolStatus},
     },
     config::ApprovalMode,
-    tools::exec::REVISION,
 };
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 
@@ -157,9 +156,6 @@ fn a_search_command_goes_to_the_check_without_a_prompt() {
         "rg -n foo src",
         "grep -rn foo src",
         "find . -name Cargo.toml",
-        "git status",
-        "git --no-pager log --oneline -n 5",
-        "git diff --stat",
     ] {
         let (mut a, turn) = run_live();
         assert_eq!(
@@ -180,7 +176,7 @@ fn mkdir_and_a_build_ask_and_y_leaves_the_enter_to_the_user() {
         ("mkdir x", "not a safe command: `mkdir`"),
         ("mkdir -p a/b", "not a safe command: `mkdir`"),
         ("npm test", "not a safe command: `npm`"),
-        ("git push", "not a safe git command: `push`"),
+        ("git push", "not a safe command: `git`"),
     ] {
         let (mut a, turn) = run_live();
         assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
@@ -205,8 +201,6 @@ fn a_search_that_could_write_or_run_a_program_asks() {
         ("find . -delete", "flag not allowed: `-delete`"),
         ("find . -exec rm", "flag not allowed: `-exec`"),
         ("rg --pre=cat foo", "flag not allowed: `--pre=cat`"),
-        ("git diff --output=x", "flag not allowed: `--output=x`"),
-        ("git -c core.pager=x log", "not a safe git command: `-c`"),
     ] {
         let (mut a, turn) = run_live();
         assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
@@ -215,13 +209,12 @@ fn a_search_that_could_write_or_run_a_program_asks() {
     }
 }
 
-// L22, L14, rulings 2-3: a check that finds the command outside the chat's
-// folder, a cloud chat under HOME or `/`, a repository config that runs a
-// program or a git revision opens the prompt with the reason. Asking is not
-// the model's fault: it never pauses the run.
+// L22, L14: a check that finds the command outside the chat's folder, or a
+// cloud chat under HOME or `/`, opens the prompt with the reason. Asking is
+// not the model's fault: it never pauses the run.
 #[test]
 fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
-    for reason in [OUTSIDE_ROOT, BROAD_ROOT, GIT_NOT_PLAIN, REVISION] {
+    for reason in [OUTSIDE_ROOT, BROAD_ROOT] {
         let (mut a, turn) = run_live();
         for call in 1..=MAX_RUN_FALLBACKS as u64 {
             announce(&mut a, turn, call, run("ls /srv"));
@@ -234,24 +227,25 @@ fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
     }
 }
 
-// Ruling 3: a revision the grammar cannot take (`HEAD~1`) asks at once and
-// never pauses the run either.
+// L32: git always asks, as at the baseline (86cf948): the grammar does not
+// take it, the prompt names `git`, nothing is checked or run, and each one
+// counts toward the pause like any command off the list.
 #[test]
-fn a_git_revision_with_a_tilde_asks_and_never_pauses() {
+fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
     let (mut a, turn) = run_live();
-    for call in 1..=MAX_RUN_FALLBACKS as u64 {
-        assert_eq!(announce(&mut a, turn, call, run("git log HEAD~1")), vec![]);
+    for (call, command) in [(1, "git status"), (2, "git log --oneline"), (3, "git diff")] {
         assert_eq!(
-            why(&a).as_deref(),
-            Some(format!("{REVISION}: `HEAD~1`").as_str())
+            announce(&mut a, turn, call, run(command)),
+            vec![],
+            "{command}"
         );
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
+        assert_eq!(why(&a).as_deref(), Some("not a safe command: `git`"));
+        assert_eq!(slot(&a), None);
         result(&mut a, turn, call, ToolStatus::Denied);
     }
-    assert!(!chat_of(&a).run_paused());
-    assert_eq!(
-        announce(&mut a, turn, 9, run("git status")),
-        vec![check(turn, 9, "git status")]
-    );
+    assert_eq!(MAX_RUN_FALLBACKS, 3);
+    assert!(chat_of(&a).run_paused());
 }
 
 // The scope of the check: the chat's origin folder (or `/`), and cloud
