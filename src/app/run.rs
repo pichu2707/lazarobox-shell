@@ -9,7 +9,7 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, run_sent_line,
+            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -115,6 +115,9 @@ impl App {
         key: KeyEvent,
         repeat: bool,
     ) -> Vec<Effect> {
+        if self.batch_pending(id) {
+            return self.on_review_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
         }
@@ -144,16 +147,18 @@ impl App {
     }
 
     /// Ends the pending approval of chat `id` with `reply`, writing nothing.
-    fn close_approval(&mut self, id: PaneId, reply: Reply) -> Option<Approval> {
+    pub(super) fn close_approval(&mut self, id: PaneId, reply: Reply) -> Option<Approval> {
         let chat = self.panes.get_mut(&id)?.chat_mut()?;
         let approval_id = chat.approvals().pending()?.id();
         let (approval, _) = chat
             .approvals_mut()
             .answer(approval_id, reply, Press::Press)?;
         chat.set_run_target(None);
-        // A tool call has its own result row; only the user's own action
-        // leaves a line behind.
-        if reply == Reply::Decline && approval.call().is_none() {
+        chat.set_orphan(None);
+        // A tool call has its own result row, and a batch review its notice;
+        // only the user's own action leaves a line behind.
+        let batch = matches!(approval.ask(), ApprovalAsk::Batch(_));
+        if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
         Some(approval)
@@ -161,7 +166,7 @@ impl App {
 
     /// `n`, Esc and Ctrl+C: ends the approval and, for a tool call, tells it
     /// why nothing was done.
-    fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
+    pub(super) fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
         self.close_approval(id, Reply::Decline)
             .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
             .into_iter()
@@ -182,6 +187,15 @@ impl App {
     /// when the prompt shows the whole path or command: a partly hidden text
     /// is never approved. The prompt stays, and `n` still denies.
     fn approve(&mut self, id: PaneId) -> Vec<Effect> {
+        let is_batch = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Batch(_)));
+        // Defence in depth: a batch is answered only by its review, behind the
+        // coverage gate.
+        if is_batch {
+            return Vec::new();
+        }
         if !self.prompt_fits(id) {
             self.notice = Some(PROMPT_TOO_SMALL.to_owned());
             return Vec::new();
@@ -430,6 +444,7 @@ impl App {
                     keys: RUN_KEYS,
                     armed,
                     why,
+                    notice: None,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -439,7 +454,58 @@ impl App {
                 keys: READ_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
+            // The pattern and the folder were made one clean line when asked.
+            ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
+                target: "send matching lines of your files to the engine".to_owned(),
+                command: format!("search {pattern} in {dir}"),
+                keys: SEARCH_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            // The program, arguments and folder are what will run, and the host
+            // refused text that would not show as it is. The notice is part of
+            // what is approved, so the pane must fit it (it is not `why`).
+            ApprovalAsk::Exec {
+                program,
+                args,
+                cwd,
+                script,
+                timeout_secs,
+                cloud,
+                earlier,
+            } => {
+                // One logical line per fact, so the folder and the script are
+                // rows `fits` checks, not a clipped head. Arguments are quoted
+                // where the text alone would read as another argv.
+                let words: Vec<String> = std::iter::once(program.as_str())
+                    .chain(args.iter().map(String::as_str))
+                    .map(display_word)
+                    .collect();
+                let mut command = format!("{}\nin {}", words.join(" "), display_word(cwd));
+                for line in script.iter().flat_map(|text| text.split('\n')) {
+                    command.push_str("\nscript ");
+                    command.push_str(line);
+                }
+                Some(ApprovalPrompt {
+                    target: "run a command in the sandbox".to_owned(),
+                    command,
+                    keys: EXTERNAL_KEYS,
+                    armed,
+                    why: None,
+                    notice: Some(exec_notice(
+                        program,
+                        args,
+                        *timeout_secs,
+                        *cloud,
+                        earlier.as_deref(),
+                    )),
+                })
+            }
+            // The review view draws a batch; it has no overlay.
+            ApprovalAsk::Batch(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {
@@ -448,6 +514,7 @@ impl App {
                 keys: EXTERNAL_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
         }
     }
@@ -464,5 +531,20 @@ impl App {
             ),
             None => format!("run in pane {number}"),
         })
+    }
+}
+
+/// `word` as a shell would need it written to be one word, for display only:
+/// quoted when it is empty or has a space, a quote or another character a
+/// shell reads. Nothing is run through a shell.
+fn display_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && !word
+            .chars()
+            .any(|c| c.is_whitespace() || "'\"\\$`;|&<>()*?#~{}![]^".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }

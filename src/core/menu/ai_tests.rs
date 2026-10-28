@@ -10,6 +10,7 @@ pub(super) fn engine(
     version: Option<&str>,
 ) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -33,6 +34,7 @@ pub(super) fn detection(found: &[EngineState]) -> Detection {
                     .unwrap_or_else(|| engine(e.id, Status::NotInstalled, &[], None))
             })
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -110,13 +112,15 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 19] = [
+const ORDER: [&str; 27] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
+    "Feedback",
     "Set all tasks",
     "general",
     "code",
@@ -128,8 +132,14 @@ const ORDER: [&str; 19] = [
     "Context",
     "Memory",
     "Tools",
+    "Search",
+    "Write",
+    "Exec",
+    "Git",
+    "Git write",
     "Approval",
     "Orchestrator",
+    "Hugging Face",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -137,7 +147,7 @@ const ORDER: [&str; 19] = [
 fn the_ai_descriptors_are_well_formed() {
     assert_eq!(AI_SECTION.title, "AI");
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels, ORDER[6..]);
+    assert_eq!(labels, ORDER[8..]);
     let mut paths: Vec<&str> = Vec::new();
     for (item, task) in AI_SECTION.items[1..7].iter().zip(Task::ALL) {
         match item.kind {
@@ -173,7 +183,7 @@ fn the_ai_descriptors_are_well_formed() {
 // Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
 fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
-    let (settings, ai) = ORDER.split_at(6);
+    let (settings, ai) = ORDER.split_at(8);
     let mut m = menu(None, None, Some(machine()));
     for (rows, tab) in [(settings, 0), (ai, 1)] {
         let mut visited = vec![selected_label(&m)];
@@ -319,16 +329,22 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Context=on",
             "Memory=off",
             "Tools=on",
+            "Search=off",
+            "Write=off",
+            "Exec=off",
+            "Git=off",
+            "Git write=off",
             "Approval=ask",
             "Orchestrator=off",
+            "Hugging Face=not connected",
         ]
     );
     assert_eq!(
         MenuState::open(&Config::default())
             .rows(&Config::default())
             .len(),
-        5,
-        "no AI section without AI: a title and four settings, no bar"
+        6,
+        "no AI section without AI: a title and five settings, no bar"
     );
 }
 

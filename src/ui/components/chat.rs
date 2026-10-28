@@ -3,6 +3,8 @@
 //! Everything goes through styled cells of already sanitized text; model
 //! output never reaches the terminal as raw bytes.
 
+use std::time::Instant;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
@@ -10,6 +12,7 @@ use ratatui::{
     widgets::Widget,
 };
 
+use super::review;
 use crate::{
     core::ai::{
         chat::{
@@ -17,6 +20,7 @@ use crate::{
             approval::ApprovalPrompt,
             composer::ComposerPlan,
             guidance::guidance_rows,
+            review::Badge,
             transcript::{Line, LineKind},
             wrap::wrap_words,
         },
@@ -32,12 +36,17 @@ pub struct ChatLayout {
     pub composer: Rect,
 }
 
+/// Columns the batch badge leaves free on the right of the pane: the widest
+/// mode badge (` AUTO `) and a gap.
+const BATCH_BADGE_ROOM: usize = 8;
+
 /// A chat pane as a widget.
 pub struct ChatView<'a> {
     chat: &'a ChatState,
     theme: &'a LazaroboxTheme,
     guidance: Option<&'a str>,
     approval: Option<&'a ApprovalPrompt>,
+    now: Option<Instant>,
 }
 
 impl<'a> ChatView<'a> {
@@ -47,7 +56,14 @@ impl<'a> ChatView<'a> {
             theme,
             guidance: None,
             approval: None,
+            now: None,
         }
+    }
+
+    /// The clock the review view counts its delay by.
+    pub fn now(mut self, now: Instant) -> Self {
+        self.now = Some(now);
+        self
     }
 
     /// The pending run-in-pane confirm, drawn over the composer.
@@ -79,11 +95,33 @@ impl<'a> ChatView<'a> {
             None => plan.height(),
         };
         let rows = ChatState::clamp_composer_rows(wanted, area.height);
+        // The batch badge owns the top row of the conversation, so it never
+        // hides a transcript line; a pane that cannot spare it draws none.
+        let top = u16::from(self.badge_row(area, area.height - rows));
         let layout = ChatLayout {
-            transcript: Rect::new(area.x, area.y, area.width, area.height - rows),
+            transcript: Rect::new(area.x, area.y + top, area.width, area.height - rows - top),
             composer: Rect::new(area.x, area.y + area.height - rows, area.width, rows),
         };
         (layout, plan)
+    }
+
+    /// Whether the conversation reserves its top row for the batch badge: one
+    /// is worn, it fits, and the `transcript` rows keep at least one.
+    fn badge_row(&self, area: Rect, transcript: u16) -> bool {
+        let Some(badge) = self.chat.batch_badge() else {
+            return false;
+        };
+        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM);
+        transcript >= 2 && badge.text(room).is_some() && self.conversation_shown()
+    }
+
+    /// Whether the pane draws the conversation: no editor, list or review.
+    fn conversation_shown(&self) -> bool {
+        self.chat.tag_editor().is_none()
+            && self.chat.list().is_none()
+            && self.chat.note_editor().is_none()
+            && self.chat.summary_draft().is_none()
+            && self.chat.approvals().review().is_none()
     }
 
     /// Where the real cursor goes, or `None` when the composer cannot show it.
@@ -103,6 +141,9 @@ impl<'a> ChatView<'a> {
         }
         if let Some(draft) = self.chat.summary_draft() {
             return self.summary_cursor(draft, area);
+        }
+        if self.chat.approvals().review().is_some() {
+            return None;
         }
         let (layout, plan) = self.plan(area);
         let composer = layout.composer;
@@ -152,8 +193,19 @@ impl Widget for ChatView<'_> {
             return;
         }
         self.render_view(area, buf);
-        if let Some(mode) = self.chat.mode_badge() {
+        // The review keeps its counter row to itself, whatever the mode.
+        if let Some(mode) = self.chat.mode_badge()
+            && !self.review_shown()
+        {
             self.draw_mode_badge(mode, area, buf);
+        }
+        // The conversation draws it only in the row it reserved.
+        let reserved = self.plan(area).0.transcript.y > area.y;
+        if let Some(badge) = self.chat.batch_badge()
+            && !self.review_shown()
+            && (reserved || !self.conversation_shown())
+        {
+            self.draw_batch_badge(badge, area, buf);
         }
     }
 }
@@ -188,6 +240,36 @@ impl ChatView<'_> {
         );
     }
 
+    /// The staged batch of the chat on the top-left cells of the pane: the
+    /// conversation reserves that row for it, the other views are drawn over.
+    /// The mode and scroll badges own the right side, so it leaves their room
+    /// and gets shorter before it would meet them.
+    fn draw_batch_badge(&self, badge: Badge, area: Rect, buf: &mut Buffer) {
+        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM);
+        let Some(text) = badge.text(room) else {
+            return;
+        };
+        let colour = match badge {
+            Badge::Staged(_) => self.theme.info_blue,
+            Badge::Orphan(_) => self.theme.warning_orange,
+        };
+        let style = Style::default()
+            .fg(self.theme.bg_base)
+            .bg(colour)
+            .add_modifier(Modifier::BOLD);
+        buf.set_stringn(area.x, area.y, text, room, style);
+    }
+
+    /// Whether the batch review is the view drawn: the tag editor, the list,
+    /// the note editor and the summary draft come before it.
+    pub fn review_shown(&self) -> bool {
+        self.chat.tag_editor().is_none()
+            && self.chat.list().is_none()
+            && self.chat.note_editor().is_none()
+            && self.chat.summary_draft().is_none()
+            && self.chat.approvals().review().is_some()
+    }
+
     /// The pane without the badge: the view that is open, or the
     /// conversation.
     fn render_view(&self, area: Rect, buf: &mut Buffer) {
@@ -207,7 +289,17 @@ impl ChatView<'_> {
             self.render_summary(draft, area, buf);
             return;
         }
+        if let Some(view) = self.chat.approvals().review() {
+            let now = self.now.unwrap_or_else(Instant::now);
+            review::render(view, now, self.theme, area, buf);
+            return;
+        }
         let (layout, plan) = self.plan(area);
+        // The row the badge reserved is drawn over by `render`.
+        if layout.transcript.y > area.y {
+            let row = Rect::new(area.x, area.y, area.width, layout.transcript.y - area.y);
+            fill(buf, row, Style::default().bg(self.theme.bg_base));
+        }
         fill(
             buf,
             layout.transcript,
@@ -260,7 +352,7 @@ impl ChatView<'_> {
 }
 
 /// Blanks `rect` with `style`.
-fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
+pub(super) fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
     for y in rect.y..rect.y + rect.height {
         for x in rect.x..rect.x + rect.width {
             buf[(x, y)].set_symbol(" ").set_style(style);

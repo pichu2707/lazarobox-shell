@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-shell"
-version = "0.18.0"
+version = "0.28.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
@@ -21,9 +21,14 @@ exclude = [
     "/.github/",
     "/cliff.toml",
     "/RELEASING.md",
+    "/odd/",
+    "/.codegraph/",
 ]
 
 [dependencies]
+# Line diff for the batch review
+similar = "2"
+
 # Async Runtime
 tokio = { version = "1.38", features = ["full"] }
 
@@ -32,11 +37,14 @@ ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 portable-pty = "0.9"
 libc = "0.2"
+sha2 = "0.10"
 vt100 = "0.16.2"
 futures = "0.3"
 
 # Serialization & Config
 serde_json = "1.0"
+# Linear-time engine behind the glob translation (and grep, later)
+regex = "1"
 toml = "0.8"
 toml_edit = "0.22"
 

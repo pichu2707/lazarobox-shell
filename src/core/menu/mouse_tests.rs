@@ -72,13 +72,14 @@ fn the_cursor_goes_through_mouse_between_the_bar_row_and_the_notify_rows() {
 }
 
 #[test]
-fn without_the_ai_section_the_cursor_wraps_over_four_rows() {
+fn without_the_ai_section_the_cursor_wraps_over_five_rows() {
     let mut m = MenuState::open(&Config::default());
     let mut live = Config::default();
     for expected in [
         "Tab bar position",
         "Mouse",
         "Updates",
+        "Feedback",
         "Statusline position",
     ] {
         m.on_key(
