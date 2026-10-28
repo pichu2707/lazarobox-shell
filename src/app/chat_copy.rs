@@ -2,7 +2,10 @@
 //! `ChatState::scroll`; the mode only carries the half-typed `gg`.
 
 use super::*;
-use crate::core::ai::chat::{copy::ChatCopyCommand, transcript::Scroll};
+use crate::core::{
+    ai::chat::{copy::ChatCopyCommand, transcript::Scroll},
+    copy::CopyMotion,
+};
 
 /// Shown when COPY is asked on a chat pane that has no transcript to scroll.
 const NOTHING_TO_SCROLL: &str = "nothing to scroll here";
@@ -51,7 +54,8 @@ impl App {
                 self.leave_chat_copy(self.tab().focus);
                 self.hold_exit(key);
             }
-            motion => self.scroll_chat(motion),
+            ChatCopyCommand::Move(motion) => self.scroll_chat(motion),
+            ChatCopyCommand::Yank | ChatCopyCommand::Answer | ChatCopyCommand::CodeBlock => {}
         }
         Vec::new()
     }
@@ -67,7 +71,7 @@ impl App {
     }
 
     /// Applies a scroll command to the focused chat's transcript.
-    fn scroll_chat(&mut self, command: ChatCopyCommand) {
+    fn scroll_chat(&mut self, command: CopyMotion) {
         let rows = self.chat_viewport(self.tab().focus);
         let cols = usize::from(self.focused_state().size.cols);
         let half = (rows / 2).max(1);
@@ -77,12 +81,12 @@ impl App {
         let total = chat.lines(cols).len();
         let scroll = chat.scroll();
         let next = match command {
-            ChatCopyCommand::Up => scroll.lines_up(1, total, rows),
-            ChatCopyCommand::Down => scroll.lines_down(1, total, rows),
-            ChatCopyCommand::HalfUp => scroll.lines_up(half, total, rows),
-            ChatCopyCommand::HalfDown => scroll.lines_down(half, total, rows),
-            ChatCopyCommand::Top => scroll.lines_up(total, total, rows),
-            ChatCopyCommand::Bottom => Scroll::Follow,
+            CopyMotion::LineUp => scroll.lines_up(1, total, rows),
+            CopyMotion::LineDown => scroll.lines_down(1, total, rows),
+            CopyMotion::HalfUp => scroll.lines_up(half, total, rows),
+            CopyMotion::HalfDown => scroll.lines_down(half, total, rows),
+            CopyMotion::Top => scroll.lines_up(total, total, rows),
+            CopyMotion::Bottom => Scroll::Follow,
             _ => scroll,
         };
         chat.set_scroll(next);
