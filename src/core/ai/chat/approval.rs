@@ -84,8 +84,14 @@ pub enum ApprovalAsk {
     },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
-    /// sanitized line.
-    Search { pattern: String, dir: String },
+    /// sanitized line. `reach` is [`Reach::Root`] when the host found the
+    /// chat's root concrete enough to search on its own, [`Reach::Broad`]
+    /// when it is HOME or above; [`ask_for`] puts [`Reach::Other`].
+    Search {
+        pattern: String,
+        dir: String,
+        reach: Reach,
+    },
     /// Call a tool of a user-declared MCP server.
     External {
         server: String,
@@ -125,10 +131,14 @@ pub enum ApprovalAsk {
 pub enum Reach {
     /// Inside the chat's root, and the path guard allows it.
     Root,
+    /// Inside the chat's root, but the root is HOME or a folder above it
+    /// (`/`): too broad to keep a read anywhere, so `run` never lets it go.
+    Broad,
     /// The path guard refuses it (a sensitive, missing or hidden path): the
     /// read returns the refusal and opens nothing.
     Refused,
-    /// Anything else: outside the root, or not judged (the ask of an edit).
+    /// Anything else: outside the root, or not judged (the ask of an edit, a
+    /// search nobody judged).
     Other,
     /// A local read outside the root whose path cannot be shown as it would
     /// be opened ([`UNSHOWABLE`]): no prompt may approve it, so the ask's
@@ -214,6 +224,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 pattern: flat(pattern, SEARCH_SHOWN).0,
                 // A blank folder is the root, as no folder is.
                 dir: if dir.is_empty() { ".".into() } else { dir },
+                reach: Reach::Other,
             })
         }
         // `glob` returns names only and, like the directory tools, never asks.
@@ -524,16 +535,24 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// no prompt; `None` opens the prompt. A read or a search let go gets
 /// [`Decision::Unprompted`], which the host never takes for the user's `y`.
 ///
-/// In `run`: a search (its walk never leaves the chat's root), and a cloud
-/// read that stays in the root or that the path guard refuses (the read then
-/// returns the refusal). A read that leads outside the root prompts on every
-/// engine, and one whose path cannot be shown is denied, as no prompt may
-/// approve it. In `ask` and `auto`: only a local read outside the root, which
-/// runs free there as it always has; every other ask prompts. A command, a
-/// user tool, a batch and the ask of an edit are never answered here.
+/// In `run`: a search of a concrete root (its walk never leaves the root),
+/// and a cloud read that stays in such a root or that the path guard refuses
+/// (the read then returns the refusal). A read or a search under a root that
+/// is HOME or `/` ([`Reach::Broad`]) prompts, and so does a read that leads
+/// outside the root, on every engine; one whose path cannot be shown is
+/// denied, as no prompt may approve it. In `ask` and `auto`: only a local
+/// read outside the root, which runs free there as it always has; every
+/// other ask prompts. A command, a user tool, a batch and the ask of an edit
+/// are never answered here.
 pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
     let ApprovalAsk::Read { reach, cloud, .. } = ask else {
-        let search = matches!(ask, ApprovalAsk::Search { .. });
+        let search = matches!(
+            ask,
+            ApprovalAsk::Search {
+                reach: Reach::Root,
+                ..
+            }
+        );
         return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
     };
     match (mode, reach, cloud) {
@@ -1224,6 +1243,73 @@ mod tests {
         ApprovalAsk::Search {
             pattern: pattern.into(),
             dir: dir.into(),
+            reach: Reach::Other,
+        }
+    }
+
+    // The whole table of what a mode answers itself: every mode, every read
+    // reach on both kinds of engine, every search reach, and the asks no mode
+    // answers. `Some(None)` is a prompt.
+    #[test]
+    fn answers_itself_follows_its_table_for_every_mode_ask_and_reach() {
+        use ApprovalMode::{Ask, Auto, Run};
+        use Reach::{Broad, Other, Refused, Root, Unshowable};
+        let free = Some(Decision::Unprompted);
+        let read = |reach, cloud| ApprovalAsk::Read {
+            path: "~/a".into(),
+            reach,
+            cloud,
+        };
+        let search = |reach| ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+            reach,
+        };
+        let unshowable = Some(Decision::Denied(UNSHOWABLE));
+        #[rustfmt::skip]
+        let reads = [
+            // (reach, cloud, run, ask and auto)
+            (Root, true, free, None),
+            (Refused, true, free, None),
+            (Broad, true, None, None),
+            (Other, true, None, None),
+            (Unshowable, true, unshowable, None),
+            (Root, false, None, None),
+            (Refused, false, None, None),
+            (Broad, false, None, None),
+            (Other, false, None, free),
+            (Unshowable, false, unshowable, free),
+        ];
+        for (reach, cloud, run, others) in reads {
+            let ask = read(reach, cloud);
+            assert_eq!(answers_itself(&ask, Run), run, "{reach:?} cloud={cloud}");
+            for mode in [Ask, Auto] {
+                assert_eq!(
+                    answers_itself(&ask, mode),
+                    others,
+                    "{mode:?} {reach:?} {cloud}"
+                );
+            }
+        }
+        for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
+            assert_eq!(answers_itself(&search(reach), Run), run, "{reach:?}");
+            for mode in [Ask, Auto] {
+                assert_eq!(answers_itself(&search(reach), mode), None, "{mode:?}");
+            }
+        }
+        let never = [
+            run("ls"),
+            ApprovalAsk::External {
+                server: "s".into(),
+                tool: "t".into(),
+                args: "{}".into(),
+            },
+            ApprovalAsk::read("~/a"),
+        ];
+        for ask in never {
+            for mode in [Ask, Auto, Run] {
+                assert_eq!(answers_itself(&ask, mode), None, "{mode:?} {ask:?}");
+            }
         }
     }
 
@@ -1257,7 +1343,7 @@ mod tests {
             pattern: "a\u{1b}[31mb\nc".into(),
             dir: Some("x\ny".into()),
         };
-        let Some(ApprovalAsk::Search { pattern, dir }) = ask_for(&call, Locality::Cloud) else {
+        let Some(ApprovalAsk::Search { pattern, dir, .. }) = ask_for(&call, Locality::Cloud) else {
             panic!("a cloud grep must ask");
         };
         assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));

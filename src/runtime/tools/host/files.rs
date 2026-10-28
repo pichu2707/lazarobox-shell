@@ -10,7 +10,7 @@
 
 use std::{
     fmt::Display,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
 };
 
@@ -24,7 +24,7 @@ use crate::{
         tools::{
             Call, ToolError,
             mcp::refusal_text,
-            paths::{PathVerdict, REFUSED, SecretRoots, real_target, resolve, resolve_write},
+            paths::{PathVerdict, REFUSED, SecretRoots, resolve, resolve_write},
             registry::Family,
             stage::{BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey},
         },
@@ -32,8 +32,7 @@ use crate::{
     runtime::tools::{
         ToolEnv,
         approver::ENDED,
-        fs::load_roots,
-        run_over,
+        fs::{Within, load_roots},
         stage::{StageFailed, Stages, Unreadable, disk_bytes},
         staged::StagedView,
     },
@@ -159,6 +158,17 @@ pub(super) async fn run(
     scope: &TurnScope,
     call: Call,
 ) -> (Outcome, ToolStatus, String) {
+    run_within(host, scope, call, Within::Anywhere).await
+}
+
+/// [`run`] with a `read_file` kept [`Within`] a bound: a read the approval
+/// mode let go because it stayed in the root is kept there by the read.
+pub(super) async fn run_within(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: Call,
+    within: Within,
+) -> (Outcome, ToolStatus, String) {
     let env = host.env(&scope.origin);
     if let (true, Some(key)) = (call.is_write(), scope.stage_key) {
         let stages = host.stages.clone();
@@ -184,15 +194,17 @@ pub(super) async fn run(
             }
         }
     };
-    read(call, env, host, view).await
+    read(call, env, host, view, within).await
 }
 
 const COULD_NOT: &str = "could not run";
 
 /// Where a read of `input` leads, for its ask: the path guard's verdict, and
 /// whether the real path (every link followed) is inside the real root of the
-/// chat. Read on the blocking pool; a failure is [`Reach::Other`], which
-/// every mode that cares about it prompts for.
+/// chat, and that root is concrete (see [`concrete_root`]). Read on the
+/// blocking pool; a failure is [`Reach::Other`], which every mode that cares
+/// about it prompts for. Only a fact for the ask: a read the mode lets go is
+/// kept in the root by the read itself ([`Within::Root`]).
 pub(super) async fn reach(host: &ToolHost, scope: &TurnScope, input: &str) -> Reach {
     let env = host.env(&scope.origin);
     let input = input.to_owned();
@@ -200,31 +212,45 @@ pub(super) async fn reach(host: &ToolHost, scope: &TurnScope, input: &str) -> Re
         let Ok(roots) = load_roots(&env) else {
             return Reach::Refused;
         };
-        match resolve(&roots, &env.origin, &input) {
-            PathVerdict::Refused => Reach::Refused,
-            PathVerdict::Allowed(real) if in_root(&env, &real) => Reach::Root,
-            PathVerdict::Allowed(_) => Reach::Other,
+        match (
+            resolve(&roots, &env.origin, &input),
+            concrete_root(&env, &roots),
+        ) {
+            (PathVerdict::Refused, _) => Reach::Refused,
+            (PathVerdict::Allowed(real), Some(root)) if real.starts_with(&root) => Reach::Root,
+            (PathVerdict::Allowed(real), None) if in_root(&env, &real) => Reach::Broad,
+            (PathVerdict::Allowed(_), _) => Reach::Other,
         }
     })
     .await
     .unwrap_or(Reach::Other)
 }
 
-/// Whether a read the approval mode answered still stays in the chat's root
-/// when it runs: the real path of `input` (every existing link followed, a
-/// missing name appended) is inside the real root. Checked again after the
-/// answer, so a file swapped for a link between the ask and the answer is not
-/// read. Read on the blocking pool; a failure is `false`.
-pub(super) async fn stays_in_root(host: &ToolHost, scope: &TurnScope, input: &str) -> bool {
+/// Where a search of the chat's root leads, for its ask: [`Reach::Root`] for
+/// a concrete root, [`Reach::Broad`] for HOME or a folder above it. Read on
+/// the blocking pool; a failure is [`Reach::Other`].
+pub(super) async fn search_reach(host: &ToolHost, scope: &TurnScope) -> Reach {
     let env = host.env(&scope.origin);
-    let input = input.to_owned();
     tokio::task::spawn_blocking(move || {
-        load_roots(&env).is_ok_and(|roots| {
-            real_target(&roots, &env.origin, &input).is_some_and(|real| in_root(&env, &real))
-        })
+        let Ok(roots) = load_roots(&env) else {
+            return Reach::Other;
+        };
+        match concrete_root(&env, &roots) {
+            Some(_) => Reach::Root,
+            None if env.origin.canonicalize().is_ok() => Reach::Broad,
+            None => Reach::Other,
+        }
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(Reach::Other)
+}
+
+/// The real root of the chat when it is concrete enough to keep a read in:
+/// not HOME and not a folder that holds HOME (`/` among them). `None` too
+/// when the root cannot be resolved.
+fn concrete_root(env: &ToolEnv, roots: &SecretRoots) -> Option<PathBuf> {
+    let root = env.origin.canonicalize().ok()?;
+    (!roots.home().starts_with(&root)).then_some(root)
 }
 
 /// Whether the resolved `real` path is the chat's root or under it, compared
@@ -240,8 +266,9 @@ async fn read(
     env: ToolEnv,
     host: &ToolHost,
     view: Option<StagedView>,
+    within: Within,
 ) -> (Outcome, ToolStatus, String) {
-    match run_over(call, env, host.limits.clone(), view).await {
+    match crate::runtime::tools::run_within(call, env, host.limits.clone(), view, within).await {
         Ok(text) => {
             let summary = format!("{} bytes", text.len());
             ended(ToolStatus::Ok, text, &summary)

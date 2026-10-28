@@ -162,8 +162,8 @@ pub enum Decision {
     Denied(&'static str),
     /// Allowed by the chat's approval mode, with no prompt: a read or a search
     /// that `run` lets go (`approval::answers_itself`). Never the user's `y`:
-    /// it allows nothing else in the turn, and the host judges such a read
-    /// again before it opens the file.
+    /// it allows nothing else in the turn, and the host takes it only where
+    /// its own ask allowed it, keeping a read in the root as it opens the file.
     Unprompted,
 }
 

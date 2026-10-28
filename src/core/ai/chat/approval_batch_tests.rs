@@ -138,6 +138,7 @@ fn others() -> Vec<ApprovalAsk> {
         ApprovalAsk::Search {
             pattern: "x".into(),
             dir: ".".into(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
         },
         ApprovalAsk::External {
             server: "s".into(),

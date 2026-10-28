@@ -457,7 +457,7 @@ impl App {
                 notice: None,
             }),
             // The pattern and the folder were made one clean line when asked.
-            ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
+            ApprovalAsk::Search { pattern, dir, .. } => Some(ApprovalPrompt {
                 target: "send matching lines of your files to the engine".to_owned(),
                 command: format!("search {pattern} in {dir}"),
                 keys: SEARCH_KEYS,

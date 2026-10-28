@@ -34,7 +34,7 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, ToolEnv, stage::Stages};
+use super::{Limits, ToolEnv, fs::Within, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
@@ -45,7 +45,7 @@ use crate::{
             Call, Locality, command,
             edit::EditError,
             label,
-            paths::{REFUSED, display_target},
+            paths::display_target,
             registry::FamilySet,
             report::{self, RunReport},
             stage::StageKey,
@@ -245,6 +245,30 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
     (Outcome { text, is_error }, status, clip(summary))
 }
 
+/// How the host takes an answer of [`Decision::Unprompted`]: only as the facts
+/// of its own ask allow, whatever the app replies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unprompted {
+    /// No ask the host made allows it: it is denied and nothing runs.
+    Never,
+    /// A cloud read whose ask said it stays in a concrete root (or is
+    /// refused): kept in that root by the read itself.
+    InRoot,
+    /// A local read outside the root, which runs free in `ask` and `auto`
+    /// as it always has, or the search of a concrete root: run as it is.
+    AsIs,
+}
+
+impl Unprompted {
+    fn of_read(reach: Reach, cloud: bool) -> Self {
+        match (reach, cloud) {
+            (Reach::Root | Reach::Refused, true) => Self::InRoot,
+            (Reach::Other | Reach::Unshowable, false) => Self::AsIs,
+            _ => Self::Never,
+        }
+    }
+}
+
 /// What the model is told when its command was typed.
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
                           the user runs it themselves.";
@@ -321,9 +345,9 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut sealed = None;
     let mut approves = None;
     let mut pinned = None;
-    // A read whose ask says it stays in the root (or is refused): when the
-    // approval mode answers it, it must still stay in the root.
-    let mut confined = false;
+    // How an answer of the approval mode is taken: only as the facts this
+    // ask carried allow.
+    let mut unprompted = Unprompted::Never;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
             // A read asks with the path as it will be opened: resolved, and
@@ -340,7 +364,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                             if cloud {
                                 approves = Some(shown.clone());
                             }
-                            confined = reach != Reach::Other;
+                            unprompted = Unprompted::of_read(reach, cloud);
                             ask = Some(ApprovalAsk::Read {
                                 path: shown,
                                 reach,
@@ -350,6 +374,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         // A local read ran free before `run` asked for it:
                         // the app decides, with nothing shown.
                         None if !cloud => {
+                            unprompted = Unprompted::of_read(reach, cloud);
                             ask = Some(ApprovalAsk::Read {
                                 path: String::new(),
                                 reach: Reach::Unshowable,
@@ -397,6 +422,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 Err(why) => checked = Err(why.into()),
             },
+            // A search asks with how concrete the root it walks is: the
+            // approval mode lets only the search of a concrete root go.
+            (Call::Grep { .. }, Locality::Cloud) => {
+                let found = files::search_reach(&host, &scope).await;
+                ask = ask_for(valid, Locality::Cloud);
+                if let Some(ApprovalAsk::Search { reach, .. }) = ask.as_mut() {
+                    *reach = found;
+                }
+                if found == Reach::Root {
+                    unprompted = Unprompted::AsIs;
+                }
+            }
             (valid, locality) => ask = ask_for(valid, locality),
         }
     }
@@ -523,14 +560,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 // The approval mode answers only a read or a search, never
                 // for the user: nothing is added to the reads the user
-                // allowed. A read it let go because it stayed in the root is
-                // judged again now, and refused if it no longer does.
-                (Decision::Unprompted, Call::ReadFile { path, .. })
-                    if confined && !files::stays_in_root(&host, &scope, &path).await =>
+                // allowed, and only what the ask allowed runs. A read it let
+                // go because it stayed in the root is kept there by the read
+                // itself, judged on the file it opens.
+                (Decision::Unprompted, call @ Call::ReadFile { .. })
+                    if unprompted == Unprompted::InRoot =>
                 {
-                    ended(ToolStatus::Error, REFUSED.to_owned(), REFUSED)
+                    files::run_within(&host, &scope, call, Within::Root).await
                 }
-                (Decision::Unprompted, call @ (Call::ReadFile { .. } | Call::Grep { .. })) => {
+                (Decision::Unprompted, call @ (Call::ReadFile { .. } | Call::Grep { .. }))
+                    if unprompted == Unprompted::AsIs =>
+                {
                     files::run(&host, &scope, call).await
                 }
                 (Decision::Unprompted, _) => ended(

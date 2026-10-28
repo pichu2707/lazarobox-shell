@@ -149,10 +149,12 @@ async fn next_result(rx: &mut mpsc::Receiver<Tagged>) -> (PaneId, u64, CallId, T
     }
 }
 
+/// The ask of a cloud read of `~/note.txt`. The chat's root is HOME, too
+/// broad to keep a read in.
 fn note(lab: &Lab) -> Option<ApprovalAsk> {
     Some(ApprovalAsk::Read {
         path: lab.home.join("note.txt").to_str().unwrap().into(),
-        reach: Reach::Root,
+        reach: Reach::Broad,
         cloud: true,
     })
 }
