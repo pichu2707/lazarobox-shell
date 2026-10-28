@@ -1487,6 +1487,25 @@ mod root_reads {
         }
     }
 
+    // S2 (L14): a read the mode answers because its path was refused opens
+    // nothing, even when the file appears before the read: under a root of
+    // HOME it would otherwise read any file in HOME with no prompt.
+    #[tokio::test]
+    async fn run_mode_reads_nothing_of_a_refused_path_that_appears_before_the_read() {
+        let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, |home, _| {
+            home.to_path_buf()
+        });
+        let home = lab.home.clone();
+        let late = home.join("late.txt");
+        crate::runtime::tools::fs::hooks::before_read(&home, move || {
+            std::fs::write(&late, "late content\n").unwrap();
+        });
+        let (prompted, out) = lab.call(read("~/late.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
     // A file in the root swapped for a link to outside it after every check
     // the host makes before the read, just before the read judges its path:
     // the read `run` let go is kept in the root by the read itself.

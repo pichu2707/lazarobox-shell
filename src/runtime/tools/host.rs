@@ -45,7 +45,7 @@ use crate::{
             Call, Locality, command,
             edit::EditError,
             label,
-            paths::display_target,
+            paths::{REFUSED, display_target},
             registry::FamilySet,
             report::{self, RunReport},
             stage::StageKey,
@@ -251,9 +251,12 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
 enum Unprompted {
     /// No ask the host made allows it: it is denied and nothing runs.
     Never,
-    /// A cloud read whose ask said it stays in a concrete root (or is
-    /// refused): kept in that root by the read itself.
+    /// A cloud read whose ask said it stays in a concrete root: kept in that
+    /// root by the read itself.
     InRoot,
+    /// A cloud read whose ask said its path is refused: it returns the
+    /// refusal and opens nothing, even if the path appeared since.
+    Refused,
     /// A local read outside the root, which runs free in `ask` and `auto`
     /// as it always has, or the search of a concrete root: run as it is.
     AsIs,
@@ -262,7 +265,8 @@ enum Unprompted {
 impl Unprompted {
     fn of_read(reach: Reach, cloud: bool) -> Self {
         match (reach, cloud) {
-            (Reach::Root | Reach::Refused, true) => Self::InRoot,
+            (Reach::Root, true) => Self::InRoot,
+            (Reach::Refused, true) => Self::Refused,
             (Reach::Other | Reach::Unshowable, false) => Self::AsIs,
             _ => Self::Never,
         }
@@ -567,6 +571,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     if unprompted == Unprompted::InRoot =>
                 {
                     files::run_within(&host, &scope, call, Within::Root).await
+                }
+                (Decision::Unprompted, Call::ReadFile { .. })
+                    if unprompted == Unprompted::Refused =>
+                {
+                    ended(ToolStatus::Error, REFUSED.to_owned(), REFUSED)
                 }
                 (Decision::Unprompted, call @ (Call::ReadFile { .. } | Call::Grep { .. }))
                     if unprompted == Unprompted::AsIs =>
