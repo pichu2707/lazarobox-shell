@@ -60,6 +60,8 @@ enum Script {
     /// answer `fixed`.
     FailTwice(&'static str, &'static str),
     /// Waits until the test releases it (`Seen::release`), then answers.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // only the Linux-only write tests use it
     Held(&'static str),
 }
 
@@ -1702,6 +1704,7 @@ impl Lab {
         self.manager.start(pane(), scope).unwrap().1
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
     fn host(&self) -> Arc<ToolHost> {
         self.manager.tooling.as_ref().unwrap().host.clone()
     }
@@ -1719,11 +1722,13 @@ async fn worker_client(seen: &Seen) -> Client {
     ready(wire).await
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
 fn tool_call(id: u32, name: &str, arguments: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
         "params": {"name": name, "arguments": arguments}})
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
 fn reply_text(reply: &Value) -> &str {
     reply["result"]["content"][0]["text"].as_str().unwrap()
 }
