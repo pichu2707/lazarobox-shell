@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added
