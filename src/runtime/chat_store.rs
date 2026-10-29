@@ -341,6 +341,8 @@ fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(),
 /// Adds the nullable `conversations.folder` column when the file lacks it. It
 /// is not a schema version: an older build never selects it and its inserts
 /// name their columns, so it keeps working on the same file (chat-folder D8).
+/// It runs on every open with `target >= 2`, so a later schema step (v3) may
+/// assume `conversations.folder` exists.
 fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
     let present: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'folder')",
