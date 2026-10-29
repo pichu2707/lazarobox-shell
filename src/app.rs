@@ -55,6 +55,7 @@ mod chat;
 mod chat_copy;
 mod compact;
 mod context;
+mod folder;
 mod history;
 mod hub;
 mod install;
@@ -8133,6 +8134,9 @@ mod app_tests {
 
     /// A resumed conversation and its engram session (engram-memory 9.6).
     mod chat_resume_memory;
+
+    /// The chat folder: busy refusals and the change (chat-folder).
+    mod chat_folder;
 
     /// The update notice: statusline mark and menu note.
     mod update;

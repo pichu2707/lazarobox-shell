@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::{ChatState, Phase};
 use crate::core::ai::tools::paths::{SecretRoots, normalize};
 
 /// A folder the runtime resolved and judged.
@@ -134,6 +135,27 @@ pub fn judge(real: &Path, roots: &SecretRoots) -> Result<Verdict, Refusal> {
         return Err(Refusal::NotAllowed);
     }
     Ok(Verdict::Outside)
+}
+
+impl ChatState {
+    /// Why the folder cannot change now, in the order the user is told (design
+    /// D4). `running` says a command typed for this chat runs in a pane: the
+    /// app owns the run slots.
+    pub fn folder_busy(&self, running: bool) -> Option<&'static str> {
+        if self.approvals.pending().is_some() {
+            Some("an approval is pending")
+        } else if running {
+            Some("a command is running")
+        } else if self.phase != Phase::Idle || self.compaction.running() {
+            Some("the model is answering")
+        } else if self.batch_badge.is_some() || self.orphan.is_some() {
+            Some("writes are staged or proposed")
+        } else if !self.pending_save_ids().is_empty() {
+            Some("a note is still being saved")
+        } else {
+            None
+        }
+    }
 }
 
 /// Whether a verdict opens the picker: never a candidate row, never silently

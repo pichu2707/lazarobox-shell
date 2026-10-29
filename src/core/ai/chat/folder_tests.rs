@@ -101,3 +101,80 @@ fn expand_reads_tilde_relative_and_parent_paths() {
     assert_eq!(expand("src", home, None), None);
     assert_eq!(expand("~/x", home, None), Some("/h/x".into()));
 }
+
+// busy ----------------------------------------------------------------------
+
+mod busy {
+    use super::super::{
+        ChatState,
+        approval::{ApprovalAsk, Origin},
+        review::Badge,
+        state_tests::{chat, sent},
+    };
+
+    fn ask(state: &mut ChatState) {
+        let run = ApprovalAsk::Run {
+            command: "ls".into(),
+        };
+        state.approvals_mut().request(run, Origin::Tool).unwrap();
+    }
+
+    #[test]
+    fn an_idle_chat_is_not_busy() {
+        assert_eq!(chat().folder_busy(false), None);
+    }
+
+    #[test]
+    fn each_reason_has_its_text() {
+        let mut state = chat();
+        ask(&mut state);
+        assert_eq!(state.folder_busy(false), Some("an approval is pending"));
+
+        assert_eq!(chat().folder_busy(true), Some("a command is running"));
+
+        let mut state = chat();
+        sent(&mut state, "q");
+        assert_eq!(state.folder_busy(false), Some("the model is answering"));
+
+        for badge in [Badge::Staged(1), Badge::Orphan(1)] {
+            let mut state = chat();
+            state.set_batch_badge(Some(badge));
+            assert_eq!(
+                state.folder_busy(false),
+                Some("writes are staged or proposed")
+            );
+        }
+
+        let mut state = chat();
+        state.save_sent("proj");
+        assert_eq!(
+            state.folder_busy(false),
+            Some("a note is still being saved")
+        );
+    }
+
+    #[test]
+    fn reasons_are_reported_in_order() {
+        let mut state = chat();
+        ask(&mut state);
+        sent(&mut state, "q");
+        state.set_batch_badge(Some(Badge::Staged(1)));
+        state.save_sent("proj");
+        assert_eq!(state.folder_busy(true), Some("an approval is pending"));
+
+        let mut state = chat();
+        sent(&mut state, "q");
+        state.set_batch_badge(Some(Badge::Staged(1)));
+        state.save_sent("proj");
+        assert_eq!(state.folder_busy(true), Some("a command is running"));
+        assert_eq!(state.folder_busy(false), Some("the model is answering"));
+
+        let mut state = chat();
+        state.set_batch_badge(Some(Badge::Staged(1)));
+        state.save_sent("proj");
+        assert_eq!(
+            state.folder_busy(false),
+            Some("writes are staged or proposed")
+        );
+    }
+}
