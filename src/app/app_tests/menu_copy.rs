@@ -37,6 +37,7 @@ fn codex(models: Option<&str>, jail: Option<&str>) -> Detection {
                 diagnostics: Diagnostics {
                     models: models.filter(|_| e.id == "codex").map(str::to_owned),
                     jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
+                    ..Default::default()
                 },
             })
             .collect(),

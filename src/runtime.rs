@@ -795,6 +795,7 @@ fn app_from_config(
         &cwd,
     )
     .app(cols, rows)
+    .with_config_path(config_path.map(Path::to_owned))
 }
 
 /// What startup read: the config, the start folder and the one notice to

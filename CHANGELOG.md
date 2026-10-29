@@ -12,6 +12,10 @@ baseline.
 
 ### Added
 
+- The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
 - `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
   before the terminal or the nesting guard are touched.
 - Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
@@ -23,12 +27,26 @@ baseline.
 
 ### Changed
 
+- When the jail refuses a codex layout, the full reason (`y` in the menu, and the chat) now names the layout and what to do, for example `codex (standalone) is installed in a layout the jail cannot isolate: … would be both run and written; reinstall it with the official installer, npm or Homebrew`. The short form on the menu row is unchanged.
+- `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
 - An unknown option or command now prints one line on stderr and exits 2
   instead of silently starting the TUI.
 
 ### Fixed
 
+- The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
 - The nesting guard no longer treats the value of `--dir` as a subcommand.
+
+### Docs
+
+- README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
+  `config.toml`, the `chat.db` format with forward migration, the public CLI
+  and the key bindings; what is not: `__*` subcommands, log text, UI layout),
+  an upgrade note, a single key-bindings reference for every view (the
+  `openspec/` link is gone), a security and threat-model index, and macOS
+  stated as not officially supported in 1.0.
+- `SECURITY.md`: supported versions and private vulnerability reporting.
+- `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
 
 ## [0.30.0] - 2026-10-29
 
