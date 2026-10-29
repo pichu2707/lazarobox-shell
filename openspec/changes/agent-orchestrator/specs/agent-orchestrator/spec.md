@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Defines the orchestrator: one coordinator agent that splits a multi-step job across worker agents, each running on the engine and model the AI menu assigns to its task. It covers the run lifecycle, the orchestration tools, the worker contract, limits, the run-start read scope, approvals, failure alerts and relaunch, the provider notice and the SDD/TDD phases. Handoff persistence is in orchestrator-handoffs. The menu is the single source of truth: lazarobox never picks an engine or a model.
+Defines the orchestrator: one coordinator agent that splits a multi-step job across worker agents, each running on the engine and model the AI menu assigns to its task. It covers the run lifecycle, the orchestration tools, the worker contract, limits, the run-start read scope, approvals, failure alerts and relaunch, the provider notice, the ODD flow and the receipt-driven review (RDD). Handoff persistence is in orchestrator-handoffs. The menu is the single source of truth: lazarobox never picks an engine or a model.
 
-Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] SDD/TDD phases, read-only; [S6] usage; [S7] write integration (needs the write-tools SDD); [S8] TDD red-green (needs the test-runner SDD and S7); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
+Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] ODD flow, read-only until S7; [S6] usage; [S7] write integration (needs coding-tools M2, merged); [S7b] receipt-driven review (RDD); [S8] ODD test-first evidence (needs coding-tools M3 and S7); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
 
-Product goal: the finished feature MUST let the user build a programming project entirely from the lazarobox chat, without opening an IDE: plan, write code, run tests and review. That end state depends on the write-tools and test-runner SDDs and is accepted only by the end-to-end requirement tagged [S10]. [S10] is the final slice: user-facing documentation and end-to-end acceptance, after S1..S9. Slices before S10 MUST NOT change the README; the feature stays off by default and undocumented there until S10. Internal docs (openspec, CHANGELOG Internal entries) may change in any slice.
+Product goal: the finished feature MUST let the user build a programming project entirely from the lazarobox chat, without opening an IDE: plan, write code, run tests and review. That end state depends on the coding-tools write tools (M2) and `run_command` (M3) and is accepted only by the end-to-end requirement tagged [S10]. [S10] is the final slice: user-facing documentation and end-to-end acceptance, after S1..S9. Slices before S10 MUST NOT change the README; the feature stays off by default and undocumented there until S10. Internal docs (openspec, CHANGELOG Internal entries) may change in any slice.
 
 Terms: a *run* is one orchestrated job started from an orchestrator turn; a *worker* is one stateless CLI (or loopback) turn started by the run for a task kind; a *kind* is one of `general`, `code`, `chat`, `review`, `summarize`.
 
@@ -129,17 +129,17 @@ Before starting a worker, the engine resolved for its kind MUST pass the same av
 - THEN the status is `refused` and the reason names the model and `download required`
 
 ### Requirement: Worker toolsets [S1, S7]
-Until write tools exist, every worker MUST be offered only the read-only tools (`find_dir`, `list_dir`, `read_file`). It MUST NOT be offered `run_in_pane`, any write tool or any orchestration tool. [S7] Once the write-tools SDD is built, `code` workers MAY be offered its write tools; every write MUST ask the user, labelled with the worker, and no scope pre-approves a write.
+Until write tools exist, every worker MUST be offered only the read-only tools (`find_dir`, `list_dir`, `read_file`). It MUST NOT be offered `run_in_pane`, any write tool or any orchestration tool. [S7] `code` workers MAY be offered the coding-tools write tools. Their writes MUST be staged and reach the disk only through the user's batch review, labelled with the worker; no scope pre-approves a write.
 
 #### Scenario: Read-only subset [auto]
 - GIVEN a `review` worker
 - WHEN its tool list is built
 - THEN it is exactly `find_dir`, `list_dir`, `read_file`
 
-#### Scenario: Write always asks [S7, auto]
+#### Scenario: Writes wait for the batch review [S7, auto]
 - GIVEN a `code` worker with a write tool and a read scope approved
 - WHEN it calls a write tool inside the scope
-- THEN an approval is requested with the worker label and nothing is written before `y`
+- THEN the change is staged with the worker label and nothing is written before the user approves the batch
 
 ### Requirement: Run-start read scope [S1]
 When a run starts, the user MUST be shown a read scope for approval before any worker reads: a list of root folders (by default the chat origin folder) and a statement that reads inside it are pre-approved for this run only. The scope MUST apply the path policy deny-lists of agent-tools to every candidate path, checking both the requested path (`~` expanded, relative resolved, `.` and `..` folded) and the resolved real path; a path is inside the scope only if both are inside an approved root and neither is excluded. A root that is itself excluded or outside `$HOME` MUST be dropped and the user told. Approving MUST apply to this run only and expire with it. Denying MUST leave an empty scope, so every worker read asks.
@@ -278,12 +278,12 @@ Each adapter MUST classify a worker failure as one of: `rate_limit` (429), `conf
 - THEN they give `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `other`
 
 ### Requirement: Failure options and relaunch [S2]
-`retry` MUST relaunch the same `WorkerSpec` from scratch (CLI turns are stateless) with the engine and model of the failed attempt. `change model` MUST open the menu picker for that task at the model level of its engine; `change provider` MUST open it at the engine level. A confirmed choice is a *run-scoped override*, not a menu change: it MUST apply to the failed worker's task for the rest of this run only, MUST NOT change the menu draft or the saved configuration and MUST NOT write the config file. The worker MUST be relaunched with the override, and every later worker of the same task in the same run MUST also use it; workers of other tasks are unaffected. The override MUST end with the run (finished or cancelled) and a new run starts from the menu values. The run state and the rows of the affected workers MUST show that an override is active, with the `engine>model` in use. Leaving the picker without a choice MUST return to the alert with the same options and nothing is relaunched. `cancel` MUST end the run (see Cancel). The relaunched worker keeps its worker id and its row. An override is still subject to Refusal on an unavailable engine.
+`retry` MUST relaunch the same `WorkerSpec` from scratch (CLI turns are stateless) with the engine and model of the failed attempt, and its prompt MUST be followed by the failed attempt's error, sanitized and capped as in the alert and wrapped as untrusted data. `change model` MUST open the menu picker for that task at the model level of its engine; `change provider` MUST open it at the engine level. A confirmed choice is a *run-scoped override*, not a menu change: it MUST apply to the failed worker's task for the rest of this run only, MUST NOT change the menu draft or the saved configuration and MUST NOT write the config file. The worker MUST be relaunched with the override, and every later worker of the same task in the same run MUST also use it; workers of other tasks are unaffected. The override MUST end with the run (finished or cancelled) and a new run starts from the menu values. The run state and the rows of the affected workers MUST show that an override is active, with the `engine>model` in use. Leaving the picker without a choice MUST return to the alert with the same options and nothing is relaunched. `cancel` MUST end the run (see Cancel). The relaunched worker keeps its worker id and its row. An override is still subject to Refusal on an unavailable engine.
 
 #### Scenario: Retry relaunches the same spec [auto]
-- GIVEN a failed `review` worker with prompt P on `codex`
+- GIVEN a failed `review` worker with prompt P on `codex` whose error was E
 - WHEN retry is chosen
-- THEN a new attempt starts on codex with prompt P and the same worker id
+- THEN a new attempt starts on codex with the same worker id, and its prompt is P followed by E wrapped as untrusted data
 
 #### Scenario: Change provider relaunches on the new one [auto]
 - GIVEN a failed `review` worker on `codex`
@@ -379,26 +379,48 @@ Ctrl+C in the chat pane MUST cancel the orchestrator turn and every worker of th
 - WHEN `cancel` is called
 - THEN the result says it already ended and its status is unchanged
 
-### Requirement: SDD/TDD phases, read-only [S5]
-The run MUST support the phases `explore`, `propose`, `spec`, `design`, `tasks`, `apply`, `verify`, with the dependencies `spec` and `design` after `propose`, `tasks` after `spec` and `design`, `apply` after `tasks`, `verify` after `apply`. A phase MUST NOT be recorded as done without a worker result and a handoff for it. Until the write-tools and test-runner SDDs exist, `apply` and `verify` MUST produce only drafts and review findings, and the orchestrator MUST NOT claim code was written or tests passed.
+### Requirement: ODD flow [S5]
+The run MUST follow the ODD steps in order: `authorize`, `explore`, `resolve`, `classify`, `track` (large goals only), `implement`, `close`. A step MUST NOT be recorded as done without a handoff for it.
+- `authorize`: a goal that asks to investigate, explain, review, compare or plan is read-only, and no `code` worker MUST be spawned for it.
+- `resolve`: the orchestrator MAY ask the user one question, then MUST wait for the answer; it MUST NOT ask a second question in the same turn.
+- `classify`: the goal is `small` when it is understood, touches no high-risk item and could be finished from the goal and the change alone; otherwise `large`. The number of files or tasks MUST NOT decide it.
+- `track`: a `large` goal MUST get a feature document (header, `Specs` with numbered `S#` quoting the user's words verbatim, `Tasks` with the linked `S#`, and `Log` whose `L1` is the goal verbatim), saved as a handoff. A `small` goal MUST NOT get one.
+- `implement`: each task worker MUST receive the feature document by reference (document, task id, `S#`) and report which `S#` it covered.
+- `close`: the run MUST report the verified outcome, every failed, skipped or pending check, and a risk line.
+Until S7, `implement` MUST produce only drafts and review findings, and the orchestrator MUST NOT claim code was written or tests passed.
 
-#### Scenario: Dependency enforced [auto]
-- GIVEN no `spec` or `design` handoff
-- WHEN phase `tasks` is started
-- THEN it is refused naming the missing phases
+#### Scenario: Read-only goal spawns no code worker [auto]
+- GIVEN the goal `explain how the scope prompt works`
+- WHEN the orchestrator calls `spawn_agent` with kind `code`
+- THEN it is refused as outside a read-only goal
 
-#### Scenario: Apply is a draft [auto]
-- GIVEN phase `apply` with no write tools built
+#### Scenario: A large goal needs its document [auto]
+- GIVEN a run classified `large` with no feature document handoff
+- WHEN step `implement` is started
+- THEN it is refused naming the missing `track` step
+
+#### Scenario: Specs keep the user's words [auto]
+- GIVEN the goal `añade un comando "lazarobox doctor" que diga "todo bien"`
+- WHEN the feature document is built
+- THEN an `S#` holds `"lazarobox doctor"` and `"todo bien"` byte for byte, and `L1` is the goal verbatim
+
+#### Scenario: Implement is a draft before S7 [auto]
+- GIVEN step `implement` with no write tools offered
 - WHEN it completes
 - THEN its result is labelled a draft and no file in the workspace changed
 
-### Requirement: TDD red-green [S8]
-Once the test-runner tool exists, the orchestrator MUST require failing-test evidence from the test runner before implementation is accepted and passing evidence after it. Evidence MUST come from the test-runner tool result, never from worker text alone.
+### Requirement: ODD test-first evidence [S8]
+Once `run_command` exists, for a task with a runnable deterministic test the run MUST require failing evidence before the implementation is accepted and passing evidence after it. Evidence MUST come from the `run_command` result, never from worker text alone. A task without a runnable test MUST record an explicit exception with its reason, and is then checked by a review worker instead.
 
 #### Scenario: Green without red refused [S8, auto]
 - GIVEN an implementation result with passing evidence and no earlier failing evidence
-- WHEN the phase is closed
+- WHEN the task is closed
 - THEN it is refused as missing red evidence
+
+#### Scenario: Exception recorded [S8, auto]
+- GIVEN a documentation-only task
+- WHEN it is closed without evidence
+- THEN its handoff holds the exception and its reason, and the close is accepted
 
 ### Requirement: Usage per worker and run [S6]
 Where a CLI reports token or cost data, its decoder MUST emit a usage event; per-worker and per-run rows MUST show the sums. Where the CLI reports nothing, the value MUST show as unknown and MUST NOT be estimated.
@@ -409,12 +431,55 @@ Where a CLI reports token or cost data, its decoder MUST emit a usage event; per
 - THEN it shows the sum, and a worker without usage shows `n/a`
 
 ### Requirement: Write integration and change ledger [S7]
-Once write tools exist, each worker MUST keep a ledger of the files it changed (path, size, diff hash) shown in its result as `files changed`. Every write MUST ask.
+Each `code` worker MUST keep a ledger of the files it staged (path, size, diff hash), shown in its result as `files changed`. Its writes MUST be staged and reach the disk only when the user approves the batch in the batch review.
 
 #### Scenario: Files changed listed [S7, auto]
-- GIVEN a `code` worker that wrote two files after approval
+- GIVEN a `code` worker that staged two files
 - WHEN `collect` returns
-- THEN the result lists both files with sizes
+- THEN the result lists both files with sizes, and neither is on disk before the user approves the batch
+
+### Requirement: Risk assessment of a change [S7b]
+Before a `code` worker's staged change reaches the user's batch review, the run MUST assess its risk as `passive`, `medium` or `high`. Deterministic rules in the core MUST set the floor: a change to build files, CI, dependencies or lockfiles, config formats, or a path the secret rules guard is `high`. The orchestrator MAY raise the tier with a one-line reason and MUST NOT lower it. A failed assessment MUST count as `high`.
+
+#### Scenario: A lockfile is high [S7b, auto]
+- GIVEN a staged change to `Cargo.lock`
+- WHEN it is assessed
+- THEN the tier is `high` whatever the orchestrator said
+
+#### Scenario: The orchestrator cannot lower [S7b, auto]
+- GIVEN a change the rules mark `high` and an orchestrator verdict `passive`
+- WHEN it is assessed
+- THEN the tier stays `high`
+
+### Requirement: Receipt-driven review [S7b]
+A `high` change, or any change the user asks to review, MUST ask the user for consent for that change, inline, before any review starts. A declined change MUST go on to the batch review unreviewed, marked `not reviewed`. On consent:
+- The orchestrator MUST pick only the lenses the change calls for, from `risk`, `resilience`, `readability` and `reliability`, with a one-line reason.
+- Each lens MUST run as a read-only `review` worker over the staged change, wrapped as untrusted data.
+- Only a severe finding the change caused MUST block. A finding that already held before the change is a follow-up.
+- Inferential blockers MUST go to one refuter worker before they count.
+- At most one bounded correction MUST run, by a `code` worker, scoped to the blockers that survived; its result is validated against those blockers only.
+- The review MUST end in a receipt handoff (tier, lenses, findings, correction, outcome), shown in the batch review next to the diff.
+A receipt MUST NOT approve the batch, and the orchestrator MUST NOT consent or approve anything.
+
+#### Scenario: Consent first [S7b, auto]
+- GIVEN a `high` change
+- WHEN the review is due
+- THEN the user is asked for consent and no review worker runs before the answer
+
+#### Scenario: Declined goes on unreviewed [S7b, auto]
+- GIVEN a `high` change and a declined consent
+- WHEN the batch review opens
+- THEN it shows the change marked `not reviewed` and no review worker ran
+
+#### Scenario: One correction at most [S7b, auto]
+- GIVEN a review whose correction still leaves a blocker
+- WHEN the correction result is validated
+- THEN no second correction runs, and the receipt names the open blocker for the user to decide
+
+#### Scenario: A receipt never approves [S7b, auto]
+- GIVEN a receipt with no blockers
+- WHEN the batch review opens
+- THEN the batch still waits for the user's `y`
 
 ### Requirement: Run view and persistence [S9]
 A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally and, after a restart, shown as interrupted with a resume choice; a resumed run relaunches unfinished workers from scratch only on the user's choice, and re-asks the read scope.
@@ -433,15 +498,15 @@ The README MUST be updated once, in the final slice, with: how to enable and use
 - THEN it documents the orchestrator, the menu row and the provider note, and the earlier slices' diffs contain no README change for this feature
 
 ### Requirement: Build a project from the chat, end to end [S10]
-With the write-tools and test-runner SDDs built and S1..S9 merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, failing test, implementation, passing test and review: the orchestrator drives the phases, a `code` worker writes files (every write asked and listed in `files changed`), tests run only through the test-runner tool with red evidence before and green evidence after, a `review` worker reports findings, and handoffs record each step. If either dependency is missing the requirement is not accepted and the feature is described as drafts only.
+With coding-tools M2 and M3 built and S1..S9 and S7b merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, failing test, implementation, passing test and review: the orchestrator drives the ODD steps, a `code` worker stages files (applied only through the user's batch review and listed in `files changed`), tests run only through `run_command` with red evidence before and green evidence after, a high-risk change gets a receipt-driven review, and handoffs record each step. If either dependency is missing the requirement is not accepted and the feature is described as drafts only.
 
 #### Scenario: Small task from the chat [S10, manual]
 - GIVEN the gate on, a chat pane with ORCH on, a scratch project, and `orchestrate`, `code` and `review` assigned to available engines
-- WHEN the user asks for a function with tests in the chat and approves the scope and each write
-- THEN a failing test run is recorded, the files are written, a passing run is recorded, a review result is returned, handoffs exist for each phase, and the user never left the chat
+- WHEN the user asks for a function with tests in the chat and approves the scope and the batch
+- THEN a failing test run is recorded, the files are written, a passing run is recorded, a review result is returned, handoffs exist for each ODD step, and the user never left the chat
 
 #### Scenario: Missing dependency [S10, auto]
-- GIVEN no write tool or test-runner tool is registered
+- GIVEN no write tool or `run_command` tool is registered
 - WHEN the end-to-end flow is requested
 - THEN the orchestrator states it can only produce drafts and does not claim code was written or tests passed
 

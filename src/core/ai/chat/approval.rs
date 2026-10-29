@@ -257,7 +257,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         }
         // `glob` returns names only and, like the directory tools, never asks.
         // Staging touches no disk and asks nothing: the host builds the batch
-        // ask itself when `propose_batch` seals the batch.
+        // ask itself when `propose_batch` seals the batch. An orchestration
+        // call touches nothing of the user's: it never asks.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
@@ -271,7 +272,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
         // The host reads the index and builds the commit review itself.
-        | Call::GitCommit { .. } => None,
+        | Call::GitCommit { .. }
+        | Call::Orchestra(_) => None,
     }
 }
 

@@ -284,7 +284,8 @@ pub fn execute_within(
         Call::Grep { pattern, dir } => {
             super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
-        // A user tool runs on its own server, never here.
+        // A user tool runs on its own server and an orchestration call goes
+        // to the run manager: neither runs here.
         Call::RunInPane { .. }
         | Call::External { .. }
         | Call::CreateDir { .. }
@@ -296,7 +297,8 @@ pub fn execute_within(
         | Call::GitLog { .. }
         | Call::GitAdd { .. }
         | Call::GitCommit { .. }
-        | Call::ProposeBatch => Err(Failure::NotReadTool),
+        | Call::ProposeBatch
+        | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }
 

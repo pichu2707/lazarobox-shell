@@ -5,7 +5,7 @@ Slice tags as in agent-orchestrator.
 ## ADDED Requirements
 
 ### Requirement: Topic-key upsert [S4]
-Saving a note with a topic key that already exists in the same project MUST update that note and not create a second one, so a retried worker or re-closed phase leaves one handoff. The call stays bounded and off the render thread like other calls, and errors carry no content.
+Saving a note with a topic key that already exists in the same project MUST update that note and not create a second one, so a retried worker or re-closed ODD step leaves one handoff. The call stays bounded and off the render thread like other calls, and errors carry no content.
 
 #### Scenario: Second save updates [auto]
 - GIVEN a fake engram holding a note with key K
