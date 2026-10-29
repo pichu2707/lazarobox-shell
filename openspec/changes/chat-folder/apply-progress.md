@@ -63,6 +63,28 @@ Deviations and notes:
 - Resume: `App.resume_folders` keeps `(conversation, stored)` while the probe runs; stale answers are dropped; the resume path does not write `SetFolder` again; busy gives `stored folder not used: <reason>`; same folder is a no-op. `on_resumed` takes `(session, folder)` as a tuple (clippy too_many_arguments).
 - The `#[allow(dead_code)]` A1 left are removed.
 
+## Batch 3: PR B1 (tasks 4.1-4.8), branch `feat/chat-folder-b1`, base `feat/chat-folder-a2`
+
+| Task | Status | Commit |
+|---|---|---|
+| 4.1-4.2 `folder_picker::{Source, Row, merge}` | done | `feat(chat): merge folder candidates into picker rows` |
+| 4.3-4.4 `FolderPicker`, `PickerOutcome`, `on_key`, `paste`, `on_probed`, `on_completed` | done | `feat(chat): drive the folder picker with keys, a typed path and completion` |
+| 4.5-4.6 `StoreCmd::RecentFolders`, `StoreReply::RecentFolders`, `recent_folders` SQL | done | `feat(chat): read the folders earlier conversations were kept under` |
+| 4.7-4.8 `runtime/folder.rs` `walk_git`, `probe_many`, `complete` | done | `feat(chat): find git roots and list directories for the folder picker` |
+| 4.8 `Answer` enum, `Prober::{start_many, start_completion}`, `Effect::{ProbeFolders, CompleteFolder}`, `AppEvent::{FoldersProbed, FolderCompleted}` | done | `feat(chat): answer picker candidates and completions off the event loop` |
+
+Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (7162 lib tests) green. About 394 added non-comment, non-blank production lines.
+
+Deviations and notes:
+- `merge` keeps `Concrete` only (design D3 amendment), not `Concrete|Outside` as D10 still says; it takes already probed candidates `(Source, Result<Probed, Refusal>)`, so HOME, `/`, ancestors, outside, secret and deleted folders are dropped by the A1 verdict, never re-judged.
+- `Source` order: `LastUsed`, `PaneRoot`, `Recent`, `LastShell`; a stable sort, dedupe by the probed real path, cap 12.
+- The picker has no `Accepting(token)`: while a probe is pending only Esc acts, so a reply cannot be stale; `on_probed` outside that state is ignored. A stale completion is dropped by comparing the field text sent with the current one.
+- `PickerOutcome::{Handled, Probe(path), Complete{text, dir, prefix}, Cancel}`. The typed path goes through `expand` and the typed-flow `typed()` mapping (`Outside` -> `not allowed`; `Home` and `AboveHome` are accepted when typed).
+- `RecentFolders` is a read-only SELECT (`GROUP BY folder ORDER BY MAX(updated_at) DESC`); a failure or a panic answers an empty list; an unreachable store thread answers an empty list from `StoreHandle::send`. `migrate_to` and the schema version are untouched.
+- `walk_git(home, start)` canonicalizes both, stops below HOME (a `.git` in HOME is never a root) and `/`. `probe_many(env, paths, git)` applies the walk only to `PaneRoot` candidates and drops those without a repository.
+- `folder::Answer` is now an enum (`Probed`, `Many`, `Completed`) instead of a tuple; `bounded` is built on a new generic `within`. Probing the candidates and listing completions are bounded by the same 3 s `TIMEOUT` and answer an empty list when late.
+- `AppEvent::{FoldersProbed, FolderCompleted}` and the `RecentFolders` reply are ignored by the app until PR B2 wires the picker.
+
 ## Remaining
 
-A3 (3.1-3.8), B1 (4.1-4.8), B2 (5.1-5.7), closing 6.1-6.2.
+A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.
