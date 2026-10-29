@@ -578,6 +578,29 @@ impl ChatState {
         self.generation += 1;
     }
 
+    /// The stored folder of a resumed conversation was put back. When the
+    /// project the chat resolved is the one its session was made under,
+    /// nothing changes. Otherwise memory is asked again for the new folder,
+    /// and the resumed session is kept: its notes stay in it (engram
+    /// rejects a session under another project).
+    ///
+    /// Two projects can coexist afterwards: the one resolved from the folder
+    /// (`readiness`) is only what the chat READS (the context block and the
+    /// badge), while a save WRITES under the session's own project.
+    pub fn restore_memory_for_folder(&mut self) {
+        let kept = self.memory.session.clone();
+        if let (Some(session), Some(project)) = (&kept, self.project())
+            && session.project == project
+        {
+            return;
+        }
+        let linked = self.memory.session_linked;
+        self.reset_memory_for_folder();
+        self.memory.session = kept;
+        self.memory.session_linked = linked;
+        self.memory.relink = false;
+    }
+
     /// A save is about to be sent under `project`: its token, to put on the
     /// command. Its answer is awaited.
     pub fn save_sent(&mut self, project: &str) -> SaveId {

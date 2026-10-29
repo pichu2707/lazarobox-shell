@@ -764,6 +764,13 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// The folder a resumed conversation was stored with while the runtime
+    /// probes it, by chat: `(token, conversation, stored folder)`.
+    resume_folders: HashMap<PaneId, (u64, i64, PathBuf)>,
+    /// The `/cd` a chat waits for the probe of.
+    cd_requests: HashMap<PaneId, folder::CdRequest>,
+    /// The last token handed to a folder probe.
+    folder_seq: u64,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -885,6 +892,9 @@ impl App {
             menu: None,
             launch_cwd: None,
             home: None,
+            resume_folders: HashMap::new(),
+            cd_requests: HashMap::new(),
+            folder_seq: 0,
             hostname: None,
             dir_exists: |_| true,
             shell: None,
@@ -1669,8 +1679,11 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
-            // Nothing asks for a probe yet (the `/cd` flow comes next).
-            AppEvent::FolderProbed { .. } => Vec::new(),
+            AppEvent::FolderProbed {
+                pane,
+                purpose,
+                result,
+            } => self.on_folder_probed(pane, purpose, result),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -2366,6 +2379,7 @@ impl App {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_folder_state(id);
             self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
@@ -2578,6 +2592,7 @@ impl App {
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_folder_state(id);
                 self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {

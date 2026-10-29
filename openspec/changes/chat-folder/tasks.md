@@ -52,16 +52,16 @@ Order: A1 -> A2 -> B1 -> B2 sequential; A3 any time before B2. Each PR keeps `ca
 
 ## PR A2: `/cd`, confirm, chat.db folder, resume (~320, base `main` after A1)
 
-- [ ] 2.1 RED: `ensure_folder` adds the nullable column on a v2 file, is idempotent, and an older-build open (`open_with(.., 2)`) still works; `Create` stores `folder`; `SetFolder` resolves like `SetTags`; `Resumed` returns `folder`. (~0)
-- [ ] 2.2 GREEN: `chat_store.rs` + `chat_store/worker.rs`: `ensure_folder` inside `migrate_to`, `Create.folder`, `StoreCmd::SetFolder`, `Resumed.folder`. (~85)
-- [ ] 2.3 RED: `chat_submit` with `/cd p`: no `ChatSend`, no message appended, composer kept on refusal, `usage: /cd <folder>`, `already in <f>`, `/cdx` and `/etc/x` sent as normal messages, `//cd` sent as `/cd`, each busy reason gives `/cd refused: <reason>`. (~0)
-- [ ] 2.4 GREEN: hook in `app/chat.rs::chat_submit` and new `app/folder.rs` (`/cd` flow, busy check, `ProbeFolder{Cd}`, probe reply handling, invalid target lines). (~95)
-- [ ] 2.5 RED: `ApprovalAsk::Folder` keys: only `y` confirms; `n`, Esc, `x`, `Y`, Enter cancel; busy re-checked at `y`; composer cleared on confirm, kept on cancel; `TestBackend` + insta 60x10 shows old and new folder. (~0)
-- [ ] 2.6 GREEN: `ApprovalAsk::Folder{from,to,note}` in `core/ai/chat/approval.rs`, render in `ui/components/chat/approval.rs`, confirm wiring calling `apply_folder`. (~70)
-- [ ] 2.7 RED: `apply_folder` emits `StoreCmd::SetFolder`; the next send carries the notice once; the same conversation continues; panes opened from the chat get the new cwd; `/cd` model-callable tool absent. (~0)
-- [ ] 2.8 GREEN: wire `SetFolder` and pane cwd (`effective_cwd`) in `apply_folder`. (~20)
-- [ ] 2.9 RED: `on_resumed`: stored concrete folder is set with no ask; `NULL`, vanished, `Outside` or broad (including explicit `$HOME`, twice) gives `no stored folder` / `stored folder not available: <f>` and the folder stays (picker arrives in B2); busy chat keeps its folder. (~0)
-- [ ] 2.10 GREEN: `ProbeFolder{Resume}` in `app/history.rs::on_resumed`. (~50)
+- [x] 2.1 RED: `ensure_folder` adds the nullable column on a v2 file, is idempotent, and an older-build open (`open_with(.., 2)`) still works; `Create` stores `folder`; `SetFolder` resolves like `SetTags`; `Resumed` returns `folder`. (~0)
+- [x] 2.2 GREEN: `chat_store.rs` + `chat_store/worker.rs`: `ensure_folder` inside `migrate_to`, `Create.folder`, `StoreCmd::SetFolder`, `Resumed.folder`. (~85)
+- [x] 2.3 RED: `chat_submit` with `/cd p`: no `ChatSend`, no message appended, composer kept on refusal, `usage: /cd <folder>`, `already in <f>`, `/cdx` and `/etc/x` sent as normal messages, `//cd` sent as `/cd`, each busy reason gives `/cd refused: <reason>`. (~0)
+- [x] 2.4 GREEN: hook in `app/chat.rs::chat_submit` and new `app/folder.rs` (`/cd` flow, busy check, `ProbeFolder{Cd}`, probe reply handling, invalid target lines). (~95)
+- [x] 2.5 RED: `ApprovalAsk::Folder` keys: only `y` confirms; `n`, Esc, `x`, `Y`, Enter cancel; busy re-checked at `y`; composer cleared on confirm, kept on cancel; `TestBackend` + insta 60x10 shows old and new folder. (~0)
+- [x] 2.6 GREEN: `ApprovalAsk::Folder{from,to,note}` in `core/ai/chat/approval.rs`, render in `ui/components/chat/approval.rs`, confirm wiring calling `apply_folder`. (~70)
+- [x] 2.7 RED: `apply_folder` emits `StoreCmd::SetFolder`; the next send carries the notice once; the same conversation continues; panes opened from the chat get the new cwd; `/cd` model-callable tool absent. (~0)
+- [x] 2.8 GREEN: wire `SetFolder` and pane cwd (`effective_cwd`) in `apply_folder`. (~20)
+- [x] 2.9 RED: `on_resumed`: stored concrete folder is set with no ask; `NULL`, vanished, `Outside` or broad (including explicit `$HOME`, twice) gives `no stored folder` / `stored folder not available: <f>` and the folder stays (picker arrives in B2); busy chat keeps its folder. (~0)
+- [x] 2.10 GREEN: `ProbeFolder{Resume}` in `app/history.rs::on_resumed`. (~50)
 
 ## PR A3: start dir (~290, base `main`, independent)
 

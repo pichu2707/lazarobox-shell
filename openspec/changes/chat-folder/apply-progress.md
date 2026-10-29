@@ -41,6 +41,46 @@ Production size: about 350 lines of code (372 added non-comment, non-blank lines
 - S3: the probe refuses a relative path and names `/` as `Root` before reading HOME.
 - S4: the epoch uses `wrapping_add`.
 
+## Batch 2: PR A2 (tasks 2.1-2.10), branch `feat/chat-folder-a2`, base `feat/chat-folder-a1`
+
+| Task | Status | Commit |
+|---|---|---|
+| 2.1 `ensure_folder` in `migrate_to` (still schema v2) | done | `feat(chat): add a nullable folder column to chat.db without a schema bump` |
+| 2.1-2.2 `Create.folder`, `StoreCmd::SetFolder`, `Resumed.folder` | done | `feat(chat): keep the chat folder with the conversation and read it back on resume` |
+| 2.3-2.4 `/cd` hook, busy, usage, probe reply lines | done | `feat(chat): read /cd in the composer and probe the folder it names` |
+| 2.5-2.6 `ApprovalAsk::Folder`, keys, prompt, confirm | done | `feat(chat): confirm a /cd with y and change the chat folder` |
+| 2.7-2.8 `SetFolder` from `apply_folder`, notice once, pane cwd | done | `feat(chat): keep a confirmed folder with the stored conversation` |
+| 2.9-2.10 resume probe and `on_resumed` | done | `feat(chat): take the stored folder of a resumed conversation when it is concrete` |
+
+A1 review fixes merged with `git merge feat/chat-folder-a1` (no conflicts). `cargo fmt --check`, clippy `-D warnings` and `cargo test` (7133 lib tests) green.
+
+Deviations and notes:
+- `SetFolder` is silent (no reply): a lost write only makes a resume ask. A panic in it is swallowed without a reply.
+- `ensure_folder` runs for every `target >= 2` open, not only when migrating, so an existing v2 file gains the column.
+- The confirm reuses the approval slot (`Origin::Block`); its keys are handled before the generic approval keys (`on_folder_key`): only an unmodified `y` confirms, a bare modifier is ignored, busy is re-checked after the ask closes (the ask itself would otherwise count as "an approval is pending").
+- Prompt/pane cwd needed no code: `effective_cwd` of a chat is its folder.
+- `/cd` lines: `/cd refused: <reason>` for busy and invalid targets (typed verdicts, `Outside` -> `not allowed`); `already in <f>` compares the probed real path with the chat folder.
+- Resume: `App.resume_folders` keeps `(conversation, stored)` while the probe runs; stale answers are dropped; the resume path does not write `SetFolder` again; busy gives `stored folder not used: <reason>`; same folder is a no-op. `on_resumed` takes `(session, folder)` as a tuple (clippy too_many_arguments).
+- The `#[allow(dead_code)]` A1 left are removed.
+
+### Batch 2b: PR A2 review fixes (W1-W5, S1-S2)
+
+- W1/W2: `Purpose::Resume(token)`; `App.resume_folders` holds `(token, conversation, path)`; only the latest resume answer counts; `/cd` submit and any folder change drop the entry.
+- W3: `Purpose::Cd(token)` and `App.cd_requests` (token + submitted arg); an answer is dropped unless it matches the latest request and the composer still holds that arg.
+- W5: at `y` the folder is probed again (`Purpose::Confirm(token)`, through the off-loop Prober); a different path or a refusal gives `/cd refused: folder changed since it was checked`; the composer clears and the folder applies only on a matching answer. Busy is checked at `y` and again at the answer.
+- W4: `ChatState::restore_folder` for a resume: system line `folder restored: <f>`, model notice `This conversation's folder is <f>.` once, no `End`, no `SetFolder`; memory is untouched when the resolved project equals the resumed session project, else it resolves again keeping the resumed session (`restore_memory_for_folder`).
+- S1: `drop_folder_state` on pane removal. S2: comment in `chat_store.rs` that v3 may assume `folder` exists.
+- Production size of A2 after the fixes: 561 added / 33 removed lines gross (`git diff --numstat`, tests and snapshots excluded; comments and blanks included, roughly 170 of them), 179 added in the fixes. Over the 400 soft limit, under the 600 hard limit.
+- Tests: 7148 lib tests green. RED was seen at compile level (new variants/fields) for each batch; the behavioural assertions were written with the code in the same step.
+
+### Batch 2c: PR A2 review round 2
+
+- The folder ask stays up after `y` with `checking: true` (`ApprovalAsk::Folder{.., checking}`, prompt `checking <f>…`, keys `Esc cancels`): while the last check runs only Esc answers (`/cd cancelled`), every other key is swallowed, so the composer cannot be edited under the pending answer. The answer closes the ask before the busy check.
+- A refused or bare `/cd` no longer drops the pending resume folder; only the `/cd` that emits a probe does. Decline and busy-at-`y` remove the `/cd` request. `debug_assert` where a folder ask has no request.
+- New tests: second `y`, a char, Enter and Esc while checking; busy between `y` and the answer; duplicate answer applies once; n/Esc clear the request; bare/refused `/cd` keeps the resume folder; a restore into another project still saves under the session project (comment on read vs write project in `restore_memory_for_folder`).
+- Size of A2 against A1 after round 2: 617 added / 33 removed gross, 509 added excluding comments and blank lines (tests and snapshots excluded). Over the 400 soft limit; the gross figure passes 600, the code-only figure does not.
+- 7157 lib tests green.
+
 ## Remaining
 
-PR A2 (2.1-2.10), A3 (3.1-3.8), B1 (4.1-4.8), B2 (5.1-5.7), closing 6.1-6.2.
+A3 (3.1-3.8), B1 (4.1-4.8), B2 (5.1-5.7), closing 6.1-6.2.

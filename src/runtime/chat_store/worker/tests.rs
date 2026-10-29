@@ -62,6 +62,7 @@ fn create(first: StoredMessage, open: Vec<i64>) -> StoreCmd {
         extras: vec![],
         first,
         origin: None,
+        folder: None,
         open,
     }
 }
@@ -208,6 +209,7 @@ fn a_conversation_without_a_tag_stores_no_tag_row() {
         extras: vec![],
         first: user("hi"),
         origin: None,
+        folder: None,
         open: vec![],
     };
     created_id(worker.handle(cmd));
@@ -324,6 +326,7 @@ fn an_append_after_a_failed_create_is_dropped_silently() {
         extras: vec![],
         first: user("q"),
         origin: None,
+        folder: None,
         open: vec![],
     });
     assert!(failed(made));
@@ -1379,6 +1382,7 @@ fn the_list_is_newest_activity_first_with_the_first_user_message() {
         extras: vec![],
         first: user("newer\nquestion"),
         origin: None,
+        folder: None,
         open: vec![],
     }));
     worker.handle(append(old, reply_msg("an answer", MsgStatus::Complete)));
@@ -1745,6 +1749,7 @@ fn a_create_without_a_tag_resolves_it_from_the_origin() {
         extras: vec![],
         first: user("hi"),
         origin,
+        folder: None,
         open: vec![],
     };
     let id = created_id(worker.handle(cmd(None, Some(proj.clone()))));
@@ -1939,6 +1944,7 @@ fn a_create_stores_the_extra_tags_after_the_project_tag() {
         extras: vec!["sql".into(), "SQL".into(), "etl".into()],
         first: user("q"),
         origin: None,
+        folder: None,
         open: vec![],
     }));
     assert_eq!(
@@ -2020,4 +2026,87 @@ fn a_failed_create_forgets_the_conversation_the_pane_had() {
     assert_eq!(worker.handle(set_tags(None, Tags::parse("late"))), None);
     assert_eq!(rows(&conn, first).len(), 1, "nothing landed in the old one");
     assert_eq!(count(&conn, "tags"), 1, "the old conversation kept its tag");
+}
+
+// ---- the chat folder (chat-folder) -----------------------------------------
+
+fn create_in(folder: &str) -> StoreCmd {
+    StoreCmd::Create {
+        pane: pane(),
+        profile: "programmer".into(),
+        tag: None,
+        extras: vec![],
+        first: user("q"),
+        origin: None,
+        folder: Some(PathBuf::from(folder)),
+        open: vec![],
+    }
+}
+
+fn set_folder(conversation: Option<i64>, folder: &str) -> StoreCmd {
+    StoreCmd::SetFolder {
+        pane: pane(),
+        conversation,
+        folder: PathBuf::from(folder),
+    }
+}
+
+fn stored_folder(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT folder FROM conversations WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn create_stores_the_folder_and_a_conversation_without_one_reads_null() {
+    let (_dir, mut worker, conn) = fixture();
+    let with = created_id(worker.handle(create_in("/work/a")));
+    let without = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(stored_folder(&conn, with).as_deref(), Some("/work/a"));
+    assert_eq!(stored_folder(&conn, without), None);
+}
+
+#[test]
+fn set_folder_replaces_the_folder_silently_and_bumps_the_activity() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create_in("/work/a")));
+    conn.execute("UPDATE conversations SET updated_at = 1", [])
+        .unwrap();
+    assert_eq!(worker.handle(set_folder(Some(id), "/work/b")), None);
+    assert_eq!(stored_folder(&conn, id).as_deref(), Some("/work/b"));
+    assert!(updated_at(&conn, id) > 1);
+}
+
+#[test]
+fn set_folder_without_an_id_resolves_the_conversation_of_the_pane() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create_in("/work/a")));
+    assert_eq!(worker.handle(set_folder(None, "/work/c")), None);
+    assert_eq!(stored_folder(&conn, id).as_deref(), Some("/work/c"));
+}
+
+#[test]
+fn set_folder_for_a_conversation_that_is_gone_changes_nothing() {
+    let (_dir, mut worker, conn) = fixture();
+    assert_eq!(worker.handle(set_folder(Some(999), "/work/x")), None);
+    assert_eq!(count(&conn, "conversations"), 0);
+    assert_eq!(worker.handle(set_folder(None, "/work/x")), None);
+}
+
+#[test]
+fn resume_returns_the_stored_folder_or_none() {
+    let (_dir, mut worker, _conn) = fixture();
+    let with = created_id(worker.handle(create_in("/work/a")));
+    let without = created_id(worker.handle(create(user("q"), vec![])));
+    let Some(StoreReply::Resumed { folder, .. }) = worker.handle(resume(with)) else {
+        panic!("expected Resumed");
+    };
+    assert_eq!(folder, Some(PathBuf::from("/work/a")));
+    let Some(StoreReply::Resumed { folder, .. }) = worker.handle(resume(without)) else {
+        panic!("expected Resumed");
+    };
+    assert_eq!(folder, None);
 }

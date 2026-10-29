@@ -30,6 +30,7 @@ fn new_conv() -> NewConversation {
         tag: Some("proj".into()),
         extras: vec![],
         origin: Some("/work/proj".into()),
+        folder: Some("/work/proj".into()),
         open: vec![7],
     }
 }
@@ -57,6 +58,7 @@ fn the_first_save_creates_the_conversation() {
             extras: vec![],
             first: user("hi"),
             origin: Some("/work/proj".into()),
+            folder: Some("/work/proj".into()),
             open: vec![7],
         })
     );
@@ -380,4 +382,31 @@ fn a_detached_conversation_stores_no_tags() {
     let mut store = PaneStore::open(9);
     store.detach();
     assert_eq!(store.set_tags(pane(), Tags::parse("a")), None);
+}
+
+#[test]
+fn set_folder_follows_the_link_like_set_tags() {
+    let folder = || PathBuf::from("/work/new");
+    let mut store = PaneStore::new();
+    // Nothing stored yet: the `Create` will carry the folder.
+    assert_eq!(store.set_folder(pane(), folder()), None);
+    store.save(pane(), user("hi"), &new_conv());
+    assert_eq!(
+        store.set_folder(pane(), folder()),
+        Some(StoreCmd::SetFolder {
+            pane: pane(),
+            conversation: None,
+            folder: folder(),
+        })
+    );
+    store.on_reply(pane(), &created(9));
+    assert!(matches!(
+        store.set_folder(pane(), folder()),
+        Some(StoreCmd::SetFolder {
+            conversation: Some(9),
+            ..
+        })
+    ));
+    store.detach();
+    assert_eq!(store.set_folder(pane(), folder()), None);
 }

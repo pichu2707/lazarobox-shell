@@ -390,6 +390,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
             first,
             origin,
             open,
+            ..
         }),
         Effect::ChatSend { .. },
     ] = effects.as_slice()
@@ -695,6 +696,7 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
             stored(Role::Assistant, "par", MsgStatus::Interrupted),
         ],
         session: None,
+        folder: None,
     })
 }
 

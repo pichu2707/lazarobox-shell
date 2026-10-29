@@ -142,6 +142,7 @@ impl ChatState {
             } else {
                 self.origin_cwd.clone()
             },
+            folder: self.origin_cwd.clone(),
             open: open.to_vec(),
         };
         std::mem::take(&mut self.outbox)

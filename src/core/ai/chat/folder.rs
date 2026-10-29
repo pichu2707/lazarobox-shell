@@ -4,11 +4,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ChatState, Phase};
+use super::{ChatState, Phase, store::StoreCmd};
 use crate::core::ai::{
     sanitize::clean,
     tools::paths::{SecretRoots, normalize},
 };
+use crate::core::layout::PaneId;
 
 /// A folder the runtime resolved and judged.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -21,10 +22,15 @@ pub struct Probed {
 /// Why a folder is being probed, so the answer reaches the right flow.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Purpose {
-    /// The user typed `/cd`.
-    Cd,
-    /// A conversation was resumed with a stored folder.
-    Resume,
+    /// The user typed `/cd`; the token names the request, so a stale
+    /// answer (an earlier or an edited command) is told apart.
+    Cd(u64),
+    /// The check made when the user presses `y`: the folder is resolved once
+    /// more, and must still be the one that was asked about.
+    Confirm(u64),
+    /// A conversation was resumed with a stored folder; the token names the
+    /// request, so the answer of an earlier resume is told apart.
+    Resume(u64),
 }
 
 /// The argument of `/cd`.
@@ -170,6 +176,32 @@ impl ChatState {
              messages may not exist; tool paths are now relative to {to}."
         ));
         FolderChange { old, prompt_now }
+    }
+
+    /// Puts back the folder a resumed conversation was stored with. Unlike
+    /// [`set_folder`](Self::set_folder) this is not a change for the model
+    /// (the earlier messages were made there): it is told where the
+    /// conversation is, once. The resumed engram session stays unless the
+    /// project of the chat has to be resolved again.
+    pub fn restore_folder(&mut self, new: PathBuf) -> FolderChange {
+        let old = self.origin_cwd.replace(new.clone());
+        let to = clean(&new.to_string_lossy());
+        let prompt_now = self.invalidate_prompt();
+        self.restore_memory_for_folder();
+        self.push_system_line(format!("folder restored: {to}"));
+        self.tell(format!("This conversation's folder is {to}."));
+        FolderChange { old, prompt_now }
+    }
+
+    /// The stored conversation this chat saves to, once it exists.
+    pub fn stored_conversation(&self) -> Option<i64> {
+        self.store.conversation()
+    }
+
+    /// The command that keeps `folder` with the conversation, when it is
+    /// stored already (a fresh one carries the folder in its `Create`).
+    pub fn store_set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {
+        self.store.set_folder(pane, folder)
     }
 
     /// Why the folder cannot change now, in the order the user is told (design

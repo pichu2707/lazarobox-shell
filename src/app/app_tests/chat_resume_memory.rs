@@ -45,6 +45,7 @@ fn resumed_with(session: Option<(&str, &str)>) -> AppEvent {
         extras,
         messages,
         session: session.map(|(id, project)| (id.to_owned(), project.to_owned())),
+        folder: None,
     })
 }
 
@@ -267,4 +268,117 @@ fn a_late_resume_does_not_hydrate_a_pane_that_left_the_list() {
     a.update(key('n'));
     a.update(resumed_with(Some((STORED_SESSION, STORED_PROJECT))));
     assert!(chat_of(&a).session().is_none());
+}
+
+// ---- the folder a resume restores (chat-folder A2) -------------------------
+
+fn session_of(a: &App) -> Option<(String, String)> {
+    chat_of(a)
+        .session()
+        .map(|s| (s.id.clone(), s.project.clone()))
+}
+
+#[test]
+fn a_restored_folder_says_restored_and_not_changed() {
+    let mut a = resumed_chat(Some((STORED_SESSION, PROJECT)));
+    a.restore_folder(chat_id(), "/w/stored".into());
+    let lines: Vec<String> = chat_of(&a)
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            crate::core::ai::chat::Entry::System(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        lines.contains(&"folder restored: /w/stored".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("-> /w/stored")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_restored_folder_is_told_to_the_model_once_without_a_change() {
+    let mut a = resumed_chat(Some((STORED_SESSION, PROJECT)));
+    a.restore_folder(chat_id(), "/w/stored".into());
+    a.update(prompt_for(chat_id()));
+    let first = super::chat_history::ask(&mut a, "one");
+    let system = |effects: &[Effect]| {
+        effects.iter().find_map(|e| match e {
+            Effect::ChatSend { request, .. } => Some(request.system.clone()),
+            _ => None,
+        })
+    };
+    let first = system(&first).expect("a send");
+    assert!(
+        first.contains("This conversation's folder is /w/stored."),
+        "{first}"
+    );
+    assert!(!first.contains("changed from"), "{first}");
+}
+
+#[test]
+fn restoring_a_folder_of_the_same_project_keeps_memory_and_session_as_they_are() {
+    let mut a = resumed_chat(Some((STORED_SESSION, PROJECT)));
+    let epoch = chat_of(&a).memory_epoch();
+    let effects = a.restore_folder(chat_id(), "/w/stored".into());
+    assert!(memory_cmds(&effects).is_empty(), "{effects:?}");
+    assert_eq!(chat_of(&a).memory_epoch(), epoch);
+    assert_eq!(
+        session_of(&a),
+        Some((STORED_SESSION.to_owned(), PROJECT.to_owned()))
+    );
+}
+
+#[test]
+fn restoring_a_folder_of_another_project_resolves_again_and_keeps_the_session() {
+    let mut a = resumed_chat(Some((STORED_SESSION, STORED_PROJECT)));
+    let epoch = chat_of(&a).memory_epoch();
+    let effects = a.restore_folder(chat_id(), "/w/stored".into());
+    let cmds = memory_cmds(&effects);
+    assert!(
+        matches!(cmds.as_slice(), [MemCmd::Resolve { cwd, epoch: e, .. }]
+            if cwd == "/w/stored" && *e != epoch),
+        "{cmds:?}"
+    );
+    // No `End`: the resumed session is still the one the notes go into.
+    assert_eq!(
+        session_of(&a),
+        Some((STORED_SESSION.to_owned(), STORED_PROJECT.to_owned()))
+    );
+}
+
+#[test]
+fn a_cd_still_resets_memory_and_ends_the_session() {
+    let mut a = resumed_chat(Some((STORED_SESSION, STORED_PROJECT)));
+    save_note(&mut a, "Kept");
+    let effects = a.apply_folder(chat_id(), "/w/b".into());
+    assert!(
+        memory_cmds(&effects)
+            .iter()
+            .any(|c| matches!(c, MemCmd::Resolve { .. })),
+        "{effects:?}"
+    );
+    assert_eq!(session_of(&a), None);
+}
+
+#[test]
+fn after_a_restore_into_another_project_the_notes_still_go_into_the_session_project() {
+    let mut a = resumed_chat(Some((STORED_SESSION, STORED_PROJECT)));
+    a.restore_folder(chat_id(), "/w/stored".into());
+    // The chat resolves the project of the restored folder again, to read
+    // the context; writes follow the resumed session instead.
+    a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: chat_of(&a).memory_epoch(),
+        result: Ok("restored-project".into()),
+    }));
+    let effects = save_note(&mut a, "Later");
+    assert_eq!(
+        the_save(&effects),
+        (Some(STORED_SESSION.to_owned()), STORED_PROJECT.to_owned())
+    );
 }

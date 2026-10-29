@@ -325,12 +325,20 @@ impl App {
                 extras,
                 messages,
                 session,
+                folder,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
                     extras: extras.clone(),
                 };
-                self.on_resumed(*pane, *conversation, profile, tags, messages, session)
+                self.on_resumed(
+                    *pane,
+                    *conversation,
+                    profile,
+                    tags,
+                    messages,
+                    (session, folder),
+                )
             }
             StoreReply::ResumeFailed { pane } => {
                 self.set_list_line(*pane, RESUME_FAILED);
@@ -421,7 +429,7 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
-        session: &Option<(String, String)>,
+        (session, folder): (&Option<(String, String)>, &Option<PathBuf>),
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -445,11 +453,13 @@ impl App {
             chat.replace_session(session_id, project);
         }
         self.dirty = true;
-        if reprepare {
+        let mut effects: Vec<Effect> = if reprepare {
             self.prepare_prompt(id).into_iter().collect()
         } else {
             Vec::new()
-        }
+        };
+        effects.extend(self.probe_stored_folder(id, conversation, folder.as_deref()));
+        effects
     }
 
     /// The runtime prepared a system prompt for chat `id`. When the profile

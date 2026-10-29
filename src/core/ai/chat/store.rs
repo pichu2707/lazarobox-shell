@@ -55,6 +55,8 @@ pub enum StoreCmd {
         /// The cwd the chat was opened from: when `tag` is not known yet (the
         /// list has not answered), the store thread resolves it from here.
         origin: Option<PathBuf>,
+        /// The chat folder, kept with the conversation for a resume.
+        folder: Option<PathBuf>,
         open: Vec<i64>,
     },
     /// Adds a message. `conversation` is `None` while the pane does not know
@@ -97,6 +99,14 @@ pub enum StoreCmd {
         pane: PaneId,
         conversation: Option<i64>,
         tags: Tags,
+    },
+    /// Replaces the folder a conversation is kept under and bumps its last
+    /// activity. `conversation` is `None` while the pane does not know its id
+    /// yet (as for `Append`). Silent: a lost write only means a resume asks.
+    SetFolder {
+        pane: PaneId,
+        conversation: Option<i64>,
+        folder: PathBuf,
     },
     /// The conversations of the store, newest last activity first, and the
     /// project tag of `origin` (resolved on the store thread: it walks the
@@ -219,6 +229,9 @@ pub enum StoreReply {
         extras: Vec<String>,
         messages: Vec<Msg>,
         session: Option<(String, String)>,
+        /// The folder the conversation was kept under; `None` for one stored
+        /// before the column existed.
+        folder: Option<PathBuf>,
     },
     ResumeFailed {
         pane: PaneId,
@@ -312,6 +325,8 @@ pub struct NewConversation {
     pub tag: Option<String>,
     pub extras: Vec<String>,
     pub origin: Option<PathBuf>,
+    /// The chat folder at the time of the first save.
+    pub folder: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
 }
@@ -370,6 +385,7 @@ impl PaneStore {
                     extras: new.extras.clone(),
                     first: message,
                     origin: new.origin.clone(),
+                    folder: new.folder.clone(),
                     open: new.open.clone(),
                 })
             }
@@ -401,6 +417,22 @@ impl PaneStore {
             pane,
             conversation,
             tags,
+        })
+    }
+
+    /// The command that stores `folder` now. A conversation not created yet
+    /// keeps it for its `Create`; one being created is named by its pane; a
+    /// detached one stores nothing.
+    pub fn set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::SetFolder {
+            pane,
+            conversation,
+            folder,
         })
     }
 
