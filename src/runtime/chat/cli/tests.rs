@@ -3331,6 +3331,22 @@ fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
 }
 
 #[test]
+fn the_full_jail_note_keeps_the_short_one_and_adds_what_to_do() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
+    let bin = Path::new("/bin/true");
+    let note = jail_note_with(Os::Macos, &env, Cli::Codex, bin).unwrap();
+    assert_eq!(note.short, "Linux/macOS only · use claude");
+    assert_eq!(
+        note.full,
+        "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
+    );
+    // claude on macOS is never jailed: one reason, short and full.
+    let keychain = jail_note_with(Os::Macos, &env, Cli::Claude, bin).unwrap();
+    assert_eq!(keychain.short, keychain.full);
+}
+
+#[test]
 fn macos_adds_env_and_the_homebrew_openssl_config_to_the_layout() {
     let head = b"#!/usr/bin/env node\n";
     let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");

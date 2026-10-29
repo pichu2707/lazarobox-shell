@@ -45,9 +45,19 @@ pub fn shown(text: &str) -> String {
         .collect()
 }
 
-/// A download the runtime is running, as the llamacpp row shows it.
+/// Where a download comes from: one runs at a time, from either.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    HuggingFace,
+    Ollama,
+}
+
+/// A download the runtime is running, as its entry row (llamacpp's or
+/// ollama's) shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Running {
+    pub source: Source,
+    /// The file, or the `model:tag` of an Ollama pull.
     pub file: String,
     pub license: String,
     /// Bytes on disk.
@@ -311,7 +321,7 @@ impl Picker {
         }
     }
 
-    /// The download that runs, shown on the llamacpp row. Its end closes a
+    /// The download that runs, shown on its entry row. Its end closes a
     /// cancel prompt.
     pub fn set_download(&mut self, download: Option<Running>) {
         if download.is_none() {
@@ -336,13 +346,17 @@ impl Picker {
         }
     }
 
-    /// Enter on the llamacpp entry row: the cancel prompt while a download
-    /// runs, else the Query screen, with the popular models asked for to
-    /// open over it.
+    /// Enter on the llamacpp entry row: the cancel prompt while its
+    /// download runs, [`Outcome::Busy`] while an Ollama pull runs, else the
+    /// Query screen, with the popular models asked for to open over it.
     pub(super) fn open_hub(&mut self) -> Outcome {
-        if self.download.is_some() {
-            self.cancel_prompt = true;
-            return Outcome::Stay;
+        match self.download.as_ref().map(|d| d.source) {
+            Some(Source::HuggingFace) => {
+                self.cancel_prompt = true;
+                return Outcome::Stay;
+            }
+            Some(Source::Ollama) => return Outcome::Busy,
+            None => {}
         }
         let mut hub = Hub::new();
         hub.asking = Some(Ask::Popular);

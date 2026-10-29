@@ -97,12 +97,18 @@ fn y_does_nothing_while_rows_of_the_diff_are_unseen() {
 fn y_approves_only_after_every_row_was_seen_and_the_review_delay() {
     let (mut a, turn) = asked(60);
     read_all(&mut a);
-    assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
     assert_eq!(
-        at(&mut a, ms(ARM_DELAY) + 100, key('y')),
+        early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
         vec![decision(turn, 1, Decision::Sent)]
     );
     assert_eq!(pending(&a), None);
+    // A first press at exactly the delay approves.
+    let (mut b, turn) = asked(60);
+    read_all(&mut b);
+    assert_eq!(
+        at(&mut b, ms(ARM_DELAY), key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
 }
 
 // Scenario "Declined": `n` and Esc end it as denied.

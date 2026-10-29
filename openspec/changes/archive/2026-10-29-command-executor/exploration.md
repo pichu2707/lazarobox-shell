@@ -1,5 +1,7 @@
 # Exploration: command-executor
 
+> Superseded by `coding-tools` (archived 2026-10-29 as exploration only; no spec merge).
+
 > Source of truth also stored in engram topic `sdd/command-executor/explore` (project `lazarobox-shell`).
 
 ## Executive summary
