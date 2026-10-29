@@ -546,5 +546,6 @@ fn enlarging_the_pane_lets_y_type_the_command_shown_in_full() {
     a.update(AppEvent::Resize { cols: 80, rows: 7 });
     assert!(writes(&a.update(key('y'))).is_empty());
     a.update(AppEvent::Resize { cols: 80, rows: 30 });
+    let_go();
     assert_eq!(writes(&a.update(key('y'))).len(), 1);
 }

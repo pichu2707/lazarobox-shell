@@ -360,6 +360,19 @@ fn a_missing_title_reads_as_the_footer_error() {
     assert_eq!(texts(&m)[3], "  s▏");
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_feedback_form() {
+    let mut m = on_row();
+    send(&mut m, KeyCode::Enter);
+    send(&mut m, KeyCode::Tab);
+    send(&mut m, KeyCode::Char('a'));
+    send(&mut m, KeyCode::Char('b'));
+    assert_eq!(texts(&m)[3], "  ab▏");
+    key_with(&mut m, KeyCode::Char('h'), KeyModifiers::CONTROL);
+    assert_eq!(texts(&m)[3], "  a▏");
+}
+
 // Spec (config-menu, Feedback): the engines attached are the detected ones,
 // with their version; one not installed is left out.
 #[test]

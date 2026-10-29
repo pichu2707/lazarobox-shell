@@ -158,6 +158,8 @@ fn a_failed_send_keeps_the_form_and_shows_the_message() {
         a.menu().unwrap().footer(),
         Footer::Error("gh: HTTP 403: forbidden")
     );
+    // A retry is a new press, not the first Ctrl+S still held.
+    let_go();
     assert!(matches!(
         a.update(ctrl('s')).as_slice(),
         [Effect::SendIssue(_)]
