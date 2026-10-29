@@ -8,7 +8,7 @@ use std::time::Instant;
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::Widget,
 };
 
@@ -30,6 +30,9 @@ use crate::{
     ui::theme::LazaroboxTheme,
 };
 
+/// Columns the batch badge also leaves free for the ORCH badge.
+const ORCH_BADGE_ROOM: usize = " ORCH ".len();
+
 /// The two areas of a chat pane.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ChatLayout {
@@ -45,6 +48,7 @@ pub struct ChatView<'a> {
     approval: Option<&'a ApprovalPrompt>,
     now: Option<Instant>,
     copy: Option<ChatMarks>,
+    orchestrating: bool,
 }
 
 impl<'a> ChatView<'a> {
@@ -56,7 +60,15 @@ impl<'a> ChatView<'a> {
             approval: None,
             now: None,
             copy: None,
+            orchestrating: false,
         }
+    }
+
+    /// Whether the pane orchestrates (the global gate and its ORCH mode both
+    /// on): it then wears the ORCH badge beside the mode badge.
+    pub fn orchestrating(mut self, on: bool) -> Self {
+        self.orchestrating = on;
+        self
     }
 
     /// The chat COPY cursor and selection: the selection is drawn reversed
@@ -221,10 +233,14 @@ impl Widget for ChatView<'_> {
         }
         self.render_view(area, buf);
         // The review keeps its counter row to itself, whatever the mode.
+        let mut right = area.right();
         if let Some(mode) = self.chat.mode_badge()
             && !self.review_shown()
         {
-            self.draw_mode_badge(mode, area, buf);
+            right = self.draw_mode_badge(mode, area, buf);
+        }
+        if self.orchestrating && !self.review_shown() {
+            self.draw_orch_badge(area, right, buf);
         }
         // The conversation draws it only in the row it reserved.
         let reserved = self.plan(area).0.transcript.y > area.y;
@@ -240,31 +256,47 @@ impl Widget for ChatView<'_> {
 impl ChatView<'_> {
     /// ` AUTO ` (amber) or ` RUN ` (red) over the top-right cells of the
     /// pane, `A` or `R` when it is narrower than that: an exception marker,
-    /// drawn in every view.
-    fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) {
+    /// drawn in every view. Returns the column it starts at.
+    fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) -> u16 {
         let (text, short, colour) = match mode {
             ApprovalMode::Run => (" RUN ", "R", self.theme.error_red),
             ApprovalMode::Auto => (" AUTO ", "A", self.theme.warning_orange),
             // `mode_badge` never yields `ask`.
-            ApprovalMode::Ask => return,
+            ApprovalMode::Ask => return area.right(),
         };
+        self.draw_badge(text, short, colour, area, buf)
+            .unwrap_or(area.right())
+    }
+
+    /// ` ORCH ` (purple) just left of the mode badge, whose cells start at
+    /// `right`, or `O` when only one column is left: drawn in every view of
+    /// an orchestrating pane, as the mode badge.
+    fn draw_orch_badge(&self, area: Rect, right: u16, buf: &mut Buffer) {
+        let room = Rect::new(area.x, area.y, right - area.x, area.height);
+        self.draw_badge(" ORCH ", "O", self.theme.ai_purple, room, buf);
+    }
+
+    /// A badge, `text` or else `short`, over the top-right cells of `area`;
+    /// `None` when not even `short` fits. Returns the column it starts at.
+    fn draw_badge(
+        &self,
+        text: &str,
+        short: &str,
+        colour: Color,
+        area: Rect,
+        buf: &mut Buffer,
+    ) -> Option<u16> {
         let style = Style::default()
             .fg(self.theme.bg_base)
             .bg(colour)
             .add_modifier(Modifier::BOLD);
-        let text = if usize::from(area.width) >= text.len() {
-            text
-        } else {
-            short
-        };
-        let width = u16::try_from(text.len()).unwrap_or(1);
-        buf.set_stringn(
-            area.right() - width,
-            area.y,
-            text,
-            usize::from(width),
-            style,
-        );
+        let text = [text, short]
+            .into_iter()
+            .find(|text| usize::from(area.width) >= text.len())?;
+        let width = u16::try_from(text.len()).ok()?;
+        let x = area.right() - width;
+        buf.set_stringn(x, area.y, text, usize::from(width), style);
+        Some(x)
     }
 
     /// The staged batch of the chat on the top-left cells of the pane: the
@@ -272,7 +304,12 @@ impl ChatView<'_> {
     /// The mode and scroll badges own the right side, so it leaves their room
     /// and gets shorter before it would meet them.
     fn draw_batch_badge(&self, badge: Badge, area: Rect, buf: &mut Buffer) {
-        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM);
+        let orch = if self.orchestrating {
+            ORCH_BADGE_ROOM
+        } else {
+            0
+        };
+        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM + orch);
         let Some(text) = badge.text(room) else {
             return;
         };
@@ -400,6 +437,8 @@ mod memory_tests;
 mod note;
 #[cfg(test)]
 mod note_tests;
+#[cfg(test)]
+mod orch_tests;
 mod summary;
 #[cfg(test)]
 mod summary_tests;

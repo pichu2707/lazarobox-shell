@@ -9,6 +9,7 @@ use super::{
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
+use crate::core::ai::orchestra::worker::WorkerStatus;
 
 /// What a transcript line is, which decides its style.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -188,17 +189,19 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 push_wrapped(out, kind, "  ", "    ", &text, width);
             }
         }
-        // Plain text for now, so yank and COPY carry it like a tool row; the
-        // worker row's own look comes with the UI (S1e-2).
+        // Plain text, so yank and COPY carry it like a tool row; a worker
+        // that ended badly is drawn like a tool result that failed.
         Entry::Worker(row) => {
-            push_wrapped(
-                out,
-                LineKind::Tool,
-                TOOL_PREFIX,
-                "  ",
-                &worker_line(row),
-                width,
-            );
+            let kind = match row.status {
+                WorkerStatus::Failed | WorkerStatus::TimedOut | WorkerStatus::Refused => {
+                    LineKind::ToolAlert
+                }
+                WorkerStatus::Queued
+                | WorkerStatus::Running
+                | WorkerStatus::Done
+                | WorkerStatus::Cancelled => LineKind::Tool,
+            };
+            push_wrapped(out, kind, TOOL_PREFIX, "  ", &worker_line(row), width);
         }
         Entry::Reasoning(block) => {
             let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());
