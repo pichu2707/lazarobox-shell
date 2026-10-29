@@ -124,8 +124,6 @@ impl App {
     pub(super) fn cd_submit(&mut self, id: PaneId, arg: &CdArg) -> Vec<Effect> {
         let busy = self.folder_busy(id);
         let home = self.home.clone();
-        // The user's own `/cd` outranks a resume answer still on its way.
-        self.resume_folders.remove(&id);
         self.cd_requests.remove(&id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -141,6 +139,9 @@ impl App {
                 };
                 match path {
                     Some(path) => {
+                        // The user's own `/cd` outranks a resume answer still
+                        // on its way; a refused one leaves it alone.
+                        self.resume_folders.remove(&id);
                         self.folder_seq += 1;
                         let token = self.folder_seq;
                         self.cd_requests.insert(
@@ -194,7 +195,7 @@ impl App {
                     return Vec::new();
                 }
                 if matches!(purpose, Purpose::Confirm(_)) {
-                    return self.on_confirm_probed(id, confirming, result, busy);
+                    return self.on_confirm_probed(id, confirming, result);
                 }
                 self.dirty = true;
                 let verdict = typed(result.as_ref().map(|probed| probed.verdict).map_err(|r| *r));
@@ -213,6 +214,7 @@ impl App {
                             to: probed.path,
                             note: (verdict != Verdict::Concrete)
                                 .then(|| "broad folder: the tools keep their limits".to_owned()),
+                            checking: false,
                         };
                         match chat.approvals_mut().request(ask, Origin::Block) {
                             Ok(_) => return Vec::new(),
@@ -234,10 +236,13 @@ impl App {
         id: PaneId,
         confirmed: Option<PathBuf>,
         result: Result<Probed, Refusal>,
-        busy: Option<&'static str>,
     ) -> Vec<Effect> {
         self.cd_requests.remove(&id);
         self.dirty = true;
+        // The ask that waited for the check goes first: it would count as
+        // "an approval is pending" in the busy check below.
+        self.close_approval(id, Reply::Decline);
+        let busy = self.folder_busy(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -339,10 +344,29 @@ impl App {
             .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Folder { .. }))
     }
 
-    /// A key while the folder confirmation waits: an unmodified `y` changes
-    /// the folder, any other key cancels. A bare modifier is not an answer.
+    /// A key while the folder confirmation waits: an unmodified `y` starts
+    /// the last check of the folder, any other key cancels. While the check
+    /// runs only Esc answers, the rest is swallowed. A bare modifier is
+    /// not an answer.
     pub(super) fn on_folder_key(&mut self, id: PaneId, key: KeyEvent) -> Vec<Effect> {
         if matches!(key.code, KeyCode::Modifier(_)) {
+            return Vec::new();
+        }
+        let checking = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|a| matches!(a.ask(), ApprovalAsk::Folder { checking: true, .. }));
+        if checking {
+            if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+                self.close_approval(id, Reply::Decline);
+                self.cd_requests.remove(&id);
+                if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                    chat.push_system_line("/cd cancelled".to_owned());
+                }
+                self.dirty = true;
+            }
             return Vec::new();
         }
         let confirmed = key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE;
@@ -355,27 +379,40 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
-        let ApprovalAsk::Folder { to, .. } = approval.ask() else {
+        let ApprovalAsk::Folder { from, to, note, .. } = approval.ask() else {
             return Vec::new();
         };
         if !confirmed {
+            self.cd_requests.remove(&id);
             return Vec::new();
         }
         // Busy is checked again now: the chat may have changed while it waited.
         if let Some(reason) = self.folder_busy(id) {
+            self.cd_requests.remove(&id);
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 chat.push_system_line(refused(reason));
             }
             return Vec::new();
         }
-        // The folder is resolved once more before it is taken.
+        // The folder is resolved once more before it is taken; the ask stays
+        // up, checking, so the keys cannot edit the command meanwhile.
         self.folder_seq += 1;
         let token = self.folder_seq;
         let Some(request) = self.cd_requests.get_mut(&id) else {
+            debug_assert!(false, "a folder ask without its /cd request");
             return Vec::new();
         };
         request.token = token;
         request.confirm = Some(to.clone());
+        let ask = ApprovalAsk::Folder {
+            from: from.clone(),
+            to: to.clone(),
+            note: note.clone(),
+            checking: true,
+        };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            let _ = chat.approvals_mut().request(ask, Origin::Block);
+        }
         vec![Effect::ProbeFolder {
             pane: id,
             path: to.clone(),
