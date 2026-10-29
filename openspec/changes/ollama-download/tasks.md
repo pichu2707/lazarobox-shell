@@ -12,5 +12,5 @@ Feature document: `odd/tasks/ollama-download.md` (local, not in the package).
 - [x] 4.1 RED/GREEN: `download from Ollama…` row, Popular, Sizes and Confirm screens, late replies dropped, nothing pulled before `y`.
 - [x] 4.2 RED/GREEN: one download at a time across Hugging Face and Ollama; progress row, status bar, cancel prompt; forced detection once on success.
 - [x] 5.1 Docs: README (flow, what is sent, where Ollama stores models, the page may change), CHANGELOG, catalog module doc.
-- [ ] 5.2 [manual] Live: pull `qwen3:4b` from the Popular screen, cancel and pull again (resume), the model is listed and chats.
+- [x] 5.2 [manual] Live: pull `qwen3:4b` from the Popular screen, cancel and pull again (resume), the model is listed and chats.
 - [x] 5.3 [manual] Live: check that Ollama really stops a pull when the client closes the request (the cancel assumption). Done 2026-10-29 with Ollama 0.40.3: a pull of `smollm2:135m` cut at 44.3 MB resumed at 45.1 MB of 270.9 MB on a new request 20 s later, then listed and chatted.

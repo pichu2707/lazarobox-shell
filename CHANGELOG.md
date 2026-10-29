@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-29
+
 ### Added
 
 - Ollama downloads: with the Ollama server running, its model level ends in
@@ -29,6 +31,15 @@ baseline.
 
 - The loopback client may POST to `/api/pull`, for the Ollama download only;
   chat requests still refuse that path.
+
+### Fixed
+
+- A held key no longer repeats a decision: on prompts, confirmations and
+  menus, a key held down acts once, and only a new press acts again.
+  `Ctrl+H` works as Backspace in text fields.
+- Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
+  key repeat of a held key (about 600-760 ms) can never answer one.
+- The feedback form's footers say what `Esc` does on every screen.
 
 ## [0.29.0] - 2026-10-28
 
@@ -1355,7 +1366,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0
