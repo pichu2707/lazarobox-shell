@@ -178,6 +178,21 @@ impl ChatState {
         FolderChange { old, prompt_now }
     }
 
+    /// Puts back the folder a resumed conversation was stored with. Unlike
+    /// [`set_folder`](Self::set_folder) this is not a change for the model
+    /// (the earlier messages were made there): it is told where the
+    /// conversation is, once. The resumed engram session stays unless the
+    /// project of the chat has to be resolved again.
+    pub fn restore_folder(&mut self, new: PathBuf) -> FolderChange {
+        let old = self.origin_cwd.replace(new.clone());
+        let to = clean(&new.to_string_lossy());
+        let prompt_now = self.invalidate_prompt();
+        self.restore_memory_for_folder();
+        self.push_system_line(format!("folder restored: {to}"));
+        self.tell(format!("This conversation's folder is {to}."));
+        FolderChange { old, prompt_now }
+    }
+
     /// The stored conversation this chat saves to, once it exists.
     pub fn stored_conversation(&self) -> Option<i64> {
         self.store.conversation()

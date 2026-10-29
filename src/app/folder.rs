@@ -67,29 +67,41 @@ impl App {
     /// tool session (whose approvals belong to the old folder). Every other
     /// consumer reads the folder when it needs it (design D1).
     pub(super) fn apply_folder(&mut self, id: PaneId, new: PathBuf) -> Vec<Effect> {
+        self.change_folder(id, new, false)
+    }
+
+    /// Puts back the folder a resumed conversation was stored with: no write
+    /// to the store (it came from there), no end of the resumed session.
+    pub(super) fn restore_folder(&mut self, id: PaneId, new: PathBuf) -> Vec<Effect> {
         self.change_folder(id, new, true)
     }
 
-    /// [`apply_folder`](Self::apply_folder), writing the folder to the store
-    /// only when `keep`: a resume takes the folder from the store.
-    fn change_folder(&mut self, id: PaneId, new: PathBuf, keep: bool) -> Vec<Effect> {
+    fn change_folder(&mut self, id: PaneId, new: PathBuf, restore: bool) -> Vec<Effect> {
         // A resume answer still on its way must not undo this choice.
         self.resume_folders.remove(&id);
-        let history = self.history && keep;
+        let history = self.history && !restore;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         // The session of the old project ends before the chat forgets it.
-        let end = chat.take_end().map(|(session, project, summary)| {
-            Effect::Memory(MemCmd::End {
-                session,
-                project,
-                summary,
-                cwd: None,
-            })
-        });
+        let end =
+            (!restore)
+                .then(|| chat.take_end())
+                .flatten()
+                .map(|(session, project, summary)| {
+                    Effect::Memory(MemCmd::End {
+                        session,
+                        project,
+                        summary,
+                        cwd: None,
+                    })
+                });
         let store = chat.store_set_folder(id, new.clone());
-        let change = chat.set_folder(new);
+        let change = if restore {
+            chat.restore_folder(new)
+        } else {
+            chat.set_folder(new)
+        };
         let session = chat.take_tool_session();
         let mut effects: Vec<Effect> = end.into_iter().collect();
         if history {
@@ -299,7 +311,7 @@ impl App {
                     return Vec::new();
                 }
                 match busy {
-                    None => return self.change_folder(id, probed.path, false),
+                    None => return self.restore_folder(id, probed.path),
                     Some(reason) => format!("stored folder not used: {reason}"),
                 }
             }
