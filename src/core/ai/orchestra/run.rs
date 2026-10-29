@@ -357,7 +357,10 @@ impl Run {
         }
     }
 
-    fn cancel_run(&mut self, now: Instant) -> Vec<WorkerId> {
+    /// Cancels the whole run (Ctrl+C, the user's cancel, a replaced or
+    /// quitting run): its running and queued workers end `cancelled`. Returns
+    /// the running ones, whose processes the runtime must kill.
+    pub fn cancel_run(&mut self, now: Instant) -> Vec<WorkerId> {
         let running = self.ids(WorkerStatus::Running, |_| true);
         self.state = RunState::Cancelled;
         self.pending.clear();

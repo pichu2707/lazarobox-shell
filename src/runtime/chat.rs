@@ -37,6 +37,7 @@ use self::external::{Externals, Start};
 use super::{
     loopback::{Timeouts, post_stream},
     mcp::{Dispatch, Hub, Started, external::Slot},
+    orchestra::RunManager,
     tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
 };
 use crate::core::{
@@ -681,6 +682,9 @@ pub struct Chats {
     retiring: Vec<JoinHandle<()>>,
     /// The llama-server lazarobox started for llamacpp turns, stopped on quit.
     live: LiveServers,
+    /// The runs of orchestrating panes; `None` leaves every chat path as it
+    /// was before orchestration.
+    orchestra: Option<Arc<RunManager>>,
 }
 
 impl Chats {
@@ -694,6 +698,7 @@ impl Chats {
             externals: Externals::default(),
             retiring: Vec::new(),
             live: LiveServers::default(),
+            orchestra: None,
         }
     }
 
@@ -709,6 +714,13 @@ impl Chats {
     /// on starts them.
     pub fn with_servers(mut self, servers: Vec<McpServer>, home: PathBuf, wires: Wires) -> Self {
         self.externals = Externals::new(servers, home, wires);
+        self
+    }
+
+    /// Lets the panes of this app run orchestrations on `orchestra` (D1):
+    /// Ctrl+C on a pane also ends its run, and quitting ends every run.
+    pub fn with_orchestra(mut self, orchestra: Arc<RunManager>) -> Self {
+        self.orchestra = Some(orchestra);
         self
     }
 
@@ -987,7 +999,13 @@ impl Chats {
         }
     }
 
+    /// Ctrl+C: stops the turn of `pane` and ends its run, if any. Returns at
+    /// once. The run goes first, so its workers are stopped by the time the
+    /// pane's waits, theirs included, are denied.
     pub fn cancel(&mut self, pane: PaneId) {
+        if let Some(orchestra) = &self.orchestra {
+            orchestra.cancel(pane);
+        }
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();
         }
@@ -1005,6 +1023,12 @@ impl Chats {
         let stops = join_all(sets.iter().map(|set| set.shutdown()));
         let retiring = join_all(self.retiring.drain(..));
         let managed = self.live.managed();
+        // Every run ends now, whatever the bound; its future waits for the
+        // worker turns to be gone.
+        let runs = self
+            .orchestra
+            .as_ref()
+            .map(|orchestra| orchestra.shutdown());
         // After the turns: an aborted start drops its server on its own.
         let turns = async move {
             join_all(tasks).await;
@@ -1012,7 +1036,12 @@ impl Chats {
                 managed.shutdown().await;
             }
         };
-        let _ = timeout(bound, async { tokio::join!(turns, stops, retiring) }).await;
+        let runs = async move {
+            if let Some(runs) = runs {
+                runs.await;
+            }
+        };
+        let _ = timeout(bound, async { tokio::join!(turns, stops, retiring, runs) }).await;
     }
 }
 

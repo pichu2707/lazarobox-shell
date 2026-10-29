@@ -22,6 +22,7 @@ use super::*;
 use crate::{
     core::ai::chat::{
         ANSWER_CAP, ChatState, Follow, MsgStatus, REASONING_CAP,
+        approval::ApprovalAsk,
         engine::{Availability, ChatError, Finish, Tools},
     },
     runtime::proc::GroupKill,
@@ -457,6 +458,51 @@ async fn cancel_stops_the_events_and_drops_the_adapter() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     assert!(rx.try_recv().is_err(), "no event after a cancel");
     assert!(dropped.load(Ordering::SeqCst), "the adapter was dropped");
+}
+
+/// Notes the system prompt of a turn whose adapter was dropped.
+struct Gone(Arc<Mutex<Vec<String>>>, String);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push(self.1.clone());
+    }
+}
+
+// Spec (agent-orchestrator S1d-3, chat unchanged): with no run manager
+// attached, Ctrl+C drops the pane's turn and denies its waits, and quitting
+// drops every other turn, as before the run manager existed.
+#[tokio::test(start_paused = true)]
+async fn without_a_run_manager_cancel_and_shutdown_behave_as_before() {
+    let gone = Arc::new(Mutex::new(Vec::new()));
+    let notes = gone.clone();
+    let runner: Runner = Arc::new(move |request, tx| {
+        let gone = Gone(notes.clone(), request.system);
+        Box::pin(async move {
+            let (_gone, _tx) = (gone, tx);
+            std::future::pending::<()>().await;
+        })
+    });
+    let (mut chats, mut rx) = chats(runner);
+    assert!(chats.orchestra.is_none());
+    chats.send(pane(1), 1, request("one"));
+    chats.send(pane(2), 1, request("two"));
+    tokio::task::yield_now().await;
+    let ask = ApprovalAsk::Run {
+        command: "ls".into(),
+    };
+    let asked = chats
+        .waits()
+        .approver(pane(1), 1, Pending::new())
+        .ask(CallId(1), &ask);
+    chats.cancel(pane(1));
+    let denied = Decision::Denied(crate::runtime::tools::approver::ENDED);
+    assert_eq!(asked.await, denied.into());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(*gone.lock().unwrap(), ["one"]);
+    chats.shutdown(Duration::from_secs(3)).await;
+    assert_eq!(*gone.lock().unwrap(), ["one", "two"]);
+    assert!(rx.try_recv().is_err(), "no event from either turn");
 }
 
 #[tokio::test(start_paused = true)]
