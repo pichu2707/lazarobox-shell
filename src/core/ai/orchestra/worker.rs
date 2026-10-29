@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::Toolset;
+use crate::core::ai::chat::engine::Usage;
 use crate::core::ai::config::Task;
 
 /// What a worker is started from. The engine and model are those in effect
@@ -81,4 +82,7 @@ pub struct WorkerResult {
     /// The engine and model the worker started with.
     pub engine: String,
     pub model: Option<String>,
+    /// What the worker's turns reported, summed; `None` when its engine
+    /// reported nothing (never an estimate).
+    pub usage: Option<Usage>,
 }

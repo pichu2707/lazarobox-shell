@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use super::changes::{Change, ChangeLedger};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
-use crate::core::ai::chat::engine::Availability;
+use crate::core::ai::chat::engine::{Availability, Usage};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::label;
@@ -81,8 +81,16 @@ pub enum CancelOutcome {
 /// What the runtime saw a running worker do.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum WorkerEvent {
-    Done { text: String },
-    Failed { class: ErrorClass, text: String },
+    /// What one turn of the worker used. Any number may come before the end;
+    /// they add up.
+    Usage(Usage),
+    Done {
+        text: String,
+    },
+    Failed {
+        class: ErrorClass,
+        text: String,
+    },
 }
 
 /// `decide` was called while no failure was pending.
@@ -98,6 +106,9 @@ struct Slot {
     /// What the worker staged (S7). Kept across a retry: the staged files
     /// stay in the pane's batch whatever the attempt.
     ledger: ChangeLedger,
+    /// What the worker's engine reported so far, over every attempt: a failed
+    /// attempt spent its tokens too.
+    usage: Option<Usage>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +161,20 @@ impl Run {
         self.slot(id).map(|slot| &slot.spec)
     }
 
+    /// What worker `id` reported using so far; `None` when its engine
+    /// reported nothing (shown as `n/a`, never as zero).
+    pub fn usage(&self, id: WorkerId) -> Option<Usage> {
+        self.slot(id)?.usage
+    }
+
+    /// The sum over the workers that reported; `None` when none did.
+    pub fn total_usage(&self) -> Option<Usage> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.usage)
+            .reduce(Usage::plus)
+    }
+
     pub fn result(&self, id: WorkerId) -> Option<&WorkerResult> {
         self.slot(id)?.result.as_ref()
     }
@@ -190,6 +215,7 @@ impl Run {
             started: None,
             result: None,
             ledger: ChangeLedger::default(),
+            usage: None,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal);
@@ -256,6 +282,10 @@ impl Run {
             return;
         }
         match event {
+            WorkerEvent::Usage(report) => {
+                let slot = &mut self.slots[index(id)];
+                slot.usage = Some(slot.usage.map_or(report, |sum| sum.plus(report)));
+            }
             WorkerEvent::Done { text } => self.end(now, id, WorkerStatus::Done, &text, None),
             WorkerEvent::Failed { class, text } => {
                 self.end(now, id, WorkerStatus::Failed, "", Some((class, text)));
@@ -427,6 +457,7 @@ impl Run {
             error: error.clone(),
             engine: slot.spec.engine.clone(),
             model: slot.spec.model.clone(),
+            usage: slot.usage,
         });
         self.queue.retain(|queued| *queued != id);
         match (&self.state, error) {

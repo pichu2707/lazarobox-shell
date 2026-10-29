@@ -10,7 +10,7 @@ use super::scope::{Dropped, REFUSED_ROOT, ReadScope, TOO_BROAD, UNSHOWN};
 use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
-use crate::core::ai::chat::engine::Availability;
+use crate::core::ai::chat::engine::{Availability, Usage};
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::paths::SecretRoots;
 use crate::core::ai::tools::registry_for;
@@ -852,4 +852,90 @@ fn collect_lists_the_files_a_worker_staged() {
     assert!(!out.contains("c.rs"));
     assert_eq!(run.ledger(id).unwrap().changes().len(), 2);
     assert!(!collected("all good").contains("files changed"));
+}
+
+fn used(input: u64, output: u64, cost_micros: Option<u64>) -> Usage {
+    Usage {
+        input,
+        output,
+        cost_micros,
+    }
+}
+
+fn done_with(run: &mut Run, now: Instant, id: WorkerId) {
+    run.on_event(
+        now,
+        id,
+        WorkerEvent::Done {
+            text: String::new(),
+        },
+    );
+}
+
+#[test]
+fn a_workers_usage_events_add_up_and_reach_its_result() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    run.on_event(t0, id, WorkerEvent::Usage(used(10, 2, Some(500))));
+    run.on_event(t0, id, WorkerEvent::Usage(used(5, 1, Some(250))));
+    assert_eq!(run.usage(id), Some(used(15, 3, Some(750))));
+    done_with(&mut run, t0, id);
+    assert_eq!(run.result(id).unwrap().usage, Some(used(15, 3, Some(750))));
+}
+
+#[test]
+fn a_worker_that_reported_nothing_has_no_usage_never_zero() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    done_with(&mut run, t0, id);
+    assert_eq!(run.usage(id), None);
+    assert_eq!(run.result(id).unwrap().usage, None);
+    assert_eq!(run.total_usage(), None);
+}
+
+#[test]
+fn the_run_sums_the_workers_that_reported_and_skips_the_others() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "a").unwrap();
+    let two = run.spawn(t0, Task::Code, "b").unwrap();
+    run.on_event(t0, one, WorkerEvent::Usage(used(100, 10, Some(1000))));
+    done_with(&mut run, t0, one);
+    // `two` was promoted when `one` ended and reports nothing.
+    done_with(&mut run, t0, two);
+    assert_eq!(run.usage(two), None);
+    assert_eq!(run.total_usage(), Some(used(100, 10, Some(1000))));
+}
+
+#[test]
+fn a_cost_missing_from_any_report_leaves_the_sum_cost_unknown() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "a").unwrap();
+    let two = run.spawn(t0, Task::Code, "b").unwrap();
+    run.on_event(t0, one, WorkerEvent::Usage(used(100, 10, Some(1000))));
+    done_with(&mut run, t0, one);
+    run.on_event(t0, two, WorkerEvent::Usage(used(1, 1, None)));
+    done_with(&mut run, t0, two);
+    assert_eq!(run.total_usage(), Some(used(101, 11, None)));
+}
+
+#[test]
+fn usage_of_a_worker_that_is_not_running_is_ignored() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    done_with(&mut run, t0, id);
+    run.on_event(t0, id, WorkerEvent::Usage(used(9, 9, None)));
+    assert_eq!(run.usage(id), None);
+}
+
+#[test]
+fn a_failed_attempt_keeps_the_usage_it_spent_across_a_retry() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    run.on_event(t0, id, WorkerEvent::Usage(used(10, 1, None)));
+    run.on_event(t0, id, failed(ErrorClass::Other, "boom"));
+    assert_eq!(run.result(id).unwrap().usage, Some(used(10, 1, None)));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    run.on_event(t0, id, WorkerEvent::Usage(used(4, 2, None)));
+    done_with(&mut run, t0, id);
+    assert_eq!(run.result(id).unwrap().usage, Some(used(14, 3, None)));
 }
