@@ -19,7 +19,7 @@ use crate::{
         Detection, EngineState, Status,
         chat::{
             adapters::{Invocation, Job},
-            approval::ApprovalAsk,
+            approval::{ApprovalAsk, Reach},
             engine::{Availability, Decision, Finish, ToolStatus, availability_for},
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
@@ -1116,6 +1116,8 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     let expected = ApprovalAsk::WorkerRead {
         path: path.to_str().unwrap().into(),
         label,
+        reach: Reach::Broad,
+        cloud: true,
     };
     assert_eq!(*ask, expected);
     lab.manager.cancel(pane());
