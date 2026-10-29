@@ -41,6 +41,7 @@ pub mod loopback;
 pub mod mcp;
 pub mod notify;
 pub mod opener;
+pub mod orchestra;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]

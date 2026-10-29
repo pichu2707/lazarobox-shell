@@ -24,7 +24,8 @@ impl Roster {
         Self(entries)
     }
 
-    fn get(&self, task: Task) -> &Availability {
+    /// The availability of `task`; unassigned when the roster lacks it.
+    pub fn get(&self, task: Task) -> &Availability {
         const NONE: &Availability = &Availability::Unassigned;
         let found = self.0.iter().find(|(known, _)| *known == task);
         found.map_or(NONE, |(_, availability)| availability)
