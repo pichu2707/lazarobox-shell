@@ -569,7 +569,9 @@ impl ChatState {
         memory.relink = true;
         memory.save_floor = memory.saves_sent;
         memory.pending_saves.clear();
-        memory.notes.clear();
+        // A note whose link row waits for the conversation id keeps its own
+        // project and is still linked when the id arrives.
+        memory.notes.retain(|note| !note.linked);
         memory.ended = false;
         self.approved_summary = None;
         self.entries.retain(|e| !matches!(e, Entry::Memory(_)));

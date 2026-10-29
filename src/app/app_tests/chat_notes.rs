@@ -998,6 +998,21 @@ fn a_folder_change_ends_the_session_and_links_the_next_one_in_the_new_project() 
     );
 }
 
+// A note saved before the conversation had an id is linked when it appears,
+// even if the folder changed in between (under the project it was saved in).
+#[test]
+fn an_unlinked_note_survives_a_folder_change() {
+    let mut a = ready("body");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
+    a.apply_folder(chat_id(), "/srv/other".into());
+    assert_eq!(
+        a.update(created(7, false, 0)),
+        vec![link_note(7, 41, "chat/decision/one", "One")]
+    );
+}
+
 // A save answered after the folder changed (its wait ran out first) belongs to
 // the old project: it must not adopt the old session or record its note.
 #[test]
