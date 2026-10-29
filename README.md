@@ -110,6 +110,27 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 ---
 
+## 🔒 Estabilidad y compatibilidad (1.0)
+
+Desde la 1.0, lazarobox sigue [SemVer](https://semver.org): **un cambio que rompe algo de la tabla «Congelado» exige una versión mayor** (2.0). Las versiones menores añaden funciones sin romper nada y las de parche corrigen fallos. La 1.0 es solo para **Linux**; macOS sigue sin estar soportado oficialmente (ver «Compatibilidad de plataformas»).
+
+| Congelado desde la 1.0 | Qué se promete |
+| :--- | :--- |
+| `config.toml` | Los nombres de las tablas y de las claves, y los valores que cada una admite. Los nombres actuales son los definitivos: `[tabbar] position` y `[ai] notify` (donde `true` y `false` siguen siendo alias de `"auto"` y `"off"`). Una versión menor puede añadir claves o valores nuevos; ninguna clave existente cambia de nombre, de significado ni deja de admitir un valor. |
+| `chat.db` | El formato del historial (hoy, esquema 2, en `$XDG_DATA_HOME/lazarobox/chat.db`). Una versión nueva abre un `chat.db` antiguo y lo migra hacia delante, nunca hacia atrás. Un `chat.db` **más nuevo** que el lazarobox que lo abre se rechaza sin tocarlo: el historial queda no disponible (`history unavailable: store schema N is newer than this build`) y el archivo no se modifica, de modo que al volver a actualizar sigue ahí. Se puede subir de versión sin perder el historial; para bajar, el historial queda inaccesible hasta volver a subir. |
+| Línea de órdenes | Las opciones y subórdenes públicas: `install-desktop` (con `--terminal` y `--uninstall`) y `--force` (ver «Lanzador de escritorio» y «Anidamiento»). Quitar o cambiar su significado exige una versión mayor. |
+| Teclas | El prefijo `Ctrl+Espacio` y las teclas de la referencia de la sección «Teclas». El prefijo **no es configurable**. La tecla `?` tras el prefijo está **reservada** para el futuro visor de órdenes. |
+
+| No forma parte de la promesa | Por qué |
+| :--- | :--- |
+| Subórdenes internas `__*` (`__jail-exec`, `__mcp-serve`, `__watch`) | Las lanza lazarobox sobre sí mismo; no se invocan a mano y pueden cambiar en cualquier versión. |
+| El texto de los registros, de los avisos y de los mensajes de error | Pueden reformularse en una versión menor. No dependas de ellos en un script. |
+| La disposición de la interfaz (barras, colores, textos de las filas, ayudas de la barra de estado) | Puede cambiar en una versión menor. Lo que no cambia es qué hace cada tecla de la referencia. |
+
+**Actualizar a la 1.0.** Se hace como cualquier otra versión: `cargo install lazarobox-shell --locked` (o la fila **Updates** del menú). No hace falta tocar `config.toml` ni borrar `chat.db`: la primera vez que se abre, un `chat.db` anterior se migra solo. Antes de actualizar puedes copiar `~/.local/share/lazarobox/chat.db` si quieres poder volver a una versión anterior con el historial exacto de ese momento; sin copia, volver atrás deja el historial no disponible hasta que vuelvas a actualizar.
+
+---
+
 ## ⌨️ Teclas: el prefijo `Ctrl+Espacio`
 
 Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; luego se pulsa la tecla, o el grupo y la tecla (por ejemplo `w` y `v`). Mientras el prefijo espera, la barra de estado muestra las teclas posibles. `Esc` o una tecla sin asignar lo cancelan sin escribir nada.
