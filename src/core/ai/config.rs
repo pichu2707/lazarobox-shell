@@ -156,9 +156,9 @@ pub enum ApprovalMode {
     /// The command is typed into the pane without a prompt, never followed
     /// by Enter.
     Auto,
-    /// A short list of navigation commands runs at once and its output goes
-    /// to the model; every other command asks. Routes like `Auto` until the
-    /// run guards land.
+    /// Reads, searches and the navigation commands of the safe list run at
+    /// once inside the chat's folder and their output goes to the model;
+    /// every other command, and any path outside the folder, asks.
     Run,
 }
 

@@ -324,3 +324,35 @@ fn the_mode_badge_does_not_cover_the_counter_in_auto_mode() {
     assert!(first.ends_with("y ready"), "{first:?}");
     assert!(!first.contains("AUTO"), "{first:?}");
 }
+
+// Spec (git-tools, commit: Review shows message and diff): the commit review
+// is the batch view with the signing notice and the message above the diff.
+#[test]
+fn a_commit_review_shows_the_notice_the_message_and_the_staged_diff() {
+    use crate::core::ai::chat::review::CommitReview;
+    let diff = "diff --git a/src/a.rs b/src/a.rs\nindex 111..222 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let commit = Arc::new(CommitReview::new(
+        "feat: new\n\nWhy it changes.",
+        None,
+        &[],
+        diff.as_bytes(),
+    ));
+    let mut chat = ChatState::new(None);
+    chat.approvals_mut()
+        .request_call(ApprovalAsk::Commit(commit.clone()), 1, CallId(1), None)
+        .unwrap();
+    chat.approvals_mut()
+        .set_review(ReviewView::new(commit.review().clone(), (60, 20)));
+    let shown = draw(&mut chat, at(0), 60, 20);
+    let text = flat(&shown);
+    for needle in [
+        "signing disabled for this commit",
+        "feat: new",
+        "Why it changes.",
+        "+new",
+        "-old",
+    ] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    insta::assert_snapshot!("commit_review_60x20", text);
+}

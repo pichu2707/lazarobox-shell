@@ -948,3 +948,80 @@ TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2
 | 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
 
 TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.
+
+## Batch: slice G-c (host git read verbs + GitDiff ask, PR 28, branch feat/coding-tools-gc, base main)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Gc.2 core: `Call::{GitStatus,GitDiff,GitLog}`, three `ToolDef`s in the `Git` family (Access::Read), `ApprovalAsk::GitDiff`, `ask_for` (diff asks on Cloud only), app prompt arm | done | feat(tools): offer git_status, git_diff and git_log in the Git family and ask for a cloud diff |
+| Gc.1 host: refusals before the ask (family, jail, root, staged batch), run after `y` through `git::open` + `git::run`, output shaped and wrapped | done | feat(tools): run git status, diff and log in the sandbox and gate them like other reads |
+
+Seam: all logic lives in the new `runtime/tools/host/git.rs` (child of `host`). `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 10 lines): one pre-ask arm `(call, locality) if call.is_git()` (`git::plan`, a refusal sets `checked = Err`, success asks with `ask_for`), one decision arm `(Decision::Sent, call) if call.is_git()` -> `git::run`, `mod git;` and the test module. `files::gate` gained the Git family check (one condition). `exec.rs`: `jailed`, `staged`, `scratch_parent` became `pub(super)` and the root policy was extracted to `root_of` (shared by `inspect` and git).
+
+Design points:
+- Spec vs design conflict: the spec text says every read verb needs `y` on a Cloud engine, while the design table and the task say only `git_diff` does (status and log return names and subjects). The task and design were followed (`git_status`/`git_log` never ask). If the user wants the spec text, it is one `ask_for` arm each plus a prompt variant.
+- `parse_built_in` takes the first-argument text only when that argument is required, so tools whose first arg is optional (`git_diff`, `git_log`) parse with all args absent.
+- `git_log` `max_count` is an `Int` clamped to `1..=50` by the table; `git_diff` `staged` is a `Bool`. `path` is checked by `diff_argv`/`log_argv` (secret, `.git`, escape) after the question, so a refused path costs a prompt on Cloud. Candidate follow-up: refuse in `plan` before asking.
+- Result: status and log go through `status_output` (cut = error "too large to list", never half-parsed), `render_*`, `redact_tokens`, then `label::wrap`; a diff uses `Capture::text` (clean, cut, redacted) and `(no changes)` when empty. A non-zero exit is an error "git failed". Changes to watched git places during the run (a filter driver) are appended via `exec::changes_note`.
+- The read verbs take no `RunGate` claim: they are short, read-only and may overlap a command of the same chat.
+- Fault texts are fixed (`NO_GIT`, `NOT_A_REPO`, `TOO_OLD`, `REPO_REFUSED`, `COULD_NOT`); a git outside a system place says so.
+- Tests need a git in a system place (the jail refuses any other) and skip with a stderr line otherwise; the staged-batch test is `cfg(linux)` like the exec one. The jail helper is a stand-in script.
+
+TDD evidence: core RED = `E0599` on `Call::GitStatus/GitDiff/GitLog`, `ApprovalAsk::GitDiff`, `is_git` (16 errors); after GREEN one test failed with `MissingArgument` (optional first arg) and drove the `parse_built_in` fix. Host RED = 7 of 9 tests failing with the verbs unknown to the host (the other two passed trivially on the old error path); GREEN = all 10. The app prompt test and the refused-path test passed at first run (written with/after the arm).
+
+Known gaps: no `git_status`/`git_log` ask on Cloud (see above); no concurrency gate for reads; `git` is looked up on the scrubbed process PATH (a GUI launch may lack Homebrew paths, which the jail refuses anyway).
+
+## G-c review fixes (judgment day)
+- Spec and design amended (user decision 2026-10-28): on Cloud only `git_diff` asks; `git_status` and `git_log` run free. Code unchanged for this point.
+- `git::plan` now takes the call and runs the pure `check` (now `pub(crate)`) on the `path` of `git_diff`/`git_log`, so a refused path (secret, `.git`, `..`, empty) opens no prompt. `host.rs` edit: one argument.
+- `find_git` keeps only git binaries whose real path is under `SYSTEM_RX`; a user-installed git first on PATH no longer hides a system one.
+- New `Fault::Root` (from `Refusal::Root`/`Never` via `spec_fault`) maps to `REPO_REFUSED`; only `Fault::Spec` maps to `NO_GIT`.
+- Status and log use the full `redact` (same as the diff), not `redact_tokens`. Test: `password=` and `api_key=` in a commit subject.
+- Test hygiene: `sh()` drops `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and an explicit identity. The `cfg(target_os = "linux")` on the staged-batch test was dropped (module is unix-only and the test uses no Linux API; it passes).
+- TDD: the redaction test was observed RED against `redact_tokens` before the fix.
+
+## Batch: slice G-d (host git add and commit + CommitReview, PR 29, branch feat/coding-tools-gd, base feat/coding-tools-gc)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Gd.1 `git_add`: `Call::GitAdd`, `GitWrite` tool defs, one-line `ApprovalAsk::GitAdd`, host plan (path refusals before the ask, dry run count) and run | done | feat(tools): add and commit through git_add and git_commit with a reviewed commit |
+| Gd.2 `git_commit`: `ApprovalAsk::Commit(Arc<CommitReview>)`, review rows, index secret check, staged diff pin, unsigned, hooks in the jail | done | same commit |
+| Gd.3 end-to-end in a temp repo: commit refused on a staged `.env` (also as a rename away from a tracked one) | done | same commit |
+
+Seam: all logic is in `runtime/tools/host/git.rs` (`plan` now returns `Option<ApprovalAsk>`; `run` takes the reviewed ask), `core/ai/chat/review/commit.rs` (new child of `review`, so it builds `ReviewDoc` rows) and the pure argv in `core/ai/tools/git.rs`. `host.rs` edits (REBASE POINT against agent-orchestrator S1c-2, 11 lines): `let mut reviewed`, the git arm now `call.uses_git()` and stores the planned ask, the decision arm passes `reviewed.take()`. `files::gate` gained the `GitWrite` condition (one line). `Call::uses_git()` and `is_git_write()` are new.
+
+Decisions / deviations (needing the user's eye):
+- The add overlay shows the paths and the FILE COUNT of a dry run, not a diffstat (+/-). Reason: untracked files have no diff; the count is the exact list git would stage after the secret excludes. Flagged for the user; a numstat sum is an easy follow-up.
+- No review-view fallback for `git_add`: a prompt that does not fit blocks `y` (existing `fits` rule) and an add whose paths do not show whole in 400 characters is refused before the prompt ("add fewer").
+- `git_commit` is refused before the ask on: empty/oversized/control-char message, unusable repo identity, nothing staged, a secret path in the INDEX (`diff --cached --name-only -z --no-renames`, so a rename away from a tracked `.env` counts), a staged diff the capture cut. A staged diff of the secret-excluded kind is therefore never shown or hidden: the commit does not happen.
+- The review diff passes `--ignore-submodules=none` (superseded in the G-d review fixes below: it was only omitting the flag, which `.gitmodules` `ignore = all` defeated).
+- After `y` the host rebuilds the staged diff and compares it to the reviewed bytes (`CommitReview::same_staged`); a change gives "the staged changes changed after the question; ask again".
+- A workers' turn has no `stage_key`, so `git_add`/`git_commit` are refused as unknown tools there (the orchestrator chain still has to make worker scopes keep `stage_key = None`).
+- The rejection line says "commit rejected: N files, +a -b".
+- The `run` step no longer re-checks the `path` of diff/log itself: `diff_argv`/`log_argv` check it (same refusal).
+- The hook-in-jail scenario is proven by construction (commit goes through `runtime::run`, the same jailed path as the read verbs, with rw only on the git dirs); the host tests use the stand-in helper, so they prove that hooks run from the pinned folder, that a failing hook blocks the commit, that its output is wrapped data and that a repo `core.hooksPath` is not run.
+
+TDD evidence: Gd.1 RED seen as 6 failing host tests (unknown tools / no ask) after the `Call` and registry types existed, and a failing parse test (`MissingArgument` on a list-first tool) that drove the `parse_built_in` fix. The pure argv helpers and `CommitReview` were RED as compile errors only. For the commit host path the code was written before its tests, so mutation checks were run on the finished code: removing the index secret check fails `a_commit_is_refused_when_the_index_holds_a_secret_path`; replacing the staged-diff comparison fails `a_commit_is_refused_when_the_index_changed_after_the_question`; disabling the cut-diff refusal fails `a_staged_diff_too_large_to_review_is_refused_before_the_prompt`; flipping `commit.gpgsign=false` fails the unsigned and `core.hooksPath` tests; dropping `Commit` from the generic-approve guard in `app/run.rs` fails `a_generic_approve_never_answers_a_commit`.
+
+Size: about 560 production lines added (adds+deletes about 598), over the 450 estimate; tests are about 700 more.
+
+### G-d review fixes (2026-10-28, both judges confirmed)
+
+- Review blind spots: `review_diff_argv` adds `--text` and `--ignore-submodules=none`; `index_names_argv` adds `--ignore-submodules=none`. The weak argv-absence test was replaced by two real-git host tests (`.gitattributes` `-diff`; `.gitmodules` `ignore = all` with a staged gitlink bump). Both were RED (binary rows; "nothing is staged") before the fix.
+- Post-commit verification (USER DECISION 2026-10-28: warn, never undo): `write-tree` before the commit, `HEAD^{tree}` after, `diff-tree` between the two for the paths, `drift_notice` (pure, secret names masked, capped at 10 names) for the text. The outcome is an error (no `ToolStatus::Warning` exists) whose summary reaches the row. Nothing is ever reset. Tests: a pre-commit hook that `git add -f .env` (secret reported, HEAD kept), a hook that restages another file (named, no secret claim), a harmless hook (plain success). Only the tree is compared, not the message (a `commit-msg` hook edit is not detected: the whitespace cleanup would have to be re-implemented).
+- `CommitReview::new` takes the running hooks and shows "hooks that will run: ..." (warning) or "no hooks will run" (note); the 60x20 snapshot changed by that line.
+- An add path with a quote is refused before the prompt (`GitError::Quote`, also `add_line` returns `None`).
+- `git commit` runs with a 120 s timeout (`COMMIT_TIMEOUT`); read verbs keep 30 s.
+- `host.rs` untouched.
+
+### G-d2 round 2 (fix agent)
+- COMMIT_HOOKS now also lists reference-transaction and post-index-change; empty case reads "no commit hooks found" (row, snapshot, tests, spec, design).
+- Failed commit: a jailed write-tree is compared with the reviewed tree; a changed index appends a notice (secret staged named, never undone).
+- Reviewed write-tree is taken before the same_staged recheck (TOCTOU). drift_notice cuts each path at 120 chars.
+- Documented limits: only HEAD's tree compared; other refs / same-tree HEAD moves / commit-msg edits not detected.
+
+## M5-b (PR 30) - documentation
+
+- README (Spanish): "La carpeta del chat" (how the chat folder is chosen), the Git section (tools, toggles, prompts, commit review, post-commit warning), a threat model for run_command and git, and the stale "not yet offered" lines removed.
+- CHANGELOG: git tools and the README additions under Unreleased (run_command already shipped in 0.28.0; no 0.21/0.22 sections invented).
+- No code changes. `cargo test --doc` passes.

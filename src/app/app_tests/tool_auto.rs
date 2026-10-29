@@ -129,6 +129,25 @@ fn ask_mode_still_prompts() {
     assert_eq!(auto_typed(&a), 0);
 }
 
+// S1, S3: `auto` and `ask` keep their behaviour for the commands `run` now
+// tells apart: a search and `mkdir` are typed by `auto` and asked by `ask`.
+#[test]
+fn auto_and_ask_treat_a_search_and_mkdir_as_before() {
+    for command in ["rg foo", "git status", "mkdir x", "cargo build"] {
+        let (mut a, turn) = auto_live();
+        assert_eq!(
+            announce(&mut a, turn, 1, run(command)),
+            vec![typed(turn, 1, command.as_bytes())],
+            "{command}"
+        );
+        assert_eq!(pending(&a), None);
+        let (mut a, turn) = live();
+        assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
+        assert_eq!(auto_typed(&a), 0);
+    }
+}
+
 // Sent means typed, by the same function as `y`: a paste-framed multi-line
 // command has the same bytes both ways.
 #[test]
@@ -520,7 +539,7 @@ fn lines(a: &App) -> Vec<String> {
         .collect()
 }
 
-const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)";
+const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)";
 
 // Spec (modal-input): `a` cycles ask, auto, run, ask, with one system line per
 // mode and nothing written to a PTY.
