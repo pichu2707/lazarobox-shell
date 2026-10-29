@@ -654,6 +654,7 @@ impl RunManager {
             model: spec.model.clone(),
             status,
             elapsed: result.map(|r| r.elapsed),
+            usage: live.run.usage(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }
@@ -705,9 +706,9 @@ impl RunManager {
         };
         let manager = Arc::downgrade(self);
         let task = tokio::spawn(async move {
-            let event = turn.run().await;
+            let events = turn.run().await;
             if let Some(manager) = manager.upgrade() {
-                manager.finish(pane, key, event);
+                manager.finish(pane, key, events);
             }
         });
         live.tasks.insert(id, task);
@@ -793,12 +794,16 @@ impl RunManager {
 
     /// Applies how a worker turn ended; `None` means its deadline passed. A
     /// run that ended or was replaced meanwhile ignores it.
-    fn finish(self: &Arc<Self>, pane: PaneId, key: WorkerKey, event: Option<WorkerEvent>) {
+    fn finish(self: &Arc<Self>, pane: PaneId, key: WorkerKey, events: Option<Vec<WorkerEvent>>) {
         self.close_session(key);
         self.on_run(pane, key.run, |live| {
             live.tasks.remove(&key.worker);
-            match event {
-                Some(event) => live.run.on_event(now(), key.worker, event),
+            match events {
+                Some(events) => {
+                    for event in events {
+                        live.run.on_event(now(), key.worker, event);
+                    }
+                }
                 None => {
                     live.run.on_tick(now());
                 }
@@ -881,9 +886,10 @@ struct Turn {
 }
 
 impl Turn {
-    /// How the turn ended; `None` when the deadline passed. The adapter is
-    /// dropped then, which kills its process group.
-    async fn run(self) -> Option<WorkerEvent> {
+    /// What the turn reported and how it ended, in order; `None` when the
+    /// deadline passed (a worker cut off then reports no usage). The adapter
+    /// is dropped then, which kills its process group.
+    async fn run(self) -> Option<Vec<WorkerEvent>> {
         let Turn {
             runner,
             request,
@@ -906,12 +912,14 @@ impl Turn {
 async fn drive(
     adapter: BoxFuture<'static, ()>,
     mut rx: mpsc::Receiver<StreamEvent>,
-) -> WorkerEvent {
+) -> Vec<WorkerEvent> {
     let run = AssertUnwindSafe(chat::scoped(adapter))
         .catch_unwind()
         .fuse();
     tokio::pin!(run);
     let (mut pipe, mut text, mut running) = (Pipe::new(), String::new(), true);
+    // The usage of every round the engine reported, then the end.
+    let mut events = Vec::new();
     loop {
         let event = tokio::select! {
             _ = &mut run, if running => {
@@ -929,12 +937,17 @@ async fn drive(
         for event in out {
             match event {
                 StreamEvent::Delta(delta) => text.push_str(&delta),
+                StreamEvent::Usage(usage) => events.push(WorkerEvent::Usage(usage)),
                 // A capped answer still ends the worker: `collect` caps it
                 // again.
                 StreamEvent::Done(_) | StreamEvent::Error(ChatError::Truncated) => {
-                    return WorkerEvent::Done { text };
+                    events.push(WorkerEvent::Done { text });
+                    return events;
                 }
-                StreamEvent::Error(error) => return failed(error),
+                StreamEvent::Error(error) => {
+                    events.push(failed(error));
+                    return events;
+                }
                 _ => {}
             }
         }

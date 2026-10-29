@@ -99,6 +99,10 @@ baseline.
   disk only when the user approves the batch, whose review header names the
   worker. `collect` lists the worker's `files changed` (path, size, diff
   hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
 
 ## [0.29.0] - 2026-10-28
 

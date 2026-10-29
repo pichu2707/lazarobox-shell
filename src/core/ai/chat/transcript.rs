@@ -137,6 +137,13 @@ fn worker_line(row: &WorkerRow) -> String {
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
     }
+    // A done worker whose engine reported nothing says so; the number is
+    // never estimated.
+    match (row.usage, row.status) {
+        (Some(usage), _) => line.push_str(&format!(" {}", usage.label())),
+        (None, WorkerStatus::Done) => line.push_str(" n/a"),
+        (None, _) => {}
+    }
     line
 }
 
@@ -207,6 +214,17 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 | WorkerStatus::Cancelled => LineKind::Tool,
             };
             push_wrapped(out, kind, TOOL_PREFIX, "  ", &worker_line(row), width);
+        }
+        Entry::RunUsage(row) => {
+            let usage = row.usage.map_or_else(|| "n/a".to_owned(), |u| u.label());
+            push_wrapped(
+                out,
+                LineKind::Tool,
+                TOOL_PREFIX,
+                "  ",
+                &format!("run {usage}"),
+                width,
+            );
         }
         Entry::Reasoning(block) => {
             let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());

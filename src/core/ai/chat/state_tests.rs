@@ -53,7 +53,8 @@ pub(super) fn systems(state: &ChatState) -> Vec<&str> {
             | Entry::Reasoning(_)
             | Entry::Memory(_)
             | Entry::Tool(_)
-            | Entry::Worker(_) => None,
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
         .collect()
 }

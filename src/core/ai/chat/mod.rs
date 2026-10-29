@@ -47,7 +47,11 @@ use std::{
 use crate::core::{
     ai::{
         config::{ApprovalMode, Profile},
-        orchestra::{RunId, WorkerId, event::WorkerRow, worker::ErrorClass},
+        orchestra::{
+            RunId, WorkerId,
+            event::WorkerRow,
+            worker::{ErrorClass, WorkerStatus},
+        },
         tools::stage::BatchId,
     },
     layout::PaneId,
@@ -169,6 +173,16 @@ pub enum Entry {
     /// A worker of the pane's orchestrator run, updated in place as its
     /// status changes: shown, never stored, never sent as history.
     Worker(WorkerRow),
+    /// What the pane's run used, summed over its workers: kept last as the
+    /// rows change, shown, never stored, never sent as history.
+    RunUsage(RunUsage),
+}
+
+/// The per-run usage row. `usage` is `None` when no worker reported any.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RunUsage {
+    pub run: RunId,
+    pub usage: Option<engine::Usage>,
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -475,6 +489,7 @@ impl ChatState {
     /// new state in place; a worker seen for the first time gets a row at
     /// the end of the transcript.
     pub fn worker_row(&mut self, row: WorkerRow) {
+        let run = row.run;
         let shown = self.entries.iter_mut().find_map(|e| match e {
             Entry::Worker(shown) if (shown.run, shown.id) == (row.run, row.id) => Some(shown),
             _ => None,
@@ -483,7 +498,29 @@ impl ChatState {
             Some(shown) => *shown = row,
             None => self.entries.push(Entry::Worker(row)),
         }
+        self.run_usage(run);
         self.generation += 1;
+    }
+
+    /// Refreshes the usage row of `run`, once one of its workers is done:
+    /// the sum of the workers that reported, `None` when none did. The row
+    /// moves to the end, so it stays below the rows it sums.
+    fn run_usage(&mut self, run: RunId) {
+        let rows = || {
+            self.entries.iter().filter_map(move |e| match e {
+                Entry::Worker(row) if row.run == run => Some(row),
+                _ => None,
+            })
+        };
+        if !rows().any(|row| row.status == WorkerStatus::Done) {
+            return;
+        }
+        let usage = rows()
+            .filter_map(|row| row.usage)
+            .reduce(engine::Usage::plus);
+        self.entries
+            .retain(|e| !matches!(e, Entry::RunUsage(shown) if shown.run == run));
+        self.entries.push(Entry::RunUsage(RunUsage { run, usage }));
     }
 
     /// The context window of the engine the next turns go to, in tokens.
@@ -738,7 +775,8 @@ impl ChatState {
             | Entry::Reasoning(_)
             | Entry::Memory(_)
             | Entry::Tool(_)
-            | Entry::Worker(_) => None,
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 
@@ -1244,7 +1282,8 @@ impl ChatState {
             | Entry::Reasoning(_)
             | Entry::Memory(_)
             | Entry::Tool(_)
-            | Entry::Worker(_) => None,
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 

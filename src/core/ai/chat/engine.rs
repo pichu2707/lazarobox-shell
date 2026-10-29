@@ -204,6 +204,14 @@ pub fn locality(engine: &str) -> Option<Locality> {
         .map(|e| e.kind.locality())
 }
 
+/// A token count as a row shows it: exact below a thousand, then `12.3k`.
+fn tokens(count: u64) -> String {
+    match count {
+        0..1000 => count.to_string(),
+        _ => format!("{:.1}k", count as f64 / 1000.0),
+    }
+}
+
 /// What a turn used, as the CLI or server reported it. Never estimated: an
 /// engine that reports nothing emits no `Usage` at all.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -228,6 +236,16 @@ impl Usage {
                 .zip(other.cost_micros)
                 .map(|(a, b)| a.saturating_add(b)),
         }
+    }
+
+    /// The report as a row shows it: `12.3k in 450 out $0.0049`. The cost is
+    /// left out when the engine did not report one.
+    pub fn label(&self) -> String {
+        let mut text = format!("{} in {} out", tokens(self.input), tokens(self.output));
+        if let Some(micros) = self.cost_micros {
+            text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+        }
+        text
     }
 
     /// `cost_micros` of a cost in dollars, when it is a usable number.

@@ -49,6 +49,7 @@ fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         model: Some("gpt-5".into()),
         status,
         elapsed: None,
+        usage: None,
     })
 }
 

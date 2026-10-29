@@ -20,7 +20,7 @@ use crate::{
         chat::{
             adapters::{Invocation, Job},
             approval::{ApprovalAsk, Reach},
-            engine::{Availability, Decision, Finish, ToolStatus, availability_for},
+            engine::{Availability, Decision, Finish, ToolStatus, Usage, availability_for},
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
@@ -44,6 +44,8 @@ const NO_JAIL: JailSupport = JailSupport::Unavailable(JailOff::NoBackend);
 enum Script {
     /// Streams the text, then ends.
     Answer(&'static str),
+    /// Streams the text, reports two usages (one per round), then ends.
+    Used(&'static str),
     /// Streams the text, then fails with the message.
     Fail(&'static str, &'static str),
     /// The jail refuses the turn with the reason.
@@ -132,6 +134,17 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     ("fixed", StreamEvent::Done(Finish::Stop))
                 }
                 Script::Answer(text) => (text, StreamEvent::Done(Finish::Stop)),
+                Script::Used(text) => {
+                    for (input, output) in [(100, 10), (50, 5)] {
+                        let usage = Usage {
+                            input,
+                            output,
+                            cost_micros: None,
+                        };
+                        let _ = tx.send(StreamEvent::Usage(usage)).await;
+                    }
+                    (text, StreamEvent::Done(Finish::Stop))
+                }
                 Script::Fail(text, error) => {
                     (text, StreamEvent::Error(ChatError::Failed(error.into())))
                 }
@@ -327,6 +340,42 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
     }
 }
 
+// Spec (agent-orchestrator, Usage summed): a worker's usage events add up and
+// reach its row; a worker that reported nothing has none.
+#[tokio::test]
+async fn a_workers_usage_events_reach_its_done_row_summed() {
+    let mut lab = lab(Script::Used("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let OrchestraEvent::Worker(done) = lab.next().await else {
+        panic!("a worker row");
+    };
+    assert_eq!(done.status, WorkerStatus::Done);
+    assert_eq!(
+        done.usage,
+        Some(Usage {
+            input: 150,
+            output: 15,
+            cost_micros: None
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_worker_whose_engine_reported_nothing_has_no_usage_on_its_row() {
+    let mut lab = lab(Script::Answer("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let OrchestraEvent::Worker(done) = lab.next().await else {
+        panic!("a worker row");
+    };
+    assert_eq!((done.status, done.usage), (WorkerStatus::Done, None));
+}
+
 /// The nonce of a wrapped text.
 fn nonce_of(text: &str) -> String {
     let start = text.find("id=\"").unwrap() + 4;
@@ -366,6 +415,7 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             model: Some("default".into()),
             status,
             elapsed: None,
+            usage: None,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));
