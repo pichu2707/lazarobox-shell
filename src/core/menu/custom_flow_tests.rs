@@ -62,6 +62,18 @@ fn every_shortcut_letter_is_typed_and_backspace_deletes() {
     );
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_field() {
+    let mut m = field();
+    type_all(&mut m, "ab");
+    send(
+        &mut m,
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(buffer(&m), "a");
+}
+
 // Spec: Ctrl+U clears; Ctrl+Space and other modified keys are swallowed.
 #[test]
 fn ctrl_u_clears_and_other_modified_keys_are_swallowed() {

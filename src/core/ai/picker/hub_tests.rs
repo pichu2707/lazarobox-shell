@@ -90,6 +90,7 @@ fn the_row_shows_a_running_download() {
         engine: "llamacpp".to_owned(),
     };
     p.set_download(Some(Running {
+        source: crate::core::ai::picker::Source::HuggingFace,
         file: "a-Q4_K_M.gguf".to_owned(),
         license: "apache-2.0".to_owned(),
         done: 42,

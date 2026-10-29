@@ -45,9 +45,12 @@ fn next_id() -> u64 {
 }
 
 /// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
-/// user was already typing cannot answer it. The review of a batch waits
-/// longer; see [`ApprovalAsk::arm_delay`].
-pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
+/// user was already typing cannot answer it. It is longer than the usual OS
+/// auto-repeat delay (X11 660 ms, KDE 600 ms): the first repeat of a key held
+/// from before the prompt, which comes past the hold window, still finds the
+/// prompt unarmed. The review of a batch waits as long; see
+/// [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";

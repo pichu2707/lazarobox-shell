@@ -16,6 +16,37 @@ baseline.
   ~/.config/lazarobox/config.toml`), and the README has a section on where
   `config.toml` lives.
 
+## [0.30.0] - 2026-10-29
+
+### Added
+
+- Ollama downloads: with the Ollama server running, its model level ends in
+  `download from Ollama…`. It lists up to 20 of the most popular models of
+  the Ollama library that fit this PC's memory (embedding and cloud-only
+  models left out), then the exact size of each tag from its registry
+  manifest, then a confirmation with the license title, a link to read it,
+  the models folder and the free space. Nothing is pulled before `y`. The
+  pull goes through the local Ollama server (`POST /api/pull` on
+  `127.0.0.1`), with progress on the row and in the status bar, a cancel
+  prompt that keeps what Ollama pulled, and one detection when it ends.
+  When the library page cannot be read, the built-in list is shown instead.
+- One download runs at a time across Hugging Face and Ollama: while one
+  runs, the other entry row says `a download is already running`.
+
+### Changed
+
+- The loopback client may POST to `/api/pull`, for the Ollama download only;
+  chat requests still refuse that path.
+
+### Fixed
+
+- A held key no longer repeats a decision: on prompts, confirmations and
+  menus, a key held down acts once, and only a new press acts again.
+  `Ctrl+H` works as Backspace in text fields.
+- Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
+  key repeat of a held key (about 600-760 ms) can never answer one.
+- The feedback form's footers say what `Esc` does on every screen.
+
 ## [0.29.0] - 2026-10-28
 
 ### Added
@@ -1341,7 +1372,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0

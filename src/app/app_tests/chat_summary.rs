@@ -763,3 +763,11 @@ fn a_parked_send_goes_when_the_note_is_saved() {
     let effects = a.update(saved_reply(&a, SESSION, 1, "chat/decision/a", "A"));
     assert_eq!(sends(&effects), 1, "{effects:?}");
 }
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_summary_draft() {
+    let mut a = with_draft("abc");
+    a.update(ctrl('h'));
+    assert_eq!(draft_text(&a), "ab");
+}

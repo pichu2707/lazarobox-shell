@@ -22,6 +22,12 @@ use crate::core::ai::{
 };
 use crate::runtime::tools::pending;
 
+mod pull;
+pub use pull::{
+    PULL_CANNOT_CONNECT, PULL_INVALID, PULL_NO_ANSWER, PULL_PATH, PULL_REFUSED, PULL_STALLED,
+    PULL_TOO_LONG, pull_with,
+};
+
 /// Size of one read from the socket.
 const READ_SIZE: usize = 16 * 1024;
 
@@ -763,6 +769,8 @@ where
 #[cfg(test)]
 mod pending_tests;
 #[cfg(test)]
+mod pull_tests;
+#[cfg(test)]
 mod request_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

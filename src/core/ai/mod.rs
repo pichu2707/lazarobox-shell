@@ -14,6 +14,7 @@ pub mod install;
 pub mod jail;
 pub mod memory;
 pub mod menu;
+pub mod ollama_lib;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;

@@ -40,6 +40,7 @@ pub mod login_path;
 pub mod loopback;
 pub mod mcp;
 pub mod notify;
+pub mod ollama_lib;
 pub mod opener;
 pub mod proc;
 pub mod prompts;
@@ -571,6 +572,18 @@ pub async fn run() -> io::Result<()> {
             cli_env.path.clone(),
             hub_dir(),
             hf::token_env,
+            hub_tx.clone(),
+        ))
+        // The picker's Ollama screens: curl from the same PATH for the
+        // library, the pull through the local Ollama server. They answer on
+        // the Hub's channel.
+        .with_ollama(ollama_lib::Ollama::new(
+            cli_env.path.clone(),
+            ollama_lib::models_folder(
+                env::var_os("OLLAMA_MODELS"),
+                env::var_os("HOME").map(PathBuf::from).as_deref(),
+                Path::exists,
+            ),
             hub_tx.clone(),
         ))
         // The install wizard's steps: curl, gh and tar from the same PATH,
@@ -1197,6 +1210,9 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The Ollama library requests and pull. `None` ignores the Ollama
+    /// effects (unit tests).
+    ollama: Option<ollama_lib::Ollama>,
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
@@ -1232,6 +1248,7 @@ impl Panes {
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            ollama: None,
             installer: None,
         }
     }
@@ -1377,6 +1394,12 @@ impl Panes {
     /// Sets what runs the Hugging Face effects.
     fn with_hub(mut self, hub: hf::Hub) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Sets what runs the Ollama effects.
+    fn with_ollama(mut self, ollama: ollama_lib::Ollama) -> Self {
+        self.ollama = Some(ollama);
         self
     }
 
@@ -1685,9 +1708,24 @@ impl Panes {
                         hub.start(*job);
                     }
                 }
+                // Only one download runs; cancelling the idle one does
+                // nothing.
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.cancel();
+                    }
+                }
+                Effect::OllamaAsk(ask) => {
+                    if let Some(ollama) = &self.ollama {
+                        ollama.ask(ask);
+                    }
+                }
+                Effect::Pull { pull, port } => {
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.start(port, *pull);
                     }
                 }
                 // Returns at once: the step runs on its own task.

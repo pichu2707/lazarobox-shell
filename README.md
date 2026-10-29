@@ -114,6 +114,36 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 ---
 
+## ⌨️ Teclas: el prefijo `Ctrl+Espacio`
+
+Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; luego se pulsa la tecla, o el grupo y la tecla (por ejemplo `w` y `v`). Mientras el prefijo espera, la barra de estado muestra las teclas posibles. `Esc` o una tecla sin asignar lo cancelan sin escribir nada.
+
+| Tecla tras `Ctrl+Espacio` | Acción                                                              |
+| :------------------------ | :------------------------------------------------------------------ |
+| `h` `j` `k` `l`           | Mueve el foco a la izquierda, abajo, arriba o derecha               |
+| `w` `v` / `w` `h`         | Divide el panel a la derecha / abajo                                |
+| `w` `q`                   | Cierra el panel (pide confirmación)                                 |
+| `w` `r`                   | Modo RESIZE: `h` `j` `k` `l` mueven el borde, `Esc` sale             |
+| `w` `z`                   | Amplía el panel o lo devuelve a su tamaño                           |
+| `t` `n` / `t` `c`         | Pestaña nueva / cierra la pestaña (pide confirmación)               |
+| `g` `b` / `g` `B`         | Pestaña siguiente / anterior                                        |
+| `b` `1`…`b` `9`           | Va a la pestaña N                                                   |
+| `[`                       | Modo COPY (ver [Modo COPY](#-modo-copy))                            |
+| `m`                       | Abre el menú                                                        |
+| `c`                       | Abre un chat de IA                                                  |
+| `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
+| `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
+| `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
+
+**Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
+
+**Backspace que llega como `Ctrl+H`.** Algunas terminales mandan `^H` para Backspace. En los campos de texto (el mensaje del chat, las notas, el resumen, las etiquetas y los campos del menú) `Ctrl+H` borra como Backspace; un panel de shell recibe el byte tal cual.
+
+**`Esc` no significa lo mismo en todas partes.** En un shell llega al programa; en el prefijo y las confirmaciones cancela, y en RESIZE sale; en COPY limpia la selección y una segunda pulsación sale; en el menú vuelve un nivel y, arriba del todo, descarta lo no guardado y lo cierra; en el chat cancela la respuesta en curso, rechaza una aprobación o una revisión (tras su retardo), en la lista de conversaciones empieza una nueva y en los editores (etiquetas, resumen, nota) descarta lo escrito. La tabla completa está en `openspec/specs/modal-input/spec.md` («Esc per view»).
+
+---
+
 ## 📋 Modo COPY
 
 Con `Ctrl+Espacio` y `[` se entra en modo COPY. Mueve el cursor con `h` `j` `k` `l`, selecciona con `v` (caracteres) o `V` (líneas completas) y copia con `y`: el texto llega al portapapeles del sistema mediante OSC 52 y se vuelve a TERMINAL. `Esc` limpia la selección (y una segunda pulsación sale). Las selecciones de más de 75 000 bytes no se copian.
@@ -212,7 +242,7 @@ Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Conte
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
-El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. lazarobox solo descarga dos cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»).
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir. Para usar uno, descárgalo desde la fila `download from Ollama…` (ver «Descargar modelos de Ollama») o instálalo tú (`ollama pull <modelo>`), y pulsa `r`. lazarobox solo descarga tres cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face»), modelos de Ollama a través de tu propio servidor de Ollama (ver «Descargar modelos de Ollama») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»). Ninguna conversación de chat pide nunca a un servidor que descargue un modelo.
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
 
@@ -314,6 +344,25 @@ La lista de modelos de llamacpp termina en la fila `download from Hugging Face�
 
 El token va en la cabecera `Authorization` y solo a `huggingface.co`; `curl` no lo reenvía al CDN. Como en la comprobación de versiones, `curl` respeta tu proxy y tus certificados y se ignora `~/.curlrc`. Sin `curl` en el `PATH`, el flujo dice `Hugging Face needs curl on the PATH`.
 
+### Descargar modelos de Ollama
+
+Con el servidor de Ollama en marcha (detectado como `available`), la lista de modelos de ollama termina en la fila `download from Ollama…`. Sin servidor la fila no aparece, porque quien descarga es él. Desde ahí:
+
+1. **Elige un modelo.** Se muestran hasta 20 de los modelos más populares de la biblioteca de Ollama **que caben en la memoria de tu PC**, con sus descargas y los tamaños que caben (`llama3.2  86.3M pulls  1b 3b`), sin escribir nada. Quedan fuera los modelos de embeddings y los que solo funcionan en la nube. El tamaño se estima como en Hugging Face: 5 bits por parámetro, y cabe si ocupa como mucho el 70% de la RAM. Los tamaños «efectivos» (`e2b`, `e4b`) no dicen cuánto ocupa la descarga, así que no cuentan para esa estimación.
+2. **Elige el tamaño.** Cada etiqueta aparece como `<modelo>:<etiqueta>` con su tamaño exacto, la suma de las capas de su manifiesto (`llama3.2:3b  2.0 GB`). Lo que no cabe lleva la marca `too big for this PC` y se puede elegir igualmente. Si un manifiesto no se pudo leer, la fila dice `size unknown`.
+3. **Confirma.** Antes de bajar nada se muestran el modelo y su tamaño, la **licencia** (la primera línea de cada capa de licencia, o `license: not stated`) con el enlace para leerla (`https://ollama.com/library/<modelo>:<etiqueta>`), la carpeta donde Ollama guarda los modelos y el espacio libre. Nada se descarga hasta que pulsas `y`; `n` o `Esc` vuelve atrás.
+4. **Descarga.** La hace tu servidor de Ollama, en segundo plano. Solo corre una descarga a la vez, sea de Hugging Face o de Ollama: mientras una corre, `Enter` en la fila de la otra dice `a download is already running`. La fila muestra `↓ 42% <modelo>:<etiqueta> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; Ollama conserva lo ya bajado y, si vuelves a elegir la misma etiqueta, sigue donde se quedó.
+5. **Úsalo.** Al terminar se vuelven a detectar los motores y el modelo aparece en la lista de ollama.
+
+**Dónde se guarda.** Donde lo guarda tu servidor de Ollama; lazarobox nunca escribe en su almacén. Normalmente es `$OLLAMA_MODELS`, `~/.ollama/models` o, con el servicio de Linux, `/usr/share/ollama/.ollama/models`. La confirmación muestra la primera de esas carpetas que encuentra, y si no encuentra ninguna dice `the Ollama server's models folder`. Para borrar un modelo, usa `ollama rm <modelo>`.
+
+**Qué se envía.** Solo cuando estás en este flujo, nunca al arrancar ni en segundo plano, y sin credenciales:
+
+- con el `curl` del sistema y solo por HTTPS: la página `https://ollama.com/library?sort=popular` al entrar, un manifiesto de `registry.ollama.ai` por etiqueta en la pantalla de tamaños y una petición por capa de licencia en la confirmación;
+- tras `y`, una sola petición `POST /api/pull` a tu servidor de Ollama en `127.0.0.1` (en su puerto, el de `[ai.servers]` si lo cambiaste), con `{"model":"<modelo>:<etiqueta>","stream":true}`.
+
+**La página puede cambiar.** La lista sale de la página web de la biblioteca de Ollama, que no es una API publicada y puede cambiar en cualquier momento. Si no se puede leer o no trae ningún modelo, la lista muestra el catálogo incluido en lazarobox, con el aviso `could not read the Ollama library; showing the built-in list` delante.
+
 ---
 
 ## 💬 Chat de IA (experimental)
@@ -326,6 +375,7 @@ Teclas dentro del chat:
 | :--------------------- | :-------------------------------------------------- |
 | `Enter`                | Envía el mensaje                                    |
 | `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
+| `Ctrl+U`               | Borra el mensaje                                    |
 | `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
 | `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
 | `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
