@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, Kind, ServerPorts};
 
 /// The fixed set of AI tasks, in display order.
@@ -139,10 +140,78 @@ pub enum ApprovalMode {
     /// The command is typed into the pane without a prompt, never followed
     /// by Enter.
     Auto,
-    /// A short list of navigation commands runs at once and its output goes
-    /// to the model; every other command asks. Routes like `Auto` until the
-    /// run guards land.
+    /// Reads, searches and the navigation commands of the safe list run at
+    /// once inside the chat's folder and their output goes to the model;
+    /// every other command, and any path outside the folder, asks.
     Run,
+}
+
+/// Whether the chat compacts its history with a model call (`[ai.chat]
+/// compaction`). `Off` never starts a run: the truncation marker stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CompactionMode {
+    /// Compact when enough history has left the window. The default.
+    #[default]
+    Auto,
+    /// Never compact.
+    Off,
+}
+
+/// The exact problem of an unreadable `ai.chat.compaction`.
+pub const COMPACTION_PROBLEM: &str = "ai.chat.compaction: expected \"auto\" or \"off\"";
+
+impl CompactionMode {
+    /// The mode of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "auto" => Some(Self::Auto),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// A coding-tools family switch: one boolean under `[ai.tools]`, off by
+/// default. `Read` and `Pane` have none: they are the 0.18.0 tools.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolToggle {
+    Search,
+    Write,
+    Exec,
+    Git,
+    GitWrite,
+}
+
+impl ToolToggle {
+    pub const ALL: [Self; 5] = [
+        Self::Search,
+        Self::Write,
+        Self::Exec,
+        Self::Git,
+        Self::GitWrite,
+    ];
+
+    /// The key under `[ai.tools]`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Search => "search",
+            Self::Write => "write",
+            Self::Exec => "exec",
+            Self::Git => "git",
+            Self::GitWrite => "git_write",
+        }
+    }
+
+    /// The family this switch turns on.
+    pub fn family(self) -> Family {
+        match self {
+            Self::Search => Family::Search,
+            Self::Write => Family::Write,
+            Self::Exec => Family::Exec,
+            Self::Git => Family::Git,
+            Self::GitWrite => Family::GitWrite,
+        }
+    }
 }
 
 /// The exact problem of an unreadable `ai.tools.approval`.
@@ -199,6 +268,10 @@ pub struct MemoryConfig {
     pub enabled: bool,
     pub acknowledged: bool,
     pub port: u16,
+    /// `save_summaries`: the rolling summary of a long chat is written to
+    /// engram, one note per conversation. Off by default (opt-in); only
+    /// meaningful while memory is [`active`](MemoryConfig::active).
+    pub save_summaries: bool,
 }
 
 impl Default for MemoryConfig {
@@ -207,6 +280,7 @@ impl Default for MemoryConfig {
             enabled: false,
             acknowledged: false,
             port: DEFAULT_ENGRAM_PORT,
+            save_summaries: false,
         }
     }
 }
@@ -264,9 +338,12 @@ pub struct AiConfig {
     notify_sound: bool,
     tools: bool,
     approval: ApprovalMode,
+    compaction: CompactionMode,
+    toggles: [bool; 5],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
+    managed_options: ManagedOptions,
     pub memory: MemoryConfig,
 }
 
@@ -282,6 +359,63 @@ pub struct ManagedServer {
     pub model: PathBuf,
 }
 
+/// How lazarobox runs its llama-server, from `[ai.servers.llamacpp]`. Read
+/// whether it is on or not, so turning it on from the menu keeps them.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ManagedOptions {
+    /// Extra arguments, each one argv element, after the ones lazarobox sets.
+    pub args: Vec<String>,
+    /// Minutes without a turn after which it stops; the next turn starts it
+    /// again. 0 never stops it.
+    pub idle_minutes: u32,
+}
+
+/// The idle stop of the managed llama-server unless `idle_minutes` is set.
+pub const DEFAULT_IDLE_MINUTES: u32 = 15;
+
+impl Default for ManagedOptions {
+    fn default() -> Self {
+        Self {
+            args: Vec::new(),
+            idle_minutes: DEFAULT_IDLE_MINUTES,
+        }
+    }
+}
+
+/// The idle times the menu steps through, in order; 0 is never.
+const IDLE_STEPS: [u32; 4] = [5, 15, 30, 0];
+
+/// The idle time after `minutes` in the menu's steps (`forward`), or before
+/// it. Never (0) comes after the longest step; a value of the config between
+/// steps moves to the next step each way.
+pub fn cycled_idle(minutes: u32, forward: bool) -> u32 {
+    // Never counts as the longest time.
+    let key = |m: u32| if m == 0 { u32::MAX } else { m };
+    let mut steps = IDLE_STEPS;
+    if !forward {
+        steps.reverse();
+    }
+    let after = |step: &&u32| {
+        if forward {
+            key(**step) > key(minutes)
+        } else {
+            key(**step) < key(minutes)
+        }
+    };
+    steps.iter().find(after).copied().unwrap_or(steps[0])
+}
+
+impl ManagedOptions {
+    /// How long it may sit unused, `None` when it never stops for that.
+    pub fn idle(&self) -> Option<std::time::Duration> {
+        (self.idle_minutes > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(self.idle_minutes) * 60))
+    }
+}
+
+/// The llama-server options lazarobox sets itself; `args` cannot hold them.
+const MANAGED_ARGS: &[&str] = &["--host", "--port", "-m", "--model"];
+
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
@@ -292,9 +426,12 @@ impl Default for AiConfig {
             notify_sound: true,
             tools: true,
             approval: ApprovalMode::Ask,
+            compaction: CompactionMode::Auto,
+            toggles: [false; 5],
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
+            managed_options: ManagedOptions::default(),
             memory: MemoryConfig::default(),
         }
     }
@@ -362,6 +499,25 @@ impl AiConfig {
         self.approval
     }
 
+    /// Whether a coding-tools family switch (`[ai.tools] <key>`) is on. Off
+    /// by default; a family is active only while the master switch is on too.
+    pub fn toggle(&self, toggle: ToolToggle) -> bool {
+        self.toggles[toggle as usize]
+    }
+
+    pub fn set_toggle(&mut self, toggle: ToolToggle, on: bool) {
+        self.toggles[toggle as usize] = on;
+    }
+
+    /// The families a chat opened now offers: the 0.18.0 set plus every
+    /// switched-on family. With the master switch off, only the 0.18.0 set.
+    pub fn families(&self) -> FamilySet {
+        ToolToggle::ALL
+            .into_iter()
+            .filter(|t| self.tools && self.toggle(*t))
+            .fold(FamilySet::LEGACY, |set, t| set.with(t.family()))
+    }
+
     /// The user MCP servers as declared, global and per-project, in file
     /// order. Read once at startup; the menu never writes them.
     pub fn mcp_servers(&self) -> &[McpServer] {
@@ -376,6 +532,16 @@ impl AiConfig {
     /// The llama-server lazarobox starts itself, when it is turned on.
     pub fn managed(&self) -> Option<&ManagedServer> {
         self.managed.as_ref()
+    }
+
+    /// How lazarobox runs its llama-server.
+    pub fn managed_options(&self) -> &ManagedOptions {
+        &self.managed_options
+    }
+
+    /// Sets the idle time of the managed llama-server; 0 never stops it.
+    pub fn set_idle_minutes(&mut self, minutes: u32) {
+        self.managed_options.idle_minutes = minutes;
     }
 
     /// Turns lazarobox's own llama-server on with `model`, as `managed = true`
@@ -418,6 +584,15 @@ impl AiConfig {
     pub fn with_servers(mut self, servers: ServerPorts) -> Self {
         self.servers = servers;
         self
+    }
+
+    /// Whether the chat compacts its history (`[ai.chat] compaction`).
+    pub fn compaction(&self) -> CompactionMode {
+        self.compaction
+    }
+
+    pub fn set_compaction(&mut self, mode: CompactionMode) {
+        self.compaction = mode;
     }
 
     pub fn set_approval(&mut self, mode: ApprovalMode) {
@@ -609,8 +784,10 @@ pub fn read_with_port_env(
     let mut config = read_tasks(table, problems);
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
+    config.compaction = read_compaction(table, problems);
+    config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
-    (config.servers, config.managed) = read_servers(table, problems);
+    (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
 }
@@ -659,6 +836,52 @@ fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
             ApprovalMode::Ask
         }
     }
+}
+
+/// Reads `[ai.chat] compaction`. A missing table or key is `auto`; anything
+/// but `"auto"` or `"off"` falls back to `auto` with a problem.
+fn read_compaction(table: &Table, problems: &mut Vec<String>) -> CompactionMode {
+    let section = match table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("chat"))
+    {
+        None => return CompactionMode::Auto,
+        Some(Value::Table(section)) => section,
+        Some(_) => {
+            problems.push("ai.chat: expected a table".to_owned());
+            return CompactionMode::Auto;
+        }
+    };
+    match section.get("compaction") {
+        None => CompactionMode::Auto,
+        Some(Value::String(id)) if CompactionMode::from_id(id).is_some() => {
+            CompactionMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push(COMPACTION_PROBLEM.to_owned());
+            CompactionMode::Auto
+        }
+    }
+}
+
+/// Reads the five `[ai.tools]` family switches. A missing key is off; a
+/// value of the wrong type is off with a problem for that key only. A
+/// non-table `ai.tools` was already reported by `read_tools`.
+fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 5] {
+    let section = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("tools"))
+        .and_then(Value::as_table);
+    ToolToggle::ALL.map(|toggle| match section.and_then(|s| s.get(toggle.key())) {
+        None => false,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push(format!("ai.tools.{}: expected a boolean", toggle.key()));
+            false
+        }
+    })
 }
 
 /// Reads `[[ai.mcp.servers]]`. An invalid entry is skipped whole and each of
@@ -812,23 +1035,27 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
-/// Reads `[ai.servers.<id>] port` for the server engines, and `managed` and
-/// `model` for llamacpp. A wrong port falls back on its own, with a problem:
+/// Reads `[ai.servers.<id>] port` for the server engines, and `managed`,
+/// `model`, `args` and `idle_minutes` for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
 /// ignored, like unknown names under `ai.tasks`. The menu writes only
 /// `managed` and `model` of llamacpp, when a local model is chosen.
-fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Option<ManagedServer>) {
+fn read_servers(
+    table: &Table,
+    problems: &mut Vec<String>,
+) -> (ServerPorts, Option<ManagedServer>, ManagedOptions) {
     let mut ports = ServerPorts::default();
     let mut managed = None;
+    let mut options = ManagedOptions::default();
     let section = match table.get("ai").and_then(Value::as_table) {
-        None => return (ports, managed),
+        None => return (ports, managed, options),
         Some(ai) => match ai.get("servers") {
-            None => return (ports, managed),
+            None => return (ports, managed, options),
             Some(Value::Table(section)) => section,
             Some(_) => {
                 problems.push("ai.servers: expected a table".to_owned());
-                return (ports, managed);
+                return (ports, managed, options);
             }
         },
     };
@@ -860,12 +1087,60 @@ fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Opti
         if id == "llamacpp" {
             managed = read_managed(server, problems);
             fallback = managed.as_ref().map(|_| MANAGED_PORT);
+            options.args = read_managed_args(server, problems);
+            options.idle_minutes = read_idle_minutes(server, problems);
         }
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
     }
-    (ports, managed)
+    (ports, managed, options)
+}
+
+/// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
+/// for never; anything else falls back to [`DEFAULT_IDLE_MINUTES`].
+fn read_idle_minutes(server: &Table, problems: &mut Vec<String>) -> u32 {
+    match server.get("idle_minutes") {
+        None => DEFAULT_IDLE_MINUTES,
+        Some(Value::Integer(n)) if u32::try_from(*n).is_ok() => *n as u32,
+        Some(_) => {
+            problems.push(
+                "ai.servers.llamacpp.idle_minutes: expected a whole number of minutes (0 = never)"
+                    .to_owned(),
+            );
+            DEFAULT_IDLE_MINUTES
+        }
+    }
+}
+
+/// `args` of `[ai.servers.llamacpp]`: a list of strings, none of them an
+/// option lazarobox sets itself (also as `--port=<n>`). A wrong list is
+/// ignored whole, with a problem: dropping one entry would leave its value
+/// behind as an argument of its own.
+fn read_managed_args(server: &Table, problems: &mut Vec<String>) -> Vec<String> {
+    let args: Option<Vec<String>> = match server.get("args") {
+        None => return Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        Some(_) => None,
+    };
+    let Some(args) = args else {
+        problems.push("ai.servers.llamacpp.args: expected a list of strings".to_owned());
+        return Vec::new();
+    };
+    let clash = args.iter().find(|arg| {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        MANAGED_ARGS.contains(&name)
+    });
+    if let Some(clash) = clash {
+        problems.push(format!(
+            "ai.servers.llamacpp.args: \"{clash}\" is set by lazarobox"
+        ));
+        return Vec::new();
+    }
+    args
 }
 
 /// `managed` and `model` of `[ai.servers.llamacpp]`: `Some` only with
@@ -928,6 +1203,7 @@ fn read_memory(table: &Table, problems: &mut Vec<String>, port_env: Option<&str>
     };
     flag("enabled", &mut memory.enabled);
     flag("acknowledged", &mut memory.acknowledged);
+    flag("save_summaries", &mut memory.save_summaries);
     match section.get("port") {
         None => {}
         Some(Value::Integer(n)) if (1..=65535).contains(n) => memory.port = *n as u16,
@@ -1046,6 +1322,121 @@ mod tests {
         Some(ManagedServer {
             model: PathBuf::from(model),
         })
+    }
+
+    /// The extra llama-server arguments and the problems of `text`.
+    fn args_of(text: &str) -> (Vec<String>, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.managed_options().args.clone(), problems)
+    }
+
+    // Spec S9: extra llama-server arguments, one argv element each.
+    #[test]
+    fn the_managed_llama_server_reads_its_extra_args() {
+        let text = "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/q.gguf\"\n\
+                    args = [\"-ngl\", \"99\", \"-c\", \"16384\", \"--jinja\"]\n";
+        assert_eq!(
+            args_of(text),
+            (
+                vec!["-ngl", "99", "-c", "16384", "--jinja"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                vec![]
+            )
+        );
+        // Kept while it is off, so turning it on from the menu uses them.
+        let off = "[ai.servers.llamacpp]\nargs = [\"-ngl\", \"99\"]\n";
+        assert_eq!(args_of(off).0, ["-ngl", "99"]);
+        assert_eq!(args_of(""), (vec![], vec![]));
+    }
+
+    // Spec S9: entries that clash with what lazarobox sets are refused.
+    #[test]
+    fn extra_args_that_set_the_host_port_or_model_are_refused_whole() {
+        for clash in ["--host", "--port", "-m", "--model", "--port=8080"] {
+            let text = format!("[ai.servers.llamacpp]\nargs = [\"-ngl\", \"99\", \"{clash}\"]\n");
+            assert_eq!(
+                args_of(&text),
+                (
+                    vec![],
+                    vec![format!(
+                        "ai.servers.llamacpp.args: \"{clash}\" is set by lazarobox"
+                    )]
+                ),
+                "{clash}"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_args_that_are_not_a_list_of_strings_are_ignored_with_a_problem() {
+        for value in ["\"-ngl 99\"", "[\"-ngl\", 99]"] {
+            let text = format!("[ai.servers.llamacpp]\nargs = {value}\n");
+            assert_eq!(
+                args_of(&text),
+                (
+                    vec![],
+                    vec!["ai.servers.llamacpp.args: expected a list of strings".to_owned()]
+                ),
+                "{value}"
+            );
+        }
+    }
+
+    /// The idle stop minutes and the problems of `text`.
+    fn idle_of(text: &str) -> (u32, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.managed_options().idle_minutes, problems)
+    }
+
+    // Spec S8: the managed llama-server stops after 15 idle minutes unless
+    // `idle_minutes` says otherwise; 0 never stops it.
+    #[test]
+    fn the_idle_stop_is_15_minutes_unless_set() {
+        assert_eq!(idle_of(""), (15, vec![]));
+        assert_eq!(DEFAULT_IDLE_MINUTES, 15);
+        let set = |n: &str| format!("[ai.servers.llamacpp]\nidle_minutes = {n}\n");
+        assert_eq!(idle_of(&set("45")), (45, vec![]));
+        assert_eq!(idle_of(&set("0")), (0, vec![]));
+        let idle = |minutes| ManagedOptions {
+            idle_minutes: minutes,
+            ..ManagedOptions::default()
+        };
+        assert_eq!(idle(0).idle(), None);
+        assert_eq!(idle(5).idle(), Some(std::time::Duration::from_secs(300)));
+    }
+
+    // Spec S8: the menu steps through 5, 15, 30 minutes and never; a value
+    // of the config between steps moves to the next one each way.
+    #[test]
+    fn the_idle_time_cycles_through_its_steps() {
+        let forward: Vec<u32> = [5, 15, 30, 0].map(|m| cycled_idle(m, true)).to_vec();
+        assert_eq!(forward, [15, 30, 0, 5]);
+        let back: Vec<u32> = [5, 15, 30, 0].map(|m| cycled_idle(m, false)).to_vec();
+        assert_eq!(back, [0, 5, 15, 30]);
+        assert_eq!((cycled_idle(45, true), cycled_idle(45, false)), (0, 30));
+        assert_eq!((cycled_idle(10, true), cycled_idle(10, false)), (15, 5));
+        assert_eq!((cycled_idle(3, true), cycled_idle(3, false)), (5, 0));
+    }
+
+    #[test]
+    fn a_wrong_idle_stop_falls_back_to_15_minutes_with_a_problem() {
+        for value in ["-1", "\"15\"", "1.5", "99999999999"] {
+            let text = format!("[ai.servers.llamacpp]\nidle_minutes = {value}\n");
+            assert_eq!(
+                idle_of(&text),
+                (
+                    15,
+                    vec![
+                        "ai.servers.llamacpp.idle_minutes: expected a whole number of minutes \
+                         (0 = never)"
+                            .to_owned()
+                    ]
+                ),
+                "{value}"
+            );
+        }
     }
 
     // Spec: A managed llama-server is opt-in.
@@ -1181,6 +1572,7 @@ mod tests {
             enabled,
             acknowledged,
             port,
+            save_summaries: false,
         }
     }
 
@@ -1634,6 +2026,23 @@ mod tests {
         assert_eq!(memory_of(with_key, Some("8123")).0.port, 9000);
     }
 
+    #[test]
+    fn save_summaries_defaults_to_off_and_reads_a_boolean() {
+        for text in ["", "[ai.memory]\nenabled = true\n"] {
+            assert!(!memory_of(text, None).0.save_summaries, "{text:?}");
+        }
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = true\n", None);
+        assert!(memory.save_summaries);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_save_summaries_stays_off_with_its_problem() {
+        let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = \"yes\"\n", None);
+        assert!(!memory.save_summaries);
+        assert_eq!(problems, ["ai.memory.save_summaries: expected a boolean"]);
+    }
+
     // Spec: Wrong types and range.
     #[test]
     fn a_wrong_memory_value_falls_back_alone_with_its_problem() {
@@ -1876,6 +2285,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compaction_defaults_to_auto_and_reads_off() {
+        for text in [
+            "",
+            "[ai]\n",
+            "[ai.chat]\n",
+            "[ai.chat]\ncompaction = \"auto\"\n",
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.compaction(), CompactionMode::Auto, "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+        let (config, problems) = read_text("[ai.chat]\ncompaction = \"off\"\n");
+        assert_eq!(config.compaction(), CompactionMode::Off);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_bad_compaction_falls_back_to_auto_with_the_exact_problem() {
+        for value in ["\"OFF\"", "\"no\"", "false", "1", "\" off\""] {
+            let (config, problems) = read_text(&format!("[ai.chat]\ncompaction = {value}\n"));
+            assert_eq!(config.compaction(), CompactionMode::Auto, "{value}");
+            assert_eq!(problems, vec![COMPACTION_PROBLEM.to_owned()], "{value}");
+        }
+        let (config, problems) = read_text("[ai]\nchat = 1\n");
+        assert_eq!(config.compaction(), CompactionMode::Auto);
+        assert_eq!(problems, vec!["ai.chat: expected a table".to_owned()]);
+    }
+
     // Spec (configuration): `[ai.tools] approval`, default and parse (D18).
     #[test]
     fn approval_defaults_to_ask() {
@@ -1932,6 +2370,101 @@ mod tests {
                 APPROVAL_PROBLEM.to_owned(),
             ]
         );
+    }
+
+    // Spec (configuration): the five family toggles, default and parse.
+    #[test]
+    fn family_toggles_default_to_off_without_a_notice() {
+        for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
+            let (config, problems) = read_text(text);
+            for toggle in ToolToggle::ALL {
+                assert!(!config.toggle(toggle), "{text:?} {toggle:?}");
+            }
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn family_toggles_read_their_own_keys() {
+        let (config, problems) = read_text("[ai.tools]\nwrite = true\nexec = true\n");
+        let on: Vec<_> = ToolToggle::ALL
+            .into_iter()
+            .filter(|t| config.toggle(*t))
+            .collect();
+        assert_eq!(on, vec![ToolToggle::Write, ToolToggle::Exec]);
+        assert!(problems.is_empty());
+        let keys: Vec<_> = ToolToggle::ALL.into_iter().map(ToolToggle::key).collect();
+        assert_eq!(keys, ["search", "write", "exec", "git", "git_write"]);
+    }
+
+    #[test]
+    fn the_git_toggles_are_independent() {
+        let (config, _) = read_text("[ai.tools]\ngit = false\ngit_write = true\n");
+        assert!(!config.toggle(ToolToggle::Git));
+        assert!(config.toggle(ToolToggle::GitWrite));
+    }
+
+    #[test]
+    fn a_wrong_typed_toggle_falls_back_to_off_for_that_key_only() {
+        let (config, problems) = read_text("[ai.tools]\ngit = \"yes\"\nsearch = true\n");
+        assert!(!config.toggle(ToolToggle::Git));
+        assert!(config.toggle(ToolToggle::Search));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.git: expected a boolean".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_toggle_problems_follow_the_approval_one() {
+        let (_, problems) = read_text("[ai.tools]\nexec = 1\napproval = 2\nenabled = 3\n");
+        assert_eq!(
+            problems,
+            vec![
+                "ai.tools.enabled: expected a boolean".to_owned(),
+                APPROVAL_PROBLEM.to_owned(),
+                "ai.tools.exec: expected a boolean".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_table_tools_reports_no_toggle_problem() {
+        let (config, problems) = read_text("[ai]\ntools = 3\n");
+        assert!(!config.toggle(ToolToggle::Write));
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn set_toggle_changes_one_toggle_only() {
+        let mut config = AiConfig::default();
+        config.set_toggle(ToolToggle::GitWrite, true);
+        assert!(config.toggle(ToolToggle::GitWrite));
+        assert!(!config.toggle(ToolToggle::Git));
+    }
+
+    #[test]
+    fn no_toggle_on_is_the_legacy_family_set() {
+        assert_eq!(AiConfig::default().families(), FamilySet::LEGACY);
+    }
+
+    #[test]
+    fn each_toggle_adds_exactly_its_family_to_the_legacy_set() {
+        for toggle in ToolToggle::ALL {
+            let mut config = AiConfig::default();
+            config.set_toggle(toggle, true);
+            let set = config.families();
+            assert_eq!(set, FamilySet::LEGACY.with(toggle.family()), "{toggle:?}");
+            assert!(set.contains(Family::Read) && set.contains(Family::Pane));
+        }
+    }
+
+    #[test]
+    fn the_master_switch_off_leaves_only_the_legacy_set() {
+        let (mut config, _) = read_text("[ai.tools]\nwrite = true\nexec = true\n");
+        assert!(config.families().contains(Family::Exec));
+        config.set_tools_enabled(false);
+        assert_eq!(config.families(), FamilySet::LEGACY);
     }
 
     #[test]

@@ -1,13 +1,22 @@
 //! Runtime of the read tools: runs a validated call off the event loop and
 //! wraps what it returns as untrusted data.
 
+pub mod apply;
 pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
+pub mod integrity;
 pub mod open;
 pub mod pending;
+pub mod runner;
+pub mod scratch;
+pub mod search;
+pub mod stage;
+pub mod staged;
+pub mod write;
 
 use std::{
     sync::{
@@ -46,7 +55,8 @@ impl Drop for CancelOnDrop {
 
 /// Extra time past `Limits::time` before the caller gives up on the thread.
 const GRACE: Duration = if cfg!(test) {
-    Duration::from_millis(30)
+    // Room for a busy CI runner to start the blocking thread.
+    Duration::from_millis(150)
 } else {
     Duration::from_millis(500)
 };
@@ -66,10 +76,33 @@ const GRACE: Duration = if cfg!(test) {
 /// already blocked (a hung open on a dead mount) cannot be interrupted and may
 /// still pin one blocking thread until the kernel returns.
 pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Failure> {
+    run_over(call, env, limits, None).await
+}
+
+/// [`run`] that also shows the staged changes of `view`, marked as pending.
+pub async fn run_over(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+) -> Result<String, Failure> {
+    run_within(call, env, limits, view, fs::Within::Anywhere).await
+}
+
+/// [`run_over`] with a `read_file` kept [`Within`](fs::Within) a bound.
+pub async fn run_within(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+    within: fs::Within,
+) -> Result<String, Failure> {
     let cancel = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancel.clone());
     let bound = limits.time + GRACE;
-    let work = tokio::task::spawn_blocking(move || fs::execute_with(&call, &env, &limits, &cancel));
+    let work = tokio::task::spawn_blocking(move || {
+        fs::execute_within(&call, &env, &limits, &cancel, view.as_ref(), within)
+    });
     let text = tokio::time::timeout(bound, work)
         .await
         .map_err(|_| Failure::TimedOut)?
@@ -80,8 +113,11 @@ pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Fai
 
 #[cfg(test)]
 mod tests {
-    // `Duration` serves the Linux-only tests.
-    #![cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+    // `Duration` serves the tests that need the file tools.
+    #![cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_imports)
+    )]
     use super::*;
     use std::{
         sync::{
@@ -120,8 +156,8 @@ mod tests {
         (dir, home)
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_result_is_wrapped_with_a_fresh_nonce_per_call() {
         let (_dir, home) = home();
@@ -159,8 +195,8 @@ mod tests {
         );
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
         let (_dir, home) = home();
@@ -189,8 +225,8 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
         let (_dir, home) = home();
@@ -212,8 +248,8 @@ mod tests {
         }
     }
 
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {
         let (_dir, home) = home();

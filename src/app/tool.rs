@@ -4,28 +4,28 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay, unless `approval::route` says the command can be typed at once
-//! (`auto`, D18) or run after a check (`run`, D21). Only a `run` is ever
-//! routed: a read and a user tool always wait for `y`.
-
-use std::time::Duration;
+//! the overlay, unless `approval::answers_itself` lets a read or a search go
+//! (`run`: in the chat's root), or `approval::route` says the command can be
+//! typed at once (`auto`, D18) or run after a check (`run`, D21). A user tool
+//! and the other commands always wait for `y`.
 
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, Route, answers_itself, counts_toward_pause,
+        reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
-use crate::core::ai::{config::ApprovalMode, tools::exec::Fallback};
+use crate::core::ai::{
+    config::ApprovalMode,
+    tools::{exec::Fallback, registry::FamilySet},
+};
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
 pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
-/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
-/// user was already typing cannot answer it.
-pub(super) const ARM_DELAY: Duration = Duration::from_millis(400);
 const TOOLS_OFF: &str = "tools are off";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
@@ -128,6 +128,20 @@ impl App {
         if !self.ai.tools_enabled() {
             return Self::deny(id, turn, call, TOOLS_OFF);
         }
+        // A read or a search the mode answers needs no overlay, so a pending
+        // approval does not stand in its way. A reply that lets it go is not
+        // the user's `y`.
+        let mode = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .map(ChatState::approval_mode);
+        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode)) {
+            return vec![Effect::ToolDecision {
+                pane: id,
+                turn,
+                call,
+                decision,
+            }];
+        }
         let target = match &ask {
             ApprovalAsk::Run { .. } => {
                 let target = self
@@ -138,9 +152,17 @@ impl App {
                 }
                 target
             }
-            // A user tool is never routed by the approval mode (D18): only a
-            // `run` can be typed or run by itself. It always opens the prompt.
-            ApprovalAsk::Read { .. } | ApprovalAsk::External { .. } => None,
+            // A user tool and a command are never routed by the approval mode (D18): only a
+            // `run` can be typed or run by itself. A read or a search the mode
+            // did not let go above opens the prompt.
+            ApprovalAsk::Read { .. }
+            | ApprovalAsk::Search { .. }
+            | ApprovalAsk::External { .. }
+            | ApprovalAsk::Exec { .. }
+            | ApprovalAsk::GitDiff { .. }
+            | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::Commit(_)
+            | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
@@ -166,7 +188,12 @@ impl App {
         ask: ApprovalAsk,
         why: Option<String>,
     ) -> Vec<Effect> {
-        let armed_at = (self.clock)() + ARM_DELAY;
+        let armed_at = (self.clock)() + ask.arm_delay();
+        let batch = match &ask {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
+            _ => None,
+        };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
@@ -174,6 +201,9 @@ impl App {
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
+                if let Some(review) = batch {
+                    self.open_review(id, review);
+                }
                 self.dirty = true;
                 Vec::new()
             }
@@ -283,7 +313,7 @@ impl App {
         chat.set_approval_mode(mode);
         chat.push_system_line(match mode {
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
-            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)".to_owned(),
+            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),
         });
         self.dirty = true;
@@ -358,8 +388,9 @@ impl App {
     }
 
     /// The request of a turn just sent from chat `id` gets the tools its
-    /// engine is verified for, and the chat remembers that it may hold a tool
-    /// session to end.
+    /// engine is verified for and, when it offers tools, the families of the
+    /// saved toggles, and the chat remembers that it may hold a tool session
+    /// to end.
     pub(super) fn offer_tools(&mut self, id: PaneId, request: &mut ChatRequest) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
@@ -370,6 +401,11 @@ impl App {
             chat.origin_cwd().map(Path::to_path_buf),
             self.tool_engines,
         );
+        request.families = if request.tools == Tools::Off {
+            FamilySet::LEGACY
+        } else {
+            self.ai.families()
+        };
         chat.set_tool_session(request.tools != Tools::Off);
     }
 

@@ -13,7 +13,7 @@ use toml::{Table, Value};
 
 use super::ai::{
     self,
-    config::{AiConfig, ApprovalMode},
+    config::{AiConfig, ApprovalMode, ToolToggle},
 };
 
 /// Which edge of the screen a bar sits on.
@@ -91,6 +91,16 @@ impl ConfigEdit {
         }
     }
 
+    /// The edit of one coding-tools family switch (`ai.tools.<key>`): a
+    /// boolean, written only when the menu changed it.
+    pub fn toggle(toggle: ToolToggle, on: bool) -> Self {
+        Self {
+            table: TOOLS_TABLE,
+            key: toggle.key(),
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
     /// The `ai.tools.approval` edit: a string, `ask`, `auto` or `run`, written even
     /// when it equals the default.
     pub fn approval(mode: ApprovalMode) -> Self {
@@ -101,16 +111,23 @@ impl ConfigEdit {
         }
     }
 
+    /// Whether the key is a TOML integer (written as a number, not as a
+    /// string): `ai.servers.llamacpp.idle_minutes`.
+    pub fn is_integer(&self) -> bool {
+        self.table == LLAMACPP_TABLE && self.key == "idle_minutes"
+    }
+
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound`, `ai.tools.enabled` and `ai.servers.llamacpp.managed`.
+    /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches and `ai.servers.llamacpp.managed`.
     /// Every other owned key holds a string; `ai.memory.port` is owned but
     /// never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify_sound"))
-            || (self.table == TOOLS_TABLE && self.key == "enabled")
+            || (self.table == TOOLS_TABLE
+                && (self.key == "enabled" || ToolToggle::ALL.iter().any(|t| t.key() == self.key)))
             || (self.table == LLAMACPP_TABLE && self.key == "managed")
     }
 }

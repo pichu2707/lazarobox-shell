@@ -3,9 +3,6 @@ source: src/ui/mod.rs
 expression: frame
 ---
  1
-
-
-
          ┌ Menu ──────────────────────────────────────────────────────┐
          │ Settings* │ AI                                       ⇥ Tab │
          │ Statusline position                                 bottom │
@@ -13,7 +10,14 @@ expression: frame
          │ Mouse                                                   on │
          │ Notify                                                 off │
          │ Sound                                                   on │
+         │ llama-server idle                                   15 min │
          │ * Updates                                 0.16.0 available │
+         │ Feedback                                bug report or idea │
+         │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
          │                                                            │
          │                                                            │
          │                                                            │
@@ -22,8 +26,4 @@ expression: frame
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
-
-
-
-
  ◐ MENU                                                   sh · update 0.16.0

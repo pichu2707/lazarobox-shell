@@ -1374,6 +1374,25 @@ fn ollama_offers_only_the_families_of_the_request() {
     assert!(names(FamilySet::EMPTY).is_empty());
 }
 
+// T.6: with nothing to offer, the `tools` key is left out of the body rather
+// than sent as an empty list.
+#[test]
+fn an_empty_registry_leaves_the_tools_key_out_of_the_round_body() {
+    use crate::core::ai::tools::registry::FamilySet;
+    let body = |families: FamilySet| {
+        let mut req = request("");
+        req.families = families;
+        req.tools = Tools::On {
+            origin: None,
+            mcp: None,
+            external: Box::default(),
+        };
+        body_of(ollama_round_body(&req, &[], true))
+    };
+    assert!(body(FamilySet::EMPTY).get("tools").is_none());
+    assert!(body(FamilySet::LEGACY).get("tools").is_some());
+}
+
 /// Every flag a claude turn passes, with the first claude release that knows
 /// it. Adding a flag to `claude_invocation` or to the tools wiring without a
 /// row here fails `every_claude_flag_is_pinned_to_a_minimum_version`; adding
@@ -1513,4 +1532,300 @@ fn an_unknown_or_unparseable_claude_version_fails_open() {
     for line in ["", "version unknown", "claude", "2.1", "banana 1.x.y"] {
         assert!(!claude_too_old(Some(line)), "{line:?}");
     }
+}
+
+// Byte pin (llamacpp-tools T1.7). The shared-helper refactor of the round body
+// must not change one byte of what Ollama receives. `serde_json` has no
+// `preserve_order`, so keys come out sorted: these are golden bytes, not a
+// parsed comparison.
+fn pin_exchange(id: Option<&str>, index: Option<u64>, name: &str, args: Value) -> ToolExchange {
+    ToolExchange {
+        id: id.map(Into::into),
+        index,
+        name: name.into(),
+        arguments: args,
+        result: "/home/u/curso-rust".into(),
+    }
+}
+
+#[test]
+fn pin_no_rounds_with_a_system_prompt_and_a_memory_block() {
+    let mut with_memory = request("be brief");
+    with_memory.memory = Some("<m>x</m>".into());
+    let golden = br#"{"messages":[{"content":"be brief\n\n<m>x</m>","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&with_memory, &[], false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn pin_one_round_without_ids_index_or_thinking() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: "Looking.".into(),
+        exchanges: vec![pin_exchange(
+            None,
+            None,
+            "find_dir",
+            json!({"query": "curso"}),
+        )],
+    }];
+    let golden = br#"{"messages":[{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"},{"content":"Looking.","role":"assistant","tool_calls":[{"function":{"arguments":{"query":"curso"},"name":"find_dir"}}]},{"content":"/home/u/curso-rust","role":"tool","tool_name":"find_dir"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&request(""), &rounds, false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn pin_one_round_with_ids_index_and_thinking() {
+    let rounds = [ToolRound {
+        thinking: Some("hm".into()),
+        text: String::new(),
+        exchanges: vec![
+            pin_exchange(Some("c1"), Some(0), "find_dir", json!({"query": "curso"})),
+            pin_exchange(Some("c2"), Some(1), "list_dir", json!({"path": "/home/u"})),
+        ],
+    }];
+    let golden = br#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"},{"content":"","role":"assistant","thinking":"hm","tool_calls":[{"function":{"arguments":{"query":"curso"},"index":0,"name":"find_dir"},"id":"c1"},{"function":{"arguments":{"path":"/home/u"},"index":1,"name":"list_dir"},"id":"c2"}]},{"content":"/home/u/curso-rust","role":"tool","tool_call_id":"c1","tool_name":"find_dir"},{"content":"/home/u/curso-rust","role":"tool","tool_call_id":"c2","tool_name":"list_dir"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&request("be brief"), &rounds, false)).unwrap(),
+        String::from_utf8(golden.to_vec()).unwrap()
+    );
+}
+
+// Registry text is part of the golden on purpose: changing a tool description
+// or schema changes what the model sees, so it must update this pin knowingly.
+#[test]
+fn pin_tools_on_sends_the_registry_byte_for_byte_after_the_stream_flag() {
+    let mut on = request("be brief");
+    on.tools = Tools::On {
+        origin: None,
+        external: Default::default(),
+        mcp: None,
+    };
+    let golden = r#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true,"tools":[{"function":{"description":"Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.","name":"find_dir","parameters":{"additionalProperties":false,"properties":{"query":{"type":"string"}},"required":["query"],"type":"object"}},"type":"function"},{"function":{"description":"List the entries of a directory under the user's home. Names that look like secrets are left out and the result says so.","name":"list_dir","parameters":{"additionalProperties":false,"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"type":"function"},{"function":{"description":"Read a text file under the user's home.","name":"read_file","parameters":{"additionalProperties":false,"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"type":"function"},{"function":{"description":"Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree, find, grep or rg with plain or quoted paths (no &&, ;, |, $, * or redirections) can run directly inside the chat's folder when the user allows it. Anything else, git and mkdir included, waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself; any change needs a command the user reviews and runs.","name":"run_in_pane","parameters":{"additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"],"type":"object"}},"type":"function"}]}"#;
+    assert_eq!(
+        String::from_utf8(ollama_round_body(&on, &[], true)).unwrap(),
+        golden
+    );
+    // Tools off stays the tool-less bytes: the prefix of the tools-on body.
+    let off = ollama_round_body(&on, &[], false);
+    assert!(golden.as_bytes().starts_with(&off[..off.len() - 1]));
+}
+
+// llamacpp-tools T1.9: the OpenAI-shaped round body.
+fn exchange(name: &str, id: Option<&str>, arguments: Value, result: &str) -> ToolExchange {
+    ToolExchange {
+        name: name.into(),
+        id: id.map(Into::into),
+        index: None,
+        arguments,
+        result: result.into(),
+    }
+}
+
+#[test]
+fn the_openai_follow_up_sends_string_arguments_and_matching_call_ids() {
+    let rounds = [
+        ToolRound {
+            thinking: Some("hm".into()),
+            text: String::new(),
+            exchanges: vec![
+                exchange(
+                    "find_dir",
+                    Some("srv1"),
+                    json!({"query": "curso"}),
+                    "/home/u/curso",
+                ),
+                exchange("list_dir", None, json!({"path": "/home/u"}), "a\nb"),
+            ],
+        },
+        ToolRound {
+            thinking: None,
+            text: "Looking.".into(),
+            exchanges: vec![exchange("read_file", None, json!({"path": "/x"}), "text")],
+        },
+    ];
+    let body = body_of(openai_round_body(&request(""), &rounds, true));
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3 + 3 + 2);
+    assert_eq!(
+        messages[3..],
+        [
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "srv1", "type": "function",
+                 "function": {"name": "find_dir", "arguments": "{\"query\":\"curso\"}"}},
+                {"id": "call_0_1", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{\"path\":\"/home/u\"}"}},
+            ]}),
+            json!({"role": "tool", "tool_call_id": "srv1", "content": "/home/u/curso"}),
+            json!({"role": "tool", "tool_call_id": "call_0_1", "content": "a\nb"}),
+            json!({"role": "assistant", "content": "Looking.", "tool_calls": [
+                {"id": "call_1_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\":\"/x\"}"}},
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1_0", "content": "text"}),
+        ]
+    );
+}
+
+#[test]
+fn the_openai_body_never_echoes_reasoning_or_sets_call_options() {
+    let round = ToolRound {
+        thinking: Some("secret reasoning".into()),
+        text: "t".into(),
+        exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
+    };
+    let body = body_of(openai_round_body(&request(""), &[round], true));
+    // The registry text may say "secret"; the messages and options may not.
+    let text = format!(
+        "{}{}",
+        body["messages"],
+        body.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<String>()
+    );
+    for key in [
+        "thinking",
+        "reasoning",
+        "secret",
+        "parallel_tool_calls",
+        "tool_choice",
+        "tool_name",
+    ] {
+        assert!(!text.contains(key), "{key}");
+    }
+}
+
+#[test]
+fn the_openai_body_offers_the_same_tools_as_ollama_and_tools_off_is_tool_less() {
+    let req = request("be brief");
+    let on = body_of(openai_round_body(&req, &[], true));
+    assert_eq!(
+        on["tools"],
+        body_of(ollama_round_body(&req, &[], true))["tools"]
+    );
+    assert_eq!(on["stream"], true);
+    assert_eq!(on["model"], "llama3:8b");
+    assert_eq!(openai_round_body(&req, &[], false), ollama_body(&req));
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
+    }];
+    assert!(
+        body_of(openai_round_body(&req, &rounds, false))
+            .get("tools")
+            .is_none()
+    );
+}
+
+// llamacpp-tools T1.10: the shape llama-server b11935 accepted (HTTP 200).
+#[test]
+fn the_openai_follow_up_equals_the_request_recorded_against_b11935() {
+    let recorded =
+        include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-7b-tool-result.request.json");
+    let mut req = request("You are a helpful assistant. Use the tools when they help.");
+    req.model = Some("qwen".into());
+    req.messages = vec![message(
+        Role::User,
+        "Find the directory named src in my home using a tool.",
+    )];
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![exchange(
+            "find_dir",
+            Some("JEDIAQavkL8v8oW7odZMfLsZ7CM6ZgAq"),
+            json!({"query": "src"}),
+            "/home/user/projects/lazarobox-shell/src\n/home/user/projects/site/src",
+        )],
+    }];
+    // The server's own `arguments` text has a space after the colon; the
+    // string is compared as JSON, everything else byte for byte as a value.
+    let parsed_args = |mut body: Value| {
+        let args = &mut body["messages"][2]["tool_calls"][0]["function"]["arguments"];
+        *args = serde_json::from_str(args.as_str().unwrap()).unwrap();
+        body
+    };
+    let mut ours = parsed_args(body_of(openai_round_body(&req, &rounds, true)));
+    let mut theirs = parsed_args(serde_json::from_str(recorded).unwrap());
+    // The recording offered only `find_dir` and `list_dir`: each of them must be
+    // what we offer, and the rest of the body must be equal.
+    let ours_tools = ours.as_object_mut().unwrap().remove("tools").unwrap();
+    let theirs_tools = theirs.as_object_mut().unwrap().remove("tools").unwrap();
+    assert_eq!(ours, theirs);
+    for tool in theirs_tools.as_array().unwrap() {
+        assert!(ours_tools.as_array().unwrap().contains(tool), "{tool}");
+    }
+}
+
+fn call_ids(rounds: &[ToolRound]) -> (Vec<String>, Vec<String>) {
+    let body = body_of(openai_round_body(&request(""), rounds, false));
+    let messages = body["messages"].as_array().unwrap();
+    let mut calls = Vec::new();
+    let mut answers = Vec::new();
+    for m in messages {
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            calls.push(c["id"].as_str().unwrap().to_owned());
+        }
+        if m["role"] == "tool" {
+            answers.push(m["tool_call_id"].as_str().unwrap().to_owned());
+        }
+    }
+    (calls, answers)
+}
+
+fn round_of(ids: &[Option<&str>]) -> ToolRound {
+    ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: ids
+            .iter()
+            .map(|id| exchange("find_dir", *id, json!({"query": "a"}), "r"))
+            .collect(),
+    }
+}
+
+#[test]
+fn the_openai_call_ids_are_unique_and_match_their_answers() {
+    let long = "x".repeat(64);
+    let cases = [
+        vec![round_of(&[Some("same"), Some("same")])],
+        // `echo` keeps 64 characters: two longer ids collapse to this prefix.
+        vec![round_of(&[Some(&long), Some(&long)])],
+        vec![round_of(&[Some("call_0_1"), None])],
+        vec![round_of(&[None, Some("call_0_0")])],
+        vec![round_of(&[Some("a")]), round_of(&[Some("a"), None])],
+    ];
+    for rounds in cases {
+        let (calls, answers) = call_ids(&rounds);
+        let unique: std::collections::HashSet<_> = calls.iter().collect();
+        assert_eq!(unique.len(), calls.len(), "{calls:?}");
+        assert_eq!(calls, answers);
+        assert!(calls.iter().all(|id| !id.is_empty()));
+    }
+}
+
+#[test]
+fn the_openai_assistant_content_is_the_text_or_an_empty_string() {
+    let mut with_text = round_of(&[None]);
+    with_text.text = "Looking.".into();
+    let body = body_of(openai_round_body(
+        &request(""),
+        &[with_text, round_of(&[None])],
+        false,
+    ));
+    let messages = body["messages"].as_array().unwrap();
+    let assistants: Vec<&Value> = messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .collect();
+    let n = assistants.len();
+    assert_eq!(assistants[n - 2]["content"], json!("Looking."));
+    assert_eq!(assistants[n - 1]["content"], json!(""));
 }

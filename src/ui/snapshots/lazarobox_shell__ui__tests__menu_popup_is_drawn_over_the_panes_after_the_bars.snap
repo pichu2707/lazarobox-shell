@@ -1,19 +1,23 @@
 ---
 source: src/ui/mod.rs
-expression: "(0..24).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..25).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
-hi there
-
-
- ┌ Menu ──────────────────────────────────────────────────────┐
+h┌ Menu ──────────────────────────────────────────────────────┐
  │ Settings │ AI                                        ⇥ Tab │
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
  │ Mouse                                                   on │
  │ Notify                                                 off │
  │ Sound                                                   on │
+ │ llama-server idle                                   15 min │
  │ Updates                                             0.15.3 │
+ │ Feedback                                bug report or idea │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
  │                                                            │
  │                                                            │
  │                                                            │
@@ -22,7 +26,4 @@ hi there
  │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
-
-
-
  ◐ MENU                                                   sh

@@ -104,6 +104,7 @@ fn chat_app() -> App {
         .with_ai(ollama());
     app.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".into()],
@@ -299,9 +300,11 @@ fn chat_copy_always_shows_the_position_even_at_zero() {
     let (_, total) = app.scroll_position().expect("always");
     let line = status(&app);
     assert!(line.contains(&format!("COPY \u{2191}0/{total}")), "{line}");
-    keys(&mut app, "kk");
+    app.update(key('u', KeyModifiers::CONTROL));
+    let (offset, _) = app.scroll_position().expect("always");
+    assert!(offset > 0);
     assert!(
-        status(&app).contains(&format!("COPY \u{2191}2/{total}")),
+        status(&app).contains(&format!("COPY \u{2191}{offset}/{total}")),
         "{}",
         status(&app)
     );
@@ -345,7 +348,8 @@ fn a_scrolled_pane_never_panics_at_any_width() {
 // COPY hint -----------------------------------------------------------------------
 
 const SHELL_HINT: &str = "j/k scroll \u{b7} v select \u{b7} y copy \u{b7} Esc exit";
-const CHAT_HINT: &str = "j/k scroll \u{b7} Esc exit";
+const CHAT_HINT: &str =
+    "j/k move \u{b7} v select \u{b7} y copy \u{b7} ^Y answer \u{b7} ^B code \u{b7} Esc exit";
 
 #[test]
 fn shell_copy_shows_the_shell_hint_in_the_path_segment() {
@@ -359,15 +363,11 @@ fn shell_copy_shows_the_shell_hint_in_the_path_segment() {
 }
 
 #[test]
-fn chat_copy_shows_the_short_hint() {
+fn chat_copy_shows_its_hint_with_the_chat_copies() {
     let mut app = chat_app();
     prefixed(&mut app, "[");
     let line = status(&app);
     assert!(line.contains(CHAT_HINT), "{line}");
-    assert!(
-        !line.contains("select") && !line.contains("y copy"),
-        "{line}"
-    );
     insta::assert_snapshot!("hint_chat_copy", line.trim_end());
 }
 
@@ -450,21 +450,99 @@ fn copy_never_panics_at_any_width() {
     }
 }
 
-// No composer cursor in chat COPY ---------------------------------------------------
+// The COPY cursor and selection in a chat ------------------------------------------
+
+/// The buffer and the real cursor of one frame.
+fn drawn(app: &App) -> (ratatui::buffer::Buffer, ratatui::layout::Position) {
+    let theme = LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
+    terminal.draw(|f| render(f, app, &theme)).unwrap();
+    let cursor = terminal.get_cursor_position().unwrap();
+    (terminal.backend().buffer().clone(), cursor)
+}
+
+/// The screen cell where the chat pane draws the text `needle`.
+fn cell_of(app: &App, needle: &str) -> (u16, u16) {
+    let x = app
+        .tiling()
+        .panes
+        .iter()
+        .find(|(id, _)| *id == chat_id())
+        .map(|(_, rect)| rect.x)
+        .expect("the chat pane");
+    let y = rows(app)
+        .iter()
+        .position(|row| {
+            row.chars()
+                .skip(usize::from(x))
+                .collect::<String>()
+                .starts_with(needle)
+        })
+        .expect("drawn");
+    (x, u16::try_from(y).unwrap())
+}
 
 #[test]
-fn chat_copy_places_no_composer_cursor() {
-    let theme = LazaroboxTheme::default();
-    let draw_cursor = |app: &App| {
-        let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
-        terminal.draw(|f| render(f, app, &theme)).unwrap();
-        terminal.get_cursor_position().unwrap()
-    };
+fn chat_copy_puts_the_cursor_on_the_transcript_instead_of_the_composer() {
     let mut app = chat_app();
     keys(&mut app, "hi");
-    let typing = draw_cursor(&app);
+    let (_, typing) = drawn(&app);
     prefixed(&mut app, "[");
     assert!(matches!(app.input(), crate::app::InputMode::ChatCopy(_)));
-    let copying = draw_cursor(&app);
+    let (x, y) = cell_of(&app, "answer 79");
+    let (_, copying) = drawn(&app);
     assert_ne!(typing, copying, "the composer cursor is not shown in COPY");
+    // The answer ends in a newline: its last row is the blank one below.
+    assert_eq!(
+        (copying.x, copying.y),
+        (x, y + 1),
+        "on the last visible row"
+    );
+    keys(&mut app, "kl");
+    let (_, moved) = drawn(&app);
+    assert_eq!((moved.x, moved.y), (x + 1, y));
+}
+
+#[test]
+fn a_chat_selection_is_drawn_reversed() {
+    use ratatui::style::Modifier;
+    let mut app = chat_app();
+    prefixed(&mut app, "[");
+    keys(&mut app, "kvlllll");
+    let (x, y) = cell_of(&app, "answer 79");
+    let (buf, _) = drawn(&app);
+    let reversed = |col: u16| buf[(col, y)].modifier.contains(Modifier::REVERSED);
+    assert!((x..x + 6).all(reversed), "`answer` is selected");
+    assert!(!reversed(x + 6));
+    assert!(!buf[(x, y - 1)].modifier.contains(Modifier::REVERSED));
+    // Line selection: the whole row.
+    keys(&mut app, "V");
+    let (buf, _) = drawn(&app);
+    assert!(buf[(x + 20, y)].modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn with_a_batch_badge_the_chat_copy_cursor_stays_inside_the_transcript() {
+    use crate::{app::PaneView, core::ai::chat::review::Badge};
+    let mut app = chat_app();
+    app.sync_batches(&std::collections::HashMap::from([(
+        chat_id(),
+        Badge::Staged(3),
+    )]));
+    prefixed(&mut app, "[");
+    app.update(key('u', KeyModifiers::CONTROL));
+    let marks = app.chat_copy_marks().expect("chat COPY");
+    let Some(PaneView::Chat(chat)) = app.pane_view(chat_id()) else {
+        panic!("the chat pane");
+    };
+    let (x, _) = cell_of(&app, "answer");
+    let lines = chat.lines(usize::from(COLS - x));
+    let text = lines[marks.cursor.line].text.clone();
+    let (_, y) = cell_of(&app, &text);
+    let (_, cursor) = drawn(&app);
+    assert_eq!(
+        (cursor.x, cursor.y),
+        (x + marks.cursor.col, y),
+        "on {text:?}"
+    );
 }

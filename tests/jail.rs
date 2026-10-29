@@ -21,7 +21,10 @@ use lazarobox_shell::{
     core::{
         ai::{
             chat::engine::ChatError,
-            jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
+            jail::{
+                ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, NOT_ENFORCED_MARKER, NetBind,
+                Rlimits, STATUS_FD, STATUS_FD_VAR, elf_loader, exit_error,
+            },
             tools::Call,
         },
         layout::PaneIds,
@@ -84,6 +87,7 @@ fn job(program: &str, argv: &[&str], tweak: impl FnOnce(&mut JailSpec)) -> JailA
     tweak(&mut spec);
     JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv: argv.iter().map(OsString::from).collect(),
@@ -102,6 +106,23 @@ fn run_raw(args: &[OsString]) -> Output {
 
 fn run(job: &JailArgs) -> Output {
     run_raw(&job.render())
+}
+
+/// `run` for a program this test just wrote. Another test forking at that
+/// moment holds its write handle until its child execs, so the helper's exec
+/// fails with ETXTBSY for a moment; that one error is retried briefly.
+fn run_written(job: &JailArgs) -> Output {
+    let busy = format!("(os error {})", libc::ETXTBSY);
+    let mut attempt = 0;
+    loop {
+        let out = run(job);
+        if attempt < 4 && !out.status.success() && stderr(&out).contains(&busy) {
+            attempt += 1;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
+        return out;
+    }
 }
 
 fn stdout(out: &Output) -> String {
@@ -332,6 +353,7 @@ fn an_execute_rule_on_a_folder_runs_what_lives_inside_it() {
         let program = fs::canonicalize(inside.join("tool")).unwrap();
         let args = JailArgs {
             min_abi: None,
+            arg0: None,
             spec: JailSpec {
                 ro: system_ro(),
                 rx: vec![package.clone(), loader.clone()],
@@ -340,7 +362,7 @@ fn an_execute_rule_on_a_folder_runs_what_lives_inside_it() {
             program,
             argv: Vec::new(),
         };
-        run(&args)
+        run_written(&args)
     };
 
     let out = run_tool(&package);
@@ -411,6 +433,7 @@ fn the_granted_loader_cannot_run_a_program_whose_folder_is_not_readable() {
     let through_loader = |ro: Vec<PathBuf>| {
         run(&JailArgs {
             min_abi: None,
+            arg0: None,
             spec: JailSpec {
                 ro,
                 rx: vec![loader.clone()],
@@ -454,11 +477,11 @@ impl Dispatch for Done {
 /// `rw_file` rule on the socket. No folder.
 ///
 /// Landlock note: the socket rule binds to the inode, so the socket must be
-/// bound before the helper starts and a rebind invalidates it. While the
-/// pinned landlock crate (0.4.7) caps `from_all` below ABI 9, connecting to a
-/// pathname socket is not gated at all. ABI 9 adds
-/// `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`: a crate that handles it must grant that
-/// access on this rule, or the shim stops connecting.
+/// bound before the helper starts and a rebind invalidates it. Below ABI 9,
+/// connecting to a pathname socket is not gated at all. ABI 9 adds
+/// `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which the pinned crate (0.4.7) already
+/// handles in `from_all`; `AccessFs::from_file` includes it, so this rule
+/// keeps the shim connecting there.
 fn with_shim_grant(spec: &mut JailSpec, socket: &Path) {
     let bin = canon(env!("CARGO_BIN_EXE_lazarobox-shell"));
     for path in [Some(bin.clone()), loader_of(&bin)].into_iter().flatten() {
@@ -564,4 +587,385 @@ fn the_jail_that_runs_the_shim_still_denies_curl_and_the_ssh_dir() {
             eprintln!("note: no ~/.ssh here, its EACCES check is skipped");
         }
     }
+}
+
+// ---- toolchain flags (X-c2) ----
+
+/// A canonical project root with a copy of `/usr/bin/true` in it, and a
+/// sibling `home/.ssh/id` the jail never grants.
+/// It lives under the build's own tmp folder: a root under `/tmp` is a broad
+/// place the helper refuses.
+fn project_root() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("proj");
+    fs::create_dir(&root).unwrap();
+    fs::copy("/usr/bin/true", root.join("tool")).unwrap();
+    fs::create_dir_all(base.join("home/.ssh")).unwrap();
+    fs::write(base.join("home/.ssh/id"), "private\n").unwrap();
+    (dir, root, base.join("home/.ssh/id"))
+}
+
+#[test]
+fn an_rwx_root_runs_what_it_holds_and_keeps_ssh_unreadable() {
+    if !jail_available() {
+        return;
+    }
+    if probe_abi() < 3 {
+        eprintln!("skipped: execute and truncate rights need ABI 3");
+        return;
+    }
+    let (_dir, root, ssh) = project_root();
+    let loader = loader_of(Path::new("/usr/bin/true")).unwrap();
+    let tool_job = |tweak: &dyn Fn(&mut JailSpec)| {
+        let mut j = job("/usr/bin/true", &[], tweak);
+        j.program = root.join("tool");
+        j.spec.rx = vec![loader.clone()];
+        j
+    };
+
+    // The same folder as `rw` cannot be executed from (R29) ...
+    let out = run(&tool_job(&|s| s.rw.push(root.clone())));
+    assert!(!out.status.success() && denied(&out), "{}", stderr(&out));
+    // ... as `rwx` it can, and it stays writable.
+    let out = run(&tool_job(&|s| s.rwx.push(root.clone())));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let made = root.join("made");
+    let out = run(&job("/usr/bin/touch", &[made.to_str().unwrap()], |s| {
+        s.rwx.push(root.clone())
+    }));
+    assert!(out.status.success() && made.exists(), "{}", stderr(&out));
+
+    let out = run(&job("/bin/cat", &[ssh.to_str().unwrap()], |s| {
+        s.rwx.push(root.clone())
+    }));
+    assert!(denied(&out), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("private"));
+}
+
+#[test]
+fn the_helper_refuses_two_rwx_roots_and_a_whole_file_system() {
+    if !jail_available() {
+        return;
+    }
+    let (_dir, root, _ssh) = project_root();
+    let marker = root.join("marker");
+    for rwx in [
+        vec![root.clone(), root.join("tool")],
+        vec![PathBuf::from("/")],
+    ] {
+        let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+            s.rwx = rwx.clone()
+        }));
+        assert_eq!(out.status.code(), Some(125), "{rwx:?}: {}", stderr(&out));
+        assert_jail_error(&out);
+        assert!(!marker.exists(), "the program must not run");
+    }
+}
+
+#[test]
+fn an_open_net_bind_lets_the_program_listen_and_the_default_does_not() {
+    if !jail_available() {
+        return;
+    }
+    if probe_abi() < 4 {
+        eprintln!("skipped: ABI below 4 has no TCP rules");
+        return;
+    }
+    let Ok(python) = fs::canonicalize("/usr/bin/python3") else {
+        eprintln!("skipped: /usr/bin/python3 is not installed");
+        return;
+    };
+    let python = python.to_str().unwrap();
+    let bind = "import socket\ntry:\n s=socket.socket();s.bind(('127.0.0.1',0));s.listen(1)\n print('LISTENING')\nexcept OSError as e:\n print('ERR',e.errno)\n";
+    let out = run(&job(python, &["-S", "-c", bind], |_| {}));
+    assert_eq!(stdout(&out).trim(), "ERR 13", "{}", stderr(&out));
+    let out = run(&job(python, &["-S", "-c", bind], |s| {
+        s.net_bind = NetBind::Open
+    }));
+    assert_eq!(stdout(&out).trim(), "LISTENING", "{}", stderr(&out));
+}
+
+#[test]
+fn the_toolchain_rlimits_are_set_before_the_program_runs() {
+    if !jail_available() {
+        return;
+    }
+    let script = "ulimit -c; ulimit -f; ulimit -t";
+    let out = run(&job("/bin/sh", &["-c", script], |s| {
+        s.rlimits = Rlimits::Toolchain
+    }));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<_> = stdout(&out).lines().map(str::to_owned).collect();
+    // `ulimit -f` counts 512-byte blocks in dash and 1024-byte ones in bash.
+    let fsize = ["8388608", "4194304"];
+    assert!(
+        lines.len() == 3
+            && lines[0] == "0"
+            && fsize.contains(&lines[1].as_str())
+            && lines[2] == "1200",
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_lower_parent_hard_limit_is_kept_not_an_error() {
+    use std::os::unix::process::CommandExt;
+
+    if !jail_available() {
+        return;
+    }
+    let mut spec_job = job("/bin/sh", &["-c", "ulimit -f"], |s| {
+        s.rlimits = Rlimits::Toolchain
+    });
+    spec_job.min_abi = None;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    command
+        .args(spec_job.render())
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null());
+    // SAFETY: the closure only calls setrlimit, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            let lower = libc::rlimit {
+                rlim_cur: 1 << 20,
+                rlim_max: 1 << 20,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &lower) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = command.output().expect("the helper starts");
+    assert!(out.status.success(), "{}", stderr(&out));
+    // 1 MiB in 512-byte (dash) or 1024-byte (bash) blocks: the lower bound wins.
+    let said = stdout(&out);
+    assert!(["2048", "1024"].contains(&said.trim()), "{said:?}");
+}
+
+#[test]
+fn the_helper_refuses_a_symlinked_or_a_broad_rwx_root() {
+    use std::os::unix::fs::symlink;
+
+    if !jail_available() {
+        return;
+    }
+    let (dir, root, _ssh) = project_root();
+    let link = fs::canonicalize(dir.path()).unwrap().join("link");
+    symlink(&root, &link).unwrap();
+    let marker = root.join("marker");
+    let mut roots = vec![link.clone(), PathBuf::from("/usr"), PathBuf::from("/home")];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        roots.push(home);
+    }
+    for rwx in roots {
+        let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+            s.rwx = vec![rwx.clone()]
+        }));
+        assert_eq!(out.status.code(), Some(125), "{rwx:?}: {}", stderr(&out));
+        assert_jail_error(&out);
+        assert!(!marker.exists(), "the program must not run for {rwx:?}");
+    }
+    // The real path of the same root runs.
+    let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+        s.rwx = vec![root.clone()]
+    }));
+    assert!(out.status.success() && marker.exists(), "{}", stderr(&out));
+}
+
+#[test]
+fn arg0_is_the_name_the_program_runs_as_not_its_path() {
+    if !jail_available() {
+        return;
+    }
+    // What a rustup proxy relies on: it picks its role from `argv[0]`.
+    let mut named = job(
+        "/bin/bash",
+        &[
+            "-c",
+            "read -r -d '' first </proc/$$/cmdline; echo \"$first\"",
+        ],
+        |s| s.ro.push(PathBuf::from("/proc")),
+    );
+    let out = run(&named);
+    assert_eq!(stdout(&out).trim(), named.program.to_str().unwrap());
+    named.arg0 = Some(OsString::from("cargo"));
+    let out = run(&named);
+    assert_eq!(stdout(&out).trim(), "cargo", "{}", stderr(&out));
+}
+
+#[test]
+fn a_git_commit_in_the_real_jail_cannot_write_outside_its_grants() {
+    use lazarobox_shell::{
+        core::ai::tools::git as pure,
+        runtime::tools::{
+            git::{Ctx, open, run as git_run},
+            runner::Unreported,
+        },
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    if !jail_available() {
+        return;
+    }
+    let Some(git) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|d| d.join("git"))
+            .find_map(|c| fs::canonicalize(c).ok())
+    }) else {
+        eprintln!("skipped: git is not installed");
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME").and_then(|h| fs::canonicalize(h).ok()) else {
+        eprintln!("skipped: $HOME is not usable");
+        return;
+    };
+    // A root under $HOME (a root in /tmp is refused as broad).
+    let Ok(dir) = tempfile::tempdir_in(&home) else {
+        eprintln!("skipped: $HOME is not writable");
+        return;
+    };
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("proj");
+    fs::create_dir(&root).unwrap();
+    let sh = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    };
+    sh(&["init", "-q"]);
+    sh(&["config", "user.name", "Repo Dev"]);
+    sh(&["config", "user.email", "dev@example.com"]);
+    fs::write(root.join("a.txt"), "one\n").unwrap();
+    sh(&["add", "."]);
+    sh(&["commit", "-q", "-m", "first"]);
+
+    // A pre-commit hook that writes inside the root (allowed) and next to it,
+    // outside every grant (denied by Landlock).
+    let outside = base.join("outside");
+    let inside = root.join("inside");
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\necho ok > {}\necho leak > {} 2>/dev/null\nexit 0\n",
+            inside.display(),
+            outside.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("a.txt"), "two\n").unwrap();
+
+    let ctx = Ctx {
+        helper: canon(env!("CARGO_BIN_EXE_lazarobox-shell")),
+        git,
+        home,
+        root: root.clone(),
+        scratch_parent: base.join("tmp"),
+        timeout: std::time::Duration::from_secs(60),
+        unreported: Unreported::default(),
+    };
+    let read = |name: &str| std::env::var_os(name);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let opened = open(&ctx, &read).await.expect("preflight");
+        let add = pure::add_argv(&opened.dir, &["a.txt"]).unwrap();
+        let added = git_run(&ctx, &opened, add, false, &read).await.unwrap();
+        assert_eq!(
+            added.done.ended.exit,
+            Some(0),
+            "{}",
+            added.done.capture.text()
+        );
+        let who = opened.identity.clone().unwrap();
+        let commit = pure::commit_argv(&opened.dir, &who, "second").unwrap();
+        let ran = git_run(&ctx, &opened, commit, false, &read).await.unwrap();
+        assert_eq!(ran.done.ended.exit, Some(0), "{}", ran.done.capture.text());
+    });
+    assert!(
+        inside.exists(),
+        "the hook ran in the jail and may write the root"
+    );
+    assert!(
+        !outside.exists(),
+        "a write outside the grants must be denied"
+    );
+    let log = Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "second");
+}
+
+/// Runs the helper with a status pipe as descriptor 3, like `run_jailed`, and
+/// returns the output and what came back on the pipe.
+fn run_with_status(job: &JailArgs) -> (Output, String) {
+    use std::io::Read;
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
+
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let fd = writer.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    command
+        .args(job.render())
+        .env(STATUS_FD_VAR, STATUS_FD.to_string())
+        .stdin(Stdio::null());
+    // SAFETY: only `dup2` runs between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(fd, STATUS_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = command.output().expect("the helper starts");
+    drop(command);
+    drop(writer);
+    let mut said = String::new();
+    reader.read_to_string(&mut said).unwrap();
+    (out, said)
+}
+
+#[test]
+fn a_helper_that_cannot_apply_the_rules_says_so_on_the_status_pipe() {
+    if !jail_available() {
+        return;
+    }
+    let mut j = job("/usr/bin/true", &[], |_| {});
+    j.min_abi = Some(99);
+    let (out, said) = run_with_status(&j);
+    assert_eq!(out.status.code(), Some(125));
+    assert!(said.starts_with(NOT_ENFORCED_MARKER), "{said:?}");
+}
+
+// The program must not be able to write there: the helper closes the pipe on
+// exec, so a program that tries (and prints the marker) leaves it empty.
+#[test]
+fn the_program_it_runs_cannot_write_on_the_status_pipe() {
+    if !jail_available() {
+        return;
+    }
+    let script = format!(
+        "echo '{NOT_ENFORCED_MARKER}: x' >&{STATUS_FD}; echo \"$LAZAROBOX_JAIL_STATUS_FD\""
+    );
+    let (out, said) = run_with_status(&job("/bin/sh", &["-c", &script], |_| {}));
+    assert_eq!(said, "", "{}", stderr(&out));
+    assert!(
+        denied(&out) || stderr(&out).contains("Bad file descriptor"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out).trim(),
+        "",
+        "the variable must not reach the program"
+    );
 }

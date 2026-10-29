@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 
 use super::{
     Detection, Status,
-    config::{AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task},
-    picker::{Outcome, PickRow, Picker, Target, task_label},
+    config::{
+        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
+        cycled_idle,
+    },
+    hf::{Answer, Ask},
+    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -18,6 +22,8 @@ pub struct AiMenu {
     picker: Option<Picker>,
     /// The privacy warning is shown over the menu.
     warning: bool,
+    /// The Hugging Face download that runs, for llamacpp's entry row.
+    download: Option<Running>,
 }
 
 impl AiMenu {
@@ -28,6 +34,7 @@ impl AiMenu {
             engines,
             picker: None,
             warning: false,
+            download: None,
         }
     }
 
@@ -151,13 +158,16 @@ impl AiMenu {
         }
         let model = PathBuf::from(assignment.model.as_deref()?);
         let detection = self.engines.as_ref()?;
-        let stopped = detection
-            .engines
-            .iter()
-            .any(|s| s.id == "llamacpp" && s.status == Status::NotRunning);
+        // Managed, a server answering on the port (another lazarobox's, or
+        // the user's) does not stop the model from getting one of its own.
+        let managed = self.draft.managed().is_some();
+        let startable = detection.engines.iter().any(|s| {
+            s.id == "llamacpp"
+                && (s.status == Status::NotRunning || (managed && s.status == Status::Available))
+        });
         let known = self.draft.managed().is_some_and(|s| s.model == model)
             || detection.local_models.contains(&model);
-        (stopped && known).then_some(model)
+        (startable && known).then_some(model)
     }
 
     /// Moves every task whose own model is one lazarobox starts to `model`:
@@ -200,6 +210,21 @@ impl AiMenu {
             .flatten()
     }
 
+    /// Flips one family switch of the draft.
+    pub fn toggle_family(&mut self, toggle: ToolToggle) {
+        let next = !self.draft.toggle(toggle);
+        self.draft.set_toggle(toggle, next);
+    }
+
+    /// The family switches whose draft differs from the open one, in row
+    /// order, with the draft value.
+    pub fn changed_toggles(&self) -> impl Iterator<Item = (ToolToggle, bool)> + '_ {
+        ToolToggle::ALL
+            .into_iter()
+            .filter(|t| self.draft.toggle(*t) != self.original.toggle(*t))
+            .map(|t| (t, self.draft.toggle(t)))
+    }
+
     /// The tools flag in the draft, when it differs from the open one.
     pub fn changed_tools(&self) -> Option<bool> {
         (self.draft.tools_enabled() != self.original.tools_enabled())
@@ -210,6 +235,18 @@ impl AiMenu {
     pub fn cycle_approval(&mut self, forward: bool) {
         let next = self.draft.approval().cycled(forward);
         self.draft.set_approval(next);
+    }
+
+    /// Steps the idle time of the managed llama-server in the draft.
+    pub fn cycle_idle(&mut self, forward: bool) {
+        let minutes = self.draft.managed_options().idle_minutes;
+        self.draft.set_idle_minutes(cycled_idle(minutes, forward));
+    }
+
+    /// The idle minutes in the draft, when they differ from the open ones.
+    pub fn changed_idle(&self) -> Option<u32> {
+        let minutes = self.draft.managed_options().idle_minutes;
+        (minutes != self.original.managed_options().idle_minutes).then_some(minutes)
     }
 
     /// The approval mode in the draft, when it differs from the open one.
@@ -231,11 +268,66 @@ impl AiMenu {
     }
 
     pub fn open_picker(&mut self, target: Target) {
-        self.picker = Some(Picker::open(target, &self.draft, self.engines.as_ref()));
+        let mut picker = Picker::open(target, &self.draft, self.engines.as_ref());
+        picker.set_download(self.download.clone());
+        self.picker = Some(picker);
+    }
+
+    /// The download that runs (`None` once it ended): an open picker shows it
+    /// at once.
+    pub fn set_download(&mut self, download: Option<Running>) {
+        if let Some(picker) = &mut self.picker {
+            picker.set_download(download.clone());
+        }
+        self.download = download;
+    }
+
+    /// A reply of the Hub, for the open picker if it still waits for it;
+    /// the message of a failed request it waited for.
+    pub fn hub_reply(&mut self, ask: &Ask, answer: Result<Answer, String>) -> Option<String> {
+        self.picker.as_mut()?.hub_reply(ask, answer)
     }
 
     pub fn picker(&self) -> Option<&Picker> {
         self.picker.as_ref()
+    }
+
+    /// The result of install request `id`, for the open wizard.
+    pub fn install_reply(&mut self, id: u64, answer: Result<InstallReply, String>) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_reply(id, answer);
+        }
+    }
+
+    /// The bytes on disk of the install download of request `id`.
+    pub fn install_progress(&mut self, id: u64, done: u64) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_progress(id, done);
+        }
+    }
+
+    /// Whether an install download runs for the open wizard.
+    pub fn install_downloading(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.install())
+            .is_some_and(Wizard::downloading)
+    }
+
+    /// The wizard screen was drawn: its prompts now accept `y`/`n`.
+    pub fn install_arm(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.install_arm();
+        }
+    }
+
+    /// Opens the install wizard over the open picker. Tests only: the entry
+    /// row that opens it comes later.
+    #[cfg(test)]
+    pub fn open_install(&mut self, variants: Vec<crate::core::ai::install::Variant>) {
+        if let Some(picker) = &mut self.picker {
+            picker.open_install(variants);
+        }
     }
 
     /// The rows of the open picker; none when it is closed.
@@ -305,7 +397,13 @@ impl AiMenu {
                 self.picker = None;
             }
             Outcome::Close => self.picker = None,
-            Outcome::Stay | Outcome::Refresh | Outcome::Copy(_) => {}
+            Outcome::Stay
+            | Outcome::Refresh
+            | Outcome::Copy(_)
+            | Outcome::Ask(_)
+            | Outcome::Download(_)
+            | Outcome::CancelDownload
+            | Outcome::Install(_) => {}
         }
         outcome
     }

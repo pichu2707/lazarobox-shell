@@ -167,9 +167,10 @@ fn chat_copy_always_shows_a_position_even_at_the_bottom() {
     press(&mut a, "[");
     let (total, rows) = chat_extent(&a);
     assert_eq!(a.scroll_position(), Some((0, total - rows)));
-    a.update(key('k'));
-    a.update(key('k'));
-    assert_eq!(a.scroll_position(), Some((2, total - rows)));
+    a.update(super::chat_live::ctrl('u'));
+    let (offset, scrollable) = a.scroll_position().expect("always");
+    assert!(offset > 0);
+    assert_eq!(scrollable, total - rows);
 }
 
 #[test]
