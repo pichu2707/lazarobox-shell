@@ -11,6 +11,8 @@ use super::catalog::OLLAMA_CURATED;
 use super::hf;
 use super::sanitize::is_format;
 
+pub mod pull;
+
 /// The site of the library page.
 pub const LIBRARY: &str = "https://ollama.com";
 
