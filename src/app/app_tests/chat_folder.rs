@@ -1051,6 +1051,52 @@ fn a_second_y_while_checking_does_nothing_and_the_answer_still_applies() {
 }
 
 #[test]
+fn a_held_y_while_checking_does_nothing() {
+    use super::chat_live::repeat;
+    let (mut a, token) = checking();
+    let effects = a.update(repeat(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(pending_ask(&a).is_some());
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+}
+
+#[test]
+fn n_while_checking_does_nothing_fresh_or_held() {
+    use super::chat_live::repeat;
+    for held in [false, true] {
+        let (mut a, token) = checking();
+        let event = if held {
+            repeat(KeyCode::Char('n'), KeyModifiers::NONE)
+        } else {
+            plain(KeyCode::Char('n'))
+        };
+        let effects = a.update(event);
+        assert!(effects.is_empty(), "held {held}: {effects:?}");
+        assert!(pending_ask(&a).is_some(), "held {held}");
+        assert!(a.cd_requests.contains_key(&id2()), "held {held}");
+        assert!(
+            !lines(&a).contains(&"/cd cancelled".to_owned()),
+            "held {held}"
+        );
+        // The late reply of the check still applies.
+        confirm_reply(&mut a, token, "/w/b");
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")), "held {held}");
+    }
+}
+
+#[test]
+fn a_held_esc_while_checking_cancels() {
+    use super::chat_live::repeat;
+    let (mut a, token) = checking();
+    a.update(repeat(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(lines(&a).contains(&"/cd cancelled".to_owned()));
+    assert_eq!(pending_ask(&a), None);
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
 fn a_character_while_checking_is_swallowed() {
     let (mut a, token) = checking();
     a.update(key('x'));
