@@ -63,7 +63,7 @@ use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
-use orchestra::RunManager;
+use orchestra::{OrchestraEvent, RunManager};
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -399,16 +399,12 @@ pub async fn run() -> io::Result<()> {
         store_dir.as_deref(),
     );
     // The runs of orchestrating panes (D1): worker turns go through the chat's
-    // runner, prompt overrides and socket folders. Nothing starts a run before
-    // the send path (S1e-1a), which also hands its events to the app; until
-    // then nobody listens and they are dropped.
+    // runner, prompt overrides and socket folders. Their events go to the app
+    // on their own channel, because a worker can outlive a turn.
+    let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
     let orchestra = Arc::new(
-        RunManager::new(
-            runner.clone(),
-            config_dir.clone(),
-            mpsc::unbounded_channel().0,
-        )
-        .with_tools(tool_host.clone(), socket_dirs.clone()),
+        RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
+            .with_tools(tool_host.clone(), socket_dirs.clone()),
     );
     tokio::spawn({
         let live = live.clone();
@@ -627,6 +623,7 @@ pub async fn run() -> io::Result<()> {
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
+        orchestra: orchestra_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -816,6 +813,8 @@ struct Inbox {
     shared: mpsc::Receiver<()>,
     /// The Hub's replies and the progress and end of a download.
     hub: mpsc::Receiver<AppEvent>,
+    /// What the run manager says about the runs of orchestrating panes.
+    orchestra: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
 }
 
 async fn event_loop(
@@ -865,6 +864,7 @@ async fn run_loop(
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
+        orchestra: mut orchestra_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -990,6 +990,14 @@ async fn run_loop(
             // `panes` keeps the worker, and so a sender, for the whole loop.
             Some(event) = hub_rx.recv() => {
                 if step(&mut app, event, panes) {
+                    return Ok(());
+                }
+            }
+            // The run manager lives in `panes.chats`, and so its sender, for
+            // the whole loop. A run's events keep their order: its rows, then
+            // its failure or its `Ended`, nothing after.
+            Some((pane, event)) = orchestra_rx.recv() => {
+                if step(&mut app, AppEvent::Orchestra(pane, event), panes) {
                     return Ok(());
                 }
             }
@@ -1511,6 +1519,12 @@ impl Panes {
                 Effect::ChatCancel(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.cancel(pane);
+                    }
+                }
+                // Returns at once: a run that is not halted any more ignores it.
+                Effect::OrchDecide { pane, choice } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.decide_run(pane, choice);
                     }
                 }
                 // Both return at once; the answer lands on a waiting call, or

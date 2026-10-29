@@ -958,6 +958,41 @@ async fn retry_relaunches_the_same_spec_with_the_error_wrapped() {
     assert!(collected.text.contains("fixed"), "{collected:?}");
 }
 
+// Spec (modal-input, Retry key, Cancel keys; tasks.md 1e1.7): the app's
+// answer to a failure reaches the run through `Chats`: `Retry` relaunches the
+// worker, `Cancel` ends the run; with no failure waiting nothing changes.
+#[tokio::test]
+async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
+    let mut lab = lab(Script::FailOnce("409 conflict: session busy"));
+    let (turn_runner, _) = fake(Script::Hang);
+    let (tx, _chat_rx) = mpsc::channel(chat::APP_CHANNEL);
+    let chats = chat::Chats::new(turn_runner, tx).with_orchestra(lab.manager.clone());
+    assert!(!chats.decide_run(pane(), UserChoice::Retry), "no run yet");
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    assert!(chats.decide_run(pane(), UserChoice::Retry));
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    assert_eq!(lab.seen.requests().len(), 2, "relaunched once");
+    lab.sent();
+    assert!(
+        !chats.decide_run(pane(), UserChoice::Cancel),
+        "no failure waits"
+    );
+    assert_eq!(lab.sent(), [], "nothing changed");
+    let mut failing = self::lab(Script::FailOnce("boom"));
+    let (tx, _chat_rx) = mpsc::channel(chat::APP_CHANNEL);
+    let (turn_runner, _) = fake(Script::Hang);
+    let chats = chat::Chats::new(turn_runner, tx).with_orchestra(failing.manager.clone());
+    let (failed, handle) = failing.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    failing.sent();
+    assert!(chats.decide_run(pane(), UserChoice::Cancel));
+    assert_eq!(failing.sent(), [OrchestraEvent::Ended { run: failed }]);
+    assert!(lab.manager.scope(pane()).is_some(), "{run:?} goes on");
+}
+
 // Spec (agent-orchestrator, Orchestrator paused; Failure stops the run): an
 // unresolved failure keeps `wait` at `awaiting_user` with no error text and
 // refuses `spawn_agent` with `run paused` until the user picks an option;

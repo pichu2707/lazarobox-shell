@@ -81,6 +81,8 @@ use crate::core::{
     layout::PaneId,
 };
 
+pub use crate::core::ai::orchestra::event::{OrchestraEvent, WorkerRow};
+
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
 
@@ -107,38 +109,6 @@ pub struct OrchScope {
     pub events: mpsc::Sender<StreamEvent>,
     pub approver: Arc<dyn Approver>,
     pub pending: Pending,
-}
-
-/// A worker as its row shows it.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct WorkerRow {
-    pub run: RunId,
-    pub id: WorkerId,
-    pub kind: Task,
-    /// Empty when the engine was unavailable.
-    pub engine: String,
-    pub model: Option<String>,
-    pub status: WorkerStatus,
-    /// How long it ran, once it ended.
-    pub elapsed: Option<Duration>,
-}
-
-/// What the run manager tells the app.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum OrchestraEvent {
-    /// A worker's status changed.
-    Worker(WorkerRow),
-    /// A worker failed: the run waits for the user. `text` is for the alert
-    /// only, sanitized and capped by the pipe.
-    Halted {
-        run: RunId,
-        worker: WorkerId,
-        class: ErrorClass,
-        text: String,
-    },
-    /// The run is over: cancelled, replaced by a new run of the pane, or
-    /// ended by quitting. Its last rows came before; nothing of it follows.
-    Ended { run: RunId },
 }
 
 /// Where the run manager's events go.

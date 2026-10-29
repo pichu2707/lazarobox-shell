@@ -177,8 +177,9 @@ fn ctrl_u_still_clears_the_composer() {
     assert!(!orch(&a, chat_id()));
 }
 
-// chat-pane / Toggle blocked during a run: the run lives as long as its
-// orchestrator turn (S1).
+// chat-pane / Toggle blocked during a run: a run is active from its
+// orchestrator turn on; one that sent nothing past its turn is over with it
+// (a run that outlives its turn: `orchestra_run.rs`).
 #[test]
 fn the_toggle_is_blocked_while_a_run_is_active() {
     let mut a = orch_app();

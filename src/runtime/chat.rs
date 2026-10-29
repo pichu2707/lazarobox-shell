@@ -57,6 +57,7 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
+        orchestra::run::UserChoice,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
@@ -1093,6 +1094,15 @@ impl Chats {
             task.abort();
         }
         self.waits.end_pane(pane);
+    }
+
+    /// The user's answer to the failure that halted the run of `pane`
+    /// (`RunManager::decide`). `false` when no failure waits there (the run
+    /// ended meanwhile, or no run manager is attached): nothing changes.
+    pub fn decide_run(&self, pane: PaneId, choice: UserChoice) -> bool {
+        self.orchestra
+            .as_ref()
+            .is_some_and(|orchestra| orchestra.decide(pane, choice).is_ok())
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been

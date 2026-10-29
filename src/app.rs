@@ -28,6 +28,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        orchestra::{event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -199,6 +200,9 @@ pub enum AppEvent {
     MemoryTick,
     /// What the runtime found out about a run in pane `.0` (design D21).
     Run(PaneId, RunEvent),
+    /// What the run manager said about the orchestrator run of chat `.0`
+    /// (agent-orchestrator D1): a worker row, a failure, the run's end.
+    Orchestra(PaneId, OrchestraEvent),
     /// The terminal window gained (`true`) or lost (`false`) the focus, as
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
@@ -311,6 +315,13 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// The user's answer to the failure alert of the run of chat `pane`
+    /// (agent-orchestrator, Failure stops the run). A run that is not halted
+    /// any more ignores it.
+    OrchDecide {
+        pane: PaneId,
+        choice: UserChoice,
+    },
     /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
     /// (the approval overlay, or a check that failed on `y`). A call that
     /// ended meanwhile ignores it.
@@ -1659,6 +1670,7 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
+            AppEvent::Orchestra(id, event) => self.on_orchestra(id, event),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -7965,6 +7977,8 @@ mod app_tests {
 
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
+    /// The failure alert of a run, its keys and the run's events.
+    mod orchestra_run;
     mod orchestra_send;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;

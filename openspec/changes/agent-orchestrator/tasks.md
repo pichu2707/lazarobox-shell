@@ -258,7 +258,7 @@ S1e-2 bases on the S1e-1c branch.
 
 - [ ] 1e1.7 RED failure state tests: `OrchestraEvent::Halted` stores raw error; r retry, c/Esc/Ctrl+C cancel drive `RunManager::decide`/`cancel`; alert persists until answered; `Entry::Worker` rows follow status and stay out of history. Spec: agent-orchestrator / Row follows the status, Not in history, Error shown as it came; chat-pane / Alert persists; modal-input / Retry key, Cancel keys, Ctrl+C.
 - [ ] 1e1.8 GREEN `core/ai/chat/mod.rs` (`Entry::Worker`), `app/orchestra.rs` event handling. REFACTOR + gates.
-- [ ] The failure alert keys (`r`, `c`, and in S2 `m`, `p`) act only with an empty composer or after an arm delay, so typed text cannot pick an option (key audit, 2026-10-29).
+- [x] The failure alert keys (`r`, `c`, and in S2 `m`, `p`) act only with an empty composer or after an arm delay, so typed text cannot pick an option (key audit, 2026-10-29). Picked: only with an empty composer, as the notice; Esc is not a letter and cancels with text in the composer too. Test `letters_typed_into_a_message_never_answer_the_alert`.
 
 #### Obligations from the S1b-2 security review (S1e-1b)
 

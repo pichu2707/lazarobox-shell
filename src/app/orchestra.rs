@@ -1,11 +1,15 @@
 //! The orchestrator in a chat pane (agent-orchestrator D2, D5): the pane's
-//! ORCH mode, its Ctrl+O toggle, the task a send runs on and the one-time
-//! provider notice (D12). State and keys only; the badge, the hint and the
-//! notice are drawn by the UI.
+//! ORCH mode, its Ctrl+O toggle, the task a send runs on, the one-time
+//! provider notice (D12), the run's events and its failure alert. State and
+//! keys only; the badge, the hint, the notice and the alert are drawn by the
+//! UI.
 
 use super::*;
 use crate::core::ai::{
-    chat::engine::{Availability, OrchSend, Tools, availability_for, tools_for},
+    chat::{
+        OrchAlert,
+        engine::{Availability, OrchSend, Tools, availability_for, tools_for},
+    },
     orchestra::{Toolset, run::Roster},
 };
 
@@ -42,13 +46,81 @@ impl App {
                 .is_some_and(ChatState::orch)
     }
 
-    /// Whether a run is active in pane `id`: in S1 a run lives as long as
-    /// its orchestrator turn.
-    fn orch_run_active(&self, id: PaneId) -> bool {
+    /// Whether a run is active in pane `id`: from its orchestrator turn
+    /// until the run's `Ended`, since a worker can outlive the turn.
+    pub(super) fn orch_run_active(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)
             .and_then(PaneState::chat_state)
-            .is_some_and(ChatState::orch_turn_in_flight)
+            .is_some_and(|chat| chat.orch_turn_in_flight() || chat.orch_run().is_some())
+    }
+
+    /// What the run manager said about the run of chat `id`. A failure shows
+    /// its alert, which stays until it is answered or the run ends: rows,
+    /// other output and time leave it as it is. Events of a pane that is not
+    /// a chat any more are dropped.
+    pub(super) fn on_orchestra(&mut self, id: PaneId, event: OrchestraEvent) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        match event {
+            OrchestraEvent::Worker(row) => chat.set_orch_run(Some(row.run)),
+            OrchestraEvent::Halted {
+                run,
+                worker,
+                class,
+                text,
+            } => {
+                chat.set_orch_run(Some(run));
+                chat.set_orch_alert(Some(OrchAlert {
+                    run,
+                    worker,
+                    class,
+                    text,
+                }));
+            }
+            // Only the run it names ends: a replaced run ends after the new
+            // one started.
+            OrchestraEvent::Ended { run } => {
+                if chat.orch_run() == Some(run) {
+                    chat.set_orch_run(None);
+                }
+                if chat.orch_alert().is_some_and(|alert| alert.run == run) {
+                    chat.set_orch_alert(None);
+                }
+            }
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// A key on chat `id` for the failure alert shown there: `r` retries the
+    /// worker, `c` or Esc cancels the run. The letters act only with an
+    /// empty composer, so text being typed never picks an option (key audit,
+    /// 2026-10-29). Only a fresh, unmodified press answers it; `None` leaves
+    /// every other key to the chat.
+    pub(super) fn answer_orch_alert(
+        &mut self,
+        id: PaneId,
+        key: &KeyEvent,
+        repeat: bool,
+    ) -> Option<Vec<Effect>> {
+        let fresh = !repeat && key.kind == KeyEventKind::Press;
+        if !fresh || key.modifiers != KeyModifiers::NONE {
+            return None;
+        }
+        let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
+        chat.orch_alert()?;
+        let empty = chat.composer().text().is_empty();
+        let choice = match key.code {
+            KeyCode::Char('r') if empty => UserChoice::Retry,
+            KeyCode::Char('c') if empty => UserChoice::Cancel,
+            KeyCode::Esc => UserChoice::Cancel,
+            _ => return None,
+        };
+        chat.set_orch_alert(None);
+        self.dirty = true;
+        Some(vec![Effect::OrchDecide { pane: id, choice }])
     }
 
     /// Whether the provider notice is shown in pane `id`.
