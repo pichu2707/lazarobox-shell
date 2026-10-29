@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 
 use lazarobox_shell::core::ai::jail::SUBCOMMAND;
 use lazarobox_shell::core::{cli, nesting};
@@ -35,12 +36,10 @@ fn main() -> std::io::Result<()> {
     let action = cli::classify(&argv);
     match action {
         cli::Action::Version => {
-            println!("lazarobox-shell {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+            return out(&format!("lazarobox-shell {}", env!("CARGO_PKG_VERSION")));
         }
         cli::Action::Help => {
-            println!("{}", cli::USAGE);
-            return Ok(());
+            return out(cli::USAGE);
         }
         _ => {}
     }
@@ -64,4 +63,12 @@ fn main() -> std::io::Result<()> {
     guard.block_on(lazarobox_shell::runtime::run(
         lazarobox_shell::core::start::parse_args(&argv),
     ))
+}
+
+/// Prints a line to stdout; a closed pipe (`--help | head -0`) is not an error.
+fn out(text: &str) -> std::io::Result<()> {
+    match writeln!(std::io::stdout().lock(), "{text}") {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
 }

@@ -22,9 +22,8 @@ pub fn nesting_check(env_value: Option<&str>, force: bool) -> Result<(), String>
 
 /// Whether the nesting check applies to this start (program name excluded).
 /// It does only for the plain TUI start: the leading arguments are all flags
-/// and none is `--force`. Any subcommand (first non-flag argument) is exempt,
-/// and `--force` counts only as a top-level flag before it. The value after
-/// `--dir` is not a subcommand.
+/// and none is `--force`. A first non-flag argument is exempt, and the value
+/// after `--dir` is not one. (`main` rejects a subcommand that is not first.)
 pub fn guarded_start(args: &[String]) -> bool {
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {

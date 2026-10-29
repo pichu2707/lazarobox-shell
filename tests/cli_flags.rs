@@ -46,3 +46,37 @@ fn unknown_input_exits_2_with_one_stderr_line() {
         assert!(out.stdout.is_empty());
     }
 }
+
+#[test]
+fn odd_and_misplaced_arguments_exit_2() {
+    for args in [
+        &["--"][..],
+        &["-"],
+        &[""],
+        &["--force", "install-desktop"],
+        &["--dir", "x", "__watch"],
+        &["--dir", "--bogus"],
+    ] {
+        assert_eq!(run(args).status.code(), Some(2), "{args:?}");
+    }
+    let err = run(&["--force", "__watch"]).stderr;
+    assert!(String::from_utf8_lossy(&err).contains("must be the first argument"));
+}
+
+#[test]
+fn version_wins_over_what_follows_and_ignores_force() {
+    for args in [
+        &["--force", "--version"][..],
+        &["--version", "--bogus"],
+        &["--dir", "--version"],
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with("lazarobox-shell "));
+    }
+}
+
+#[test]
+fn the_internal_shim_is_not_rejected() {
+    assert_ne!(run(&["__mcp-serve"]).status.code(), Some(2));
+}
