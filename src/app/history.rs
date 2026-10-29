@@ -8,7 +8,9 @@ use crate::core::ai::chat::{
         DELETE_FAILED, LIST_FAILED, ListOutcome, NotesStay, OPEN_ELSEWHERE, RESUME_FAILED,
         notes_result_line, notes_stay_line,
     },
-    store::{ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    store::{
+        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
+    },
     tags::Tags,
 };
 
@@ -326,6 +328,7 @@ impl App {
                 messages,
                 session,
                 folder,
+                skipped,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
@@ -337,7 +340,7 @@ impl App {
                     profile,
                     tags,
                     messages,
-                    (session, folder),
+                    (session, folder, *skipped),
                 )
             }
             StoreReply::ResumeFailed { pane } => {
@@ -432,7 +435,7 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
-        (session, folder): (&Option<(String, String)>, &Option<PathBuf>),
+        (session, folder, skipped): (&Option<(String, String)>, &Option<PathBuf>, usize),
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -446,9 +449,18 @@ impl App {
             return Vec::new();
         };
         chat.set_approval_mode(mode);
-        let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
+        // A profile this build does not know (a newer one stored it) keeps the
+        // current one, and the pane says so.
+        let known = Profile::from_id(profile);
+        let profile = known.unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
         chat.resume_into(conversation, profile, tags, messages.to_vec());
+        if known.is_none() {
+            chat.push_system(UNKNOWN_PROFILE_LINE);
+        }
+        if skipped > 0 {
+            chat.push_system(skipped_line(skipped));
+        }
         // The pair its notes were written under is reused before the first
         // write: engram rejects a session under another project, and the
         // store already holds the link.

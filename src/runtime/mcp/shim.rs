@@ -54,8 +54,9 @@ use serde_json::Value;
 
 use crate::core::ai::tools::mcp::MAX_LINE_BYTES;
 
-/// The subcommand the engine's MCP config launches.
-pub const SUBCOMMAND: &str = "__mcp-serve";
+/// The subcommand the engine's MCP config launches (one definition, in the
+/// wiring that writes that config).
+pub use crate::core::ai::tools::wiring::SUBCOMMAND;
 
 /// The environment variable that carries the session token.
 pub const TOKEN_ENV: &str = "LAZAROBOX_MCP_TOKEN";

@@ -15,7 +15,8 @@ use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
 use super::{
-    CATALOG, Detection, Engine, Kind, Status, gguf, hf, ollama_lib, start_command, status_text,
+    CATALOG, Detection, Engine, Kind, Status, gguf, hf, is_refused, ollama_lib, start_command,
+    status_text,
 };
 
 mod hub;
@@ -230,7 +231,7 @@ pub fn engine_rows(
             push(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
-                adapter_for(engine.id).is_some(),
+                adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
             );
         }
     }
@@ -242,7 +243,7 @@ pub fn engine_rows(
             push(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
-                adapter_for(engine.id).is_some(),
+                adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
             );
         }
     }
@@ -645,7 +646,12 @@ fn jail_reason(detection: Option<&Detection>, id: &str) -> Option<String> {
         .engines
         .iter()
         .find(|s| s.id == id && s.status == Status::Available)
-        .and_then(|s| s.diagnostics.jail.as_deref())
+        .and_then(|s| {
+            s.diagnostics
+                .jail_full
+                .as_deref()
+                .or(s.diagnostics.jail.as_deref())
+        })
         .map(sanitize)
         .filter(|why| !why.is_empty())
 }

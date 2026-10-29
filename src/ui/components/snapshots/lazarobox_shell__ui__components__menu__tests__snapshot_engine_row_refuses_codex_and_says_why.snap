@@ -1,0 +1,27 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Engine for general                                         │
+│ none                                                       │
+│ codex refused · Landlock ABI 2, needs 3+ ●                 │
+│ llamacpp not installed                                     │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · y copies the reason · Esc back                  │
+└────────────────────────────────────────────────────────────┘
