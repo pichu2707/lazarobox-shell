@@ -262,6 +262,8 @@ S1e-2 bases on the S1e-1c branch.
 
 - [x] A run ends by itself once its orchestrator turn ended and no worker is queued or running; a halted run waits for its answer (user decision, 2026-10-29). Done: `Chats` tells `RunManager::turn_ended` when an orchestrator turn is over; the run ends at once or when its last worker finishes, with one `Ended`. Tests `a_run_ends_by_itself_once_its_turn_and_workers_are_done`, `a_run_whose_worker_still_runs_ends_when_it_finishes`, `a_halted_run_stays_until_answered_then_ends_by_itself`, `the_end_of_an_orchestrator_turn_ends_its_idle_run`.
 
+- [x] The orchestrator session keeps offering the user's MCP server tools, each call asking `y` as in a chat; workers never get them (user decision, 2026-10-29). Done: `TurnScope::offers` lets a user server tool through for a chat or the orchestrator turn, never a worker. Tests `an_orchestrator_server_tool_asks_and_runs_only_after_y`, `an_orchestrator_turn_lists_the_user_tool_and_a_call_waits_for_y`; the worker case of `an_out_of_set_call_is_refused_in_execute_unasked` stays.
+
 #### Obligations from the S1b-2 security review (S1e-1b)
 
 - [ ] Scope roots come only from the chat origin (no scope prompt, user decision 2026-10-29), never from model/worker text; a dropped root's reason is sanitized (`clean`/`clip`) before display.

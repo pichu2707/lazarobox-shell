@@ -127,17 +127,16 @@ fn refused_unknown(out: &Outcome, rx: &mut mpsc::Receiver<StreamEvent>, what: &s
 
 // Spec (tasks 1c.3, D7): the role filter is applied in `execute` too. A call
 // outside the turn's set (a worker's `run_in_pane`, `spawn_agent` or user
-// server tool; the orchestrator's `run_in_pane` or user server tool) ends as
-// "unknown tool": never asked, never run, never routed.
+// server tool; the orchestrator's `run_in_pane`) ends as "unknown tool":
+// never asked, never run, never routed.
 #[tokio::test]
 async fn an_out_of_set_call_is_refused_in_execute_unasked() {
     let (_dir, home, host) = fixture();
-    let cases: [(&str, bool, Call); 5] = [
+    let cases: [(&str, bool, Call); 4] = [
         ("worker run_in_pane", true, run_cmd("ls")),
         ("worker spawn_agent", true, spawn()),
         ("worker server tool", true, server_tool()),
         ("orchestrator run_in_pane", false, run_cmd("ls")),
-        ("orchestrator server tool", false, server_tool()),
     ];
     for (what, is_worker, call) in cases {
         let fake = Fake::new("spawned 1");
@@ -152,6 +151,61 @@ async fn an_out_of_set_call_is_refused_in_execute_unasked() {
         refused_unknown(&out, &mut rx, what);
         assert!(approver.asked.lock().unwrap().is_empty(), "{what}");
         assert!(fake.calls().is_empty(), "{what}");
+    }
+}
+
+// Spec (agent-tools, Toolsets by session role; user decision 2026-10-29): the
+// orchestrator turn may call the user's server tools, each call asking `y`
+// as in a chat: after `y` it runs, after a decline nothing reaches the
+// server.
+#[tokio::test]
+async fn an_orchestrator_server_tool_asks_and_runs_only_after_y() {
+    use crate::runtime::mcp::{
+        client::Timeouts,
+        external::{
+            ExternalSet,
+            fake::{host_env, lab, timeouts},
+        },
+    };
+    for (decision, runs) in [
+        (Decision::Denied("the user declined"), false),
+        (Decision::Sent, true),
+    ] {
+        let lab = lab();
+        let server = lab.slow("fake", "echo", "echoed", "0");
+        let limit = Duration::from_secs(10);
+        let set = ExternalSet::start(
+            &[&server],
+            &lab.home,
+            host_env,
+            Timeouts {
+                call: limit,
+                ..timeouts(limit)
+            },
+        )
+        .await;
+        let fake = Fake::new("spawned 1");
+        let (mut scope, mut rx) = orchestrator(&lab.home, Some(fake.clone()));
+        assert!(scope.external.set(Arc::new(set)).is_ok());
+        let approver = Scripted::new(decision);
+        scope.approver = approver.clone();
+        let host = ToolHost::new(Some(lab.home.clone().into()), None, None, Limits::default());
+        let out = host.dispatch(scope).call(server_tool()).await;
+        let (_, ask, status, _) = pair(&events(&mut rx));
+        assert!(matches!(ask, Some(ApprovalAsk::External { .. })), "{ask:?}");
+        assert_eq!(approver.asked.lock().unwrap().len(), 1, "asked once");
+        let received = lab.received("fake");
+        if runs {
+            assert!(!out.is_error, "{out:?}");
+            assert!(out.text.contains("echoed"), "{}", out.text);
+            assert_eq!(status, ToolStatus::Ok);
+            assert!(received.contains("\"name\":\"echo\""), "{received}");
+        } else {
+            assert!(out.is_error && out.text.contains("declined"), "{out:?}");
+            assert_eq!(status, ToolStatus::Denied);
+            assert_eq!(received, "", "nothing reached the server");
+        }
+        assert!(fake.calls().is_empty(), "never routed to the run");
     }
 }
 
@@ -782,8 +836,9 @@ async fn pending_outside_read(
 
 // Spec (agent-orchestrator, Orchestrator cannot approve): while a worker's
 // read waits, the orchestrator turn's calls that look like `y` (answers of
-// the run manager, a forged `run_in_pane`, a user tool) answer nothing; the
-// read stays pending until the user's key decides it.
+// the run manager, a forged `run_in_pane`, a user tool, which raises an ask
+// of its own) answer nothing; the read stays pending until the user's key
+// decides it.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -800,19 +855,25 @@ async fn the_orchestrator_cannot_answer_a_workers_pending_read() {
         Call::Orchestra(OrchCall::Collect { id: WorkerId(1) }),
         wait_for(1),
         run_cmd("y"),
-        server_tool(),
     ] {
         dispatch.call(call).await;
     }
+    // A user tool waits for its own `y` (user decision, 2026-10-29).
+    let asking = tokio::spawn({
+        let dispatch = dispatch.clone();
+        async move { dispatch.call(server_tool()).await }
+    });
     assert_eq!(fake.calls().len(), 2);
     tokio::task::yield_now().await;
     assert!(!task.is_finished());
+    assert!(!asking.is_finished(), "the user tool waits for the user");
     assert_eq!(pending.count(), 1);
     // The user's key: the read was still waiting for it.
     assert!(waits.decide(PANE, TURN, id, Decision::Sent));
     let out = task.await.unwrap();
     assert!(out.text.contains("outside the scope"), "{out:?}");
     assert_eq!(pending.count(), 0);
+    asking.abort();
 }
 
 // Spec (agent-orchestrator, Never silently decided): an outside read left

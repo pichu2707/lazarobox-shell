@@ -13,12 +13,17 @@ Tool sessions, tokens, scopes and pending approvals MUST be keyed by a session k
 - THEN the call is refused
 
 ### Requirement: Toolsets by session role [S1]
-The tool registry MUST offer by role: chat session = chat tools as before; orchestrator session = chat read tools plus `spawn_agent`, `wait`, `collect`, `cancel` ([S4] and `finish`) and never `run_in_pane`; worker session = read tools only (until write tools exist), never `run_in_pane`, never orchestration tools. Orchestration tools MUST NOT be reachable from user MCP servers, from a chat pane whose ORCH mode is off, or while the global orchestrator gate is off. The orchestrator session exists only for a turn of an orchestrating pane.
+The tool registry MUST offer by role: chat session = chat tools as before; orchestrator session = chat read tools plus `spawn_agent`, `wait`, `collect`, `cancel` ([S4] and `finish`), plus the tools of the user's MCP servers, each call asking `y` exactly as in a chat (user decision, 2026-10-29), and never `run_in_pane`; worker session = read tools only (until write tools exist), never `run_in_pane`, never user server tools, never orchestration tools. Orchestration tools MUST NOT be reachable from user MCP servers, from a chat pane whose ORCH mode is off, or while the global orchestrator gate is off. The orchestrator session exists only for a turn of an orchestrating pane.
 
 #### Scenario: Role toolsets [auto]
 - GIVEN each role
 - WHEN the tool list is built
 - THEN it matches the role definition exactly
+
+#### Scenario: Orchestrator user server tool asks [auto]
+- GIVEN an orchestrator turn and a user MCP server with tool `search`
+- WHEN the tool list is built and `search` is called
+- THEN `search` is listed beside the orchestration tools, the call asks `y`, and the server is contacted only after `y`; a worker's call to it is refused unasked
 
 ### Requirement: Pre-approved read scope [S1]
 A session MAY carry a run-scoped read scope (its roots default to the chat origin folder). `read_file` for a path inside it MUST run without asking, also on a cloud engine; a worker read of a path outside it MUST follow the chat's approval mode exactly as a chat read does, and when it asks, it asks with the worker label (an empty or expired scope grants nothing, so every read follows the mode). The scope MUST be evaluated with the Path policy on both the requested and the resolved path; an excluded path is refused whatever the scope, and no scope entry may make an excluded path readable. `find_dir` and `list_dir` keep their rules.
