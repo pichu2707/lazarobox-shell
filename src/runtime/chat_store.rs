@@ -338,6 +338,21 @@ fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(),
     migrate_to(conn, SCHEMA_VERSION, before_lock)
 }
 
+/// Adds the nullable `conversations.folder` column when the file lacks it. It
+/// is not a schema version: an older build never selects it and its inserts
+/// name their columns, so it keeps working on the same file (chat-folder D8).
+fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+    let present: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'folder')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        tx.execute_batch("ALTER TABLE conversations ADD COLUMN folder TEXT")?;
+    }
+    Ok(())
+}
+
 /// Creates or upgrades the schema up to `target`, every step in one
 /// transaction: a fresh database gets v1 and v2 together, a v1 one only the
 /// additions. A schema newer than `target` is refused.
@@ -359,6 +374,9 @@ fn migrate_to(
     }
     if version < 2 && target >= 2 {
         tx.execute_batch(SCHEMA_V2)?;
+    }
+    if target >= 2 {
+        ensure_folder(&tx)?;
     }
     if version < target {
         tx.pragma_update(None, "user_version", target)?;

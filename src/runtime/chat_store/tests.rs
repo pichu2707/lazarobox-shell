@@ -708,3 +708,80 @@ fn the_link_tables_are_covered_by_secure_delete_and_the_file_modes() {
     }
     assert_eq!(mode(&db), 0o600);
 }
+
+// ---- the folder column (chat-folder) ---------------------------------------
+
+fn columns(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT name FROM pragma_table_info('conversations')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_fresh_store_has_a_nullable_folder_column() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    assert!(columns(&conn).contains(&"folder".to_owned()));
+    conversation(&conn, 1);
+    let folder: Option<String> = conn
+        .query_row("SELECT folder FROM conversations WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(folder, None);
+}
+
+#[test]
+fn a_v2_file_without_the_column_gets_it_and_keeps_its_rows() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    {
+        let conn = open_as(&db, me()).unwrap();
+        conversation(&conn, 1);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN folder")
+            .unwrap();
+        assert!(!columns(&conn).contains(&"folder".to_owned()));
+    }
+    let conn = open_as(&db, me()).unwrap();
+    assert!(columns(&conn).contains(&"folder".to_owned()));
+    assert_eq!(count(&conn, "conversations"), 1);
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+}
+
+#[test]
+fn the_folder_column_is_added_once() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    let conn = open_as(&db, me()).unwrap();
+    let folders = columns(&conn).iter().filter(|c| *c == "folder").count();
+    assert_eq!(folders, 1);
+}
+
+#[test]
+fn a_v1_database_gets_the_folder_column_when_it_becomes_v2() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    v1_store(&db);
+    let conn = open_as(&db, me()).unwrap();
+    assert!(columns(&conn).contains(&"folder".to_owned()));
+}
+
+#[test]
+fn an_older_build_still_opens_a_file_that_has_the_column() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    let conn = open_with(&db, me(), 2).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    // The old build's INSERT names its columns and ignores the new one.
+    conn.execute(
+        "INSERT INTO conversations(created_at, updated_at, profile, title)
+         VALUES (1, 1, 'analyst', 't')",
+        [],
+    )
+    .unwrap();
+}
