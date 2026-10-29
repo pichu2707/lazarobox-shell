@@ -26,6 +26,17 @@ baseline.
 
 - The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
 
+### Docs
+
+- README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
+  `config.toml`, the `chat.db` format with forward migration, the public CLI
+  and the key bindings; what is not: `__*` subcommands, log text, UI layout),
+  an upgrade note, a single key-bindings reference for every view (the
+  `openspec/` link is gone), a security and threat-model index, and macOS
+  stated as not officially supported in 1.0.
+- `SECURITY.md`: supported versions and private vulnerability reporting.
+- `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added

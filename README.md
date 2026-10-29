@@ -60,7 +60,7 @@ cargo install lazarobox-shell --locked    # instala el binario `lazarobox-shell`
 Compatibilidad de plataformas:
 
 - **Linux:** soportado. Es la única plataforma probada.
-- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
+- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente en la 1.0. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
 - **Windows:** no soportado.
 
 Desde el código fuente:
@@ -114,6 +114,27 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 ---
 
+## 🔒 Estabilidad y compatibilidad (1.0)
+
+Desde la 1.0, lazarobox sigue [SemVer](https://semver.org): **un cambio que rompe algo de la tabla «Congelado» exige una versión mayor** (2.0). Las versiones menores añaden funciones sin romper nada y las de parche corrigen fallos. La 1.0 es solo para **Linux**; macOS sigue sin estar soportado oficialmente (ver «Compatibilidad de plataformas»).
+
+| Congelado desde la 1.0 | Qué se promete |
+| :--- | :--- |
+| `config.toml` | Los nombres de las tablas y de las claves, y los valores que cada una admite. Los nombres actuales son los definitivos: `[tabbar] position` y `[ai] notify` (donde `true` y `false` siguen siendo alias de `"auto"` y `"off"`). Una versión menor puede añadir claves o valores nuevos; ninguna clave existente cambia de nombre, de significado ni deja de admitir un valor. |
+| `chat.db` | El formato del historial (hoy, esquema 2, en `$XDG_DATA_HOME/lazarobox/chat.db`). Una versión nueva abre un `chat.db` antiguo y lo migra hacia delante, nunca hacia atrás. Un `chat.db` **más nuevo** que el lazarobox que lo abre se rechaza sin tocarlo: el historial queda no disponible (`history unavailable: store schema N is newer than this build`) y el archivo no se modifica, de modo que al volver a actualizar sigue ahí. Se puede subir de versión sin perder el historial; para bajar, el historial queda inaccesible hasta volver a subir. |
+| Línea de órdenes | Las opciones y subórdenes públicas: `install-desktop` (con `--terminal` y `--uninstall`) y `--force` (ver «Lanzador de escritorio» y «Anidamiento»). Quitar o cambiar su significado exige una versión mayor. |
+| Teclas | El prefijo `Ctrl+Espacio` y las teclas de la referencia de la sección «Teclas». El prefijo **no es configurable**. La tecla `?` tras el prefijo está **reservada** para el futuro visor de órdenes. |
+
+| No forma parte de la promesa | Por qué |
+| :--- | :--- |
+| Subórdenes internas `__*` (`__jail-exec`, `__mcp-serve`, `__watch`) | Las lanza lazarobox sobre sí mismo; no se invocan a mano y pueden cambiar en cualquier versión. |
+| El texto de los registros, de los avisos y de los mensajes de error | Pueden reformularse en una versión menor. No dependas de ellos en un script. |
+| La disposición de la interfaz (barras, colores, textos de las filas, ayudas de la barra de estado) | Puede cambiar en una versión menor. Lo que no cambia es qué hace cada tecla de la referencia. |
+
+**Actualizar a la 1.0.** Se hace como cualquier otra versión: `cargo install lazarobox-shell --locked` (o la fila **Updates** del menú). No hace falta tocar `config.toml` ni borrar `chat.db`: la primera vez que se abre, un `chat.db` anterior se migra solo. Antes de actualizar puedes copiar `~/.local/share/lazarobox/chat.db` si quieres poder volver a una versión anterior con el historial exacto de ese momento; sin copia, volver atrás deja el historial no disponible hasta que vuelvas a actualizar.
+
+---
+
 ## ⌨️ Teclas: el prefijo `Ctrl+Espacio`
 
 Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; luego se pulsa la tecla, o el grupo y la tecla (por ejemplo `w` y `v`). Mientras el prefijo espera, la barra de estado muestra las teclas posibles. `Esc` o una tecla sin asignar lo cancelan sin escribir nada.
@@ -134,13 +155,126 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 | `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
 | `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
 | `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `?`                       | Reservada para el futuro visor de órdenes; hoy no hace nada          |
 | `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
 
 **Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
 
 **Backspace que llega como `Ctrl+H`.** Algunas terminales mandan `^H` para Backspace. En los campos de texto (el mensaje del chat, las notas, el resumen, las etiquetas y los campos del menú) `Ctrl+H` borra como Backspace; un panel de shell recibe el byte tal cual.
 
-**`Esc` no significa lo mismo en todas partes.** En un shell llega al programa; en el prefijo y las confirmaciones cancela, y en RESIZE sale; en COPY limpia la selección y una segunda pulsación sale; en el menú vuelve un nivel y, arriba del todo, descarta lo no guardado y lo cierra; en el chat cancela la respuesta en curso, rechaza una aprobación o una revisión (tras su retardo), en la lista de conversaciones empieza una nueva y en los editores (etiquetas, resumen, nota) descarta lo escrito. La tabla completa está en `openspec/specs/modal-input/spec.md` («Esc per view»).
+### Referencia de teclas por vista
+
+Esta sección y la tabla del prefijo de arriba son la **referencia única** de teclas; las demás secciones del README la enlazan en lugar de repetirla. El prefijo `Ctrl+Espacio` **no se puede configurar**. Salvo que se diga otra cosa, las teclas se pulsan sin modificadores (`y` es la minúscula; `Y` no cuenta).
+
+**Chat, conversación**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Enter` | Envía el mensaje |
+| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje |
+| `Ctrl+U` | Borra el mensaje |
+| `Esc` / `Ctrl+C` | Cancela la respuesta en curso; sin respuesta en curso no hacen nada |
+| `Ctrl+R` | Muestra u oculta el último bloque de razonamiento del modelo |
+| `Ctrl+Y` / `Ctrl+B` | Copia la última respuesta / su último bloque de código (OSC 52) |
+| `PageUp` / `PageDown` | Desplaza la conversación |
+| `Ctrl+G` | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+| `←` `→` `Home` `End` `Backspace` `Delete` | Editan el mensaje (`Ctrl+H` borra como `Backspace`) |
+
+**Aprobación de una herramienta o de un comando** (incluida la confirmación de `Ctrl+Espacio` `e`). Mientras espera, el resto de teclas no hacen nada. Un aviso recién abierto no acepta aún `y`, `n` ni `Esc` (por si la tecla era para el mensaje); `Ctrl+C` funciona siempre.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Aprueba |
+| `n` / `Esc` | Rechaza |
+| `p` | En un comando, pasa al siguiente panel de shell como destino (da la vuelta al llegar al último) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Revisión de un lote o de un commit**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` `k` / `↓` `j` | Desplaza una fila |
+| `PageUp` / `PageDown` / `Home` / `End` | Desplaza por páginas / al principio / al final |
+| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo |
+| `n` / `Esc` | Rechaza, tras el mismo retardo (en el acto si el lote no se puede revisar) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Lista de conversaciones**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `j` `↓` / `k` `↑` | Mueve la selección |
+| `Enter` | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
+| `n` / `Esc` | Empieza una conversación nueva |
+| `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
+| `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
+| `t` | Edita las etiquetas de la fila |
+
+**Editores del chat**
+
+| Editor | Teclas |
+| :--- | :--- |
+| Etiquetas (`Ctrl+Espacio` `T`, o `t` en la lista) | Una línea separada por comas. `Enter` guarda, `Esc` descarta, `Ctrl+U` borra la línea |
+| Nota (`Ctrl+Espacio` `n`) | `Tab` / `Shift+Tab` cambian de campo; en el campo de categoría, `←` `→` la cambian. `Enter` guarda desde el título y añade una línea en el contenido; `Ctrl+S` guarda; `Esc` cierra sin guardar |
+| Resumen (`Ctrl+Espacio` `s`) | `Enter` añade una línea; `Ctrl+S` aprueba (también en la segunda pasada de ocultación de secretos); `Esc` descarta |
+| Oferta de `engram serve` | Con el mensaje vacío: `y` la acepta; `n` / `Esc` la dejan para después. Cualquier otra tecla se escribe en el mensaje |
+
+En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas del contenido; `Ctrl+C` nunca sale de lazarobox.
+
+**Menú** (`Ctrl+Espacio` `m`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Tab` / `Shift+Tab` | Pestaña siguiente / anterior |
+| `j` `↓` / `k` `↑` | Fila siguiente / anterior |
+| `l` `→` `Espacio` / `h` `←` | Valor siguiente / anterior de la fila (`Enter` también avanza al siguiente) |
+| `s` | Guarda en `config.toml` (`Enter` nunca guarda ni cierra el menú) |
+| `Enter` | En filas con acción: abre el selector de IA, actualiza (**Updates**), abre el formulario (**Feedback**) o pide el token (Hugging Face) |
+| `r` | En **Updates**, comprueba ahora; en las filas de IA, vuelve a detectar los motores y modelos |
+| `t` | En **Notify** y **Sound**, comprueba y lanza un aviso de prueba |
+| `d` | En la fila de la cuenta de Hugging Face, olvida el token |
+| `Esc` | Ver «`Esc` según la vista» |
+
+**Modo COPY** (`Ctrl+Espacio` `[`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `h` `j` `k` `l` | Mueve el cursor |
+| `0` / `$` | Inicio / final de la línea |
+| `gg` / `G` | Primera / última línea |
+| `Ctrl+D` / `Ctrl+U` | Media página abajo / arriba |
+| `v` / `V` | Empieza la selección por caracteres / por líneas |
+| `y` | Copia la selección (OSC 52) y sale |
+| `Esc` | Limpia la selección; sin selección, sale |
+| `q` / `i` | Salen (en un panel de chat, `i` no hace nada) |
+| `Ctrl+Y` / `Ctrl+B` | Solo en el chat: copian la última respuesta / su último bloque de código sin salir |
+
+**Modo RESIZE** (`Ctrl+Espacio` `w` `r`): `h` `j` `k` `l` mueven el borde del panel una celda; `Esc` sale. Cualquier otra tecla, incluido `Ctrl+Espacio`, se ignora y el modo sigue.
+
+**Confirmaciones** (salir, cerrar panel, cerrar pestaña): solo `y` confirma. `n`, `Esc`, `Y` o cualquier otra tecla la rechazan.
+
+**`Esc` según la vista.** No significa lo mismo en todas partes; así queda en la 1.0:
+
+| Vista | `Esc` |
+| :--- | :--- |
+| Panel de shell | Llega al programa (byte `0x1b`) |
+| Prefijo o grupo pendiente | Cancela, sin escribir nada |
+| Confirmaciones de salir, cerrar panel y cerrar pestaña | Rechaza, como cualquier tecla que no sea `y` |
+| RESIZE | Sale |
+| COPY (shell y chat) | Limpia la selección; sin selección, sale |
+| Menú, nivel superior | Cancela: descarta lo no guardado y cierra el menú |
+| Menú: selector de tarea, asistente de instalación, pantallas de Hugging Face | Vuelve un nivel (desde la lista de populares de Hugging Face, al campo de búsqueda) |
+| Menú: campo del token de Hugging Face | Cierra el campo; una comprobación en curso se cancela y no se guarda nada |
+| Menú: formulario de Feedback | Lo cierra, de vuelta a su fila (también tras enviar) |
+| Chat, conversación | Cancela la respuesta en curso; sin ella, no hace nada |
+| Chat, aprobación de herramienta y confirmación de `Ctrl+Espacio` `e` | Rechaza, cuando el aviso ya acepta respuesta |
+| Chat, revisión de un lote o de un commit | Rechaza, pasado el retardo (un lote huérfano se descarta) |
+| Chat, oferta de `engram serve` | Para después, como `n` |
+| Chat, lista de conversaciones | Empieza una conversación nueva, como `n` |
+| Chat, editor de etiquetas y borrador de resumen | Descarta la edición |
+| Chat, editor de notas | Lo cierra sin guardar |
+
+Una `Esc` mantenida actúa una sola vez en todas estas vistas salvo en un panel de shell.
 
 ---
 
@@ -369,18 +503,7 @@ Con el servidor de Ollama en marcha (detectado como `available`), la lista de mo
 
 Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`), con los servidores locales **llama.cpp** (`llama-server`), **LM Studio** y **vLLM**, que hablan por HTTP con `127.0.0.1`, y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
 
-Teclas dentro del chat:
-
-| Tecla                  | Acción                                              |
-| :--------------------- | :-------------------------------------------------- |
-| `Enter`                | Envía el mensaje                                    |
-| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
-| `Ctrl+U`               | Borra el mensaje                                    |
-| `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
-| `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
-| `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
-| `PageUp` / `PageDown`  | Desplaza la conversación                            |
-| `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) están en la [referencia de teclas](#referencia-de-teclas-por-vista).
 
 **La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
 
@@ -592,7 +715,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - En sistemas que no son Linux ni macOS no hay jaula. El chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini no arrancan. El mensaje lo indica: `the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat`.
 - **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 10 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
-- **gemini en macOS: todavía no verificado en un Mac real.** Se prueba en CI con CLIs de mentira, pero no con el gemini real. codex se está verificando con un probador (ver `docs/macos-tester-checklist.md`).
+- **macOS no está soportado oficialmente en la 1.0.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian el estado de soporte de la 1.0.
 - **claude nunca corre dentro de la jaula en macOS.** Guarda su sesión en el llavero (Keychain) y la jaula se lo impediría; en macOS siempre corre sin jaula, solo con sus opciones de solo texto, aunque la comprobación de la jaula falle. El panel lo avisa con `claude runs without the jail here: claude keeps its macOS Keychain login, so it never runs jailed on macOS` y nunca lo trata como «jaula no disponible».
 
 **La jaula en macOS: lo que cambia.**
@@ -874,14 +997,7 @@ Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que s
 
 ![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
 
-| Tecla        | Acción                                                                          |
-| :----------- | :------------------------------------------------------------------------------ |
-| `Enter`      | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
-| `n` / `Esc`  | Empieza una conversación nueva                                                  |
-| `a`          | Alterna entre las conversaciones del proyecto y las de todos los proyectos      |
-| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar. Con memoria activada, `ENGRAM_HTTP_TOKEN` definido y notas guardadas, la pregunta ofrece también `a`: borra la conversación y después sus notas en engram (ver «Memoria») |
-| `t`          | Edita las etiquetas de la fila                                                  |
-| `Ctrl+Espacio` `T` | Edita las etiquetas de la conversación abierta                            |
+Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `d` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
@@ -946,6 +1062,30 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 El workflow `.github/workflows/release.yml` comprueba que la etiqueta coincida con `Cargo.toml`, ejecuta fmt, clippy y los tests, publica en crates.io y crea la GitHub Release con las notas de esa versión del `CHANGELOG.md`. Relanzarlo es seguro: si la versión ya está en crates.io, el paso de publicación se omite. Las notas de la release se regeneran siempre a partir de `CHANGELOG.md`, así que cualquier edición manual en GitHub se sobrescribe.
 
 La publicación usa Trusted Publishing (OIDC), así que no hay ningún token guardado en el repositorio. Configuración única en crates.io: en la página del crate, **Settings → Trusted Publishing**, añade un repositorio de GitHub con `pichu2707/lazarobox-shell` como repositorio, `release.yml` como workflow y sin entorno (environment).
+
+---
+
+## 🛡️ Seguridad / modelo de amenazas
+
+Un índice de qué puede hacer cada función y dónde está explicado. Para avisar de una vulnerabilidad, mira [SECURITY.md](SECURITY.md).
+
+| Superficie | Resumen del riesgo | Detalle |
+| :--- | :--- | :--- |
+| Escritura de ficheros | Nada toca el disco antes de tu `y`; el lote se revisa y se puede deshacer | [Modelo de amenazas de la escritura](#modelo-de-amenazas-de-la-escritura) |
+| `run_command` y git | Ejecutan código del proyecto, con red; lo que ves es la orden, no todo lo que arrastra | [Modelo de amenazas de `run_command` y de git](#modelo-de-amenazas-de-run_command-y-de-git) |
+| Herramientas de búsqueda | Ver abajo | [Búsqueda: `glob` y `grep`](#búsqueda-glob-y-grep) |
+| La jaula de los CLIs de IA | Landlock (Linux): limita lectura, escritura, ejecución y puertos de claude, codex y gemini | [Motores CLI](#motores-cli-claude-codex-y-gemini) |
+| Servidores MCP propios | Código tuyo con tus variables; cada llamada pide `y` | [Tus propios servidores MCP](#tus-propios-servidores-mcp-aimcpservers) |
+| Memoria de engram | Opcional; las notas salen de `chat.db` y las lee cualquier proceso local | [Memoria del proyecto (engram)](#memoria-del-proyecto-engram) |
+| Comprobación de actualizaciones | Una petición HTTPS a crates.io; se apaga con `check = false` | [Avisos de actualización](#-avisos-de-actualización-updates) |
+
+**Notas de amenaza breves**
+
+- **Búsqueda (`glob`, `grep`, lectura por ventanas).** `glob` y `grep` trabajan dentro de la carpeta de origen del chat y nunca escriben. Con un motor en la nube, `grep` pide tu `y` en cada llamada, porque su resultado, con texto de tus ficheros, llega a un proveedor externo; `glob` devuelve solo nombres y no pregunta. Se saltan enlaces simbólicos, `.git`, `node_modules`, ficheros binarios y los nombres que parecen secretos, y `grep` compara contra el texto ya censurado. La lista de secretos es de mejor esfuerzo: un secreto en un fichero con otro nombre no se detecta.
+- **La jaula.** Es una segunda capa tras las opciones de solo texto de cada CLI: el CLI no puede leer fuera de lo concedido ni ejecutar programas distintos de su intérprete, ni abrir puertos para escuchar (desde Landlock ABI 4). No es una defensa total: `claude` puede funcionar sin ella si el sistema no la ofrece (el panel lo avisa), y la red hacia fuera sigue abierta porque el CLI necesita hablar con su proveedor.
+- **Servidores MCP.** Los declaras tú y corren con tu usuario, sin shell y con un entorno limpio más las variables de `env`. Solo se lee tu configuración de usuario (un `.lazarobox/mcp.toml` de un repositorio se ignora) y reciben solo las variables que nombras en `env`. Toda llamada a una herramienta pide `y`, también en el modo de aprobación `auto`, y el resultado vuelve al modelo como dato no fiable.
+- **Memoria de engram.** Está desactivada por defecto y exige aceptar una advertencia. Una nota guardada deja de estar bajo los permisos `0600` de `chat.db`: la puede leer cualquier proceso local y cualquier agente que use engram, y las rutas HTTP de engram en `127.0.0.1` están abiertas. Antes de enviar una nota se ocultan los secretos reconocibles.
+- **Comprobación de actualizaciones.** Un único `GET` a crates.io con el `curl` del sistema, sin identificadores, cookies ni telemetría. Con `[updates] check = false` no se hace ninguna petición. Actualizar solo ejecuta `cargo install` cuando pulsas `Enter` y en una pestaña visible.
 
 ---
 
