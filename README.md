@@ -399,7 +399,7 @@ Candidatos, cada uno una vez y nunca `$HOME`: la última carpeta usada (preselec
 | `Enter`                      | Abre la ruta escrita (gana a la fila) o, con el campo vacío, la fila marcada                   |
 | `Esc`                        | Se queda con la carpeta actual y deja la línea `chat folder is …; use /cd <folder> to change it` |
 
-Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide. Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas y memoria responden `Choose the chat folder first`.
+Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide. Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
 
 Avisos del selector y de `Tab` en `/cd`: `still looking for folders` (aún se buscan candidatos), `no matching folder` (nada completa) y `folder check is busy, try again` (una comprobación anterior sigue en el disco). Si la carpeta que eliges está ocupada por otra acción, el selector se queda abierto con el motivo.
 
