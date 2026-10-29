@@ -181,6 +181,9 @@ struct Live {
     /// The error of a retried worker's failed attempt, which its next prompt
     /// is followed by (wrapped).
     retry: HashMap<WorkerId, String>,
+    /// The orchestrator turn that started the run is over: the run ends once
+    /// it has nothing left to do (see [`RunManager::turn_ended`]).
+    turn_over: bool,
 }
 
 impl Drop for Live {
@@ -292,6 +295,7 @@ impl RunManager {
             shown: HashMap::new(),
             alerted: None,
             retry: HashMap::new(),
+            turn_over: false,
         };
         let old = {
             let mut runs = lock(&self.runs);
@@ -341,6 +345,38 @@ impl RunManager {
     pub fn cancel(self: &Arc<Self>, pane: PaneId) {
         let live = lock(&self.runs).remove(&pane);
         if let Some(live) = live {
+            self.end(pane, live);
+        }
+    }
+
+    /// The orchestrator turn of run `run` of `pane` ended. The run ends by
+    /// itself, with its `Ended`, once none of its workers is queued or
+    /// running and no failure waits for the user: at once, or when its last
+    /// worker finishes (user decision, 2026-10-29). A run that ended or was
+    /// replaced ignores it.
+    pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
+        self.on_run(pane, run, |live| live.turn_over = true);
+        self.settle(pane, run);
+    }
+
+    /// Ends run `run` of `pane` if its turn is over and it has nothing left
+    /// to do: no worker queued or running, no failure waiting for the user.
+    fn settle(self: &Arc<Self>, pane: PaneId, run: RunId) {
+        let done = {
+            let mut runs = lock(&self.runs);
+            let over = runs.get(&pane).is_some_and(|live| {
+                live.run.id() == run
+                    && live.turn_over
+                    && !matches!(live.run.state(), RunState::Halted { .. })
+                    && (1..)
+                        .map_while(|n| live.run.status(WorkerId(n)))
+                        .all(|status| {
+                            !matches!(status, WorkerStatus::Queued | WorkerStatus::Running)
+                        })
+            });
+            if over { runs.remove(&pane) } else { None }
+        };
+        if let Some(live) = done {
             self.end(pane, live);
         }
     }
@@ -761,6 +797,7 @@ impl RunManager {
             }
             self.sync(pane, live);
         });
+        self.settle(pane, key.run);
     }
 }
 

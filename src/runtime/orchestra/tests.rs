@@ -993,6 +993,68 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     assert!(lab.manager.scope(pane()).is_some(), "{run:?} goes on");
 }
 
+// User decision (2026-10-29, S9): once its turn ended and every worker is
+// done, a run ends by itself, once; a later call finds it ended.
+#[tokio::test]
+async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    assert_eq!(lab.sent(), [OrchestraEvent::Ended { run }]);
+    lab.manager.turn_ended(pane(), run);
+    assert_eq!(lab.sent(), [], "ended once");
+    assert_eq!(handle.call(wait(1)).await, error(ENDED));
+}
+
+// S9: with a worker still running when the turn ends, the run stays until
+// that worker finishes, then ends.
+#[tokio::test]
+async fn a_run_whose_worker_still_runs_ends_when_it_finishes() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.manager.turn_ended(pane(), run);
+    assert!(
+        !lab.sent().contains(&OrchestraEvent::Ended { run }),
+        "the worker still runs"
+    );
+    let mut statuses = Vec::new();
+    loop {
+        match lab.next().await {
+            OrchestraEvent::Ended { run: of } => {
+                assert_eq!(of, run);
+                break;
+            }
+            event => statuses.extend(status_of(&event)),
+        }
+    }
+    assert_eq!(statuses, [WorkerStatus::Done]);
+    assert_eq!(lab.sent(), [], "nothing after Ended");
+}
+
+// S9: a halted run waits for the user's answer even after its turn ended;
+// once the retried worker is done it ends by itself.
+#[tokio::test]
+async fn a_halted_run_stays_until_answered_then_ends_by_itself() {
+    let mut lab = lab(Script::FailOnce("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    lab.manager.turn_ended(pane(), run);
+    assert!(!lab.sent().contains(&OrchestraEvent::Ended { run }));
+    assert!(lab.manager.scope(pane()).is_some(), "the run waits");
+    lab.manager.decide(pane(), UserChoice::Retry).unwrap();
+    loop {
+        if lab.next().await == (OrchestraEvent::Ended { run }) {
+            break;
+        }
+    }
+    assert!(lab.manager.scope(pane()).is_none(), "the run is over");
+}
+
 // Spec (agent-orchestrator, Orchestrator paused; Failure stops the run): an
 // unresolved failure keeps `wait` at `awaiting_user` with no error text and
 // refuses `spawn_agent` with `run paused` until the user picks an option;
