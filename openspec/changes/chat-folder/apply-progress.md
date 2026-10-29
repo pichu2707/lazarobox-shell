@@ -63,6 +63,16 @@ Deviations and notes:
 - Resume: `App.resume_folders` keeps `(conversation, stored)` while the probe runs; stale answers are dropped; the resume path does not write `SetFolder` again; busy gives `stored folder not used: <reason>`; same folder is a no-op. `on_resumed` takes `(session, folder)` as a tuple (clippy too_many_arguments).
 - The `#[allow(dead_code)]` A1 left are removed.
 
+### Batch 2b: PR A2 review fixes (W1-W5, S1-S2)
+
+- W1/W2: `Purpose::Resume(token)`; `App.resume_folders` holds `(token, conversation, path)`; only the latest resume answer counts; `/cd` submit and any folder change drop the entry.
+- W3: `Purpose::Cd(token)` and `App.cd_requests` (token + submitted arg); an answer is dropped unless it matches the latest request and the composer still holds that arg.
+- W5: at `y` the folder is probed again (`Purpose::Confirm(token)`, through the off-loop Prober); a different path or a refusal gives `/cd refused: folder changed since it was checked`; the composer clears and the folder applies only on a matching answer. Busy is checked at `y` and again at the answer.
+- W4: `ChatState::restore_folder` for a resume: system line `folder restored: <f>`, model notice `This conversation's folder is <f>.` once, no `End`, no `SetFolder`; memory is untouched when the resolved project equals the resumed session project, else it resolves again keeping the resumed session (`restore_memory_for_folder`).
+- S1: `drop_folder_state` on pane removal. S2: comment in `chat_store.rs` that v3 may assume `folder` exists.
+- Production size of A2 after the fixes: 561 added / 33 removed lines gross (`git diff --numstat`, tests and snapshots excluded; comments and blanks included, roughly 170 of them), 179 added in the fixes. Over the 400 soft limit, under the 600 hard limit.
+- Tests: 7148 lib tests green. RED was seen at compile level (new variants/fields) for each batch; the behavioural assertions were written with the code in the same step.
+
 ## Remaining
 
 A3 (3.1-3.8), B1 (4.1-4.8), B2 (5.1-5.7), closing 6.1-6.2.
