@@ -292,7 +292,7 @@ const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as repl
 pub const WARN_TRUNCATED: &str =
     "warning: too large to review: reject it and ask for smaller changes";
 
-/// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
+/// How long `y` stays disabled after the view opens, as for every other ask.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// Marks every row of a logical line after the first, in the sign column of
