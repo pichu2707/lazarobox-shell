@@ -10,7 +10,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
-│ orchestrate                                      (default) │
+│ orchestrate                    (default) · not recommended │
 │ Profile                                            analyst │
 │ Context                                                 on │
 │ Memory                                                 off │

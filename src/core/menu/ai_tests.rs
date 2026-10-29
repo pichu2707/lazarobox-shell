@@ -324,7 +324,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "chat=(default)",
             "review=(default)",
             "summarize=(default)",
-            "orchestrate=(default)",
+            "orchestrate=(default) · not recommended",
             "Profile=programmer",
             "Context=on",
             "Memory=off",
