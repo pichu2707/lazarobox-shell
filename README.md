@@ -110,6 +110,36 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 ---
 
+## ⌨️ Teclas: el prefijo `Ctrl+Espacio`
+
+Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; luego se pulsa la tecla, o el grupo y la tecla (por ejemplo `w` y `v`). Mientras el prefijo espera, la barra de estado muestra las teclas posibles. `Esc` o una tecla sin asignar lo cancelan sin escribir nada.
+
+| Tecla tras `Ctrl+Espacio` | Acción                                                              |
+| :------------------------ | :------------------------------------------------------------------ |
+| `h` `j` `k` `l`           | Mueve el foco a la izquierda, abajo, arriba o derecha               |
+| `w` `v` / `w` `h`         | Divide el panel a la derecha / abajo                                |
+| `w` `q`                   | Cierra el panel (pide confirmación)                                 |
+| `w` `r`                   | Modo RESIZE: `h` `j` `k` `l` mueven el borde, `Esc` sale             |
+| `w` `z`                   | Amplía el panel o lo devuelve a su tamaño                           |
+| `t` `n` / `t` `c`         | Pestaña nueva / cierra la pestaña (pide confirmación)               |
+| `g` `b` / `g` `B`         | Pestaña siguiente / anterior                                        |
+| `b` `1`…`b` `9`           | Va a la pestaña N                                                   |
+| `[`                       | Modo COPY (ver [Modo COPY](#-modo-copy))                            |
+| `m`                       | Abre el menú                                                        |
+| `c`                       | Abre un chat de IA                                                  |
+| `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
+| `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
+| `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
+
+**Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
+
+**Backspace que llega como `Ctrl+H`.** Algunas terminales mandan `^H` para Backspace. En los campos de texto (el mensaje del chat, las notas, el resumen, las etiquetas y los campos del menú) `Ctrl+H` borra como Backspace; un panel de shell recibe el byte tal cual.
+
+**`Esc` no significa lo mismo en todas partes.** En un shell llega al programa; en el prefijo y las confirmaciones cancela, y en RESIZE sale; en COPY limpia la selección y una segunda pulsación sale; en el menú vuelve un nivel y, arriba del todo, descarta lo no guardado y lo cierra; en el chat cancela la respuesta en curso, rechaza una aprobación o una revisión (tras su retardo), en la lista de conversaciones empieza una nueva y en los editores (etiquetas, resumen, nota) descarta lo escrito. La tabla completa está en `openspec/specs/modal-input/spec.md` («Esc per view»).
+
+---
+
 ## 📋 Modo COPY
 
 Con `Ctrl+Espacio` y `[` se entra en modo COPY. Mueve el cursor con `h` `j` `k` `l`, selecciona con `v` (caracteres) o `V` (líneas completas) y copia con `y`: el texto llega al portapapeles del sistema mediante OSC 52 y se vuelve a TERMINAL. `Esc` limpia la selección (y una segunda pulsación sale). Las selecciones de más de 75 000 bytes no se copian.
@@ -322,6 +352,7 @@ Teclas dentro del chat:
 | :--------------------- | :-------------------------------------------------- |
 | `Enter`                | Envía el mensaje                                    |
 | `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
+| `Ctrl+U`               | Borra el mensaje                                    |
 | `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
 | `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
 | `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |

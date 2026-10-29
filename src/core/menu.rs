@@ -1581,7 +1581,9 @@ impl MenuState {
 
     /// Interprets a key. Release is ignored; a repeat moves and cycles but
     /// never saves or cancels; a pending error is cleared by the next press.
+    /// Ctrl+H is Backspace in every text field.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
+        let key = &crate::core::keys::backspace_alias(*key);
         if key.kind == KeyEventKind::Release {
             return MenuCommand::None;
         }

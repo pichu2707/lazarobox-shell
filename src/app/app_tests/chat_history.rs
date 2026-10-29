@@ -984,6 +984,7 @@ fn the_server_offer_does_not_take_the_keys_of_the_list() {
         "the question shows now"
     );
     // In the conversation view the offer takes its keys again.
+    let_go();
     a.update(key('n'));
     assert_eq!(a.chat_guidance(chat_id()), None, "declined");
 }

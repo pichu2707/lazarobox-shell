@@ -405,6 +405,15 @@ fn keys_in_the_editor_edit_the_editor_and_never_the_composer() {
     assert_eq!(chat_of(&a).note_editor().unwrap().content(), "body\n");
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_note_editor() {
+    let mut a = ready("body");
+    type_text(&mut a, "Ab");
+    a.update(ctrl('h'));
+    assert_eq!(chat_of(&a).note_editor().unwrap().title(), "A");
+}
+
 #[test]
 fn the_editor_swallows_everything_else_and_ctrl_c_never_quits() {
     let mut a = ready("body");

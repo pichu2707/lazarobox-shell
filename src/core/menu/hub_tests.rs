@@ -519,6 +519,18 @@ fn a_reply_for_a_level_the_user_left_is_dropped() {
     assert_eq!(hint(&m), "Enter search · Esc back");
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_query() {
+    let mut m = at_query();
+    type_text(&mut m, "qwen");
+    send(
+        &mut m,
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(field(&m), Some("qwe".to_owned()));
+}
+
 #[test]
 fn keys_other_than_esc_are_ignored_while_asking() {
     let mut m = at_query();
