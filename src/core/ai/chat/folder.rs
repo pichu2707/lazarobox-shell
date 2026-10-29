@@ -5,7 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use super::{ChatState, Phase};
-use crate::core::ai::tools::paths::{SecretRoots, normalize};
+use crate::core::ai::{
+    sanitize::clean,
+    tools::paths::{SecretRoots, normalize},
+};
 
 /// A folder the runtime resolved and judged.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -137,7 +140,37 @@ pub fn judge(real: &Path, roots: &SecretRoots) -> Result<Verdict, Refusal> {
     Ok(Verdict::Outside)
 }
 
+/// What a folder change left for the caller to do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FolderChange {
+    pub old: Option<PathBuf>,
+    /// The prompt was prepared and is dropped: prepare it again now.
+    pub prompt_now: bool,
+}
+
 impl ChatState {
+    /// Makes `new` (a probed, resolved folder) the chat's folder and
+    /// invalidates what was pinned to the old one: the system prompt, and a
+    /// tag proposed for a conversation nothing was saved for. Adds the
+    /// visible line and the once-only notice for the model.
+    pub fn set_folder(&mut self, new: PathBuf) -> FolderChange {
+        let old = self.origin_cwd.replace(new.clone());
+        let show = |path: Option<&Path>| {
+            path.map_or_else(|| "unknown".to_owned(), |p| clean(&p.to_string_lossy()))
+        };
+        let (from, to) = (show(old.as_deref()), show(Some(&new)));
+        let prompt_now = self.invalidate_prompt();
+        if !self.tags_edited && self.store.is_fresh() {
+            self.tag = None;
+        }
+        self.push_system_line(format!("folder changed: {from} -> {to}"));
+        self.tell(format!(
+            "The chat's folder changed from {from} to {to}. Paths from earlier \
+             messages may not exist; tool paths are now relative to {to}."
+        ));
+        FolderChange { old, prompt_now }
+    }
+
     /// Why the folder cannot change now, in the order the user is told (design
     /// D4). `running` says a command typed for this chat runs in a pane: the
     /// app owns the run slots.

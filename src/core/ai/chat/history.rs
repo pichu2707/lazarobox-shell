@@ -251,6 +251,14 @@ impl ChatState {
             return false;
         }
         self.profile = profile;
+        self.invalidate_prompt()
+    }
+
+    /// The pinned system prompt no longer fits (the profile or the folder
+    /// changed): returns whether it must be prepared again now. A prompt
+    /// already prepared is dropped; one still being prepared is dropped when
+    /// it arrives (see `set_prompt_or_reprepare`).
+    pub(super) fn invalidate_prompt(&mut self) -> bool {
         if self.prompt.take().is_some() {
             return true;
         }

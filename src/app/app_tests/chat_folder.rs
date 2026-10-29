@@ -18,6 +18,42 @@ fn a_command_running_for_the_chat_blocks_the_change() {
     assert_eq!(a.folder_busy(id2()), Some("a command is running"));
 }
 
+fn folder_of(a: &App) -> Option<PathBuf> {
+    super::run_pane::chat(a, id2())
+        .origin_cwd()
+        .map(Path::to_path_buf)
+}
+
+#[test]
+fn the_change_moves_the_chat_and_prepares_its_prompt_again() {
+    let mut a = one_shell_and_a_chat("hello");
+    let effects = a.apply_folder(id2(), "/w/b".into());
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    let prepared: Vec<_> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::PreparePrompt { pane, origin, .. } => Some((*pane, origin.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prepared, vec![(id2(), Some(PathBuf::from("/w/b")))]);
+    assert!(a.take_dirty());
+}
+
+#[test]
+fn the_change_ends_the_tool_session_of_the_old_folder_once() {
+    let mut a = one_shell_and_a_chat("hello");
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_tool_session(true);
+    let first = a.apply_folder(id2(), "/w/b".into());
+    assert!(first.contains(&Effect::EndToolSession(id2())));
+    let second = a.apply_folder(id2(), "/w/c".into());
+    assert!(!second.contains(&Effect::EndToolSession(id2())));
+}
+
 #[test]
 fn a_chat_that_is_gone_is_not_busy() {
     let a = one_shell_and_a_chat("hello");

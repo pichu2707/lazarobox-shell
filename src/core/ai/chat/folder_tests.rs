@@ -102,6 +102,102 @@ fn expand_reads_tilde_relative_and_parent_paths() {
     assert_eq!(expand("~/x", home, None), Some("/h/x".into()));
 }
 
+// the change -----------------------------------------------------------------
+
+mod change {
+    use super::super::{
+        ChatState, Entry,
+        prompts::Resolved,
+        state_tests::{SYSTEM, sent},
+    };
+    use std::path::PathBuf;
+
+    fn chat_in(folder: &str) -> ChatState {
+        ChatState::new(Some(PathBuf::from(folder)))
+    }
+
+    fn prompt() -> Resolved {
+        Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_folder_is_replaced_and_the_old_one_returned() {
+        let mut state = chat_in("/w/a");
+        let change = state.set_folder("/w/b".into());
+        assert_eq!(change.old, Some(PathBuf::from("/w/a")));
+        assert_eq!(state.origin_cwd(), Some(std::path::Path::new("/w/b")));
+    }
+
+    #[test]
+    fn a_visible_line_names_both_folders() {
+        let mut state = chat_in("/w/a");
+        state.set_folder("/w/b".into());
+        let last = state.entries().last();
+        assert_eq!(
+            last,
+            Some(&Entry::System("folder changed: /w/a -> /w/b".into()))
+        );
+    }
+
+    #[test]
+    fn the_model_hears_of_it_once_and_nothing_is_stored() {
+        let mut state = chat_in("/w/a");
+        state.set_folder("/w/b".into());
+        let (turn, first) = sent(&mut state, "one");
+        assert!(first.system.starts_with(SYSTEM), "{}", first.system);
+        assert!(
+            first.system.contains("from /w/a to /w/b"),
+            "{}",
+            first.system
+        );
+        assert!(first.system.contains("tool paths are now relative to /w/b"));
+        state.apply(turn, super::super::engine::StreamEvent::Delta("hi".into()));
+        state.apply(
+            turn,
+            super::super::engine::StreamEvent::Done(super::super::engine::Finish::Stop),
+        );
+        let (_, second) = sent(&mut state, "two");
+        assert_eq!(second.system, SYSTEM);
+        assert!(second.messages.iter().all(|m| !m.content.contains("/w/b")));
+    }
+
+    #[test]
+    fn a_prepared_prompt_is_dropped_and_asked_again() {
+        let mut state = chat_in("/w/a");
+        state.set_prompt(prompt());
+        assert!(state.set_folder("/w/b".into()).prompt_now);
+        assert!(state.prompt.is_none());
+    }
+
+    #[test]
+    fn a_prompt_still_being_prepared_is_dropped_when_it_arrives() {
+        let mut state = chat_in("/w/a");
+        assert!(!state.set_folder("/w/b".into()).prompt_now);
+        assert!(state.set_prompt_or_reprepare(prompt()), "prepare it again");
+        assert!(!state.set_prompt_or_reprepare(prompt()));
+    }
+
+    #[test]
+    fn a_fresh_untouched_conversation_proposes_its_tag_again() {
+        let mut state = chat_in("/w/a");
+        state.set_tag(Some("a".into()));
+        state.set_folder("/w/b".into());
+        assert_eq!(state.tag(), None);
+    }
+
+    #[test]
+    fn a_tag_the_user_edited_stays() {
+        let mut state = chat_in("/w/a");
+        state.set_tag(Some("mine".into()));
+        state.tags_edited = true;
+        state.set_folder("/w/b".into());
+        assert_eq!(state.tag(), Some("mine"));
+    }
+}
+
 // busy ----------------------------------------------------------------------
 
 mod busy {
