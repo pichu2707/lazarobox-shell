@@ -14,7 +14,7 @@ use crate::core::{
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             folder::{Probed, Purpose as FolderPurpose, Refusal},
-            folder_picker::Source as PickerSource,
+            folder_picker::{Completion, Source as PickerSource},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -180,14 +180,17 @@ pub enum AppEvent {
     /// The answer to `Effect::ProbeFolders`: every candidate, judged.
     FoldersProbed {
         pane: PaneId,
+        /// The picker that asked.
+        id: u64,
         found: Vec<(PickerSource, Result<Probed, Refusal>)>,
     },
     /// The answer to `Effect::CompleteFolder`: the directory names for the
     /// field text that was sent.
     FolderCompleted {
         pane: PaneId,
+        id: u64,
         text: String,
-        names: Vec<String>,
+        found: Completion,
     },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
@@ -394,6 +397,8 @@ pub enum Effect {
     /// `AppEvent::FoldersProbed`.
     ProbeFolders {
         pane: PaneId,
+        /// The picker that asks.
+        id: u64,
         paths: Vec<(PickerSource, PathBuf)>,
         git: bool,
     },
@@ -402,6 +407,7 @@ pub enum Effect {
     /// `AppEvent::FolderCompleted`.
     CompleteFolder {
         pane: PaneId,
+        id: u64,
         text: String,
         dir: PathBuf,
         prefix: String,

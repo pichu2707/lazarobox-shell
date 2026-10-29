@@ -31,6 +31,9 @@ pub enum Purpose {
     /// A conversation was resumed with a stored folder; the token names the
     /// request, so the answer of an earlier resume is told apart.
     Resume(u64),
+    /// The folder picker chose a folder; the token is the picker id, so the
+    /// answer for a closed picker is told apart.
+    Pick(u64),
 }
 
 /// The argument of `/cd`.

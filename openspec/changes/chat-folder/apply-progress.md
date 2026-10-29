@@ -95,6 +95,19 @@ Deviations and notes:
 - Production size of A2 after the fixes: 561 added / 33 removed lines gross (`git diff --numstat`, tests and snapshots excluded; comments and blanks included, roughly 170 of them), 179 added in the fixes. Over the 400 soft limit, under the 600 hard limit.
 - Tests: 7148 lib tests green. RED was seen at compile level (new variants/fields) for each batch; the behavioural assertions were written with the code in the same step.
 
+### Batch 3b: PR B1 review fixes (W1-W5, S)
+
+Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test and this file).
+
+- W1: `complete(roots, dir, prefix)` canonicalizes `dir` and lists nothing unless it is `Concrete` or `Home`; each entry is canonicalized and must pass `roots.judge_real`, so a link into `~/.ssh` is never suggested.
+- W2: `Tab` ignores a held key and waits for the answer (`completing`, freed by any answer of this picker, stale text included). In the runtime, `Prober` keeps one `Flight` per kind (candidates, completions), held by the blocking work itself until it really ends; a request that finds it taken answers empty at once, so a hung filesystem cannot fill the blocking pool.
+- W3: the roots load once per request; `each` bounds every candidate on its own (all in parallel), a stalled one is `folder not found` and `merge` drops it. `probe_many` is gone from production (tests keep a helper over `candidate`).
+- W4: `Completion{names, truncated}`; a truncated list is shown but never extends the field.
+- W5: names with control characters are dropped in `complete`.
+- S: `RECENT_ASK` = 40 for `RecentFolders`, `merge` caps at 12; the typed text is trimmed before completion; `FolderPicker::new(id, ..)`, and `set_rows`, `on_probed`, `on_completed` drop answers whose id is not the picker's (`Purpose::Pick(id)`, `Answer::{Many, Completed}` and the events carry it).
+- TDD note: W1 and W5 were seen failing against the old `complete` before the fix; the signature changes (ids, `Completion`) were RED at compile level; the stalled-candidate and single-flight tests were written together with the code.
+- 7187 lib tests green.
+
 ## Remaining
 
 A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.

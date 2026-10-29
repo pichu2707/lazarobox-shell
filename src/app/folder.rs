@@ -181,6 +181,8 @@ impl App {
         };
         match purpose {
             Purpose::Resume(token) => self.on_resume_probed(id, token, result, busy),
+            // The picker takes it up (PR B2).
+            Purpose::Pick(_) => Vec::new(),
             Purpose::Cd(token) | Purpose::Confirm(token) => {
                 // Only the answer of the latest command, still in the
                 // composer as it was submitted, counts.

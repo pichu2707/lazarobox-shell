@@ -978,9 +978,11 @@ async fn run_loop(
                     folder::Answer::Probed(pane, purpose, result) => {
                         AppEvent::FolderProbed { pane, purpose, result }
                     }
-                    folder::Answer::Many(pane, found) => AppEvent::FoldersProbed { pane, found },
-                    folder::Answer::Completed(pane, text, names) => {
-                        AppEvent::FolderCompleted { pane, text, names }
+                    folder::Answer::Many(pane, id, found) => {
+                        AppEvent::FoldersProbed { pane, id, found }
+                    }
+                    folder::Answer::Completed(pane, id, text, found) => {
+                        AppEvent::FolderCompleted { pane, id, text, found }
                     }
                 };
                 if step(&mut app, event, panes) {
@@ -1662,24 +1664,32 @@ impl Panes {
                         result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
                     }),
                 },
-                Effect::ProbeFolders { pane, paths, git } => match self.folder_probes.as_ref() {
-                    Some(prober) => prober.start_many(pane, paths, git),
+                Effect::ProbeFolders {
+                    pane,
+                    id,
+                    paths,
+                    git,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, id, paths, git),
                     None => feedback.push(AppEvent::FoldersProbed {
                         pane,
+                        id,
                         found: Vec::new(),
                     }),
                 },
                 Effect::CompleteFolder {
                     pane,
+                    id,
                     text,
                     dir,
                     prefix,
                 } => match self.folder_probes.as_ref() {
-                    Some(prober) => prober.start_completion(pane, text, dir, prefix),
+                    Some(prober) => prober.start_completion(pane, id, text, dir, prefix),
                     None => feedback.push(AppEvent::FolderCompleted {
                         pane,
+                        id,
                         text,
-                        names: Vec::new(),
+                        found: Default::default(),
                     }),
                 },
                 Effect::EndToolSession(pane) => {

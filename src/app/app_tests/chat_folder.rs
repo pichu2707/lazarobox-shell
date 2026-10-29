@@ -115,7 +115,7 @@ fn cd_purposes(effects: &[Effect]) -> Vec<u64> {
         .into_iter()
         .filter_map(|(_, purpose)| match purpose {
             Purpose::Cd(token) => Some(token),
-            Purpose::Resume(_) | Purpose::Confirm(_) => None,
+            Purpose::Resume(_) | Purpose::Confirm(_) | Purpose::Pick(_) => None,
         })
         .collect()
 }
