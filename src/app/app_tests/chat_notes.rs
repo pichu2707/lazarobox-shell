@@ -88,6 +88,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
     }
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -487,6 +488,7 @@ fn save_cmd(n: u64, session: Option<&str>, title: &str, content: &str) -> Effect
             title: title.into(),
             content: content.into(),
         },
+        topic_key: None,
     })
 }
 
@@ -786,6 +788,7 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -843,6 +846,7 @@ fn created(conversation: i64, evicted: bool, evicted_notes: u32) -> AppEvent {
         conversation,
         evicted,
         evicted_notes,
+        created_at: 1_000,
     })
 }
 
@@ -983,6 +987,7 @@ fn store_replies_for_a_pane_that_is_gone_change_nothing() {
             conversation: 1,
             evicted: true,
             evicted_notes: 3,
+            created_at: 1_000,
         },
         StoreReply::LinkFailed {
             pane: gone,

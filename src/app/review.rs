@@ -123,10 +123,14 @@ impl App {
         }
     }
 
-    /// A frame was drawn: every review counts the rows that frame showed, and
-    /// the first frame starts its delay. A review in a hidden pane was not
-    /// drawn, so it counts nothing.
+    /// A frame was drawn: an install prompt becomes answerable, every review
+    /// counts the rows that frame showed, and the first frame starts its
+    /// delay. A review in a hidden pane was not drawn, so it counts nothing.
     pub fn frame_drawn(&mut self) {
+        // The install wizard's prompts accept `y`/`n` only once drawn.
+        if let Some(menu) = self.menu.as_mut() {
+            menu.install_arm();
+        }
         for state in self.panes.values_mut() {
             let redraw = state
                 .chat_mut()
@@ -255,6 +259,10 @@ impl App {
                 id: batch,
             }];
         }
+        let commit = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Commit(_)));
         let Some(view) = self.review_mut(id) else {
             return Vec::new();
         };
@@ -264,9 +272,10 @@ impl App {
             TOO_LARGE
         };
         let counts = view.review().counts();
+        let what = if commit { "commit" } else { "batch" };
         let effects = self.decline(id, reason);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.push_system_line(format!("batch rejected: {counts}"));
+            chat.push_system_line(format!("{what} rejected: {counts}"));
         }
         effects
     }

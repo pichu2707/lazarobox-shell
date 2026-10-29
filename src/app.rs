@@ -28,6 +28,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -50,9 +51,11 @@ use crate::core::{
 mod auto_run;
 mod chat;
 mod chat_copy;
+mod compact;
 mod context;
 mod history;
 mod hub;
+mod install;
 mod notes;
 mod offer;
 mod review;
@@ -63,7 +66,7 @@ mod tags;
 mod tool;
 
 use auto_run::RunSlot;
-pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent};
+pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent, RunScope};
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
@@ -102,7 +105,8 @@ pub enum InputMode {
     Prefix,
     /// Read-only scrollback navigation.
     Copy(CopyState),
-    /// Line scrolling of a chat transcript; the view stays in the chat.
+    /// A cursor and a selection over a chat transcript; the view stays in
+    /// the chat.
     ChatCopy(ChatCopy),
     /// A group is open (WINDOW, TAB, GO, BUFFER); the next key picks its binding.
     Group(&'static Group),
@@ -216,6 +220,21 @@ pub enum AppEvent {
     },
     /// The running Hugging Face download ended.
     DownloadEnd(End),
+    /// The bytes on disk of the llama-server archive that downloads, for the
+    /// request `id`.
+    InstallProgress {
+        id: u64,
+        done: u64,
+        total: u64,
+    },
+    /// The result of the install step the wizard asked for; it names the
+    /// request it answers.
+    InstallReply(u64, Result<InstallReply, String>),
+    /// A notice about the install (an attestation that was not verified):
+    /// shown, not swallowed.
+    InstallWarning(String),
+    /// A newer llama.cpp build exists; shown unless a notice is already up.
+    InstallNewer(String),
     /// What the runtime found for `Effect::HfAccount`.
     HfAccount(AccountReply),
     /// What became of `Effect::SendIssue`.
@@ -269,6 +288,15 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start a background compaction run for a pane: not a turn of the chat,
+    /// so it touches neither the pane's tool session nor its servers.
+    ChatCompact {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop the background compaction run of a pane and nothing else.
+    ChatCompactCancel(PaneId),
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
@@ -319,14 +347,16 @@ pub enum Effect {
     },
     /// Chat `chat` routed a model's safe command for the shell pane `target`
     /// to a run (design D21): the runtime reads the pane's real directory,
-    /// checks the paths of `command` off the UI thread and answers with one
-    /// `AppEvent::Run`. Nothing is written.
+    /// checks the paths of `command` off the UI thread, against the chat's
+    /// root and engine in `scope`, and answers with one `AppEvent::Run`.
+    /// Nothing is written.
     CheckRun {
         chat: PaneId,
         target: PaneId,
         turn: u64,
         call: CallId,
         command: String,
+        scope: RunScope,
     },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
@@ -402,6 +432,11 @@ pub enum Effect {
     Download(Box<Job>),
     /// Stop the running Hugging Face download; its partial file stays.
     CancelDownload,
+    /// Run one step of the llama-server install wizard, or the newer build
+    /// check; the runtime answers
+    /// with `AppEvent::InstallReply` (and `InstallProgress` while it
+    /// downloads).
+    Install(InstallAsk),
     /// Connect, check or disconnect the Hugging Face account of the menu's
     /// `Hugging Face` row; the runtime answers with one
     /// `AppEvent::HfAccount`.
@@ -671,6 +706,10 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The privacy notice of the rolling summary was shown in this run.
+    summary_notice_shown: bool,
+    /// A quiet save (the rolling summary) failed and the user was told.
+    summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -778,6 +817,8 @@ pub struct App {
     history: bool,
     /// The Hugging Face download that runs; one at a time.
     download: Option<crate::core::ai::picker::Running>,
+    /// The newer llama.cpp build check ran this run: it asks GitHub once.
+    newer_checked: bool,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -808,6 +849,8 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            summary_notice_shown: false,
+            summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -856,6 +899,7 @@ impl App {
             no_server: None,
             history: false,
             download: None,
+            newer_checked: false,
         }
     }
 
@@ -1187,10 +1231,12 @@ impl App {
 
     /// The kind of the active selection, for the statusline marker.
     pub fn copy_selection_kind(&self) -> Option<SelectionKind> {
-        let InputMode::Copy(state) = &self.input else {
-            return None;
+        let selection = match &self.input {
+            InputMode::Copy(state) => state.selection,
+            InputMode::ChatCopy(chat) => chat.state.selection,
+            _ => None,
         };
-        state.selection.map(|s| s.kind)
+        selection.map(|s| s.kind)
     }
 
     /// What the focused pane offers to copy mode.
@@ -1681,6 +1727,10 @@ impl App {
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
+            AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
+            AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
+            AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -1804,6 +1854,7 @@ impl App {
                 .with_download(self.download.clone())
                 .with_hf((self.hf_tokens)(), self.hf_account.clone())
                 .with_opener(self.opener)
+                .with_sandbox(self.jail.runs_commands())
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -1831,7 +1882,10 @@ impl App {
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
         let mut saved_over = None;
+        let mut stop_download = false;
         if let Some(menu) = self.menu.take() {
+            // The wizard goes with the menu: its download must not run on.
+            stop_download = menu.install_downloading();
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
@@ -1850,6 +1904,9 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
+        if stop_download {
+            effects.push(Effect::Install(InstallAsk::Cancel));
+        }
         // Last, so its notice is the one shown.
         if let Some((before, idle)) = saved_over {
             let now = self.ai.managed_options().idle();
@@ -1922,6 +1979,7 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
                 if let Some(menu) = self.menu.as_mut() {
@@ -1974,21 +2032,39 @@ impl App {
     }
 
     fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
-        let Some(menu) = self.menu.as_mut() else {
+        if self.menu.is_none() {
             return Vec::new();
+        }
+        // The menu footer says why; the notice keeps what it had.
+        let kept = self.notice.clone();
+        let effects = self.copy_to_clipboard(text);
+        let said = self.notice.clone().unwrap_or_default();
+        let Some(menu) = self.menu.as_mut() else {
+            return effects;
         };
+        if effects.is_empty() {
+            self.notice = kept;
+            menu.set_error("Too large to copy".to_string());
+        } else {
+            menu.set_copied(said);
+        }
+        effects
+    }
+
+    /// Puts `text` on the host clipboard (OSC 52) and says so in the notice:
+    /// `Copied N characters`, or `Selection too large to copy` and nothing
+    /// sent when it does not fit in one sequence.
+    pub(super) fn copy_to_clipboard(&mut self, text: &str) -> Vec<Effect> {
         match osc52(text) {
             Ok(sequence) => {
-                let said = match text.chars().count() {
+                self.notice = Some(match text.chars().count() {
                     1 => "Copied 1 character".to_string(),
                     n => format!("Copied {n} characters"),
-                };
-                menu.set_copied(said.clone());
-                self.notice = Some(said);
+                });
                 vec![Effect::SetClipboard(sequence)]
             }
             Err(TooLarge) => {
-                menu.set_error("Too large to copy".to_string());
+                self.notice = Some("Selection too large to copy".to_string());
                 Vec::new()
             }
         }
@@ -2380,6 +2456,10 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A compaction run is not a turn: the pane stays idle meanwhile.
+        if chat.is_compaction_turn(turn) {
+            return self.on_compaction(id, event);
+        }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
         // (a delta that ends the turn) count as `Error`.
@@ -2388,6 +2468,14 @@ impl App {
             _ => Ended::Error,
         };
         let tool = ToolEvent::of(&event);
+        // A llama-server that fails may be gone or restarted with another
+        // window: detect again, so the next turn is sized by what it says now.
+        let llamacpp_failed = live
+            && chat.stream_engine() == "llamacpp"
+            && matches!(
+                event,
+                StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
+            );
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -2398,6 +2486,12 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if finished && how == Ended::Done {
+            effects.extend(self.start_compaction(id));
+        }
+        if llamacpp_failed {
+            effects.extend(self.request_detection());
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -2508,6 +2602,7 @@ impl App {
             self.refit_review(id);
         }
         self.sync_copy();
+        self.sync_chat_copy();
         effects
     }
 
@@ -2626,31 +2721,21 @@ impl App {
             self.input = InputMode::Copy(state);
             return Vec::new();
         };
-        let pane = self.copy_pane_mut();
-        let text = join(&pane.read_lines(span));
+        let text = join(&self.copy_pane_mut().read_lines(span));
         if text.is_empty() {
             // An empty OSC 52 would clobber the clipboard.
             self.notice = Some("Nothing to copy".to_string());
             self.input = InputMode::Copy(state);
             return Vec::new();
         }
-        match osc52(&text) {
-            Ok(sequence) => {
-                pane.set_scrollback(0);
-                let count = text.chars().count();
-                self.notice = Some(match count {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                self.input = InputMode::Terminal;
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
-                self.notice = Some("Selection too large to copy".to_string());
-                self.input = InputMode::Copy(state);
-                Vec::new()
-            }
+        let effects = self.copy_to_clipboard(&text);
+        if effects.is_empty() {
+            self.input = InputMode::Copy(state);
+        } else {
+            self.copy_pane_mut().set_scrollback(0);
+            self.input = InputMode::Terminal;
         }
+        effects
     }
 
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
@@ -6888,6 +6973,7 @@ mod app_tests {
             engines: CATALOG
                 .iter()
                 .map(|e| crate::core::ai::EngineState {
+                    binary: None,
                     id: e.id,
                     status,
                     models: Vec::new(),
@@ -7027,6 +7113,7 @@ mod app_tests {
                 .map(|e| {
                     let (status, models) = engine(e.id);
                     EngineState {
+                        binary: None,
                         id: e.id,
                         status,
                         models: models.into_iter().map(str::to_owned).collect(),
@@ -7847,6 +7934,7 @@ mod app_tests {
 
     /// The review view of a proposed write batch.
     mod batch_review;
+    mod commit_review;
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
@@ -7888,6 +7976,9 @@ mod app_tests {
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
 
+    /// Rolling compaction of the history (chat-memory S3, S4, S8).
+    mod chat_compact;
+
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
 
@@ -7911,6 +8002,13 @@ mod app_tests {
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;
+
+    /// The llama-server install wizard of the llamacpp picker
+    /// (llama-server-install).
+    mod install;
+
+    /// The manage rows of llamacpp: remove and the newer build notice.
+    mod install_manage;
 
     /// The Feedback row of the Settings tab (config-menu).
     mod feedback;

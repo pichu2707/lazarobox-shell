@@ -25,6 +25,7 @@ fn cfg(task: Task, engine: Option<&str>, model: Option<&str>) -> AiConfig {
 
 fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -466,4 +467,50 @@ fn a_claude_with_a_jail_note_still_runs_bare() {
     claude.diagnostics.jail = Some("no Landlock".to_owned());
     let d = detected(vec![claude]);
     assert_eq!(availability(&c, Some(&d), JAIL), ready("claude", None));
+}
+
+#[test]
+fn another_task_resolves_its_own_engine_and_chat_is_unchanged() {
+    let mut c = cfg(Task::Chat, Some("ollama"), Some("llama3:8b"));
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("tiny".into()),
+        },
+    );
+    let d = detected(vec![state(
+        "ollama",
+        Status::Available,
+        &["llama3:8b", "tiny"],
+    )]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("tiny"))
+    );
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+}
+
+#[test]
+fn an_unassigned_task_inherits_general_and_a_missing_model_is_not_ready() {
+    let mut c = cfg(Task::General, Some("ollama"), Some("llama3:8b"));
+    let d = detected(vec![state("ollama", Status::Available, &["llama3:8b"])]);
+    assert_eq!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        ready("ollama", Some("llama3:8b"))
+    );
+    c.set(
+        Task::Summarize,
+        Assignment {
+            engine: Some("ollama".into()),
+            model: Some("gone".into()),
+        },
+    );
+    assert!(matches!(
+        availability_for(Task::Summarize, &c, Some(&d), JAIL),
+        Availability::ModelMissing { .. }
+    ));
 }

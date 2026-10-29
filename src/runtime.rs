@@ -35,6 +35,7 @@ pub mod gh;
 pub mod hf;
 pub mod jail;
 pub mod jobs;
+pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
@@ -45,6 +46,9 @@ pub mod prompts;
 #[cfg(test)]
 pub(crate) mod refused_port;
 mod run_check;
+/// The check's reasons that never count toward the pause, for the app tests.
+#[cfg(test)]
+pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
 pub mod tools;
 pub mod update;
 pub mod watch;
@@ -267,7 +271,15 @@ pub async fn run() -> io::Result<()> {
     let path = login_path
         .await
         .unwrap_or_else(|_| login_path::sanitize(&process_path));
-    let cli_env = chat::CliEnv::from_env(jail).with_path(path);
+    let cli_env = chat::CliEnv::from_env(jail);
+    // The owned llama.cpp install, last: a system `llama-server` wins. Its
+    // folder is looked at on each lookup, so an install or a remove needs
+    // only a forced detection, not a new `PATH`.
+    let path = crate::core::ai::install::with_owned_path(
+        &path,
+        cli_env.data.as_deref().and_then(std::path::Path::parent),
+    );
+    let cli_env = cli_env.with_path(path);
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
@@ -532,7 +544,7 @@ pub async fn run() -> io::Result<()> {
                 chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
                 chat_tx,
             )
-            .with_live(live)
+            .with_live(live.clone())
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
             // `<data>/run`. Without a private folder every turn runs as text.
             .with_tools(
@@ -559,8 +571,36 @@ pub async fn run() -> io::Result<()> {
             cli_env.path.clone(),
             hub_dir(),
             hf::token_env,
-            hub_tx,
-        ));
+            hub_tx.clone(),
+        ))
+        // The install wizard's steps: curl, gh and tar from the same PATH,
+        // into the owned folder under the data home. They answer on the
+        // Hub's channel.
+        .with_installer(
+            llama_install::installer::Installer::new(
+                cli_env.path.clone(),
+                cli_env
+                    .data
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf),
+                hub_tx,
+            )
+            // A remove stops the managed server first: it may run from the
+            // files that are about to go. It is not retired, so a later
+            // install makes the next turn start it again.
+            .with_stop(Arc::new({
+                let live = live.clone();
+                move || {
+                    let live = live.clone();
+                    Box::pin(async move {
+                        if let Some(managed) = live.managed() {
+                            managed.shutdown().await;
+                        }
+                    })
+                }
+            })),
+        );
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,
@@ -1156,6 +1196,9 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The llama-server install steps. `None` ignores `Effect::Install`
+    /// (unit tests).
+    installer: Option<llama_install::installer::Installer>,
 }
 
 impl Panes {
@@ -1188,6 +1231,7 @@ impl Panes {
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            installer: None,
         }
     }
 
@@ -1335,6 +1379,12 @@ impl Panes {
         self
     }
 
+    /// Sets what runs the install wizard's steps.
+    fn with_installer(mut self, installer: llama_install::installer::Installer) -> Self {
+        self.installer = Some(installer);
+        self
+    }
+
     /// Sets what `Effect::CheckUpdate` runs.
     fn with_update_checker(mut self, check: Box<dyn FnMut()>) -> Self {
         self.check_update = check;
@@ -1421,6 +1471,20 @@ impl Panes {
                 } => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.send(pane, turn, request);
+                    }
+                }
+                Effect::ChatCompact {
+                    pane,
+                    turn,
+                    request,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_background(pane, turn, request);
+                    }
+                }
+                Effect::ChatCompactCancel(pane) => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.cancel_background(pane);
                     }
                 }
                 Effect::ChatCancel(pane) => {
@@ -1515,11 +1579,14 @@ impl Panes {
                     target,
                     call,
                     command,
+                    scope,
                     ..
                 } => {
                     let cwd = self.handles.get(&target).and_then(|pty| pty.cwd());
                     match (cwd, self.run_checks.as_ref()) {
-                        (Some(cwd), Some(checks)) => checks.start(target, call, cwd, command),
+                        (Some(cwd), Some(checks)) => {
+                            checks.start(target, call, cwd, command, scope);
+                        }
                         _ => feedback.push(AppEvent::Run(
                             target,
                             RunEvent::Refused {
@@ -1620,6 +1687,12 @@ impl Panes {
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                }
+                // Returns at once: the step runs on its own task.
+                Effect::Install(ask) => {
+                    if let Some(installer) = self.installer.as_mut() {
+                        installer.ask(ask);
                     }
                 }
                 Effect::HfAccount(ask) => {
@@ -2735,6 +2808,45 @@ mod tests {
         assert_eq!(asked.load(Ordering::SeqCst), 1);
     }
 
+    // Design D9: an install step reaches the installer, whose reply comes
+    // back on the event channel under the same id.
+    #[tokio::test]
+    async fn an_install_effect_reaches_the_installer_and_its_reply_comes_back() {
+        use crate::core::ai::install::{Release, Variant};
+        use crate::core::ai::picker::InstallAsk;
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let (events, mut inbox) = mpsc::channel(4);
+        // No data folder: a download is refused before any network.
+        let installer =
+            llama_install::installer::Installer::new(std::ffi::OsString::new(), None, events);
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_installer(installer);
+        let release = Release {
+            tag: "b9000".to_owned(),
+            asset: "a.tar.gz".to_owned(),
+            size: 1,
+            sha256: "a".repeat(64),
+        };
+        let (outcome, _) = panes.apply(vec![
+            Effect::Install(InstallAsk::Download(3, release)),
+            // Without an installer the effect would be dropped silently.
+            Effect::Install(InstallAsk::Resolve(4, Variant::Cpu)),
+        ]);
+        assert_eq!(outcome, Outcome::Continue);
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(10), inbox.recv())
+                .await
+                .expect("a reply arrives");
+            let Some(AppEvent::InstallReply(id, Err(_))) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, [3, 4]);
+    }
+
     #[test]
     fn quit_effect_is_reported() {
         let (mut panes, _rx, _rec) = fake_panes(None);
@@ -3102,6 +3214,7 @@ mod tests {
             enabled: true,
             acknowledged: true,
             port: 9123,
+            save_summaries: false,
         };
         let (memory, starts, calls, mut rx) = recording_memory(config);
         let (panes, _rx, _rec) = fake_panes(None);
@@ -3142,6 +3255,7 @@ mod tests {
         panes.spawn_pane(first, &first_spec).unwrap();
         let found = Detection {
             engines: vec![EngineState {
+                binary: None,
                 id: "codex",
                 status: Status::Available,
                 models: vec!["default".to_string()],
@@ -3671,6 +3785,7 @@ mod tests {
             app_from_config(120, 30, Some(&config), None).with_env(Some("/bin/zsh"), None, work);
         app.update(AppEvent::EnginesDetected(Detection {
             engines: vec![EngineState {
+                binary: None,
                 id: "ollama",
                 status: Status::Available,
                 models: vec!["llama3:8b".to_owned()],
@@ -4271,6 +4386,8 @@ mod tests {
         use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
         let ask = ApprovalAsk::Read {
             path: String::new(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
+            cloud: true,
         };
         let waits = panes.chats.as_ref().unwrap().waits();
         waits
@@ -4340,12 +4457,21 @@ mod tests {
     }
 
     fn check_effect(target: u32, call: u64, command: &str) -> Effect {
+        check_effect_in(target, call, command, std::path::Path::new("/"))
+    }
+
+    /// The check of a local chat whose root is `root`.
+    fn check_effect_in(target: u32, call: u64, command: &str, root: &std::path::Path) -> Effect {
         Effect::CheckRun {
             chat: id(9),
             target: id(target),
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
             command: command.to_owned(),
+            scope: crate::app::RunScope {
+                root: root.to_path_buf(),
+                cloud: false,
+            },
         }
     }
 
@@ -4381,6 +4507,53 @@ mod tests {
                     call: CallId(7),
                     cwd: home.join("dev"),
                     cd_target: None,
+                }
+            ))
+        );
+    }
+
+    // L22: the chat's root travels with the effect: the same `ls` that runs
+    // in the root asks when the root is elsewhere.
+    #[tokio::test]
+    async fn a_check_run_judges_the_paths_against_the_root_of_the_chat() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::{approval::OUTSIDE_ROOT, engine::CallId};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        for sub in ["dev", "other"] {
+            std::fs::create_dir_all(home.join(sub)).unwrap();
+        }
+        let env = crate::runtime::tools::ToolEnv {
+            home: Some(home.clone().into()),
+            ..run_check::process_env()
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_run_checks(run_check::Checker::new(env, tx));
+        let pty = FakePty {
+            cwd: Some(home.join("dev")),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        panes.apply(vec![check_effect_in(1, 7, "ls", &home.join("dev"))]);
+        assert!(matches!(
+            rx.recv().await,
+            Some((
+                _,
+                RunEvent::Checked {
+                    call: CallId(7),
+                    ..
+                }
+            ))
+        ));
+        panes.apply(vec![check_effect_in(1, 8, "ls", &home.join("other"))]);
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                id(1),
+                RunEvent::Refused {
+                    call: CallId(8),
+                    reason: OUTSIDE_ROOT,
                 }
             ))
         );
@@ -4802,6 +4975,7 @@ mod tests {
             enabled: true,
             acknowledged: true,
             port: 9123,
+            save_summaries: false,
         };
         let (tx, _rx) = mpsc::channel(8);
         let memory = Memory::for_config(&config, move |port| engram::spawn(Slow, port, tx));
@@ -5001,6 +5175,7 @@ mod tests {
             enabled: true,
             acknowledged: true,
             port,
+            save_summaries: false,
         };
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&reads);

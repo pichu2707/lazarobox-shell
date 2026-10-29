@@ -116,6 +116,7 @@ fn bash_job(script: &str, args: &[&Path], tweak: impl FnOnce(&mut JailSpec)) -> 
     argv.extend(args.iter().map(|a| a.as_os_str().to_owned()));
     JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv,
@@ -513,6 +514,7 @@ fn a_program_beyond_rx_is_a_jail_error_through_the_helper() {
     let marker = w.rw.join("ran");
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec {
             rw: vec![w.rw.clone()],
             ..JailSpec::default()
@@ -631,6 +633,7 @@ fn node_starts_under_the_profile() {
     };
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec {
             rx: vec![node.clone()],
             ro_files: node_ro_files(),
@@ -661,6 +664,7 @@ fn run_shim(with_env_in_rx: bool) -> Option<(Output, World)> {
     }
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program: shim,
         argv: Vec::new(),

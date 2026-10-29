@@ -44,7 +44,7 @@ use crate::{
             engine::{ChatError, StreamEvent},
             stream::StreamDecoder,
         },
-        install::{CodexInstall, codex_home_of},
+        codex_install::{CodexInstall, codex_home_of},
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
             JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
@@ -960,6 +960,7 @@ fn jailed(
     };
     let args = JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv,

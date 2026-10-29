@@ -1,0 +1,28 @@
+---
+source: src/ui/components/menu.rs
+assertion_line: 1233
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
+│ Engine for general                                         │
+│ none                                                       │
+│ codex available · 0.153.4 · standalone ●                   │
+│ llamacpp not installed                                     │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
+└────────────────────────────────────────────────────────────┘

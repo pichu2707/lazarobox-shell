@@ -423,6 +423,7 @@ fn eviction_never_prompts_and_never_sends_a_delete() {
         conversation: 99,
         evicted: true,
         evicted_notes: 3,
+        created_at: 1_000,
     }));
     assert_eq!(memory_cmds(&effects), Vec::new());
     assert!(

@@ -6,9 +6,13 @@ pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
+pub mod integrity;
 pub mod open;
 pub mod pending;
+pub mod runner;
+pub mod scratch;
 pub mod search;
 pub mod stage;
 pub mod staged;
@@ -82,11 +86,22 @@ pub async fn run_over(
     limits: Limits,
     view: Option<staged::StagedView>,
 ) -> Result<String, Failure> {
+    run_within(call, env, limits, view, fs::Within::Anywhere).await
+}
+
+/// [`run_over`] with a `read_file` kept [`Within`](fs::Within) a bound.
+pub async fn run_within(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+    within: fs::Within,
+) -> Result<String, Failure> {
     let cancel = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancel.clone());
     let bound = limits.time + GRACE;
     let work = tokio::task::spawn_blocking(move || {
-        fs::execute_over(&call, &env, &limits, &cancel, view.as_ref())
+        fs::execute_within(&call, &env, &limits, &cancel, view.as_ref(), within)
     });
     let text = tokio::time::timeout(bound, work)
         .await

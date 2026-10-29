@@ -422,6 +422,18 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
                             ollama::tool_turn(&request, port, dispatch, &Timeouts::SERVER, &tx)
                                 .await
                         }
+                        (Adapter::Llamacpp, Tools::On { .. }, Some(dispatch)) => {
+                            let profile = ollama::Profile::OpenAi;
+                            ollama::tool_turn_with(
+                                profile,
+                                &request,
+                                port,
+                                dispatch,
+                                &Timeouts::SERVER,
+                                &tx,
+                            )
+                            .await
+                        }
                         _ => http_turn(wire, port, path, body, tx).await,
                     }
                 }
@@ -613,13 +625,14 @@ struct Tooling {
 /// Whether a turn's engine will get its tools wired (see [`wires_tools`]).
 pub type Wires = Arc<dyn Fn(&ChatRequest) -> bool + Send + Sync>;
 
-/// Whether the tools of `request` reach its engine: a server engine (Ollama)
-/// runs them in-process; a CLI only when it will run jailed. The user's
+/// Whether the tools of `request` reach its engine: a server engine (Ollama,
+/// llama.cpp) runs them in-process; a CLI only when it will run jailed. The user's
 /// servers are started only for such a turn: for a bare CLI the wiring is
 /// dropped, so a server would run, and be announced, for nothing.
+// The llamacpp arm is inert until `MCP_VERIFIED` lists it (PR3).
 pub fn wires_tools(cli: &CliEnv, request: &ChatRequest) -> bool {
     match adapter_for(&request.engine) {
-        Some(Adapter::Ollama) => true,
+        Some(Adapter::Ollama | Adapter::Llamacpp) => true,
         Some(adapter) => match adapter.build(request) {
             Invocation::Process(job) => cli::runs_jailed(cli, &job),
             Invocation::Http { .. } | Invocation::Refused(_) => false,
@@ -698,6 +711,33 @@ impl Chats {
             started: HashMap::new(),
         });
         self
+    }
+
+    /// Starts a background text-only run (a compaction) for `pane`. Unlike
+    /// [`Chats::send`] it is not a turn of the chat: it ends no wait, stops no
+    /// server and replaces no tool session, so a user's tool call or MCP
+    /// server of the pane survives it. A later `send` aborts it.
+    pub fn send_background(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+        self.turns.retain(|_, task| !task.is_finished());
+        if let Some(old) = self.turns.remove(&pane) {
+            old.abort();
+        }
+        let channel = mpsc::channel(TURN_CHANNEL);
+        let task = tokio::spawn(run_turn(
+            self.runner.clone(),
+            self.tx.clone(),
+            Turn {
+                pane,
+                turn,
+                waits: self.waits.clone(),
+                external: None,
+            },
+            request,
+            channel,
+            None,
+            None,
+        ));
+        self.turns.insert(pane, task);
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
@@ -790,7 +830,10 @@ impl Chats {
             allowed: Default::default(),
         };
         let dispatch = tooling.host.dispatch(scope);
-        if adapter_for(&request.engine) == Some(Adapter::Ollama) {
+        if matches!(
+            adapter_for(&request.engine),
+            Some(Adapter::Ollama | Adapter::Llamacpp)
+        ) {
             // The pane may have had a CLI session: it must not stay open.
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
@@ -921,6 +964,14 @@ impl Chats {
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.
+    /// Stops the background run of `pane` and nothing else (see
+    /// [`Chats::send_background`]).
+    pub fn cancel_background(&mut self, pane: PaneId) {
+        if let Some(task) = self.turns.remove(&pane) {
+            task.abort();
+        }
+    }
+
     pub fn cancel(&mut self, pane: PaneId) {
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();
@@ -954,6 +1005,8 @@ impl Chats {
 mod adapter_tests;
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod llamacpp_tests;
 mod ollama;
 #[cfg(test)]
 mod ollama_tests;

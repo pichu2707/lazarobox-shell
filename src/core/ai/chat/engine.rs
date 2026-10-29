@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use super::{
     adapters::{self, adapter_for},
     approval::ApprovalAsk,
+    budget,
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -159,6 +160,11 @@ pub enum Decision {
     Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
+    /// Allowed by the chat's approval mode, with no prompt: a read or a search
+    /// that `run` lets go (`approval::answers_itself`). Never the user's `y`:
+    /// it allows nothing else in the turn, and the host takes it only where
+    /// its own ask allowed it, keeping a read in the root as it opens the file.
+    Unprompted,
 }
 
 /// What a waiting call is finally told: the user's `Decision`, or, for a
@@ -273,6 +279,16 @@ pub fn availability(
     availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
+/// [`availability`] for the engine another task resolves to.
+pub fn availability_for(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+) -> Availability {
+    availability_of(task, cfg, detection, jail, GATED_OFF, &has_adapter)
+}
+
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
 const GATED_OFF: &[&str] = &[];
 
@@ -289,7 +305,18 @@ pub fn availability_with(
     gated_off: &[&str],
     adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
-    let (assignment, _) = cfg.resolve(Task::Chat);
+    availability_of(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
+}
+
+fn availability_of(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+    gated_off: &[&str],
+    adapter_exists: &dyn Fn(&str) -> bool,
+) -> Availability {
+    let (assignment, _) = cfg.resolve(task);
     let Some(engine) = assignment.engine else {
         return Availability::Unassigned;
     };
@@ -416,16 +443,26 @@ pub struct Context {
 /// starts on a user message, because chat APIs reject a leading assistant one;
 /// any assistant messages that would lead it count as omitted.
 pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
+    fit(history, max_chars, |m| m.content.chars().count())
+}
+
+/// [`build_context`] counting estimated tokens instead of characters.
+pub fn build_context_tokens(history: &[ChatMessage], max_tokens: usize) -> Context {
+    fit(history, max_tokens, |m| budget::estimate_tokens(&m.content))
+}
+
+/// The window of [`build_context`], with each message weighed by `cost`.
+fn fit(history: &[ChatMessage], max: usize, cost: impl Fn(&ChatMessage) -> usize) -> Context {
     let mut used = 0;
     let mut start = history.len();
     for (i, message) in history.iter().enumerate().rev() {
-        let chars = message.content.chars().count();
+        let size = cost(message);
         let newest = i + 1 == history.len();
-        let fits = history.len() - i <= MAX_HISTORY_MESSAGES && used + chars <= max_chars;
+        let fits = history.len() - i <= MAX_HISTORY_MESSAGES && used + size <= max;
         if !newest && !fits {
             break;
         }
-        used += chars;
+        used += size;
         start = i;
     }
     while start + 1 < history.len() && history[start].role == Role::Assistant {

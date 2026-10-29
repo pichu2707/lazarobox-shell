@@ -565,6 +565,7 @@ fn helper_args_round_trip() {
     let spec = jail_spec(&nvm_codex()).unwrap();
     let job = JailArgs {
         min_abi: Some(6),
+        arg0: None,
         spec,
         program: p("/home/u/.nvm/versions/node/v24.16.0/bin/node"),
         argv: args(&["codex.js", "--model", "-x; $(id)", "--"]),
@@ -575,6 +576,7 @@ fn helper_args_round_trip() {
 
     let bare = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec::default(),
         program: p("/bin/true"),
         argv: Vec::new(),
@@ -586,6 +588,7 @@ fn helper_args_round_trip() {
 fn helper_args_carry_the_write_exceptions_to_the_helper() {
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap(),
         program: p(STANDALONE),
         argv: Vec::new(),
@@ -621,6 +624,120 @@ fn helper_args_refuse_anything_unclear() {
     ] {
         assert!(parse_args(&bad).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn helper_args_carry_an_rwx_root_before_the_other_lists() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec: JailSpec {
+            rwx: paths(&["/home/u/proj"]),
+            rx: paths(&["/usr/bin"]),
+            ..JailSpec::default()
+        },
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_a_relative_rwx_root() {
+    let err = parse_args(&args(&["--rwx", "rel/path", "--", "/bin/x"])).unwrap_err();
+    assert_eq!(err, ArgError(ARG_RELATIVE_RULE));
+    assert!(parse_args(&args(&["--rwx", "--", "/bin/x"])).is_err());
+}
+
+#[test]
+fn helper_args_carry_the_toolchain_flags_and_leave_them_out_by_default() {
+    let spec = JailSpec {
+        rwx: paths(&["/home/u/proj"]),
+        rx: paths(&["/usr/bin"]),
+        net_bind: NetBind::Open,
+        rlimits: Rlimits::Toolchain,
+        ..JailSpec::default()
+    };
+    let job = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec,
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--net-bind",
+            "open",
+            "--rlimits",
+            "toolchain",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+
+    let plain = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec: JailSpec::default(),
+        program: p("/bin/true"),
+        argv: Vec::new(),
+    };
+    let text = plain.render();
+    assert!(!text.iter().any(|a| a == "--net-bind" || a == "--rlimits"));
+}
+
+#[test]
+fn helper_args_refuse_a_bad_toolchain_flag() {
+    for bad in [
+        args(&["--rwx", "rel/path", "--", "/bin/x"]),
+        args(&["--net-bind", "closed", "--", "/bin/x"]),
+        args(&["--net-bind", "--", "/bin/x"]),
+        args(&["--rlimits", "all", "--", "/bin/x"]),
+        args(&["--rlimits", "Toolchain", "--", "/bin/x"]),
+    ] {
+        assert!(parse_args(&bad).is_err(), "{bad:?}");
+    }
+    let err = parse_args(&args(&["--net-bind", "closed", "--", "/bin/x"])).unwrap_err();
+    assert!(ARG_REASONS.contains(&err.0), "{err:?}");
+}
+
+#[test]
+fn the_toolchain_limits_are_core_zero_file_4_gib_and_cpu_1200_seconds() {
+    assert_eq!(Rlimits::None.limits(), []);
+    assert_eq!(
+        Rlimits::Toolchain.limits(),
+        [
+            (Limit::Core, 0),
+            (Limit::FileSize, 4 << 30),
+            (Limit::CpuSeconds, 1200),
+        ]
+    );
 }
 
 // ---- the ELF loader ----
@@ -1431,7 +1548,13 @@ fn every_macos_jail_text_is_a_safe_helper_reason() {
 
 #[test]
 fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
-    let mut texts = vec![MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON];
+    let mut texts = vec![
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+        RLIMIT_REASON,
+    ];
     texts.extend(ARG_REASONS);
     for text in texts {
         assert_eq!(known_helper_reason(text), Some(text.to_owned()));
@@ -1781,6 +1904,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
     assert_eq!(
         spec,
         JailSpec {
+            rwx: Vec::new(),
             rx: paths(&[
                 "/home/u/.nvm/versions/node/v24.16.0/bin/node",
                 "/opt/lb/lib/ld-linux-x86-64.so.2",
@@ -1810,7 +1934,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
                 "/opt/lb/share/ca.pem",
             ]),
             rw_files: paths(&["/dev/null", "/run/user/1000/lazarobox/shim.sock"]),
-            rw_except: Vec::new(),
+            ..JailSpec::default()
         }
     );
 }
@@ -2437,6 +2561,15 @@ fn a_layout_outside_the_state_dir_gets_no_exception() {
     }
 }
 
+fn with_rwx(root: &[&str]) -> JailSpec {
+    JailSpec {
+        rx: paths(&["/usr/bin"]),
+        rw: paths(&["/run/lb/tmp"]),
+        rwx: paths(root),
+        ..JailSpec::default()
+    }
+}
+
 #[test]
 fn a_binary_in_the_state_dir_outside_packages_is_still_refused_on_macos() {
     let mut l = layout(Cli::Codex, "/Users/u/.codex/bin/codex", None);
@@ -2596,4 +2729,148 @@ fn a_helper_under_packages_does_not_open_the_exception_for_a_program_elsewhere()
     l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
     let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
     assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn one_rwx_root_passes_the_exec_check_on_linux() {
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &[]),
+        Ok(())
+    );
+    assert_eq!(with_rwx(&[]).check_exec(Os::Linux, &[]), Ok(()));
+}
+
+#[test]
+fn two_rwx_roots_are_refused() {
+    let spec = with_rwx(&["/home/u/a", "/home/u/b"]);
+    assert_eq!(spec.check_exec(Os::Linux, &[]), Err(ExecFault::ManyRwx(2)));
+}
+
+#[test]
+fn an_rwx_root_must_be_canonical_and_not_the_top() {
+    for bad in ["proj", "/home/u/../v", "/home/u/./p"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux, &[]),
+            Err(ExecFault::NotCanonical(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/"]).check_exec(Os::Linux, &[]),
+        Err(ExecFault::TooBroad(p("/")))
+    );
+}
+
+#[test]
+fn rwx_is_refused_on_macos_until_seatbelt_runs_toolchains() {
+    let spec = with_rwx(&["/Users/u/proj"]);
+    assert_eq!(spec.check_exec(Os::Macos, &[]), Err(ExecFault::Macos));
+    assert_eq!(with_rwx(&[]).check_exec(Os::Macos, &[]), Ok(()));
+}
+
+#[test]
+fn execute_is_only_ever_in_rx_or_the_rwx_root() {
+    let spec = with_rwx(&["/home/u/proj"]);
+    assert_eq!(spec.exec_paths(), paths(&["/usr/bin", "/home/u/proj"]));
+    assert!(!spec.exec_paths().contains(&p("/run/lb/tmp")));
+}
+
+#[test]
+fn retain_existing_covers_the_rwx_root() {
+    let spec =
+        with_rwx(&["/home/u/proj"]).retain_existing(|path| path != Path::new("/home/u/proj"));
+    assert!(spec.rwx.is_empty());
+    assert_eq!(spec.rx, paths(&["/usr/bin"]));
+}
+
+#[test]
+fn a_cli_spec_never_carries_rwx() {
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        let spec = jail_spec_for(os, &nvm_codex(), &identity).unwrap();
+        assert!(spec.rwx.is_empty(), "{os:?}");
+        assert_eq!(spec.check_exec(os, &[]), Ok(()));
+    }
+}
+
+#[test]
+fn an_rwx_root_that_is_a_broad_place_is_refused() {
+    let homes = [Path::new("/home/u")];
+    for bad in ["/home", "/usr", "/home/u", "/tmp", "/home/u/.ssh", "/etc"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux, &homes),
+            Err(ExecFault::TooBroad(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &homes),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_writable_path_next_to_an_execute_path_is_refused_on_linux_too() {
+    // R29: equal, under or over, for rx and for the rwx root alike.
+    for (rx, rw) in [
+        ("/usr/local", "/usr/local/cargo/registry"),
+        ("/usr/local/cargo/registry", "/usr/local"),
+        ("/home/u/go", "/home/u/go"),
+    ] {
+        let mut spec = with_rwx(&["/home/u/proj"]);
+        spec.rx = paths(&[rx]);
+        spec.rw = paths(&[rw]);
+        assert_eq!(
+            spec.check_exec(Os::Linux, &[]),
+            Err(ExecFault::WritableExec {
+                rx: p(rx),
+                rw: p(rw)
+            }),
+            "{rx} {rw}"
+        );
+    }
+    let mut spec = with_rwx(&["/home/u/proj"]);
+    spec.rw_files = paths(&["/home/u/proj/.cache/f"]);
+    assert!(matches!(
+        spec.check_exec(Os::Linux, &[]),
+        Err(ExecFault::WritableExec { .. })
+    ));
+}
+
+#[test]
+fn helper_args_carry_the_name_the_program_runs_as() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: Some(OsString::from("cargo")),
+        spec: JailSpec::default(),
+        program: p("/home/u/.rustup/toolchains/x/bin/rustup"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--arg0",
+            "cargo",
+            "--",
+            "/home/u/.rustup/toolchains/x/bin/rustup",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_an_arg0_that_is_a_path_or_empty() {
+    for bad in ["a/b", "/bin/cargo", "../x", "", "a\0b"] {
+        let given = vec![
+            OsString::from("--arg0"),
+            OsString::from(bad),
+            OsString::from("--"),
+            OsString::from("/bin/x"),
+        ];
+        let err = parse_args(&given).unwrap_err();
+        assert!(ARG_REASONS.contains(&err.0), "{bad:?}: {err:?}");
+    }
 }

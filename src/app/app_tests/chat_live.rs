@@ -71,6 +71,7 @@ pub(super) fn ollama() -> AiConfig {
 pub(super) fn detection(models: &[&str]) -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -804,6 +805,7 @@ fn a_resize_keeps_a_pinned_view_on_the_same_line() {
 fn detection_with(status: Status, models: &[&str]) -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -902,6 +904,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     let mut a = undetected_chat(assigned("opencode"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "opencode",
             status: Status::Available,
             models: vec![],
@@ -922,6 +925,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
 fn cli_detected(id: &'static str) -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id,
             status: Status::Available,
             models: vec![],

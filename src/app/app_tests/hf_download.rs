@@ -13,7 +13,7 @@ use crate::core::menu::Footer;
 
 const GB: u64 = 1_000_000_000;
 
-fn enter() -> AppEvent {
+pub(super) fn enter() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
 }
 
@@ -22,6 +22,7 @@ fn stopped_llamacpp() -> Detection {
         engines: CATALOG
             .iter()
             .map(|e| EngineState {
+                binary: None,
                 id: e.id,
                 status: if e.id == "llamacpp" {
                     Status::NotRunning
@@ -35,10 +36,13 @@ fn stopped_llamacpp() -> Detection {
             })
             .collect(),
         local_models: vec![PathBuf::from("/m/b.gguf")],
+        data_home: None,
+        vulkan_icd: false,
+        ..Default::default()
     }
 }
 
-fn cursor_label(a: &App) -> String {
+pub(super) fn cursor_label(a: &App) -> String {
     a.menu()
         .unwrap()
         .rows(&a.config)
@@ -54,7 +58,7 @@ fn cursor_label(a: &App) -> String {
         .expect("a picker cursor")
 }
 
-fn goto_pick(a: &mut App, label: &str) {
+pub(super) fn goto_pick(a: &mut App, label: &str) {
     for _ in 0..30 {
         if cursor_label(a) == label {
             return;
@@ -65,7 +69,7 @@ fn goto_pick(a: &mut App, label: &str) {
 }
 
 /// The menu open on the chat picker, at llamacpp's model level.
-fn at_llamacpp() -> App {
+pub(super) fn at_llamacpp() -> App {
     let mut a = app();
     a.engines = Some(stopped_llamacpp());
     a.menu = Some(MenuState::open(&a.config).with_ai(AiConfig::default(), a.engines.clone()));

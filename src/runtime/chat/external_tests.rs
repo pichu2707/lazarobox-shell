@@ -217,6 +217,20 @@ async fn a_turn_without_tools_after_one_with_them_stops_the_servers() {
 }
 
 #[tokio::test]
+async fn a_background_run_leaves_the_servers_of_the_pane_running() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let servers = vec![lab.fake.server("fs", "search", "found")];
+    let (mut chats, mut rx) = open_chats(&lab, recording(&seen), servers);
+    chats.send(pane(1), 1, turn_on("ollama"));
+    notices(&mut rx).await;
+    let pid = server_pid(&lab, "fs").expect("started");
+    chats.send_background(pane(1), 2, request(""));
+    notices(&mut rx).await;
+    assert!(!gone(pid).await, "a compaction run is not a tool-less turn");
+}
+
+#[tokio::test]
 async fn quitting_stops_every_server() {
     let lab = lab();
     let seen = Arc::new(Mutex::new(Vec::new()));

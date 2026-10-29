@@ -20,7 +20,7 @@ pub const REFUSED: &str = "path not available";
 /// place; a custom `$XDG_DATA_HOME` is not followed here, nor are
 /// `$XDG_CONFIG_HOME` or `$GH_CONFIG_DIR`. The list is best effort, not
 /// complete.
-const SECRET_DIRS: &[&str] = &[
+pub(crate) const SECRET_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".config/gh",
@@ -35,7 +35,7 @@ const SECRET_DIRS: &[&str] = &[
 /// File names that are never readable wherever they sit below `$HOME`:
 /// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
 /// project file may hold a token) and shell or REPL histories.
-const SECRET_FILES: &[&str] = &[
+pub(crate) const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
     ".pgpass",
@@ -366,6 +366,15 @@ impl SecretRoots {
     /// The runtime runs it on the real path of an opened file descriptor.
     pub fn judge_real(&self, real: &Path) -> bool {
         matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
+    }
+
+    /// Whether the real target of a secret root is `dir` or lies below it:
+    /// a walk of `dir` that never follows a link can still reach it. Pure.
+    pub fn holds_root(&self, dir: &Path) -> bool {
+        let fold = cfg!(target_os = "macos");
+        self.roots
+            .iter()
+            .any(|root| starts_with_folded(root, dir, fold))
     }
 
     fn under_root(&self, real: &Path) -> bool {
