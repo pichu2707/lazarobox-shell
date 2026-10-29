@@ -154,6 +154,7 @@ fn worker(id: u32, kind: Task, status: WorkerStatus, elapsed: Option<u64>) -> Wo
         status,
         elapsed: elapsed.map(Duration::from_secs),
         usage: None,
+        partial: false,
     }
 }
 

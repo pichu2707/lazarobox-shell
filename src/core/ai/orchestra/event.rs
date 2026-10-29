@@ -25,6 +25,9 @@ pub struct WorkerRow {
     /// What the worker's engine reported using; `None` when it reported
     /// nothing (shown as `n/a` once the worker is done).
     pub usage: Option<Usage>,
+    /// Some attempt of the worker ended without reporting: `usage` (cost
+    /// omitted) covers only the attempts that did.
+    pub partial: bool,
 }
 
 /// What the run manager tells the app.

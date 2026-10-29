@@ -416,6 +416,7 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             status,
             elapsed: None,
             usage: None,
+            partial: false,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));

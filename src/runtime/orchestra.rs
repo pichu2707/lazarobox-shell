@@ -655,6 +655,7 @@ impl RunManager {
             status,
             elapsed: result.map(|r| r.elapsed),
             usage: live.run.usage(id),
+            partial: live.run.usage_partial(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }

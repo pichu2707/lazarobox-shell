@@ -183,6 +183,9 @@ pub enum Entry {
 pub struct RunUsage {
     pub run: RunId,
     pub usage: Option<engine::Usage>,
+    /// The sum misses something: a worker still running or one that
+    /// reported nothing. The cost is then left out.
+    pub partial: bool,
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -515,12 +518,27 @@ impl ChatState {
         if !rows().any(|row| row.status == WorkerStatus::Done) {
             return;
         }
+        // A worker misses a report while it runs, or when it ended having
+        // reported nothing (a refused one never ran).
+        let partial = rows().any(|row| match row.status {
+            WorkerStatus::Queued | WorkerStatus::Running => true,
+            WorkerStatus::Refused => false,
+            _ => row.usage.is_none() || row.partial,
+        });
         let usage = rows()
             .filter_map(|row| row.usage)
-            .reduce(engine::Usage::plus);
+            .reduce(engine::Usage::plus)
+            .map(|sum| engine::Usage {
+                cost_micros: sum.cost_micros.filter(|_| !partial),
+                ..sum
+            });
         self.entries
             .retain(|e| !matches!(e, Entry::RunUsage(shown) if shown.run == run));
-        self.entries.push(Entry::RunUsage(RunUsage { run, usage }));
+        self.entries.push(Entry::RunUsage(RunUsage {
+            run,
+            usage,
+            partial,
+        }));
     }
 
     /// The context window of the engine the next turns go to, in tokens.

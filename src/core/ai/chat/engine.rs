@@ -204,11 +204,13 @@ pub fn locality(engine: &str) -> Option<Locality> {
         .map(|e| e.kind.locality())
 }
 
-/// A token count as a row shows it: exact below a thousand, then `12.3k`.
+/// A token count as a row shows it: exact below a thousand, then `12.3k`,
+/// then `1.2M` (where `k` would round up to `1000.0k`).
 fn tokens(count: u64) -> String {
     match count {
         0..1000 => count.to_string(),
-        _ => format!("{:.1}k", count as f64 / 1000.0),
+        1000..999_950 => format!("{:.1}k", count as f64 / 1000.0),
+        _ => format!("{:.1}M", count as f64 / 1e6),
     }
 }
 
@@ -243,7 +245,12 @@ impl Usage {
     pub fn label(&self) -> String {
         let mut text = format!("{} in {} out", tokens(self.input), tokens(self.output));
         if let Some(micros) = self.cost_micros {
-            text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+            // Under half a unit of the fourth decimal it would read `$0.0000`.
+            if (1..50).contains(&micros) {
+                text.push_str(" <$0.0001");
+            } else {
+                text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+            }
         }
         text
     }

@@ -29,6 +29,7 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         status,
         elapsed: elapsed.map(Duration::from_secs),
         usage: None,
+        partial: false,
     }
 }
 
@@ -226,11 +227,12 @@ fn the_run_row_shows_the_sum_and_skips_the_worker_without_usage() {
         run_rows(&state),
         [&RunUsage {
             run: RunId(7),
-            usage: Some(used(3_000, 300, Some(3000)))
+            usage: Some(used(3_000, 300, None)),
+            partial: true
         }]
     );
     assert!(
-        ends_with(&state, "run 3.0k in 300 out $0.0030"),
+        ends_with(&state, "run 3.0k in 300 out (partial)"),
         "{:?}",
         texts(&state)
     );
@@ -246,7 +248,8 @@ fn the_run_row_is_n_a_when_no_worker_reported_and_waits_for_a_finished_one() {
         run_rows(&state),
         [&RunUsage {
             run: RunId(7),
-            usage: None
+            usage: None,
+            partial: true
         }]
     );
     assert!(ends_with(&state, "run n/a"), "{:?}", texts(&state));
@@ -281,4 +284,80 @@ fn the_run_row_is_not_sent_as_history() {
     let mut state = answered();
     state.worker_row(row(1, WorkerStatus::Done, Some(3)));
     assert_eq!(state.messages().count(), 2);
+}
+
+#[test]
+fn a_partial_worker_row_says_so() {
+    let mut state = chat();
+    let mut partial = with_usage(row(1, WorkerStatus::Done, Some(2)), used(100, 5, None));
+    partial.partial = true;
+    state.worker_row(partial);
+    assert!(
+        ends_with(&state, "done 2.0s 100 in 5 out (partial)"),
+        "{:?}",
+        texts(&state)
+    );
+}
+
+#[test]
+fn a_complete_run_row_has_no_marker_and_keeps_the_cost() {
+    let mut state = chat();
+    state.worker_row(with_usage(
+        row(1, WorkerStatus::Done, Some(5)),
+        used(10, 1, Some(1000)),
+    ));
+    state.worker_row(with_usage(
+        row(2, WorkerStatus::Done, Some(6)),
+        used(10, 1, Some(2000)),
+    ));
+    assert!(
+        ends_with(&state, "run 20 in 2 out $0.0030"),
+        "{:?}",
+        texts(&state)
+    );
+}
+
+#[test]
+fn the_run_row_is_partial_while_a_worker_runs_or_after_one_failed_with_nothing() {
+    let mut state = chat();
+    state.worker_row(with_usage(
+        row(1, WorkerStatus::Done, Some(5)),
+        used(10, 1, Some(1000)),
+    ));
+    state.worker_row(row(2, WorkerStatus::Running, None));
+    assert!(
+        ends_with(&state, "run 10 in 1 out (partial)"),
+        "{:?}",
+        texts(&state)
+    );
+    state.worker_row(with_usage(
+        row(2, WorkerStatus::Done, Some(6)),
+        used(5, 1, Some(500)),
+    ));
+    assert!(
+        ends_with(&state, "run 15 in 2 out $0.0015"),
+        "{:?}",
+        texts(&state)
+    );
+    state.worker_row(row(3, WorkerStatus::Failed, Some(1)));
+    assert!(
+        ends_with(&state, "run 15 in 2 out (partial)"),
+        "{:?}",
+        texts(&state)
+    );
+}
+
+#[test]
+fn a_refused_worker_never_ran_so_it_does_not_make_the_run_partial() {
+    let mut state = chat();
+    state.worker_row(with_usage(
+        row(1, WorkerStatus::Done, Some(5)),
+        used(10, 1, Some(1000)),
+    ));
+    state.worker_row(row(2, WorkerStatus::Refused, None));
+    assert!(
+        ends_with(&state, "run 10 in 1 out $0.0010"),
+        "{:?}",
+        texts(&state)
+    );
 }

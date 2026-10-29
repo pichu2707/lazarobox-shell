@@ -109,6 +109,10 @@ struct Slot {
     /// What the worker's engine reported so far, over every attempt: a failed
     /// attempt spent its tokens too.
     usage: Option<Usage>,
+    /// The current attempt reported usage.
+    reported: bool,
+    /// Some attempt that ran ended without reporting: the sum is partial.
+    gap: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -164,15 +168,34 @@ impl Run {
     /// What worker `id` reported using so far; `None` when its engine
     /// reported nothing (shown as `n/a`, never as zero).
     pub fn usage(&self, id: WorkerId) -> Option<Usage> {
-        self.slot(id)?.usage
+        let slot = self.slot(id)?;
+        slot.usage.map(|usage| shown(usage, slot.gap))
+    }
+
+    /// Whether an attempt of worker `id` ended without reporting, so its
+    /// usage covers only the attempts that did. A refused worker never ran
+    /// and misses nothing; a cancelled or timed-out one does.
+    pub fn usage_partial(&self, id: WorkerId) -> bool {
+        self.slot(id).is_some_and(|slot| slot.gap)
     }
 
     /// The sum over the workers that reported; `None` when none did.
+    /// The cost is left out when the sum is partial.
     pub fn total_usage(&self) -> Option<Usage> {
-        self.slots
+        let sum = self
+            .slots
             .iter()
             .filter_map(|slot| slot.usage)
-            .reduce(Usage::plus)
+            .reduce(Usage::plus)?;
+        Some(shown(sum, self.total_partial()))
+    }
+
+    /// Whether the run's sum misses something: a worker that has not ended,
+    /// or a worker with an attempt that reported nothing.
+    pub fn total_partial(&self) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.gap || matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running)
+        })
     }
 
     pub fn result(&self, id: WorkerId) -> Option<&WorkerResult> {
@@ -216,6 +239,8 @@ impl Run {
             result: None,
             ledger: ChangeLedger::default(),
             usage: None,
+            reported: false,
+            gap: false,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal);
@@ -238,6 +263,7 @@ impl Run {
         }
         let slot = &mut self.slots[index(id)];
         slot.result = None;
+        slot.reported = false;
         slot.status = WorkerStatus::Queued;
         self.queue.push_back(id);
     }
@@ -284,6 +310,7 @@ impl Run {
         match event {
             WorkerEvent::Usage(report) => {
                 let slot = &mut self.slots[index(id)];
+                slot.reported = true;
                 slot.usage = Some(slot.usage.map_or(report, |sum| sum.plus(report)));
             }
             WorkerEvent::Done { text } => self.end(now, id, WorkerStatus::Done, &text, None),
@@ -447,6 +474,7 @@ impl Run {
         error: Option<(ErrorClass, String)>,
     ) {
         let slot = &mut self.slots[index(id)];
+        slot.gap |= status != WorkerStatus::Refused && !slot.reported;
         slot.status = status;
         slot.result = Some(WorkerResult {
             status,
@@ -457,7 +485,7 @@ impl Run {
             error: error.clone(),
             engine: slot.spec.engine.clone(),
             model: slot.spec.model.clone(),
-            usage: slot.usage,
+            usage: slot.usage.map(|usage| shown(usage, slot.gap)),
         });
         self.queue.retain(|queued| *queued != id);
         match (&self.state, error) {
@@ -494,6 +522,15 @@ impl Run {
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.
+/// A sum as it is shown: with no cost when it is partial, because a total
+/// that misses a report must not read as the whole.
+fn shown(usage: Usage, partial: bool) -> Usage {
+    Usage {
+        cost_micros: usage.cost_micros.filter(|_| !partial),
+        ..usage
+    }
+}
+
 fn index(id: WorkerId) -> usize {
     (id.0 as usize).wrapping_sub(1)
 }

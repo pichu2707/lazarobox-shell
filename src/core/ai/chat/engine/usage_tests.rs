@@ -37,3 +37,22 @@ fn dollars_become_millionths_and_nonsense_is_not_a_cost() {
         assert_eq!(Usage::micros(bad), None, "{bad}");
     }
 }
+
+#[test]
+fn big_counts_move_to_millions_instead_of_reading_1000_0k() {
+    let label = |n| used(n, 0, None).label();
+    assert_eq!(label(999), "999 in 0 out");
+    assert_eq!(label(999_949), "999.9k in 0 out");
+    assert_eq!(label(999_950), "1.0M in 0 out");
+    assert_eq!(label(12_345_678), "12.3M in 0 out");
+}
+
+#[test]
+fn a_cost_too_small_to_show_is_not_printed_as_zero() {
+    let label = |m| used(1, 1, Some(m)).label();
+    assert_eq!(label(0), "1 in 1 out $0.0000");
+    assert_eq!(label(1), "1 in 1 out <$0.0001");
+    assert_eq!(label(49), "1 in 1 out <$0.0001");
+    assert_eq!(label(50), "1 in 1 out $0.0001");
+    assert_eq!(label(4936), "1 in 1 out $0.0049");
+}

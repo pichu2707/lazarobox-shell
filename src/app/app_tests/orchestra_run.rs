@@ -50,6 +50,7 @@ fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         status,
         elapsed: None,
         usage: None,
+        partial: false,
     })
 }
 
