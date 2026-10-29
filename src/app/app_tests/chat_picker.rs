@@ -592,6 +592,25 @@ fn the_memory_and_tag_keys_wait_while_the_picker_is_open() {
 }
 
 #[test]
+fn run_in_pane_and_the_approval_switch_wait_while_the_folder_is_asked() {
+    for c in ['e', 'a'] {
+        let mut a = app();
+        broad(&mut a);
+        let mode = chat(&a, id2()).approval_mode();
+        let effects = prefix_key(&mut a, c);
+        assert!(effects.is_empty(), "{c}: {effects:?}");
+        assert_eq!(a.notice(), Some("Choose the chat folder first"), "{c}");
+        assert_eq!(chat(&a, id2()).approval_mode(), mode, "{c}");
+        assert!(chat(&a, id2()).approvals().pending().is_none(), "{c}");
+        // The same while the open probe is still pending.
+        let mut a = app();
+        open(&mut a);
+        prefix_key(&mut a, c);
+        assert_eq!(a.notice(), Some("Choose the chat folder first"), "{c}");
+    }
+}
+
+#[test]
 fn the_same_keys_wait_while_the_open_probe_is_pending() {
     for c in ['n', 'o', 's', 'T'] {
         let mut a = app();

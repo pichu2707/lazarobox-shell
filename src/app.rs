@@ -2320,7 +2320,9 @@ impl App {
                 PrefixAction::EditTags
                 | PrefixAction::SaveNote
                 | PrefixAction::Summarize
-                | PrefixAction::ToggleMemory,
+                | PrefixAction::ToggleMemory
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
