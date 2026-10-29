@@ -16,13 +16,14 @@ use super::review;
 use crate::{
     core::ai::{
         chat::{
-            ChatState,
+            BATCH_BADGE_ROOM, ChatState,
             approval::ApprovalPrompt,
             composer::ComposerPlan,
+            copy::ChatMarks,
             guidance::guidance_rows,
             review::Badge,
             transcript::{Line, LineKind},
-            wrap::wrap_words,
+            wrap::{text_width, wrap_words},
         },
         config::ApprovalMode,
     },
@@ -36,10 +37,6 @@ pub struct ChatLayout {
     pub composer: Rect,
 }
 
-/// Columns the batch badge leaves free on the right of the pane: the widest
-/// mode badge (` AUTO `) and a gap.
-const BATCH_BADGE_ROOM: usize = 8;
-
 /// A chat pane as a widget.
 pub struct ChatView<'a> {
     chat: &'a ChatState,
@@ -47,6 +44,7 @@ pub struct ChatView<'a> {
     guidance: Option<&'a str>,
     approval: Option<&'a ApprovalPrompt>,
     now: Option<Instant>,
+    copy: Option<ChatMarks>,
 }
 
 impl<'a> ChatView<'a> {
@@ -57,7 +55,15 @@ impl<'a> ChatView<'a> {
             guidance: None,
             approval: None,
             now: None,
+            copy: None,
         }
+    }
+
+    /// The chat COPY cursor and selection: the selection is drawn reversed
+    /// and the cursor goes on the transcript instead of the composer.
+    pub fn copy(mut self, marks: Option<ChatMarks>) -> Self {
+        self.copy = marks;
+        self
     }
 
     /// The clock the review view counts its delay by.
@@ -97,31 +103,12 @@ impl<'a> ChatView<'a> {
         let rows = ChatState::clamp_composer_rows(wanted, area.height);
         // The batch badge owns the top row of the conversation, so it never
         // hides a transcript line; a pane that cannot spare it draws none.
-        let top = u16::from(self.badge_row(area, area.height - rows));
+        let top = u16::from(self.chat.badge_row(area.width, area.height - rows));
         let layout = ChatLayout {
             transcript: Rect::new(area.x, area.y + top, area.width, area.height - rows - top),
             composer: Rect::new(area.x, area.y + area.height - rows, area.width, rows),
         };
         (layout, plan)
-    }
-
-    /// Whether the conversation reserves its top row for the batch badge: one
-    /// is worn, it fits, and the `transcript` rows keep at least one.
-    fn badge_row(&self, area: Rect, transcript: u16) -> bool {
-        let Some(badge) = self.chat.batch_badge() else {
-            return false;
-        };
-        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM);
-        transcript >= 2 && badge.text(room).is_some() && self.conversation_shown()
-    }
-
-    /// Whether the pane draws the conversation: no editor, list or review.
-    fn conversation_shown(&self) -> bool {
-        self.chat.tag_editor().is_none()
-            && self.chat.list().is_none()
-            && self.chat.note_editor().is_none()
-            && self.chat.summary_draft().is_none()
-            && self.chat.approvals().review().is_none()
     }
 
     /// Where the real cursor goes, or `None` when the composer cannot show it.
@@ -144,6 +131,9 @@ impl<'a> ChatView<'a> {
         }
         if self.chat.approvals().review().is_some() {
             return None;
+        }
+        if let Some(marks) = self.copy {
+            return self.copy_cursor(marks, area);
         }
         let (layout, plan) = self.plan(area);
         let composer = layout.composer;
@@ -171,6 +161,43 @@ impl<'a> ChatView<'a> {
             LineKind::Tool => base.fg(theme.info_blue),
             LineKind::ToolAlert => base.fg(theme.warning_orange),
             LineKind::Hint => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
+        }
+    }
+
+    /// The chat COPY cursor on the screen, `None` when its line is not drawn.
+    fn copy_cursor(&self, marks: ChatMarks, area: Rect) -> Option<Position> {
+        let transcript = self.transcript_rows(self.plan(area).0.transcript);
+        let lines = self.chat.lines(usize::from(transcript.width));
+        let height = usize::from(transcript.height);
+        let top = self.chat.scroll().top(lines.len(), height);
+        let row = u16::try_from(marks.cursor.line.checked_sub(top)?).ok()?;
+        (row < transcript.height && marks.cursor.col < transcript.width)
+            .then(|| Position::new(transcript.x + marks.cursor.col, transcript.y + row))
+    }
+
+    /// The rows of `transcript` the lines are drawn in: the guidance takes
+    /// the rows just above the composer.
+    fn transcript_rows(&self, mut transcript: Rect) -> Rect {
+        if let Some(text) = self.guidance
+            && !transcript.is_empty()
+        {
+            transcript.height -= guidance_rows(text, transcript.width, transcript.height);
+        }
+        transcript
+    }
+
+    /// Reverses the selected cells of transcript `line`, drawn at row `y`. A
+    /// wide character is selected from either of its cells.
+    fn draw_selection(&self, buf: &mut Buffer, rect: Rect, y: u16, line: usize) {
+        let Some(span) = self.copy.and_then(|marks| marks.span) else {
+            return;
+        };
+        for col in 0..rect.width {
+            let cell = &mut buf[(rect.x + col, y)];
+            let wide = text_width(cell.symbol()) > 1;
+            if span.contains(line, col) || (wide && span.contains(line, col + 1)) {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
         }
     }
 
@@ -203,7 +230,7 @@ impl Widget for ChatView<'_> {
         let reserved = self.plan(area).0.transcript.y > area.y;
         if let Some(badge) = self.chat.batch_badge()
             && !self.review_shown()
-            && (reserved || !self.conversation_shown())
+            && (reserved || !self.chat.conversation_shown())
         {
             self.draw_batch_badge(badge, area, buf);
         }
@@ -311,14 +338,11 @@ impl ChatView<'_> {
             Style::default().bg(self.theme.bg_panel),
         );
 
-        let mut transcript = layout.transcript;
-        if let Some(text) = self.guidance
-            && !transcript.is_empty()
-        {
+        let transcript = self.transcript_rows(layout.transcript);
+        if let Some(text) = self.guidance {
             // The guidance takes the rows just above the composer.
             let rows = wrap_words(text, usize::from(transcript.width));
-            let taken = guidance_rows(text, transcript.width, transcript.height);
-            transcript.height -= taken;
+            let taken = layout.transcript.height - transcript.height;
             let style = Style::default()
                 .fg(self.theme.warning_orange)
                 .bg(self.theme.bg_base);
@@ -334,6 +358,7 @@ impl ChatView<'_> {
             for (row, line) in lines.iter().skip(top).take(height).enumerate() {
                 let y = transcript.y + u16::try_from(row).unwrap_or(0);
                 self.draw_line(buf, transcript, y, line);
+                self.draw_selection(buf, transcript, y, top + row);
             }
         }
 

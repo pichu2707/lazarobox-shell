@@ -34,7 +34,7 @@ use crate::{
             allow::{self, Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
-            paths::{REFUSED, plain_relative},
+            paths::{REFUSED, SecretRoots, plain_relative},
             run::RunOutcome,
             stage::{StageKey, State},
         },
@@ -103,7 +103,7 @@ impl Exec {
         sinks.entry(key).or_default().clone()
     }
 
-    fn jailed(&self) -> bool {
+    pub(super) fn jailed(&self) -> bool {
         (self.jail)().runs_commands()
     }
 }
@@ -222,13 +222,12 @@ pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
     Some(clip(&line, EARLIER_COLUMNS))
 }
 
-/// The root policy of the chat origin, the folder, the allow-list and what the
-/// prompt can show. Reads the disk.
-fn inspect(
+/// The chat origin as a root a command or a git verb may use: absolute, a real
+/// folder, not HOME, and not a place the path guard refuses.
+pub(super) fn root_of(
     env: &ToolEnv,
     origin: &Path,
-    args: &Value,
-) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), &'static str> {
+) -> Result<(SecretRoots, PathBuf), &'static str> {
     let roots = load_roots(env).map_err(|_| REFUSED)?;
     let root = origin
         .is_absolute()
@@ -236,6 +235,17 @@ fn inspect(
         .flatten()
         .filter(|root| root.is_dir() && root != roots.home() && roots.judge_real(root))
         .ok_or(REFUSED)?;
+    Ok((roots, root))
+}
+
+/// The root policy of the chat origin, the folder, the allow-list and what the
+/// prompt can show. Reads the disk.
+fn inspect(
+    env: &ToolEnv,
+    origin: &Path,
+    args: &Value,
+) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), &'static str> {
+    let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
         None => PathBuf::new(),
@@ -266,7 +276,10 @@ fn inspect(
 }
 
 /// A command runs against the disk, never against staged content.
-fn staged(stages: &Arc<std::sync::Mutex<Stages>>, key: StageKey) -> Result<(), &'static str> {
+pub(super) fn staged(
+    stages: &Arc<std::sync::Mutex<Stages>>,
+    key: StageKey,
+) -> Result<(), &'static str> {
     match lock(stages).batch(key).map(|batch| batch.state()) {
         Some(State::Staging) => Err(PROPOSE_FIRST),
         Some(State::Proposed) => Err(IN_REVIEW),
@@ -463,7 +476,7 @@ fn failed(why: &str, changes: Vec<Change>, nonce: &str) -> (Outcome, ToolStatus,
 }
 
 /// Where the private temp folders go: `$XDG_RUNTIME_DIR`, else the data folder.
-fn scratch_parent(host: &ToolHost) -> Option<PathBuf> {
+pub(super) fn scratch_parent(host: &ToolHost) -> Option<PathBuf> {
     let absolute = |path: OsString| Some(PathBuf::from(path)).filter(|p| p.is_absolute());
     if let Some(runtime) = (host.exec.read)("XDG_RUNTIME_DIR").and_then(absolute) {
         return Some(runtime.join("lazarobox-run"));
