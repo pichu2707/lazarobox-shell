@@ -471,6 +471,26 @@ async fn the_cli_sees_neither_agents_nor_outer_claude_state_but_keeps_its_settin
     assert!(has("HOME") && has("PATH"));
 }
 
+// Spec (chat-engines, API keys survive the scrub): with the three provider
+// key variables set, the environment a turn (a chat's or a worker's: both
+// run through this command) is built with holds all three.
+#[tokio::test]
+async fn the_provider_api_keys_survive_the_scrub() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    let keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"];
+    for name in keys {
+        env.inject.push((name.into(), "k".into()));
+    }
+    run(env, request()).await;
+    let dump = lab.recorded("env");
+    for name in keys {
+        let line = format!("{name}=k");
+        assert!(dump.lines().any(|l| l == line), "{name} must be kept");
+    }
+}
+
 #[tokio::test]
 async fn a_failing_cli_shows_the_last_stderr_line_sanitized() {
     let lab = lab();
