@@ -230,21 +230,22 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
 | `t` | Edita las etiquetas de la fila |
 
-**Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide.
+**Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
 
 | Tecla | Acción |
 | :--- | :--- |
 | `↑` / `↓` | Mueve la fila marcada |
 | Texto, `Backspace`, `Delete`, `←` `→` `Home` `End`, `Ctrl+U` | Editan la ruta (`~` y `~/…` valen; una ruta relativa parte de la carpeta que el chat tendría) |
-| `Tab` | Completa nombres de carpeta |
+| `Tab` | Completa nombres de carpeta. No hace nada mientras aún se buscan candidatos (`still looking for folders`) ni si se mantiene pulsada |
 | `Enter` | Abre la ruta escrita (gana a la fila) o, con el campo vacío, la fila marcada |
 | `Esc` | Se queda con la carpeta actual y deja la línea `chat folder is …; use /cd <folder> to change it` |
 
-**Confirmación de `/cd`** (se pulsa tras `Enter` en un mensaje `/cd <carpeta>`; `Tab` en esa línea completa la ruta).
+**Confirmación de `/cd`** (aparece al enviar un mensaje `/cd <carpeta>`; `Tab` en esa línea completa la ruta).
 
 | Tecla | Acción |
 | :--- | :--- |
-| `y` | Cambia la carpeta (una `y` mantenida nunca confirma) |
+| `y` | Comprueba la carpeta una última vez y la cambia (aún puede rechazarla); una `y` mantenida nunca confirma |
+| Mientras se comprueba la carpeta (tras `y`) | Solo `Esc` cancela; las demás teclas no hacen nada |
 | `n` / `Esc` | Cancelan, también si se mantienen |
 | Cualquier otra | Cancela, salvo que sea una tecla mantenida (el `Enter` que envió `/cd` cuenta como mantenido 500 ms) |
 
@@ -558,7 +559,7 @@ Candidatos, cada uno una vez y nunca `$HOME`: la última carpeta usada (preselec
 
 Las teclas del selector están en [«Referencia de teclas por vista»](#referencia-de-teclas-por-vista).
 
-Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide. Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
+Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide (salvo `Esc`, que cancela). Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
 
 Avisos del selector y de `Tab` en `/cd`: `still looking for folders` (aún se buscan candidatos), `no matching folder` (nada completa) y `folder check is busy, try again` (una comprobación anterior sigue en el disco). Si la carpeta que eliges está ocupada por otra acción, el selector se queda abierto con el motivo.
 
