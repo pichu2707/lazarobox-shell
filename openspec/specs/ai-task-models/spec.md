@@ -123,15 +123,22 @@ For the server engines (`ollama`, `lmstudio`, `llamacpp`, `vllm`) the model list
 - THEN no row has `✓`, `llama3:8b` is shown muted, `●` and not selectable with no `download required` mark, a muted row `engine not detected` is present, and no curated rows are listed
 
 ### Requirement: Curated Ollama catalog
-The code MUST ship a static catalog of well-known Ollama model tags, between 8 and 12 entries, with unique non-empty names. Only Ollama has a curated catalog (lmstudio, llamacpp and vllm have none). The catalog MUST be informational: it is never fetched, never refreshed from any network, and the source and the user documentation MUST say it may be stale. lazarobox MUST NOT download, pull or install any model, and MUST NOT send any request other than the localhost detection requests and the loopback chat requests of chat-engines (sent only when the user sends a chat message). No chat request MUST ever ask a server to download a model.
+The code MUST ship a static catalog of well-known Ollama model tags, between 8 and 12 entries, with unique non-empty names. Only Ollama has a curated catalog (lmstudio, llamacpp and vllm have none). The catalog MUST be informational: it is never fetched and never refreshed from any network, and the source and the user documentation MUST say it may be stale. It is also the fallback list of the Ollama download flow when the library page cannot be read. lazarobox MUST NOT pull or install any model through a server, except the one `POST /api/pull` of ollama-download, sent after the user confirms it. No chat request MUST ever ask a server to download a model. The only requests lazarobox sends are:
+- the localhost detection requests;
+- the loopback chat requests of chat-engines, sent only when the user sends a chat message;
+- the update check of the updates feature;
+- the Hugging Face requests of model-download, sent only while the user is in its download flow;
+- the ollama.com and registry.ollama.ai requests and the loopback pull of ollama-download, sent only while the user is in its download flow.
+
+A model is downloaded only by those two flows, after the user confirms it.
 
 #### Scenario: Catalog integrity [auto]
 - GIVEN the curated Ollama catalog
 - WHEN it is validated
 - THEN it has between 8 and 12 entries, all unique and non-empty
 
-#### Scenario: No download path [auto]
-- GIVEN a download-required model
+#### Scenario: No download path outside the flows [auto]
+- GIVEN a download-required model row
 - WHEN the cursor is on it and every key is pressed
 - THEN no request, command or effect is produced and the assignment is unchanged
 
@@ -143,7 +150,7 @@ The code MUST ship a static catalog of well-known Ollama model tags, between 8 a
 #### Scenario: Docs say stale [manual]
 - GIVEN the README
 - WHEN it is read
-- THEN it states that the Ollama catalog is informational, may be out of date, and that nothing is downloaded by lazarobox
+- THEN it states that the Ollama catalog is informational and may be out of date, and that a model is downloaded only from the Hugging Face or the Ollama flow, after the user confirms it
 
 ### Requirement: Model marks on task rows
 Where a task row shows an assigned model of an available server engine, a model not among the detected models MUST carry the suffix ` · download required`; a detected model carries no suffix on the row (`✓` is a picker mark). An assigned engine that is not available (status known) MUST carry the suffix ` (not detected)` after the engine id, and then no model mark is applied. While no detection result exists yet, no suffix or mark is applied. CLI assignments never get a model mark.

@@ -1,8 +1,18 @@
 # Releasing
 
-Versioning follows [SemVer](https://semver.org). While the crate is below 1.0:
-bump the **minor** version for each feature milestone and the **patch** version
-for fixes. The changelog follows [Keep a Changelog](https://keepachangelog.com)
+Versioning follows [SemVer](https://semver.org). From 1.0 on:
+
+- **major**: a breaking change to `config.toml` (keys or values), to the
+  `chat.db` format (a build that can no longer open an older file), to the
+  public CLI flags and subcommands, or to the prefix key and key bindings;
+- **minor**: new features, and new config keys or values;
+- **patch**: fixes only.
+
+The internal `__*` subcommands, log text and UI layout are outside that rule
+(see "Estabilidad y compatibilidad (1.0)" in the README). Below 1.0, a minor
+bump marked a feature milestone and a patch bump a fix.
+
+The changelog follows [Keep a Changelog](https://keepachangelog.com)
 and is generated from Conventional Commits with
 [git-cliff](https://git-cliff.org) (`cliff.toml`).
 
@@ -22,6 +32,15 @@ and is generated from Conventional Commits with
 6. Check the package: `cargo publish --dry-run`.
 7. Publish (run by the maintainer): `cargo publish`.
 8. Push the commit and the tag: `git push && git push origin vX.Y.Z`.
+
+## Before 1.0.0
+
+1. Publish `1.0.0-rc.1` to crates.io (same steps as above; cargo does not
+   install a pre-release unless asked, so it does not reach `cargo install`
+   users by default).
+2. Use it daily on Linux for a few days and fix what turns up (each fix is a new
+   `rc.N`).
+3. Publish `1.0.0` from the last good release candidate.
 
 ## Notes
 

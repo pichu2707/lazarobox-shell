@@ -44,6 +44,7 @@ use crate::{
             engine::{ChatError, StreamEvent},
             stream::StreamDecoder,
         },
+        codex_install::{CodexInstall, codex_home_of},
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
             JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
@@ -863,28 +864,74 @@ fn jail_plan(
     Ok((layout, spec))
 }
 
-/// Why the CLI at `binary` would run without its jail here, in a few words:
-/// the system cannot jail, or its layout is refused. `None` when it can be
-/// jailed (or cannot be told). Nothing is started.
-pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
-    jail_note_on(Os::CURRENT, env, cli, binary)
+/// Why the CLI at `binary` would run without its jail here, in a few words
+/// and in full: the system cannot jail, or its layout is refused. `None` when
+/// it can be jailed (or cannot be told). Nothing is started.
+pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<JailNote> {
+    jail_note_with(Os::CURRENT, env, cli, binary)
+}
+
+/// A jail reason: `short` fits a menu row, `full` says what to do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct JailNote {
+    pub short: String,
+    pub full: String,
+}
+
+/// The short form of [`jail_note_with`].
+#[cfg(test)]
+fn jail_note_on(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    jail_note_with(os, env, cli, binary).map(|n| n.short)
 }
 
 /// [`jail_note`] for a given system.
-fn jail_note_on(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+fn jail_note_with(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<JailNote> {
     if jail_policy(cli, os) == JailPolicy::Exempt {
-        return Some("uses macOS Keychain".to_owned());
+        let why = "uses macOS Keychain".to_owned();
+        return Some(JailNote {
+            short: why.clone(),
+            full: why,
+        });
     }
     let home = env.home.as_deref();
     if let JailSupport::Unavailable(off) = env.jail {
         return Some(match cli {
-            Cli::Claude => JailRefusal::Unsupported(off).short(home),
-            Cli::Codex | Cli::Gemini => off.short_required(),
+            Cli::Claude => JailNote {
+                short: JailRefusal::Unsupported(off).short(home),
+                full: off.text(),
+            },
+            Cli::Codex | Cli::Gemini => JailNote {
+                short: off.short_required(),
+                full: off.text_required(),
+            },
         });
     }
     let dirs = Dirs::create(env.data.as_deref()?).ok()?;
     let refusal = jail_plan(env, cli, binary, &dirs, None).err()?;
-    Some(refusal.short(home))
+    let install = layout_of(env, cli, binary);
+    Some(JailNote {
+        short: refusal.short(home),
+        full: refusal.hint_for(home, install),
+    })
+}
+
+/// `(cli, layout)` for a message about codex's refused layout; `None` for
+/// another CLI or a layout with no name. Only the text of a message reads it.
+fn layout_of(env: &CliEnv, cli: Cli, binary: &Path) -> Option<(&'static str, &'static str)> {
+    (cli == Cli::Codex)
+        .then(|| codex_install(env, binary))
+        .flatten()
+        .and_then(CodexInstall::label)
+        .map(|label| ("codex", label))
+}
+
+/// How the codex at `binary` is installed, from its real path and the real
+/// `$CODEX_HOME` (else `~/.codex`). For messages only.
+pub(crate) fn codex_install(env: &CliEnv, binary: &Path) -> Option<CodexInstall> {
+    let real = resolve(binary)?;
+    let state = codex_home_of(env.codex_home.as_deref(), env.home.as_deref())?;
+    let state = resolve(&state).unwrap_or(state);
+    Some(CodexInstall::detect(&real, &state))
 }
 
 /// The helper command line that runs `job` jailed, or why the layout cannot
@@ -1253,7 +1300,10 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             // Layered: the flags alone are text-only, so a layout the jail
             // refuses runs bare. Required: no jail, no process.
             if job.jail == JailPolicy::Required {
-                return Err(refused(&why));
+                let layout = layout_of(env, job.cli, &binary);
+                return Err(StreamEvent::Error(ChatError::Jail(
+                    why.hint_for(home, layout),
+                )));
             }
             why.hint(home)
         }
@@ -1283,11 +1333,30 @@ pub(crate) async fn run_listing(
     limit: Duration,
     cap: usize,
 ) -> Result<Vec<u8>, String> {
+    run_codex(env, &["debug", "models"], limit, cap).await
+}
+
+/// `codex --version` the same way: its binary may sit in the writable state
+/// folder (the standalone install), so it never runs outside the jail.
+pub(crate) async fn run_version(
+    env: &CliEnv,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
+    run_codex(env, &["--version"], limit, cap).await
+}
+
+async fn run_codex(
+    env: &CliEnv,
+    args: &[&str],
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
     let job = Job {
         wire: Wire::CodexJsonl,
         binary: "codex",
         cli: Cli::Codex,
-        args: vec!["debug".to_owned(), "models".to_owned()],
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
         stdin: Vec::new(),
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
