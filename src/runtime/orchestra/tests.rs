@@ -206,6 +206,10 @@ struct Lab {
     /// The orchestrator turn's channel: worker tool rows would land here.
     turn: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
     home: tempfile::TempDir,
+    /// The name HOME is reached by: `home` itself, or a link to it.
+    via: PathBuf,
+    /// Holds the link of `via`, when there is one.
+    _link_dir: Option<tempfile::TempDir>,
 }
 
 fn lab(script: Script) -> Lab {
@@ -214,15 +218,29 @@ fn lab(script: Script) -> Lab {
 
 fn lab_with(script: Script, build: impl FnOnce(RunManager, &Path) -> RunManager) -> Lab {
     let home = tempfile::tempdir().unwrap();
+    let via = home.path().to_path_buf();
+    lab_over(script, home, via, None, build)
+}
+
+/// A lab whose HOME is the folder `home`, reached by the name `via`.
+fn lab_over(
+    script: Script,
+    home: tempfile::TempDir,
+    via: PathBuf,
+    link_dir: Option<tempfile::TempDir>,
+    build: impl FnOnce(RunManager, &Path) -> RunManager,
+) -> Lab {
     let (runner, seen) = fake(script);
     let (tx, events) = mpsc::unbounded_channel();
-    let manager = Arc::new(build(RunManager::new(runner, None, tx), home.path()));
+    let manager = Arc::new(build(RunManager::new(runner, None, tx), &via));
     Lab {
         manager,
         seen,
         events,
         turn: mpsc::channel(TURN_CHANNEL),
         home,
+        via,
+        _link_dir: link_dir,
     }
 }
 
@@ -241,7 +259,7 @@ impl Lab {
     fn scope(&self, roster: Roster, roots: &[&str]) -> OrchScope {
         OrchScope {
             roster,
-            origin: self.home.path().to_path_buf(),
+            origin: self.via.clone(),
             roots: roots.iter().map(|r| (*r).to_owned()).collect(),
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
             profile: Profile::Programmer,
@@ -1651,9 +1669,25 @@ fn writing_lab(script: Script) -> Lab {
     lab
 }
 
+/// [`writing_lab`] whose HOME is reached through a symlink, as `/var` is
+/// `/private/var` on macOS, or a home kept on another volume: the host, the
+/// origin and the roots all use the link, the disk is the real folder.
+#[cfg(target_os = "linux")]
+fn linked_writing_lab(script: Script) -> Lab {
+    let home = tempfile::tempdir().unwrap();
+    let link_dir = tempfile::tempdir().unwrap();
+    let via = link_dir.path().join("home-link");
+    std::os::unix::fs::symlink(home.path(), &via).unwrap();
+    std::fs::create_dir_all(home.path().join("dev/app")).unwrap();
+    lab_over(script, home, via, Some(link_dir), |m, home| RunManager {
+        scratch: |_| false,
+        ..tooled(m, home)
+    })
+}
+
 impl Lab {
     fn app(&self) -> PathBuf {
-        self.home.path().join("dev/app")
+        self.via.join("dev/app")
     }
 
     fn start_writing(&self, waits: &Arc<Waits>, deadline: Duration) -> OrchHandle {
@@ -1745,6 +1779,9 @@ async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
 // Spec (agent-orchestrator, Files changed listed [S7]): a `code` worker that
 // staged two files is collected with both listed with their sizes, and
 // neither is on disk: nothing was approved.
+// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
+// write is refused as `path not available` by design.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn collect_lists_both_staged_files_and_neither_is_on_disk() {
     let lab = writing_lab(Script::Held("staged both"));
@@ -1784,6 +1821,9 @@ async fn collect_lists_both_staged_files_and_neither_is_on_disk() {
 // worker; nothing is on disk while it waits. The approval mode's answer
 // (`run` included) never approves it; only the user's `y` writes it, and
 // `collect` then lists it applied.
+// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
+// write is refused as `path not available` by design.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_code_workers_batch_waits_for_the_users_review() {
     for answer in [Decision::Unprompted, Decision::Sent] {
@@ -1844,10 +1884,34 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
     }
 }
 
+// A HOME reached through a link (macOS `/var` is `/private/var`) is still the
+// same folder: a `code` worker's write inside the scope is staged.
+// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
+// write is refused as `path not available` by design.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_write_is_staged_when_home_is_reached_through_a_link() {
+    let lab = linked_writing_lab(Script::Held("staged"));
+    let handle = lab.start_writing(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    let reply = exchange(&mut client, call).await;
+    assert!(reply_text(&reply).starts_with("staged a.txt"), "{reply}");
+    assert!(!lab.home.path().join("dev/app/a.txt").exists());
+}
+
 // Spec (agent-orchestrator, Worker toolsets [S7]): the review time counts
 // against the worker's deadline. A worker that times out while its batch
 // waits for the user leaves the batch as an orphan the user can still
 // review; nothing is written.
+// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
+// write is refused as `path not available` by design.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     let lab = writing_lab(Script::Hang);
