@@ -1,11 +1,13 @@
 //! The run of an orchestrating pane as the app sees it (agent-orchestrator
 //! D1, D5): the run manager's events, the failure alert and its keys, and
-//! the run's lifetime. State asserts only; the alert is drawn in S1e-2.
+//! the run's lifetime; the alert is drawn above the composer.
 
 use super::chat_live::{
     ask, chat_id, chat_of, code, composer, ctrl, delta, finish, plain, ready_app, repeat, type_text,
 };
+use super::orchestra_notice::NOTICE;
 use super::orchestra_send::{orch_ai, orch_app_with, toggle};
+use super::orchestra_toggle::screen;
 use super::*;
 use crate::app::orchestra::OrchHint;
 use crate::core::ai::{
@@ -291,4 +293,57 @@ fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
         .map(|m| m.content.as_str())
         .collect();
     assert_eq!(sent, ["plan it", "all done", "next"]);
+}
+
+/// What the alert of `alerted` says.
+const ALERT: &str = "run paused: worker review codex>gpt-5 failed: \
+     409 conflict: session busy \u{b7} r retry \u{b7} c/Esc cancel";
+
+// chat-pane / Alert content (S1 part; the class and the change options are
+// S2): the pane says the run is paused, names the worker, shows the error as
+// it came and the keys that answer it.
+#[test]
+fn the_alert_is_drawn_with_the_worker_the_raw_error_and_its_keys() {
+    let (mut a, turn) = alerted();
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(ALERT));
+    insta::assert_snapshot!("orch_alert_on_screen", screen(&a));
+    // Shown while the orchestrator still streams, and through other rows.
+    a.update(delta(turn, "waiting for you"));
+    a.update(event(row(RUN, 2, WorkerStatus::Running)));
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(ALERT));
+    a.update(key('r'));
+    assert_eq!(a.chat_guidance(chat_id()), None, "answered");
+}
+
+// The alert shows the status the worker ended with, and a line break in the
+// error does not break the row.
+#[test]
+fn the_alert_names_how_the_worker_ended_on_one_paragraph() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::TimedOut)));
+    a.update(event(halted(RUN, "no answer\nin 600 s")));
+    assert_eq!(
+        a.chat_guidance(chat_id()).as_deref(),
+        Some(
+            "run paused: worker review codex>gpt-5 timed_out: no answer in 600 s \
+             \u{b7} r retry \u{b7} c/Esc cancel"
+        )
+    );
+}
+
+// With the notice still up, both are shown, in the order their keys answer:
+// nothing that a key would answer is hidden.
+#[test]
+fn the_notice_and_the_alert_are_shown_together() {
+    let mut ai = orch_ai();
+    ai.orchestrator.acknowledged = false;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    ask(&mut a, "plan it");
+    a.update(event(row(RUN, 1, WorkerStatus::Failed)));
+    a.update(event(halted(RUN, "409 conflict: session busy")));
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        Some(format!("{NOTICE} | {ALERT}"))
+    );
 }

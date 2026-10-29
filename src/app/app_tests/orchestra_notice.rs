@@ -1,9 +1,11 @@
 //! The one-time provider notice of an orchestrating pane (agent-orchestrator
 //! D12): shown when a run starts, never blocking it; Enter accepts and
-//! saves, Esc dismisses, only with an empty composer. State asserts only.
+//! saves, Esc dismisses, only with an empty composer; drawn above the
+//! composer like the `engram serve` offer.
 
 use super::chat_live::{ask, chat_id, chat_of, composer, finish, plain, repeat, type_text};
 use super::orchestra_send::{orch_ai, orch_app, orch_app_with, toggle};
+use super::orchestra_toggle::screen;
 use super::*;
 use crate::core::config::ConfigEdit;
 
@@ -163,4 +165,22 @@ fn a_failed_notice_save_leaves_it_unaccepted_and_says_why() {
     assert_eq!(a.notice(), Some("save failed: disk full"));
     assert!(orchestrates(&next_run(&mut a)));
     assert!(a.orch_notice(chat_id()));
+}
+
+/// What the notice says, with the keys that answer it.
+pub(super) const NOTICE: &str = "Providers recommend API keys for automation; \
+     consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
+
+// The notice view: drawn above the composer with its keys, Enter and Esc
+// only (`y` is typed), and gone once answered.
+#[test]
+fn the_notice_is_drawn_above_the_composer_with_its_keys() {
+    let mut a = noticed();
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(NOTICE));
+    let shown = screen(&a);
+    assert!(shown.contains("Enter accept \u{b7} Esc dismiss"), "{shown}");
+    assert!(!shown.contains("y accept"), "{shown}");
+    insta::assert_snapshot!("orch_notice_on_screen", shown);
+    a.update(plain(KeyCode::Esc));
+    assert_eq!(a.chat_guidance(chat_id()), None);
 }

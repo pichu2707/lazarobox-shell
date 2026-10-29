@@ -303,8 +303,13 @@ impl App {
     /// cannot be used. `None` while it is ready or the pane is busy.
     pub fn chat_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
-        if let Some(prompt) = self.server_offer_prompt(id) {
-            return Some(prompt);
+        // Everything a key would answer is on screen, in the order the keys
+        // answer: the `engram serve` offer, then the run's notice and alert,
+        // whatever the phase.
+        match (self.server_offer_prompt(id), self.orch_guidance(id)) {
+            (Some(offer), Some(orch)) => return Some(format!("{offer} | {orch}")),
+            (Some(text), None) | (None, Some(text)) => return Some(text),
+            (None, None) => {}
         }
         if chat.phase() != Phase::Idle {
             return None;
