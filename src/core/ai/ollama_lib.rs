@@ -65,6 +65,31 @@ pub struct Manifest {
     pub licenses: Vec<String>,
 }
 
+/// A pull the user confirmed: `model:tag`, from the Ollama library.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Pull {
+    pub model: String,
+    pub tag: String,
+    /// The bytes of its manifest's layers, when known.
+    pub size: Option<u64>,
+    /// What the Confirm screen showed as its license.
+    pub license: String,
+}
+
+impl Pull {
+    /// `model:tag`, as Ollama names it.
+    pub fn name(&self) -> String {
+        format!("{}:{}", self.model, self.tag)
+    }
+
+    /// The body of the pull request: `{"model":"<model>:<tag>","stream":true}`.
+    pub fn body(&self) -> Vec<u8> {
+        serde_json::json!({ "model": self.name(), "stream": true })
+            .to_string()
+            .into_bytes()
+    }
+}
+
 /// The cards of the library page, in page order. A card whose name is not
 /// safe to send is skipped.
 pub fn parse_library(html: &str) -> Vec<Card> {
