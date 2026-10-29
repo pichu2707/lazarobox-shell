@@ -10,7 +10,6 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     ffi::OsString,
-    fs::FileType,
     io::Read,
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -29,7 +28,8 @@ use crate::{
             tools::{
                 Call, Lines,
                 paths::{
-                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config,
+                    real_target, resolve,
                 },
             },
         },
@@ -37,7 +37,10 @@ use crate::{
     },
     runtime::{
         chat_store::resolve_path,
-        tools::open::{fd_path, open_beneath},
+        tools::{
+            open::{fd_path, open_beneath},
+            staged::{MARKER, StagedView, plain},
+        },
     },
 };
 
@@ -183,6 +186,39 @@ thread_local! {
     static OPEN_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
+/// A test's way to change the disk at the last moment before a read: a hook
+/// runs once, just before the next `read_file` against its origin judges its
+/// path, on whatever thread the read runs.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Mutex, PoisonError},
+    };
+
+    type Hook = Box<dyn FnOnce() + Send>;
+
+    static BEFORE_READ: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+    /// Runs `hook` once, before the next read whose origin is `origin`.
+    pub(crate) fn before_read(origin: &Path, hook: impl FnOnce() + Send + 'static) {
+        let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+        hooks.push((origin.to_path_buf(), Box::new(hook)));
+    }
+
+    pub(super) fn fire(origin: &Path) {
+        let ready: Vec<Hook> = {
+            let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+            let (ready, kept) = std::mem::take(&mut *hooks)
+                .into_iter()
+                .partition(|(at, _)| at == origin);
+            *hooks = kept;
+            ready.into_iter().map(|(_, hook)| hook).collect()
+        };
+        ready.into_iter().for_each(|hook| hook());
+    }
+}
+
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
@@ -196,22 +232,71 @@ pub fn execute_with(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
+    execute_over(call, env, limits, cancel, None)
+}
+
+/// [`execute_with`] that also shows the staged changes in `view` (marked as
+/// pending). With `None` it is exactly [`execute_with`]. With a view, text
+/// that comes from the disk can no longer forge the marker.
+pub fn execute_over(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+) -> Result<String, Failure> {
+    execute_within(call, env, limits, cancel, view, Within::Anywhere)
+}
+
+/// Where a `read_file` may lead. The other tools keep their own bounds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Within {
+    /// Anywhere the path guard allows.
+    Anywhere,
+    /// Only inside the real root of the chat (`ToolEnv::origin`), judged on
+    /// the path the read opens: a read the approval mode let go because it
+    /// stayed in the root.
+    Root,
+}
+
+/// [`execute_over`] with a `read_file` kept [`Within`] a bound.
+pub fn execute_within(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+    within: Within,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
-        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
-        Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
+        Call::ReadFile { path, lines } => {
+            read_file(&roots, env, path, *lines, limits, view, within)
+        }
+        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
+        Call::FindDir { query } => find_dir(&roots, &budget, query, limits).map(plain),
         // Whether `grep` may run is decided before this, by `ask_for`; `glob`
         // names files only and needs no approval.
         Call::Glob { pattern, dir } => {
-            super::search::glob(pattern, dir.as_deref(), env, limits, cancel)
+            super::search::glob_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
         Call::Grep { pattern, dir } => {
-            super::search::grep(pattern, dir.as_deref(), env, limits, cancel)
+            super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
         // A user tool runs on its own server, never here.
-        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
+        Call::RunInPane { .. }
+        | Call::External { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::RunCommand { .. }
+        | Call::GitStatus
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        | Call::GitAdd { .. }
+        | Call::GitCommit { .. }
+        | Call::ProposeBatch => Err(Failure::NotReadTool),
     }
 }
 
@@ -248,10 +333,15 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     let rel = real
         .strip_prefix(roots.home())
         .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
-        // No safe open on this platform: the tool cannot work at all.
-        std::io::ErrorKind::Unsupported => Failure::Unreadable,
-        _ => Failure::Refused,
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        // No safe open on this platform: the tool cannot work at all. An OS
+        // error of that kind is about the file (macOS opens a socket with
+        // `EOPNOTSUPP`), so it is refused like any other.
+        if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+            Failure::Unreadable
+        } else {
+            Failure::Refused
+        }
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
@@ -259,18 +349,44 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     }
 }
 
+/// Reads a file. Kept [`Within::Root`], the path is judged in the same step
+/// as the open: the open follows no link in any component and the descriptor
+/// is proved to be the real path that was judged inside the root, so a link
+/// swapped in at any moment cannot lead the read outside it.
 fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
     path: &str,
     window: Option<Lines>,
     limits: &Limits,
+    view: Option<&StagedView>,
+    within: Within,
 ) -> Result<String, Failure> {
+    let root = match within {
+        Within::Anywhere => None,
+        Within::Root => Some(env.origin.canonicalize().map_err(|_| Failure::Refused)?),
+    };
+    let inside = |real: &Path| root.as_ref().is_none_or(|root| real.starts_with(root));
+    // A staged text goes through the same cut, clean and redaction as a file.
+    // It is in memory, so judging where it would be written is enough.
+    let staged = view.and_then(|v| v.file(roots, &env.origin, path));
+    if let Some(text) = staged.filter(|_| {
+        root.is_none() || real_target(roots, &env.origin, path).is_some_and(|real| inside(&real))
+    }) {
+        let bytes = text.as_bytes().to_vec();
+        let body = match window {
+            Some(window) => window_text(bytes, window, limits),
+            None => head_text(bytes, limits),
+        }?;
+        return Ok(format!("{MARKER}\n{body}"));
+    }
+    #[cfg(test)]
+    hooks::fire(&env.origin);
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
     // Judged on the real path, so a link to it is refused too.
-    if is_git_config(&real) {
+    if is_git_config(&real) || !inside(&real) {
         return Err(Failure::Refused);
     }
     let file = std::fs::File::from(open_checked(roots, &real, false)?);
@@ -288,6 +404,7 @@ fn read_file(
         Some(window) => read_window(file, window, limits),
         None => read_head(file, limits),
     }
+    .map(plain)
 }
 
 /// The start of an opened file, as far as the read cap allows.
@@ -299,6 +416,12 @@ fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
     file.take(window as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
+    head_text(bytes, limits)
+}
+
+/// The start of `bytes` (a file, or a staged text) as far as the cap allows.
+fn head_text(mut bytes: Vec<u8>, limits: &Limits) -> Result<String, Failure> {
+    let window = limits.read_bytes + REDACT_MARGIN;
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
@@ -363,6 +486,11 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
     file.take(PAGE_SCAN as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
+    window_text(bytes, window, limits)
+}
+
+/// [`read_window`] over the bytes themselves.
+fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<String, Failure> {
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
@@ -413,16 +541,42 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
     Ok(out)
 }
 
+/// What a directory entry is, as far as the tools care. A symlink is its own
+/// kind: it is reported as such, never followed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Kind {
+    Dir,
+    File,
+    Link,
+    Other,
+    /// The type could not be told (macOS `DT_UNKNOWN` and a failed `fstatat`):
+    /// never shown, never entered.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Unknown,
+}
+
+impl Kind {
+    pub(super) fn is_dir(self) -> bool {
+        self == Kind::Dir
+    }
+    pub(super) fn is_file(self) -> bool {
+        self == Kind::File
+    }
+    pub(super) fn is_symlink(self) -> bool {
+        self == Kind::Link
+    }
+}
+
 /// The entries of an open directory, at most `max` of them, and whether more
-/// were left. Read through `/proc/self/fd`, so it is the opened directory and
-/// not a path that is listed. A symlink is reported as such, never followed.
+/// were left. Read through the descriptor itself (see `read_dir_fd`), so it is
+/// the opened directory and not a path that is listed. A symlink is reported as
+/// such, never followed.
 pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
-) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
-    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-        .map_err(|_| Failure::Unreadable)?;
+) -> Result<(Vec<(OsString, Kind)>, bool), Failure> {
+    let dir = read_dir_fd(fd).map_err(|_| Failure::Unreadable)?;
     let mut out = Vec::new();
     for entry in dir {
         if out.len() == max || budget.spent() {
@@ -430,13 +584,129 @@ pub(super) fn entries(
         }
         #[cfg(test)]
         std::thread::sleep(budget.entry_delay);
-        let entry = entry.map_err(|_| Failure::Unreadable)?;
-        out.push((
-            entry.file_name(),
-            entry.file_type().map_err(|_| Failure::Unreadable)?,
-        ));
+        out.push(entry.map_err(|_| Failure::Unreadable)?);
     }
     Ok((out, false))
+}
+
+/// Linux: the descriptor is listed through `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
+    Ok(dir.map(|entry| {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let kind = if kind.is_dir() {
+            Kind::Dir
+        } else if kind.is_file() {
+            Kind::File
+        } else if kind.is_symlink() {
+            Kind::Link
+        } else {
+            Kind::Other
+        };
+        Ok((entry.file_name(), kind))
+    }))
+}
+
+/// macOS: `fdopendir` on a duplicate of the descriptor. Written without a macOS
+/// compiler at hand: keep it small.
+#[cfg(target_os = "macos")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+    struct Dir(*mut libc::DIR);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `fdopendir` and is closed once, here.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+    impl Iterator for Dir {
+        type Item = std::io::Result<(OsString, Kind)>;
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                // SAFETY: `readdir` returns NULL at the end or on an error, told
+                // apart by `errno`; the entry is read before the next call.
+                let entry = unsafe {
+                    *libc::__error() = 0;
+                    libc::readdir(self.0)
+                };
+                if entry.is_null() {
+                    // SAFETY: `__error` points at this thread's `errno`.
+                    return match unsafe { *libc::__error() } {
+                        0 => None,
+                        errno => Some(Err(std::io::Error::from_raw_os_error(errno))),
+                    };
+                }
+                // SAFETY: a non-NULL entry has a NUL-terminated `d_name`.
+                let (name, d_type) = unsafe {
+                    let entry = &*entry;
+                    (
+                        CStr::from_ptr(entry.d_name.as_ptr()).to_bytes(),
+                        entry.d_type,
+                    )
+                };
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                let kind = match d_type {
+                    libc::DT_DIR => Kind::Dir,
+                    libc::DT_REG => Kind::File,
+                    libc::DT_LNK => Kind::Link,
+                    // SAFETY: `self.0` is the open stream.
+                    libc::DT_UNKNOWN => kind_at(unsafe { libc::dirfd(self.0) }, name),
+                    _ => Kind::Other,
+                };
+                return Some(Ok((OsStr::from_bytes(name).to_os_string(), kind)));
+            }
+        }
+    }
+
+    // SAFETY: `fcntl` takes no pointer here; a failed duplicate is -1. The
+    // duplicate keeps close-on-exec, which a plain `dup` would drop.
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: on success `fdopendir` owns `copy`; on failure it is still ours.
+    let dir = unsafe { libc::fdopendir(copy) };
+    if dir.is_null() {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: `copy` is a descriptor this function owns.
+        unsafe { libc::close(copy) };
+        return Err(error);
+    }
+    // The duplicate shares its offset with `fd`: start from the top.
+    // SAFETY: `dir` is a valid open stream.
+    unsafe { libc::rewinddir(dir) };
+    Ok(Dir(dir))
+}
+
+/// The kind of `name` in the folder `dirfd`, from `fstatat` without following a
+/// link. Any failure is `Unknown`, which `visible` hides.
+#[cfg(any(target_os = "macos", test))]
+fn kind_at(dirfd: i32, name: &[u8]) -> Kind {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return Kind::Unknown;
+    };
+    // SAFETY: `stat` is plain data; `fstatat` fills it when it returns 0.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is NUL-terminated and `st` is a valid out pointer.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    if rc != 0 {
+        return Kind::Unknown;
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => Kind::Dir,
+        libc::S_IFREG => Kind::File,
+        libc::S_IFLNK => Kind::Link,
+        _ => Kind::Other,
+    }
 }
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
@@ -446,9 +716,9 @@ pub(super) fn visible(
     budget: &Budget,
     dir: &Path,
     name: &OsStr,
-    kind: FileType,
+    kind: Kind,
 ) -> bool {
-    if is_excluded_name(&name.to_string_lossy()) {
+    if kind == Kind::Unknown || is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
     let full = dir.join(name);
@@ -486,14 +756,24 @@ fn list_dir(
     env: &ToolEnv,
     path: &str,
     limits: &Limits,
+    view: Option<&StagedView>,
 ) -> Result<String, Failure> {
-    let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
-        return Err(Failure::Refused);
+    // A folder only the batch makes (no disk yet) has no real path to resolve.
+    let virtual_dir = view.and_then(|v| v.dir(roots, &env.origin, path));
+    let (real, fd) = match (resolve(roots, &env.origin, path), virtual_dir) {
+        (PathVerdict::Allowed(real), _) => {
+            let fd = open_checked(roots, &real, true)?;
+            (real, Some(fd))
+        }
+        (_, Some(real)) => (real, None),
+        _ => return Err(Failure::Refused),
     };
-    let fd = open_checked(roots, &real, true)?;
-    let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
+    let (found, scan_cut) = match &fd {
+        Some(fd) => entries(fd, limits.visited, budget)?,
+        None => (Vec::new(), false),
+    };
     let mut omitted = false;
-    let mut shown: Vec<(String, char)> = found
+    let mut shown: Vec<(String, char, bool)> = found
         .iter()
         .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
         .filter(|(name, _)| {
@@ -511,15 +791,34 @@ fn list_dir(
             } else {
                 '?'
             };
-            (one_line(name), tag)
+            (plain(one_line(name)), tag, false)
         })
         .collect();
+    // Names the batch adds. One already on disk keeps its row: only its
+    // content is staged.
+    for (name, is_dir) in view.map(|v| v.children(&real)).unwrap_or_default() {
+        let known = found.iter().any(|(n, _)| *n == name);
+        if known {
+            continue;
+        }
+        let hidden = is_excluded_name(&name.to_string_lossy())
+            || !roots.judge_real(&real.join(&name))
+            || redaction_changes(&name);
+        if hidden {
+            omitted = true;
+            continue;
+        }
+        shown.push((one_line(&name), if is_dir { 'd' } else { 'f' }, true));
+    }
     shown.sort();
     let cut = scan_cut || shown.len() > limits.list_entries;
     shown.truncate(limits.list_entries);
     let mut lines: Vec<String> = shown
         .into_iter()
-        .map(|(name, tag)| format!("{tag} {name}"))
+        .map(|(name, tag, pending)| match pending {
+            true => format!("{tag} {name} {MARKER}"),
+            false => format!("{tag} {name}"),
+        })
         .collect();
     if lines.is_empty() && !cut && !omitted {
         lines.push("(empty)".into());
@@ -622,10 +921,10 @@ fn find_dir(
     Ok(out)
 }
 
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// Needs the file tools: they open files below HOME without a link, Linux and macOS.
 // `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -977,6 +1276,33 @@ mod tests {
         assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
     }
 
+    // A read kept within the root is judged on the file it opens: a link in
+    // the root that leads out of it, or a path that climbs out, reads nothing.
+    #[test]
+    fn a_read_kept_within_the_root_refuses_what_leads_out_of_it() {
+        let f = fixture();
+        let mut e = env(&f.home);
+        e.origin = f.home.join("dev/app");
+        fs::write(f.home.join("dev/other.txt"), "other").unwrap();
+        symlink(
+            f.home.join("dev/other.txt"),
+            f.home.join("dev/app/link.txt"),
+        )
+        .unwrap();
+        let read_in = |path: &str, within| {
+            let call = Call::ReadFile {
+                path: path.into(),
+                lines: None,
+            };
+            let cancel = AtomicBool::new(false);
+            execute_within(&call, &e, &Limits::default(), &cancel, None, within)
+        };
+        assert_eq!(read_in("link.txt", Within::Anywhere).unwrap(), "other");
+        assert_eq!(read_in("link.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("../other.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("main.rs", Within::Root).unwrap(), "fn main() {}\n");
+    }
+
     #[test]
     fn a_hard_link_to_a_secret_is_refused() {
         let f = fixture();
@@ -1064,6 +1390,33 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_unknown_kind_is_never_visible() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        let cancel = AtomicBool::new(false);
+        let budget = Budget::new(&Limits::default(), &cancel);
+        let dir = f.home.join("dev/app");
+        let name = OsStr::new("main.rs");
+        assert!(visible(&roots, &budget, &dir, name, Kind::File));
+        assert!(visible(&roots, &budget, &dir, name, Kind::Other));
+        assert!(!visible(&roots, &budget, &dir, name, Kind::Unknown));
+    }
+
+    #[test]
+    fn kind_at_tells_dir_file_and_link_without_following_and_fails_closed() {
+        let f = fixture();
+        let dir = std::fs::File::open(f.home.join("dev/app")).unwrap();
+        symlink("main.rs", f.home.join("dev/app/ln")).unwrap();
+        let at = |name: &str| kind_at(dir.as_raw_fd(), name.as_bytes());
+        assert_eq!(at("main.rs"), Kind::File);
+        assert_eq!(at("ln"), Kind::Link);
+        assert_eq!(at("missing"), Kind::Unknown);
+        assert_eq!(at("bad\0name"), Kind::Unknown);
+        let parent = std::fs::File::open(f.home.join("dev")).unwrap();
+        assert_eq!(kind_at(parent.as_raw_fd(), b"app"), Kind::Dir);
+    }
+
+    #[test]
     fn a_window_with_no_safe_cut_point_says_so_instead_of_an_empty_body() {
         let f = fixture();
         // Minified JSON or base64: one long line, no whitespace to cut at.
@@ -1145,6 +1498,22 @@ mod tests {
         symlink(f.home.join("nowhere"), dev.join("dangling")).unwrap();
         let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
         assert_eq!(out, "f a.txt\nd app\nl ok-link\nd zeta");
+    }
+
+    #[test]
+    fn a_leftover_write_temp_is_not_listed_found_or_read() {
+        let f = fixture();
+        let dev = f.home.join("dev");
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        fs::write(dev.join(temp), "half written").unwrap();
+        fs::create_dir_all(dev.join("lbx-keep")).unwrap();
+        fs::create_dir_all(dev.join("lbx-up/.lbx-fedcba9876543210fedcba9876543210.tmp")).unwrap();
+        let e = env(&f.home);
+        let listed = list(&e, "~/dev", &Limits::default()).unwrap();
+        assert_eq!(listed, "d app\nd lbx-keep\nd lbx-up");
+        assert_eq!(read(&e, &format!("~/dev/{temp}")), Err(Failure::Refused));
+        let found = find(&e, "lbx", &Limits::default()).unwrap();
+        assert_eq!(found, "~/dev/lbx-keep\n~/dev/lbx-up");
     }
 
     #[test]
@@ -1338,8 +1707,8 @@ mod tests {
 
     // Spec (agent-tools, approval model): `execute_with` never asks; asking is
     // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn grep_and_glob_are_dispatched_through_execute_with() {
         let f = fixture();

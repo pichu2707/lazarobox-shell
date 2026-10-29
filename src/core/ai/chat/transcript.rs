@@ -41,6 +41,24 @@ pub enum LineKind {
 pub struct Line {
     pub kind: LineKind,
     pub text: String,
+    /// Display columns of the drawing prefix that `text` starts with
+    /// (`› `, `┊ `, `• `, `» ` or the indent of a continuation row).
+    pub lead: usize,
+    /// How the row ends: a logical line ends here or it goes on in the next
+    /// row.
+    pub wrap: Wrap,
+}
+
+/// How a transcript row ends.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Wrap {
+    /// The logical line ends here.
+    #[default]
+    End,
+    /// Soft-wrapped: the next row goes on with nothing in between.
+    Cut,
+    /// Soft-wrapped at a space the wrap dropped.
+    Space,
 }
 
 /// The hint under the last shell block of the last answer (tools on).
@@ -105,6 +123,8 @@ fn blank() -> Line {
     Line {
         kind: LineKind::Blank,
         text: String::new(),
+        lead: 0,
+        wrap: Wrap::End,
     }
 }
 
@@ -235,23 +255,46 @@ fn push_wrapped(
         let logical = expand_tabs(logical);
         let logical = logical.as_str();
         // Code keeps every character where it is; prose breaks at spaces.
-        let rows = if kind == LineKind::Code {
+        let rows: Vec<(String, Wrap)> = if kind == LineKind::Code {
             let chars: Vec<char> = logical.chars().collect();
             wrap_ranges(&chars, room)
                 .into_iter()
-                .map(|range| chars[range].iter().collect())
+                .map(|range| (chars[range].iter().collect(), Wrap::Cut))
                 .collect()
         } else {
-            wrap_words(logical, room)
+            prose_rows(logical, room)
         };
-        for row in rows {
+        let last = rows.len().saturating_sub(1);
+        for (n, (row, wrap)) in rows.into_iter().enumerate() {
             out.push(Line {
                 kind,
                 text: format!("{lead}{row}"),
+                lead: text_width(lead),
+                wrap: if n == last { Wrap::End } else { wrap },
             });
             lead = rest;
         }
     }
+}
+
+/// `logical` wrapped at spaces, each row with how it goes on: `Space` where
+/// the wrap dropped spaces at the break, `Cut` where it broke a long word.
+fn prose_rows(logical: &str, room: usize) -> Vec<(String, Wrap)> {
+    let mut at = 0;
+    wrap_words(logical, room)
+        .into_iter()
+        .map(|row| {
+            // Rows are pieces of `logical` in order: only spaces lie between.
+            let start = logical[at..].find(row.as_str()).map_or(at, |i| at + i);
+            at = start + row.len();
+            let wrap = if logical[at..].starts_with(' ') {
+                Wrap::Space
+            } else {
+                Wrap::Cut
+            };
+            (row, wrap)
+        })
+        .collect()
 }
 
 /// Where the view is: glued to the bottom, or pinned to a line.
@@ -368,5 +411,10 @@ impl std::fmt::Debug for LineCache {
     }
 }
 
+mod read;
+pub use read::read_rows;
+
+#[cfg(test)]
+mod read_tests;
 #[cfg(test)]
 mod tests;

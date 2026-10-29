@@ -4,7 +4,7 @@ expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Settings │ AI                                              │
-│ Model for general (ollama) 1/18                            │
+│ Model for general (ollama) 1/19                            │
 │ model1:7b ✓ ●                                              │
 │ model2:7b ✓                                                │
 │ model3:7b ✓                                                │
@@ -15,6 +15,7 @@ expression: shown
 │ model8:7b ✓                                                │
 │ llama3.2:3b download required                              │
 │ llama3.1:8b download required                              │
+│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

@@ -71,6 +71,7 @@ pub(super) fn ollama() -> AiConfig {
 pub(super) fn detection(models: &[&str]) -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -804,6 +805,7 @@ fn a_resize_keeps_a_pinned_view_on_the_same_line() {
 fn detection_with(status: Status, models: &[&str]) -> Detection {
     Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
@@ -902,6 +904,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     let mut a = undetected_chat(assigned("opencode"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "opencode",
             status: Status::Available,
             models: vec![],
@@ -922,6 +925,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
 fn cli_detected(id: &'static str) -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id,
             status: Status::Available,
             models: vec![],
@@ -1112,6 +1116,7 @@ fn the_engine_is_checked_again_on_every_send() {
     ask(&mut a, "hello");
     assert_eq!(composer(&a), "hello");
     a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    let_go();
     let effects = a.update(plain(KeyCode::Enter));
     assert!(
         matches!(effects.as_slice(), [Effect::ChatSend { .. }]),
@@ -1331,6 +1336,47 @@ fn a_held_cancel_sent_as_presses_cancels_once() {
     assert_eq!(ask(&mut a, "two").len(), 1);
     let again = at(&mut a, 2000, plain(KeyCode::Esc));
     assert_eq!(again, vec![Effect::ChatCancel(chat_id())]);
+}
+
+#[test]
+fn a_held_esc_that_closed_the_menu_does_not_cancel_the_stream() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = ready_app().with_clock(mock_now);
+    assert_eq!(ask(&mut a, "one").len(), 1);
+    press(&mut a, "m");
+    at(&mut a, 0, plain(KeyCode::Esc));
+    assert_eq!(a.input(), InputMode::Terminal);
+    for ms in [100, 200] {
+        let effects = at(&mut a, ms, plain(KeyCode::Esc));
+        assert!(
+            !effects.contains(&Effect::ChatCancel(chat_id())),
+            "Esc at {ms}: {effects:?}"
+        );
+    }
+    assert!(chat_of(&a).stream_phase().is_some(), "still streaming");
+}
+
+#[test]
+fn held_text_and_editing_keys_still_repeat_in_the_composer() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = ready_app().with_clock(mock_now);
+    for ms in [0, 30, 60] {
+        at(&mut a, ms, key('l'));
+    }
+    assert_eq!(composer(&a), "lll");
+    for ms in [90, 120] {
+        at(&mut a, ms, plain(KeyCode::Backspace));
+    }
+    assert_eq!(composer(&a), "l");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_composer() {
+    let mut a = ready_app();
+    type_text(&mut a, "ab");
+    assert_eq!(a.update(ctrl('h')), vec![]);
+    assert_eq!(composer(&a), "a");
 }
 
 // PR12: the system prompt is prepared per conversation ------------------------

@@ -173,6 +173,7 @@ fn first_answer_streaming() -> App {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -502,7 +503,11 @@ fn quit_carries_the_summary_too() {
     press(&mut a, "q");
     assert_eq!(
         a.update(key('y')),
-        vec![end_summary("We chose Axum."), Effect::Quit]
+        vec![
+            end_summary("We chose Axum."),
+            Effect::BatchClose(id2()),
+            Effect::Quit
+        ]
     );
 }
 
@@ -514,7 +519,10 @@ fn a_discarded_summary_leaves_the_titles_at_close() {
     done(&mut a, turn);
     a.update(plain(KeyCode::Esc));
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end("Notes: A"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![end("Notes: A"), Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 // An approved summary in a chat with no note still reaches engram: the session
@@ -527,7 +535,14 @@ fn a_summary_alone_registers_a_session_and_ends_it_at_close() {
     // Approval sends nothing and takes no session yet.
     assert_eq!(chat_of(&a).session(), None);
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end_summary("alone"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![
+            end_summary("alone"),
+            Effect::BatchClose(id2()),
+            Effect::Quit
+        ]
+    );
 }
 
 #[test]
@@ -538,6 +553,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
         conversation: 7,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     }));
     approve_summary(&mut a, "alone");
     press(&mut a, "q");
@@ -551,6 +567,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
                 project: PROJECT.into(),
             }),
             end_summary("alone"),
+            Effect::BatchClose(chat_id()),
             Effect::Quit
         ]
     );
@@ -578,7 +595,14 @@ fn a_summary_alone_keeps_the_pair_the_store_holds() {
     }));
     approve_summary(&mut a, "alone");
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end_summary("alone"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![
+            end_summary("alone"),
+            Effect::BatchClose(id2()),
+            Effect::Quit
+        ]
+    );
 }
 
 #[test]
@@ -588,13 +612,19 @@ fn a_summary_alone_with_memory_off_before_close_sends_nothing() {
     approve_summary(&mut a, "alone");
     let mut a = a.with_ai(ai(false));
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 
     let mut b = ready_chat().with_session_ids(fixed_session);
     approve_summary(&mut b, "alone");
     b.memory_turned_off();
     press(&mut b, "q");
-    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        b.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
@@ -602,14 +632,20 @@ fn a_summary_alone_without_a_session_id_sends_nothing() {
     let mut a = ready_chat();
     approve_summary(&mut a, "alone");
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
 fn a_chat_with_notes_and_no_summary_never_asks_for_a_session_id() {
     let mut a = wrote_one().with_session_ids(|| panic!("no new id is needed"));
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end("Notes: A"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![end("Notes: A"), Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
@@ -675,6 +711,7 @@ fn the_reasoning_of_the_conversation_never_reaches_the_summary_request() {
 fn detected() -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -725,4 +762,12 @@ fn a_parked_send_goes_when_the_note_is_saved() {
     assert_eq!(sends(&effects), 0, "{effects:?}");
     let effects = a.update(saved_reply(&a, SESSION, 1, "chat/decision/a", "A"));
     assert_eq!(sends(&effects), 1, "{effects:?}");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_summary_draft() {
+    let mut a = with_draft("abc");
+    a.update(ctrl('h'));
+    assert_eq!(draft_text(&a), "ab");
 }

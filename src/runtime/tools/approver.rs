@@ -232,6 +232,8 @@ mod tests {
 
     const ASK: ApprovalAsk = ApprovalAsk::Read {
         path: String::new(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
     };
 
     fn pane(n: u32) -> PaneId {
@@ -239,7 +241,7 @@ mod tests {
     }
 
     fn read(path: &str) -> ApprovalAsk {
-        ApprovalAsk::Read { path: path.into() }
+        ApprovalAsk::read(path)
     }
 
     #[tokio::test]

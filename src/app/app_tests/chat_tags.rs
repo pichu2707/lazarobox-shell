@@ -265,6 +265,34 @@ fn prefix_t_capital_opens_the_editor_on_the_proposed_tag() {
     assert_eq!(a.input(), InputMode::Terminal);
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_tag_editor() {
+    let mut a = fresh();
+    press(&mut a, "T");
+    a.update(ctrl('h'));
+    assert_eq!(editor_text(&a), "pro");
+}
+
+// A held Enter saves once; the rest of the hold does not send the composer.
+#[test]
+fn a_held_enter_saves_the_tags_once_and_sends_nothing() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = fresh().with_clock(mock_now);
+    type_text(&mut a, "draft");
+    press(&mut a, "T");
+    at(&mut a, 0, plain(KeyCode::Enter));
+    assert!(!editor_open(&a));
+    for ms in [100, 200] {
+        let effects = at(&mut a, ms, plain(KeyCode::Enter));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+            "Enter at {ms}: {effects:?}"
+        );
+    }
+    assert_eq!(chat_of(&a).composer().text(), "draft");
+}
+
 #[test]
 fn prefix_lowercase_t_is_still_the_tab_group() {
     let mut a = fresh();

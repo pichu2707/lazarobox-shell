@@ -1,5 +1,8 @@
-// What only the Linux-only tests use is dead code elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// What only the tests that need the file tools use is dead code elsewhere.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 use std::{path::Path, sync::Mutex, time::Duration};
 
@@ -13,7 +16,10 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::{ai::chat::approval::ApprovalAsk, layout::PaneId},
+    core::{
+        ai::chat::approval::{ApprovalAsk, Reach},
+        layout::PaneId,
+    },
     runtime::mcp::Hub,
 };
 
@@ -116,7 +122,7 @@ pub(super) fn pair(events: &[StreamEvent]) -> (CallId, Option<ApprovalAsk>, Tool
 
 // Spec (agent-tools, tool events): a call, then exactly one result.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_free_call_announces_runs_and_reports_once() {
     let (_dir, home, host) = fixture();
@@ -139,7 +145,7 @@ async fn a_free_call_announces_runs_and_reports_once() {
 }
 
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn directory_tools_are_free_on_a_cloud_engine_and_a_local_read_too() {
     let (_dir, home, host) = fixture();
@@ -157,7 +163,7 @@ async fn directory_tools_are_free_on_a_cloud_engine_and_a_local_read_too() {
 }
 
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_local_read_returns_the_wrapped_text() {
     let (_dir, home, host) = fixture();
@@ -180,14 +186,16 @@ async fn a_cloud_read_asks_first_and_is_denied_without_an_approver() {
     assert_eq!(
         ask,
         Some(ApprovalAsk::Read {
-            path: home.join("note.txt").to_str().unwrap().into()
+            path: home.join("note.txt").to_str().unwrap().into(),
+            reach: Reach::Broad,
+            cloud: true,
         })
     );
     assert_eq!(status, ToolStatus::Denied);
 }
 
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_read_runs_only_after_the_answer_is_sent() {
     let (_dir, home, host) = fixture();
@@ -221,7 +229,7 @@ fn grep(pattern: &str, dir: Option<&str>) -> Call {
 
 // Spec (agent-tools, approval model): a cloud grep asks before it opens a
 // file, and the prompt names the pattern and the folder.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
     let (_dir, home, host) = fixture();
@@ -253,7 +261,8 @@ async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
             *approver.asked.lock().unwrap(),
             vec![ApprovalAsk::Search {
                 pattern: "hello from".into(),
-                dir: ".".into()
+                dir: ".".into(),
+                reach: Reach::Broad,
             }]
         );
         let (_, _, status, _) = pair(&events(&mut rx));
@@ -270,7 +279,7 @@ async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
 
 // Without an approver nobody answers: the Cloud grep is denied and nothing is read.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_grep_nobody_approves_is_denied_and_reads_nothing() {
     let (_dir, home, host) = fixture();
@@ -288,14 +297,15 @@ async fn a_cloud_grep_nobody_approves_is_denied_and_reads_nothing() {
         ask,
         Some(ApprovalAsk::Search {
             pattern: "hello from".into(),
-            dir: ".".into()
+            dir: ".".into(),
+            reach: Reach::Broad,
         })
     );
     assert_eq!(status, ToolStatus::Denied);
 }
 
 // Spec (agent-tools): a Local grep and a glob on any engine run free.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_local_grep_and_a_glob_on_any_engine_run_without_a_prompt() {
     let (_dir, home, host) = fixture();
@@ -393,7 +403,7 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
 }
 
 /// Answers with the report of a run the app made.
-struct Ran(RunReport);
+pub(super) struct Ran(pub(super) RunReport);
 
 impl Approver for Ran {
     fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
@@ -446,7 +456,7 @@ async fn a_ran_answer_to_a_call_that_is_not_a_command_is_denied() {
 // Spec (pane-execution, result contract): a run that settled is worded from
 // its report, and the output goes through clean, redact and the nonce wrapper.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_ran_answer_becomes_the_wrapped_result_and_a_ran_row() {
     use crate::core::ai::tools::{report::CwdSource, settle::End};
@@ -583,7 +593,7 @@ async fn line(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> Value 
 }
 
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let (dir, home, host) = fixture();
@@ -693,7 +703,7 @@ fn tool_names(list: &Value) -> Vec<&str> {
 
 // Spec (code-search, Family and toggle): with Search off the surface is the
 // 0.18.0 one and a call to `glob` or `grep` runs nothing.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn with_search_off_glob_and_grep_are_neither_listed_nor_run() {
     use crate::core::ai::tools::registry::FamilySet;
@@ -727,7 +737,7 @@ async fn with_search_off_glob_and_grep_are_neither_listed_nor_run() {
 
 // With Search on both tools are offered and run through the session: glob
 // free, grep after the user's `y` on a cloud engine.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
     use crate::core::ai::tools::registry::{Family, FamilySet};
@@ -773,7 +783,8 @@ async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
         *approver.asked.lock().unwrap(),
         vec![ApprovalAsk::Search {
             pattern: "hello from".into(),
-            dir: "dev/curso-rust".into()
+            dir: "dev/curso-rust".into(),
+            reach: Reach::Broad,
         }]
     );
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
@@ -918,9 +929,37 @@ async fn a_relative_cloud_read_asks_with_the_path_resolved_against_the_origin() 
     let want = home.join("note.txt").to_str().unwrap().to_owned();
     assert_eq!(
         *approver.asked.lock().unwrap(),
-        [ApprovalAsk::Read { path: want }]
+        [ApprovalAsk::Read {
+            path: want,
+            reach: Reach::Broad,
+            cloud: true,
+        }]
     );
     let _ = events(&mut rx);
+}
+
+// A reply of `Unprompted` is taken only where the host's own ask said the read
+// stays in the root: one for a read outside the root, or for a search of a
+// root too broad to confine (HOME), is denied and reads nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_unprompted_answer_the_ask_did_not_allow_is_denied_and_reads_nothing() {
+    let (_dir, home, host) = fixture();
+    for (origin, call) in [
+        (home.join("dev/curso-rust"), read("~/note.txt")),
+        (home.clone(), read("~/note.txt")),
+        (home.clone(), grep("hello from", None)),
+    ] {
+        let (mut scope, mut rx) = scope(Locality::Cloud, &origin);
+        let approver = Scripted::new(Decision::Unprompted);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(call.clone()).await;
+        assert_eq!(out.text, format!("denied: {NOT_APPROVED}"), "{call:?}");
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        let (_, _, status, _) = pair(&events(&mut rx));
+        assert_eq!(status, ToolStatus::Denied);
+    }
 }
 
 // -- the real approver (2e-2): the app's answers, keyed by pane, turn and call --
@@ -989,7 +1028,7 @@ mod answered {
     // opened until `y`. The text changes after the ask: the answer reads the
     // file as it is when `y` comes, not as it was when the prompt opened.
     // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_cloud_read_opens_the_file_only_after_y() {
         let (turn, mut rx, scope) = turn();
@@ -998,7 +1037,9 @@ mod answered {
         assert_eq!(
             ask,
             Some(ApprovalAsk::Read {
-                path: path.to_str().unwrap().into()
+                path: path.to_str().unwrap().into(),
+                reach: Reach::Broad,
+                cloud: true,
             })
         );
         std::fs::write(&path, "written after the prompt").unwrap();
@@ -1050,7 +1091,7 @@ mod answered {
 
     // A local read is free: the approver is never involved.
     // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_local_read_runs_free_and_waits_for_nobody() {
         let (turn, mut rx, mut scope) = turn();
@@ -1065,7 +1106,7 @@ mod answered {
     // Free tools run around a pending one: the user's thinking does not hold
     // up the model's other calls.
     // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn free_tools_run_around_a_pending_approval() {
         let (turn, mut rx, scope) = turn();
@@ -1134,7 +1175,7 @@ mod answered {
     // Spec (agent-tools): text inside a file is data. It comes back wrapped,
     // and what it says does not make the host do anything.
     // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn an_injection_in_file_text_comes_back_wrapped_and_triggers_nothing() {
         let (turn, mut rx, scope) = turn();
@@ -1151,4 +1192,16 @@ mod answered {
             .count();
         assert_eq!(calls, 0, "the read is the only call of the turn");
     }
+}
+
+/// A poll that finds the store held by an apply says so with `None`, so the
+/// pane keeps its badge instead of losing it for one tick.
+#[test]
+fn a_contended_badge_poll_answers_none_and_a_free_one_answers() {
+    let (_dir, _home, host) = fixture();
+    assert_eq!(host.badges(|_| false), Some(Default::default()));
+    let held = host.stages.lock().unwrap();
+    assert_eq!(host.badges(|_| false), None, "the store is held");
+    drop(held);
+    assert!(host.badges(|_| false).is_some());
 }

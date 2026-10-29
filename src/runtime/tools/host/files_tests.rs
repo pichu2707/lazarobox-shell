@@ -1,0 +1,1192 @@
+//! The write family in the host: staging touches no disk and asks nothing,
+//! `propose_batch` seals the batch and asks the user, and only an answer of
+//! `Sent` applies it. What the model is told is counts and paths.
+
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
+use std::sync::Mutex;
+
+use super::{
+    tests::{events, pair},
+    *,
+};
+use crate::core::{
+    ai::{
+        chat::{
+            approval::ApprovalAsk,
+            review::{BatchEvent, TOO_LARGE},
+        },
+        tools::{
+            paths::REFUSED,
+            registry::{Family, FamilySet},
+            report::RunReport,
+            stage::StageKey,
+        },
+    },
+    layout::PaneId,
+};
+
+/// Answers every ask the same way, remembers the asks, and can run a hook
+/// first (to play a user or a pane that acts before the answer arrives).
+struct Script {
+    answer: Decision,
+    asked: Mutex<Vec<ApprovalAsk>>,
+    first: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Script {
+    fn new(answer: Decision) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            asked: Mutex::new(Vec::new()),
+            first: Mutex::new(None),
+        })
+    }
+
+    fn asks(&self) -> Vec<ApprovalAsk> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl Approver for Script {
+    fn ask(&self, _: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        self.asked.lock().unwrap().push(ask.clone());
+        if let Some(hook) = self.first.lock().unwrap().take() {
+            hook();
+        }
+        let answer = self.answer;
+        async move { answer.into() }.boxed()
+    }
+}
+
+struct World {
+    _dir: tempfile::TempDir,
+    proj: PathBuf,
+    host: Arc<ToolHost>,
+}
+
+fn key() -> StageKey {
+    StageKey::Pane(PaneId::for_test(1))
+}
+
+fn world() -> World {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap().join("home");
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let host = ToolHost::new(Some(home.clone().into()), None, None, Limits::default());
+    World {
+        _dir: dir,
+        proj,
+        host,
+    }
+}
+
+fn on() -> FamilySet {
+    FamilySet::LEGACY.with(Family::Write).with(Family::Search)
+}
+
+impl World {
+    /// A turn of the pane with the write family on.
+    fn turn(
+        &self,
+        approver: Arc<dyn Approver>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        self.turn_with(approver, on(), Some(key()))
+    }
+
+    fn turn_with(
+        &self,
+        approver: Arc<dyn Approver>,
+        families: FamilySet,
+        stage_key: Option<StageKey>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, self.proj.clone());
+        scope.approver = approver;
+        scope.families = families;
+        scope.stage_key = stage_key;
+        (self.host.dispatch(scope), rx)
+    }
+
+    fn staged(&self) -> usize {
+        let stages = self.host.stages.lock().unwrap();
+        stages.batch(key()).map_or(0, |b| b.entries().len())
+    }
+}
+
+fn write(path: &str, content: &str) -> Call {
+    Call::WriteFile {
+        path: path.into(),
+        content: content.into(),
+    }
+}
+
+fn edit(path: &str, old: &str, new: &str) -> Call {
+    Call::EditFile {
+        path: path.into(),
+        old: old.into(),
+        new: new.into(),
+    }
+}
+
+fn folder(path: &str) -> Call {
+    Call::CreateDir { path: path.into() }
+}
+
+fn read(path: &str) -> Call {
+    Call::ReadFile {
+        path: path.into(),
+        lines: None,
+    }
+}
+
+// Spec (code-write, create_dir and write_file staging; Nothing writes
+// without approval): staging adds to the batch, asks nothing, touches no disk.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn staging_asks_nothing_and_leaves_the_disk_alone() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, mut rx) = w.turn(approver.clone());
+    let out = d.call(write("a.txt", "hello new")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(
+        out.text,
+        "staged a.txt (batch: 1 of 50 entries, 9 of 1048576 bytes)"
+    );
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!((ask, status), (None, ToolStatus::Ok));
+    let out = d.call(folder("sub")).await;
+    assert_eq!(
+        out.text,
+        "staged sub (batch: 2 of 50 entries, 9 of 1048576 bytes)"
+    );
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!((ask, status), (None, ToolStatus::Ok));
+    assert!(approver.asks().is_empty());
+    assert_eq!(w.staged(), 2);
+    assert!(!w.proj.join("a.txt").exists() && !w.proj.join("sub").exists());
+    // A repeated call for one path replaces its entry.
+    d.call(write("a.txt", "second")).await;
+    assert_eq!(w.staged(), 2);
+}
+
+// Spec (code-write, edit_file staging): applies to the staged version when
+// there is one, otherwise to the disk, and never touches the disk.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn edits_chain_on_the_staged_text_and_leave_the_disk_alone() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(edit("b.txt", "bar", "baz")).await.is_error);
+    // The second edit matches text only the first one introduced.
+    assert!(!d.call(edit("b.txt", "baz", "qux")).await.is_error);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("b.txt")).unwrap(),
+        "foo bar"
+    );
+    let seen = d.call(read("b.txt")).await;
+    assert!(
+        seen.text.contains("(pending, not on disk)"),
+        "{}",
+        seen.text
+    );
+    assert!(seen.text.contains("foo qux"), "{}", seen.text);
+}
+
+// Spec (code-search/code-write): the read tools see the batch of the chat's
+// key as soon as the Write family is on, marked as pending.
+// Staging needs the write side, Linux only for now.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_read_tools_see_the_staged_batch() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    // A file below a folder that is neither on disk nor staged is refused.
+    let early = d.call(write("src/new.txt", "needle text")).await;
+    assert!(early.is_error && early.text == REFUSED, "{early:?}");
+    assert!(!d.call(folder("src")).await.is_error);
+    assert!(!d.call(write("src/new.txt", "needle text")).await.is_error);
+    let read_it = d.call(read("src/new.txt")).await;
+    assert!(
+        read_it.text.contains("(pending, not on disk)\nneedle text"),
+        "{}",
+        read_it.text
+    );
+    let glob = d
+        .call(Call::Glob {
+            pattern: "**/*.txt".into(),
+            dir: None,
+        })
+        .await;
+    assert!(
+        glob.text.contains("src/new.txt (pending, not on disk)"),
+        "{}",
+        glob.text
+    );
+    let grep = d
+        .call(Call::Grep {
+            pattern: "needle".into(),
+            dir: None,
+        })
+        .await;
+    assert!(
+        grep.text
+            .contains("src/new.txt (pending, not on disk):1:needle text"),
+        "{}",
+        grep.text
+    );
+    // The view is the chat's own: another pane sees nothing.
+    let (tx, _) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+    scope.families = on();
+    scope.stage_key = Some(StageKey::Pane(PaneId::for_test(2)));
+    let other = w.host.dispatch(scope).call(read("src/new.txt")).await;
+    assert!(
+        other.is_error && !other.text.contains("needle"),
+        "{other:?}"
+    );
+}
+
+// Spec (code-write, Root policy; Deny rules): every refusal is the same text
+// and stages nothing; a content refusal says why but never quotes the text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_refused_call_stages_nothing_and_says_so_without_the_text() {
+    let w = world();
+    std::fs::write(w.proj.join("x.txt"), "x x").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    for call in [
+        write("../escape.txt", "t"),
+        write(".env", "t"),
+        folder("../up"),
+        edit("missing.txt", "a", "b"),
+    ] {
+        let out = d.call(call.clone()).await;
+        assert!(out.is_error, "{call:?}");
+        assert!(
+            out.text == REFUSED || out.text.contains("does not exist"),
+            "{}",
+            out.text
+        );
+    }
+    let many = d.call(edit("x.txt", "x", "SECRET-NEW")).await;
+    assert!(
+        many.is_error && many.text.contains("more than once"),
+        "{many:?}"
+    );
+    assert!(!many.text.contains("SECRET-NEW"));
+    let big = d.call(write("big.txt", &"y".repeat(32 * 1024 + 1))).await;
+    assert!(big.is_error && big.text.contains("32 KiB"), "{big:?}");
+    assert_eq!(w.staged(), 0);
+}
+
+// Spec (code-write, Propose batch and size cap): an empty batch is refused
+// and nothing opens.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn proposing_an_empty_batch_is_an_error_and_asks_nothing() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, mut rx) = w.turn(approver.clone());
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.contains("nothing is staged"),
+        "{out:?}"
+    );
+    assert!(approver.asks().is_empty());
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!((ask, status), (None, ToolStatus::Error));
+}
+
+// Spec (code-write, Batch review; Apply): the batch asks on any engine, and
+// only `Sent` writes. The result is the change list: paths and counts.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_approved_batch_is_applied_and_the_model_gets_counts_and_paths() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, mut rx) = w.turn(approver.clone());
+    d.call(folder("sub")).await;
+    d.call(write("sub/a.txt", "one\ntwo\n")).await;
+    events(&mut rx);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.starts_with("applied 2 paths:"), "{}", out.text);
+    assert!(out.text.contains("sub/a.txt"), "{}", out.text);
+    assert!(!out.text.contains("one"), "{}", out.text);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("sub/a.txt")).unwrap(),
+        "one\ntwo\n"
+    );
+    let asks = approver.asks();
+    assert!(
+        matches!(asks.as_slice(), [ApprovalAsk::Batch(r)] if r.doc().reviewable()),
+        "{asks:?}"
+    );
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert!(matches!(ask, Some(ApprovalAsk::Batch(_))));
+    assert_eq!(status, ToolStatus::Ok);
+    // The batch is closed: it left the store.
+    assert_eq!(w.staged(), 0);
+}
+
+// Spec (code-write, Reject discards): a rejection, or nobody to ask, writes
+// nothing and drops the batch.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_rejected_batch_writes_nothing_and_is_discarded() {
+    let w = world();
+    for approver in [
+        Script::new(Decision::Denied("declined")) as Arc<dyn Approver>,
+        Arc::new(Unwired),
+    ] {
+        let (d, _rx) = w.turn(approver);
+        d.call(write("a.txt", "hello")).await;
+        let out = d.call(Call::ProposeBatch).await;
+        assert!(out.is_error && out.text.starts_with("denied: "), "{out:?}");
+        assert!(!w.proj.join("a.txt").exists());
+        assert_eq!(w.staged(), 0);
+    }
+}
+
+// Spec (code-write, Propose batch): a proposed batch accepts no staging until
+// the user answers.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
+    let w = world();
+    let (d, _rx) = w.turn(Arc::new(super::tests::Waiting));
+    d.call(write("a.txt", "hello")).await;
+    let waiting = tokio::spawn({
+        let d = d.clone();
+        async move { d.call(Call::ProposeBatch).await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let late = d.call(write("b.txt", "late")).await;
+    assert!(
+        late.is_error && late.text.contains("waiting for review"),
+        "{late:?}"
+    );
+    assert_eq!(w.staged(), 1);
+    waiting.abort();
+}
+
+// Spec (code-write, Orphan, close and quit): a call dropped while its batch
+// waits (the turn was cancelled, or a CLI timed out) leaves the batch proposed
+// for the user: an orphan that stays until the user answers or the pane closes.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
+    let w = world();
+    let (d, mut rx) = w.turn(Arc::new(super::tests::Waiting));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let mut propose = d.call(Call::ProposeBatch);
+    // Until the ask is announced the user has seen nothing.
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
+    let during = d.call(write("b.txt", "late")).await;
+    assert!(during.text.contains("waiting for review"), "{during:?}");
+    drop(propose);
+    assert_eq!(w.staged(), 1, "the orphan stays");
+    let after = d.call(write("b.txt", "again")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    // The user can still review it, as the same batch.
+    let (id, review) = w
+        .host
+        .review_batch(key(), false)
+        .expect("an orphan to review");
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    let BatchEvent::Done { shown, .. } = w.host.discard_batch(id) else {
+        panic!("a discard is done");
+    };
+    assert_eq!(shown, "discarded 1 staged entry");
+    assert_eq!(w.staged(), 0);
+}
+
+// The turn ended while the ask was open (a CLI timeout, a cancel that reached
+// the approver first): the answer is `ENDED`, which is no user's no.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
+    use crate::runtime::tools::approver::ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
+    assert_eq!(w.staged(), 1);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    w.host.discard_batch(id);
+    let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+// A run report is no answer to a batch: the call is denied, and the batch is
+// closed, not left as an orphan (only a call dropped while it waits is one).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
+    use crate::core::ai::tools::settle::End;
+    let w = world();
+    let report = RunReport {
+        number: 1,
+        end: End::Settled,
+        cwd: None,
+        cd_target: None,
+        output: None,
+    };
+    let (d, _rx) = w.turn(Arc::new(super::tests::Ran(report)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(w.staged(), 0, "a denied batch is not an orphan");
+    assert!(w.host.review_batch(key(), false).is_none());
+}
+
+// The command was typed but the turn ended: that is no user's no, but it is
+// no orphan either: the batch of a call that ran something is closed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_ran_ended_answer_discards_the_batch() {
+    use crate::runtime::tools::approver::RAN_ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(RAN_ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0);
+}
+
+// A batch the turn never proposed is a staging orphan: reviewing it seals it.
+// What the user is told holds counts only, never the staged text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("a.txt", "sk-ant-api03-SECRETSECRET"))
+            .await
+            .is_error
+    );
+    assert!(!d.call(folder("sub")).await.is_error);
+    let (id, review) = w.host.review_batch(key(), false).expect("a staging orphan");
+    assert_eq!(review.counts(), "2 files, +1 -0");
+    assert_eq!(
+        w.host.review_batch(key(), false).map(|(again, _)| again),
+        Some(id)
+    );
+    let after = d.call(write("b.txt", "x")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+        panic!("an apply is done");
+    };
+    assert_eq!(shown, "applied 2 paths");
+    // Model-facing: counts only, never the staged text.
+    let told = told.expect("the model is told");
+    assert_eq!(
+        told,
+        "The user applied the batch you left staged: applied 2 paths."
+    );
+    assert!(!told.contains("SECRET") && !shown.contains("SECRET"));
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "sk-ant-api03-SECRETSECRET"
+    );
+    assert!(w.proj.join("sub").is_dir());
+    let gone = BatchEvent::Done {
+        shown: "that batch is no longer there".into(),
+        told: None,
+    };
+    assert_eq!(w.host.apply_batch(id, false), gone);
+    assert_eq!(w.host.discard_batch(id), gone);
+    assert!(
+        w.host.review_batch(key(), false).is_none(),
+        "nothing to review"
+    );
+}
+
+// The same for a call whose channel is gone before it can announce: the batch
+// it sealed is not left behind.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
+    let w = world();
+    let (live, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!live.call(write("a.txt", "hello")).await.is_error);
+    let (closed, rx) = w.turn(Script::new(Decision::Sent));
+    drop(rx);
+    let out = closed.call(Call::ProposeBatch).await;
+    assert!(out.is_error && out.text == "cancelled", "{out:?}");
+    assert_eq!(w.staged(), 0);
+    assert!(!live.call(write("b.txt", "again")).await.is_error);
+}
+
+// The disk is read before the lock is taken: staging never holds the mutex of
+// every chat's batches across a read.
+#[cfg(target_os = "linux")]
+#[test]
+fn staging_reads_the_disk_before_it_takes_the_lock() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo").unwrap();
+    let env = w.host.env(&w.proj);
+    for call in [
+        write("a.txt", "x"),
+        edit("b.txt", "foo", "bar"),
+        folder("d"),
+    ] {
+        let probed = std::cell::Cell::new(None);
+        let text = files::stage_with_probe(&w.host.stages, key(), &env, &call, |roots, real| {
+            probed.set(Some(w.host.stages.try_lock().is_ok()));
+            crate::runtime::tools::stage::disk_bytes(roots, real)
+        })
+        .unwrap();
+        assert_eq!(probed.get(), Some(true), "{call:?}: the lock was held");
+        assert!(text.starts_with("staged "), "{text}");
+    }
+    assert_eq!(w.staged(), 3);
+}
+
+// An async worker never waits for the mutex: while an apply holds it, a call
+// that needs it parks on the blocking pool and the worker keeps serving tasks.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_busy_store_does_not_block_the_async_worker() {
+    for call in [Call::ProposeBatch, read("a.txt")] {
+        let w = world();
+        let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        let held = w.host.stages.lock().unwrap();
+        let waiting = tokio::spawn({
+            let d = d.clone();
+            async move { d.call(call).await }
+        });
+        // Plain sleeps: with the worker blocked the timers would not fire.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tokio::spawn({
+            let ran = ran.clone();
+            async move { ran.store(true, std::sync::atomic::Ordering::SeqCst) }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let alive = ran.load(std::sync::atomic::Ordering::SeqCst);
+        drop(held);
+        assert!(alive, "the worker is blocked on the store lock");
+        waiting.await.unwrap();
+    }
+}
+
+impl World {
+    /// A turn of the pane on a cloud engine, with the write family on.
+    fn cloud(
+        &self,
+        approver: Arc<dyn Approver>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Cloud, self.proj.clone());
+        scope.approver = approver;
+        scope.families = on();
+        scope.stage_key = Some(key());
+        (self.host.dispatch(scope), rx)
+    }
+}
+
+// Spec (code-write, edit_file staging): on a cloud engine an edit asks like a
+// read of the file, once per file per turn; a denial stages nothing; a read
+// the user already allowed counts; a new turn asks again; a local engine never
+// asks. The ask carries the path, never the text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_asks_once_per_file_per_turn() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    std::fs::write(w.proj.join("c.txt"), "one two").unwrap();
+    let asked = |a: &Script| a.asks().len();
+
+    // Local: never.
+    let local = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(local.clone());
+    assert!(!d.call(edit("b.txt", "foo", "SECRET-NEW")).await.is_error);
+    assert_eq!(asked(&local), 0);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // Cloud: asks, with the path and no text, then not again for that file.
+    let approver = Script::new(Decision::Sent);
+    let (d, mut rx) = w.cloud(approver.clone());
+    let first = d.call(edit("b.txt", "foo", "SECRET-NEW")).await;
+    assert!(!first.is_error, "{first:?}");
+    let asks = approver.asks();
+    assert!(
+        matches!(asks.as_slice(), [ApprovalAsk::Read { path, .. }] if path.ends_with("/b.txt")),
+        "{asks:?}"
+    );
+    assert!(!format!("{asks:?}").contains("SECRET"));
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert!(matches!(ask, Some(ApprovalAsk::Read { .. })));
+    assert_eq!(status, ToolStatus::Ok);
+    assert!(!d.call(edit("b.txt", "bar", "baz")).await.is_error);
+    assert_eq!(asked(&approver), 1);
+    // Another file asks again.
+    assert!(!d.call(edit("c.txt", "one", "uno")).await.is_error);
+    assert_eq!(asked(&approver), 2);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // A new turn asks again.
+    let next = Script::new(Decision::Sent);
+    let (d2, _rx2) = w.cloud(next.clone());
+    assert!(!d2.call(edit("b.txt", "foo", "x")).await.is_error);
+    assert_eq!(asked(&next), 1);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // A read allowed first counts for the edit.
+    let both = Script::new(Decision::Sent);
+    let (d3, _rx3) = w.cloud(both.clone());
+    assert!(!d3.call(read("b.txt")).await.is_error);
+    assert!(!d3.call(edit("b.txt", "foo", "y")).await.is_error);
+    assert_eq!(asked(&both), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_denied_cloud_edit_stages_nothing_and_a_denial_is_not_remembered() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Denied("declined"));
+    let (d, _rx) = w.cloud(approver.clone());
+    for _ in 0..2 {
+        let out = d.call(edit("b.txt", "foo", "SECRET-NEW")).await;
+        assert!(out.is_error && out.text == "denied: declined", "{out:?}");
+    }
+    assert_eq!(approver.asks().len(), 2);
+    assert_eq!(w.staged(), 0);
+}
+
+// A path the ask could not show as it is opened is refused before any ask: the
+// user never approves a path that differs from the one that is used.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_of_an_unshowable_path_is_refused_without_an_ask() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    for path in ["b\u{202e}.txt", "b\u{200b}.txt"] {
+        for _ in 0..2 {
+            let out = d.call(edit(path, "foo", "x")).await;
+            assert!(out.is_error && out.text == UNSHOWABLE, "{out:?}");
+        }
+    }
+    // Nothing was remembered either: the refusal repeats and nothing asks.
+    assert!(approver.asks().is_empty());
+    assert_eq!(w.staged(), 0);
+}
+
+// Spelling does not matter: the key is the path as `display_target` resolves
+// it. A read records into `allowed` like an edit; a read never consults it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn different_spellings_of_one_path_share_a_single_cloud_ask() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar baz").unwrap();
+    std::fs::create_dir_all(w.proj.join("sub")).unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    assert!(!d.call(edit("b.txt", "foo", "1")).await.is_error);
+    for (path, old) in [
+        ("./b.txt", "bar"),
+        ("sub/../b.txt", "baz"),
+        ("~/proj/b.txt", "1"),
+    ] {
+        // The staging path may refuse these spellings; only the asks count.
+        d.call(edit(path, old, "2")).await;
+    }
+    assert_eq!(approver.asks().len(), 1);
+
+    w.host.stages.lock().unwrap().discard_key(key());
+    // A read of one spelling allows an edit of another.
+    let mixed = Script::new(Decision::Sent);
+    let (d2, _rx2) = w.cloud(mixed.clone());
+    assert!(!d2.call(read("./b.txt")).await.is_error);
+    assert!(!d2.call(edit("b.txt", "foo", "y")).await.is_error);
+    assert_eq!(mixed.asks().len(), 1);
+
+    w.host.stages.lock().unwrap().discard_key(key());
+    // A read does not consult `allowed`: it asks even after an allowed edit.
+    let reverse = Script::new(Decision::Sent);
+    let (d3, _rx3) = w.cloud(reverse.clone());
+    assert!(!d3.call(edit("b.txt", "foo", "z")).await.is_error);
+    assert!(!d3.call(read("b.txt")).await.is_error);
+    assert_eq!(reverse.asks().len(), 2);
+}
+
+// An edit with an empty `old` can only fail, so the user is not asked for it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_with_an_empty_old_is_refused_before_the_ask() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    let out = d.call(edit("b.txt", "", "x")).await;
+    assert!(
+        out.is_error && out.text == "old must not be empty",
+        "{out:?}"
+    );
+    assert!(approver.asks().is_empty());
+    assert_eq!(w.staged(), 0);
+}
+
+// Only `Sent` is remembered: a busy answer (and any other non-`Sent` one)
+// leaves the next edit of the file asking again.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_busy_cloud_edit_stages_nothing_and_is_not_remembered() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Busy(2));
+    let (d, _rx) = w.cloud(approver.clone());
+    for _ in 0..2 {
+        let out = d.call(edit("b.txt", "foo", "x")).await;
+        assert!(out.is_error, "{out:?}");
+    }
+    assert_eq!(approver.asks().len(), 2);
+    assert_eq!(w.staged(), 0);
+}
+
+// Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
+// is truncated is sealed, the user can only reject it, and `Sent` never
+// applies it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unreviewable_batch_cannot_be_applied_and_the_model_is_told_to_split() {
+    let w = world();
+    let lines = "x\n".repeat(3000);
+    for answer in [Decision::Sent, Decision::Denied(TOO_LARGE)] {
+        let approver = Script::new(answer);
+        let (d, _rx) = w.turn(approver.clone());
+        assert!(!d.call(write("long.txt", &lines)).await.is_error);
+        let out = d.call(Call::ProposeBatch).await;
+        assert!(out.is_error && out.text.contains(TOO_LARGE), "{out:?}");
+        assert!(!out.text.contains("x\nx"), "{}", out.text);
+        let asks = approver.asks();
+        assert!(
+            matches!(asks.as_slice(), [ApprovalAsk::Batch(r)] if !r.doc().reviewable()),
+            "{asks:?}"
+        );
+        assert!(!w.proj.join("long.txt").exists());
+        assert_eq!(w.staged(), 0);
+    }
+}
+
+// Spec (code-write, Apply): the answer reaches the batch by id. A batch that
+// was discarded meanwhile (pane closed) is not applied by a late `y`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_answer_for_a_batch_that_is_gone_applies_nothing() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let host = w.host.clone();
+    *approver.first.lock().unwrap() = Some(Box::new(move || {
+        host.stages.lock().unwrap().discard_key(key());
+    }));
+    let (d, _rx) = w.turn(approver);
+    d.call(write("a.txt", "hello")).await;
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.contains("no longer the current one"),
+        "{out:?}"
+    );
+    assert!(!w.proj.join("a.txt").exists());
+}
+
+// Spec (code-write, Drift refuses the batch): a file changed after staging
+// refuses the whole batch, nothing is written, and the batch is closed so the
+// model can stage it again.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_drifted_batch_writes_nothing_and_leaves_the_model_free_to_restage() {
+    let w = world();
+    std::fs::write(w.proj.join("d.txt"), "before").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let path = w.proj.join("d.txt");
+    *approver.first.lock().unwrap() = Some(Box::new(move || {
+        std::fs::write(path, "someone else").unwrap();
+    }));
+    let (d, _rx) = w.turn(approver);
+    d.call(write("new.txt", "fresh")).await;
+    d.call(edit("d.txt", "before", "after")).await;
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.starts_with("refused: 1 paths changed"),
+        "{out:?}"
+    );
+    assert!(out.text.contains("d.txt"), "{}", out.text);
+    assert!(!out.text.contains("someone else"), "{}", out.text);
+    assert!(!w.proj.join("new.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("d.txt")).unwrap(),
+        "someone else"
+    );
+    assert_eq!(w.staged(), 0);
+    assert!(!d.call(write("new.txt", "again")).await.is_error);
+}
+
+// Spec (agent-tools, Off equals 0.18.0): a write call with the family off is
+// refused like an unknown tool and stages nothing, even if it got this far.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_write_call_with_the_family_off_is_unknown_and_stages_nothing() {
+    let w = world();
+    for families in [FamilySet::LEGACY, FamilySet::LEGACY.with(Family::Search)] {
+        let approver = Script::new(Decision::Sent);
+        let (d, mut rx) = w.turn_with(approver.clone(), families, Some(key()));
+        for call in [
+            write("a.txt", "t"),
+            folder("d"),
+            edit("a.txt", "a", "b"),
+            Call::ProposeBatch,
+        ] {
+            let out = d.call(call).await;
+            assert!(out.is_error && out.text == "unknown tool", "{out:?}");
+        }
+        assert!(approver.asks().is_empty());
+        assert!(events(&mut rx).len() >= 8);
+        assert_eq!(w.staged(), 0);
+        assert!(!w.proj.join("a.txt").exists());
+    }
+    // No key to stage under is the same refusal.
+    let (d, _rx) = w.turn_with(Script::new(Decision::Sent), on(), None);
+    assert_eq!(d.call(write("a.txt", "t")).await.text, "unknown tool");
+}
+
+// The Write family off: the read tools get no view, so a batch staged earlier
+// under the same key is not shown (and not forgeable text either).
+// Staging needs the write side, Linux only for now.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn with_the_family_off_the_read_tools_see_no_batch() {
+    let w = world();
+    let (on_turn, _rx) = w.turn(Script::new(Decision::Sent));
+    on_turn.call(write("new.txt", "needle text")).await;
+    assert!(!on_turn.call(read("new.txt")).await.is_error);
+    let (off, _rx) = w.turn_with(Script::new(Decision::Sent), FamilySet::LEGACY, Some(key()));
+    let out = off.call(read("new.txt")).await;
+    assert!(out.is_error && !out.text.contains("needle"), "{out:?}");
+}
+
+// Review-only invariant (Wd review): the base and the new text of an edit,
+// and so every diff row, reach nothing the model sees.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
+    const KEY: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const NEW: &str = "hunter2";
+    let outcomes = [
+        Decision::Sent,
+        Decision::Denied("declined"),
+        Decision::Denied(TOO_LARGE),
+    ];
+    for answer in outcomes {
+        let w = world();
+        std::fs::write(w.proj.join("s.txt"), format!("token = {KEY}\nport = 1\n")).unwrap();
+        let (d, mut rx) = w.turn(Script::new(answer));
+        let staged = d.call(edit("s.txt", "port = 1", NEW)).await.text;
+        assert!(staged.starts_with("staged s.txt (batch: 1 of"), "{staged}");
+        let proposed = d.call(Call::ProposeBatch).await.text;
+        let expect = match answer {
+            Decision::Sent => "applied 1 paths:\nedited ",
+            Decision::Denied(reason) => &format!("denied: {reason}"),
+            _ => unreachable!(),
+        };
+        assert!(proposed.starts_with(expect), "{proposed}");
+        let rows: Vec<String> = events(&mut rx).iter().map(|e| format!("{e:?}")).collect();
+        // One ToolCall and one ToolResult for each of the two calls.
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        let mut seen = vec![staged, proposed];
+        seen.extend(rows);
+        for text in &seen {
+            assert!(
+                !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA"),
+                "{text}"
+            );
+            assert!(!text.contains(NEW), "{text}");
+        }
+    }
+}
+
+// Review-only invariant, over every other output a secret could reach: the
+// text of a `write_file`, the staged view the read tools show, the edit
+// refusals, the apply summaries and the wait for review.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_secret_reaches_no_other_model_facing_output() {
+    use crate::runtime::tools::apply::ApplyResult;
+    const KEY: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const NEW: &str = "hunter2";
+    let clean = |label: &str, text: &str| {
+        assert!(
+            !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA") && !text.contains(NEW),
+            "{label}: {text}"
+        );
+    };
+    // The view of the model's own staged text is redacted for a recognizable
+    // token; a plain word it wrote itself is its own text and stays.
+    let redacted = |label: &str, text: &str| {
+        assert!(text.contains("[REDACTED]"), "{label}: {text}");
+        assert!(
+            !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA"),
+            "{label}: {text}"
+        );
+    };
+    let w = world();
+    std::fs::write(w.proj.join("s.txt"), format!("a = {KEY}\na = {KEY}\n")).unwrap();
+    std::fs::write(w.proj.join("d.txt"), "before").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let path = w.proj.join("d.txt");
+    *approver.first.lock().unwrap() = Some(Box::new(move || {
+        std::fs::write(path, format!("{KEY} {NEW}")).unwrap();
+    }));
+    let (d, mut rx) = w.turn(approver);
+
+    // write_file whose content holds a secret.
+    let wrote = d
+        .call(write("n.txt", &format!("key = {KEY}\npw = {NEW}\n")))
+        .await;
+    assert!(!wrote.is_error, "{wrote:?}");
+    assert!(
+        wrote
+            .text
+            .starts_with("staged n.txt (batch: 1 of 50 entries,"),
+        "{}",
+        wrote.text
+    );
+    clean("write_file", &wrote.text);
+
+    // The staged view and the disk file the read tools show are redacted.
+    let read_staged = d.call(read("n.txt")).await;
+    assert!(
+        read_staged.text.contains("(pending, not on disk)"),
+        "{}",
+        read_staged.text
+    );
+    assert!(read_staged.text.contains("key = "), "{}", read_staged.text);
+    redacted("read_file staged", &read_staged.text);
+    let grep = d
+        .call(Call::Grep {
+            pattern: "key".into(),
+            dir: None,
+        })
+        .await;
+    assert!(
+        grep.text.contains("n.txt (pending, not on disk):1:key = "),
+        "{}",
+        grep.text
+    );
+    redacted("grep staged", &grep.text);
+
+    // The edit refusals never quote old or new.
+    let missing = d.call(edit("s.txt", &format!("{KEY}-x"), NEW)).await;
+    assert!(
+        missing.is_error && missing.text.contains("does not occur"),
+        "{missing:?}"
+    );
+    clean("edit NoMatch", &missing.text);
+    let twice = d.call(edit("s.txt", KEY, NEW)).await;
+    assert!(
+        twice.is_error && twice.text.contains("more than once"),
+        "{twice:?}"
+    );
+    clean("edit Ambiguous", &twice.text);
+
+    // Drift: the disk text changed to a secret after the review.
+    assert!(!d.call(edit("d.txt", "before", "after")).await.is_error);
+    let drifted = d.call(Call::ProposeBatch).await;
+    assert!(
+        drifted.is_error && drifted.text.starts_with("refused: 1 paths changed"),
+        "{drifted:?}"
+    );
+    clean("Drifted", &drifted.text);
+    // Every apply summary is paths and counts, whatever the path is called.
+    let named = std::path::PathBuf::from("dir/s.txt");
+    for result in [
+        ApplyResult::Drifted(vec![named.clone()]),
+        ApplyResult::Failed {
+            path: named.clone(),
+            undone: true,
+        },
+        ApplyResult::Failed {
+            path: named.clone(),
+            undone: false,
+        },
+        ApplyResult::Invalid {
+            path: named.clone(),
+        },
+        ApplyResult::Partial {
+            changed: vec![named.clone()],
+        },
+        ApplyResult::Unsupported,
+    ] {
+        clean("summary", &result.summary());
+    }
+
+    // The wait for review: staging is refused with a fixed text.
+    let (waiting, _rx2) = w.turn(Arc::new(super::tests::Waiting));
+    assert!(!waiting.call(write("w.txt", "x")).await.is_error);
+    let pending = tokio::spawn({
+        let waiting = waiting.clone();
+        async move { waiting.call(Call::ProposeBatch).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let late = waiting.call(write("l.txt", &format!("{KEY} {NEW}"))).await;
+    assert!(
+        late.is_error && late.text.contains("waiting for review"),
+        "{late:?}"
+    );
+    clean("waiting for review", &late.text);
+    let late_edit = waiting.call(edit("s.txt", KEY, NEW)).await;
+    assert!(
+        late_edit.is_error && late_edit.text.contains("waiting for review"),
+        "{late_edit:?}"
+    );
+    clean("waiting for review (edit)", &late_edit.text);
+    pending.abort();
+
+    // And no event the chat gets carries it either.
+    for row in events(&mut rx) {
+        clean("event", &format!("{row:?}"));
+    }
+}
+
+// Wd review, applied: the result of an approved edit names the path and counts.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_applied_edit_reports_its_path_and_counts() {
+    let w = world();
+    std::fs::write(w.proj.join("e.txt"), "a\nb\n").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    d.call(edit("e.txt", "b", "c")).await;
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.text.starts_with("applied 1 paths:\nedited "),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("e.txt (+1 -1,"), "{}", out.text);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("e.txt")).unwrap(),
+        "a\nc\n"
+    );
+}
+
+// The host is the trust boundary: an orphan the user could not have reviewed
+// (a truncated diff) is refused here, whatever the caller sends. Nothing is
+// written and the batch stays for the user to discard.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unreviewable_orphan_is_not_applied() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("long.txt", &"x\n".repeat(3000)))
+            .await
+            .is_error
+    );
+    let (id, review) = w.host.review_batch(key(), false).unwrap();
+    assert!(!review.doc().reviewable());
+    let event = w.host.apply_batch(id, false);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: TOO_LARGE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("long.txt").exists());
+    assert_eq!(w.staged(), 1, "the batch stays for the user to discard");
+}
+
+// A turn of the pane is live: the batch is the model's, so an apply that
+// arrives anyway writes nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let event = w.host.apply_batch(id, true);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: super::orphan::LIVE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("a.txt").exists());
+    assert_eq!(w.staged(), 1);
+}
+
+// User decision: a drifted apply writes nothing, leaves the batch proposed
+// for the user, and does not tell the model.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo\n").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+        panic!("done");
+    };
+    assert!(shown.starts_with("refused"), "{shown}");
+    assert_eq!(told, None);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("b.txt")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(w.staged(), 1);
+    let stages = w.host.stages.lock().unwrap();
+    assert_eq!(
+        stages.batch(key()).map(|b| b.state()),
+        Some(crate::core::ai::tools::stage::State::Proposed)
+    );
+}
+
+// Model-facing text of an orphan answer carries counts only: the base of an
+// edit (disk text the model never saw) reaches neither line.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    for apply in [true, false] {
+        let (d, _rx) = w.turn(Script::new(Decision::Sent));
+        assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+        let (id, _) = w.host.review_batch(key(), false).unwrap();
+        let event = if apply {
+            w.host.apply_batch(id, false)
+        } else {
+            w.host.discard_batch(id)
+        };
+        let BatchEvent::Done { shown, told } = event else {
+            panic!("done");
+        };
+        let all = format!("{shown} {}", told.expect("told"));
+        assert!(!all.contains("BASESECRET") && !all.contains("foo"), "{all}");
+        std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    }
+}

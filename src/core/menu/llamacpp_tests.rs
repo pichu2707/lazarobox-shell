@@ -178,6 +178,38 @@ fn a_second_local_model_moves_the_tasks_on_the_first_one_to_it() {
     );
 }
 
+// Spec S12 (managed-llama-server-followups): "si no es bloqueante para usar
+// otros modelos": with a llama-server of another model answering on the
+// port, a local model is still lazarobox's own server.
+#[test]
+fn managed_a_local_model_is_chosen_while_another_server_answers() {
+    let ai = AiConfig::general(None, None).with_managed(ManagedServer {
+        model: PathBuf::from("/m/a.gguf"),
+    });
+    let mut d = detection(&[engine("llamacpp", Status::Available, &["/m/x.gguf"], None)]);
+    d.local_models = vec![PathBuf::from("/m/a.gguf"), PathBuf::from("/m/b.gguf")];
+    let mut m = MenuState::open(&Config::default()).with_ai(ai, Some(d));
+    open(&mut m, "chat");
+    for _ in 0..20 {
+        if cursor_label(&m) == "llamacpp" {
+            break;
+        }
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "b.gguf");
+    send(&mut m, key(KeyCode::Enter));
+    let draft = m.ai_draft();
+    assert_eq!(draft.label(Task::Chat), "llamacpp › /m/b.gguf");
+    assert_eq!(
+        draft.managed(),
+        Some(&ManagedServer {
+            model: PathBuf::from("/m/b.gguf")
+        })
+    );
+}
+
 // Only tasks on a model lazarobox starts move: a name of the user's own stays.
 #[test]
 fn a_task_on_a_name_of_its_own_keeps_it() {

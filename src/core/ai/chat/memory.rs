@@ -138,6 +138,9 @@ pub struct PendingSave {
     editor: u64,
     /// When it was sent: the answer is awaited for `MEMORY_WAIT`.
     since: Instant,
+    /// Sent by the app, not by the user (the rolling summary): its answer
+    /// adds no transcript line and a failure says nothing.
+    pub quiet: bool,
 }
 
 /// The waits that ran out (see `ChatState::expire_waits`).
@@ -161,6 +164,9 @@ pub struct ChatMemory {
     notes: Vec<SavedNote>,
     /// The database id of the conversation, once the store created it.
     conversation: Option<i64>,
+    /// When the store created that conversation in this run. `None` for one
+    /// resumed: it names no lifetime this run knows from message 0.
+    born: Option<i64>,
     link_warned: bool,
     ended: bool,
     pending_saves: Vec<PendingSave>,
@@ -187,6 +193,7 @@ impl ChatMemory {
             session_linked: false,
             notes: Vec::new(),
             conversation: None,
+            born: None,
             link_warned: false,
             ended: false,
             pending_saves: Vec::new(),
@@ -537,7 +544,19 @@ impl ChatState {
             project: project.to_owned(),
             editor: self.memory.editors,
             since: now,
+            quiet: false,
         });
+        id
+    }
+
+    /// `save_sent_at` for a save the app sends on its own. It belongs to no
+    /// note editor, so its answer never closes or fails one.
+    pub fn quiet_save_sent_at(&mut self, project: &str, now: Instant) -> SaveId {
+        let id = self.save_sent_at(project, now);
+        if let Some(save) = self.memory.pending_saves.last_mut() {
+            save.editor = 0;
+            save.quiet = true;
+        }
         id
     }
 
@@ -632,8 +651,27 @@ impl ChatState {
         self.memory.conversation
     }
 
+    /// A conversation the store has not created in this run (a resume).
     pub fn set_conversation(&mut self, conversation: i64) {
         self.memory.conversation = Some(conversation);
+        self.memory.born = None;
+    }
+
+    /// The store just created the conversation, at `created_at` seconds.
+    pub fn set_created(&mut self, conversation: i64, created_at: i64) {
+        self.memory.conversation = Some(conversation);
+        self.memory.born = Some(created_at);
+    }
+
+    /// The engram key of the rolling summary of this conversation, unique for
+    /// its lifetime: the id alone is reused once the conversation is deleted,
+    /// so the creation time joins it. `None` for a resumed conversation: its
+    /// rolling summary is not persisted, so after a resume it covers only the
+    /// later messages and must not replace the fuller one already saved.
+    pub fn summary_key(&self) -> Option<String> {
+        let id = self.memory.conversation?;
+        let born = self.memory.born?;
+        Some(format!("chat/{id}-{born}/summary"))
     }
 
     /// Records a note this conversation saved. The same `topic_key` is an

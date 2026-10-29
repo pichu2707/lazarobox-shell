@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     core::ai::chat::{
-        approval::ApprovalAsk,
+        approval::{ApprovalAsk, Reach},
         engine::{CallId, Decision, Finish, ToolStatus, Tools},
     },
     runtime::tools::{Limits, ToolHost, pending},
@@ -149,9 +149,13 @@ async fn next_result(rx: &mut mpsc::Receiver<Tagged>) -> (PaneId, u64, CallId, T
     }
 }
 
+/// The ask of a cloud read of `~/note.txt`. The chat's root is HOME, too
+/// broad to keep a read in.
 fn note(lab: &Lab) -> Option<ApprovalAsk> {
     Some(ApprovalAsk::Read {
         path: lab.home.join("note.txt").to_str().unwrap().into(),
+        reach: Reach::Broad,
+        cloud: true,
     })
 }
 
@@ -623,4 +627,130 @@ async fn a_turn_on_ollama_closes_the_cli_session_the_pane_had() {
     chats.send(pane(1), 2, req);
     assert!(chats.session(pane(1)).is_none());
     assert!(!socket.exists(), "the old socket is still there");
+}
+
+// Spec (chat-pane, Closing discards a batch): a closed chat loses its staged
+// batch and says how many entries; the disk is untouched and other chats keep
+// theirs.
+fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
+    let (tx, rx) = mpsc::channel(64);
+    // Nothing reads the events of a staging call: the channel only has to stay open.
+    std::mem::forget(rx);
+    let proj = lab.home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mut scope = TurnScope::new(tx, crate::core::ai::tools::Locality::Local, proj);
+    scope.families = crate::core::ai::tools::registry::FamilySet::LEGACY
+        .with(crate::core::ai::tools::registry::Family::Write);
+    scope.stage_key = Some(StageKey::Pane(pane));
+    lab.host.dispatch(scope)
+}
+
+async fn stage(dispatch: &Arc<dyn Dispatch>, path: &str, content: &str) {
+    let call = crate::core::ai::tools::Call::WriteFile {
+        path: path.into(),
+        content: content.into(),
+    };
+    let out = dispatch.call(call).await;
+    assert!(!out.is_error, "{out:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    stage(&one, "b.txt", "y").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "c.txt", "z").await;
+    assert_eq!(chats.close_batch(pane(1)), Some(2));
+    assert_eq!(chats.close_batch(pane(1)), None, "nothing left to discard");
+    assert!(
+        !lab.home.join("proj/a.txt").exists(),
+        "the close writes nothing"
+    );
+    assert_eq!(
+        chats.close_batch(pane(2)),
+        Some(1),
+        "the other chat kept its batch"
+    );
+    assert_eq!(chats.close_batch(pane(3)), None);
+}
+
+// Spec (code-write, Orphan, close and quit): the user reviews, applies or
+// discards what a turn left behind, through the chats. While a turn runs the
+// batch is the model's, not an orphan.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "b.txt", "y").await;
+
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(chats.review_batch(pane(1)), None, "a running turn owns it");
+    chats.cancel(pane(1));
+    let Some(BatchEvent::Review(id, review)) = chats.review_batch(pane(1)) else {
+        panic!("a cancelled turn leaves an orphan");
+    };
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    assert_eq!(
+        chats.apply_batch(id),
+        Some(BatchEvent::Done {
+            shown: "applied 1 paths".into(),
+            told: Some("The user applied the batch you left staged: applied 1 paths.".into()),
+        })
+    );
+    assert_eq!(std::fs::read_to_string(proj.join("a.txt")).unwrap(), "x");
+
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(2)) else {
+        panic!("an orphan");
+    };
+    let done = chats.discard_batch(id);
+    let told = "The user discarded the batch you left staged (1 entry).";
+    assert_eq!(
+        done,
+        Some(BatchEvent::Done {
+            shown: "discarded 1 staged entry".into(),
+            told: Some(told.into()),
+        })
+    );
+    assert!(!proj.join("b.txt").exists());
+    assert_eq!(chats.close_batch(pane(2)), None);
+    assert_eq!(chats.review_batch(pane(3)), None);
+}
+
+// The pane badge (chat-pane, "Staged batch indicator") is polled from the
+// store: a batch is staged while a turn of its pane runs and an orphan once
+// no turn does; closing the chat clears it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
+    use crate::core::ai::chat::review::Badge;
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    assert!(chats.batch_badges().unwrap().is_empty());
+    let (bare, _rx) = (Chats::new(idle(), mpsc::channel(APP_CHANNEL).0), ());
+    assert_eq!(bare.batch_badges(), None, "no tooling, nothing to poll");
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    stage(&one, "b.txt", "y").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "c.txt", "z").await;
+
+    chats.send(pane(1), 1, request(""));
+    let badges = chats.batch_badges().unwrap();
+    assert_eq!(badges[&pane(1)], Badge::Staged(2), "its turn runs");
+    assert_eq!(badges[&pane(2)], Badge::Orphan(1), "no turn runs");
+    chats.cancel(pane(1));
+    assert_eq!(chats.batch_badges().unwrap()[&pane(1)], Badge::Orphan(2));
+    chats.close_batch(pane(1));
+    let badges = chats.batch_badges().unwrap();
+    assert!(!badges.contains_key(&pane(1)), "{badges:?}");
+    assert_eq!(badges.len(), 1);
 }

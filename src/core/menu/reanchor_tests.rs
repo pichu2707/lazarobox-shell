@@ -26,7 +26,7 @@ fn the_cursor_stays_on_a_row_that_became_disabled() {
     assert_eq!(cursor_label(&m), "llama3:8b");
     let draft = m.ai_draft();
     m.set_engines(ollama(&["x:1", "y:2"]));
-    assert_eq!(title(&m), "Model for code (ollama) 3/13");
+    assert_eq!(title(&m), "Model for code (ollama) 3/14");
     assert_eq!(cursor_label(&m), "llama3:8b");
     let rows = m.rows(&Config::default());
     assert!(
@@ -50,7 +50,8 @@ fn the_cursor_is_clamped_when_its_row_is_gone() {
     assert_eq!(cursor_label(&m), "claude");
     m.set_engines(ollama(&["llama3:8b"]));
     assert_eq!(title(&m), "Engine for code");
-    assert_eq!(cursor_label(&m), "ollama", "the last row left");
+    assert_eq!(cursor_label(&m), "llamacpp", "the last row left");
+    assert_eq!(m.rows(&Config::default()).len(), 4, "rows left");
     assert_eq!(m.ai_draft(), AiConfig::default());
 }
 

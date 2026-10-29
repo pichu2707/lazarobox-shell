@@ -8,6 +8,7 @@ const ACKED: MemoryConfig = MemoryConfig {
     enabled: false,
     acknowledged: true,
     port: 7437,
+    save_summaries: false,
 };
 
 fn menu_with(memory: MemoryConfig) -> MenuState {
@@ -100,7 +101,7 @@ fn warned() -> MenuState {
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
 fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 8];
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 9];
     assert_eq!(memory.label, "Memory");
     let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
@@ -127,6 +128,7 @@ fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
             "Git",
             "Git write",
             "Approval",
+            "Hugging Face",
         ]
     );
 }
@@ -152,14 +154,16 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Git",
         "Git write",
         "Approval",
+        "Hugging Face",
         "Set all tasks",
     ] {
         press(&mut menu, KeyCode::Char('j'));
         assert_eq!(selected_label(&menu), label);
     }
     press(&mut menu, KeyCode::Char('k'));
-    assert_eq!(selected_label(&menu), "Approval");
+    assert_eq!(selected_label(&menu), "Hugging Face");
     for label in [
+        "Approval",
         "Git write",
         "Git",
         "Exec",
@@ -418,6 +422,7 @@ fn turning_off_an_enabled_memory_edits_only_enabled() {
         enabled: true,
         acknowledged: true,
         port: 8123,
+        save_summaries: false,
     };
     let mut menu = menu_with(on);
     assert!(menu.edits(&Config::default()).is_empty());
@@ -468,6 +473,7 @@ const HAND_EDITED: MemoryConfig = MemoryConfig {
     enabled: true,
     acknowledged: false,
     port: 7437,
+    save_summaries: false,
 };
 
 #[test]

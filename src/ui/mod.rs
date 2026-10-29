@@ -25,6 +25,17 @@ impl From<Rect> for ratatui::layout::Rect {
     }
 }
 
+impl From<ratatui::layout::Rect> for Rect {
+    fn from(rect: ratatui::layout::Rect) -> Self {
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }
+    }
+}
+
 /// Draws the tab bar (with several tabs), every pane in its tile, the
 /// separators between them, the statusline and, in MENU, the popup. Only the focused pane places the real cursor.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
@@ -58,19 +69,24 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             PaneView::Chat(chat) => {
                 let guidance = app.chat_guidance(id);
                 let approval = app.approval_prompt(id);
+                let marks = (id == focused).then(|| app.chat_copy_marks()).flatten();
                 let chat_view = ChatView::new(chat, theme)
+                    .now(app.now())
                     .guidance(guidance.as_deref())
-                    .approval(approval.as_ref());
-                // The composer owns the real cursor of a focused chat; MENU
+                    .approval(approval.as_ref())
+                    .copy(marks);
+                // The composer owns the real cursor of a focused chat, and the
+                // COPY cursor on the transcript replaces it in chat COPY. MENU
                 // hides it like it hides a shell's.
-                // Chat COPY scrolls the transcript and edits nothing: no cursor.
-                let cursor = (id == focused
-                    && app.menu().is_none()
-                    && !matches!(app.input(), InputMode::ChatCopy(_)))
-                .then(|| chat_view.cursor(area))
-                .flatten();
+                let chat_copy = matches!(app.input(), InputMode::ChatCopy(_));
+                let cursor =
+                    (id == focused && app.menu().is_none() && (!chat_copy || marks.is_some()))
+                        .then(|| chat_view.cursor(area))
+                        .flatten();
+                let review = chat_view.review_shown();
                 frame.render_widget(chat_view, area);
-                if let Some(offset) = app.scrolled_by(id) {
+                // The review hides the transcript the badge speaks of.
+                if !review && let Some(offset) = app.scrolled_by(id) {
                     frame.render_widget(ScrollBadge::new(offset, theme), area);
                 }
                 if let Some(position) = cursor {
@@ -119,16 +135,21 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let thinking = pick_stream(&streams, focused)
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
-    let line = |path| {
+    let download = app.status_download();
+    let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
+            .context(app.status_context())
             .update(app.status_update())
+            .download(download.as_deref())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.scroll_position())
             .marker(app.copy_selection_kind())
     };
+    let label = app.status_label(plain("").label_room(status.width));
+    let line = |path| plain(path).label(label.as_deref());
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
 
@@ -531,6 +552,24 @@ mod tests {
         );
     }
 
+    // Spec S7: the quit prompt names what still runs, fitted to the width.
+    #[test]
+    fn the_quit_prompt_names_what_still_runs_within_the_width() {
+        let jobs = AppEvent::StillRunning(vec!["sleep 77".into(), "npm run dev".into()]);
+        for (cols, shown) in [
+            (100, "Quit? still running: sleep 77, npm run dev (y/n)"),
+            (40, "Quit? 2 still running (y/n)"),
+            (20, "Quit? (y/n)"),
+        ] {
+            let mut app = App::new(cols, 3);
+            press(&mut app, ' ', KeyModifiers::CONTROL);
+            keys(&mut app, "q");
+            app.update(jobs.clone());
+            let line = status(&app);
+            assert!(line.contains(shown), "{cols}: {line:?}");
+        }
+    }
+
     // Spec: Root hint clipped and cleared; Narrow width.
     #[test]
     fn a_narrow_statusline_clips_the_hint_by_whole_entries_and_never_panics() {
@@ -842,14 +881,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 24 rows: the popup with its AI section is 22 rows high, centred.
-        let app = menu_app(64, 24);
-        let (buf, _) = draw_at(&app, 64, 24);
+        // 25 rows: the popup with its AI section is 23 rows high, centred.
+        let app = menu_app(64, 25);
+        let (buf, _) = draw_at(&app, 64, 25);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 23).contains("MENU"), "{:?}", row(&buf, 23));
+        assert!(row(&buf, 24).contains("MENU"), "{:?}", row(&buf, 24));
         insta::assert_snapshot!(
-            (0..24)
+            (0..25)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")

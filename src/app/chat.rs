@@ -4,7 +4,7 @@
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
-    engine::{Availability, availability},
+    engine::{Availability, Tools, availability, tools_for},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -86,6 +86,16 @@ impl App {
         self.focused_state().chat_state().map(ChatState::mem_badge)
     }
 
+    /// How full the focused chat's context was at its last send, in percent.
+    pub fn status_context(&self) -> Option<u8> {
+        let Availability::Ready { engine, model } = self.chat_availability() else {
+            return None;
+        };
+        self.focused_state()
+            .chat_state()
+            .and_then(|chat| chat.context_percent(&engine, model.as_deref()))
+    }
+
     /// The animation frame the indicator is drawn at.
     pub fn anim_frame(&self) -> usize {
         self.anim_frame
@@ -108,9 +118,12 @@ impl App {
     }
 
     /// A key in TERMINAL with a chat pane focused. Nothing here reaches a
-    /// PTY, and a key the table does not list is swallowed. A held key keeps
-    /// editing and scrolling but never sends, cancels, yanks or toggles.
+    /// PTY, and a key the table does not list is swallowed. `repeat` marks a
+    /// held key, a Repeat or the same key again within the hold window (see
+    /// `Hold`): it keeps editing and scrolling but never sends, cancels,
+    /// yanks, toggles, saves or answers. Ctrl+H is Backspace in every field.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let key = backspace_alias(key);
         let id = self.tab().focus;
         // A pending approval takes every key first.
         if self.has_approval(id) {
@@ -118,31 +131,24 @@ impl App {
         }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
-        // its keys to a question it hides.
+        // its keys to a question it hides. A held key never answers it.
+        let offered = if repeat {
+            KeyEvent {
+                kind: KeyEventKind::Repeat,
+                ..key
+            }
+        } else {
+            key
+        };
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
-            && let Some(effects) = self.answer_server_offer(key)
+            && let Some(effects) = self.answer_server_offer(offered)
         {
             return effects;
         }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
-        let debounced = matches!(
-            (key.code, mods),
-            (KeyCode::Esc, KeyModifiers::NONE)
-                | (
-                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's'),
-                    KeyModifiers::CONTROL
-                )
-        );
-        // A held key arrives as Repeat (Kitty) or as Presses close together.
-        let repeat = if debounced {
-            self.held_chat_key_dropped(&key, repeat)
-        } else {
-            self.held_chat_key = None;
-            repeat
-        };
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -175,6 +181,7 @@ impl App {
             (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_toggle_reasoning(), self)
             }
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) => one_shot(App::chat_review_orphan, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
             (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
@@ -190,24 +197,6 @@ impl App {
             (KeyCode::End, _) if plain => self.edit_composer(|c| c.end()),
             _ => Vec::new(),
         }
-    }
-
-    /// Whether `key`, a debounced one-shot chat key, is part of a hold: a
-    /// Repeat, or the same key again within `HELD_EXIT_WINDOW` of the last
-    /// such event (every event of the hold renews the window).
-    fn held_chat_key_dropped(&mut self, key: &KeyEvent, repeat: bool) -> bool {
-        let now = (self.clock)();
-        let held = self.held_chat_key.is_some_and(|h| {
-            h.code == key.code
-                && h.modifiers == key.modifiers
-                && now.saturating_duration_since(h.last) <= HELD_EXIT_WINDOW
-        });
-        self.held_chat_key = Some(HeldExit {
-            code: key.code,
-            modifiers: key.modifiers,
-            last: now,
-        });
-        repeat || held
     }
 
     /// A paste into the focused chat's composer.
@@ -311,6 +300,25 @@ impl App {
         let Some(system) = chat.prompt().map(str::to_owned) else {
             return Vec::new();
         };
+        // The engine's own window sizes the turn; unknown keeps the char caps.
+        let window = match availability {
+            Availability::Ready { engine, .. } => {
+                self.engines.as_ref().and_then(|d| d.window(engine))
+            }
+            _ => None,
+        };
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        chat.set_window(window);
+        // The tool schemas weigh on the budget only when the turn offers them.
+        let tools = match availability {
+            Availability::Ready { engine, .. } => {
+                tools_for(engine, self.ai.tools_enabled(), None, self.tool_engines) != Tools::Off
+            }
+            _ => false,
+        };
+        chat.set_tools_offered(tools);
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 chat.composer_mut().clear();
@@ -384,8 +392,9 @@ impl App {
         effects
     }
 
-    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block).
-    fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
+    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block), from the
+    /// composer or chat COPY.
+    pub(super) fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
         let Some(chat) = self.focused_state().chat_state() else {
             return Vec::new();
         };
@@ -398,19 +407,7 @@ impl App {
             self.notice = Some("Nothing to copy".to_string());
             return Vec::new();
         };
-        match osc52(&text) {
-            Ok(sequence) => {
-                self.notice = Some(match text.chars().count() {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
-                self.notice = Some("Selection too large to copy".to_string());
-                Vec::new()
-            }
-        }
+        self.copy_to_clipboard(&text)
     }
 
     /// The transcript rows really drawn in chat `id`: the pane less its

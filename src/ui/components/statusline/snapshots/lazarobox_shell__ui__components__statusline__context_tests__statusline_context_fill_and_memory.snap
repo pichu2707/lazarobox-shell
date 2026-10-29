@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/context_tests.rs
+expression: "draw(Some(100), Some(MemBadge::Ready), None, 90).trim_end()"
+---
+ ◐ CHAT  /srv/app                          llamacpp › qwen · context 100% · mem: ready

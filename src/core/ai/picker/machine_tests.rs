@@ -3,6 +3,7 @@ use crate::core::ai::EngineState;
 
 pub(super) fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| m.to_string()).collect(),
@@ -95,9 +96,12 @@ fn step_lands_on_disabled_rows() {
     assert!(rows[0].enabled && !rows[1].enabled);
     p.step(true, &draft, Some(&d));
     assert_eq!(p.cursor(), 1);
+    // Up from the first row wraps to the download row, then the last
+    // curated row, which is disabled.
     p.step(false, &draft, Some(&d));
     p.step(false, &draft, Some(&d));
-    assert_eq!(p.cursor(), rows.len() - 1);
+    p.step(false, &draft, Some(&d));
+    assert_eq!(p.cursor(), rows.len() - 2);
     assert!(!rows[p.cursor()].enabled);
 }
 
@@ -145,9 +149,14 @@ fn models_open_on_the_first_selectable_when_current_is_disabled() {
 
 #[test]
 fn models_open_on_the_first_row_when_nothing_is_selectable() {
-    let d = det(&[]);
+    // A running Ollama always offers its download row; LM Studio with no
+    // model has nothing to choose.
+    let d = Detection {
+        engines: vec![state("lmstudio", Status::Available, &[])],
+        ..Default::default()
+    };
     let draft = AiConfig::default();
-    let mut p = at_models(&draft, &d, "ollama");
+    let mut p = at_models(&draft, &d, "lmstudio");
     let rows = p.rows(&draft, Some(&d));
     assert!(rows.iter().all(|r| !r.enabled));
     assert_eq!(p.cursor(), 0);

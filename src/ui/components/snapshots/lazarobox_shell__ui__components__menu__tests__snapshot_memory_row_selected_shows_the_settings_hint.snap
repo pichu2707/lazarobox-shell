@@ -20,6 +20,7 @@ expression: shown
 │ Git                                                    off │
 │ Git write                                              off │
 │ Approval                                               ask │
+│ Hugging Face                                 not connected │
 │                                                            │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │

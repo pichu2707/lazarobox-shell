@@ -2,13 +2,22 @@
 //! in the statusline.
 
 use super::*;
+use crate::core::ai::chat::review_view::Move;
 use crate::core::mouse::{PaneFacts, WHEEL_STEP, WheelAction, WheelDir, route_wheel};
-use ratatui::crossterm::event::MouseEventKind;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
 /// The COPY key hint of a shell pane.
 const SHELL_COPY_HINT: [&str; 4] = ["j/k scroll", "v select", "y copy", "Esc exit"];
-/// The COPY key hint of a chat pane: no selection or yank.
-const CHAT_COPY_HINT: [&str; 2] = ["j/k scroll", "Esc exit"];
+/// The COPY key hint of a chat pane: the shell's keys plus the chat's own
+/// copies. `j/k move` (not `scroll`) keeps it whole in a 100-column terminal.
+const CHAT_COPY_HINT: [&str; 6] = [
+    "j/k move",
+    "v select",
+    "y copy",
+    "^Y answer",
+    "^B code",
+    "Esc exit",
+];
 
 /// Whether the cell `(x, y)` is inside `rect`.
 fn rect_has(rect: &Rect, x: u16, y: u16) -> bool {
@@ -58,8 +67,12 @@ impl App {
         }
     }
 
-    /// A mouse event: only a vertical wheel tick over a pane does anything.
+    /// A mouse event: a vertical wheel tick over a pane, or a left click on
+    /// a link line of the open menu.
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            return self.on_click(mouse);
+        }
         let dir = match mouse.kind {
             MouseEventKind::ScrollUp => WheelDir::Up,
             MouseEventKind::ScrollDown => WheelDir::Down,
@@ -82,6 +95,16 @@ impl App {
         else {
             return Vec::new();
         };
+        // A review covers the pane: the wheel reads it, nothing is hidden
+        // under it to scroll and no other mouse event reaches it.
+        if self.batch_pending(id) {
+            let by = match dir {
+                WheelDir::Up => Move::Up,
+                WheelDir::Down => Move::Down,
+            };
+            self.scroll_review(id, by);
+            return Vec::new();
+        }
         let (col, row) = (mouse.column - rect.x, mouse.row - rect.y);
         let Some(facts) = self.wheel_facts(id) else {
             return Vec::new();
@@ -105,6 +128,24 @@ impl App {
             }
             WheelAction::Ignore => Vec::new(),
         }
+    }
+
+    /// A left click: only the open menu takes it (open-links S2), and acts
+    /// only on a link line. Elsewhere a click is not the app's.
+    fn on_click(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if !self.config.mouse || self.input != InputMode::Menu {
+            return Vec::new();
+        }
+        let Some(menu) = self.menu.as_mut() else {
+            return Vec::new();
+        };
+        menu.set_term(self.term.0, self.term.1);
+        let command = menu.on_click(&self.config, mouse.column, mouse.row);
+        if command == MenuCommand::None {
+            return Vec::new();
+        }
+        self.dirty = true;
+        self.on_menu_command(command)
     }
 
     /// What routing needs to know about pane `id`; `None` for a chat that
@@ -151,8 +192,13 @@ impl App {
         self.dirty |= state != before;
     }
 
-    /// One wheel tick on chat `id`: the transcript moves by whole lines.
+    /// One wheel tick on chat `id`: the transcript moves by whole lines. In
+    /// chat COPY the cursor stays on a visible row.
     fn scroll_chat_by_wheel(&mut self, id: PaneId, dir: WheelDir) {
+        if id == self.tab().focus && matches!(self.input, InputMode::ChatCopy(_)) {
+            self.dirty |= self.wheel_chat_copy(dir);
+            return;
+        }
         let rows = self.chat_viewport(id);
         let Some(state) = self.panes.get_mut(&id) else {
             return;

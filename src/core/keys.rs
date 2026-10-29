@@ -2,6 +2,10 @@
 //!
 //! No IO, no state. Only xterm-style sequences are produced; the Kitty keyboard
 //! protocol is deliberately not used. Prefix and quit handling belong to the app layer.
+//! Also the two key rules every view shares: [`Hold`] tells a held key from a
+//! new press, and [`backspace_alias`] reads Ctrl+H as Backspace in text fields.
+
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -56,7 +60,7 @@ pub fn encode_key(key: KeyEvent, modes: TermModes) -> Option<Vec<u8>> {
         KeyCode::PageUp => return Some(csi("5", '~')),
         KeyCode::PageDown => return Some(csi("6", '~')),
         KeyCode::F(n @ 1..=4) => {
-            let final_byte = [b'P', b'Q', b'R', b'S'][usize::from(n) - 1] as char;
+            let final_byte = b"PQRS"[usize::from(n) - 1] as char;
             return Some(if modified {
                 csi("1", final_byte)
             } else {
@@ -164,6 +168,63 @@ fn strip_marker(input: &[u8], marker: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// How long after a key event a Press of the same key is taken as the key
+/// still being held: OS auto-repeat arrives as plain Presses when the terminal
+/// reports no event types (no keyboard enhancement flags are pushed).
+/// Trade-off: a deliberate retype of the same key within this window is
+/// dropped where only a Press may act.
+pub const HOLD_WINDOW: Duration = Duration::from_millis(500);
+
+/// The last key event, to tell a held key from a new press. The clock is the
+/// caller's, so the rule stays deterministic.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Hold {
+    last: Option<(KeyCode, KeyModifiers, Instant)>,
+}
+
+impl Hold {
+    /// Records `key` (a Press or a Repeat) at `now` and says whether it is
+    /// part of a hold: a Repeat, or the same key and modifiers as the previous
+    /// event within [`HOLD_WINDOW`] of it (inclusive). Every event of a hold
+    /// renews the window; any other key ends it.
+    pub fn track(&mut self, key: &KeyEvent, now: Instant) -> bool {
+        let same = self.last.is_some_and(|(code, mods, last)| {
+            code == key.code
+                && mods == key.modifiers
+                && now.saturating_duration_since(last) <= HOLD_WINDOW
+        });
+        self.last = Some((key.code, key.modifiers, now));
+        key.kind == KeyEventKind::Repeat || same
+    }
+
+    /// A Release of `code` ends its hold.
+    pub fn release(&mut self, code: KeyCode) {
+        if self.last.is_some_and(|(last, ..)| last == code) {
+            self.last = None;
+        }
+    }
+
+    /// Ends any hold, for an event that is not a key (a paste).
+    pub fn end(&mut self) {
+        self.last = None;
+    }
+}
+
+/// Ctrl+H as Backspace, for text fields: a terminal that sends `^H` (0x08)
+/// for Backspace delivers it as Ctrl+H. Shell panes never use it: they get
+/// the byte as it came.
+pub fn backspace_alias(key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL {
+        KeyEvent {
+            code: KeyCode::Backspace,
+            modifiers: KeyModifiers::NONE,
+            ..key
+        }
+    } else {
+        key
+    }
 }
 
 #[cfg(test)]
@@ -569,5 +630,87 @@ mod tests {
             encode_paste("x\x1b[2\x1b[201~01~y", BRACKETED),
             b"\x1b[200~xy\x1b[201~".to_vec()
         );
+    }
+
+    fn ev(code: KeyCode, mods: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        ev(code, KeyModifiers::NONE, KeyEventKind::Press)
+    }
+
+    #[test]
+    fn a_press_of_the_same_key_within_the_window_is_the_hold() {
+        let t0 = Instant::now();
+        let mut hold = Hold::default();
+        let y = press(c('y'));
+        assert!(!hold.track(&y, t0), "the first press is new");
+        assert!(hold.track(&y, t0 + Duration::from_millis(30)));
+        // Every event of the hold renews the window, inclusive.
+        let at_edge = t0 + Duration::from_millis(30) + HOLD_WINDOW;
+        assert!(hold.track(&y, at_edge));
+        let after = at_edge + HOLD_WINDOW + Duration::from_millis(1);
+        assert!(
+            !hold.track(&y, after),
+            "a gap over the window is a new press"
+        );
+    }
+
+    #[test]
+    fn a_repeat_is_always_the_hold() {
+        let t0 = Instant::now();
+        let mut hold = Hold::default();
+        let repeat = ev(c('j'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(hold.track(&repeat, t0));
+    }
+
+    #[test]
+    fn another_key_a_release_or_a_paste_ends_the_hold() {
+        let t0 = Instant::now();
+        let y = press(c('y'));
+        let mut hold = Hold::default();
+        hold.track(&y, t0);
+        assert!(!hold.track(&press(c('n')), t0));
+        assert!(!hold.track(&y, t0), "y after n is new");
+        hold.release(c('n'));
+        assert!(
+            hold.track(&y, t0),
+            "a release of another key changes nothing"
+        );
+        hold.release(c('y'));
+        assert!(!hold.track(&y, t0));
+        hold.end();
+        assert!(!hold.track(&y, t0));
+        // The same code with other modifiers is another key.
+        let ctrl_y = ev(c('y'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        assert!(!hold.track(&ctrl_y, t0));
+    }
+
+    #[test]
+    fn ctrl_h_reads_as_backspace_and_other_keys_are_untouched() {
+        for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
+            let ctrl_h = ev(c('h'), KeyModifiers::CONTROL, kind);
+            assert_eq!(
+                backspace_alias(ctrl_h),
+                ev(KeyCode::Backspace, KeyModifiers::NONE, kind)
+            );
+        }
+        for key in [
+            press(c('h')),
+            ev(
+                c('h'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                KeyEventKind::Press,
+            ),
+            ev(c('j'), KeyModifiers::CONTROL, KeyEventKind::Press),
+        ] {
+            assert_eq!(backspace_alias(key), key);
+        }
     }
 }

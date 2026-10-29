@@ -84,3 +84,37 @@ fn the_golden_is_not_vacuous() {
     assert!(PARSE_ERRORS.contains("=> unexpected argument"));
     assert!(PARSE_ERRORS.contains("=> argument too long"));
 }
+
+// Spec (code-write, Family and toggle; agent-tools, Off equals 0.18.0): with
+// every toggle off a write tool is not listed and a call to it is answered
+// byte for byte like a name that does not exist.
+#[test]
+fn a_write_tool_with_the_toggle_off_is_answered_like_an_unknown_name() {
+    let call = |name: &str, args: Value| {
+        let mut server = Server::new(registry(&[]));
+        let line = |id: u64, method: &str, params: Value| {
+            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
+        };
+        server.handle(&line(
+            1,
+            "initialize",
+            json!({"protocolVersion": "2025-06-18"}),
+        ));
+        let params = json!({"name": name, "arguments": args});
+        match server.handle(&line(2, "tools/call", params)) {
+            Action::Reply(value) => value.to_string(),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    };
+    let unknown = call("bash", json!({"path": "a"}));
+    assert!(unknown.contains("unknown tool"), "{unknown}");
+    for (name, args) in [
+        ("create_dir", json!({"path": "d"})),
+        ("write_file", json!({"path": "a", "content": "x"})),
+        ("edit_file", json!({"path": "a", "old": "x", "new": "y"})),
+        ("propose_batch", json!({})),
+    ] {
+        assert_eq!(call(name, args), unknown, "{name}");
+        assert!(!TOOLS_LIST.contains(name), "{name}");
+    }
+}

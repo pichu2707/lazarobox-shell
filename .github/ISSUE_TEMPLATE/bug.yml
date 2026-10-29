@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in lazarobox does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. From lazarobox itself, **Menu ▸ Feedback** fills this form with your environment.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, with any error message as it appeared.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open lazarobox in …
+        2. Press …
+        3. …
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The lazarobox version, the OS (and WSL), the shell, the terminal and the AI engines involved.
+      placeholder: |
+        lazarobox 0.25.1 · Linux (WSL2) · zsh · Windows Terminal
+        engines: ollama available · llamacpp available
+      render: text
+    validations:
+      required: true

@@ -63,7 +63,7 @@ const ANGLE: char = '\u{2039}';
 /// Strips the filler characters and escapes every `<`, so no tag of any
 /// spelling, visible or look-alike, can exist in the data: only the two
 /// delimiters of the block hold a `<`.
-fn neutralize(text: String) -> String {
+pub(crate) fn neutralize(text: String) -> String {
     text.chars()
         .filter(|&c| !is_filler(c))
         .map(|c| if c == '<' { ANGLE } else { c })

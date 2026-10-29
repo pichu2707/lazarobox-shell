@@ -50,17 +50,17 @@ async fn collect(mut rx: mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
 
 /// Accepts one connection, records its request and relays what the test feeds.
 /// Any further connection is counted and dropped.
-struct Fake {
-    port: u16,
+pub(crate) struct Fake {
+    pub(crate) port: u16,
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
     connections: Arc<AtomicUsize>,
     feed: Option<mpsc::UnboundedSender<Vec<u8>>>,
-    request_read: Arc<Notify>,
-    closed: Arc<Notify>,
+    pub(crate) request_read: Arc<Notify>,
+    pub(crate) closed: Arc<Notify>,
 }
 
 impl Fake {
-    async fn start() -> Self {
+    pub(crate) async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (feed, fed) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -124,20 +124,20 @@ impl Fake {
         fake
     }
 
-    fn send(&self, bytes: &[u8]) {
+    pub(crate) fn send(&self, bytes: &[u8]) {
         let _ = self.feed.as_ref().unwrap().send(bytes.to_vec());
     }
 
     /// Ends the reply: the server shuts its side down once all is sent.
-    fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.feed = None;
     }
 
-    fn connections(&self) -> usize {
+    pub(crate) fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
 
-    fn request(&self) -> String {
+    pub(crate) fn request(&self) -> String {
         let requests = self.requests.lock().unwrap();
         String::from_utf8(requests.first().expect("no request").clone()).unwrap()
     }
@@ -242,6 +242,25 @@ async fn a_non_200_gives_the_status_and_a_message_of_at_most_200_chars() {
     };
     assert!(message.starts_with("HTTP 404"), "{message}");
     assert!(message.chars().count() <= ERROR_MESSAGE_CAP, "{message}");
+}
+
+#[tokio::test]
+async fn the_recorded_no_jinja_rejection_keeps_tools_and_jinja_inside_the_cap() {
+    let mut fake = Fake::start().await;
+    fake.send(include_bytes!(
+        "../../../tests/fixtures/llamacpp/no-jinja-tools.http"
+    ));
+    fake.close();
+    let events = turn(fake.port, "/v1/chat/completions", b"{}").await;
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        message,
+        "HTTP 500: {\"error\":{\"code\":500,\"message\":\"tools param requires --jinja flag\",\"type\":\"server_error\"}}"
+    );
+    let at = |w: &str| message.find(w).expect(w);
+    assert!(at("tools") < ERROR_MESSAGE_CAP && at("jinja") < ERROR_MESSAGE_CAP);
 }
 
 #[tokio::test]

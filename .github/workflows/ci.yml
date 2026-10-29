@@ -128,9 +128,12 @@ jobs:
   # blocks a merge: a geo block, rate limit or Cloudflare challenge is an
   # annotated skip in the test, and `continue-on-error` covers the rest. The
   # version is the one the #180 tester runs. The `check` job does not install
-  # codex, so its plain `cargo test` skips this test there.
+  # codex, so its plain `cargo test` skips this test there. It runs on pushes
+  # to main only: macOS runners queue for long on every PR, and a job that
+  # never blocks a merge is not worth that wait.
   real-cli-macos:
     name: Real codex (${{ matrix.name }})
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     continue-on-error: true

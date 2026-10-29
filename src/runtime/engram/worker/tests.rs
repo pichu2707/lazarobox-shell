@@ -251,6 +251,7 @@ fn save(n: u32, session: Option<&str>) -> MemCmd {
             title: "Use Axum".into(),
             content: "We chose Axum.".into(),
         },
+        topic_key: None,
     }
 }
 

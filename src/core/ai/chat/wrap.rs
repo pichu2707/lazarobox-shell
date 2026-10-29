@@ -104,7 +104,7 @@ pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<Range<usize>> {
 
 /// Where the row that starts at cluster `start` ends: as many clusters as
 /// fit in `width` columns, and at least one.
-fn row_end(cl: &[Cluster], start: usize, width: usize) -> usize {
+pub fn row_end(cl: &[Cluster], start: usize, width: usize) -> usize {
     let width = width.max(1);
     let mut used = 0;
     let mut end = start;

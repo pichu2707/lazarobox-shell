@@ -31,9 +31,17 @@ pub trait StreamDecoder {
     fn finish(&mut self) -> Vec<StreamEvent>;
 }
 
+/// A decoder that also collects the tool calls of a reply.
+pub trait ToolCalls {
+    /// The calls of the reply, in order, after a clean end; the decoder
+    /// forgets them. Empty before the end, after an error and after a
+    /// truncated stream.
+    fn take_calls(&mut self) -> Vec<ToolRequest>;
+}
+
 /// Splits bytes into lines at `\n`, dropping a trailing `\r`. A line over the
 /// cap is reported once and the buffer is dropped.
-pub(super) struct Lines {
+pub(crate) struct Lines {
     buf: Vec<u8>,
     /// Leading bytes of `buf` already known to hold no newline.
     scanned: usize,
@@ -41,10 +49,10 @@ pub(super) struct Lines {
 }
 
 /// A line was longer than the cap.
-pub(super) struct TooLong;
+pub(crate) struct TooLong;
 
 impl Lines {
-    pub(super) fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             buf: Vec::new(),
             scanned: 0,
@@ -52,7 +60,7 @@ impl Lines {
         }
     }
 
-    pub(super) fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         let mut start = 0;
@@ -82,7 +90,7 @@ impl Lines {
     }
 
     /// The last line, when the stream ended without a newline.
-    pub(super) fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
+    pub(crate) fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
         self.scanned = 0;
         let buf = std::mem::take(&mut self.buf);
         let line = trim_cr(&buf);
@@ -206,16 +214,17 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
     (events, Some(value))
 }
 
-/// Events of one SSE `data` payload.
-fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
+/// Events of one SSE `data` payload, and its JSON when it parsed and is not an
+/// error. One parse feeds both, so events and tool calls cannot disagree.
+fn sse_decode(data: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
     if data.trim_ascii() == b"[DONE]" {
-        return vec![StreamEvent::Done(Finish::Stop)];
+        return (vec![StreamEvent::Done(Finish::Stop)], None);
     }
     let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(data)) else {
-        return vec![malformed()];
+        return (vec![malformed()], None);
     };
     if let Some(error) = server_error(&value) {
-        return vec![error];
+        return (vec![error], None);
     }
     let choice = &value["choices"][0];
     let mut events: Vec<StreamEvent> = delta(choice["delta"]["content"].as_str())
@@ -224,7 +233,7 @@ fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
     if let Some(reason) = choice["finish_reason"].as_str() {
         events.push(StreamEvent::Done(finish_reason(Some(reason))));
     }
-    events
+    (events, Some(value))
 }
 
 /// Decodes Ollama `/api/chat` replies, one JSON object per line.
@@ -447,6 +456,12 @@ impl OllamaToolDecoder {
     }
 }
 
+impl ToolCalls for OllamaToolDecoder {
+    fn take_calls(&mut self) -> Vec<ToolRequest> {
+        Self::take_calls(self)
+    }
+}
+
 impl StreamDecoder for OllamaToolDecoder {
     fn feed(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
         let mut out = Vec::new();
@@ -484,6 +499,8 @@ pub struct SseParser {
     data: Option<Vec<u8>>,
     cap: usize,
     ended: bool,
+    /// Collects `delta.tool_calls`; `None` for a text-only stream.
+    calls: Option<openai::Calls>,
 }
 
 impl SseParser {
@@ -493,6 +510,7 @@ impl SseParser {
             data: None,
             cap: event_cap,
             ended: false,
+            calls: None,
         }
     }
 
@@ -525,7 +543,13 @@ impl SseParser {
 
     fn dispatch(&mut self) -> Vec<StreamEvent> {
         match self.data.take() {
-            Some(data) if !data.is_empty() => sse_event(&data),
+            Some(data) if !data.is_empty() => {
+                let (mut events, value) = sse_decode(&data);
+                if let (Some(calls), Some(value)) = (self.calls.as_mut(), value) {
+                    events.splice(..0, calls.collect(&value));
+                }
+                events
+            }
             _ => vec![],
         }
     }
@@ -565,6 +589,9 @@ impl StreamDecoder for SseParser {
         finish_with(&mut self.ended, out)
     }
 }
+
+mod openai;
+pub use openai::OpenAiToolDecoder;
 
 #[cfg(test)]
 mod tests;

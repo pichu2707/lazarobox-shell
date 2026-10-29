@@ -225,6 +225,7 @@ mod tests {
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
             note: note(),
+            topic_key: None,
         });
         link.send(MemCmd::Context {
             pane: pane(),
@@ -288,6 +289,38 @@ mod tests {
         assert_eq!(end.json().unwrap()["summary"], "Decided Axum.");
     }
 
+    // Needs `getrandom(2)` for the session id, Linux only.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_caller_topic_key_reaches_the_wire_and_the_reply() {
+        let (fake, link, mut rx) = start(happy()).await;
+        link.send(MemCmd::Resolve {
+            pane: pane(),
+            cwd: "/tmp/a".into(),
+        });
+        link.send(MemCmd::Save {
+            pane: pane(),
+            id: SaveId(1),
+            session: None,
+            project: "widget".into(),
+            cwd: "/tmp/a".into(),
+            note: note(),
+            topic_key: Some("chat/12/summary".into()),
+        });
+        // Health, project, saved.
+        let got = replies(&mut rx, 3).await;
+        link.shutdown(Duration::from_secs(1)).await;
+        let sent = fake
+            .requests()
+            .into_iter()
+            .find(|r| r.target == "/observations")
+            .expect("a save");
+        assert_eq!(sent.json().unwrap()["topic_key"], "chat/12/summary");
+        assert!(got.iter().any(
+            |r| matches!(r, MemReply::Saved { topic_key, .. } if topic_key == "chat/12/summary")
+        ));
+    }
+
     #[tokio::test]
     async fn the_token_and_the_note_never_reach_an_error_text() {
         let routes = vec![
@@ -307,6 +340,7 @@ mod tests {
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
             note: note(),
+            topic_key: None,
         });
         link.send(MemCmd::Delete {
             pane: pane(),
@@ -336,6 +370,7 @@ mod tests {
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
             note: note(),
+            topic_key: None,
         });
         let got = replies(&mut rx, 2).await;
         assert!(matches!(

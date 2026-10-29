@@ -565,6 +565,7 @@ fn helper_args_round_trip() {
     let spec = jail_spec(&nvm_codex()).unwrap();
     let job = JailArgs {
         min_abi: Some(6),
+        arg0: None,
         spec,
         program: p("/home/u/.nvm/versions/node/v24.16.0/bin/node"),
         argv: args(&["codex.js", "--model", "-x; $(id)", "--"]),
@@ -575,11 +576,31 @@ fn helper_args_round_trip() {
 
     let bare = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec::default(),
         program: p("/bin/true"),
         argv: Vec::new(),
     };
     assert_eq!(parse_args(&bare.render()[1..]).unwrap(), bare);
+}
+
+#[test]
+fn helper_args_carry_the_write_exceptions_to_the_helper() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec: jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap(),
+        program: p(STANDALONE),
+        argv: Vec::new(),
+    };
+    assert_eq!(job.spec.rw_except, paths(&["/Users/u/.codex/packages"]));
+    let rendered = job.render();
+    assert!(
+        rendered
+            .windows(2)
+            .any(|w| { w[0] == "--rw-except" && w[1] == "/Users/u/.codex/packages" })
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
 }
 
 #[test]
@@ -603,6 +624,120 @@ fn helper_args_refuse_anything_unclear() {
     ] {
         assert!(parse_args(&bad).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn helper_args_carry_an_rwx_root_before_the_other_lists() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec: JailSpec {
+            rwx: paths(&["/home/u/proj"]),
+            rx: paths(&["/usr/bin"]),
+            ..JailSpec::default()
+        },
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_a_relative_rwx_root() {
+    let err = parse_args(&args(&["--rwx", "rel/path", "--", "/bin/x"])).unwrap_err();
+    assert_eq!(err, ArgError(ARG_RELATIVE_RULE));
+    assert!(parse_args(&args(&["--rwx", "--", "/bin/x"])).is_err());
+}
+
+#[test]
+fn helper_args_carry_the_toolchain_flags_and_leave_them_out_by_default() {
+    let spec = JailSpec {
+        rwx: paths(&["/home/u/proj"]),
+        rx: paths(&["/usr/bin"]),
+        net_bind: NetBind::Open,
+        rlimits: Rlimits::Toolchain,
+        ..JailSpec::default()
+    };
+    let job = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec,
+        program: p("/usr/bin/cargo"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--rwx",
+            "/home/u/proj",
+            "--rx",
+            "/usr/bin",
+            "--net-bind",
+            "open",
+            "--rlimits",
+            "toolchain",
+            "--",
+            "/usr/bin/cargo",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+
+    let plain = JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec: JailSpec::default(),
+        program: p("/bin/true"),
+        argv: Vec::new(),
+    };
+    let text = plain.render();
+    assert!(!text.iter().any(|a| a == "--net-bind" || a == "--rlimits"));
+}
+
+#[test]
+fn helper_args_refuse_a_bad_toolchain_flag() {
+    for bad in [
+        args(&["--rwx", "rel/path", "--", "/bin/x"]),
+        args(&["--net-bind", "closed", "--", "/bin/x"]),
+        args(&["--net-bind", "--", "/bin/x"]),
+        args(&["--rlimits", "all", "--", "/bin/x"]),
+        args(&["--rlimits", "Toolchain", "--", "/bin/x"]),
+    ] {
+        assert!(parse_args(&bad).is_err(), "{bad:?}");
+    }
+    let err = parse_args(&args(&["--net-bind", "closed", "--", "/bin/x"])).unwrap_err();
+    assert!(ARG_REASONS.contains(&err.0), "{err:?}");
+}
+
+#[test]
+fn the_toolchain_limits_are_core_zero_file_4_gib_and_cpu_1200_seconds() {
+    assert_eq!(Rlimits::None.limits(), []);
+    assert_eq!(
+        Rlimits::Toolchain.limits(),
+        [
+            (Limit::Core, 0),
+            (Limit::FileSize, 4 << 30),
+            (Limit::CpuSeconds, 1200),
+        ]
+    );
 }
 
 // ---- the ELF loader ----
@@ -1393,7 +1528,13 @@ fn every_macos_jail_text_is_a_safe_helper_reason() {
 
 #[test]
 fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
-    let mut texts = vec![MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON];
+    let mut texts = vec![
+        MIN_ABI_REASON,
+        PROFILE_REASON,
+        EXEC_FAILED_REASON,
+        RWX_REASON,
+        RLIMIT_REASON,
+    ];
     texts.extend(ARG_REASONS);
     for text in texts {
         assert_eq!(known_helper_reason(text), Some(text.to_owned()));
@@ -1743,6 +1884,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
     assert_eq!(
         spec,
         JailSpec {
+            rwx: Vec::new(),
             rx: paths(&[
                 "/home/u/.nvm/versions/node/v24.16.0/bin/node",
                 "/opt/lb/lib/ld-linux-x86-64.so.2",
@@ -1772,6 +1914,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
                 "/opt/lb/share/ca.pem",
             ]),
             rw_files: paths(&["/dev/null", "/run/user/1000/lazarobox/shim.sock"]),
+            ..JailSpec::default()
         }
     );
 }
@@ -2346,5 +2489,368 @@ fn linux_keeps_case_variants_apart_in_the_overlap_check() {
     l.codex_home = Some(p("/home/u/.CODEX"));
     for os in [Os::Linux, Os::Other] {
         assert!(jail_spec_for(os, &l, &identity).is_ok(), "{os:?}");
+    }
+}
+
+// Codex's official standalone installer puts the binary under
+// `~/.codex/packages/standalone/releases/<version>/bin`, inside the state dir.
+const STANDALONE: &str =
+    "/Users/u/.codex/packages/standalone/releases/0.153.4-aarch64-apple-darwin/bin/codex";
+
+fn standalone_codex() -> CliLayout {
+    let mut l = layout(Cli::Codex, STANDALONE, None);
+    l.home = p("/Users/u");
+    l
+}
+
+#[test]
+fn the_standalone_codex_is_accepted_on_macos_with_its_packages_folder_read_only() {
+    let spec = jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap();
+    assert_eq!(spec.rw_except, paths(&["/Users/u/.codex/packages"]));
+    assert!(spec.rw.contains(&p("/Users/u/.codex")));
+    assert!(spec.rx.contains(&p(
+        "/Users/u/.codex/packages/standalone/releases/0.153.4-aarch64-apple-darwin/bin"
+    )));
+}
+
+#[test]
+fn the_standalone_exception_follows_codex_home() {
+    let mut l = standalone_codex();
+    l.codex_home = Some(p("/Users/u/.codex"));
+    let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+    assert_eq!(spec.rw_except, paths(&["/Users/u/.codex/packages"]));
+
+    let mut l = layout(
+        Cli::Codex,
+        "/Users/u/state/packages/standalone/releases/1/bin/codex",
+        None,
+    );
+    l.home = p("/Users/u");
+    l.codex_home = Some(p("/Users/u/state"));
+    let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+    assert_eq!(spec.rw_except, paths(&["/Users/u/state/packages"]));
+    // The default state dir is not where this codex lives: no exception there.
+    assert!(!spec.rw_except.contains(&p("/Users/u/.codex/packages")));
+}
+
+#[test]
+fn a_layout_outside_the_state_dir_gets_no_exception() {
+    for l in [nvm_codex(), busy_codex(), native_claude(), brew_gemini()] {
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(spec.rw_except.is_empty(), "{:?}", l.cli);
+    }
+}
+
+fn with_rwx(root: &[&str]) -> JailSpec {
+    JailSpec {
+        rx: paths(&["/usr/bin"]),
+        rw: paths(&["/run/lb/tmp"]),
+        rwx: paths(root),
+        ..JailSpec::default()
+    }
+}
+
+#[test]
+fn a_binary_in_the_state_dir_outside_packages_is_still_refused_on_macos() {
+    let mut l = layout(Cli::Codex, "/Users/u/.codex/bin/codex", None);
+    l.home = p("/Users/u");
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    // Not even a sibling whose name only starts like the exception.
+    let mut l = layout(Cli::Codex, "/Users/u/.codex/packages-old/bin/codex", None);
+    l.home = p("/Users/u");
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_program_over_the_state_dir_is_still_refused_on_macos() {
+    let mut l = standalone_codex();
+    l.helpers = vec![p("/Users/u")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(
+        matches!(err, SpecError::RootTooBroad(_) | SpecError::Overlap { .. }),
+        "{err:?}"
+    );
+    // A program that is an ancestor of the state dir but not broad.
+    let mut l = standalone_codex();
+    l.codex_home = Some(p("/Users/u/tools/codex/state"));
+    l.binary = p("/Users/u/tools/codex/bin/codex");
+    l.helpers = vec![p("/Users/u/tools/codex")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_case_variant_of_packages_is_refused_not_exempted_on_macos() {
+    // On a case-sensitive APFS `.CODEX/Packages` is another, writable folder
+    // that the deny does not cover; the exemption compares exactly. Refusing
+    // still ignores case, so the variant is the state dir and is refused.
+    for binary in [
+        "/Users/u/.CODEX/Packages/standalone/releases/1/bin/codex",
+        "/Users/u/.codex/Packages/standalone/releases/1/bin/codex",
+        "/Users/u/.CODEX/packages/standalone/releases/1/bin/codex",
+        "/Users/u/.CODEX/Bin/codex",
+    ] {
+        let mut l = layout(Cli::Codex, binary, None);
+        l.home = p("/Users/u");
+        l.codex_home = Some(p("/Users/u/.codex"));
+        let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+        assert!(
+            matches!(err, SpecError::Overlap { .. }),
+            "{binary}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn a_symlinked_packages_gets_no_exception_and_is_refused_without_panicking() {
+    // packages -> elsewhere: the exception would land outside every rw dir and
+    // the name could be replaced. Only a real folder inside the state dir counts.
+    let resolve = |path: &Path| -> Option<PathBuf> {
+        Some(if path == Path::new("/Users/u/.codex/packages") {
+            p("/Users/u/elsewhere/packages")
+        } else {
+            path.to_path_buf()
+        })
+    };
+    let err = jail_spec_for(Os::Macos, &standalone_codex(), &resolve).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    // A binary under the link's target: no exception outside the rw dirs (and
+    // no debug_assert) either; the spec just has nothing to carve out.
+    let mut l = standalone_codex();
+    l.binary = p("/Users/u/elsewhere/packages/standalone/releases/1/bin/codex");
+    let spec = jail_spec_for(Os::Macos, &l, &resolve).unwrap();
+    assert!(spec.rw_except.is_empty());
+    // The same when the link points to a folder inside the state dir.
+    let resolve = |path: &Path| -> Option<PathBuf> {
+        Some(if path == Path::new("/Users/u/.codex/packages") {
+            p("/Users/u/.codex/real")
+        } else {
+            path.to_path_buf()
+        })
+    };
+    let err = jail_spec_for(Os::Macos, &standalone_codex(), &resolve).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_writable_file_inside_the_exception_is_still_refused_on_macos() {
+    let mut spec = JailSpec {
+        rx: paths(&["/Users/u/.codex/packages/standalone/releases/1/bin"]),
+        rw: paths(&["/Users/u/.codex"]),
+        rw_files: paths(&["/Users/u/.codex/packages/standalone/releases/1/bin/sock"]),
+        rw_except: paths(&["/Users/u/.codex/packages"]),
+        ..JailSpec::default()
+    };
+    assert_eq!(
+        writable_executable(&spec, Os::Macos),
+        Some((
+            p("/Users/u/.codex/packages/standalone/releases/1/bin"),
+            p("/Users/u/.codex/packages/standalone/releases/1/bin/sock")
+        ))
+    );
+    // And a program over a writable folder that holds the exception stays refused.
+    spec.rw_files.clear();
+    spec.rx = paths(&["/Users/u"]);
+    assert!(writable_executable(&spec, Os::Macos).is_some());
+}
+
+#[test]
+fn the_standalone_layout_is_unchanged_on_linux() {
+    // Landlock cannot carve a deny inside an allowed tree, and nothing checks
+    // the overlap there: the spec is the same as before, with no exception.
+    for os in [Os::Linux, Os::Other] {
+        let spec = jail_spec_for(os, &standalone_codex(), &identity).unwrap();
+        assert!(spec.rw_except.is_empty(), "{os:?}");
+    }
+}
+
+#[test]
+fn retain_existing_drops_a_missing_exception() {
+    let spec = jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap();
+    let kept = spec
+        .clone()
+        .retain_existing(|path| path != Path::new("/Users/u/.codex/packages"));
+    assert!(kept.rw_except.is_empty());
+    assert_eq!(spec.retain_existing(|_| true).rw_except.len(), 1);
+}
+
+#[test]
+fn every_write_exception_is_a_strict_descendant_of_an_rw_folder() {
+    let spec = jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap();
+    assert_eq!(except_outside_rw(&spec), None);
+    let bad = JailSpec {
+        rw: paths(&["/Users/u/.codex"]),
+        rw_except: paths(&["/Users/u/.codex", "/Users/u/.codex2/packages"]),
+        ..JailSpec::default()
+    };
+    // The folder itself is not a descendant, and a sibling prefix is not either.
+    assert_eq!(except_outside_rw(&bad), Some(p("/Users/u/.codex")));
+    let bad = JailSpec {
+        rw_except: paths(&["/x"]),
+        ..JailSpec::default()
+    };
+    assert_eq!(except_outside_rw(&bad), Some(p("/x")));
+}
+
+#[test]
+fn a_helper_under_packages_does_not_open_the_exception_for_a_program_elsewhere() {
+    // The program is in the state dir outside packages (refused); a helper in
+    // packages must not turn the exception on and excuse nothing else.
+    let mut l = layout(Cli::Codex, "/Users/u/.codex/bin/codex", None);
+    l.home = p("/Users/u");
+    l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    // A program elsewhere with a helper in packages: the helper is refused.
+    let mut l = nvm_codex();
+    l.home = p("/Users/u");
+    l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn one_rwx_root_passes_the_exec_check_on_linux() {
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &[]),
+        Ok(())
+    );
+    assert_eq!(with_rwx(&[]).check_exec(Os::Linux, &[]), Ok(()));
+}
+
+#[test]
+fn two_rwx_roots_are_refused() {
+    let spec = with_rwx(&["/home/u/a", "/home/u/b"]);
+    assert_eq!(spec.check_exec(Os::Linux, &[]), Err(ExecFault::ManyRwx(2)));
+}
+
+#[test]
+fn an_rwx_root_must_be_canonical_and_not_the_top() {
+    for bad in ["proj", "/home/u/../v", "/home/u/./p"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux, &[]),
+            Err(ExecFault::NotCanonical(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/"]).check_exec(Os::Linux, &[]),
+        Err(ExecFault::TooBroad(p("/")))
+    );
+}
+
+#[test]
+fn rwx_is_refused_on_macos_until_seatbelt_runs_toolchains() {
+    let spec = with_rwx(&["/Users/u/proj"]);
+    assert_eq!(spec.check_exec(Os::Macos, &[]), Err(ExecFault::Macos));
+    assert_eq!(with_rwx(&[]).check_exec(Os::Macos, &[]), Ok(()));
+}
+
+#[test]
+fn execute_is_only_ever_in_rx_or_the_rwx_root() {
+    let spec = with_rwx(&["/home/u/proj"]);
+    assert_eq!(spec.exec_paths(), paths(&["/usr/bin", "/home/u/proj"]));
+    assert!(!spec.exec_paths().contains(&p("/run/lb/tmp")));
+}
+
+#[test]
+fn retain_existing_covers_the_rwx_root() {
+    let spec =
+        with_rwx(&["/home/u/proj"]).retain_existing(|path| path != Path::new("/home/u/proj"));
+    assert!(spec.rwx.is_empty());
+    assert_eq!(spec.rx, paths(&["/usr/bin"]));
+}
+
+#[test]
+fn a_cli_spec_never_carries_rwx() {
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        let spec = jail_spec_for(os, &nvm_codex(), &identity).unwrap();
+        assert!(spec.rwx.is_empty(), "{os:?}");
+        assert_eq!(spec.check_exec(os, &[]), Ok(()));
+    }
+}
+
+#[test]
+fn an_rwx_root_that_is_a_broad_place_is_refused() {
+    let homes = [Path::new("/home/u")];
+    for bad in ["/home", "/usr", "/home/u", "/tmp", "/home/u/.ssh", "/etc"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux, &homes),
+            Err(ExecFault::TooBroad(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/home/u/proj"]).check_exec(Os::Linux, &homes),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_writable_path_next_to_an_execute_path_is_refused_on_linux_too() {
+    // R29: equal, under or over, for rx and for the rwx root alike.
+    for (rx, rw) in [
+        ("/usr/local", "/usr/local/cargo/registry"),
+        ("/usr/local/cargo/registry", "/usr/local"),
+        ("/home/u/go", "/home/u/go"),
+    ] {
+        let mut spec = with_rwx(&["/home/u/proj"]);
+        spec.rx = paths(&[rx]);
+        spec.rw = paths(&[rw]);
+        assert_eq!(
+            spec.check_exec(Os::Linux, &[]),
+            Err(ExecFault::WritableExec {
+                rx: p(rx),
+                rw: p(rw)
+            }),
+            "{rx} {rw}"
+        );
+    }
+    let mut spec = with_rwx(&["/home/u/proj"]);
+    spec.rw_files = paths(&["/home/u/proj/.cache/f"]);
+    assert!(matches!(
+        spec.check_exec(Os::Linux, &[]),
+        Err(ExecFault::WritableExec { .. })
+    ));
+}
+
+#[test]
+fn helper_args_carry_the_name_the_program_runs_as() {
+    let job = JailArgs {
+        min_abi: None,
+        arg0: Some(OsString::from("cargo")),
+        spec: JailSpec::default(),
+        program: p("/home/u/.rustup/toolchains/x/bin/rustup"),
+        argv: args(&["build"]),
+    };
+    let rendered = job.render();
+    let text: Vec<_> = rendered.iter().map(|a| a.to_str().unwrap()).collect();
+    assert_eq!(
+        text,
+        [
+            "__jail-exec",
+            "--arg0",
+            "cargo",
+            "--",
+            "/home/u/.rustup/toolchains/x/bin/rustup",
+            "build"
+        ]
+    );
+    assert_eq!(parse_args(&rendered[1..]).unwrap(), job);
+}
+
+#[test]
+fn helper_args_refuse_an_arg0_that_is_a_path_or_empty() {
+    for bad in ["a/b", "/bin/cargo", "../x", "", "a\0b"] {
+        let given = vec![
+            OsString::from("--arg0"),
+            OsString::from(bad),
+            OsString::from("--"),
+            OsString::from("/bin/x"),
+        ];
+        let err = parse_args(&given).unwrap_err();
+        assert!(ARG_REASONS.contains(&err.0), "{bad:?}: {err:?}");
     }
 }
