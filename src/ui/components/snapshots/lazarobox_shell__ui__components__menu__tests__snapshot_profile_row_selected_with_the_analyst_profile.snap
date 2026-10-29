@@ -10,6 +10,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ orchestrate                                      (default) │
 │ Profile                                            analyst │
 │ Context                                                 on │
 │ Memory                                                 off │
@@ -20,6 +21,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Git                                                    off │
 │ Git write                                              off │
 │ Approval                                               ask │
+│ Orchestrator                                           off │
 │ Hugging Face                                 not connected │
 │                                                            │
 │                                                            │

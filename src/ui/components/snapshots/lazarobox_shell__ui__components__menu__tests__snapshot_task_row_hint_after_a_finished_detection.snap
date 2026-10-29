@@ -10,6 +10,7 @@ expression: shown
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ orchestrate                                      (default) │
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
@@ -20,6 +21,7 @@ expression: shown
 │ Git                                                    off │
 │ Git write                                              off │
 │ Approval                                               ask │
+│ Orchestrator                                           off │
 │ Hugging Face                                 not connected │
 │                                                            │
 │                                                            │

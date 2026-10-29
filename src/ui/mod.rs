@@ -881,14 +881,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 25 rows: the popup with its AI section is 23 rows high, centred.
-        let app = menu_app(64, 25);
-        let (buf, _) = draw_at(&app, 64, 25);
+        // 27 rows: the popup with its AI section is 25 rows high, centred.
+        let app = menu_app(64, 27);
+        let (buf, _) = draw_at(&app, 64, 27);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 24).contains("MENU"), "{:?}", row(&buf, 24));
+        assert!(row(&buf, 26).contains("MENU"), "{:?}", row(&buf, 26));
         insta::assert_snapshot!(
-            (0..25)
+            (0..27)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -897,15 +897,15 @@ mod tests {
 
     #[test]
     fn a_known_update_marks_the_statusline_and_the_menu_note_fits_a_real_frame() {
-        let mut app = App::new(80, 25).with_update(Some("0.16.0".into()));
+        let mut app = App::new(80, 27).with_update(Some("0.16.0".into()));
         let line = status(&app);
         assert!(line.contains("update 0.16.0"), "{line:?}");
         insta::assert_snapshot!("update_statusline", line.trim_end());
 
         press(&mut app, ' ', KeyModifiers::CONTROL);
         press(&mut app, 'm', KeyModifiers::NONE);
-        let (buf, _) = draw_at(&app, 80, 25);
-        let frame = (0..25)
+        let (buf, _) = draw_at(&app, 80, 27);
+        let frame = (0..27)
             .map(|y| row(&buf, y).trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");

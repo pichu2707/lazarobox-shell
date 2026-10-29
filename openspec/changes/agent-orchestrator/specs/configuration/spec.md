@@ -5,15 +5,15 @@ Slice tags as in agent-orchestrator.
 ## ADDED Requirements
 
 ### Requirement: Orchestrate slot [S1]
-The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the table `[ai.orchestrate]`. An absent table means unassigned. The slot MUST NOT be counted by any logic that is defined over the five original tasks (Set all, its aggregate).
+The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the table `[ai.tasks.orchestrate]`. An absent table means unassigned. The slot MUST NOT be counted by any logic that is defined over the five original tasks (Set all, its aggregate).
 
 #### Scenario: Slot parsed [auto]
-- GIVEN `[ai.orchestrate]` with `engine = "claude"` and `model = "opus"`
+- GIVEN `[ai.tasks.orchestrate]` with `engine = "claude"` and `model = "opus"`
 - WHEN the configuration is loaded
 - THEN `orchestrate` is `claude` / `opus` and the other slots are as before
 
 #### Scenario: Absent means unassigned [auto]
-- GIVEN no `[ai.orchestrate]` table
+- GIVEN no `[ai.tasks.orchestrate]` table
 - WHEN the configuration is loaded
 - THEN `orchestrate` is unassigned and falls back to `general`
 
@@ -31,6 +31,6 @@ The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (boo
 - THEN `max_parallel` is 2, `enabled` is true and a startup notice names the key
 
 #### Scenario: Older build ignores keys [auto]
-- GIVEN a file with `[ai.orchestrate]` and `[ai.orchestrator]` read by the previous schema
+- GIVEN a file with `[ai.tasks.orchestrate]` and `[ai.orchestrator]` read by the previous schema
 - WHEN it is loaded
 - THEN the earlier keys load unchanged and the new ones are ignored
