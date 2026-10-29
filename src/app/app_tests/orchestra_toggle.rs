@@ -5,6 +5,7 @@
 use super::chat_live::{
     answered, ask, chat_id, chat_of, composer, ctrl, delta, ready_app, repeat, type_text,
 };
+use super::orchestra_send::{orch_app, toggle};
 use super::*;
 use crate::app::orchestra::OrchHint;
 use crate::core::ai::chat::{Entry, ReasoningState, engine::StreamEvent};
@@ -174,4 +175,26 @@ fn ctrl_u_still_clears_the_composer() {
     assert_eq!(a.update(ctrl('u')), vec![]);
     assert_eq!(composer(&a), "");
     assert!(!orch(&a, chat_id()));
+}
+
+// chat-pane / Toggle blocked during a run: the run lives as long as its
+// orchestrator turn (S1).
+#[test]
+fn the_toggle_is_blocked_while_a_run_is_active() {
+    let mut a = orch_app();
+    toggle(&mut a);
+    let turn = match ask(&mut a, "plan it").as_slice() {
+        [.., Effect::OrchestrateSend { turn, .. }] => *turn,
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::CancelRunFirst));
+    assert_eq!(toggle(&mut a), vec![]);
+    assert!(orch(&a, chat_id()), "the mode stays on");
+    a.update(super::chat_live::finish(turn));
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::Toggle));
+    toggle(&mut a);
+    assert!(
+        !orch(&a, chat_id()),
+        "with the run over the key works again"
+    );
 }

@@ -289,13 +289,14 @@ impl App {
         if chat.phase() != Phase::Idle {
             return None;
         }
-        guidance(&self.chat_availability())
+        self.orch_refusal(id)
+            .or_else(|| guidance(&self.turn_availability(id)))
     }
 
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
     fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
-        let availability = self.chat_availability();
+        let availability = self.turn_availability(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -313,6 +314,11 @@ impl App {
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        // An orchestrator turn that could not offer its tools does not go;
+        // the pane shows why.
+        if self.orch_refusal(id).is_some() {
+            return Vec::new();
+        }
         // Memory off means no engram text leaves, whatever the chat holds.
         if !self.ai.memory.active() {
             self.forget_memory(id);
@@ -349,11 +355,7 @@ impl App {
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(Effect::ChatSend {
-                    pane: id,
-                    turn,
-                    request,
-                });
+                effects.push(self.turn_effect(id, turn, request));
                 effects
             }
             SendOutcome::Refused => Vec::new(),
@@ -363,13 +365,12 @@ impl App {
     /// The first detection or a conversation's prompt arrived: the sends that
     /// waited for them go now, those still missing one of them keep waiting.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
-        let availability = self.chat_availability();
         // A send whose pane is gone is dropped here, not kept.
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting_sends)
             .into_iter()
             .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
-                availability != Availability::Checking
+                self.turn_availability(*id) != Availability::Checking
                     // A note editor or summary draft owns the conversation
                     // until it closes: the send goes then.
                     && !self.memory_view_open(*id)
@@ -382,7 +383,10 @@ impl App {
         self.waiting_sends = waiting;
         ready
             .into_iter()
-            .flat_map(|(id, text)| self.send_text(id, &text, &availability))
+            .flat_map(|(id, text)| {
+                let availability = self.turn_availability(id);
+                self.send_text(id, &text, &availability)
+            })
             .collect()
     }
 

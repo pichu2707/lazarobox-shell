@@ -754,3 +754,42 @@ async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
     assert!(!badges.contains_key(&pane(1)), "{badges:?}");
     assert_eq!(badges.len(), 1);
 }
+
+// agent-orchestrator / Unusable orchestrator engine: the run does not start,
+// so the turn ends at once with the engine guidance and no engine is
+// contacted.
+#[tokio::test]
+async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
+    use crate::core::ai::{
+        chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+        config::{Profile, Task},
+        orchestra::run::Roster,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let manager = RunManager::new(idle(), None, tokio::sync::mpsc::unbounded_channel().0);
+    let mut chats = chats.with_orchestra(Arc::new(manager));
+    let unusable = Availability::Undetected {
+        engine: "codex".into(),
+        status: "not installed".into(),
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, unusable)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    match event {
+        StreamEvent::Error(ChatError::Failed(reason)) => {
+            assert!(reason.contains("codex"), "the guidance: {reason}");
+        }
+        other => panic!("the run's refusal: {other:?}"),
+    }
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}

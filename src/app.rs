@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -288,6 +288,16 @@ pub enum Effect {
         pane: PaneId,
         turn: u64,
         request: ChatRequest,
+    },
+    /// Start one orchestrator turn for a pane (agent-orchestrator D5): a chat
+    /// turn on the `orchestrate` engine whose session offers the
+    /// orchestration tools, with the run it starts. Only an orchestrating
+    /// pane sends it; every other turn is a `ChatSend`.
+    OrchestrateSend {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+        orch: Box<OrchSend>,
     },
     /// Start a background compaction run for a pane: not a turn of the chat,
     /// so it touches neither the pane's tool session nor its servers.
@@ -7940,6 +7950,7 @@ mod app_tests {
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
+    mod orchestra_send;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;
 

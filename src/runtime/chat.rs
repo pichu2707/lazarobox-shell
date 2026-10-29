@@ -37,7 +37,7 @@ use self::external::{Externals, Start};
 use super::{
     loopback::{Timeouts, post_stream},
     mcp::{Dispatch, Hub, Started, external::Slot},
-    orchestra::RunManager,
+    orchestra::{OrchScope, RunManager},
     tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
 };
 use crate::core::{
@@ -49,7 +49,8 @@ use crate::core::{
             claude::ClaudeDecoder,
             codex::CodexDecoder,
             engine::{
-                Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
+                Answer, CallId, ChatError, ChatRequest, Decision, OrchSend, StreamEvent, Tools,
+                locality,
             },
             gemini::GeminiDecoder,
             review::{Badge, BatchEvent},
@@ -764,7 +765,33 @@ impl Chats {
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
-    pub fn send(&mut self, pane: PaneId, turn: u64, mut request: ChatRequest) {
+    pub fn send(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+        self.start_turn(pane, turn, request, None);
+    }
+
+    /// Starts orchestrator turn `turn` of `pane` (agent-orchestrator D5): a
+    /// turn like [`Chats::send`] whose session also reaches the run it
+    /// starts, which replaces any run of the pane. The read scope is empty
+    /// until the scope prompt exists (S1e-1b), so every worker read asks.
+    /// Without a run manager it runs as a plain turn; when the run cannot
+    /// start (quitting) the turn ends at once with the reason.
+    pub fn send_orchestrated(
+        &mut self,
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+        orch: OrchSend,
+    ) {
+        self.start_turn(pane, turn, request, Some(orch));
+    }
+
+    fn start_turn(
+        &mut self,
+        pane: PaneId,
+        turn: u64,
+        mut request: ChatRequest,
+        orch: Option<OrchSend>,
+    ) {
         self.turns.retain(|_, task| !task.is_finished());
         if let Some(old) = self.turns.remove(&pane) {
             old.abort();
@@ -777,15 +804,23 @@ impl Chats {
             self.stop_servers(pane);
         }
         let channel = mpsc::channel(TURN_CHANNEL);
-        let (pending, dispatch, external) =
-            match self.open_session(pane, turn, &request, &channel.0) {
-                Some((pending, dispatch, slot)) => (
-                    Some(pending),
-                    dispatch,
-                    self.externals.start_for(slot, &request),
-                ),
-                None => (None, None, None),
-            };
+        let opened = match self.open_session(pane, turn, &request, &channel.0, orch) {
+            Ok(opened) => opened,
+            Err(reason) => {
+                let app = self.tx.clone();
+                let error = StreamEvent::Error(ChatError::Failed(reason));
+                tokio::spawn(async move { app.send((pane, turn, error)).await });
+                return;
+            }
+        };
+        let (pending, dispatch, external) = match opened {
+            Some((pending, dispatch, slot)) => (
+                Some(pending),
+                dispatch,
+                self.externals.start_for(slot, &request),
+            ),
+            None => (None, None, None),
+        };
         // Tell the engine's adapter which session is this turn's. Without a
         // session the request keeps `mcp: None` and the turn runs as text.
         if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
@@ -816,7 +851,9 @@ impl Chats {
 
     /// The session of this turn, if it offers tools: any earlier session of
     /// the pane is replaced (its token stops working), or closed when this
-    /// turn has no tools. `None` when the turn runs without a session.
+    /// turn has no tools. `None` when the turn runs without a session. An
+    /// orchestrator turn (`orch`) starts its run here, its handle in the
+    /// session's scope; `Err` is why the run could not start.
     ///
     /// A server engine (Ollama) gets no socket: its dispatch comes back for
     /// the turn's tool loop, which reaches the same host and approvals.
@@ -826,8 +863,11 @@ impl Chats {
         turn: u64,
         request: &ChatRequest,
         events: &mpsc::Sender<StreamEvent>,
-    ) -> Option<Opened> {
-        let tooling = self.tooling.as_mut()?;
+        orch: Option<OrchSend>,
+    ) -> Result<Option<Opened>, String> {
+        let Some(tooling) = self.tooling.as_mut() else {
+            return Ok(None);
+        };
         tooling.started.remove(&pane);
         let (Tools::On { origin, .. }, Some(locality)) =
             (&request.tools, locality(&request.engine))
@@ -835,25 +875,45 @@ impl Chats {
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
             }
-            return None;
+            return Ok(None);
         };
         let pending = Pending::new();
         let slot = Slot::default();
+        // A chat of unknown origin reads relative paths against `/`, which
+        // the path policy then refuses: the ask shows `/name`.
+        let origin = origin.clone().unwrap_or_else(|| PathBuf::from("/"));
+        let approver = self.waits.approver(pane, turn, pending.clone());
+        let orchestra = match (orch, &self.orchestra) {
+            (Some(orch), Some(manager)) => {
+                let scope = OrchScope {
+                    roster: orch.roster,
+                    origin: origin.clone(),
+                    // No scope prompt yet (S1e-1b): every worker read asks.
+                    roots: Vec::new(),
+                    deadline: orch.deadline,
+                    profile: orch.profile,
+                    events: events.clone(),
+                    approver: approver.clone(),
+                    pending: pending.clone(),
+                };
+                Some(manager.start(pane, scope)?.1)
+            }
+            _ => None,
+        };
         let scope = TurnScope {
             events: events.clone(),
             locality,
-            // A chat of unknown origin reads relative paths against `/`,
-            // which the path policy then refuses: the ask shows `/name`.
-            origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
-            approver: self.waits.approver(pane, turn, pending.clone()),
+            origin,
+            approver,
             // Filled by the turn's task once its servers run.
             external: slot.clone(),
             // What the session lists is what the host accepts (D7).
             families: request.families,
             stage_key: Some(StageKey::Pane(pane)),
             allowed: Default::default(),
-            // A chat turn has no run manager and no read scope.
-            orchestra: None,
+            // Only an orchestrator turn reaches a run; the read scope is the
+            // workers'.
+            orchestra,
             read_scope: None,
         };
         let dispatch = tooling.host.dispatch(scope);
@@ -865,18 +925,20 @@ impl Chats {
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
             }
-            return Some((pending, Some(dispatch), slot));
+            return Ok(Some((pending, Some(dispatch), slot)));
         }
         if tooling.hub.is_none() {
             tooling.hub = Hub::new(&tooling.dirs).ok();
         }
-        let hub = tooling.hub.as_mut()?;
+        let Some(hub) = tooling.hub.as_mut() else {
+            return Ok(None);
+        };
         // No session means no tools for this turn: it runs as text.
-        let started = hub
-            .open(pane, dispatch, slot.clone(), request.families)
-            .ok()?;
+        let Ok(started) = hub.open(pane, dispatch, slot.clone(), request.families) else {
+            return Ok(None);
+        };
         tooling.started.insert(pane, started);
-        Some((pending, None, slot))
+        Ok(Some((pending, None, slot)))
     }
 
     /// The user's answer to a call that waits: the app's `ToolDecision`.
