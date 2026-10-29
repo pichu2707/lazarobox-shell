@@ -184,9 +184,9 @@ S1e-1a bases on the S1d-3 branch.
 
 ### S1d-1 (PR 6, ~230 lines, base: S1c-2 branch): tasks 1d.1, 1d.2, 1d.6
 
-- [ ] 1d.1 RED `runtime/prompts.rs` tests: prompt per task (worker gets its kind's prompt), override still untrusted, built-in `orchestrate.md` per profile exists. Spec: prompt-profiles / Worker gets its kind's prompt, Override still untrusted, Built-ins exist, Docs deferred.
-- [ ] 1d.2 GREEN `runtime/prompts.rs`, `core/ai/chat/prompts.rs`, `prompts/*/orchestrate.md` (stub text; final wording in S1e-2/S5).
-- [ ] 1d.6 Follow-up from S1a review: the "not recommended" mark checks only an explicit `orchestrate` assignment. When the slot is unassigned and falls back to a server engine in `general`, mark it too (use the effective engine, `resolve(Task::Orchestrate)`, in `task_label` and the engine list). RED test first. REFACTOR + gates (S1d-1 closes here).
+- [x] 1d.1 RED `runtime/prompts.rs` tests: prompt per task (worker gets its kind's prompt), override still untrusted, built-in `orchestrate.md` per profile exists. Spec: prompt-profiles / Worker gets its kind's prompt, Override still untrusted, Built-ins exist, Docs deferred.
+- [x] 1d.2 GREEN `runtime/prompts.rs`, `core/ai/chat/prompts.rs`, `prompts/*/orchestrate.md` (stub text; final wording in S1e-2/S5). Done: `load_prompt(dir, profile, kind)` already resolves any task, so a worker loads its own kind (tests pin it, override rules included); the two `orchestrate.md` hold the coordinator rules of the Orchestrate prompt requirement.
+- [x] 1d.6 Follow-up from S1a review: the "not recommended" mark checks only an explicit `orchestrate` assignment. When the slot is unassigned and falls back to a server engine in `general`, mark it too (use the effective engine, `resolve(Task::Orchestrate)`, in `task_label` and the engine list). RED test first. REFACTOR + gates (S1d-1 closes here). Done: `task_label` marks by `resolve(task)`, so `(default) · not recommended` when general is a server; the engine list already marked every server on the orchestrate picker, assignment or not.
 
 ### S1d-2 (PR 7, ~520 lines, base: S1d-1 branch): tasks 1d.3a, 1d.4a
 

@@ -10,7 +10,7 @@ expression: shown
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
-│ orchestrate                                      (default) │
+│ orchestrate                    (default) · not recommended │
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │

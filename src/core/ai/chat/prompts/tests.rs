@@ -13,10 +13,9 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
 
 // Spec (prompt-profiles): Prompt table integrity.
 #[test]
-fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
+fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
     let mut count = 0;
-    // Orchestrate has no prompt of its own yet.
-    for task in Task::SET_ALL {
+    for task in Task::ALL {
         for profile in Profile::ALL {
             let prompt = builtin(profile, task);
             assert!(!prompt.trim().is_empty(), "{profile:?} {task:?}");
@@ -33,7 +32,30 @@ fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 10);
+    assert_eq!(count, 12);
+}
+
+// Spec (prompt-profiles): Built-ins exist (the orchestrate prompt).
+#[test]
+fn the_orchestrate_prompts_hold_the_coordinator_rules() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        assert_ne!(prompt, builtin(profile, Task::Chat), "{profile:?}");
+        for rule in [
+            "coordinator",
+            "spawn_agent",
+            "wait",
+            "collect",
+            "cancel",
+            "by kind",
+            "Never approve",
+            "untrusted data",
+            "awaiting_user",
+            "evidence",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
 }
 
 // Spec (prompt-profiles): Reply in the user's language.

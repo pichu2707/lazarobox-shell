@@ -583,10 +583,12 @@ pub const NOT_IN_LIST: &str = "not in your account's list";
 /// that is not available gets ` (not detected)` and no model mark; a model
 /// of an available server that is not detected gets ` · download required`.
 /// CLI assignments never get a model mark, and nothing is marked before the
-/// first detection result.
+/// first detection result. The `not recommended` mark follows the effective
+/// engine, so an unassigned row that falls back to a server in `general` gets
+/// it too.
 pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
     let label = detected_label(config, task, detection);
-    match config.get(task).engine.as_deref() {
+    match config.resolve(task).0.engine.as_deref() {
         Some(id) if not_recommended(task, id) => format!("{label} · {NOT_RECOMMENDED}"),
         _ => label,
     }

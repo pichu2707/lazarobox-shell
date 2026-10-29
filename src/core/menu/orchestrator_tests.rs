@@ -141,6 +141,26 @@ fn a_server_engine_is_marked_not_recommended_on_the_orchestrate_row_only() {
     assert_eq!(value_of(&m, "orchestrate"), "claude › opus");
 }
 
+// Follow-up from the S1a review (1d.6): the mark follows the effective engine.
+#[test]
+fn an_unassigned_orchestrate_row_falling_back_to_a_server_is_marked() {
+    let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
+    assert_eq!(value_of(&m, "orchestrate"), "(default) · not recommended");
+    assert_eq!(value_of(&m, "general"), "ollama › llama3:8b");
+    assert_eq!(value_of(&m, "code"), "(default)");
+    let m = assigned(&[(Task::General, "claude", "opus")], Some(machine()));
+    assert_eq!(value_of(&m, "orchestrate"), "(default)");
+    // An own CLI assignment wins over a server in general.
+    let m = assigned(
+        &[
+            (Task::General, "ollama", "llama3:8b"),
+            (Task::Orchestrate, "claude", "opus"),
+        ],
+        Some(machine()),
+    );
+    assert_eq!(value_of(&m, "orchestrate"), "claude › opus");
+}
+
 #[test]
 fn the_engine_list_of_orchestrate_marks_the_servers_and_keeps_them_selectable() {
     let found = detection(&[
