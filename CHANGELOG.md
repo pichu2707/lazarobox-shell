@@ -13,6 +13,9 @@ baseline.
 ### Added
 
 - The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
 
 ### Changed
 
