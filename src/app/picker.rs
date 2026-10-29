@@ -4,13 +4,19 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        folder::{Probed, Purpose, Refusal, Verdict},
-        folder_picker::{Completion, PickerOutcome, RECENT_ASK, Source, merge},
+        folder::{CdArg, Command, Probed, Purpose, Refusal, Verdict, parse_command},
+        folder_picker::{
+            Completion, PickerOutcome, RECENT_ASK, Source, completed, completion_target, merge,
+        },
     },
     sanitize::clean,
 };
 
+/// The completion id of the composer's `/cd` line: picker ids start at 1.
+const COMPOSER: u64 = 0;
 const CHOOSE_FIRST: &str = "Choose the chat folder first";
+const NO_MATCH: &str = "no matching folder";
+const BUSY: &str = "folder check is busy, try again";
 
 impl App {
     /// Whether chat `id` shows its folder picker.
@@ -119,6 +125,7 @@ impl App {
         id: PaneId,
         picker_id: u64,
         found: Vec<(Source, Result<Probed, Refusal>)>,
+        busy: bool,
     ) -> Vec<Effect> {
         if let Some(picker) = self
             .panes
@@ -128,12 +135,16 @@ impl App {
             .filter(|picker| picker.gathering())
         {
             picker.set_rows(picker_id, merge(found));
+            if busy {
+                picker.note(BUSY);
+            }
             self.dirty = true;
         }
         Vec::new()
     }
 
-    /// The directory names that complete the field text arrived.
+    /// The directory names that complete the field text arrived. Id 0 is the
+    /// `/cd` line of the composer, the others name a picker.
     pub(super) fn on_folder_completed(
         &mut self,
         id: PaneId,
@@ -141,13 +152,22 @@ impl App {
         text: &str,
         found: &Completion,
     ) -> Vec<Effect> {
+        if picker_id == COMPOSER {
+            return self.on_cd_completed(id, text, found);
+        }
         if let Some(picker) = self
             .panes
             .get_mut(&id)
             .and_then(PaneState::chat_mut)
             .and_then(|chat| chat.folder_picker_mut())
         {
-            self.dirty |= picker.on_completed(picker_id, text, found);
+            let fresh = picker.on_completed(picker_id, text, found);
+            if fresh && found.busy {
+                picker.note(BUSY);
+            } else if fresh && found.names.is_empty() && !found.truncated {
+                picker.note(NO_MATCH);
+            }
+            self.dirty |= fresh;
         }
         Vec::new()
     }
@@ -168,6 +188,11 @@ impl App {
             return Vec::new();
         };
         let picker_id = picker.id();
+        if picker.gathering() && key.code == KeyCode::Tab {
+            picker.note("still looking for folders");
+            self.dirty = true;
+            return Vec::new();
+        }
         let outcome = picker.on_key(key, repeat);
         self.dirty = true;
         match outcome {
@@ -210,6 +235,56 @@ impl App {
             picker.paste(text);
             self.dirty = true;
         }
+    }
+
+    /// Tab in the composer: a `/cd <path>` line asks which directories
+    /// complete the path. Anything else is not a completion.
+    pub(super) fn cd_complete(&mut self, id: PaneId) -> Vec<Effect> {
+        let home = self.home.clone().unwrap_or_else(|| PathBuf::from("/"));
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Vec::new();
+        };
+        let text = chat.composer().text();
+        let Command::Cd(CdArg::Path(arg)) = parse_command(&text) else {
+            return Vec::new();
+        };
+        match completion_target(&arg, &home, chat.origin_cwd()) {
+            Some((dir, prefix)) if !text.contains('\n') => vec![Effect::CompleteFolder {
+                pane: id,
+                id: COMPOSER,
+                text,
+                dir,
+                prefix,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The names that complete a `/cd` line arrived: the line takes them
+    /// only if it is still the one that was asked about.
+    fn on_cd_completed(&mut self, id: PaneId, text: &str, found: &Completion) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if chat.composer().text() != text {
+            return Vec::new();
+        }
+        let Command::Cd(CdArg::Path(arg)) = parse_command(text) else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match completed(&arg, found) {
+            Some(done) => {
+                chat.composer_mut().clear();
+                chat.composer_mut().paste(&format!("/cd {done}"));
+            }
+            None if found.busy => chat.push_system_line(BUSY.to_owned()),
+            None if found.names.is_empty() && !found.truncated => {
+                chat.push_system_line(NO_MATCH.to_owned());
+            }
+            None => {}
+        }
+        Vec::new()
     }
 
     /// The open probe answered: a concrete folder opens the chat as before,

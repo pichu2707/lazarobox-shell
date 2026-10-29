@@ -2,7 +2,7 @@
 //! reads the disk and the store; this module orders what they found and
 //! drives the keys.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -10,6 +10,7 @@ use super::{
     composer::Composer,
     folder::{Probed, Refusal, Verdict, expand, typed},
 };
+use crate::core::ai::sanitize::is_format;
 
 /// The most characters of the typed path.
 const FIELD_CAP: usize = 1024;
@@ -74,6 +75,47 @@ pub struct Completion {
     pub truncated: bool,
     /// An earlier request was still on the disk, so nothing was listed.
     pub busy: bool,
+}
+
+/// What a Tab on `text` lists: the folder named up to the last `/` (the
+/// base when there is none) and the name typed after it.
+pub fn completion_target(
+    text: &str,
+    home: &Path,
+    base: Option<&Path>,
+) -> Option<(PathBuf, String)> {
+    let (dir_part, prefix) = text.split_at(text.rfind('/').map_or(0, |at| at + 1));
+    let dir = if dir_part.is_empty() {
+        base.map(Path::to_path_buf)
+    } else {
+        expand(dir_part, home, base)
+    };
+    dir.map(|dir| (dir, prefix.to_owned()))
+}
+
+/// `text` completed with what `found` lists: the longest prefix the names
+/// share, and a `/` when only one folder matches. `None` when nothing
+/// matches, or when the list is cut and says nothing about a common prefix.
+pub fn completed(text: &str, found: &Completion) -> Option<String> {
+    // A name the screen would not draw as typed has no place in the field.
+    let names: Vec<&String> = found
+        .names
+        .iter()
+        .filter(|name| !name.chars().any(|c| c.is_control() || is_format(c)))
+        .collect();
+    let first = names.first().filter(|_| !found.truncated)?;
+    let common = names.iter().skip(1).fold(first.as_str(), |common, name| {
+        let same = common
+            .chars()
+            .zip(name.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a.len_utf8())
+            .sum();
+        &common[..same]
+    });
+    let dir_part = &text[..text.rfind('/').map_or(0, |at| at + 1)];
+    let slash = if names.len() == 1 { "/" } else { "" };
+    Some(format!("{dir_part}{common}{slash}"))
 }
 
 /// What the picker is waiting for.
@@ -239,20 +281,10 @@ impl FolderPicker {
     /// Tab: the part of the text up to the last `/` names the folder to list.
     fn complete(&mut self) -> PickerOutcome {
         let text = self.field.text().trim().to_owned();
-        let (dir_part, prefix) = text.split_at(text.rfind('/').map_or(0, |at| at + 1));
-        let dir = if dir_part.is_empty() {
-            self.base.clone()
-        } else {
-            expand(dir_part, &self.home, self.base.as_deref())
-        };
-        match dir {
-            Some(dir) => {
+        match completion_target(&text, &self.home, self.base.as_deref()) {
+            Some((dir, prefix)) => {
                 self.completing = true;
-                PickerOutcome::Complete {
-                    dir,
-                    prefix: prefix.to_owned(),
-                    text,
-                }
+                PickerOutcome::Complete { dir, prefix, text }
             }
             None => {
                 self.error = Some(Refusal::NotFound.text());
@@ -291,31 +323,15 @@ impl FolderPicker {
             return false;
         }
         self.completing = false;
-        let names = &found.names;
         if self.state != State::Ready || self.field.text().trim() != text {
             return false;
         }
-        if found.truncated {
-            return true;
+        if let Some(done) = completed(text, found) {
+            self.edit(|f| {
+                f.clear();
+                f.paste(&done);
+            });
         }
-        let Some(first) = names.first() else {
-            return true;
-        };
-        let common = names.iter().skip(1).fold(first.as_str(), |common, name| {
-            let same = common
-                .chars()
-                .zip(name.chars())
-                .take_while(|(a, b)| a == b)
-                .map(|(a, _)| a.len_utf8())
-                .sum();
-            &common[..same]
-        });
-        let dir_part = &text[..text.rfind('/').map_or(0, |at| at + 1)];
-        let slash = if names.len() == 1 { "/" } else { "" };
-        self.edit(|f| {
-            f.clear();
-            f.paste(&format!("{dir_part}{common}{slash}"));
-        });
         true
     }
 

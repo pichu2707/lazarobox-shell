@@ -358,3 +358,57 @@ fn the_typed_text_is_trimmed_before_it_is_completed() {
         }
     );
 }
+
+#[test]
+fn completed_keeps_the_directory_part_and_the_common_prefix() {
+    let found = |names: &[&str], truncated| Completion {
+        names: names.iter().map(|n| (*n).to_owned()).collect(),
+        truncated,
+        busy: false,
+    };
+    assert_eq!(
+        completed("/w/p", &found(&["proj"], false)).as_deref(),
+        Some("/w/proj/")
+    );
+    assert_eq!(
+        completed("p", &found(&["proj-a", "proj-b"], false)).as_deref(),
+        Some("proj-")
+    );
+    assert_eq!(completed("/w/p", &found(&[], false)), None);
+    // A cut list says nothing about what the names share.
+    assert_eq!(completed("/w/p", &found(&["proj-a"], true)), None);
+}
+
+#[test]
+fn the_completion_target_is_the_folder_before_the_last_slash() {
+    let home = PathBuf::from("/h");
+    let base = PathBuf::from("/w/a");
+    assert_eq!(
+        completion_target("/w/p", &home, Some(&base)),
+        Some(("/w".into(), "p".to_owned()))
+    );
+    assert_eq!(
+        completion_target("sr", &home, Some(&base)),
+        Some(("/w/a".into(), "sr".to_owned()))
+    );
+    assert_eq!(completion_target("sr", &home, None), None);
+}
+
+#[test]
+fn completed_ignores_names_with_control_or_invisible_characters() {
+    let found = Completion {
+        names: vec![
+            "a\u{202e}b".to_owned(),
+            "a\u{1b}c".to_owned(),
+            "ad".to_owned(),
+        ],
+        truncated: false,
+        busy: false,
+    };
+    assert_eq!(completed("a", &found).as_deref(), Some("ad/"));
+    let only_bad = Completion {
+        names: vec!["a\u{202e}b".to_owned()],
+        ..Completion::default()
+    };
+    assert_eq!(completed("a", &only_bad), None);
+}
