@@ -326,7 +326,7 @@ fn pending_ask(a: &App) -> Option<ApprovalAsk> {
 #[test]
 fn a_valid_cd_opens_the_confirmation_with_both_folders() {
     let a = asking();
-    let Some(ApprovalAsk::Folder { from, to, note }) = pending_ask(&a) else {
+    let Some(ApprovalAsk::Folder { from, to, note, .. }) = pending_ask(&a) else {
         panic!("expected the folder ask, got {:?}", pending_ask(&a));
     };
     assert_eq!((from.as_str(), to), ("/w/a", PathBuf::from("/w/b")));
@@ -415,6 +415,7 @@ fn the_chat_becoming_busy_before_y_refuses_the_change() {
                 from: "/w/a".into(),
                 to: "/w/b".into(),
                 note: None,
+                checking: false,
             },
             crate::core::ai::chat::approval::Origin::Block,
         )
@@ -875,27 +876,6 @@ fn the_same_folder_at_the_check_changes_it() {
 }
 
 #[test]
-fn a_stale_check_answer_changes_nothing() {
-    let mut a = asking();
-    let effects = a.update(key('y'));
-    let Some((_, Purpose::Confirm(token))) = probes(&effects).into_iter().next() else {
-        panic!("expected the check");
-    };
-    // The user typed another command before the check came back.
-    let_go_edit(&mut a);
-    a.update(AppEvent::FolderProbed {
-        pane: id2(),
-        purpose: Purpose::Confirm(token),
-        result: concrete("/w/b"),
-    });
-    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
-}
-
-fn let_go_edit(a: &mut App) {
-    type_text(a, "x");
-}
-
-#[test]
 fn closing_the_chat_drops_what_it_waited_for() {
     let mut a = resuming();
     a.update(resumed_in(Some("/w/stored")));
@@ -907,4 +887,144 @@ fn closing_the_chat_drops_what_it_waited_for() {
     a.remove_pane(id2());
     assert!(!a.resume_folders.contains_key(&id2()));
     assert!(!a.cd_requests.contains_key(&id2()));
+}
+
+// ---- while the folder is checked at `y` (chat-folder A2, round 2) ----------
+
+/// `/cd /w/b` confirmed with `y`: the check is out, its answer not yet. The
+/// token of the check comes with it.
+fn checking() -> (App, u64) {
+    let mut a = asking();
+    let effects = a.update(key('y'));
+    let Some((_, Purpose::Confirm(token))) = probes(&effects).into_iter().next() else {
+        panic!("expected the check, got {effects:?}");
+    };
+    (a, token)
+}
+
+fn confirm_reply(a: &mut App, token: u64, path: &str) -> Vec<Effect> {
+    a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Confirm(token),
+        result: concrete(path),
+    })
+}
+
+fn moves_to(a: &App, folder: &str) -> usize {
+    lines(a)
+        .iter()
+        .filter(|l| l.ends_with(&format!("-> {folder}")))
+        .count()
+}
+
+#[test]
+fn a_second_y_while_checking_does_nothing_and_the_answer_still_applies() {
+    let (mut a, token) = checking();
+    let effects = a.update(key('y'));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(composer(&a), "/cd /w/b");
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    assert_eq!(composer(&a), "");
+}
+
+#[test]
+fn a_character_while_checking_is_swallowed() {
+    let (mut a, token) = checking();
+    a.update(key('x'));
+    assert_eq!(composer(&a), "/cd /w/b");
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+}
+
+#[test]
+fn enter_while_checking_starts_no_second_command() {
+    let mut a = asking().with_clock(mock_now);
+    let effects = a.update(key('y'));
+    let token = match probes(&effects).into_iter().next() {
+        Some((_, Purpose::Confirm(token))) => token,
+        other => panic!("expected the check, got {other:?}"),
+    };
+    let_go();
+    let again = a.update(plain(KeyCode::Enter));
+    assert!(probes(&again).is_empty(), "{again:?}");
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+}
+
+#[test]
+fn esc_while_checking_cancels_and_a_late_answer_changes_nothing() {
+    let (mut a, token) = checking();
+    a.update(plain(KeyCode::Esc));
+    assert!(lines(&a).contains(&"/cd cancelled".to_owned()));
+    assert_eq!(pending_ask(&a), None);
+    assert_eq!(composer(&a), "/cd /w/b");
+    assert!(!a.cd_requests.contains_key(&id2()));
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn the_check_shows_which_folder_it_looks_at() {
+    let (a, _) = checking();
+    let prompt = a.approval_prompt(id2()).expect("a prompt while checking");
+    assert!(prompt.command.contains("checking"), "{}", prompt.command);
+    assert!(prompt.command.contains("/w/b"), "{}", prompt.command);
+}
+
+#[test]
+fn becoming_busy_between_y_and_the_answer_refuses_with_the_reason() {
+    let (mut a, token) = checking();
+    let ready = crate::core::ai::chat::engine::Availability::Ready {
+        engine: "ollama".into(),
+        model: Some("llama3:8b".into()),
+    };
+    let chat = a
+        .panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap();
+    // The prompt of the check is withdrawn so the stream can start.
+    let pending = chat.approvals().pending().unwrap().id();
+    chat.approvals_mut().withdraw(pending);
+    chat.send("go", &ready, "system");
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    assert!(lines(&a).contains(&"/cd refused: the model is answering".to_owned()));
+    assert!(!a.cd_requests.contains_key(&id2()));
+    assert_eq!(pending_ask(&a), None);
+}
+
+#[test]
+fn a_duplicate_check_answer_applies_once() {
+    let (mut a, token) = checking();
+    confirm_reply(&mut a, token, "/w/b");
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    assert_eq!(moves_to(&a, "/w/b"), 1);
+}
+
+#[test]
+fn declining_the_ask_clears_the_request() {
+    for event in [plain(KeyCode::Char('n')), plain(KeyCode::Esc)] {
+        let mut a = asking().with_clock(mock_now);
+        let_go();
+        a.update(event);
+        assert!(!a.cd_requests.contains_key(&id2()));
+    }
+}
+
+#[test]
+fn a_bare_cd_or_a_refused_cd_keeps_the_stored_folder_of_a_resume() {
+    for text in ["/cd", "/cd ~/x"] {
+        let mut a = resuming();
+        let effects = a.update(resumed_in(Some("/w/stored")));
+        let token = resume_purposes(&effects)[0];
+        // No home is known: `~` is refused before any probe.
+        ask(&mut a, text);
+        assert!(a.resume_folders.contains_key(&id2()), "{text}");
+        a.update(AppEvent::Store(StoreReply::ResumeFailed { pane: id2() }));
+        resume_answer(&mut a, token, probed_as("/w/stored", Verdict::Concrete));
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/stored")), "{text}");
+    }
 }
