@@ -35,14 +35,18 @@ fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
     assert_eq!(count, 12);
 }
 
-// Spec (prompt-profiles): Built-ins exist (the orchestrate prompt).
+// Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
+// profile, with every coordinator rule; the user's server tools ask each
+// call and never reach a worker (S1e-1c).
 #[test]
 fn the_orchestrate_prompts_hold_the_coordinator_rules() {
     for profile in Profile::ALL {
         let prompt = builtin(profile, Task::Orchestrate);
+        assert!(!prompt.trim().is_empty(), "{profile:?}");
         assert_ne!(prompt, builtin(profile, Task::Chat), "{profile:?}");
         for rule in [
             "coordinator",
+            "only through the orchestration tools",
             "spawn_agent",
             "wait",
             "collect",
@@ -51,7 +55,10 @@ fn the_orchestrate_prompts_hold_the_coordinator_rules() {
             "Never approve",
             "untrusted data",
             "awaiting_user",
-            "evidence",
+            "tests passed without evidence",
+            "the user's own server tools",
+            "each call asks the user first",
+            "Workers never get these tools",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
