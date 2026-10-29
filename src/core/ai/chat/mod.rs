@@ -55,6 +55,10 @@ use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEven
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
 
+/// Columns the batch badge leaves free on the right of the pane: the widest
+/// mode badge (` AUTO `) and a gap.
+pub const BATCH_BADGE_ROOM: usize = 8;
+
 /// The longest answer kept, in bytes. Past it the answer is cut.
 pub const ANSWER_CAP: usize = 1 << 20;
 /// The most messages one conversation holds.
@@ -583,10 +587,33 @@ impl ChatState {
         height - self.composer_rows(width, height)
     }
 
+    /// Whether the conversation reserves its top row for the batch badge in a
+    /// pane `width` columns wide whose composer leaves `transcript` rows: a
+    /// badge is worn, it fits, the transcript keeps at least one row and the
+    /// conversation is the view shown.
+    pub fn badge_row(&self, width: u16, transcript: u16) -> bool {
+        let Some(badge) = self.batch_badge else {
+            return false;
+        };
+        let room = usize::from(width).saturating_sub(BATCH_BADGE_ROOM);
+        transcript >= 2 && badge.text(room).is_some() && self.conversation_shown()
+    }
+
+    /// Whether the pane draws the conversation: no editor, list or review.
+    pub fn conversation_shown(&self) -> bool {
+        self.tag_editor().is_none()
+            && self.list().is_none()
+            && self.note_editor().is_none()
+            && self.summary_draft().is_none()
+            && self.approvals().review().is_none()
+    }
+
     /// The rows of the transcript that are really drawn in a pane `width` x
-    /// `height`: what the composer leaves, less the rows `guidance` takes.
+    /// `height`: what the composer leaves, less the batch badge row and the
+    /// rows `guidance` takes.
     pub fn viewport_rows(&self, width: u16, height: u16, guidance: Option<&str>) -> u16 {
         let transcript = self.transcript_rows(width, height);
+        let transcript = transcript - u16::from(self.badge_row(width, transcript));
         let taken = guidance.map_or(0, |text| guidance::guidance_rows(text, width, transcript));
         transcript - taken
     }

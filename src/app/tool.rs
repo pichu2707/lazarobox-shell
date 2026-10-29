@@ -4,14 +4,16 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay, unless `approval::route` says the command can be typed at once
-//! (`auto`, D18) or run after a check (`run`, D21). Only a `run` is ever
-//! routed: a read and a user tool always wait for `y`.
+//! the overlay, unless `approval::answers_itself` lets a read or a search go
+//! (`run`: in the chat's root), or `approval::route` says the command can be
+//! typed at once (`auto`, D18) or run after a check (`run`, D21). A user tool
+//! and the other commands always wait for `y`.
 
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, Route, answers_itself, counts_toward_pause,
+        reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -126,6 +128,20 @@ impl App {
         if !self.ai.tools_enabled() {
             return Self::deny(id, turn, call, TOOLS_OFF);
         }
+        // A read or a search the mode answers needs no overlay, so a pending
+        // approval does not stand in its way. A reply that lets it go is not
+        // the user's `y`.
+        let mode = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .map(ChatState::approval_mode);
+        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode)) {
+            return vec![Effect::ToolDecision {
+                pane: id,
+                turn,
+                call,
+                decision,
+            }];
+        }
         let target = match &ask {
             ApprovalAsk::Run { .. } => {
                 let target = self
@@ -137,11 +153,15 @@ impl App {
                 target
             }
             // A user tool and a command are never routed by the approval mode (D18): only a
-            // `run` can be typed or run by itself. It always opens the prompt.
+            // `run` can be typed or run by itself. A read or a search the mode
+            // did not let go above opens the prompt.
             ApprovalAsk::Read { .. }
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
+            | ApprovalAsk::GitDiff { .. }
+            | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
@@ -171,6 +191,7 @@ impl App {
         let armed_at = (self.clock)() + ask.arm_delay();
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
+            ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
             _ => None,
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -292,7 +313,7 @@ impl App {
         chat.set_approval_mode(mode);
         chat.push_system_line(match mode {
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
-            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)".to_owned(),
+            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),
         });
         self.dirty = true;

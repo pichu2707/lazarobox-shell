@@ -253,6 +253,11 @@ impl CopyState {
         }
     }
 
+    /// Drops a half-typed `gg`, for a key the caller handles itself.
+    pub fn cancel_g(&mut self) {
+        self.pending_g = false;
+    }
+
     fn select(&mut self, kind: SelectionKind) -> CopyCommand {
         self.toggle_selection(kind);
         CopyCommand::Ignore

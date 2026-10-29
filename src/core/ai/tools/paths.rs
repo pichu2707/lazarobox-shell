@@ -368,6 +368,15 @@ impl SecretRoots {
         matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
     }
 
+    /// Whether the real target of a secret root is `dir` or lies below it:
+    /// a walk of `dir` that never follows a link can still reach it. Pure.
+    pub fn holds_root(&self, dir: &Path) -> bool {
+        let fold = cfg!(target_os = "macos");
+        self.roots
+            .iter()
+            .any(|root| starts_with_folded(root, dir, fold))
+    }
+
     fn under_root(&self, real: &Path) -> bool {
         // macOS volumes fold case: a variant spelling of a root is the root.
         let fold = cfg!(target_os = "macos");

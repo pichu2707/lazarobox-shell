@@ -909,3 +909,21 @@ fn a_clamped_chat_tick_does_not_mark_the_screen_dirty() {
     up_on(&mut a, chat_id());
     assert!(a.take_dirty());
 }
+
+#[test]
+fn the_wheel_in_chat_copy_moves_the_view_and_clamps_the_cursor() {
+    use crate::core::mouse::WHEEL_STEP;
+    let mut a = enabled(answered(&"line\n".repeat(100)));
+    a.update(ctrl_space());
+    a.update(key('['));
+    assert!(matches!(a.input(), InputMode::ChatCopy(_)));
+    let cursor = |a: &App| a.chat_copy_marks().expect("chat COPY").cursor.line;
+    let last = cursor(&a);
+    up_on(&mut a, chat_id());
+    assert_eq!(a.scrolled_by(chat_id()), Some(WHEEL_STEP));
+    assert_eq!(cursor(&a), last - WHEEL_STEP, "on the new bottom row");
+    assert!(matches!(a.input(), InputMode::ChatCopy(_)));
+    down_on(&mut a, chat_id());
+    assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
+    assert_eq!(cursor(&a), last - WHEEL_STEP, "still visible: it stays");
+}

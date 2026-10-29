@@ -414,8 +414,9 @@ impl App {
         effects
     }
 
-    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block).
-    fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
+    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block), from the
+    /// composer or chat COPY.
+    pub(super) fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
         let Some(chat) = self.focused_state().chat_state() else {
             return Vec::new();
         };
@@ -428,19 +429,7 @@ impl App {
             self.notice = Some("Nothing to copy".to_string());
             return Vec::new();
         };
-        match osc52(&text) {
-            Ok(sequence) => {
-                self.notice = Some(match text.chars().count() {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
-                self.notice = Some("Selection too large to copy".to_string());
-                Vec::new()
-            }
-        }
+        self.copy_to_clipboard(&text)
     }
 
     /// The transcript rows really drawn in chat `id`: the pane less its

@@ -16,20 +16,20 @@ use crate::core::{
 };
 
 /// Answers every ask the same way and remembers what it was asked.
-struct Asks {
+pub(super) struct Asks {
     answer: Decision,
     asked: Mutex<Vec<ApprovalAsk>>,
 }
 
 impl Asks {
-    fn new(answer: Decision) -> Arc<Self> {
+    pub(super) fn new(answer: Decision) -> Arc<Self> {
         Arc::new(Self {
             answer,
             asked: Mutex::default(),
         })
     }
 
-    fn asked(&self) -> Vec<ApprovalAsk> {
+    pub(super) fn asked(&self) -> Vec<ApprovalAsk> {
         self.asked.lock().unwrap().clone()
     }
 }

@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::core::ai::{
     chat::{
-        engine::CallId,
-        review::{self, BatchReview},
+        engine::{CallId, Decision},
+        review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
     },
     config::ApprovalMode,
@@ -73,11 +73,25 @@ pub enum ApprovalAsk {
     /// Type `command` into a pane. The command is already validated.
     Run { command: String },
     /// Read `path` (sanitized for display) and send its text to the engine.
-    Read { path: String },
+    /// `reach` is where the host found the read leads, and `cloud` whether the
+    /// engine is a cloud one; only the approval mode reads them (see
+    /// [`answers_itself`]). [`ask_for`] puts [`Reach::Other`]; the host fills
+    /// in what it found. The ask an edit opens is always `Other`.
+    Read {
+        path: String,
+        reach: Reach,
+        cloud: bool,
+    },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
-    /// sanitized line.
-    Search { pattern: String, dir: String },
+    /// sanitized line. `reach` is [`Reach::Root`] when the host found the
+    /// chat's root concrete enough to search on its own, [`Reach::Broad`]
+    /// when it is HOME or above; [`ask_for`] puts [`Reach::Other`].
+    Search {
+        pattern: String,
+        dir: String,
+        reach: Reach,
+    },
     /// Call a tool of a user-declared MCP server.
     External {
         server: String,
@@ -105,18 +119,68 @@ pub enum ApprovalAsk {
         /// watched git places, as one sanitized line the host fills in.
         earlier: Option<String>,
     },
+    /// Show the diff of the repository to the engine: file text leaves the
+    /// machine, so a cloud engine asks (`git_status` and `git_log` return
+    /// names and subjects only and never ask). `path` is `.` for the whole
+    /// tree, as one clean line. Never routed by the approval mode.
+    GitDiff { staged: bool, path: String },
+    /// Stage `paths` in the index (one clean line, as the user will read it).
+    /// `files` is how many files a dry run says would be staged; the host
+    /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
+    /// approval mode: every mode asks.
+    GitAdd { paths: String, files: Option<usize> },
+    /// Record the index as a commit. The user reads the message, the signing
+    /// notice and the whole staged diff in the review view; it is never routed
+    /// by the approval mode, so no mode approves it.
+    Commit(Arc<CommitReview>),
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
 }
 
+/// Where a read leads, as the host found it on the real path (every link
+/// followed) before it asked. A fact for the approval mode, never a verdict:
+/// the read itself judges the path again when it runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Inside the chat's root, and the path guard allows it.
+    Root,
+    /// Inside the chat's root, but the root is HOME or a folder above it
+    /// (`/`): too broad to keep a read anywhere, so `run` never lets it go.
+    Broad,
+    /// The path guard refuses it (a sensitive, missing or hidden path): the
+    /// read returns the refusal and opens nothing.
+    Refused,
+    /// Anything else: outside the root, or not judged (the ask of an edit, a
+    /// search nobody judged).
+    Other,
+    /// A local read outside the root whose path cannot be shown as it would
+    /// be opened ([`UNSHOWABLE`]): no prompt may approve it, so the ask's
+    /// `path` is empty. `ask` and `auto` let it run as they always have.
+    Unshowable,
+}
+
+/// Why a read whose path cannot be shown exactly as it would be opened is
+/// refused: the user must never approve a path that differs from the one read.
+pub const UNSHOWABLE: &str = "path cannot be shown safely";
+
 impl ApprovalAsk {
+    /// The ask of a read of `path` on a cloud engine, judged by nobody yet:
+    /// every mode prompts for it.
+    pub fn read(path: impl Into<String>) -> Self {
+        Self::Read {
+            path: path.into(),
+            reach: Reach::Other,
+            cloud: true,
+        }
+    }
+
     /// How long after it opens the keys start to answer this ask: the review
     /// of a batch waits longer than any other ask, because the user has to
     /// read it first.
     pub fn arm_delay(&self) -> Duration {
         match self {
-            Self::Batch(_) => review::ARM_DELAY,
+            Self::Batch(_) | Self::Commit(_) => review::ARM_DELAY,
             _ => ASK_ARM_DELAY,
         }
     }
@@ -131,18 +195,20 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
+/// The host also asks for a local read that leads outside the chat's root,
+/// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
     match call {
         Call::RunInPane { command } => Some(ApprovalAsk::Run {
             command: command.clone(),
         }),
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // An edit answers whether a text occurs in the file, so on a cloud
-        // engine it asks like a read of that file (and routes like one).
+        // engine it asks like a read of that file, one no mode answers.
         Call::EditFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // A command always asks, on any engine and in any approval mode.
         Call::RunCommand { .. } => {
@@ -157,6 +223,20 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 earlier: None,
             })
         }
+        // The diff holds file text, so it goes to a cloud provider only after
+        // the user's `y`; on a local engine it runs free.
+        Call::GitDiff { staged, path } if locality == Locality::Cloud => {
+            let path = flat(path.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::GitDiff {
+                staged: *staged,
+                path: if path.is_empty() { ".".into() } else { path },
+            })
+        }
+        // An add changes the index: it always asks, on any engine and mode.
+        Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
+            paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
+            files: None,
+        }),
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
         Call::External {
@@ -172,6 +252,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 pattern: flat(pattern, SEARCH_SHOWN).0,
                 // A blank folder is the root, as no folder is.
                 dir: if dir.is_empty() { ".".into() } else { dir },
+                reach: Reach::Other,
             })
         }
         // `glob` returns names only and, like the directory tools, never asks.
@@ -187,8 +268,42 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
         | Call::ProposeBatch
+        | Call::GitStatus
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        // The host reads the index and builds the commit review itself.
+        | Call::GitCommit { .. }
         | Call::Orchestra(_) => None,
     }
+}
+
+/// The most characters of the paths of an add that its prompt shows. The host
+/// refuses an add whose paths are longer, so the prompt never hides one.
+pub const GIT_ADD_SHOWN: usize = 400;
+
+/// The paths of an add as the prompt writes them: a path with whitespace is
+/// quoted, so two paths never read as one.
+fn joined_paths(paths: &[String]) -> String {
+    let word = |p: &String| {
+        if p.contains(char::is_whitespace) {
+            format!("'{p}'")
+        } else {
+            p.clone()
+        }
+    };
+    paths.iter().map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// The paths of an add as the prompt will show them, or `None` when the line
+/// would be cut or changed: the host refuses such an add before it asks,
+/// because `y` must approve exactly the paths that are staged.
+pub fn add_line(paths: &[String]) -> Option<String> {
+    if paths.iter().any(|p| p.contains('\'')) {
+        return None;
+    }
+    let joined = joined_paths(paths);
+    let (line, cut) = flat(&joined, GIT_ADD_SHOWN);
+    (cut == 0 && line == joined && !line.is_empty()).then_some(line)
 }
 
 /// The most characters of a search ask's pattern or folder that are shown.
@@ -332,6 +447,11 @@ pub const MAX_RUN_FALLBACKS: u8 = 3;
 pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
 /// Why a path check refuses a command: the one refusal that counts toward the pause.
 pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
+/// Why a command that leaves the chat's folder asks: a path it acts on, or
+/// the pane's directory, is elsewhere. Asking is no fault of the model.
+pub const OUTSIDE_ROOT: &str = "the command reaches outside the chat's folder";
+/// Why every command of a cloud chat asks when its folder is HOME or `/`.
+pub const BROAD_ROOT: &str = "the chat's folder is your home or /";
 pub const PAUSED: &str = "auto-run paused for this turn";
 pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// Why a command that the grammar accepts still takes the prompt: the pane
@@ -477,6 +597,42 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
         Ok(safe) if !ctx.utf8 && !safe.as_str().is_ascii() => because(NON_UTF8),
         Ok(safe) => busy(ctx).map_or(Route::AutoRun(safe), because),
         Err(fallback) => Route::Prompt(Some(fallback)),
+    }
+}
+
+/// How a chat in `mode` answers a model's read or search ask itself, with
+/// no prompt; `None` opens the prompt. A read or a search let go gets
+/// [`Decision::Unprompted`], which the host never takes for the user's `y`.
+///
+/// In `run`: a search of a concrete root (its walk never leaves the root),
+/// and a cloud read that stays in such a root or that the path guard refuses
+/// (the read then returns the refusal). A read or a search under a root that
+/// is HOME or `/` ([`Reach::Broad`]) prompts, and so does a read that leads
+/// outside the root, on every engine; one whose path cannot be shown is
+/// denied, as no prompt may approve it. In `ask` and `auto`: only a local
+/// read outside the root, which runs free there as it always has; every
+/// other ask prompts. A command, a user tool, a batch and the ask of an edit
+/// are never answered here.
+pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
+    let ApprovalAsk::Read { reach, cloud, .. } = ask else {
+        let search = matches!(
+            ask,
+            ApprovalAsk::Search {
+                reach: Reach::Root,
+                ..
+            }
+        );
+        return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
+    };
+    match (mode, reach, cloud) {
+        (ApprovalMode::Run, Reach::Root | Reach::Refused, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
+        (ApprovalMode::Run, _, _) => None,
+        // The local engine asks only for a read outside the root.
+        (ApprovalMode::Ask | ApprovalMode::Auto, Reach::Other | Reach::Unshowable, false) => {
+            Some(Decision::Unprompted)
+        }
+        (ApprovalMode::Ask | ApprovalMode::Auto, _, _) => None,
     }
 }
 
@@ -733,7 +889,7 @@ mod tests {
 
     #[test]
     fn ask_mode_and_other_asks_always_prompt() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         let external = ApprovalAsk::External {
             server: "s".into(),
             tool: "t".into(),
@@ -807,7 +963,7 @@ mod tests {
 
     #[test]
     fn auto_and_ask_never_produce_a_run() {
-        for ask in ["cd x", "ls", "pwd", "mkdir -p a"] {
+        for ask in ["cd x", "ls", "pwd", "mkdir -p a", "rg foo", "git status"] {
             for mode in [ApprovalMode::Auto, ApprovalMode::Ask] {
                 let ask = ask_of(ask);
                 let route = route(&ask, Origin::Tool, mode, FREE);
@@ -889,7 +1045,7 @@ mod tests {
             panic!("{got:?}")
         };
         assert_eq!((fallback.at, fallback.why), (3..4, "shell metacharacter"));
-        let ask = ask_of("git status");
+        let ask = ask_of("cargo build");
         let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
         assert_eq!(why(&got), Some("not a safe command"));
     }
@@ -935,7 +1091,7 @@ mod tests {
 
     #[test]
     fn only_a_model_run_can_run() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         for (ask, origin) in [
             (run_ask(), Origin::Block),
             (read.clone(), Origin::Tool),
@@ -1000,7 +1156,7 @@ mod tests {
             assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
         }
         // A command off the grammar still names the grammar, not the pane.
-        let off = ask_of("git status");
+        let off = ask_of("cargo build");
         let busy = AutoCtx {
             executing: true,
             ..FREE
@@ -1017,7 +1173,7 @@ mod tests {
             reason_line(&fallback, text)
         };
         assert_eq!(line("cd a && ls"), "shell metacharacter: `&&`");
-        assert_eq!(line("git status"), "not a safe command: `git`");
+        assert_eq!(line("cargo build"), "not a safe command: `cargo`");
         assert_eq!(line("ls -R src"), "flag not allowed: `-R`");
         // Nothing to name: no token, or a token that is only a space.
         assert_eq!(line("ls "), "trailing space");
@@ -1066,7 +1222,7 @@ mod tests {
             matches!(&got, Route::Prompt(Some(f)) if counts_toward_pause(f))
         };
         assert!(counted("ls *"));
-        assert!(counted("git status"));
+        assert!(counted("cargo build"));
         for ctx in [
             AutoCtx {
                 paused: true,
@@ -1118,9 +1274,7 @@ mod tests {
         assert_eq!(ask_for(&read, Locality::Local), None);
         assert_eq!(
             ask_for(&read, Locality::Cloud),
-            Some(ApprovalAsk::Read {
-                path: "~/a.txt".into()
-            })
+            Some(ApprovalAsk::read("~/a.txt"))
         );
     }
 
@@ -1158,6 +1312,73 @@ mod tests {
         ApprovalAsk::Search {
             pattern: pattern.into(),
             dir: dir.into(),
+            reach: Reach::Other,
+        }
+    }
+
+    // The whole table of what a mode answers itself: every mode, every read
+    // reach on both kinds of engine, every search reach, and the asks no mode
+    // answers. `Some(None)` is a prompt.
+    #[test]
+    fn answers_itself_follows_its_table_for_every_mode_ask_and_reach() {
+        use ApprovalMode::{Ask, Auto, Run};
+        use Reach::{Broad, Other, Refused, Root, Unshowable};
+        let free = Some(Decision::Unprompted);
+        let read = |reach, cloud| ApprovalAsk::Read {
+            path: "~/a".into(),
+            reach,
+            cloud,
+        };
+        let search = |reach| ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+            reach,
+        };
+        let unshowable = Some(Decision::Denied(UNSHOWABLE));
+        #[rustfmt::skip]
+        let reads = [
+            // (reach, cloud, run, ask and auto)
+            (Root, true, free, None),
+            (Refused, true, free, None),
+            (Broad, true, None, None),
+            (Other, true, None, None),
+            (Unshowable, true, unshowable, None),
+            (Root, false, None, None),
+            (Refused, false, None, None),
+            (Broad, false, None, None),
+            (Other, false, None, free),
+            (Unshowable, false, unshowable, free),
+        ];
+        for (reach, cloud, run, others) in reads {
+            let ask = read(reach, cloud);
+            assert_eq!(answers_itself(&ask, Run), run, "{reach:?} cloud={cloud}");
+            for mode in [Ask, Auto] {
+                assert_eq!(
+                    answers_itself(&ask, mode),
+                    others,
+                    "{mode:?} {reach:?} {cloud}"
+                );
+            }
+        }
+        for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
+            assert_eq!(answers_itself(&search(reach), Run), run, "{reach:?}");
+            for mode in [Ask, Auto] {
+                assert_eq!(answers_itself(&search(reach), mode), None, "{mode:?}");
+            }
+        }
+        let never = [
+            run("ls"),
+            ApprovalAsk::External {
+                server: "s".into(),
+                tool: "t".into(),
+                args: "{}".into(),
+            },
+            ApprovalAsk::read("~/a"),
+        ];
+        for ask in never {
+            for mode in [Ask, Auto, Run] {
+                assert_eq!(answers_itself(&ask, mode), None, "{mode:?} {ask:?}");
+            }
         }
     }
 
@@ -1191,7 +1412,7 @@ mod tests {
             pattern: "a\u{1b}[31mb\nc".into(),
             dir: Some("x\ny".into()),
         };
-        let Some(ApprovalAsk::Search { pattern, dir }) = ask_for(&call, Locality::Cloud) else {
+        let Some(ApprovalAsk::Search { pattern, dir, .. }) = ask_for(&call, Locality::Cloud) else {
             panic!("a cloud grep must ask");
         };
         assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));
@@ -1268,7 +1489,7 @@ mod tests {
         let mut a = Approvals::default();
         a.request(run("one"), Origin::Block).unwrap();
         let err = a
-            .request(ApprovalAsk::Read { path: "/x".into() }, Origin::Tool)
+            .request(ApprovalAsk::read("/x"), Origin::Tool)
             .unwrap_err();
         assert_eq!(err.reason(), "another approval is pending");
         assert_eq!(a.pending().unwrap().ask(), &run("one"));
@@ -1278,7 +1499,7 @@ mod tests {
     fn all_three_asks_can_be_pending() {
         for ask in [
             run("ls"),
-            ApprovalAsk::Read { path: "/x".into() },
+            ApprovalAsk::read("/x"),
             ApprovalAsk::External {
                 server: "s".into(),
                 tool: "t".into(),
@@ -1432,6 +1653,127 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    // Spec (git-tools, Read verbs): `git_status` and `git_log` run free;
+    // `git_diff` shows file text, so it asks on a cloud engine only.
+    #[test]
+    fn git_diff_asks_on_a_cloud_engine_and_the_other_read_verbs_never_do() {
+        let diff = Call::GitDiff {
+            staged: true,
+            path: Some("src/a.rs".into()),
+        };
+        assert_eq!(ask_for(&diff, Locality::Local), None);
+        assert_eq!(
+            ask_for(&diff, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: true,
+                path: "src/a.rs".into()
+            })
+        );
+        let whole = Call::GitDiff {
+            staged: false,
+            path: None,
+        };
+        assert_eq!(
+            ask_for(&whole, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: false,
+                path: ".".into()
+            })
+        );
+        let log = Call::GitLog {
+            max_count: None,
+            path: None,
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(ask_for(&Call::GitStatus, locality), None);
+            assert_eq!(ask_for(&log, locality), None);
+        }
+    }
+
+    // Spec (git-tools, add): every engine asks for an add, with the paths as
+    // one line; a path with a space is quoted so two never read as one.
+    #[test]
+    fn an_add_asks_on_every_engine_with_the_paths_on_one_line() {
+        let add = Call::GitAdd {
+            paths: vec!["src/a.rs".into(), "my notes.md".into()],
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&add, locality),
+                Some(ApprovalAsk::GitAdd {
+                    paths: "src/a.rs 'my notes.md'".into(),
+                    files: None
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_paths_of_an_add_that_would_not_show_whole_have_no_line() {
+        let paths = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            add_line(&paths(&["a.rs", "b.rs"])).as_deref(),
+            Some("a.rs b.rs")
+        );
+        assert_eq!(add_line(&paths(&[&"a".repeat(GIT_ADD_SHOWN + 1)])), None);
+        assert_eq!(
+            add_line(&paths(&["a\nb"])),
+            None,
+            "a newline is not one line"
+        );
+        assert_eq!(
+            add_line(&paths(&["a  b"])),
+            None,
+            "spaces are not collapsed"
+        );
+        assert_eq!(add_line(&[]), None);
+        assert_eq!(
+            add_line(&paths(&["'a", "b'"])),
+            None,
+            "a quote makes the quoting ambiguous"
+        );
+    }
+
+    // The commit asks through the review the host builds; `ask_for` alone
+    // gives no ask, which the host never takes for a free run (it always
+    // fills one in or refuses).
+    #[test]
+    fn a_commit_has_no_ask_of_its_own_in_ask_for() {
+        let commit = Call::GitCommit {
+            message: "m".into(),
+        };
+        assert_eq!(ask_for(&commit, Locality::Cloud), None);
+    }
+
+    #[test]
+    fn a_git_diff_path_is_shown_as_one_clean_line() {
+        let call = Call::GitDiff {
+            staged: false,
+            path: Some("a\n\u{202e}b".into()),
+        };
+        let Some(ApprovalAsk::GitDiff { path, .. }) = ask_for(&call, Locality::Cloud) else {
+            panic!("no ask");
+        };
+        assert!(
+            path.chars().all(|c| !c.is_control() && c != '\u{202e}'),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn a_git_diff_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::GitDiff {
+            staged: false,
+            path: ".".into(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+            assert_eq!(answers_itself(&ask, mode), None);
         }
     }
 
