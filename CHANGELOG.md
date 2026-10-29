@@ -16,6 +16,8 @@ baseline.
 - A menu save says where it wrote in the statusline (`saved to
   ~/.config/lazarobox/config.toml`), and the README has a section on where
   `config.toml` lives.
+- `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
+  before the terminal or the nesting guard are touched.
 - Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
   `config.toml` choose where the first shell starts (flag, then config, then
   the launch folder). An invalid folder does not stop the app: it starts in
@@ -27,6 +29,8 @@ baseline.
 
 - When the jail refuses a codex layout, the full reason (`y` in the menu, and the chat) now names the layout and what to do, for example `codex (standalone) is installed in a layout the jail cannot isolate: … would be both run and written; reinstall it with the official installer, npm or Homebrew`. The short form on the menu row is unchanged.
 - `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
+- An unknown option or command now prints one line on stderr and exits 2
+  instead of silently starting the TUI.
 
 ### Fixed
 
