@@ -3,7 +3,10 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::folder::{CdArg, Command, Probed, Purpose, Refusal, expand, parse_command, typed},
+    chat::{
+        approval::{ApprovalAsk, Origin, Reply},
+        folder::{CdArg, Command, Probed, Purpose, Refusal, Verdict, expand, parse_command, typed},
+    },
     sanitize::clean,
 };
 
@@ -37,7 +40,6 @@ impl App {
     /// what the old one pinned: the system prompt, the memory project and the
     /// tool session (whose approvals belong to the old folder). Every other
     /// consumer reads the folder when it needs it (design D1).
-    #[allow(dead_code)] // used once `y` confirms a `/cd` (next commit)
     pub(super) fn apply_folder(&mut self, id: PaneId, new: PathBuf) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -125,13 +127,71 @@ impl App {
                     (None, Ok(_), Ok(probed)) if chat.origin_cwd() == Some(&probed.path) => {
                         format!("already in {}", clean(&probed.path.to_string_lossy()))
                     }
-                    // The confirmation opens here (the next commit).
-                    (None, Ok(_), _) => return Vec::new(),
+                    (None, Ok(verdict), Ok(probed)) => {
+                        let ask = ApprovalAsk::Folder {
+                            from: chat.origin_cwd().map_or_else(
+                                || "unknown".to_owned(),
+                                |from| clean(&from.to_string_lossy()),
+                            ),
+                            to: probed.path,
+                            note: (verdict != Verdict::Concrete)
+                                .then(|| "broad folder: the tools keep their limits".to_owned()),
+                        };
+                        match chat.approvals_mut().request(ask, Origin::Block) {
+                            Ok(_) => return Vec::new(),
+                            Err(_) => refused("an approval is pending"),
+                        }
+                    }
+                    (None, Ok(_), Err(_)) => return Vec::new(),
                 };
                 chat.push_system_line(line);
                 Vec::new()
             }
             Purpose::Resume => Vec::new(),
         }
+    }
+
+    /// Whether the approval waiting in chat `id` is the folder confirmation.
+    pub(super) fn folder_ask_pending(&self, id: PaneId) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Folder { .. }))
+    }
+
+    /// A key while the folder confirmation waits: an unmodified `y` changes
+    /// the folder, any other key cancels. A bare modifier is not an answer.
+    pub(super) fn on_folder_key(&mut self, id: PaneId, key: KeyEvent) -> Vec<Effect> {
+        if matches!(key.code, KeyCode::Modifier(_)) {
+            return Vec::new();
+        }
+        let confirmed = key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE;
+        let reply = if confirmed {
+            Reply::Approve
+        } else {
+            Reply::Decline
+        };
+        let Some(approval) = self.close_approval(id, reply) else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        let ApprovalAsk::Folder { to, .. } = approval.ask() else {
+            return Vec::new();
+        };
+        if !confirmed {
+            return Vec::new();
+        }
+        // Busy is checked again now: the chat may have changed while it waited.
+        if let Some(reason) = self.folder_busy(id) {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.push_system_line(refused(reason));
+            }
+            return Vec::new();
+        }
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().clear();
+        }
+        self.apply_folder(id, to.clone())
     }
 }

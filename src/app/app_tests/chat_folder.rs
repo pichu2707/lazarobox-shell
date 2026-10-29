@@ -62,7 +62,7 @@ fn a_chat_that_is_gone_is_not_busy() {
 
 // ---- the /cd command (chat-folder A2) --------------------------------------
 
-use super::chat_history::{ask, plain, systems, type_text};
+use super::chat_history::{ask, code, plain, systems, type_text};
 use super::chat_live::ollama;
 use crate::core::ai::chat::folder::{Probed, Purpose, Refusal, Verdict};
 
@@ -249,4 +249,155 @@ fn the_same_folder_says_so_and_opens_nothing() {
             .pending()
             .is_none()
     );
+}
+
+// ---- the confirmation (chat-folder A2) -------------------------------------
+
+use crate::core::ai::chat::approval::ApprovalAsk;
+
+/// `/cd /w/b` typed and probed: the confirmation is open.
+fn asking() -> App {
+    let mut a = in_folder();
+    ask(&mut a, "/cd /w/b");
+    probed(&mut a, concrete("/w/b"));
+    a
+}
+
+fn pending_ask(a: &App) -> Option<ApprovalAsk> {
+    super::run_pane::chat(a, id2())
+        .approvals()
+        .pending()
+        .map(|p| p.ask().clone())
+}
+
+#[test]
+fn a_valid_cd_opens_the_confirmation_with_both_folders() {
+    let a = asking();
+    let Some(ApprovalAsk::Folder { from, to, note }) = pending_ask(&a) else {
+        panic!("expected the folder ask, got {:?}", pending_ask(&a));
+    };
+    assert_eq!((from.as_str(), to), ("/w/a", PathBuf::from("/w/b")));
+    assert_eq!(note, None);
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn a_broad_folder_typed_by_the_user_is_confirmed_with_a_note() {
+    let mut a = in_folder();
+    ask(&mut a, "/cd ~");
+    probed(
+        &mut a,
+        Ok(Probed {
+            path: "/h".into(),
+            verdict: Verdict::Home,
+        }),
+    );
+    let Some(ApprovalAsk::Folder { note, .. }) = pending_ask(&a) else {
+        panic!("expected the folder ask");
+    };
+    assert!(note.is_some_and(|n| n.contains("broad")));
+}
+
+#[test]
+fn y_changes_the_folder_and_clears_the_composer() {
+    let mut a = asking();
+    a.update(key('y'));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    assert_eq!(composer(&a), "");
+    assert_eq!(pending_ask(&a), None);
+    assert!(lines(&a).contains(&"folder changed: /w/a -> /w/b".to_owned()));
+}
+
+#[test]
+fn every_other_key_cancels_and_keeps_the_text() {
+    let keys = [
+        plain(KeyCode::Char('n')),
+        plain(KeyCode::Esc),
+        plain(KeyCode::Char('x')),
+        code(KeyCode::Char('Y'), KeyModifiers::SHIFT),
+        plain(KeyCode::Enter),
+    ];
+    for event in keys {
+        // The Enter that sent `/cd` must not read as the same key held.
+        let mut a = asking().with_clock(mock_now);
+        let_go();
+        a.update(event.clone());
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")), "{event:?}");
+        assert_eq!(composer(&a), "/cd /w/b", "{event:?}");
+        assert_eq!(pending_ask(&a), None, "{event:?}");
+        assert!(
+            !lines(&a).iter().any(|l| l.ends_with("-> /w/b")),
+            "{event:?}"
+        );
+    }
+}
+
+#[test]
+fn a_modified_y_does_not_confirm() {
+    let mut a = asking();
+    a.update(code(KeyCode::Char('y'), KeyModifiers::CONTROL));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn the_chat_becoming_busy_before_y_refuses_the_change() {
+    let mut a = asking();
+    let ready = crate::core::ai::chat::engine::Availability::Ready {
+        engine: "ollama".into(),
+        model: Some("llama3:8b".into()),
+    };
+    // A stream started elsewhere while the prompt waited.
+    let chat = a
+        .panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap();
+    let pending = chat.approvals().pending().unwrap().id();
+    chat.approvals_mut().withdraw(pending);
+    chat.send("again", &ready, "system");
+    chat.approvals_mut()
+        .request(
+            ApprovalAsk::Folder {
+                from: "/w/a".into(),
+                to: "/w/b".into(),
+                note: None,
+            },
+            crate::core::ai::chat::approval::Origin::Block,
+        )
+        .unwrap();
+    a.update(key('y'));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    assert!(lines(&a).contains(&"/cd refused: the model is answering".to_owned()));
+}
+
+#[test]
+fn the_confirmation_shows_the_old_and_the_new_folder() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let a = asking();
+    let prompt = a.approval_prompt(id2());
+    let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let chat = super::run_pane::chat(&a, id2());
+            frame.render_widget(
+                crate::ui::components::chat::ChatView::new(chat, &theme).approval(prompt.as_ref()),
+                area,
+            );
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let shot = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(shot.contains("/w/a") && shot.contains("/w/b"), "{shot}");
+    insta::assert_snapshot!("folder_confirmation_60x10", shot);
 }

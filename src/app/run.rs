@@ -8,8 +8,8 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_KEYS, Origin, Press,
+            READ_KEYS, RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -121,6 +121,9 @@ impl App {
         if repeat {
             return Vec::new();
         }
+        if self.folder_ask_pending(id) {
+            return self.on_folder_key(id, key);
+        }
         // A prompt the model just opened takes no answer yet: the key may have
         // been typed for the composer. Ctrl+C always works.
         let answers = matches!(
@@ -159,7 +162,7 @@ impl App {
         // only the user's own action leaves a line behind.
         let batch = matches!(
             approval.ask(),
-            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_)
+            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Folder { .. }
         );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
@@ -539,6 +542,14 @@ impl App {
             }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
+            ApprovalAsk::Folder { from, to, note } => Some(ApprovalPrompt {
+                target: "Change folder?".to_owned(),
+                command: format!("{from} -> {}", sanitize::clean(&to.to_string_lossy())),
+                keys: FOLDER_KEYS,
+                armed,
+                why: None,
+                notice: note.clone(),
+            }),
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {

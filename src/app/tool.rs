@@ -162,7 +162,8 @@ impl App {
             | ApprovalAsk::GitDiff { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
-            | ApprovalAsk::Batch(_) => None,
+            | ApprovalAsk::Batch(_)
+            | ApprovalAsk::Folder { .. } => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
