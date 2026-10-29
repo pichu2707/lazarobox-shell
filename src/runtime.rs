@@ -3587,6 +3587,7 @@ mod tests {
             extras: vec![],
             first: stored(Role::User, text, MsgStatus::Complete),
             origin: None,
+            folder: None,
             open: Vec::new(),
         }
     }

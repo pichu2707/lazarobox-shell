@@ -89,6 +89,7 @@ fn the_first_send_creates_the_conversation_with_profile_tag_and_message() {
                 model: Some("llama3:8b".into()),
             },
             origin: None,
+            folder: None,
             open: vec![3, 4],
         }]
     );

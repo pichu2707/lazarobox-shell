@@ -45,6 +45,7 @@ fn resumed_with(session: Option<(&str, &str)>) -> AppEvent {
         extras,
         messages,
         session: session.map(|(id, project)| (id.to_owned(), project.to_owned())),
+        folder: None,
     })
 }
 

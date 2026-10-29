@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc as std_mpsc,
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -96,6 +96,7 @@ impl Worker {
                 extras,
                 first,
                 origin,
+                folder,
                 open,
             } => {
                 // The pane may have sent before its list answered.
@@ -108,7 +109,7 @@ impl Worker {
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
                 };
                 let tags = Tags::new(tag, extras);
-                let made = create(conn, &profile, &tags, &first, &open);
+                let made = create(conn, &profile, &tags, &first, folder.as_deref(), &open);
                 Some(match made {
                     Ok((conversation, created_at, gone)) => {
                         self.failing = false;
@@ -211,6 +212,18 @@ impl Worker {
                     None => StoreReply::TagsFailed { pane },
                 })
             }
+            StoreCmd::SetFolder {
+                pane,
+                conversation,
+                folder,
+            } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
+                if let Ok(conn) = self.conn() {
+                    // A failed write only means a resume asks again.
+                    let _ = replace_folder(conn, conversation, &folder);
+                }
+                None
+            }
             StoreCmd::List { pane, origin } => {
                 // The walk to the repository root is filesystem IO: it is
                 // done here, not on the UI thread.
@@ -235,6 +248,7 @@ impl Worker {
                         extras,
                         messages,
                         session,
+                        folder,
                     }) => StoreReply::Resumed {
                         pane,
                         conversation,
@@ -243,6 +257,7 @@ impl Worker {
                         extras,
                         messages,
                         session,
+                        folder,
                     },
                     None => StoreReply::ResumeFailed { pane },
                 })
@@ -295,6 +310,7 @@ impl Worker {
             StoreCmd::Resume { pane, .. } => (*pane, Panicked::Resume),
             StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
+            StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -307,7 +323,11 @@ impl Worker {
                 // left a transaction open, leaves it in an unknown state.
                 let keep = matches!(
                     on_panic,
-                    Panicked::Link(_) | Panicked::Resume | Panicked::Delete | Panicked::SetTags
+                    Panicked::Link(_)
+                        | Panicked::Resume
+                        | Panicked::Delete
+                        | Panicked::SetTags
+                        | Panicked::SetFolder
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -321,6 +341,7 @@ impl Worker {
                     Panicked::Resume => StoreReply::ResumeFailed { pane },
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
+                    Panicked::SetFolder => return None,
                 })
             }
         }
@@ -342,6 +363,7 @@ enum Panicked {
     Resume,
     Delete,
     SetTags,
+    SetFolder,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -386,6 +408,7 @@ fn create(
     profile: &str,
     tags: &Tags,
     first: &StoredMessage,
+    folder: Option<&Path>,
     open: &[i64],
 ) -> Result<(i64, i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -425,9 +448,9 @@ fn create(
     let text = clean(&first.text);
     let stamp = now();
     tx.execute(
-        "INSERT INTO conversations(created_at, updated_at, profile, title)
-         VALUES (?1, ?1, ?2, ?3)",
-        (stamp, profile, title_of(&text)),
+        "INSERT INTO conversations(created_at, updated_at, profile, title, folder)
+         VALUES (?1, ?1, ?2, ?3, ?4)",
+        (stamp, profile, title_of(&text), folder.and_then(Path::to_str)),
     )?;
     let id = tx.last_insert_rowid();
     insert_tags(&tx, id, tags)?;
@@ -480,6 +503,24 @@ fn replace_tags(
     insert_tags(&tx, conversation, tags)?;
     tx.commit()?;
     Ok(stamp)
+}
+
+/// Replaces the folder of a conversation and bumps its last activity. A
+/// conversation that does not exist is an error. A path that is not UTF-8 is
+/// stored as `NULL` (a resume then asks).
+fn replace_folder(
+    conn: &mut Connection,
+    conversation: i64,
+    folder: &Path,
+) -> Result<(), rusqlite::Error> {
+    let touched = conn.execute(
+        "UPDATE conversations SET folder = ?2, updated_at = ?3 WHERE id = ?1",
+        (conversation, folder.to_str(), now()),
+    )?;
+    if touched == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
 }
 
 /// Appends a message and bumps the conversation's last activity.
@@ -626,6 +667,8 @@ struct Resumed {
     messages: Vec<Msg>,
     /// The engram `(session id, project)` pair of its notes, if it has one.
     session: Option<(String, String)>,
+    /// The folder it was kept under, when one was stored.
+    folder: Option<PathBuf>,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -633,6 +676,11 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
     let tx = conn.transaction()?;
     let profile: String = tx.query_row(
         "SELECT profile FROM conversations WHERE id = ?1",
+        [conversation],
+        |r| r.get(0),
+    )?;
+    let folder: Option<String> = tx.query_row(
+        "SELECT folder FROM conversations WHERE id = ?1",
         [conversation],
         |r| r.get(0),
     )?;
@@ -682,6 +730,7 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         extras,
         messages,
         session,
+        folder: folder.map(PathBuf::from),
     })
 }
 

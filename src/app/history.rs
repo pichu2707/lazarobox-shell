@@ -325,6 +325,7 @@ impl App {
                 extras,
                 messages,
                 session,
+                ..
             } => {
                 let tags = Tags {
                     project: tag.clone(),
