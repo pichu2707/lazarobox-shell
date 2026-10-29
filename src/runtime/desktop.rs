@@ -25,6 +25,8 @@ pub struct Context<'a> {
     pub home: Option<OsString>,
     /// Absolute, canonical path of the running binary.
     pub exe: PathBuf,
+    /// The working directory, for a relative `--dir`.
+    pub cwd: PathBuf,
     /// Resolves a command to an absolute executable path.
     pub lookup: &'a dyn Fn(&str) -> Option<PathBuf>,
     /// Best-effort `update-desktop-database <applications dir>`.
@@ -67,6 +69,7 @@ pub fn main(args: &[OsString]) -> i32 {
         xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
         home: std::env::var_os("HOME"),
         exe,
+        cwd: std::env::current_dir().unwrap_or_default(),
         lookup: &lookup,
         refresh_db: &refresh_db,
     };
@@ -102,10 +105,15 @@ pub fn execute(options: &Options, ctx: &Context, out: &mut dyn Write) -> Result<
             (ctx.refresh_db)(&apps_dir);
             writeln!(out, "Removed {}", target.display()).map_err(io_error)
         }
-        Options::Install { terminal } => {
+        Options::Install { terminal, dir } => {
+            // Checked first: a bad folder writes nothing.
+            let dir = dir
+                .as_deref()
+                .map(|raw| install_dir(raw, ctx))
+                .transpose()?;
             let (choice, mut notes) =
                 choose_terminal(terminal.as_deref(), ctx.env_terminal.as_deref(), ctx.lookup)?;
-            let plan = plan_install(&choice, &ctx.exe)?;
+            let plan = plan_install(&choice, &ctx.exe, dir.as_deref())?;
             notes.extend(plan.notes);
             write_atomically(&apps_dir, &target, &plan.contents)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
@@ -117,6 +125,18 @@ pub fn execute(options: &Options, ctx: &Context, out: &mut dyn Write) -> Result<
             }
             Ok(())
         }
+    }
+}
+
+/// The absolute folder for `--dir`: `~` and relative paths resolve now, and
+/// it must be an existing directory.
+fn install_dir(raw: &str, ctx: &Context) -> Result<PathBuf, String> {
+    let home = ctx.home.as_deref().map(Path::new);
+    let path = crate::core::start::absolute(raw, &ctx.cwd, home);
+    match fs::metadata(&path) {
+        Ok(meta) if meta.is_dir() => Ok(path),
+        Ok(_) => Err(format!("--dir: not a folder: {}", path.display())),
+        Err(_) => Err(format!("--dir: folder not found: {}", path.display())),
     }
 }
 

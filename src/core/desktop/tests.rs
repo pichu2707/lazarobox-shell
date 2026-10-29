@@ -35,26 +35,31 @@ const BIN: &str = "/home/u/.cargo/bin/lazarobox-shell";
 
 fn plan_for(name: &str) -> Plan {
     let choice = pick(None, None, &[Box::leak(name.to_string().into_boxed_str())]);
-    plan_install(&choice, Path::new(BIN)).unwrap()
+    plan_install(&choice, Path::new(BIN), None).unwrap()
 }
 
 #[test]
 fn parses_the_three_forms() {
     assert_eq!(
         parse_args(&os(&[])),
-        Ok(Options::Install { terminal: None })
+        Ok(Options::Install {
+            terminal: None,
+            dir: None
+        })
     );
     assert_eq!(parse_args(&os(&["--uninstall"])), Ok(Options::Uninstall));
     assert_eq!(
         parse_args(&os(&["--terminal", "foot"])),
         Ok(Options::Install {
-            terminal: Some("foot".into())
+            terminal: Some("foot".into()),
+            dir: None
         })
     );
     assert_eq!(
         parse_args(&os(&["--terminal=foot"])),
         Ok(Options::Install {
-            terminal: Some("foot".into())
+            terminal: Some("foot".into()),
+            dir: None
         })
     );
     assert_eq!(parse_args(&os(&["--help"])), Ok(Options::Help));
@@ -202,7 +207,7 @@ fn startup_wm_class_only_when_the_terminal_sets_the_class() {
 #[test]
 fn unknown_terminal_uses_dash_e_and_says_so() {
     let choice = pick(Some("mytty"), None, &["mytty"]);
-    let plan = plan_install(&choice, Path::new(BIN)).unwrap();
+    let plan = plan_install(&choice, Path::new(BIN), None).unwrap();
     assert_eq!(plan.exec, format!("/usr/bin/mytty -e {BIN}"));
     assert!(plan.notes.iter().any(|n| n.contains("no launch syntax")));
     assert!(!plan.contents.contains("StartupWMClass"));
@@ -210,7 +215,7 @@ fn unknown_terminal_uses_dash_e_and_says_so() {
 
 #[test]
 fn fallback_runs_the_binary_in_a_desktop_chosen_terminal() {
-    let plan = plan_install(&Choice::Fallback, Path::new(BIN)).unwrap();
+    let plan = plan_install(&Choice::Fallback, Path::new(BIN), None).unwrap();
     assert_eq!(plan.exec, BIN);
     assert!(plan.contents.contains("Terminal=true\n"));
     assert!(plan.contents.contains(&format!("Exec={BIN}\n")));
@@ -225,7 +230,7 @@ fn kitty_gets_no_compatibility_notice_and_others_do() {
             .notes
             .contains(&NON_KITTY_NOTICE.to_string())
     );
-    let fallback = plan_install(&Choice::Fallback, Path::new(BIN)).unwrap();
+    let fallback = plan_install(&Choice::Fallback, Path::new(BIN), None).unwrap();
     assert!(fallback.notes.contains(&NON_KITTY_NOTICE.to_string()));
 }
 
@@ -260,7 +265,7 @@ fn reserved_characters_and_relative_paths_are_refused() {
     ] {
         assert!(validate_path(Path::new(bad)).is_err(), "{bad}");
         assert!(
-            plan_install(&Choice::Fallback, Path::new(bad)).is_err(),
+            plan_install(&Choice::Fallback, Path::new(bad), None).is_err(),
             "{bad}"
         );
     }
@@ -275,7 +280,7 @@ fn unsafe_terminal_path_is_refused_too() {
         known: true,
         source: Source::Flag,
     };
-    assert!(plan_install(&choice, Path::new(BIN)).is_err());
+    assert!(plan_install(&choice, Path::new(BIN), None).is_err());
 }
 
 #[test]
@@ -299,7 +304,7 @@ fn build_artefact_paths_are_detected_by_component() {
 #[test]
 fn a_build_artefact_binary_gets_a_cargo_clean_note() {
     let bin = Path::new("/src/lazarobox-shell/target/debug/lazarobox-shell");
-    let plan = plan_install(&Choice::Fallback, bin).unwrap();
+    let plan = plan_install(&Choice::Fallback, bin, None).unwrap();
     assert!(plan.notes.iter().any(|n| n.contains("cargo clean")));
     assert!(
         !plan_for("kitty")
@@ -313,10 +318,109 @@ fn a_build_artefact_binary_gets_a_cargo_clean_note() {
 fn placeholders_in_a_path_are_not_rewritten() {
     let choice = pick(None, None, &["kitty"]);
     let bin = Path::new("/opt/@TERMINAL@/@EXEC@/lazarobox-shell");
-    let plan = plan_install(&choice, bin).unwrap();
+    let plan = plan_install(&choice, bin, None).unwrap();
     assert!(plan.contents.contains(&format!(
         "Exec=/usr/bin/kitty --class lazarobox --title Lazarobox {}\n",
         bin.display()
     )));
     assert!(plan.contents.contains("Terminal=false\n"));
+}
+
+fn with_dir(dir: &str) -> Plan {
+    let choice = pick(None, None, &["kitty"]);
+    plan_install(&choice, Path::new(BIN), Some(Path::new(dir))).unwrap()
+}
+
+// Spec (start-dir): install-desktop --dir.
+#[test]
+fn parses_the_dir_flag_in_both_forms() {
+    let want = Ok(Options::Install {
+        terminal: None,
+        dir: Some("/w/proj".into()),
+    });
+    assert_eq!(parse_args(&os(&["--dir", "/w/proj"])), want);
+    assert_eq!(parse_args(&os(&["--dir=/w/proj"])), want);
+    assert!(parse_args(&os(&["--dir"])).is_err());
+    assert!(parse_args(&os(&["--dir="])).is_err());
+    assert!(parse_args(&os(&["--uninstall", "--dir", "/w"])).is_err());
+}
+
+#[test]
+fn a_dir_writes_path_and_the_exec_argument() {
+    let plan = with_dir("/w/proj");
+    assert!(
+        plan.contents.contains("\nPath=/w/proj\n"),
+        "{}",
+        plan.contents
+    );
+    let exec =
+        format!("Exec=/usr/bin/kitty --class lazarobox --title Lazarobox {BIN} --dir=/w/proj\n");
+    assert!(plan.contents.contains(&exec), "{}", plan.contents);
+    let without = plan_for("kitty");
+    let terminal = |c: &str| {
+        c.lines()
+            .find(|l| l.starts_with("Terminal="))
+            .map(String::from)
+    };
+    assert_eq!(terminal(&plan.contents), terminal(&without.contents));
+}
+
+#[test]
+fn without_a_dir_neither_path_nor_the_argument_is_written() {
+    let plan = plan_for("kitty");
+    assert!(!plan.contents.contains("Path="));
+    assert!(!plan.contents.contains("--dir"));
+    assert!(!plan.contents.contains('@'));
+}
+
+#[test]
+fn the_fallback_launcher_also_carries_the_dir() {
+    let plan = plan_install(
+        &Choice::Fallback,
+        Path::new(BIN),
+        Some(Path::new("/w/proj")),
+    )
+    .unwrap();
+    assert!(
+        plan.contents
+            .contains(&format!("Exec={BIN} --dir=/w/proj\n"))
+    );
+    assert!(plan.contents.contains("Path=/w/proj\n"));
+}
+
+#[test]
+fn a_dir_with_spaces_keeps_the_path_verbatim_and_quotes_the_argument() {
+    let plan = with_dir("/w/my proj");
+    assert!(plan.contents.contains("\nPath=/w/my proj\n"));
+    assert!(
+        plan.contents
+            .contains(&format!("{BIN} \"--dir=/w/my proj\"\n"))
+    );
+}
+
+#[test]
+fn backslashes_and_a_leading_space_are_escaped_and_controls_refused() {
+    let plan = with_dir("/w/a\\b");
+    assert!(
+        plan.contents.contains("\nPath=/w/a\\\\b\n"),
+        "{}",
+        plan.contents
+    );
+    let choice = pick(None, None, &["kitty"]);
+    let relative_space = plan_install(&choice, Path::new(BIN), Some(Path::new(" /w")));
+    assert!(relative_space.is_err(), "a relative path is refused");
+    for bad in ["/w/a\nb", "/w/a\tb", "/w/a\u{7f}b"] {
+        let result = plan_install(&choice, Path::new(BIN), Some(Path::new(bad)));
+        assert!(result.is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_dir_in_the_exec_line_escapes_percent_and_dollar() {
+    let plan = with_dir("/w/50%$x");
+    assert!(
+        plan.contents.contains("\"--dir=/w/50%%\\\\$x\""),
+        "{}",
+        plan.contents
+    );
 }

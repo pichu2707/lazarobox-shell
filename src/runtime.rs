@@ -2133,7 +2133,7 @@ mod tests {
     fn the_start_dir_becomes_the_launch_cwd_of_the_app() {
         let cwd = tempfile::tempdir().unwrap();
         let got = start_for(&[], None, cwd.path());
-        let mut app = got
+        let app = got
             .app(80, 25)
             .with_env(Some("/bin/zsh"), None, got.dir.clone());
         let (_, spec) = app.initial_spawn();

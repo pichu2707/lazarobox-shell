@@ -59,7 +59,7 @@ pub fn parse_args(argv: &[String]) -> StartArgs {
 }
 
 /// Expands `~`, joins a relative path to `cwd` and drops `.` components.
-fn absolute(raw: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
+pub fn absolute(raw: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
     let joined = match (raw, raw.strip_prefix("~/"), home) {
         ("~", _, Some(home)) => home.to_path_buf(),
         (_, Some(rest), Some(home)) => home.join(rest),
