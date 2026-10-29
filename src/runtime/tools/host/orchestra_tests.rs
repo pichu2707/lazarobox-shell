@@ -195,7 +195,8 @@ async fn a_chat_turn_keeps_its_tools_through_the_filter() {
         assert_eq!(ask.as_ref(), asked.first(), "{call:?}");
         if let Call::ReadFile { .. } = call {
             let path = home.join("note.txt").to_str().unwrap().to_owned();
-            assert_eq!(asked[0], ApprovalAsk::Read { path });
+            let (reach, cloud) = (Reach::Broad, true);
+            assert_eq!(asked[0], ApprovalAsk::Read { path, reach, cloud });
         }
     }
 }
@@ -451,7 +452,14 @@ async fn a_read_outside_any_scope_keeps_the_chat_rules() {
     let path = home.join("dev/other/a.rs").to_str().unwrap().to_owned();
     for (locality, want) in [
         (Locality::Local, None),
-        (Locality::Cloud, Some(ApprovalAsk::Read { path })),
+        (
+            Locality::Cloud,
+            Some(ApprovalAsk::Read {
+                path,
+                reach: Reach::Broad,
+                cloud: true,
+            }),
+        ),
     ] {
         let (mut scope, mut rx) = scope(locality, &home);
         let approver = Scripted::new(Decision::Sent);

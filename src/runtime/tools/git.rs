@@ -51,6 +51,9 @@ pub enum Fault {
     /// place, a broad root). git must live in a system place such as
     /// `/usr/bin`: a user-installed git is refused by design.
     Spec(PathBuf),
+    /// The jail refused the root or a granted folder (a root under `/tmp`, a
+    /// broad or credential git dir): the repository place, not the binary.
+    Root,
     /// A git dir is broad, next to an execute place, not a clean path, or a
     /// repository outside the root that is not a genuine linked worktree of
     /// it (a planted `.git` file, an unreadable or oversized pointer file).
@@ -278,6 +281,15 @@ pub fn pointer_dirs(root: &Path) -> Result<Vec<PathBuf>, Fault> {
     Ok(vec![git_dir, common])
 }
 
+/// The fault of a refused jail: a root or credential place is the repository's
+/// fault, anything else is about the git binary.
+pub fn spec_fault(why: Refusal, git: &Path) -> Fault {
+    match why {
+        Refusal::Root(_) | Refusal::Never(_) => Fault::Root,
+        _ => Fault::Spec(git.to_path_buf()),
+    }
+}
+
 /// One jailed git call: a private `TMPDIR`, the cleared environment, the
 /// spawn core. `dirs` are the folders this call may reach.
 async fn jailed(
@@ -305,8 +317,7 @@ async fn jailed(
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| ctx.home.join(".config"));
     let resolve = |p: &Path| std::fs::canonicalize(p).ok();
-    let spec =
-        jail_spec(&layout, &resolve, dirs, &xdg).map_err(|_| Fault::Spec(ctx.git.clone()))?;
+    let spec = jail_spec(&layout, &resolve, dirs, &xdg).map_err(|why| spec_fault(why, &ctx.git))?;
     let env = git_env(read, &ctx.root, scratch.path(), read_verb)?;
     let args = JailArgs {
         min_abi: None,

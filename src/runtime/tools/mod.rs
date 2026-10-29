@@ -89,8 +89,19 @@ pub async fn run_over(
     limits: Limits,
     view: Option<staged::StagedView>,
 ) -> Result<String, Failure> {
+    run_within(call, env, limits, view, fs::Within::Anywhere).await
+}
+
+/// [`run_over`] with a `read_file` kept [`Within`](fs::Within) a bound.
+pub async fn run_within(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+    within: fs::Within,
+) -> Result<String, Failure> {
     off_loop(limits, move |limits, cancel| {
-        fs::execute_over(&call, &env, limits, cancel, view.as_ref())
+        fs::execute_within(&call, &env, limits, cancel, view.as_ref(), within)
     })
     .await
 }
