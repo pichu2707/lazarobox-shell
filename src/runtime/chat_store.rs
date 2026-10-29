@@ -373,16 +373,17 @@ fn refuse_newer(conn: &Connection, supported: i64) -> Result<(), StoreError> {
     }
 }
 
-/// Brings the database to the current schema; a newer one is refused.
+/// Brings the database to the current schema; a newer one is refused. Returns
+/// how many orphan rows the v3 rebuild dropped.
 #[cfg(test)]
-fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+fn migrate(conn: &mut Connection) -> Result<usize, StoreError> {
     migrate_with(conn, || {})
 }
 
 /// [`migrate`] with a hook just before the write lock is taken, where another
 /// instance could get in first.
 #[cfg(test)]
-fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(), StoreError> {
+fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<usize, StoreError> {
     migrate_to(conn, SCHEMA_VERSION, before_lock)
 }
 
@@ -407,31 +408,50 @@ fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
 ///
 /// The v3 rebuild drops tables other tables point at, so foreign keys are off
 /// for the whole migration (SQLite ignores that pragma inside a transaction)
-/// and put back as they were afterwards, whatever the outcome.
+/// and put back as they were afterwards, whatever the outcome. If putting them
+/// back fails after a committed migration, the open still succeeds: that is a
+/// fact about this connection only, and the store is correct on disk.
+///
+/// Returns how many orphan rows (messages or tags of a conversation that no
+/// longer exists) the v3 rebuild dropped. After a successful rebuild of an
+/// existing store the file is vacuumed, best effort: the rebuild leaves the old
+/// pages on the freelist and the file would stay twice its size.
 fn migrate_to(
     conn: &mut Connection,
     target: i64,
     before_lock: impl FnOnce(),
-) -> Result<(), StoreError> {
+) -> Result<usize, StoreError> {
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     if keys {
         conn.pragma_update(None, "foreign_keys", false)?;
     }
     let migrated = migrate_locked(conn, target, before_lock);
     if keys {
-        let restored = conn.pragma_update(None, "foreign_keys", true);
-        migrated?;
-        restored?;
-        return Ok(());
+        let _ = conn.pragma_update(None, "foreign_keys", true);
     }
-    migrated
+    let (dropped, rebuilt) = migrated?;
+    if rebuilt {
+        vacuum(conn);
+    }
+    Ok(dropped)
 }
 
+/// Gives the freed pages back to the file. The scratch copy SQLite builds
+/// stays in memory, so no chat text lands in a temporary file. A failure is
+/// ignored: the store is fine, only bigger.
+fn vacuum(conn: &Connection) {
+    let _ = conn.pragma_update(None, "temp_store", "MEMORY");
+    let _ = conn.execute_batch("VACUUM");
+    let _ = conn.pragma_update(None, "temp_store", "DEFAULT");
+}
+
+/// The migration proper: the orphans it dropped and whether it rebuilt an
+/// existing store.
 fn migrate_locked(
     conn: &mut Connection,
     target: i64,
     before_lock: impl FnOnce(),
-) -> Result<(), StoreError> {
+) -> Result<(usize, bool), StoreError> {
     before_lock();
     // The version is read under the write lock, so two instances on a fresh
     // store cannot both decide to create the schema.
@@ -449,22 +469,38 @@ fn migrate_locked(
     if target >= 2 {
         ensure_folder(&tx)?;
     }
+    let mut dropped = 0;
+    let rebuilt = (1..3).contains(&version) && target >= 3;
     if version < 3 && target >= 3 {
+        // A row whose conversation is gone can never be listed or resumed, and
+        // would fail the check below, locking the whole history out. It is
+        // dropped before the copy and counted. Only the rebuilt tables are
+        // checked: the others are not touched by this step.
+        for table in ["messages", "tags"] {
+            dropped += tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE conversation_id NOT IN (SELECT id FROM conversations)"
+                ),
+                [],
+            )?;
+        }
         tx.execute_batch(SCHEMA_V3)?;
-        let broken: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
-            [],
-            |r| r.get(0),
-        )?;
-        if broken {
-            return Err(StoreError::Sqlite("foreign key check failed"));
+        for table in ["messages", "tags"] {
+            let broken: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check(?1))",
+                [table],
+                |r| r.get(0),
+            )?;
+            if broken {
+                return Err(StoreError::Sqlite("foreign key check failed"));
+            }
         }
     }
     if version < target {
         tx.pragma_update(None, "user_version", target)?;
     }
     tx.commit()?;
-    Ok(())
+    Ok((dropped, rebuilt))
 }
 
 #[cfg(test)]

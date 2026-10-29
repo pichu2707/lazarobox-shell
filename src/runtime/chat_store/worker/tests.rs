@@ -2110,3 +2110,57 @@ fn resume_returns_the_stored_folder_or_none() {
     };
     assert_eq!(folder, None);
 }
+
+#[test]
+fn a_create_with_an_unknown_profile_fails_before_the_insert() {
+    let (_dir, mut worker, conn) = fixture();
+    let StoreCmd::Create {
+        pane,
+        tag,
+        extras,
+        first,
+        origin,
+        folder,
+        open,
+        ..
+    } = create(user("q"), vec![])
+    else {
+        unreachable!()
+    };
+    let reply = worker.handle(StoreCmd::Create {
+        pane,
+        profile: "reviewer".into(),
+        tag,
+        extras,
+        first,
+        origin,
+        folder,
+        open,
+    });
+    assert!(
+        matches!(reply, Some(StoreReply::Failed { .. })),
+        "{reply:?}"
+    );
+    assert_eq!(count(&conn, "conversations"), 0);
+}
+
+#[test]
+fn a_resume_skips_and_counts_a_row_of_an_unknown_role() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    conn.execute(
+        "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+         VALUES (?1, 50, 'tool', 'from the future', 'e', NULL, 'complete', 1)",
+        [id],
+    )
+    .unwrap();
+    let Some(StoreReply::Resumed {
+        messages, skipped, ..
+    }) = worker.handle(resume(id))
+    else {
+        panic!("expected Resumed");
+    };
+    assert_eq!(skipped, 1);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, Role::User);
+}

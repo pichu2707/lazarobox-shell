@@ -17,7 +17,10 @@ baseline.
   role or status can be added without rebuilding tables. Opening an older
   file rebuilds `conversations`, `messages` and `tags` once, in one
   transaction, keeping every row and id. A build that only knows schema 2
-  refuses a schema 3 file and leaves it untouched.
+  refuses a schema 3 file and leaves it untouched. The migration drops
+  messages or tags whose conversation no longer exists (they could never be
+  shown) and vacuums the file afterwards. Resuming a conversation leaves out
+  messages of a role this version does not know and says how many.
 
 ## [0.30.0] - 2026-10-29
 

@@ -867,6 +867,25 @@ fn assert_v3_intact(db: &Path, before: &[Vec<String>], v1: bool) {
         before[1].len() as i64 - 3,
         "the cascade removed conversation 1's three messages"
     );
+    // The tables that were not rebuilt still point at the new `conversations`
+    // and cascade with it.
+    if !v1 {
+        assert_eq!(count(&conn, "memory_sessions"), 1);
+        assert_eq!(count(&conn, "memory_notes"), 1);
+    }
+    for table in ["messages", "tags", "memory_sessions", "memory_notes"] {
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = ?1",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("REFERENCES conversations(id)"),
+            "{table}: {sql}"
+        );
+    }
 }
 
 #[test]
@@ -874,7 +893,9 @@ fn a_v2_fixture_migrates_to_v3_keeping_every_row_id_and_folder() {
     let dir = TempDir::new().unwrap();
     let db = from_fixture(&dir, FIXTURE_V2);
     let before = snapshot(&db, false);
-    assert_eq!(before[1].len(), 6);
+    assert_eq!(before[1].len(), 5);
+    // The fixture has a hole in its rowids (rowid 4 was deleted).
+    assert!(!before[1].iter().any(|l| l.starts_with("Integer(4)|")));
     assert!(before[5][0].contains("/home/u/work/parser"));
     assert_v3_intact(&db, &before, false);
 }
@@ -978,4 +999,69 @@ fn a_failed_v3_rebuild_rolls_back_to_the_untouched_v2_file() {
     let conn = Connection::open(&db).unwrap();
     assert_eq!(pragma_text(&conn, "user_version"), "2");
     assert_eq!(snapshot(&db, false), before);
+}
+
+#[test]
+fn an_orphan_row_is_dropped_and_counted_instead_of_blocking_the_migration() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+                 VALUES (99, 1, 'user', 'orphan', 'e', NULL, 'complete', 1);
+             INSERT INTO tags(conversation_id, tag, is_project) VALUES (99, 'x', 0);",
+        )
+        .unwrap();
+    }
+    let mut conn = Connection::open(&db).unwrap();
+    assert_eq!(migrate(&mut conn).unwrap(), 2);
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
+    assert_eq!(count(&conn, "messages"), 5);
+    assert_eq!(count(&conn, "tags"), 3);
+}
+
+#[test]
+fn foreign_keys_are_restored_as_they_were_even_when_the_migration_fails() {
+    for was_on in [true, false] {
+        let dir = TempDir::new().unwrap();
+        let db = from_fixture(&dir, FIXTURE_V2);
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE new_messages(x)")
+            .unwrap();
+        let mut conn = Connection::open(&db).unwrap();
+        conn.pragma_update(None, "foreign_keys", was_on).unwrap();
+        assert!(migrate(&mut conn).is_err());
+        assert_eq!(
+            pragma_text(&conn, "foreign_keys"),
+            if was_on { "1" } else { "0" }
+        );
+    }
+}
+
+#[test]
+fn a_migrated_store_shrinks_back_and_stays_private() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000)
+             INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+                 SELECT 1, i + 10, 'user', hex(randomblob(1000)), 'e', NULL, 'complete', 1 FROM n;",
+        )
+        .unwrap();
+    }
+    let before = fs::metadata(&db).unwrap().len();
+    let conn = open_as(&db, me()).unwrap();
+    let after = fs::metadata(&db).unwrap().len();
+    assert!(after * 5 <= before * 6, "{before} -> {after}");
+    assert_eq!(count(&conn, "messages"), 4005);
+    assert_eq!(pragma_text(&conn, "secure_delete"), "1");
+    assert_eq!(mode(&db), 0o600);
+    for suffix in ["-journal", "-wal", "-shm"] {
+        assert!(!side(&db, suffix).exists());
+    }
 }

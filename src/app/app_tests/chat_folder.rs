@@ -549,6 +549,7 @@ fn resumed_in(folder: Option<&str>) -> AppEvent {
         messages,
         session,
         folder: folder.map(PathBuf::from),
+        skipped: 0,
     })
 }
 

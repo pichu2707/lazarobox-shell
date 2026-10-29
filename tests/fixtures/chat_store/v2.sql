@@ -55,6 +55,8 @@ INSERT INTO messages(conversation_id, seq, role, content, engine, model, status,
   (2, 1, 'user', 'sum Q3', 'claude', NULL, 'complete', 2001),
   (2, 2, 'assistant', 'partial answ', 'claude', 'sonnet', 'truncated', 2002),
   (2, 3, 'assistant', 'oops', 'claude', 'sonnet', 'error', 2600);
+-- A deleted message leaves a gap in the rowids, which a rebuild must keep.
+DELETE FROM messages WHERE conversation_id = 2 AND seq = 1;
 INSERT INTO tags(conversation_id, tag, is_project) VALUES
   (1, 'rust', 0), (1, 'lazarobox', 1), (2, 'finance', 0);
 INSERT INTO memory_sessions(conversation_id, session_id, project) VALUES

@@ -12,7 +12,7 @@ use crate::core::{
             prompts::Resolved,
             store::{
                 ConvRow, DELETED_LINE, NoteRow, SAVE_FAILED_LINE, StoreCmd, StoreReply,
-                UNAVAILABLE_PREFIX,
+                UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
             },
         },
         config::{Assignment, Profile, Task},
@@ -697,6 +697,7 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
         ],
         session: None,
         folder: None,
+        skipped: 0,
     })
 }
 
@@ -717,6 +718,40 @@ fn enter_asks_the_store_for_the_conversation() {
         chat_of(&a).list().is_some(),
         "the list stays until the reply"
     );
+}
+
+// A profile or a role written by a newer build is not guessed at: the pane
+// keeps its own profile and says what it left out.
+#[test]
+fn a_resume_of_an_unknown_profile_or_skipped_rows_says_so() {
+    let mut a = listing();
+    let AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        tag,
+        extras,
+        messages,
+        session,
+        folder,
+        ..
+    }) = resumed(chat_id(), 30, "reviewer")
+    else {
+        unreachable!()
+    };
+    a.update(AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        profile: "reviewer".into(),
+        tag,
+        extras,
+        messages,
+        session,
+        folder,
+        skipped: 2,
+    }));
+    let lines = systems(chat_of(&a));
+    assert!(lines.iter().any(|l| l == UNKNOWN_PROFILE_LINE), "{lines:?}");
+    assert!(lines.iter().any(|l| l == &skipped_line(2)), "{lines:?}");
 }
 
 // Spec: Full history restored.
