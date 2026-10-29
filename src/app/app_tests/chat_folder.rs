@@ -894,3 +894,17 @@ fn a_stale_check_answer_changes_nothing() {
 fn let_go_edit(a: &mut App) {
     type_text(a, "x");
 }
+
+#[test]
+fn closing_the_chat_drops_what_it_waited_for() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    assert!(a.resume_folders.contains_key(&id2()));
+    ask(&mut a, "/cd /w/x");
+    assert!(a.cd_requests.contains_key(&id2()));
+    // The /cd above took the resume entry; ask for a resume again.
+    a.update(resumed_in(Some("/w/stored")));
+    a.remove_pane(id2());
+    assert!(!a.resume_folders.contains_key(&id2()));
+    assert!(!a.cd_requests.contains_key(&id2()));
+}
