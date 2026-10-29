@@ -16,6 +16,12 @@ baseline.
 - A menu save says where it wrote in the statusline (`saved to
   ~/.config/lazarobox/config.toml`), and the README has a section on where
   `config.toml` lives.
+- Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
+  `config.toml` choose where the first shell starts (flag, then config, then
+  the launch folder). An invalid folder does not stop the app: it starts in
+  the launch folder and shows a notice inside lazarobox.
+- `install-desktop --dir <folder>` writes `Path=` and `--dir=` in the
+  launcher; running it again without `--dir` removes both.
 
 ### Changed
 
@@ -25,6 +31,7 @@ baseline.
 ### Fixed
 
 - The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
+- The nesting guard no longer treats the value of `--dir` as a subcommand.
 
 ### Docs
 

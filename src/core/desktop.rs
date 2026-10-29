@@ -31,7 +31,8 @@ pub const KNOWN_TERMINALS: [&str; 9] = [
 
 const TEMPLATE: &str = include_str!("desktop/lazarobox.desktop");
 
-pub const USAGE: &str = "usage: lazarobox-shell install-desktop [--terminal <cmd>] [--uninstall]";
+pub const USAGE: &str =
+    "usage: lazarobox-shell install-desktop [--terminal <cmd>] [--dir <folder>] [--uninstall]";
 
 pub const NON_KITTY_NOTICE: &str =
     "lazarobox is tested in Kitty; in other terminals some keys or OSC 52 clipboard may not work.";
@@ -39,7 +40,11 @@ pub const NON_KITTY_NOTICE: &str =
 /// What the user asked for.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Options {
-    Install { terminal: Option<String> },
+    Install {
+        terminal: Option<String>,
+        /// Folder the launcher starts in, as typed (resolved by the caller).
+        dir: Option<String>,
+    },
     Uninstall,
     Help,
 }
@@ -90,6 +95,7 @@ pub struct Plan {
 /// Parses what follows `install-desktop`.
 pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
     let mut terminal = None;
+    let mut dir = None;
     let mut uninstall = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -101,16 +107,26 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
                 let value = it.next().and_then(|v| v.to_str());
                 terminal = Some(terminal_value(value)?);
             }
-            _ => match arg.strip_prefix("--terminal=") {
-                Some(value) => terminal = Some(terminal_value(Some(value))?),
-                None => return Err(format!("unknown argument: {arg}")),
+            "--dir" => dir = Some(dir_value(it.next().map(OsString::as_os_str))?),
+            _ => match (arg.strip_prefix("--terminal="), arg.strip_prefix("--dir=")) {
+                (Some(value), _) => terminal = Some(terminal_value(Some(value))?),
+                (_, Some(value)) => dir = Some(dir_value(Some(OsStr::new(value)))?),
+                _ => return Err(format!("unknown argument: {arg}")),
             },
         }
     }
-    match (uninstall, terminal) {
-        (true, Some(_)) => Err("--uninstall cannot be combined with --terminal".into()),
-        (true, None) => Ok(Options::Uninstall),
-        (false, terminal) => Ok(Options::Install { terminal }),
+    match (uninstall, terminal.is_some() || dir.is_some()) {
+        (true, true) => Err("--uninstall cannot be combined with --terminal or --dir".into()),
+        (true, false) => Ok(Options::Uninstall),
+        (false, _) => Ok(Options::Install { terminal, dir }),
+    }
+}
+
+fn dir_value(value: Option<&OsStr>) -> Result<String, String> {
+    match value.map(|v| v.to_str().ok_or(v)) {
+        Some(Ok(v)) if !v.is_empty() && !v.starts_with('-') => Ok(v.to_string()),
+        Some(Err(_)) => Err("--dir: folder name is not valid UTF-8".into()),
+        _ => Err("--dir needs a folder".into()),
     }
 }
 
@@ -245,9 +261,62 @@ pub fn is_build_artefact(path: &Path) -> bool {
 
 const BUILD_ARTEFACT_NOTE: &str = "the launcher points at a build artefact that `cargo clean` removes; run install-desktop from the installed binary (cargo install) instead.";
 
-/// Renders the launcher for `choice` running `bin`.
-pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
+/// A Desktop Entry *string* value: `\` is `\\`, a leading space is `\s`;
+/// control characters are refused. Spaces elsewhere are kept verbatim.
+fn entry_string(text: &str) -> Result<String, String> {
+    if text.chars().any(char::is_control) {
+        return Err(format!("unsupported folder (control characters): {text:?}"));
+    }
+    let escaped = text.replace('\\', "\\\\");
+    Ok(match escaped.strip_prefix(' ') {
+        Some(rest) => format!("\\s{rest}"),
+        None => escaped,
+    })
+}
+
+/// ` --dir=<dir>` as an `Exec` argument: quoted when it holds a reserved
+/// character, then escaped as a string value.
+fn dir_argument(dir: &str) -> Result<String, String> {
+    let arg = format!("--dir={dir}");
+    let quoted = if arg.chars().any(|c| RESERVED.contains(c)) {
+        let mut out = String::from("\"");
+        for c in arg.chars() {
+            match c {
+                '"' | '`' | '$' | '\\' => out.extend(['\\', c]),
+                '%' => out.push_str("%%"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    } else {
+        arg
+    };
+    Ok(format!(" {}", entry_string(&quoted)?))
+}
+
+/// Renders the launcher for `choice` running `bin`, starting in `dir` (an
+/// absolute, existing folder; the caller checks it).
+pub fn plan_install(choice: &Choice, bin: &Path, dir: Option<&Path>) -> Result<Plan, String> {
     validate_path(bin)?;
+    let (path_line, dir_arg) = match dir {
+        None => (None, String::new()),
+        Some(dir) => {
+            let text = dir
+                .to_str()
+                .filter(|t| dir.is_absolute() && t.trim() == *t)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported folder (must be absolute, no leading or trailing whitespace): {}",
+                        dir.display()
+                    )
+                })?;
+            (
+                Some(format!("Path={}", entry_string(text)?)),
+                dir_argument(text)?,
+            )
+        }
+    };
     let bin_text = bin.to_string_lossy().into_owned();
     let mut notes = Vec::new();
     if is_build_artefact(bin) {
@@ -282,22 +351,43 @@ pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
             (bin_text, "true", false)
         }
     };
+    let contents = render(
+        &exec,
+        &dir_arg,
+        path_line.as_deref(),
+        terminal_flag,
+        wm_class,
+    );
     Ok(Plan {
-        contents: render(&exec, terminal_flag, wm_class),
-        exec,
+        contents,
+        exec: format!("{exec}{dir_arg}"),
         notes,
     })
 }
 
-fn render(exec: &str, terminal: &str, wm_class: bool) -> String {
+fn render(
+    exec: &str,
+    dir_arg: &str,
+    path_line: Option<&str>,
+    terminal: &str,
+    wm_class: bool,
+) -> String {
     let mut out = String::new();
     for line in TEMPLATE.lines() {
         match line {
             "@STARTUP_WM_CLASS@" if !wm_class => continue,
+            "@PATH@" => match path_line {
+                Some(path) => out.push_str(path),
+                None => continue,
+            },
             "@STARTUP_WM_CLASS@" => out.push_str(&format!("StartupWMClass={WM_CLASS}")),
             _ => substitute(
                 line,
-                &[("@EXEC@", exec), ("@TERMINAL@", terminal)],
+                &[
+                    ("@EXEC@", exec),
+                    ("@DIR_ARG@", dir_arg),
+                    ("@TERMINAL@", terminal),
+                ],
                 &mut out,
             ),
         }

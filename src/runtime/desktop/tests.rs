@@ -38,6 +38,7 @@ impl Fixture {
             xdg_data_home: xdg.map(OsString::from),
             home: Some(self.home.path().as_os_str().to_owned()),
             exe: PathBuf::from(EXE),
+            cwd: self.home.path().to_path_buf(),
             lookup: &lookup,
             refresh_db: &refresh,
         };
@@ -56,6 +57,7 @@ impl Fixture {
 fn install(terminal: Option<&str>) -> Options {
     Options::Install {
         terminal: terminal.map(String::from),
+        dir: None,
     }
 }
 
@@ -159,6 +161,7 @@ fn a_build_artefact_exe_is_reported_with_a_note() {
         xdg_data_home: None,
         home: Some(fx.home.path().as_os_str().to_owned()),
         exe: PathBuf::from("/src/lazarobox-shell/target/debug/lazarobox-shell"),
+        cwd: fx.home.path().to_path_buf(),
         lookup: &lookup,
         refresh_db: &refresh,
     };
@@ -195,6 +198,7 @@ fn unsafe_binary_path_writes_nothing() {
         xdg_data_home: None,
         home: Some(fx.home.path().as_os_str().to_owned()),
         exe: PathBuf::from("/opt/my app/lazarobox-shell"),
+        cwd: fx.home.path().to_path_buf(),
         lookup: &lookup,
         refresh_db: &refresh,
     };
@@ -239,4 +243,103 @@ fn which_searches_only_absolute_path_entries_for_executables() {
     assert_eq!(which("fake-term", Some(OsStr::new("relative"))), None);
     assert_eq!(which("./fake-term", Some(dir.path().as_os_str())), None);
     assert_eq!(which("fake-term", None), None);
+}
+
+fn install_in(dir: &str) -> Options {
+    Options::Install {
+        terminal: None,
+        dir: Some(dir.into()),
+    }
+}
+
+#[test]
+fn install_dir_writes_path_and_exec_for_an_existing_folder() {
+    let fx = Fixture::new();
+    let proj = fx.home.path().join("my proj");
+    fs::create_dir(&proj).unwrap();
+    let (result, _) = fx.run(&install_in(proj.to_str().unwrap()), None, None, &["kitty"]);
+    result.unwrap();
+    let written = fs::read_to_string(fx.target()).unwrap();
+    assert!(
+        written.contains(&format!("\nPath={}\n", proj.display())),
+        "{written}"
+    );
+    assert!(
+        written.contains(&format!("\"--dir={}\"", proj.display())),
+        "{written}"
+    );
+}
+
+#[test]
+fn install_dir_resolves_relative_and_tilde_at_install_time() {
+    let fx = Fixture::new();
+    fs::create_dir(fx.home.path().join("code")).unwrap();
+    for raw in ["code", "~/code", "./code"] {
+        fs::remove_file(fx.target()).ok();
+        fx.run(&install_in(raw), None, None, &["kitty"]).0.unwrap();
+        let written = fs::read_to_string(fx.target()).unwrap();
+        let want = format!("\nPath={}\n", fx.home.path().join("code").display());
+        assert!(written.contains(&want), "{raw}: {written}");
+    }
+}
+
+#[test]
+fn install_dir_that_is_not_a_folder_fails_and_writes_nothing() {
+    let fx = Fixture::new();
+    let file = fx.home.path().join("f");
+    fs::write(&file, "x").unwrap();
+    for bad in ["/nope-lazarobox", file.to_str().unwrap()] {
+        let (result, out) = fx.run(&install_in(bad), None, None, &["kitty"]);
+        let why = result.unwrap_err();
+        assert!(why.contains("--dir"), "{why}");
+        assert!(!why.contains('\n') && out.is_empty());
+        assert!(!fx.target().exists());
+    }
+}
+
+#[test]
+fn reinstalling_without_dir_removes_a_previous_one() {
+    let fx = Fixture::new();
+    let proj = fx.home.path().join("p");
+    fs::create_dir(&proj).unwrap();
+    fx.run(&install_in(proj.to_str().unwrap()), None, None, &["kitty"])
+        .0
+        .unwrap();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let written = fs::read_to_string(fx.target()).unwrap();
+    assert!(
+        !written.contains("Path=") && !written.contains("--dir"),
+        "{written}"
+    );
+}
+
+#[test]
+fn install_dir_with_shell_special_characters_stays_valid() {
+    let fx = Fixture::new();
+    for name in ["a$b", "a`b", "a\"b", "50%x"] {
+        let proj = fx.home.path().join(name);
+        fs::create_dir(&proj).unwrap();
+        let options = install_in(proj.to_str().unwrap());
+        fx.run(&options, None, None, &["kitty"]).0.unwrap();
+        let written = fs::read_to_string(fx.target()).unwrap();
+        assert!(written.contains("\nPath="), "{name}: {written}");
+        let exec = written.lines().find(|l| l.starts_with("Exec=")).unwrap();
+        assert!(exec.contains("\"--dir="), "{name}: {exec}");
+        match name {
+            "a$b" => assert!(exec.contains("a\\\\$b"), "{exec}"),
+            "a`b" => assert!(exec.contains("a\\\\`b"), "{exec}"),
+            "a\"b" => assert!(exec.contains("a\\\\\"b"), "{exec}"),
+            _ => assert!(exec.contains("50%%x"), "{exec}"),
+        }
+    }
+}
+
+#[test]
+fn install_dir_with_uninstall_is_a_parse_error_and_touches_nothing() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let before = fs::read_to_string(fx.target()).unwrap();
+    let args: Vec<OsString> = ["--dir", "/w", "--uninstall"].map(OsString::from).to_vec();
+    assert!(parse_args(&args).is_err());
+    assert_eq!(fs::read_to_string(fx.target()).unwrap(), before);
 }

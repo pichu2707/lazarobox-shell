@@ -216,7 +216,7 @@ impl Drop for QuitGuard {
 }
 
 /// Runs the terminal pane until the child exits or the user quits.
-pub async fn run() -> io::Result<()> {
+pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // First, before any child or pane exists: from here on every process
     // group lazarobox starts is stopped once it ends, however it ends.
     watch::start();
@@ -229,7 +229,7 @@ pub async fn run() -> io::Result<()> {
         login_path::LOGIN_TIMEOUT,
     ));
     let (cols, rows) = terminal::size()?;
-    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    let launch_cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
@@ -242,7 +242,18 @@ pub async fn run() -> io::Result<()> {
         .unwrap_or(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         ));
-    let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
+    // The start folder: `--dir`, else `[workspace] dir`, else the launch cwd.
+    // It is the launch cwd of the app; the process never changes directory.
+    let started = startup(
+        &start_args,
+        config_path.as_deref(),
+        engram_port.as_deref(),
+        env::var_os("HOME").map(PathBuf::from).as_deref(),
+        &launch_cwd,
+    );
+    let cwd = started.dir.clone();
+    let mut app = started
+        .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
@@ -768,26 +779,69 @@ fn local_hostname() -> Option<String> {
 }
 
 /// The app as the saved config configures it: layout, AI choice and notice.
+#[cfg(test)]
 fn app_from_config(
     cols: u16,
     rows: u16,
     config_path: Option<&Path>,
     port_env: Option<&str>,
 ) -> App {
-    let (config, ai, notice) = load_config(config_path, port_env);
-    App::new(cols, rows)
-        .with_config(&config)
-        .with_ai(ai)
-        .with_chat_history()
-        .with_notice(notice)
-        .with_config_path(config_path.map(Path::to_owned))
+    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    startup(
+        &crate::core::start::StartArgs::default(),
+        config_path,
+        port_env,
+        None,
+        &cwd,
+    )
+    .app(cols, rows)
+    .with_config_path(config_path.map(Path::to_owned))
 }
 
-/// Reads the config once at startup; a missing file is silent defaults.
-fn load_config(path: Option<&Path>, port_env: Option<&str>) -> (Config, AiConfig, Option<String>) {
-    match path {
-        Some(path) => Config::load_with_ai(fs::read_to_string(path), port_env),
-        None => (Config::default(), AiConfig::default(), None),
+/// What startup read: the config, the start folder and the one notice to
+/// show (a start problem wins over a config problem).
+struct Startup {
+    config: Config,
+    ai: AiConfig,
+    notice: Option<String>,
+    dir: PathBuf,
+}
+
+impl Startup {
+    fn app(&self, cols: u16, rows: u16) -> App {
+        App::new(cols, rows)
+            .with_config(&self.config)
+            .with_ai(self.ai.clone())
+            .with_chat_history()
+            .with_notice(self.notice.clone())
+    }
+}
+
+/// Reads the config once at startup (a missing file is silent defaults) and
+/// resolves the start folder. An invalid folder never stops the app.
+fn startup(
+    args: &crate::core::start::StartArgs,
+    config_path: Option<&Path>,
+    port_env: Option<&str>,
+    home: Option<&Path>,
+    launch_cwd: &Path,
+) -> Startup {
+    use crate::core::start::{Kind, resolve};
+    let (config, ai, notice, workspace) = match config_path {
+        Some(path) => Config::load_with_workspace(fs::read_to_string(path), port_env, home),
+        None => (Config::default(), AiConfig::default(), None, None),
+    };
+    let kind = |p: &Path| match fs::metadata(p) {
+        Ok(meta) if meta.is_dir() => Kind::Dir,
+        Ok(_) => Kind::File,
+        Err(_) => Kind::Missing,
+    };
+    let start = resolve(args, workspace.as_deref(), launch_cwd, home, &kind);
+    Startup {
+        config,
+        ai,
+        notice: start.notice.or(notice),
+        dir: start.path,
     }
 }
 
@@ -2014,6 +2068,77 @@ mod tests {
         );
         // Single flight: a second request while one is pending is empty.
         assert_eq!(app.request_detection(), Vec::new());
+    }
+
+    fn start_for(args: &[&str], config: Option<&str>, cwd: &Path) -> Startup {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        if let Some(text) = config {
+            fs::write(&path, text).unwrap();
+        }
+        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        startup(
+            &crate::core::start::parse_args(&argv),
+            Some(&path),
+            None,
+            None,
+            cwd,
+        )
+    }
+
+    // Spec (start-dir): an invalid `--dir` starts in the launch cwd with a
+    // notice shown inside the app; nothing exits.
+    #[test]
+    fn a_bad_dir_flag_starts_in_the_cwd_with_an_in_app_notice() {
+        let cwd = tempfile::tempdir().unwrap();
+        let config = "[workspace]\ndir = \"/\"\n";
+        let got = start_for(&["--dir", "/nope-lazarobox"], Some(config), cwd.path());
+        assert_eq!(got.dir, cwd.path());
+        assert_eq!(
+            got.notice.as_deref(),
+            Some("--dir: folder not found: /nope-lazarobox")
+        );
+    }
+
+    #[test]
+    fn a_valid_flag_beats_the_config_and_raises_no_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let flag = target.path().to_str().unwrap();
+        let got = start_for(
+            &["--dir", flag],
+            Some("[workspace]\ndir = \"/\"\n"),
+            cwd.path(),
+        );
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+    }
+
+    #[test]
+    fn the_config_dir_is_used_and_a_missing_one_falls_back_with_its_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let text = format!("[workspace]\ndir = \"{}\"\n", target.path().display());
+        let got = start_for(&[], Some(&text), cwd.path());
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+        let gone = start_for(
+            &[],
+            Some("[workspace]\ndir = \"/nope-lazarobox\"\n"),
+            cwd.path(),
+        );
+        assert_eq!(gone.dir, cwd.path());
+        assert_eq!(
+            gone.notice.as_deref(),
+            Some("config: workspace.dir: folder not found")
+        );
+    }
+
+    #[test]
+    fn the_start_dir_becomes_the_launch_cwd_of_the_app() {
+        let cwd = tempfile::tempdir().unwrap();
+        let got = start_for(&[], None, cwd.path());
+        let app = got
+            .app(80, 25)
+            .with_env(Some("/bin/zsh"), None, got.dir.clone());
+        let (_, spec) = app.initial_spawn();
+        assert_eq!(spec.cwd, cwd.path());
     }
 
     const SAVED_AI: &str = "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n";

@@ -23,9 +23,19 @@ pub fn nesting_check(env_value: Option<&str>, force: bool) -> Result<(), String>
 /// Whether the nesting check applies to this start (program name excluded).
 /// It does only for the plain TUI start: the leading arguments are all flags
 /// and none is `--force`. Any subcommand (first non-flag argument) is exempt,
-/// and `--force` counts only as a top-level flag before it.
+/// and `--force` counts only as a top-level flag before it. The value after
+/// `--dir` is not a subcommand.
 pub fn guarded_start(args: &[String]) -> bool {
-    args.iter().all(|a| a.starts_with('-')) && !args.iter().any(|a| a == FORCE_FLAG)
+    let mut it = args.iter().peekable();
+    while let Some(arg) = it.next() {
+        if arg == FORCE_FLAG || !arg.starts_with('-') {
+            return false;
+        }
+        if arg == crate::core::start::DIR_FLAG {
+            it.next_if(|v| !v.starts_with('-'));
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -82,5 +92,14 @@ mod tests {
     fn force_after_a_subcommand_is_not_an_override() {
         assert!(!guarded_start(&args(&["install-desktop", "--force"])));
         assert!(!guarded_start(&args(&["--version", "x"])));
+    }
+
+    #[test]
+    fn the_value_of_dir_does_not_exempt_the_start() {
+        assert!(guarded_start(&args(&["--dir", "/a"])));
+        assert!(guarded_start(&args(&["--dir=/a"])));
+        assert!(guarded_start(&args(&["--dir", "/a", "--version"])));
+        assert!(!guarded_start(&args(&["--dir", "/a", "--force"])));
+        assert!(!guarded_start(&args(&["--dir", "/a", "install-desktop"])));
     }
 }
