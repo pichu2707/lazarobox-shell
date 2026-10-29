@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use super::changes::{Change, ChangeLedger, diff_hash};
 use super::run::{
     CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
 };
@@ -757,4 +758,94 @@ fn each_toolset_maps_to_its_families() {
     assert_eq!(orchestrator, read.with(Family::Orchestra));
     assert!(!orchestrator.contains(Family::Pane));
     assert!(!read.contains(Family::Orchestra));
+}
+
+// S7: a worker's write is staged only inside its run's scope: under one of
+// its real roots, while the run goes on, and only for its own run.
+#[test]
+fn a_write_is_in_scope_only_under_a_root_of_a_live_run() {
+    let h = home();
+    let (scope, _) = scope_of(&h, &["app"]);
+    let app = h.home.join("app");
+    let live = run();
+    assert!(scope.allows_write(&live, &app.join("src/new.rs")));
+    assert!(scope.allows_write(&live, &app.join("new/deep.rs")));
+    assert!(!scope.allows_write(&live, &h.home.join("other/new.rs")));
+    assert!(!scope.allows_write(&live, &h.home.join("apple.rs")));
+    let other = Run::new(RunId(2), roster(ready("codex", "default")), Duration::ZERO);
+    assert!(!scope.allows_write(&other, &app.join("src/new.rs")));
+    let mut ended = run();
+    ended.cancel_run(Instant::now());
+    assert!(!scope.allows_write(&ended, &app.join("src/new.rs")));
+    assert!(!ReadScope::denied(RunId(1)).allows_write(&live, &app.join("src/new.rs")));
+}
+
+fn change(path: &str, size: Option<u64>, hash: &str) -> Change {
+    Change {
+        path: path.to_owned(),
+        size,
+        hash: hash.to_owned(),
+        applied: true,
+    }
+}
+
+// Spec (agent-orchestrator, Write integration and change ledger [S7]): the
+// ledger keeps each staged path once (a restage replaces its size and hash
+// and is not applied), marks applied only the paths of an applied batch,
+// and renders `files changed` with the size, the diff hash and the state.
+#[test]
+fn the_ledger_lists_each_staged_path_once_with_its_state() {
+    let mut ledger = ChangeLedger::default();
+    assert_eq!(ledger.render(), None);
+    ledger.staged(change("a.rs", Some(3), "h1"));
+    ledger.staged(change("src", None, "h0"));
+    ledger.applied(&["a.rs".to_owned(), "other.rs".to_owned()]);
+    ledger.staged(change("b.rs", Some(5), "h2"));
+    assert_eq!(
+        ledger.render().unwrap(),
+        "files changed:\n- a.rs (3 bytes, diff h1): applied\n- src (folder, diff h0): not applied\n- b.rs (5 bytes, diff h2): not applied"
+    );
+    ledger.staged(change("a.rs", Some(4), "h3"));
+    let a = &ledger.changes()[0];
+    assert_eq!((a.size, a.hash.as_str(), a.applied), (Some(4), "h3", false));
+    assert_eq!(ledger.changes().len(), 3);
+}
+
+#[test]
+fn the_diff_hash_tells_a_create_from_an_overwrite_and_is_stable() {
+    let create = diff_hash(None, "x");
+    assert_eq!(create, diff_hash(None, "x"));
+    assert_eq!(create.len(), 16);
+    assert!(create.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(create, diff_hash(Some(""), "x"));
+    assert_ne!(diff_hash(Some("a"), "bc"), diff_hash(Some("ab"), "c"));
+    assert_ne!(create, diff_hash(None, "y"));
+}
+
+// Spec (agent-orchestrator, Files changed listed [S7]): a worker that staged
+// two files is collected with both listed, sizes included, inside the
+// wrapper and before its text; one that staged nothing is collected as
+// before.
+#[test]
+fn collect_lists_the_files_a_worker_staged() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Code, "write two files").unwrap();
+    run.staged(id, change("a.rs", Some(3), "h1"));
+    run.staged(id, change("b.rs", Some(5), "h2"));
+    run.staged(WorkerId(9), change("c.rs", Some(1), "h3"));
+    let done = WorkerEvent::Done {
+        text: "two files staged".to_owned(),
+    };
+    run.on_event(t0, id, done);
+    let out = run.collect_wrapped(NONCE_BYTES, id).unwrap();
+    let head = format!("<untrusted-tool-output id=\"{NONCE}\">\nfiles changed:\n");
+    assert!(out.starts_with(&head), "{out}");
+    assert!(
+        out.contains("- a.rs (3 bytes, diff h1): not applied\n"),
+        "{out}"
+    );
+    assert!(out.contains("- b.rs (5 bytes, diff h2): not applied\n\ntwo files staged"));
+    assert!(!out.contains("c.rs"));
+    assert_eq!(run.ledger(id).unwrap().changes().len(), 2);
+    assert!(!collected("all good").contains("files changed"));
 }

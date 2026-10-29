@@ -208,11 +208,28 @@ impl ReviewDoc {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BatchReview {
     doc: ReviewDoc,
+    /// Who proposed the batch when it is not the chat itself: the worker's
+    /// label (`approval::worker_label`), one sanitized line, shown in the
+    /// review header. `None` for a chat's own batch.
+    label: Option<String>,
 }
 
 impl BatchReview {
     pub fn new(doc: ReviewDoc) -> Self {
-        Self { doc }
+        Self { doc, label: None }
+    }
+
+    /// The review of a batch a worker proposed, headed by its `label`.
+    pub fn labelled(doc: ReviewDoc, label: String) -> Self {
+        Self {
+            doc,
+            label: Some(label),
+        }
+    }
+
+    /// The worker that proposed the batch; `None` for a chat's own.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     pub fn doc(&self) -> &ReviewDoc {
