@@ -318,4 +318,9 @@ impl FolderPicker {
         });
         true
     }
+
+    /// Shows `reason` under the rows, until the field changes.
+    pub fn note(&mut self, reason: &'static str) {
+        self.error = Some(reason);
+    }
 }

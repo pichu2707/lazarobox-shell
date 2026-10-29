@@ -118,11 +118,11 @@ impl App {
         if self.batch_pending(id) {
             return self.on_review_key(id, key, repeat);
         }
+        if self.folder_ask_pending(id) {
+            return self.on_folder_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
-        }
-        if self.folder_ask_pending(id) {
-            return self.on_folder_key(id, key);
         }
         // A prompt the model just opened takes no answer yet: the key may have
         // been typed for the composer. Ctrl+C always works.
@@ -415,7 +415,7 @@ impl App {
         (self.panes.get(&pane).and_then(PaneState::pty)).is_some_and(|pty| pty.update.is_some())
     }
 
-    fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
+    pub(super) fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
         tab.tree
             .leaves()
             .into_iter()

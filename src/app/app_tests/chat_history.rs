@@ -723,7 +723,7 @@ fn enter_asks_the_store_for_the_conversation() {
 #[test]
 fn a_resumed_conversation_shows_every_stored_message_in_order() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let chat = chat_of(&a);
     assert!(chat.list().is_none());
     let got: Vec<(Role, &str, MsgStatus)> = chat
@@ -753,7 +753,7 @@ fn a_resumed_conversation_shows_every_stored_message_in_order() {
 #[test]
 fn a_message_after_a_resume_appends_and_uses_the_current_engine() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let effects = ask(&mut a, "third");
     let saved = stores(&effects);
     assert!(matches!(
@@ -788,7 +788,7 @@ fn a_message_after_a_resume_appends_and_uses_the_current_engine() {
 #[test]
 fn a_stored_profile_other_than_the_current_prepares_the_prompt_again() {
     let mut a = listing();
-    let effects = a.update(resumed(chat_id(), 10, "analyst"));
+    let effects = a.update_settled(resumed(chat_id(), 10, "analyst"));
     let [Effect::PreparePrompt { pane, profile, .. }] = effects.as_slice() else {
         panic!("expected one PreparePrompt, got {effects:?}");
     };
@@ -805,7 +805,7 @@ fn a_stored_profile_other_than_the_current_prepares_the_prompt_again() {
 #[test]
 fn the_same_profile_keeps_the_prompt() {
     let mut a = listing();
-    let effects = a.update(resumed(chat_id(), 30, "programmer"));
+    let effects = a.update_settled(resumed(chat_id(), 30, "programmer"));
     assert_eq!(effects, Vec::new());
     assert_eq!(chat_of(&a).prompt(), Some("system prompt"));
 }
@@ -815,7 +815,7 @@ fn a_profile_change_while_the_first_prompt_is_in_flight_drops_that_answer() {
     let (mut a, _) = opened();
     listed(&mut a, chat_id(), rows());
     // The resume arrives before the prompt prepared at open.
-    let none = a.update(resumed(chat_id(), 10, "analyst"));
+    let none = a.update_settled(resumed(chat_id(), 10, "analyst"));
     assert_eq!(none, Vec::new());
     let again = a.update(prompt_for(chat_id()));
     let [Effect::PreparePrompt { profile, .. }] = again.as_slice() else {
@@ -855,7 +855,7 @@ fn a_resume_that_lost_the_race_is_refused_too() {
     a.update(plain(KeyCode::Enter));
     // Pane A's conversation turns out to be 30 before B's reply lands.
     a.update(created(chat_id(), 30));
-    a.update(resumed(b, 30, "programmer"));
+    a.update_settled(resumed(b, 30, "programmer"));
     assert!(chat_at(&a, b).list().is_some());
     assert_eq!(chat_at(&a, b).list().unwrap().line(), Some(OPEN_ELSEWHERE));
 }
@@ -995,7 +995,7 @@ fn the_server_offer_does_not_take_the_keys_of_the_list() {
 #[test]
 fn ctrl_r_does_nothing_in_a_resumed_conversation() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let before = chat_of(&a).generation();
     let effects = a.update(ctrl('r'));
     assert_eq!(effects, Vec::new());
@@ -1007,7 +1007,7 @@ fn ctrl_r_does_nothing_in_a_resumed_conversation() {
 fn a_partial_message_keeps_its_mark_after_a_resume() {
     use crate::core::ai::chat::transcript::LineKind;
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let marks = chat_of(&a)
         .lines(80)
         .iter()

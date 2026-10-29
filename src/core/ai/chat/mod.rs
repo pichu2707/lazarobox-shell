@@ -303,6 +303,8 @@ pub struct ChatState {
     tag_editor: Option<tag_editor::TagEditor>,
     /// The conversation list, while it is shown instead of the conversation.
     list: Option<list::ListView>,
+    /// The folder picker, while it is shown over the pane (chat-folder).
+    folder_picker: Option<folder_picker::FolderPicker>,
     /// The profile of the conversation: the current one when it is new, the
     /// stored one when it was resumed.
     profile: Profile,
@@ -381,6 +383,7 @@ impl ChatState {
             tags_edited: false,
             tag_editor: None,
             list: None,
+            folder_picker: None,
             profile: Profile::default(),
             store: store::PaneStore::new(),
             outbox: Vec::new(),
@@ -604,6 +607,7 @@ impl ChatState {
     /// Whether the pane draws the conversation: no editor, list or review.
     pub fn conversation_shown(&self) -> bool {
         self.tag_editor().is_none()
+            && self.folder_picker().is_none()
             && self.list().is_none()
             && self.note_editor().is_none()
             && self.summary_draft().is_none()

@@ -181,8 +181,8 @@ impl App {
         };
         match purpose {
             Purpose::Resume(token) => self.on_resume_probed(id, token, result, busy),
-            // The picker takes it up (PR B2).
-            Purpose::Pick(_) => Vec::new(),
+            Purpose::Open => self.on_open_probed(id, result),
+            Purpose::Pick(picker) => self.on_pick_probed(id, picker, result),
             Purpose::Cd(token) | Purpose::Confirm(token) => {
                 // Only the answer of the latest command, still in the
                 // composer as it was submitted, counts.
@@ -264,22 +264,33 @@ impl App {
         id: PaneId,
         conversation: i64,
         folder: Option<&Path>,
-    ) -> Option<Effect> {
+    ) -> Vec<Effect> {
         let Some(folder) = folder else {
             self.resume_folders.remove(&id);
-            let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
+            let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+                return Vec::new();
+            };
             chat.push_system_line("no stored folder".to_owned());
-            return None;
+            return self.pick_over_resume(id);
         };
         self.folder_seq += 1;
         let token = self.folder_seq;
         self.resume_folders
             .insert(id, (token, conversation, folder.to_path_buf()));
-        Some(Effect::ProbeFolder {
+        vec![Effect::ProbeFolder {
             pane: id,
             path: folder.to_path_buf(),
             purpose: Purpose::Resume(token),
-        })
+        }]
+    }
+
+    /// A resumed conversation has no usable folder: the picker opens over it,
+    /// unless the chat is busy (then it keeps the folder it has).
+    fn pick_over_resume(&mut self, id: PaneId) -> Vec<Effect> {
+        if self.folder_busy(id).is_some() {
+            return Vec::new();
+        }
+        self.open_folder_picker(id)
     }
 
     /// The probe of a resumed conversation's folder answered: a concrete
@@ -307,6 +318,7 @@ impl App {
             return Vec::new();
         }
         self.dirty = true;
+        let unusable = !matches!(&result, Ok(p) if p.verdict == Verdict::Concrete);
         let line = match result {
             Ok(probed) if probed.verdict == Verdict::Concrete => {
                 if chat.origin_cwd() == Some(&probed.path) {
@@ -323,13 +335,18 @@ impl App {
             ),
         };
         chat.push_system_line(line);
-        Vec::new()
+        if unusable {
+            self.pick_over_resume(id)
+        } else {
+            Vec::new()
+        }
     }
 
     /// The pane is gone: nothing it asked about is answered any more.
     pub(super) fn drop_folder_state(&mut self, id: PaneId) {
         self.resume_folders.remove(&id);
         self.cd_requests.remove(&id);
+        self.opening.remove(&id);
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.
@@ -342,9 +359,13 @@ impl App {
     }
 
     /// A key while the folder confirmation waits: an unmodified `y` changes
-    /// the folder, any other key cancels. A bare modifier is not an answer.
-    pub(super) fn on_folder_key(&mut self, id: PaneId, key: KeyEvent) -> Vec<Effect> {
-        if matches!(key.code, KeyCode::Modifier(_)) {
+    /// the folder, any other key cancels. A bare modifier is not an answer,
+    /// and neither is a held key, except Esc and `n`, which only cancel: the
+    /// Enter that sent `/cd` may still be down when the ask opens.
+    pub(super) fn on_folder_key(&mut self, id: PaneId, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let cancels = matches!(key.code, KeyCode::Esc | KeyCode::Char('n'))
+            && key.modifiers == KeyModifiers::NONE;
+        if matches!(key.code, KeyCode::Modifier(_)) || repeat && !cancels {
             return Vec::new();
         }
         let confirmed = key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE;

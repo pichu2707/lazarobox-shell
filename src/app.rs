@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -62,6 +62,7 @@ mod hub;
 mod install;
 mod notes;
 mod offer;
+mod picker;
 mod review;
 mod run;
 mod scroll;
@@ -807,6 +808,9 @@ pub struct App {
     cd_requests: HashMap<PaneId, folder::CdRequest>,
     /// The last token handed to a folder probe.
     folder_seq: u64,
+    /// The chats whose open steps (memory, prompt, list) wait for the folder
+    /// to be settled: the probe, or the picker.
+    opening: HashSet<PaneId>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -928,6 +932,7 @@ impl App {
             launch_cwd: None,
             home: None,
             resume_folders: HashMap::new(),
+            opening: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
             hostname: None,
@@ -1696,6 +1701,59 @@ impl App {
             .is_some_and(|state| state.pty().is_some())
     }
 
+    /// [`update`](Self::update) for tests that are not about the folder. What
+    /// the update itself opens is settled as it always was: a chat that asks
+    /// the runtime to probe its folder is answered "concrete", and a picker
+    /// the update opened (an unknown folder, a resume without one) is closed
+    /// with the held-back steps run. Pickers that were open before are left
+    /// alone.
+    #[cfg(test)]
+    pub(crate) fn update_settled(&mut self, event: AppEvent) -> Vec<Effect> {
+        let had: Vec<PaneId> = self
+            .panes
+            .keys()
+            .copied()
+            .filter(|id| self.picker_open(*id))
+            .collect();
+        let mut settled = Vec::new();
+        for effect in self.update(event) {
+            match effect {
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose: FolderPurpose::Open,
+                } => settled.extend(self.update(AppEvent::FolderProbed {
+                    pane,
+                    purpose: FolderPurpose::Open,
+                    result: Ok(Probed {
+                        path,
+                        verdict: crate::core::ai::chat::folder::Verdict::Concrete,
+                    }),
+                })),
+                effect => settled.push(effect),
+            }
+        }
+        for id in self.panes.keys().copied().collect::<Vec<_>>() {
+            if had.contains(&id) || !self.picker_open(id) {
+                continue;
+            }
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.close_folder_picker();
+            }
+            // What the picker gathered is not part of the old behaviour.
+            settled.retain(|effect| {
+                !matches!(
+                    effect,
+                    Effect::ProbeFolders { pane, .. }
+                        | Effect::Store(StoreCmd::RecentFolders { pane, .. })
+                        if *pane == id
+                )
+            });
+            settled.extend(self.finish_open(id));
+        }
+        settled
+    }
+
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
@@ -1713,8 +1771,15 @@ impl App {
                 purpose,
                 result,
             } => self.on_folder_probed(pane, purpose, result),
-            // The picker takes both up (PR B2).
-            AppEvent::FoldersProbed { .. } | AppEvent::FolderCompleted { .. } => Vec::new(),
+            AppEvent::FoldersProbed {
+                pane, id, found, ..
+            } => self.on_folders_probed(pane, id, found),
+            AppEvent::FolderCompleted {
+                pane,
+                id,
+                text,
+                found,
+            } => self.on_folder_completed(pane, id, &text, &found),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -2247,6 +2312,13 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            // They would open a view under the folder picker.
+            Step::Run(
+                PrefixAction::EditTags
+                | PrefixAction::SaveNote
+                | PrefixAction::Summarize
+                | PrefixAction::ToggleMemory,
+            ) if self.refuse_over_folder() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
                 PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
@@ -5069,9 +5141,15 @@ mod app_tests {
     }
 
     /// Press the prefix, then each of `keys`.
+    ///
+    /// A chat that opens asks the runtime to probe its folder first; these
+    /// tests answer "concrete" at once, so the chat opens as it always did.
+    /// The picker tests drive the open flow by hand.
     fn press(a: &mut App, keys: &str) -> Vec<Effect> {
         a.update(ctrl_space());
-        keys.chars().flat_map(|c| a.update(key(c))).collect()
+        keys.chars()
+            .flat_map(|c| a.update_settled(key(c)))
+            .collect()
     }
 
     fn split_right() -> App {
@@ -8195,6 +8273,9 @@ mod app_tests {
 
     /// The chat folder: busy refusals and the change (chat-folder).
     mod chat_folder;
+
+    /// The folder picker: open flow, keys, accept and drop (chat-folder B2).
+    mod chat_picker;
 
     /// The update notice: statusline mark and menu note.
     mod update;

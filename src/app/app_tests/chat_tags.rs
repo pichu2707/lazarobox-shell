@@ -223,7 +223,7 @@ fn a_failed_save_in_a_conversation_is_a_system_line() {
 fn a_resume_closes_the_editor_of_the_list_it_replaces() {
     let mut a = tag_listing();
     a.update(key('t'));
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     assert!(!editor_open(&a));
     assert!(chat_of(&a).list().is_none());
 }
@@ -430,7 +430,7 @@ fn a_conversation_being_created_names_only_its_pane() {
 #[test]
 fn the_reply_reaches_the_pane_that_has_the_conversation_open() {
     let mut a = tag_listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     // A second chat edits the same conversation from its list.
     a.update(ctrl_space());
     a.update(key('c'));
@@ -447,7 +447,7 @@ fn the_reply_reaches_the_pane_that_has_the_conversation_open() {
 #[test]
 fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
     let mut a = listing();
-    a.update(AppEvent::Store(StoreReply::Resumed {
+    a.update_settled(AppEvent::Store(StoreReply::Resumed {
         pane: chat_id(),
         conversation: 30,
         profile: "programmer".into(),
