@@ -331,7 +331,14 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one). It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one). It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing). That run may refresh the catalog from OpenAI with the user's own login and update codex's own cache. Detection never executes a server binary, and MUST NOT open any credential, token or config file of any engine.
+
+This rule describes detection. Three other uses share the client and never happen as part of a detection run:
+- the chat requests: POST to the same loopback servers, and the text-only CLI runs, specified in chat-engines;
+- the engram requests: GET, POST and DELETE to the memory port (see engram-client), which never touch a catalog endpoint;
+- the Ollama pull of ollama-download: one `POST /api/pull` to the Ollama port, sent only after the user confirms a pull.
+
+The client remains bound to `127.0.0.1` for all four uses, and a POST is refused for any path other than the chat paths and `/api/pull`. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
 
 #### Scenario: Traffic audit [auto]
 - GIVEN a recording fake server per endpoint
@@ -352,6 +359,11 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 - GIVEN the client asked to connect to a non-loopback host for a GET, a POST or a DELETE
 - WHEN the request is made
 - THEN no connection is attempted
+
+#### Scenario: Only the allowed POST paths [auto]
+- GIVEN the client asked to POST to `127.0.0.1` on `/api/delete` or `/api/push`
+- WHEN the request is made
+- THEN no connection is attempted, while `/api/chat`, `/v1/chat/completions` and `/api/pull` are allowed
 
 #### Scenario: Detection never touches the memory port [auto]
 - GIVEN memory active and a recording fake on the memory port
