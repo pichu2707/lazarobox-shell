@@ -8,8 +8,16 @@ use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
 /// The COPY key hint of a shell pane.
 const SHELL_COPY_HINT: [&str; 4] = ["j/k scroll", "v select", "y copy", "Esc exit"];
-/// The COPY key hint of a chat pane: no selection or yank.
-const CHAT_COPY_HINT: [&str; 2] = ["j/k scroll", "Esc exit"];
+/// The COPY key hint of a chat pane: the shell's keys plus the chat's own
+/// copies. `j/k move` (not `scroll`) keeps it whole in a 100-column terminal.
+const CHAT_COPY_HINT: [&str; 6] = [
+    "j/k move",
+    "v select",
+    "y copy",
+    "^Y answer",
+    "^B code",
+    "Esc exit",
+];
 
 /// Whether the cell `(x, y)` is inside `rect`.
 fn rect_has(rect: &Rect, x: u16, y: u16) -> bool {
@@ -184,8 +192,13 @@ impl App {
         self.dirty |= state != before;
     }
 
-    /// One wheel tick on chat `id`: the transcript moves by whole lines.
+    /// One wheel tick on chat `id`: the transcript moves by whole lines. In
+    /// chat COPY the cursor stays on a visible row.
     fn scroll_chat_by_wheel(&mut self, id: PaneId, dir: WheelDir) {
+        if id == self.tab().focus && matches!(self.input, InputMode::ChatCopy(_)) {
+            self.dirty |= self.wheel_chat_copy(dir);
+            return;
+        }
         let rows = self.chat_viewport(id);
         let Some(state) = self.panes.get_mut(&id) else {
             return;
