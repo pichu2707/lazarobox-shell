@@ -441,6 +441,31 @@ async fn a_worker_read_outside_the_scope_asks_on_a_local_engine_too() {
     }
 }
 
+// Regression: the approval mode never answers a worker read. An unprompted
+// answer to a read outside the scope ends `denied`, on a cloud or a local
+// engine, and the file is never read.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unprompted_answer_to_a_worker_read_is_denied_and_reads_nothing() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    for locality in [Locality::Cloud, Locality::Local] {
+        let (mut scope, mut rx) = worker(locality, &home, handle.clone());
+        let approver = Scripted::new(Decision::Unprompted);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(read("~/dev/other/a.rs")).await;
+        let (_, ask, status, _) = pair(&events(&mut rx));
+        let want = worker_ask(&home, "dev/other/a.rs");
+        assert_eq!(ask, Some(want.clone()), "{locality:?}");
+        assert_eq!(*approver.asked.lock().unwrap(), vec![want], "{locality:?}");
+        assert_eq!(status, ToolStatus::Denied, "{locality:?}");
+        assert_eq!(out.text, format!("denied: {NOT_APPROVED}"), "{locality:?}");
+        assert!(!out.text.contains("outside the scope"), "{locality:?}");
+    }
+}
+
 // Regression: a read in a turn with no read scope keeps the chat rules: free
 // on a local engine, and on a cloud one the plain read ask, with no label.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
