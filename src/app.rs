@@ -28,6 +28,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        ollama_lib::{self, Pull},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -207,12 +208,16 @@ pub enum AppEvent {
     /// The Hub answered `Effect::HubAsk` (or the request failed, with its
     /// message). It names the request it answers.
     HubReply(Ask, Result<Answer, String>),
-    /// The bytes on disk of the running Hugging Face download, and its total.
+    /// The Ollama library answered `Effect::OllamaAsk` (or the request
+    /// failed, with its message). It names the request it answers.
+    OllamaReply(ollama_lib::Ask, Result<ollama_lib::Answer, String>),
+    /// The bytes done of the running download (Hugging Face or an Ollama
+    /// pull), and its total.
     DownloadProgress {
         done: u64,
         total: u64,
     },
-    /// The running Hugging Face download ended.
+    /// The running download (Hugging Face or an Ollama pull) ended.
     DownloadEnd(End),
     /// The bytes on disk of the llama-server archive that downloads, for the
     /// request `id`.
@@ -424,8 +429,19 @@ pub enum Effect {
     /// runtime reports `AppEvent::DownloadProgress` and one
     /// `AppEvent::DownloadEnd`.
     Download(Box<Job>),
-    /// Stop the running Hugging Face download; its partial file stays.
+    /// Stop the running download; a Hugging Face partial file stays, and
+    /// Ollama keeps the parts it pulled.
     CancelDownload,
+    /// Ask the Ollama library, from the picker's Ollama screens; the
+    /// runtime answers with one `AppEvent::OllamaReply`.
+    OllamaAsk(ollama_lib::Ask),
+    /// Pull this model through the Ollama server on `127.0.0.1:port`.
+    /// Emitted only while no download runs; the runtime reports
+    /// `AppEvent::DownloadProgress` and one `AppEvent::DownloadEnd`.
+    Pull {
+        pull: Box<Pull>,
+        port: u16,
+    },
     /// Run one step of the llama-server install wizard, or the newer build
     /// check; the runtime answers
     /// with `AppEvent::InstallReply` (and `InstallProgress` while it
@@ -1713,6 +1729,7 @@ impl App {
                 }
             }
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
+            AppEvent::OllamaReply(ask, answer) => self.on_ollama_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
             AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
@@ -1967,6 +1984,8 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::OllamaAsk(ask) => vec![Effect::OllamaAsk(ask)],
+            MenuCommand::Pull(pull) => self.start_pull(pull),
             MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
@@ -8109,6 +8128,7 @@ mod app_tests {
 
     /// A Hugging Face download from the llamacpp picker (config-menu).
     mod hf_download;
+    mod ollama_download;
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;

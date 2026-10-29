@@ -90,6 +90,64 @@ impl Pull {
     }
 }
 
+/// A request of the Ollama screens; its reply names it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Ask {
+    /// The library page, for the Popular screen.
+    Popular,
+    /// The manifest of each size tag of `model`, for the Sizes screen.
+    Sizes { model: String, tags: Vec<String> },
+    /// The license titles of `model:tag`, for the Confirm screen: one GET
+    /// per license layer its manifest named. `None` when that manifest
+    /// could not be read on the Sizes screen; it is asked for again first.
+    Licenses {
+        model: String,
+        tag: String,
+        digests: Option<Vec<String>>,
+    },
+}
+
+/// The reply to an [`Ask`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Answer {
+    /// The cards of the library page; the curated catalog's (`fallback`)
+    /// when the page could not be read or held none.
+    Popular {
+        cards: Vec<Card>,
+        fallback: bool,
+        /// This machine's memory, when known.
+        ram: Option<u64>,
+    },
+    /// Each size tag and its manifest; `None` when it could not be read.
+    Sizes {
+        manifests: Vec<(String, Option<Manifest>)>,
+        ram: Option<u64>,
+    },
+    Licenses(Box<Licenses>),
+}
+
+/// What the Confirm screen shows besides the choice.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Licenses {
+    /// The size of the manifest read again, when it had to be.
+    pub size: Option<u64>,
+    /// One title per license layer, in manifest order.
+    pub titles: Vec<String>,
+    /// The folder Ollama stores models in, when known.
+    pub folder: Option<std::path::PathBuf>,
+    /// The free space there.
+    pub free: Option<u64>,
+}
+
+/// The license of a pull as one label: its titles, or [`NOT_STATED`].
+pub fn license_label(titles: &[String]) -> String {
+    if titles.is_empty() {
+        NOT_STATED.to_owned()
+    } else {
+        titles.join(", ")
+    }
+}
+
 /// The cards of the library page, in page order. A card whose name is not
 /// safe to send is skipped.
 pub fn parse_library(html: &str) -> Vec<Card> {

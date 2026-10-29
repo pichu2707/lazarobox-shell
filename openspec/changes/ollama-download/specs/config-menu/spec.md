@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Ollama download row
-The model level of the `ollama` picker MUST end with a row `download from Ollama…` (key `PickKey::OllamaDownload`, mark Plain). It is shown when Ollama is `available` (its server answered detection) and is enabled then. While a pull runs, the row reads `↓ <percent>% <model>:<tag> · <license title>` instead, and Enter on it asks `cancel the download? (y/n)`. While a Hugging Face download runs, the row stays but Enter on it says `a download is already running`.
+The model level of the `ollama` picker MUST end with a row `download from Ollama…` (key `PickKey::OllamaDownload`, mark Plain). It is shown when Ollama is `available` (its server answered detection) and is enabled then. While a pull runs, the row reads `↓ <percent>% <model>:<tag> · <license title>` instead, and Enter on it asks `cancel the download? (y/n)`. While a Hugging Face download runs, the row stays but Enter on it says `a download is already running`. Likewise, while an Ollama pull runs, the llamacpp row `download from Hugging Face…` keeps its label and Enter on it says `a download is already running`.
 
 #### Scenario: Row only with a running server [auto]
 - GIVEN ollama `available`, then ollama `not running`

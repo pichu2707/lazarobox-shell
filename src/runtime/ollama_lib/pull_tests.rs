@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use std::ffi::OsString;
+
 use tokio::sync::mpsc;
 
 use super::*;
@@ -58,8 +60,8 @@ async fn progress_rises_to_100_then_the_pull_is_done() {
     fake.send(b"0\r\n\r\n");
     fake.close();
     let (tx, mut rx) = mpsc::channel(64);
-    let mut ollama = Ollama::new(fake.port, tx);
-    ollama.start(job());
+    let mut ollama = Ollama::new(OsString::new(), None, tx);
+    ollama.start(fake.port, job());
     let (seen, end) = until_end(&mut rx).await;
     assert_eq!(seen, [(0, 100), (100, 100), (250, 400), (400, 400)]);
     assert_eq!(end, End::Done(PathBuf::new()));
@@ -83,8 +85,8 @@ async fn an_error_line_fails_the_pull() {
     fake.close();
     let (tx, mut rx) = mpsc::channel(64);
     // Kept alive: dropping the worker cancels its pull.
-    let mut ollama = Ollama::new(fake.port, tx);
-    ollama.start(job());
+    let mut ollama = Ollama::new(OsString::new(), None, tx);
+    ollama.start(fake.port, job());
     let (seen, end) = until_end(&mut rx).await;
     assert!(seen.is_empty());
     assert_eq!(
@@ -103,8 +105,8 @@ async fn a_closed_stream_fails_the_pull() {
     fake.close();
     let (tx, mut rx) = mpsc::channel(64);
     // Kept alive: dropping the worker cancels its pull.
-    let mut ollama = Ollama::new(fake.port, tx);
-    ollama.start(job());
+    let mut ollama = Ollama::new(OsString::new(), None, tx);
+    ollama.start(fake.port, job());
     let (seen, end) = until_end(&mut rx).await;
     assert_eq!(seen, [(5, 10)]);
     assert!(
@@ -122,8 +124,8 @@ async fn cancel_closes_the_connection() {
         "{\"digest\":\"sha256:a\",\"total\":10,\"completed\":5}",
     ));
     let (tx, mut rx) = mpsc::channel(64);
-    let mut ollama = Ollama::new(fake.port, tx);
-    ollama.start(job());
+    let mut ollama = Ollama::new(OsString::new(), None, tx);
+    ollama.start(fake.port, job());
     let first = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await;
     assert!(matches!(
         first,
@@ -143,10 +145,10 @@ async fn only_one_pull_runs_at_a_time() {
     let fake = Fake::start().await;
     fake.send(HEAD);
     let (tx, _rx) = mpsc::channel(64);
-    let mut ollama = Ollama::new(fake.port, tx);
-    ollama.start(job());
+    let mut ollama = Ollama::new(OsString::new(), None, tx);
+    ollama.start(fake.port, job());
     fake.request_read.notified().await;
-    ollama.start(job());
+    ollama.start(fake.port, job());
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(fake.connections(), 1);
 }

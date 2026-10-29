@@ -53,7 +53,7 @@ The Popular list keeps the cards with at least one size that fits, in page order
 - THEN it lists the curated catalog entries that fit, after the info row `could not read the Ollama library; showing the built-in list`
 
 ### Requirement: Exact sizes and license before a pull
-On the Sizes screen, each size tag of the chosen model MUST show the exact size: the sum of the `size` of every layer of its manifest. A tag whose manifest cannot be read shows `size unknown` and stays choosable.
+On the Sizes screen, each size tag of the chosen model MUST show the exact size: the sum of the `size` of every layer of its manifest. A tag whose manifest cannot be read shows `size unknown` and stays choosable; choosing it reads that manifest once more, for its size and its license layers, before the Confirm screen opens.
 On the Confirm screen, every license layer (`application/vnd.ollama.image.license`) is read, and its first non-empty line, at most 120 characters with control and format characters drawn as `?`, is its title. The screen shows `license: <title>` for each, then `read it: https://ollama.com/library/<model>:<tag>`. With no license layer it reads `license: not stated`. Nothing is pulled before `y`.
 
 #### Scenario: Exact size from the manifest [auto]

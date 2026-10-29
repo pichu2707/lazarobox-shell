@@ -698,10 +698,12 @@ mod tests {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter]);
         let top = draw(62, POPUP_H, &menu);
-        press(&mut menu, &[KeyCode::Char('k')]);
+        // Up wraps to the `download from Ollama…` row, then the last
+        // curated row, which is disabled.
+        press(&mut menu, &[KeyCode::Char('k'), KeyCode::Char('k')]);
         let buf = draw(62, POPUP_H, &menu);
         let shown = text(&buf);
-        assert!(shown.contains("18/18"), "{shown}");
+        assert!(shown.contains("18/19"), "{shown}");
         assert!(
             shown.contains("download required · not selectable"),
             "{shown}"
@@ -714,7 +716,11 @@ mod tests {
     #[test]
     fn the_cursor_on_a_disabled_row_is_muted_and_reversed() {
         let mut menu = picker_of("general", 0);
-        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
+        // Past the `download from Ollama…` row, onto the last curated one.
+        press(
+            &mut menu,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Char('k')],
+        );
         let buf = draw(62, POPUP_H, &menu);
         let theme = LazaroboxTheme::default();
         let y = (0..POPUP_H)

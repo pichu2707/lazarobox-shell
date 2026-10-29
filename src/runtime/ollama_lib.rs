@@ -3,15 +3,16 @@
 //! model on the registry, HTTPS GETs through the system curl, as the Hub's.
 //! Then the pull itself, through the local Ollama server.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::app::AppEvent;
 use crate::core::ai::hf::End;
-use crate::core::ai::ollama_lib::{self, Card, Manifest, Pull};
+use crate::core::ai::ollama_lib::{self, Answer, Ask, Card, Licenses, Manifest, Pull};
 
-use super::hf::{Curl, Fetch, REPLY_CAP};
+use super::hf::{Curl, Fetch, REPLY_CAP, free_space, total_ram};
 use super::loopback::{PULL_PATH, Timeouts, pull_with};
 
 /// The library page: HTML, 4 MiB, no redirects.
@@ -94,6 +95,10 @@ pub async fn pull(
     mut progress: impl FnMut(u64, u64) + Send,
     cancel: oneshot::Receiver<()>,
 ) -> End {
+    // The names came from the library page: never sent unless safe.
+    if !ollama_lib::is_name(&pull.model) || !ollama_lib::is_name(&pull.tag) {
+        return End::Failed("failed: not a model name".to_owned());
+    }
     let body = pull.body();
     let request = pull_with(timeouts, "127.0.0.1", port, PULL_PATH, &body, &mut progress);
     tokio::select! {
@@ -106,12 +111,93 @@ pub async fn pull(
     }
 }
 
-/// Runs the one pull of the picker's Ollama screens in the background and
-/// sends its progress and its end to the event loop, as the Hub does for a
-/// Hugging Face download.
+/// Where Ollama keeps its models, as far as this process can tell: the
+/// `OLLAMA_MODELS` folder, else the first of `~/.ollama/models` and the Linux
+/// service's `/usr/share/ollama/.ollama/models` that exists. `None` when no
+/// folder is known; the server may still use another.
+pub fn models_folder(
+    env: Option<std::ffi::OsString>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(folder) = env.filter(|f| !f.is_empty()) {
+        return Some(PathBuf::from(folder));
+    }
+    let user = home.map(|home| home.join(".ollama/models"));
+    user.into_iter()
+        .chain([PathBuf::from("/usr/share/ollama/.ollama/models")])
+        .find(|folder| exists(folder))
+}
+
+/// The cards of the Popular screen: the library page's, or the curated
+/// catalog's when the page cannot be read or holds none.
+async fn popular_cards(site: &Curl) -> (Vec<Card>, bool) {
+    match library(site).await {
+        Ok(cards) if !cards.is_empty() => (cards, false),
+        _ => (ollama_lib::fallback_cards(), true),
+    }
+}
+
+/// The answer to one request of the Ollama screens.
+async fn answer(
+    site: &Curl,
+    registry: &Curl,
+    folder: Option<&Path>,
+    ask: &Ask,
+) -> Result<Answer, String> {
+    match ask {
+        Ask::Popular => {
+            let (cards, fallback) = popular_cards(site).await;
+            Ok(Answer::Popular {
+                cards,
+                fallback,
+                ram: total_ram(),
+            })
+        }
+        Ask::Sizes { model, tags } => {
+            let mut manifests = Vec::new();
+            for tag in tags {
+                manifests.push((tag.clone(), manifest(registry, model, tag).await.ok()));
+            }
+            Ok(Answer::Sizes {
+                manifests,
+                ram: total_ram(),
+            })
+        }
+        Ask::Licenses {
+            model,
+            tag,
+            digests,
+        } => {
+            let (size, digests) = match digests {
+                Some(digests) => (None, digests.clone()),
+                None => {
+                    let manifest = manifest(registry, model, tag).await?;
+                    (Some(manifest.size), manifest.licenses)
+                }
+            };
+            let mut titles = Vec::new();
+            for digest in &digests {
+                titles.push(license(registry, model, digest).await?);
+            }
+            Ok(Answer::Licenses(Box::new(Licenses {
+                size,
+                titles,
+                folder: folder.map(Path::to_owned),
+                free: folder.and_then(free_space),
+            })))
+        }
+    }
+}
+
+/// Answers the requests of the picker's Ollama screens and runs their one
+/// pull in the background, sending the replies, the progress and the end
+/// to the event loop, as the Hub does for a Hugging Face download.
 pub struct Ollama {
-    /// The Ollama server's port, as detection uses it.
-    port: u16,
+    site: Arc<Curl>,
+    registry: Arc<Curl>,
+    /// Where Ollama keeps its models, when known.
+    folder: Option<PathBuf>,
     timeouts: Timeouts,
     events: mpsc::Sender<AppEvent>,
     /// The cancel of the running pull, open while it runs.
@@ -119,25 +205,52 @@ pub struct Ollama {
 }
 
 impl Ollama {
-    pub fn new(port: u16, events: mpsc::Sender<AppEvent>) -> Self {
+    /// A worker running curl from `path` (the `PATH` it is looked up in).
+    pub fn new(
+        path: std::ffi::OsString,
+        folder: Option<PathBuf>,
+        events: mpsc::Sender<AppEvent>,
+    ) -> Self {
+        let (site, registry) = curls(path);
         Ollama {
-            port,
+            site: Arc::new(site),
+            registry: Arc::new(registry),
+            folder,
             timeouts: Timeouts::PULL,
             events,
             cancel: None,
         }
     }
 
-    /// Starts pulling `pull`, unless one runs already. Its progress comes as
+    /// Tests: the library and the registry through these curls.
+    #[cfg(test)]
+    pub(crate) fn with_curls(mut self, site: Curl, registry: Curl) -> Self {
+        self.site = Arc::new(site);
+        self.registry = Arc::new(registry);
+        self
+    }
+
+    /// Answers `ask` with one `AppEvent::OllamaReply`.
+    pub fn ask(&self, ask: Ask) {
+        let (site, registry) = (self.site.clone(), self.registry.clone());
+        let (folder, events) = (self.folder.clone(), self.events.clone());
+        tokio::spawn(async move {
+            let answer = answer(&site, &registry, folder.as_deref(), &ask).await;
+            let _ = events.send(AppEvent::OllamaReply(ask, answer)).await;
+        });
+    }
+
+    /// Starts pulling `job` through the Ollama server on `127.0.0.1:port`,
+    /// unless one runs already. Its progress comes as
     /// `AppEvent::DownloadProgress` (dropped when the loop is behind) and
     /// its end as one `AppEvent::DownloadEnd`.
-    pub fn start(&mut self, job: Pull) {
+    pub fn start(&mut self, port: u16, job: Pull) {
         if self.cancel.as_ref().is_some_and(|tx| !tx.is_closed()) {
             return;
         }
         let (cancel, cancelled) = oneshot::channel();
         self.cancel = Some(cancel);
-        let (port, timeouts, events) = (self.port, self.timeouts, self.events.clone());
+        let (timeouts, events) = (self.timeouts, self.events.clone());
         tokio::spawn(async move {
             let progress = |done, total| {
                 let _ = events.try_send(AppEvent::DownloadProgress { done, total });

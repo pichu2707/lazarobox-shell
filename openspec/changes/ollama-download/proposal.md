@@ -37,7 +37,7 @@ Out of scope:
 This extends the narrow policy of hf-download.
 - **ollama.com:** HTTPS only, one GET of `/library?sort=popular`, through the system `curl` with the hf-download limits (15 s, 4 MiB reply cap, no redirects).
 - **registry.ollama.ai:** HTTPS only, through the same `curl`:
-  - one manifest GET per size tag of the chosen model, on the Sizes screen;
+  - one manifest GET per size tag of the chosen model, on the Sizes screen (and once more for a tag whose manifest could not be read, when it is chosen);
   - one GET per license layer, on the Confirm screen. The license text is capped at 64 KiB and only its title is shown.
 - **The pull:** one loopback POST to `/api/pull` on the configured Ollama port, sent only after `y`. The loopback client's allowed paths gain `/api/pull`, for this flow only. No chat request ever asks a server to download a model.
 - **Trigger:** all of these are sent only while the user is in this flow. Nothing is sent at startup, on detection or by a chat turn.

@@ -10,6 +10,7 @@ use super::{
         cycled_idle,
     },
     hf::{Answer, Ask},
+    ollama_lib,
     picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
 };
 
@@ -288,6 +289,16 @@ impl AiMenu {
         self.picker.as_mut()?.hub_reply(ask, answer)
     }
 
+    /// A reply of the Ollama library, for the open picker if it still waits
+    /// for it; the message of a failed request it waited for.
+    pub fn ollama_reply(
+        &mut self,
+        ask: &ollama_lib::Ask,
+        answer: Result<ollama_lib::Answer, String>,
+    ) -> Option<String> {
+        self.picker.as_mut()?.ollama_reply(ask, answer)
+    }
+
     pub fn picker(&self) -> Option<&Picker> {
         self.picker.as_ref()
     }
@@ -403,6 +414,9 @@ impl AiMenu {
             | Outcome::Ask(_)
             | Outcome::Download(_)
             | Outcome::CancelDownload
+            | Outcome::OllamaAsk(_)
+            | Outcome::Pull(_)
+            | Outcome::Busy
             | Outcome::Install(_) => {}
         }
         outcome
