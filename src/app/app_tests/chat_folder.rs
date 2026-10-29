@@ -506,3 +506,166 @@ fn nothing_the_model_can_call_changes_the_folder() {
             .any(|t| t.name == "cd" || t.name.contains("folder"))
     );
 }
+
+// ---- resume (chat-folder A2) -----------------------------------------------
+
+/// The resume of conversation 30 with `folder` stored.
+fn resumed_in(folder: Option<&str>) -> AppEvent {
+    let AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        profile,
+        tag,
+        extras,
+        messages,
+        session,
+        ..
+    }) = super::chat_history::resumed(id2(), 30, "programmer")
+    else {
+        unreachable!("resumed builds a Resumed reply");
+    };
+    AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        profile,
+        tag,
+        extras,
+        messages,
+        session,
+        folder: folder.map(PathBuf::from),
+    })
+}
+
+fn resume_probed(a: &mut App, result: Result<Probed, Refusal>) -> Vec<Effect> {
+    a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Resume,
+        result,
+    })
+}
+
+fn probed_as(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
+    Ok(Probed {
+        path: path.into(),
+        verdict,
+    })
+}
+
+/// A chat on its list whose folder is `/w/a`, ready to resume.
+fn resuming() -> App {
+    let mut a = super::chat_history::listing();
+    a.apply_folder(id2(), "/w/a".into());
+    a.update(super::chat_history::prompt_for(id2()));
+    a
+}
+
+#[test]
+fn a_stored_folder_is_probed_when_the_conversation_is_resumed() {
+    let mut a = resuming();
+    let effects = a.update(resumed_in(Some("/w/stored")));
+    assert_eq!(
+        probes(&effects),
+        vec![(PathBuf::from("/w/stored"), Purpose::Resume)]
+    );
+    // Nothing changes until the probe answers.
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn a_concrete_stored_folder_is_set_without_asking_and_is_not_written_again() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    let effects = resume_probed(&mut a, probed_as("/w/stored", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/stored")));
+    assert_eq!(pending_ask(&a), None);
+    assert!(super::chat_history::stores(&effects).is_empty());
+}
+
+#[test]
+fn a_stored_folder_equal_to_the_chat_folder_changes_nothing() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/a")));
+    let effects = resume_probed(&mut a, probed_as("/w/a", Verdict::Concrete));
+    assert!(effects.is_empty());
+    // Only the move into `/w/a` the test made to start with.
+    let moves = lines(&a)
+        .iter()
+        .filter(|l| l.starts_with("folder changed"))
+        .count();
+    assert_eq!(moves, 1);
+}
+
+#[test]
+fn a_conversation_without_a_stored_folder_says_so_and_keeps_the_folder() {
+    let mut a = resuming();
+    let effects = a.update(resumed_in(None));
+    assert!(probes(&effects).is_empty());
+    assert!(lines(&a).contains(&"no stored folder".to_owned()));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn a_stored_folder_that_cannot_be_used_says_so_and_keeps_the_folder() {
+    let cases = [
+        Err(Refusal::NotFound),
+        Err(Refusal::NotAllowed),
+        probed_as("/usr", Verdict::Outside),
+        probed_as("/h", Verdict::Home),
+        probed_as("/home", Verdict::AboveHome),
+    ];
+    for result in cases {
+        let mut a = resuming();
+        a.update(resumed_in(Some("/w/stored")));
+        resume_probed(&mut a, result.clone());
+        assert!(
+            lines(&a).contains(&"stored folder not available: /w/stored".to_owned()),
+            "{result:?}: {:?}",
+            lines(&a)
+        );
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")), "{result:?}");
+    }
+}
+
+#[test]
+fn an_explicit_home_is_refused_on_every_resume() {
+    for _ in 0..2 {
+        let mut a = resuming();
+        a.update(resumed_in(Some("/h")));
+        resume_probed(&mut a, probed_as("/h", Verdict::Home));
+        assert!(lines(&a).contains(&"stored folder not available: /h".to_owned()));
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    }
+}
+
+#[test]
+fn a_busy_chat_keeps_its_folder_when_the_probe_answers() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    let ready = crate::core::ai::chat::engine::Availability::Ready {
+        engine: "ollama".into(),
+        model: Some("llama3:8b".into()),
+    };
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .send("go", &ready, "system");
+    resume_probed(&mut a, probed_as("/w/stored", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    assert!(lines(&a).contains(&"stored folder not used: the model is answering".to_owned()));
+}
+
+#[test]
+fn a_probe_answer_for_another_conversation_is_ignored() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    // The user went on to another conversation before the answer came.
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .open_list();
+    a.update(super::chat_history::resumed(id2(), 20, "programmer"));
+    resume_probed(&mut a, probed_as("/w/stored", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}

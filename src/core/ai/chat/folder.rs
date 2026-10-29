@@ -173,6 +173,11 @@ impl ChatState {
         FolderChange { old, prompt_now }
     }
 
+    /// The stored conversation this chat saves to, once it exists.
+    pub fn stored_conversation(&self) -> Option<i64> {
+        self.store.conversation()
+    }
+
     /// The command that keeps `folder` with the conversation, when it is
     /// stored already (a fresh one carries the folder in its `Create`).
     pub fn store_set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {

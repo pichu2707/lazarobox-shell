@@ -762,6 +762,9 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// The folder a resumed conversation was stored with while the runtime
+    /// probes it, by chat: `(conversation, stored folder)`.
+    resume_folders: HashMap<PaneId, (i64, PathBuf)>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -882,6 +885,7 @@ impl App {
             menu: None,
             launch_cwd: None,
             home: None,
+            resume_folders: HashMap::new(),
             hostname: None,
             dir_exists: |_| true,
             shell: None,
