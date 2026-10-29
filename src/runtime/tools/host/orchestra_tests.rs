@@ -849,7 +849,8 @@ async fn the_orchestrator_cannot_answer_a_workers_pending_read() {
     let (task, id, pending, _rx) = pending_outside_read(&host, &home, &waits).await;
     let fake = Fake::new("y");
     let (mut scope, _orch_rx) = orchestrator(&home, Some(fake.clone()));
-    scope.approver = waits.approver(PANE, TURN, Pending::new());
+    let asks = Pending::new();
+    scope.approver = waits.approver(PANE, TURN, asks.clone());
     let dispatch = host.dispatch(scope);
     for call in [
         Call::Orchestra(OrchCall::Collect { id: WorkerId(1) }),
@@ -864,7 +865,13 @@ async fn the_orchestrator_cannot_answer_a_workers_pending_read() {
         async move { dispatch.call(server_tool()).await }
     });
     assert_eq!(fake.calls().len(), 2);
-    tokio::task::yield_now().await;
+    for _ in 0..100 {
+        if asks.count() == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(asks.count(), 1, "the user tool reached its own ask");
     assert!(!task.is_finished());
     assert!(!asking.is_finished(), "the user tool waits for the user");
     assert_eq!(pending.count(), 1);
