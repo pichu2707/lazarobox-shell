@@ -46,6 +46,7 @@ fn resumed_with(session: Option<(&str, &str)>) -> AppEvent {
         messages,
         session: session.map(|(id, project)| (id.to_owned(), project.to_owned())),
         folder: None,
+        skipped: 0,
     })
 }
 
@@ -363,4 +364,22 @@ fn a_cd_still_resets_memory_and_ends_the_session() {
         "{effects:?}"
     );
     assert_eq!(session_of(&a), None);
+}
+
+#[test]
+fn after_a_restore_into_another_project_the_notes_still_go_into_the_session_project() {
+    let mut a = resumed_chat(Some((STORED_SESSION, STORED_PROJECT)));
+    a.restore_folder(chat_id(), "/w/stored".into());
+    // The chat resolves the project of the restored folder again, to read
+    // the context; writes follow the resumed session instead.
+    a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: chat_of(&a).memory_epoch(),
+        result: Ok("restored-project".into()),
+    }));
+    let effects = save_note(&mut a, "Later");
+    assert_eq!(
+        the_save(&effects),
+        (Some(STORED_SESSION.to_owned()), STORED_PROJECT.to_owned())
+    );
 }
