@@ -280,10 +280,10 @@ S1e-2 bases on the S1e-1c branch.
 
 Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1.
 
-- [ ] 1e2.1 RED insta snapshots (TestBackend): ORCH badge follows gate AND flag; worker row per status; notice view; failure alert content (raw error, r/c keys); approval label shown. Spec: chat-pane / Badge follows both switches, Row rendered, Alert content, Label shown.
-- [ ] 1e2.2 GREEN `ui/components/chat.rs` (badge beside `mode_badge`, notice, alert views), `ui/components/worker.rs`.
-- [ ] 1e2.3 RED+GREEN prompt test then final `prompts/*/orchestrate.md` wording (built-ins exist per profile, docs deferred). Spec: prompt-profiles / Built-ins exist, Docs deferred.
-- [ ] 1e2.4 CHANGELOG Internal line (no README). REFACTOR + gates + manual smoke with fake runner.
+- [x] 1e2.1 RED insta snapshots (TestBackend): ORCH badge follows gate AND flag; worker row per status; notice view; failure alert content (raw error, r/c keys); approval label shown. Spec: chat-pane / Badge follows both switches, Row rendered, Alert content, Label shown.
+- [x] 1e2.2 GREEN `ui/components/chat.rs` (badge beside `mode_badge`, notice, alert views), `ui/components/worker.rs`.
+- [x] 1e2.3 RED+GREEN prompt test then final `prompts/*/orchestrate.md` wording (built-ins exist per profile, docs deferred). Spec: prompt-profiles / Built-ins exist, Docs deferred.
+- [x] 1e2.4 CHANGELOG Internal line (no README). REFACTOR + gates + manual smoke with fake runner. Done: `ChatView::orchestrating` draws ` ORCH ` left of the mode badge (`ai_purple`, `O` when narrow; `ui/mod.rs` passes `App::orchestrating`); worker rows keep their text, failed/timed_out/refused in the tool alert colour (`transcript.rs`, no `ui/components/worker.rs` needed); `App::orch_guidance` gives the notice (`Enter accept · Esc dismiss`) and the alert (`run paused: worker <kind> <engine>><model> <status>: <error> · r retry · c/Esc cancel`) to `chat_guidance`, after the `engram serve` offer, joined by ` | ` so nothing a key answers is hidden, and paging counts their rows; the `orchestrate` prompts allow the user's own server tools (each call asks, workers never get them). The worker read prompt keeps its S1c-2 label. Carried forward: elapsed time of a running row (the row has no start time) and the `n/m` label (S3). Manual smoke: the binary needs a live terminal and engines, so the TestBackend screens of `orchestra_toggle.rs`, `orchestra_notice.rs`, `orchestra_run.rs` and `tool_approval.rs` stand in for it.
 
 ## S2 to S10 (coarser; each slice RED tests first, then GREEN, one or more PRs on the chain)
 
