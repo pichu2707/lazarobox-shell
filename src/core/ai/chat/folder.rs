@@ -6,6 +6,23 @@ use std::path::{Path, PathBuf};
 
 use crate::core::ai::tools::paths::{SecretRoots, normalize};
 
+/// A folder the runtime resolved and judged.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Probed {
+    /// The resolved absolute path: the one stored, shown and used.
+    pub path: PathBuf,
+    pub verdict: Verdict,
+}
+
+/// Why a folder is being probed, so the answer reaches the right flow.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Purpose {
+    /// The user typed `/cd`.
+    Cd,
+    /// A conversation was resumed with a stored folder.
+    Resume,
+}
+
 /// The argument of `/cd`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CdArg {

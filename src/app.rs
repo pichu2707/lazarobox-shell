@@ -13,6 +13,7 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            folder::{Probed, Purpose as FolderPurpose, Refusal},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -167,6 +168,13 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// The answer to `Effect::ProbeFolder`: the resolved folder and its
+    /// verdict, or why it is refused.
+    FolderProbed {
+        pane: PaneId,
+        purpose: FolderPurpose,
+        result: Result<Probed, Refusal>,
+    },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
     /// The store thread answered a command of a pane.
@@ -360,6 +368,13 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Resolve and judge a folder of chat `pane` (chat-folder): the runtime
+    /// answers with one `AppEvent::FolderProbed`.
+    ProbeFolder {
+        pane: PaneId,
+        path: PathBuf,
+        purpose: FolderPurpose,
+    },
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
     BatchClose(PaneId),
@@ -1644,6 +1659,8 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
+            // Nothing asks for a probe yet (the `/cd` flow comes next).
+            AppEvent::FolderProbed { .. } => Vec::new(),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()

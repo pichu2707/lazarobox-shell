@@ -30,6 +30,7 @@ mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod feedback;
+pub mod folder;
 pub mod gguf;
 pub mod gh;
 pub mod hf;
@@ -1619,6 +1620,15 @@ impl Panes {
                         )),
                     }
                 }
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose,
+                } => feedback.push(AppEvent::FolderProbed {
+                    pane,
+                    purpose,
+                    result: folder::probe(&run_check::process_env(), &path),
+                }),
                 Effect::EndToolSession(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.end_session(pane);
