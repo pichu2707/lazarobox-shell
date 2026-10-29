@@ -125,6 +125,13 @@ Decisions (the spec leaves them open; the most conservative reading was taken):
 
 Open questions for the user: (1) is counting cache reads and writes as input right for claude, or should the row show fresh tokens only? (2) should a timed-out worker's partial usage be kept (needs the runtime to read events before the deadline)? (3) should llama.cpp usage be added (needs a request option)?
 
+#### S6 review fixes (PR 15 follow-up)
+
+- W1: all four decoders emit `Usage` only when both the input and the output count are present; a missing one is no longer read as zero (a cached Ollama prompt omits `prompt_eval_count`).
+- W2: a total never reads as complete when it is not. The run tracks, per worker, whether an attempt that ran ended without reporting (`gap`; cancelled and timed-out count, refused does not because it never ran). `Run::usage_partial`, `Run::total_partial`; the cost is dropped from a partial sum. `WorkerRow.partial` and `RunUsage.partial` render `(partial)`. The run row is marked partial while any worker is queued or running (chosen over deferring the row: simpler, and the row keeps updating).
+- Suggestions: `1.0M` tier (no `1000.0k`), `<$0.0001` for a cost under half a unit of the fourth decimal. Gemini: `result.stats` in the recorded fixtures has no separate thoughts count (total minus input minus output is unexplained there), so only `output_tokens` is read; revisit if the CLI documents a thoughts field.
+- W3 open question for the user (spec vs code): the spec says a failed turn emits nothing, and the decoders do that, but the runtime keeps the usage of earlier rounds and of failed attempts across a retry because those tokens were really spent. Keep usage of failed attempts?
+
 ### Carried-forward advisories
 
 - S1e-1b: a message starting with `y` while the notice was shown used to accept it (closed by the Enter-only change in S1e-1c). Roots that are ancestors of secret folders are not refused (`jail::too_broad` is still "to be considered"); each read inside is still checked. A chat origin that is not valid UTF-8 gives no root and no recorded reason.
