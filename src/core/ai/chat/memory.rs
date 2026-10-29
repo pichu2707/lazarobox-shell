@@ -185,7 +185,10 @@ pub struct ChatMemory {
     degraded: bool,
     /// Bumped when the chat folder changes: a project or context reply from
     /// an older epoch belongs to the old folder and is ignored.
-    epoch: u32,
+    pub(super) epoch: u32,
+    /// Save tokens up to this one were sent under an older folder: their
+    /// answers are ignored.
+    save_floor: u64,
     /// The next session link replaces the stored one: the project changed.
     relink: bool,
 }
@@ -211,6 +214,7 @@ impl ChatMemory {
             degraded: false,
             epoch: 0,
             relink: false,
+            save_floor: 0,
         }
     }
 
@@ -537,6 +541,11 @@ impl ChatState {
         Some((session, std::mem::take(&mut self.memory.relink)))
     }
 
+    /// Whether the save with token `id` was sent before the folder changed.
+    pub fn save_is_stale(&self, id: SaveId) -> bool {
+        id.0 <= self.memory.save_floor
+    }
+
     /// The epoch the memory requests of this view carry.
     pub fn memory_epoch(&self) -> u32 {
         self.memory.epoch
@@ -548,7 +557,7 @@ impl ChatState {
     /// takes the end of the old session first (`take_end`).
     pub fn reset_memory_for_folder(&mut self) {
         let memory = &mut self.memory;
-        memory.epoch += 1;
+        memory.epoch = memory.epoch.wrapping_add(1);
         memory.readiness = Readiness::Unknown;
         memory.resolving_since = None;
         memory.injected = None;
@@ -558,7 +567,11 @@ impl ChatState {
         memory.session = None;
         memory.session_linked = false;
         memory.relink = true;
-        memory.notes.clear();
+        memory.save_floor = memory.saves_sent;
+        memory.pending_saves.clear();
+        // A note whose link row waits for the conversation id keeps its own
+        // project and is still linked when the id arrives.
+        memory.notes.retain(|note| !note.linked);
         memory.ended = false;
         self.approved_summary = None;
         self.entries.retain(|e| !matches!(e, Entry::Memory(_)));

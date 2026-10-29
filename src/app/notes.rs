@@ -171,6 +171,7 @@ impl App {
             // own answer follows and takes it as its reason.
             MemReply::Unavailable {
                 pane: None,
+                epoch: None,
                 reason: reason @ (Reason::NoBinary | Reason::OldBinary),
             } => {
                 if self.ai.memory.active() {
@@ -198,6 +199,11 @@ impl App {
                 if !self.memory_epoch_is(id, *epoch) => {}
             MemReply::Project { result, .. } => return self.on_project_reply(id, result),
             MemReply::Context { block, .. } => self.on_context(id, block),
+            // A save asked under the folder the chat left is not for it.
+            MemReply::Saved { id: token, .. }
+            | MemReply::SaveFailed { id: token, .. }
+            | MemReply::SaveUnavailable { id: token, .. }
+                if self.save_is_stale(id, *token) => {}
             MemReply::SaveUnavailable {
                 id: token, reason, ..
             } => {
@@ -217,6 +223,9 @@ impl App {
                 refused,
                 ..
             } => self.on_notes_deleted(id, *ok, *failed, *refused),
+            MemReply::Unavailable {
+                epoch: Some(epoch), ..
+            } if !self.memory_epoch_is(id, *epoch) => {}
             MemReply::Unavailable { reason, .. } => {
                 let reason = match (&self.no_server, reason) {
                     (Some(cause), Reason::NotRunning) => cause.clone(),

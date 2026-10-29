@@ -298,6 +298,7 @@ fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
     let mut a = with_answer(true, "x");
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));
@@ -995,6 +996,54 @@ fn a_folder_change_ends_the_session_and_links_the_next_one_in_the_new_project() 
             }),
         ]
     );
+}
+
+// A note saved before the conversation had an id is linked when it appears,
+// even if the folder changed in between (under the project it was saved in).
+#[test]
+fn an_unlinked_note_survives_a_folder_change() {
+    let mut a = ready("body");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
+    a.apply_folder(chat_id(), "/srv/other".into());
+    assert_eq!(
+        a.update(created(7, false, 0)),
+        vec![link_note(7, 41, "chat/decision/one", "One")]
+    );
+}
+
+// A save answered after the folder changed (its wait ran out first) belongs to
+// the old project: it must not adopt the old session or record its note.
+#[test]
+fn a_late_save_answer_of_the_old_folder_is_ignored() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    let late = saved_reply(&a, SESSION, 41, "chat/decision/one", "One");
+    a.apply_folder(chat_id(), "/srv/other".into());
+    a.take_dirty();
+    assert_eq!(a.update(late), vec![]);
+    assert!(chat_of(&a).session().is_none());
+    assert!(!systems(&a).iter().any(|l| l.contains("saved note")));
+
+    for reply in [
+        MemReply::SaveFailed {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: "boom".into(),
+        },
+        MemReply::SaveUnavailable {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: Reason::NotRunning,
+        },
+    ] {
+        let before = systems(&a);
+        assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
+        assert_eq!(systems(&a), before);
+    }
 }
 
 #[test]

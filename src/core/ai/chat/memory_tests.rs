@@ -322,6 +322,14 @@ fn a_folder_change_leaves_the_session_to_be_replaced_by_the_next_one() {
 }
 
 #[test]
+fn the_epoch_wraps_instead_of_overflowing() {
+    let mut state = chat();
+    state.memory.epoch = u32::MAX;
+    state.reset_memory_for_folder();
+    assert_eq!(state.memory_epoch(), 0);
+}
+
+#[test]
 fn set_folder_resets_the_memory_too() {
     let mut state = chat();
     known_project(&mut state);

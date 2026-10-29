@@ -933,6 +933,33 @@ fn a_replacing_link_overwrites_the_stored_pair() {
     assert_eq!(count(&conn, "memory_sessions"), 1);
 }
 
+// A replacing link must never delete the row of ANOTHER conversation that
+// holds the same (UNIQUE) session id: it fails and both rows stay.
+#[test]
+fn a_replacing_link_leaves_another_conversations_row_alone() {
+    let (_dir, mut worker, conn) = fixture();
+    let first = created_id(worker.handle(create(user("one"), vec![])));
+    let second = created_id(worker.handle(create(user("two"), vec![])));
+    session_of(worker.handle(link_session(first, SESSION_A)));
+    session_of(worker.handle(link_session(second, SESSION_B)));
+    let reply = worker.handle(StoreCmd::LinkSession {
+        pane: pane(),
+        conversation: second,
+        session_id: SESSION_A.into(),
+        project: "other".into(),
+        replace: true,
+    });
+    assert!(
+        matches!(reply, Some(StoreReply::LinkFailed { .. })),
+        "{reply:?}"
+    );
+    assert_eq!(count(&conn, "memory_sessions"), 2);
+    assert_eq!(
+        session_of(worker.handle(link_session(first, SESSION_B))),
+        SESSION_A
+    );
+}
+
 #[test]
 fn a_session_id_that_is_not_ours_is_not_stored() {
     let (_dir, mut worker, conn) = fixture();

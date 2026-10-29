@@ -25,10 +25,21 @@ Production size: about 350 lines of code (372 added non-comment, non-blank lines
 - `parse_command` returns `Command::{Plain, Escaped, Cd}`; a multi-line text with `/cd` as the first token is a command and the argument is the first line after it.
 - `normalize` in `core/ai/tools/paths.rs` is now `pub` (reused by `expand`); `ChatState::take_session_link` returns `(SessionRef, replace)`.
 - The epoch travels through `MemCmd::{Resolve, Context}` and `MemReply::{Project, Context}`. A generic `MemReply::Unavailable` (no epoch) can still reach a new view; it was left alone because it only degrades the badge and a re-resolve fixes it.
+- `Effect::ProbeFolder` now runs off the event loop (`runtime::folder::Prober`, `spawn_blocking` bounded by `TIMEOUT` = 3 s, answers `folder not found` on timeout) and answers through a dedicated `folder` inbox channel.
 - `App::folder_busy` and `App::apply_folder` carry `#[allow(dead_code)]` until the `/cd` flow (PR A2) calls them. `Effect::ProbeFolder` is executed by the runtime but nothing emits it yet; the app ignores `AppEvent::FolderProbed` for now.
 - `apply_folder` also ends the old engram session with `MemCmd::End{cwd: None}` when the session has notes, resets memory, and calls `begin_memory` so the new project is resolved. `StoreCmd::SetFolder` and pane cwd belong to PR A2.
-- `Effect::ProbeFolder` runs the probe on the event loop thread (a `canonicalize` and one `read_dir` of HOME), like the other short synchronous effects; move it to the blocking pool if A2 shows a stall.
 - The memory-epoch plumbing and the `LinkSession` upsert were written with their tests in one pass (the tests for `reset_memory_for_folder`, the worker `replace` upsert and the app flows were written before the commit, but the plumbing compiled before they ran).
+
+## Review fixes (batch 1b, on top of the A1 commits)
+
+- W1: `MemReply::Unavailable` gained `epoch: Option<u32>` (set for failures of `Resolve`/`Context`); an older epoch is ignored.
+- W2: the answers of saves sent before a folder change (`Saved`, `SaveFailed`, `SaveUnavailable`) are ignored via a per-chat `save_floor` (the save token is monotonic); `reset_memory_for_folder` also drops the pending saves.
+- W3: probe off the loop with a 3 s `TIMEOUT` (see above).
+- W4: `link_session` uses `ON CONFLICT(conversation_id) DO UPDATE` instead of `INSERT OR REPLACE`, so another conversation's row with the same session id is never deleted (the link fails instead).
+- S1: `folder_busy` adds `a note or summary is open` and `a message is waiting to be sent` (parked send in `waiting_sends`); design D4 updated.
+- S2: notes whose link row still waits for the conversation id survive `reset_memory_for_folder` (they link under their own project). Limitation: such a note's title can appear in the `Notes:` summary of the next session end.
+- S3: the probe refuses a relative path and names `/` as `Root` before reading HOME.
+- S4: the epoch uses `wrapping_add`.
 
 ## Remaining
 

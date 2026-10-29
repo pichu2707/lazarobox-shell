@@ -568,15 +568,19 @@ fn link_session(
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // The stored pair wins (a resume) unless the conversation changed project.
-    let verb = if replace {
-        "INSERT OR REPLACE"
+    let (verb, tail) = if replace {
+        (
+            "INSERT",
+            "ON CONFLICT(conversation_id) DO UPDATE
+             SET session_id = excluded.session_id, project = excluded.project",
+        )
     } else {
-        "INSERT OR IGNORE"
+        ("INSERT OR IGNORE", "")
     };
     tx.execute(
         &format!(
             "{verb} INTO memory_sessions(conversation_id, session_id, project)
-             VALUES (?1, ?2, ?3)"
+             VALUES (?1, ?2, ?3) {tail}"
         ),
         (conversation, session_id, clean(project)),
     )?;
