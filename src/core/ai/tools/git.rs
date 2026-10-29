@@ -51,6 +51,9 @@ pub enum GitError {
     Path,
     /// `add` with no path, or with more than [`MAX_ADD_PATHS`].
     PathCount,
+    /// An add path with a quote: the prompt quotes paths, so it would be
+    /// ambiguous.
+    Quote,
     /// A commit message that is empty, too long, or holds a control or bidi
     /// character.
     Message,
@@ -67,6 +70,7 @@ impl GitError {
         match self {
             Self::Path => "path not available",
             Self::PathCount => "give between 1 and 64 paths",
+            Self::Quote => "a path with a quote cannot be shown clearly in the question",
             Self::Message => "invalid commit message",
             Self::GitDir => "invalid git dir",
             Self::Identity => "invalid commit identity",
@@ -111,7 +115,7 @@ impl GitDir {
         }
     }
 
-    fn hooks(&self) -> String {
+    pub fn hooks(&self) -> String {
         format!("{}/hooks", self.common)
     }
 }
@@ -211,7 +215,7 @@ pub fn excludes() -> Vec<String> {
 
 /// Checks a path given to a verb: relative, below the root, outside `.git`
 /// and not a secret name. Pure: the runtime still resolves it.
-fn check(path: &str) -> Result<(), GitError> {
+pub(crate) fn check(path: &str) -> Result<(), GitError> {
     if path.is_empty() || !clean_line(path) {
         return Err(GitError::Path);
     }
@@ -341,18 +345,96 @@ pub fn log_argv(
 
 /// `git add` of literal paths.
 pub fn add_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitError> {
+    add_with(dir, paths, false)
+}
+
+/// The same add as a dry run: it lists what would be staged and stages nothing.
+pub fn add_dry_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitError> {
+    add_with(dir, paths, true)
+}
+
+/// Whether the paths of an add are allowed: between 1 and
+/// [`MAX_ADD_PATHS`], each one inside the root, with no quote (the prompt
+/// quotes paths) and not a secret or `.git`.
+pub fn check_add(paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() || paths.len() > MAX_ADD_PATHS {
         return Err(GitError::PathCount);
     }
-    for path in paths {
-        check(path)?;
-    }
+    paths.iter().try_for_each(|path| {
+        if path.contains('\'') {
+            return Err(GitError::Quote);
+        }
+        check(path)
+    })
+}
+
+fn add_with(dir: &GitDir, paths: &[&str], dry: bool) -> Result<Vec<String>, GitError> {
+    check_add(paths)?;
     let mut argv = base(dir);
-    argv.extend(["add", "--"].map(str::to_owned));
+    argv.push("add".to_owned());
+    if dry {
+        argv.push("--dry-run".to_owned());
+    }
+    argv.push("--".to_owned());
     argv.extend(paths.iter().map(|path| literal(path)));
     // A folder or `.` would stage the secrets below it: exclude them too.
     argv.extend(excludes());
     Ok(argv)
+}
+
+/// The names the index would commit, NUL separated, with no secret exclude
+/// and no rename pairing: a renamed secret shows under both names.
+pub fn index_names_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--ignore-submodules=none",
+            "--",
+            ".",
+        ]
+        .map(str::to_owned),
+    );
+    argv
+}
+
+/// Whether the `-z` listing of [`index_names_argv`] holds a secret name or a
+/// path inside a secret folder: the commit is then refused, so the review
+/// (which cannot show a secret) stays the whole truth.
+pub fn staged_has_secret(listing: &str) -> bool {
+    listing
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .any(secret_path)
+}
+
+/// The diff the commit review shows: the whole index against `HEAD`, with
+/// nothing left out (no secret exclude, because [`staged_has_secret`] has
+/// refused a secret already; `--ignore-submodules=none` beats a `.gitmodules`
+/// `ignore = all`, and `--text` beats a `-diff` attribute, so neither hides a
+/// change the commit records).
+pub fn review_diff_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--text",
+            "--ignore-submodules=none",
+            "--no-color",
+            "--",
+            ".",
+        ]
+        .map(str::to_owned),
+    );
+    argv
 }
 
 /// Whether a commit message is allowed: not empty, bounded, and free of
@@ -383,6 +465,119 @@ pub fn commit_argv(dir: &GitDir, who: &Identity, message: &str) -> Result<Vec<St
     Ok(argv)
 }
 
+/// The hooks a commit can run, in the order git runs them.
+pub const COMMIT_HOOKS: [&str; 6] = [
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "reference-transaction",
+    "post-index-change",
+];
+
+/// Said when the commit made is not the one the user reviewed.
+pub const DRIFT: &str = "the commit differs from the reviewed changes";
+
+/// The most differing paths a [`drift_notice`] names.
+const DRIFT_SHOWN: usize = 10;
+
+/// The most characters of one path a [`drift_notice`] shows.
+const DRIFT_PATH: usize = 120;
+
+/// Said when a commit failed but its hooks changed the index.
+pub const INDEX_CHANGED: &str = "the index was changed during the failed commit";
+
+/// What a failed commit that changed the index says; nothing was undone.
+pub fn index_notice(secret: bool) -> String {
+    let mut text = format!("{INDEX_CHANGED}; nothing was undone");
+    if secret {
+        text.push_str("; a secret path is now staged");
+    }
+    text.push_str(
+        ". The user can check it with `git status` and unstage with `git restore --staged`.",
+    );
+    text
+}
+
+/// The tree of the index, written to the object store: what the user's
+/// review stands for, recorded before the commit runs its hooks.
+pub fn write_tree_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.push("write-tree".to_owned());
+    argv
+}
+
+/// The tree of the commit just made.
+pub fn head_tree_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
+    argv.extend(["rev-parse", "HEAD^{tree}"].map(str::to_owned));
+    argv
+}
+
+/// The paths where two trees differ, NUL separated, nothing left out. `None`
+/// unless both are object names (never an option).
+pub fn tree_diff_argv(dir: &GitDir, before: &str, after: &str) -> Option<Vec<String>> {
+    let name = |t: &str| (40..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit());
+    if !(name(before) && name(after)) {
+        return None;
+    }
+    let mut argv = base(dir);
+    argv.extend(
+        [
+            "diff-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+            before,
+            after,
+        ]
+        .map(str::to_owned),
+    );
+    Some(argv)
+}
+
+/// What a commit that differs from the reviewed one tells the model and the
+/// user, from the `-z` listing of [`tree_diff_argv`], and whether a secret
+/// path was committed. Names are one clean line and a secret name is masked.
+/// The commit is never undone: the way back is only suggested.
+pub fn drift_notice(listing: &str) -> (String, bool) {
+    let names: Vec<&str> = listing.split('\0').filter(|n| !n.is_empty()).collect();
+    let secret = names.iter().any(|n| secret_path(n));
+    let shown: Vec<String> = names
+        .iter()
+        .take(DRIFT_SHOWN)
+        .map(|n| {
+            if secret_path(n) {
+                "<secret path>".to_owned()
+            } else {
+                let name = tidy(n);
+                if name.chars().count() > DRIFT_PATH {
+                    let cut: String = name.chars().take(DRIFT_PATH).collect();
+                    format!("{cut}…")
+                } else {
+                    name
+                }
+            }
+        })
+        .collect();
+    let more = names.len().saturating_sub(DRIFT_SHOWN);
+    let mut text = format!("{DRIFT}: {}", shown.join(", "));
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text.push_str(". The commit WAS made and nothing was undone");
+    if secret {
+        text.push_str("; a secret path was committed");
+    }
+    text.push_str(
+        ". To take it back the user can run `git reset --soft HEAD~1` \
+         (for a first commit, `git update-ref -d HEAD`).",
+    );
+    (text, secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +596,99 @@ mod tests {
 
     fn pair(argv: &[String], key: &str) -> bool {
         argv.windows(2).any(|w| w[0] == "-c" && w[1] == key)
+    }
+
+    // Spec (git-tools, commit): the index is checked for secret paths, not
+    // only the add arguments; a rename counts under both of its names.
+    #[test]
+    fn a_staged_secret_path_is_found_in_the_index_listing() {
+        assert!(staged_has_secret(".env\0a.rs\0"));
+        assert!(staged_has_secret("a.rs\0config/.ENV.local\0"));
+        assert!(staged_has_secret("a.rs\0.ssh/id_rsa\0"));
+        assert!(!staged_has_secret("a.rs\0src/env.rs\0"));
+        assert!(!staged_has_secret(""));
+        let argv = index_names_argv(&gd());
+        for word in ["--cached", "--name-only", "-z", "--no-renames"] {
+            assert!(has(&argv, word), "{word}");
+        }
+        // No exclude: the listing must show the secret it looks for.
+        assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
+    }
+
+    // The review argv hardening: no external program, no textconv, no color.
+    // What it must not hide is proved on a real repo (host git tests).
+    #[test]
+    fn the_commit_diff_has_no_program_and_every_verb_has_the_hardening() {
+        let argv = review_diff_argv(&gd());
+        for word in ["--cached", "--no-ext-diff", "--no-textconv", "--no-color"] {
+            assert!(has(&argv, word), "{word}");
+        }
+        assert!(!argv.iter().any(|a| a.starts_with(":(exclude")), "{argv:?}");
+        for setting in HARDENING {
+            assert!(pair(&argv, setting), "{setting}");
+        }
+    }
+
+    // User decision 2026-10-28: a commit that differs from the reviewed one is
+    // reported, never undone. Secret names are masked, names are one clean
+    // line, and the way back is suggested for a root commit too.
+    #[test]
+    fn a_drift_notice_lists_clean_names_masks_secrets_and_suggests_the_way_back() {
+        let (text, secret) = drift_notice("b.rs\0x\u{1b}y.rs\0");
+        assert!(!secret);
+        assert!(text.starts_with(DRIFT), "{text}");
+        assert!(text.contains("b.rs") && text.contains("x?y.rs"), "{text}");
+        assert!(text.contains("git reset --soft HEAD~1"), "{text}");
+        assert!(text.contains("git update-ref -d HEAD"), "{text}");
+        assert!(!text.contains("secret path"), "{text}");
+
+        let (text, secret) = drift_notice("b.rs\0config/.env\0.ssh/id_rsa\0");
+        assert!(secret);
+        assert!(text.contains("a secret path was committed"), "{text}");
+        assert!(!text.contains(".env") && !text.contains("id_rsa"), "{text}");
+        assert!(text.contains("b.rs"), "{text}");
+
+        let many: String = (0..15).map(|n| format!("f{n}.rs\0")).collect();
+        let (text, _) = drift_notice(&many);
+        assert!(text.contains("f9.rs") && !text.contains("f10.rs"), "{text}");
+        assert!(text.contains("and 5 more"), "{text}");
+    }
+
+    #[test]
+    fn a_long_drift_path_is_cut() {
+        let long = format!("{}\0", "a".repeat(500));
+        let (text, _) = drift_notice(&long);
+        assert!(text.len() < 400, "{text}");
+        assert!(text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn the_tree_checks_take_only_object_names() {
+        let tree = "a".repeat(40);
+        let diff = tree_diff_argv(&gd(), &tree, &tree).unwrap();
+        for word in [
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+        ] {
+            assert!(has(&diff, word), "{word}");
+        }
+        assert!(tree_diff_argv(&gd(), "--output=x", &tree).is_none());
+        assert!(tree_diff_argv(&gd(), &tree, "HEAD").is_none());
+        assert!(has(&write_tree_argv(&gd()), "write-tree"));
+        assert!(has(&head_tree_argv(&gd()), "HEAD^{tree}"));
+    }
+
+    #[test]
+    fn the_add_preview_is_the_add_with_a_dry_run() {
+        let real = add_argv(&gd(), &["src", "a.rs"]).unwrap();
+        let dry = add_dry_argv(&gd(), &["src", "a.rs"]).unwrap();
+        assert!(!has(&real, "--dry-run") && has(&dry, "--dry-run"));
+        let without: Vec<&String> = dry.iter().filter(|a| *a != "--dry-run").collect();
+        assert_eq!(without, real.iter().collect::<Vec<_>>());
+        assert_eq!(add_dry_argv(&gd(), &[".env"]), Err(GitError::Path));
     }
 
     #[test]

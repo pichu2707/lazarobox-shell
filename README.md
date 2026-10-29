@@ -14,6 +14,8 @@
 
 **`lazarobox-shell`** es un espacio de trabajo unificado (_Workspace_) de terminal (TUI) ultrarrápido, modular e independiente escrita en **Rust**. Actúa como una interfaz centralizada para conversación con modelos de Inteligencia Artificial (locales y a través de CLIs), panes de terminal y ejecución de herramientas de automatización bajo aprobación del usuario.
 
+![Paneles divididos, cambio de foco y chat de IA en lazarobox](docs/assets/overview.gif)
+
 Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, CRO y Analítica Digital**, su núcleo está diseñado para ser **completamente agnóstico al dominio**, permitiendo escalar hacia sectores como **Automatización Industrial, IoT, Logística y Telemetría SCADA/PLC**.
 
 ---
@@ -112,6 +114,10 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 Con `Ctrl+Espacio` y `[` se entra en modo COPY. Mueve el cursor con `h` `j` `k` `l`, selecciona con `v` (caracteres) o `V` (líneas completas) y copia con `y`: el texto llega al portapapeles del sistema mediante OSC 52 y se vuelve a TERMINAL. `Esc` limpia la selección (y una segunda pulsación sale). Las selecciones de más de 75 000 bytes no se copian.
 
+En un panel de chat de IA funciona igual y copia texto limpio: sin los prefijos de dibujo (`›`, `┊`, `•` y la sangría), con las líneas partidas por el ancho unidas de nuevo y sin las pistas de teclas. Dentro del modo COPY del chat, `Ctrl+Y` copia la última respuesta y `Ctrl+B` su último bloque de código, sin salir del modo.
+
+![Modo COPY: seleccionar líneas con V y copiarlas con y en un panel de shell](docs/assets/copy-mode.gif)
+
 Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ---
@@ -120,7 +126,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 - **Rueda del ratón:** desplaza el panel que queda bajo el puntero, sin cambiar el foco. En un panel de shell recorre el historial (3 líneas por paso); en `less`, `man` o `vim` la rueda llega a la aplicación; en el chat de IA desplaza la conversación. Cualquier tecla pulsada en el panel (o un pegado) vuelve a la pantalla en vivo.
 - **Selección nativa:** con la captura del ratón activa, mantén pulsado un modificador mientras arrastras para seleccionar texto con la terminal: `Shift` en Kitty y en la mayoría de terminales de Linux, `Option` en Terminal e iTerm2 de macOS.
-- **Modo COPY:** `Ctrl+Espacio` y `[` funciona en paneles de shell y de chat. Se mueve con `j`/`k` (línea), `Ctrl+u`/`Ctrl+d` (media página), `gg` (inicio) y `G` (final); `Esc` o `q` sale. En un panel de shell, además, `v`, `V` e `y` seleccionan y copian.
+- **Modo COPY:** `Ctrl+Espacio` y `[` funciona en paneles de shell y de chat. Se mueve con `j`/`k` (línea), `Ctrl+u`/`Ctrl+d` (media página), `gg` (inicio) y `G` (final); `Esc` o `q` sale. `v`, `V` e `y` seleccionan y copian (ver [Modo COPY](#-modo-copy)).
 - **Indicador `[+N]`:** un panel desplazado muestra en su esquina superior derecha cuántas líneas quedan por debajo; la línea de estado indica la posición (`↑N/total`) del panel enfocado.
 - **Desactivar la captura:** `mouse = false` en `config.toml` (o la fila `Mouse` de la sección Settings del menú `Ctrl+Espacio m`) deja la rueda y la selección a la terminal. Por defecto está activada.
 
@@ -195,6 +201,8 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 ## 🤖 Menú de IA
 
 Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+
+![Menú de IA: pestaña AI y selector de motor y modelo](docs/assets/ai-menu.gif)
 
 Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
@@ -320,6 +328,13 @@ Teclas dentro del chat:
 | `PageUp` / `PageDown`  | Desplaza la conversación                            |
 | `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
 
+**La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
+
+- Es la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Queda fija mientras dure el chat: un `cd` posterior en un shell no la mueve, y todavía no hay forma de cambiarla (un futuro `/cd` está en el [issue #394](https://github.com/pichu2707/lazarobox-shell/issues/394)).
+- Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
+- Con un motor en la nube y la carpeta del chat en `$HOME` o en `/`, todo comando se rechaza (`the chat's folder is your home or /`).
+- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`. Haz `cd` al proyecto en un panel de shell y abre el chat desde ahí, o fija la carpeta en el lanzador con `Path=` o con `sh -c 'cd … && exec lazarobox-shell'`.
+
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
 **Aviso al terminar:** `notify` en `[ai]` (o la fila Notify de la sección Settings del menú, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
@@ -416,7 +431,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (salvo en `run`, ver más abajo): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -425,7 +440,7 @@ By default every command a model asks to run needs your `y` (`approval = "ask"`)
 - The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
 - The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
 - It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
-- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`).
+- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`), except a read or a search the mode answers without a prompt (in `run`, see below; a local engine's read outside the chat's folder in `ask` and `auto`), which runs, or is refused, as it would with nothing waiting.
 
 Residual risks (design D18), so you can decide if auto is for you:
 
@@ -437,16 +452,44 @@ Residual risks (design D18), so you can decide if auto is for you:
 
 #### Modo `run`
 
-En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lista corta y segura escribe el comando **y pulsa Enter**, espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe, sin Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe; tú pulsas Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
-**Lista segura.** Un único comando, con palabras separadas por un solo espacio, de entre `cd`, `pwd`, `ls`, `tree` y `mkdir`:
+![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
-- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos) y `mkdir` (`-p`, de 1 a 4 rutas).
+![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
+
+![mkdir pide confirmación; con y solo se escribe en el panel y tú pulsas Enter](docs/assets/run-mkdir.gif)
+
+**Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
+
+**Pregunta.** La confirmación dice el motivo:
+
+- Cualquier otro comando, `git` y `mkdir` incluidos (``not a safe command: `git` ``), o uno que la gramática de abajo no admite.
+- Una ruta, o el directorio del panel, fuera de la carpeta del chat (`the command reaches outside the chat's folder`).
+- Con un motor en la nube, todo comando cuando la carpeta del chat es `$HOME`, `/` o una carpeta que contiene `$HOME`, también a través de un enlace simbólico (`the chat's folder is your home or /`). Con un motor local esta regla no se aplica.
+- Un `grep -r` sobre una carpeta con más de 5000 entradas, o un `rg` que leería más de 5000 (`the folder is too large to check`). Para `rg` la comprobación recorre la carpeta con el mismo recorrido de ripgrep: salta los ocultos y lo que ignoran `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, las exclusiones globales de git y los archivos de ignorados de las carpetas superiores, y respeta `--max-depth`; así un `target/` o un `node_modules/` ignorado no cuenta para ese límite. Aun así, lo que hay en las carpetas ignoradas (sin entrar en las ocultas) se juzga igual, por si el `rg` instalado entra en ellas. Con `-t` o `-T` también juzga los archivos ocultos, porque un tipo puede incluirlos (`rg -t sh` lee `.bashrc`).
+- Un `rg` cuando las exclusiones globales de git, o un `.ignore`, `.rgignore`, `.gitignore` o `.git/info/exclude` de una carpeta de debajo, ignorada o no, o de una superior, tienen una línea `!`, que podría hacerle leer archivos ocultos: el `rg` instalado puede aplicar esos archivos de otra forma que la comprobación (`an ignore file may let the search read hidden files`).
+- Un `rg` cuyo recorrido encuentra una carpeta o un archivo de ignorados que no se puede leer, o más de 100 000 entradas contando las ignoradas (`a folder in the search cannot be checked`).
+
+**Nunca corre solo.** Pregunta con `a path in the command is not allowed to run directly`:
+
+- Una ruta sensible (ver «Which paths the read tools refuse»), también si se llega a ella por un enlace simbólico.
+- Un `find`, `grep -r` o `rg` sobre una carpeta que contiene una carpeta de secretos (`~/.ssh`, `~/.gnupg`, credenciales…).
+- Un `grep -r` o un `rg` que leería un archivo sensible por su nombre o su posición (`.env`, `.git/config`…), y un `grep` o `rg` al que se le da uno de esos archivos o un `.git/config`.
+
+**Gramática.** Un único comando de hasta 8 palabras separadas por un solo espacio:
+
+- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos).
+- `grep` (flags `i n l c w v F E H h s o x r`, `-A`/`-B`/`-C`/`-m <n>`, un patrón y al menos una ruta; sin `-R` ni `-f`).
+- `rg` (flags `i s S n N l c w v F x H o`, `-A`/`-B`/`-C`/`-m <n>`, `-t`/`-T <tipo>`, `--max-depth <n>` y algunas opciones largas (`--ignore-case`, `--count`, `--no-heading`…); sin `--hidden`, `--no-ignore`, `-u`, `-L`, `--pre` ni `-z`).
+- `find` (`-name`, `-iname`, `-type f|d|l`, `-maxdepth`, `-mindepth`; sin `-exec`, `-delete`, `-fprint`, `-ok` ni `-L`).
 - Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
-- Las rutas pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
-- Solo las rutas de `mkdir` y `tree` deben resolverse dentro de `$HOME`. Con todos los verbos salvo `cd` se comprueba siempre el directorio actual del panel; para `tree` debe estar dentro de `$HOME` aunque se le dé una ruta. `cd` y `ls` pueden ir a cualquier sitio (`cd /tmp`, `ls /etc`), salvo las carpetas de secretos (`~/.ssh`, `~/.gnupg`, credenciales…), también si se llega a ellas por un enlace simbólico. Lo que no cumpla esto, o no exista, pregunta y la confirmación dice por qué.
-- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
-- Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
+- Las rutas y los patrones pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
+- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni otras opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
+
+**Panel libre y pausa.** El panel debe estar sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8; si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos pausan el modo `run` hasta el final del turno. Solo cuentan los de gramática y los de ruta no permitida (`a path in the command is not allowed to run directly`); salir de la carpeta, una carpeta amplia, demasiado grande o que no se puede comprobar, un archivo de ignorados con una línea `!` y el estado del panel (ocupado, foco, línea a medias…) no cuentan. El contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo.
+
+**Lecturas y búsquedas.** En `run`, `grep` (que solo busca dentro de la carpeta del chat) y `read_file` de un archivo dentro de la carpeta del chat corren sin confirmación, también con motores en la nube, y su resultado va al modelo. La ruta se juzga sobre la ruta real: un enlace simbólico dentro de la carpeta que apunta fuera cuenta como fuera, y la propia lectura vuelve a juzgarla sobre el archivo que abre, sin seguir enlaces, así que un enlace cambiado en el último momento no saca la lectura de la carpeta. Si la carpeta del chat es `$HOME` o `/` (o una carpeta que contiene `$HOME`), nada se lee solo: con un motor en la nube cada lectura y cada `grep` piden confirmación, y con uno local las lecturas siguen como en `ask`. Leer un archivo fuera de la carpeta del chat pide confirmación con cualquier motor, también con uno local; si esa ruta no se puede mostrar tal cual se abriría (demasiado larga, con caracteres invisibles o de control), se deniega con `path cannot be shown safely`, porque ninguna confirmación podría aprobarla. Las rutas sensibles (ver «Which paths the read tools refuse») se siguen rechazando como siempre, sin preguntar y sin leerse. Una lectura que corre sola no cuenta como tu `y`: un `edit_file` posterior del mismo archivo sigue pidiendo confirmación. `edit_file`, `run_command`, las escrituras y las herramientas de usuario no cambian, y en `ask` y `auto` las lecturas y búsquedas siguen como antes.
 
 **Por qué pide confirmación.** La confirmación de un comando que no corrió directamente muestra una línea con el motivo y el trozo que lo causó, por ejemplo ``shell metacharacter: `&&` ``, ``not a safe command: `git` `` o `a command is still running in the pane`. Los caracteres de control, de formato (bidi, espacio de ancho cero) e invisibles se dibujan como `?`. La línea solo aparece si la confirmación tiene una fila libre; el comando completo siempre se muestra.
 
@@ -458,7 +501,7 @@ En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lis
 - Si tu prompt ocupa varias líneas, las superiores pueden colarse en la salida que recibe el modelo (se redactan, pero no se detectan).
 - Un programa a pantalla completa, que escribas en el panel mientras corre, o un panel que se cierra, tampoco devuelven salida.
 
-**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
+**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. También se envían, sin preguntar, el texto de los archivos de la carpeta del chat que el modelo lea y las líneas que encuentre con `grep`. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
 
 Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `auto`:
 
@@ -466,7 +509,7 @@ Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `a
 - Entre la comprobación de la ruta y la escritura hay una ventana en la que un enlace simbólico puede cambiarse (TOCTOU). Se comprueba de nuevo justo antes de escribir, pero no se elimina.
 - Continuación del prompt (PS2): si dejaste abierta una comilla, un `$(`, un heredoc o un bucle, o una línea que acaba en `\`, `&&`, `|`, `do` o `then`, el comando del modelo puede unirse a lo tuyo. Las palabras entre comillas son texto inerte y lazarobox rechaza texto con comillas sin cerrar, pero el caso en que lo cierras tú no se detecta hasta tener marcas de prompt (OSC 133).
 - Una línea de prompt que se cuele en la salida, como se dijo arriba.
-- Fuera de `$HOME`, `cd` y `ls` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos. Los montajes bind no se detectan.
+- `ls`, `tree` y `find` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos; `grep` y `rg` envían al modelo las líneas que encuentran. Con un motor local y la carpeta del chat en `$HOME` o `/`, esto vale para toda esa carpeta. Los montajes bind no se detectan.
 - El locale se lee del entorno de lazarobox; un archivo rc que lo cambie después no se ve.
 - Todo lo que dice `auto` sobre líneas a medias, `read`/`select` y programas que reaccionan sin Enter sigue valiendo.
 
@@ -606,8 +649,8 @@ enabled = true
 search = true      # glob, grep y la lectura por ventanas de read_file
 write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
-git = false        # interruptor de las operaciones de git de solo lectura (aún no se ofrecen al modelo)
-git_write = false  # interruptor de las operaciones de git que escriben (aún no se ofrecen al modelo)
+git = false        # git_status, git_diff, git_log (solo lectura)
+git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
 ```
 
 La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
@@ -680,7 +723,44 @@ Se rechazan las opciones que cambian de dónde se lee la configuración o el des
 - **Un comando a la vez por chat y dos en total en la aplicación.** Un segundo comando espera o se rechaza con `a command is already running in this chat` o `too many commands are running; try again later`.
 - **`npm`, `yarn` y `pnpm` (`test`, `run`, `install` y `ci`) solo desde la carpeta que contiene `package.json`.** Si no, se rechazan, para que un gestor no lea un `package.json` de una carpeta superior que nadie ha mostrado.
 - **Ganchos y configuración de git.** Antes y después de cada ejecución, lazarobox compara los ganchos (_hooks_) y la configuración de git. Si el comando los cambió, el resultado lo dice (`git hooks or config changed during the run (not reverted)`) y **no los revierte**. Si no se puede verificar el estado (una carpeta con demasiadas entradas, una configuración que no se entiende, un límite superado), el resultado indica `could not verify git hooks and config after this run` y el modelo debe tratar el proyecto como posiblemente contaminado y avisarte. Lo mismo ocurre con una ejecución cancelada o que falla después de arrancar: el aviso llega en el siguiente comando de ese chat.
-- **Las operaciones de git (`git`, `git_write`) aún no se ofrecen al modelo.** Los interruptores existen en la configuración y en el menú, pero hoy no añaden ninguna herramienta.
+- **Las operaciones de git** (`git`, `git_write`) se describen en la sección siguiente.
+
+#### Git: `git_status`, `git_diff`, `git_log`, `git_add` y `git_commit`
+
+Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git = true`) ofrece las tres de lectura y **Git write** (`git_write = true`) ofrece `git_add` y `git_commit`. No existe ninguna otra operación (ni `push`, `pull`, `checkout`, `reset`, `rebase`...) ni una lista libre de argumentos, y un _worker_ del orquestador nunca puede hacer commit. Linux solamente; `git` debe estar en un lugar del sistema.
+
+| Herramienta  | Qué hace                                                                 | ¿Pregunta?                                   |
+| :----------- | :----------------------------------------------------------------------- | :------------------------------------------- |
+| `git_status` | Estado acotado y ya analizado.                                           | Motor local: no. Nube: no.                   |
+| `git_log`    | Hasta 20 entradas por defecto (máximo 50), con formato fijo.             | Motor local: no. Nube: no.                   |
+| `git_diff`   | Diff del árbol de trabajo o del índice, acotado.                         | Motor local: no. **Nube: sí**, antes de ejecutar. |
+| `git_add`    | Añade al índice las rutas indicadas.                                     | Siempre.                                     |
+| `git_commit` | Crea el commit tras la revisión a panel completo.                        | Siempre, en todos los motores.               |
+
+**Lectura.** Los nombres de secretos (`.env`, `.npmrc`...) se excluyen por _pathspec_, así que un `.env` rastreado y modificado no aparece en el diff ni en el log, y toda la salida se censura y se entrega como dato no fiable. Se rechazan mientras haya un lote de escritura preparado o propuesto, y una ruta rechazada no abre ningún aviso.
+
+**`git_add`.** Una línea de aviso con las rutas y el número de ficheros. Si las rutas no caben enteras en esa línea, o alguna contiene `'`, se rechaza (no hay revisión alternativa). Nunca añade secretos ni nada dentro de `.git/`, ni siquiera con una carpeta o `.`.
+
+**`git_commit`.** Abre una revisión a panel completo, igual en todos los motores, con:
+
+- el mensaje;
+- el aviso `signing disabled for this commit` (el commit se crea sin firmar y sin _trailer_);
+- los ganchos (_hooks_) que se van a ejecutar, que corren dentro de la jaula;
+- todo el diff del índice, con `--text`.
+
+Se rechaza si hay un secreto en el índice o si el diff queda cortado. Como en un lote de escritura, `y` solo aprueba si has visto todo lo que debe caber. Tras `y`, lazarobox vuelve a comprobar el índice byte a byte; si cambió, no hay commit. El commit tiene un límite de 120 s.
+
+Después del commit, lazarobox compara el árbol que se ha confirmado con el que revisaste. Si difieren (un gancho puede cambiar ficheros), **avisa y no deshace nada**, y sugiere `git reset --soft HEAD~1`. Límite conocido: un gancho `commit-msg` que edite el mensaje no se detecta.
+
+#### Modelo de amenazas de `run_command` y de git
+
+- **La lista de programas acota el verbo, no lo que hace el programa.** `cargo test`, `npm run <script>`, `pytest` o `go test` ejecutan código del proyecto: un `build.rs`, un script de `package.json`, un `conftest.py`. Lo que ves en el aviso es la orden; lo que corre es todo lo que esa orden arrastra.
+- **La red está activa.** Un programa que corre dentro de la jaula puede leer el `.env` del proyecto (la jaula lo permite) y enviarlo fuera. El aviso lo dice cada vez; no hay «permitir siempre».
+- **Residuo: sockets UNIX.** Landlock no cubre la conexión a un socket UNIX existente (un agente de claves, un demonio de Docker accesible). Lo que sea alcanzable desde el proceso, lo es también para el comando.
+- **Procesos nietos que se desacoplan.** El proceso se vigila como grupo y se mata al terminar el tiempo, pero un nieto que se desacopla (_daemonizing_) en un grupo propio puede sobrevivir al comando.
+- **Los ganchos pueden cambiar un commit después de aprobarlo.** Se detecta (comparación del árbol confirmado con el revisado, aviso y `git reset --soft HEAD~1`), pero no se impide.
+- **Un modelo con Exec puede escribir `.git/hooks`.** Se detecta con las instantáneas de integridad antes y después de cada ejecución (`git hooks or config changed during the run (not reverted)`), pero no se impide ni se revierte. Revisa siempre los ganchos que muestra la revisión del commit.
+- **Git no carga tu configuración.** Los ganchos solo se leen del `.git/hooks` del propio repositorio, el commit no se firma y la identidad se pasa explícitamente.
 
 ### Tools with Ollama
 
@@ -736,6 +816,8 @@ project = "/home/u/dev/mi-proyecto"
 ### Historial de conversaciones
 
 Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que se interrumpe tras haber recibido texto (por un error o una cancelación) también se guarda, marcada como parcial. `Ctrl+Espacio` y `c` abre la **lista de conversaciones** del proyecto actual (el repositorio git), de la más reciente a la más antigua, con el formato `fecha · perfil · primer mensaje`.
+
+![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
 
 | Tecla        | Acción                                                                          |
 | :----------- | :------------------------------------------------------------------------------ |
