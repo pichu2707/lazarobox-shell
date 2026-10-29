@@ -21,7 +21,7 @@
 
 use serde_json::Value;
 
-use super::engine::{ChatError, Finish, StreamEvent};
+use super::engine::{ChatError, Finish, StreamEvent, Usage};
 use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
@@ -100,6 +100,29 @@ fn started_foreign_tool(value: &Value, wired: bool) -> bool {
         _ => return false,
     };
     blocks.into_iter().any(|block| foreign_block(block, wired))
+}
+
+/// What the `result` line reports as used. The prompt count adds the cache
+/// reads and writes to the fresh tokens, so it means the same as codex's and
+/// gemini's. `None` when the line holds no token count at all.
+fn usage(value: &Value) -> Option<Usage> {
+    let counts = &value["usage"];
+    let (fresh, out) = (
+        counts["input_tokens"].as_u64(),
+        counts["output_tokens"].as_u64(),
+    );
+    if fresh.is_none() && out.is_none() {
+        return None;
+    }
+    let cached = ["cache_creation_input_tokens", "cache_read_input_tokens"]
+        .iter()
+        .filter_map(|key| counts[*key].as_u64())
+        .fold(0u64, u64::saturating_add);
+    Some(Usage {
+        input: fresh.unwrap_or(0).saturating_add(cached),
+        output: out.unwrap_or(0),
+        cost_micros: value["total_cost_usd"].as_f64().and_then(Usage::micros),
+    })
 }
 
 /// Decodes the stream-json output of the claude CLI.
@@ -198,6 +221,7 @@ impl ClaudeDecoder {
         } else {
             Finish::Stop
         };
+        events.extend(usage(value).map(StreamEvent::Usage));
         events.push(StreamEvent::Done(finish));
         events
     }

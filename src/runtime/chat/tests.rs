@@ -85,6 +85,26 @@ fn reasoning_of(events: &[StreamEvent]) -> String {
 }
 
 #[test]
+fn a_usage_report_passes_the_pipe_untouched() {
+    use crate::core::ai::chat::engine::Usage;
+    let usage = Usage {
+        input: 3,
+        output: 4,
+        cost_micros: Some(5),
+    };
+    let mut pipe = Pipe::new();
+    assert_eq!(
+        pipe.event(StreamEvent::Usage(usage)),
+        [StreamEvent::Usage(usage)]
+    );
+    // It is not a final event: the turn goes on until `Done`.
+    assert_eq!(
+        pipe.event(StreamEvent::Done(Finish::Stop)),
+        [StreamEvent::Done(Finish::Stop)]
+    );
+}
+
+#[test]
 fn thinking_deltas_pass_as_thinking_deltas_and_are_sanitized() {
     let mut pipe = Pipe::new();
     let mut out = Vec::new();

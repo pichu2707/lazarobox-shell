@@ -26,7 +26,7 @@
 
 use serde_json::Value;
 
-use super::engine::{ChatError, Finish, StreamEvent};
+use super::engine::{ChatError, Finish, StreamEvent, Usage};
 use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
@@ -82,7 +82,7 @@ impl GeminiDecoder {
             Some("message") => Self::message(&value),
             Some("tool_use") if self.wired && is_ours(&value) => vec![],
             Some("tool_use") => vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))],
-            Some("result") => vec![Self::result(&value)],
+            Some("result") => Self::result(&value),
             // Known and harmless: the start of the session, the result of a
             // tool that was already refused, a non-fatal warning.
             Some("init" | "tool_result" | "error") => vec![],
@@ -102,12 +102,18 @@ impl GeminiDecoder {
         }
     }
 
-    fn result(value: &Value) -> StreamEvent {
+    fn result(value: &Value) -> Vec<StreamEvent> {
         if value["status"].as_str() == Some("success") {
-            return StreamEvent::Done(Finish::Stop);
+            return usage(value)
+                .map(StreamEvent::Usage)
+                .into_iter()
+                .chain([StreamEvent::Done(Finish::Stop)])
+                .collect();
         }
         let text = value["error"]["message"].as_str().unwrap_or("");
-        StreamEvent::Error(ChatError::Failed(error_message(&unwrap_api_error(text))))
+        vec![StreamEvent::Error(ChatError::Failed(error_message(
+            &unwrap_api_error(text),
+        )))]
     }
 
     fn lines_events(&mut self, lines: Vec<Result<Vec<u8>, TooLong>>) -> Vec<StreamEvent> {
@@ -121,6 +127,24 @@ impl GeminiDecoder {
         }
         out
     }
+}
+
+/// What the `result` line's `stats` report as used. `input_tokens` already
+/// counts the cached ones. `None` when no token count is there.
+fn usage(value: &Value) -> Option<Usage> {
+    let stats = &value["stats"];
+    let (input, output) = (
+        stats["input_tokens"].as_u64(),
+        stats["output_tokens"].as_u64(),
+    );
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(Usage {
+        input: input.unwrap_or(0),
+        output: output.unwrap_or(0),
+        cost_micros: None,
+    })
 }
 
 /// Whether a `tool_use` is one of lazarobox's tools. gemini names an MCP tool

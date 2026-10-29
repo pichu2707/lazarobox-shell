@@ -1065,7 +1065,10 @@ impl ChatState {
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
-            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+            StreamEvent::Slow
+                | StreamEvent::Notice(_)
+                | StreamEvent::Usage(_)
+                | StreamEvent::Error(_)
         ) {
             self.told_sent.clear();
         }
@@ -1084,6 +1087,8 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
+            // The chat pane shows no usage; the orchestrator's rows do.
+            StreamEvent::Usage(_) => Follow::Nothing,
             StreamEvent::ToolCall {
                 id, name, summary, ..
             } => {

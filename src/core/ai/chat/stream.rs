@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{ChatError, Finish, StreamEvent};
+use super::engine::{ChatError, Finish, StreamEvent, Usage};
 use crate::core::ai::{
     sanitize::clean,
     tools::{
@@ -207,11 +207,29 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
         .chain(delta(message["content"].as_str()))
         .collect();
     if value["done"].as_bool() == Some(true) {
+        events.extend(ollama_usage(&value).map(StreamEvent::Usage));
         events.push(StreamEvent::Done(finish_reason(
             value["done_reason"].as_str(),
         )));
     }
     (events, Some(value))
+}
+
+/// What the final Ollama line reports as used. `None` when it holds no count
+/// (a cached prompt can omit `prompt_eval_count`; a server may omit both).
+fn ollama_usage(value: &Value) -> Option<Usage> {
+    let (input, output) = (
+        value["prompt_eval_count"].as_u64(),
+        value["eval_count"].as_u64(),
+    );
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(Usage {
+        input: input.unwrap_or(0),
+        output: output.unwrap_or(0),
+        cost_micros: None,
+    })
 }
 
 /// Events of one SSE `data` payload, and its JSON when it parsed and is not an

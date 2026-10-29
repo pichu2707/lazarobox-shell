@@ -34,7 +34,7 @@
 
 use serde_json::Value;
 
-use super::engine::{ChatError, Finish, StreamEvent};
+use super::engine::{ChatError, Finish, StreamEvent, Usage};
 use super::stream::{
     CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
     malformed, too_long,
@@ -64,6 +64,24 @@ pub struct CodexDecoder {
     /// The turn has the lazarobox tools wired in: its `mcp_tool_call` items
     /// (and only those) are allowed.
     wired: bool,
+}
+
+/// What `turn.completed` reports as used. `input_tokens` already counts the
+/// cached ones. `None` when the line holds no token count at all.
+fn usage(value: &Value) -> Option<Usage> {
+    let counts = &value["usage"];
+    let (input, output) = (
+        counts["input_tokens"].as_u64(),
+        counts["output_tokens"].as_u64(),
+    );
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(Usage {
+        input: input.unwrap_or(0),
+        output: output.unwrap_or(0),
+        cost_micros: None,
+    })
 }
 
 impl CodexDecoder {
@@ -97,7 +115,11 @@ impl CodexDecoder {
         match value["type"].as_str() {
             Some("item.started" | "item.updated") => self.tool_check(&value),
             Some("item.completed") => self.completed(&value),
-            Some("turn.completed") => vec![StreamEvent::Done(Finish::Stop)],
+            Some("turn.completed") => usage(&value)
+                .map(StreamEvent::Usage)
+                .into_iter()
+                .chain([StreamEvent::Done(Finish::Stop)])
+                .collect(),
             Some("turn.failed") => vec![StreamEvent::Error(ChatError::Failed(failure(&value)))],
             _ => vec![],
         }

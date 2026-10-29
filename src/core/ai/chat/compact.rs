@@ -295,7 +295,8 @@ impl ChatState {
             | StreamEvent::Notice(_)
             | StreamEvent::ThinkingDelta(_)
             | StreamEvent::ToolCall { .. }
-            | StreamEvent::ToolResult { .. } => {}
+            | StreamEvent::ToolResult { .. }
+            | StreamEvent::Usage(_) => {}
         }
         Follow::Nothing
     }
