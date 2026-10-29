@@ -1060,6 +1060,30 @@ La publicación usa Trusted Publishing (OIDC), así que no hay ningún token gua
 
 ---
 
+## 🛡️ Seguridad / modelo de amenazas
+
+Un índice de qué puede hacer cada función y dónde está explicado. Para avisar de una vulnerabilidad, mira [SECURITY.md](SECURITY.md).
+
+| Superficie | Resumen del riesgo | Detalle |
+| :--- | :--- | :--- |
+| Escritura de ficheros | Nada toca el disco antes de tu `y`; el lote se revisa y se puede deshacer | [Modelo de amenazas de la escritura](#modelo-de-amenazas-de-la-escritura) |
+| `run_command` y git | Ejecutan código del proyecto, con red; lo que ves es la orden, no todo lo que arrastra | [Modelo de amenazas de `run_command` y de git](#modelo-de-amenazas-de-run_command-y-de-git) |
+| Herramientas de búsqueda | Ver abajo | [Búsqueda: `glob` y `grep`](#búsqueda-glob-y-grep) |
+| La jaula de los CLIs de IA | Landlock (Linux): limita lectura, escritura, ejecución y puertos de claude, codex y gemini | [Motores CLI](#motores-cli-claude-codex-y-gemini) |
+| Servidores MCP propios | Código tuyo con tus variables; cada llamada pide `y` | [Tus propios servidores MCP](#tus-propios-servidores-mcp-aimcpservers) |
+| Memoria de engram | Opcional; las notas salen de `chat.db` y las lee cualquier proceso local | [Memoria del proyecto (engram)](#memoria-del-proyecto-engram) |
+| Comprobación de actualizaciones | Una petición HTTPS a crates.io; se apaga con `check = false` | [Avisos de actualización](#-avisos-de-actualización-updates) |
+
+**Notas de amenaza breves**
+
+- **Búsqueda (`glob`, `grep`, lectura por ventanas).** `glob` y `grep` trabajan dentro de la carpeta de origen del chat y nunca escriben. Con un motor en la nube, `grep` pide tu `y` en cada llamada, porque su resultado, con texto de tus ficheros, llega a un proveedor externo; `glob` devuelve solo nombres y no pregunta. Se saltan enlaces simbólicos, `.git`, `node_modules`, ficheros binarios y los nombres que parecen secretos, y `grep` compara contra el texto ya censurado. La lista de secretos es de mejor esfuerzo: un secreto en un fichero con otro nombre no se detecta.
+- **La jaula.** Es una segunda capa tras las opciones de solo texto de cada CLI: el CLI no puede leer fuera de lo concedido ni ejecutar programas distintos de su intérprete, ni abrir puertos para escuchar (desde Landlock ABI 4). No es una defensa total: `claude` puede funcionar sin ella si el sistema no la ofrece (el panel lo avisa), y la red hacia fuera sigue abierta porque el CLI necesita hablar con su proveedor.
+- **Servidores MCP.** Los declaras tú y corren con tu usuario, sin shell y con un entorno limpio más las variables de `env`. Solo se lee tu configuración de usuario (un `.lazarobox/mcp.toml` de un repositorio se ignora) y reciben solo las variables que nombras en `env`. Toda llamada a una herramienta pide `y`, también en el modo de aprobación `auto`, y el resultado vuelve al modelo como dato no fiable.
+- **Memoria de engram.** Está desactivada por defecto y exige aceptar una advertencia. Una nota guardada deja de estar bajo los permisos `0600` de `chat.db`: la puede leer cualquier proceso local y cualquier agente que use engram, y las rutas HTTP de engram en `127.0.0.1` están abiertas. Antes de enviar una nota se ocultan los secretos reconocibles.
+- **Comprobación de actualizaciones.** Un único `GET` a crates.io con el `curl` del sistema, sin identificadores, cookies ni telemetría. Con `[updates] check = false` no se hace ninguna petición. Actualizar solo ejecuta `cargo install` cuando pulsas `Enter` y en una pestaña visible.
+
+---
+
 ## 📁 Arquitectura del Workspace en Rust
 
 ```text
