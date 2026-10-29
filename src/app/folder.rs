@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// A send waits for memory: it must not leave under another folder.
+const PARKED: &str = "a message is waiting to be sent";
+
 impl App {
     /// Why chat `id` cannot change folder now (see `ChatState::folder_busy`),
     /// with the run slots the app owns. `None` for a chat that is gone.
@@ -14,7 +17,9 @@ impl App {
             .values()
             .filter_map(PaneState::pty)
             .any(|pty| pty.run.as_ref().is_some_and(|slot| slot.chat == id));
-        chat.folder_busy(running)
+        // A send parked for the memory answer would leave under the new folder.
+        let parked = self.waiting_sends.iter().any(|(pane, _)| *pane == id);
+        chat.folder_busy(running).or(parked.then_some(PARKED))
     }
 
     /// Whether `epoch` is the memory epoch chat `id` asks under now.

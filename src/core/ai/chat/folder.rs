@@ -186,6 +186,8 @@ impl ChatState {
             Some("writes are staged or proposed")
         } else if !self.pending_save_ids().is_empty() {
             Some("a note is still being saved")
+        } else if self.note_editor().is_some() || self.summary_draft().is_some() {
+            Some("a note or summary is open")
         } else {
             None
         }

@@ -55,6 +55,22 @@ fn the_change_ends_the_tool_session_of_the_old_folder_once() {
 }
 
 #[test]
+fn a_parked_send_blocks_the_change() {
+    let mut a = one_shell_and_a_chat("hello");
+    a.waiting_sends.push((id2(), "hi".into()));
+    assert_eq!(
+        a.folder_busy(id2()),
+        Some("a message is waiting to be sent")
+    );
+}
+
+#[test]
+fn an_open_note_editor_blocks_the_change() {
+    let a = super::chat_notes::ready("body");
+    assert_eq!(a.folder_busy(id2()), Some("a note or summary is open"));
+}
+
+#[test]
 fn a_chat_that_is_gone_is_not_busy() {
     let a = one_shell_and_a_chat("hello");
     assert_eq!(a.folder_busy(PaneId::for_test(99)), None);
