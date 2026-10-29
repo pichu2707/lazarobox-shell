@@ -185,7 +185,7 @@ pub struct ChatMemory {
     degraded: bool,
     /// Bumped when the chat folder changes: a project or context reply from
     /// an older epoch belongs to the old folder and is ignored.
-    epoch: u32,
+    pub(super) epoch: u32,
     /// The next session link replaces the stored one: the project changed.
     relink: bool,
 }
@@ -548,7 +548,7 @@ impl ChatState {
     /// takes the end of the old session first (`take_end`).
     pub fn reset_memory_for_folder(&mut self) {
         let memory = &mut self.memory;
-        memory.epoch += 1;
+        memory.epoch = memory.epoch.wrapping_add(1);
         memory.readiness = Readiness::Unknown;
         memory.resolving_since = None;
         memory.injected = None;

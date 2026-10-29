@@ -75,6 +75,25 @@ fn no_home_refuses_everything_like_the_tools() {
     );
 }
 
+#[test]
+fn root_is_root_even_without_home_and_a_relative_path_is_not_found() {
+    let f = fixture();
+    let env = ToolEnv {
+        home: None,
+        ..f.env.clone()
+    };
+    assert_eq!(probe(&env, Path::new("/")).unwrap_err(), Refusal::Root);
+    // Never resolved against the process cwd.
+    assert_eq!(
+        probe(&f.env, Path::new("home")).unwrap_err(),
+        Refusal::NotFound
+    );
+    assert_eq!(
+        probe(&f.env, Path::new(".")).unwrap_err(),
+        Refusal::NotFound
+    );
+}
+
 // The verdict must match the building blocks the tool host judges a root by
 // (`root_of`: a directory that is not HOME and passes `judge_real`;
 // `concrete_root`: a folder that does not hold HOME). Those two are private
