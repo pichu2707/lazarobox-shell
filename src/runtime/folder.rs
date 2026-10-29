@@ -224,11 +224,6 @@ pub fn probe(env: &ToolEnv, path: &Path) -> Result<Probed, Refusal> {
     judged(&roots, real)
 }
 
-/// [`probe`] with the roots already loaded.
-fn probe_with(roots: &SecretRoots, path: &Path) -> Result<Probed, Refusal> {
-    judged(roots, resolve(path)?)
-}
-
 /// The real path of an existing folder.
 fn resolve(path: &Path) -> Result<PathBuf, Refusal> {
     // A relative path would read against the process cwd, not the chat.
@@ -274,11 +269,12 @@ pub fn candidate(
     path: &Path,
     git: bool,
 ) -> Option<Result<Probed, Refusal>> {
-    if git && source == Source::PaneRoot {
-        let root = walk_git(roots.home(), path)?;
-        return Some(probe_with(roots, &root));
-    }
-    Some(probe_with(roots, path))
+    let path = if git && source == Source::PaneRoot {
+        walk_git(roots.home(), path)?
+    } else {
+        path.to_path_buf()
+    };
+    Some(resolve(&path).and_then(|real| judged(roots, real)))
 }
 
 /// Runs `work` for every candidate at once, each on the blocking pool and
@@ -311,9 +307,10 @@ const EXAMINED_MAX: usize = COMPLETIONS_MAX * 4;
 /// A control character, or a format one (zero width, bidi override, BOM)
 /// that would make a name read as something else.
 fn unsafe_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+    let (soft_hyphen, bom) = ('\u{ad}', '\u{feff}');
+    // Zero width and direction marks, bidi embeddings and overrides, joiners.
+    let format = matches!(c as u32, 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2069);
+    c.is_control() || format || c == soft_hyphen || c == bom
 }
 
 /// The names of the directories in `dir` that start with `prefix`, sorted, at
@@ -328,12 +325,9 @@ pub fn complete(roots: &SecretRoots, dir: &Path, prefix: &str) -> Completion {
     let Ok(real) = std::fs::canonicalize(dir) else {
         return none;
     };
-    match probe_with(roots, &real) {
-        Ok(Probed {
-            verdict: Verdict::Concrete | Verdict::Home,
-            ..
-        }) => {}
-        _ => return none,
+    let verdict = judged(roots, real.clone()).map(|probed| probed.verdict);
+    if !matches!(verdict, Ok(Verdict::Concrete | Verdict::Home)) {
+        return none;
     }
     let Ok(entries) = std::fs::read_dir(&real) else {
         return none;
