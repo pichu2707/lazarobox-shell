@@ -45,5 +45,7 @@ fn main() -> std::io::Result<()> {
     // thread (a hung PATH lookup) from holding the exit, panics included.
     let guard =
         lazarobox_shell::runtime::QuitGuard::new(rt, lazarobox_shell::runtime::RUNTIME_QUIT_BOUND);
-    guard.block_on(lazarobox_shell::runtime::run())
+    guard.block_on(lazarobox_shell::runtime::run(
+        lazarobox_shell::core::start::parse_args(&argv),
+    ))
 }
