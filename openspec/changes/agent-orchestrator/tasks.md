@@ -150,14 +150,18 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 
 ### S1c-2 (PR 5, ~330 lines, base: S1c-1 branch): tasks 1c.3, 1c.4
 
-- [ ] 1c.3 RED `runtime/tools/host.rs` tests: out-of-set call refused in `execute`; `Call::Orchestra` without handle = `UnknownTool`; read inside `ReadScope` skips the ask only when both paths inside; orchestrator never approves; label travels with the ask; closed session denies; wait bound held. Spec: agent-tools / Inside runs, outside asks; agent-orchestrator / Orchestrator cannot approve, Outside read asks with a label, Never silently decided; lazarobox-mcp-server / Bound held, Label travels, Closed session denies.
-- [ ] 1c.4 GREEN `runtime/tools/host.rs`: `TurnScope{orchestra: Option<OrchHandle>, read_scope, toolset}`, execute filter, ask label. REFACTOR + gates (S1c-2 closes here).
+- [x] 1c.3 RED `runtime/tools/host.rs` tests: out-of-set call refused in `execute`; `Call::Orchestra` without handle = `UnknownTool`; read inside `ReadScope` skips the ask only when both paths inside; orchestrator never approves; label travels with the ask; closed session denies; wait bound held. Spec: agent-tools / Inside runs, outside asks; agent-orchestrator / Orchestrator cannot approve, Outside read asks with a label, Never silently decided; lazarobox-mcp-server / Bound held, Label travels, Closed session denies.
+- [x] 1c.4 GREEN `runtime/tools/host.rs`: `TurnScope{orchestra: Option<OrchHandle>, read_scope, toolset}`, execute filter, ask label. REFACTOR + gates (S1c-2 closes here). Done: `OrchHandle` is `Arc<dyn Orchestra>` (`runtime/tools/orchestra.rs`, the RunManager implements it in S1d-2); `read_scope` is `Option<WorkerScope{handle, run, label}>`; a chat's `toolset` is its request's families; the ask is `ApprovalAsk::WorkerRead{path, label}` with label `<kind> <engine>><model>`; the host bounds `wait` at 120 s with `awaiting_user`. A worker read outside the scope asks on every engine, local ones included (user, 2026-10-27; agent-tools spec wording aligned).
 
 #### Obligations from the S1b-2 security review (S1c-2)
 
-- [ ] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`.
-- [ ] A denied or expired scope makes the host ASK, never silently allow or refuse.
-- [ ] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown.
+- [x] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`. Done: the scope check and the open share one snapshot built for the call; `open_checked` proves the fd is that path and judges it again. Decision (parent, 2026-10-27): a scoped read of a file with `nlink > 1` stays refused, with no ask (the stricter behaviour of every read).
+- [x] A denied or expired scope makes the host ASK, never silently allow or refuse.
+- [x] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown. Done: an orchestration call never asks; its argument is shown only in the row summary, cut by `summary::clip` to `SUMMARY_CAP` (120 characters), and the worker label's engine and model are cut like a server name (64 characters each).
+
+#### Obligation when the chain picks up main (from the S1c-2 native review, `R3-scoped-read-drops-lines`)
+
+- [x] The chain branched from main at f3fc629 (#289), before coding-tools M1-b, so its `read_file` has no paging. On main, `fs::execute_with` passes the call's `lines` window (`start_line` / `max_lines`) and the staged view to `read_file` (`src/runtime/tools/fs.rs:217`). When main is merged into the chain, the scoped read MUST do the same: `read_in_scope` / `fs::read_real` take the call's `lines` and the view and page exactly as a chat read does. Add a RED test first: a worker read inside its scope with `start_line` / `max_lines` returns that window and the paging markers, like the same chat read. Decision (user, 2026-10-27): record it here and fix it at the sync, not before. Done at the sync (06495f3): `fs::read_real` pages the scoped read like a chat read; test `orchestra_tests::a_scoped_read_is_paged_and_keeps_its_refusals`.
 
 ## S1d: RunManager (3 chained PRs: S1d-1 = PR 6, S1d-2 = PR 7, S1d-3 = PR 8; ~1,200 lines re-estimated in total)
 

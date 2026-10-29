@@ -18,7 +18,7 @@ use crate::core::ai::{
         review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
     },
-    config::ApprovalMode,
+    config::{ApprovalMode, Task},
     sanitize::clean,
     tools::{
         Call, Locality, allow,
@@ -82,6 +82,9 @@ pub enum ApprovalAsk {
         reach: Reach,
         cloud: bool,
     },
+    /// A worker's read outside its run's scope: `path` as in `Read`, and the
+    /// worker's `label` (see [`worker_label`]). It asks on every engine.
+    WorkerRead { path: String, label: String },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
     /// sanitized line. `reach` is [`Reach::Root`] when the host found the
@@ -195,6 +198,8 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
+/// A worker's read is not decided here: the host asks [`ApprovalAsk::WorkerRead`]
+/// on every engine when the read is outside the run's scope.
 /// The host also asks for a local read that leads outside the chat's root,
 /// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
@@ -275,6 +280,12 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::GitCommit { .. }
         | Call::Orchestra(_) => None,
     }
+}
+
+/// The label of a worker's asks: `<kind> <engine>><model>`, the engine and
+/// the model each one sanitized line, cut like a server name.
+pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
+    format!("{} {}>{}", kind.id(), shown_name(engine), shown_name(model))
 }
 
 /// The most characters of the paths of an add that its prompt shows. The host
@@ -876,6 +887,39 @@ mod tests {
         match route {
             Route::Prompt(Some(fallback)) => Some(fallback.why),
             _ => None,
+        }
+    }
+
+    // Spec (agent-orchestrator, Outside read asks with a label): the label
+    // is the kind and `engine>model`, the engine and the model each one
+    // sanitized line cut like a server name.
+    #[test]
+    fn a_worker_label_is_the_kind_and_engine_model_on_one_clipped_line() {
+        assert_eq!(
+            worker_label(Task::Review, "claude", "opus"),
+            "review claude>opus"
+        );
+        let model = format!("qwen\n\x1b[31m{}", "m".repeat(100));
+        let label = worker_label(Task::Code, "ollama", &model);
+        assert!(label.starts_with("code ollama>qwen "), "{label:?}");
+        assert!(
+            !label.contains('\n') && !label.contains('\x1b'),
+            "{label:?}"
+        );
+        assert!(label.ends_with('\u{2026}'), "{label:?}");
+        assert_eq!(label.chars().count(), "code ollama>".len() + SHOWN_NAME + 1);
+    }
+
+    // Spec (agent-orchestrator, Reads outside the scope ask): a worker's read
+    // ask is never typed, run or allowed by the approval mode: it prompts.
+    #[test]
+    fn a_worker_read_prompts_in_every_approval_mode() {
+        let ask = ApprovalAsk::WorkerRead {
+            path: "~/a".into(),
+            label: "review claude>opus".into(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert_eq!(route(&ask, Origin::Tool, mode, FREE), Route::Prompt(None));
         }
     }
 

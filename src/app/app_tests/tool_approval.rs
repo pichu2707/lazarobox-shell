@@ -140,6 +140,24 @@ fn a_read_ask_shows_read_and_the_path() {
     assert!(prompt.keys.contains("y read it"), "{prompt:?}");
 }
 
+// Spec (lazarobox-mcp-server, Label travels; agent-orchestrator, Outside
+// read asks with a label): a worker's read ask reaches the app with its kind
+// and `engine>model`, and the prompt shows them with the path.
+#[test]
+fn a_worker_read_ask_shows_the_label_and_the_path() {
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::WorkerRead {
+        path: "/home/u/dev/other/a.rs".to_owned(),
+        label: "review claude>opus".to_owned(),
+    };
+    announce(&mut a, turn, 1, ask.clone());
+    assert_eq!(pending(&a).map(|(got, _)| got), Some(ask));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "read /home/u/dev/other/a.rs");
+    assert!(prompt.target.contains("review claude>opus"), "{prompt:?}");
+    assert!(prompt.keys.contains("y read it"), "{prompt:?}");
+}
+
 // y on a run: one write, then the answer that says it was typed.
 #[test]
 fn y_types_the_command_and_answers_sent() {

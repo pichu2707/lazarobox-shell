@@ -825,9 +825,13 @@ impl Chats {
             approver: self.waits.approver(pane, turn, pending.clone()),
             // Filled by the turn's task once its servers run.
             external: slot.clone(),
+            // What the session lists is what the host accepts (D7).
             families: request.families,
             stage_key: Some(StageKey::Pane(pane)),
             allowed: Default::default(),
+            // A chat turn has no run manager and no read scope.
+            orchestra: None,
+            read_scope: None,
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

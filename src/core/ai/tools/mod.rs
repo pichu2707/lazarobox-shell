@@ -351,6 +351,18 @@ impl Call {
             Call::Orchestra(call) => call.argument(),
         }
     }
+
+    /// The family of a built-in call, from the tool table; `None` for a user
+    /// tool, which belongs to no family.
+    pub fn family(&self) -> Option<Family> {
+        match self {
+            Call::External { .. } => None,
+            built_in => BUILT_INS
+                .iter()
+                .find(|def| def.name == built_in.name())
+                .map(|def| def.family),
+        }
+    }
 }
 
 /// Why a call was refused. Short and content-free: it may go back to a model.

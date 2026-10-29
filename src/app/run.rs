@@ -464,6 +464,16 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // A worker's read outside its scope: the label names the worker,
+            // its kind and `engine>model`, already sanitized.
+            ApprovalAsk::WorkerRead { path, label } => Some(ApprovalPrompt {
+                target: format!("worker {label}: send a file's text to the engine"),
+                command: format!("read {path}"),
+                keys: READ_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The pattern and the folder were made one clean line when asked.
             ApprovalAsk::Search { pattern, dir, .. } => Some(ApprovalPrompt {
                 target: "send matching lines of your files to the engine".to_owned(),

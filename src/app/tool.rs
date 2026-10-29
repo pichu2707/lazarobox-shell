@@ -156,6 +156,7 @@ impl App {
             // `run` can be typed or run by itself. A read or a search the mode
             // did not let go above opens the prompt.
             ApprovalAsk::Read { .. }
+            | ApprovalAsk::WorkerRead { .. }
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
