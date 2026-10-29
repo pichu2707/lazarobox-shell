@@ -55,6 +55,21 @@ pub enum ErrorClass {
     Other,
 }
 
+impl ErrorClass {
+    /// The spec's id of the class, which a log line may carry.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate_limit",
+            Self::Conflict => "conflict",
+            Self::Auth => "auth",
+            Self::Quota => "quota",
+            Self::Timeout => "timeout",
+            Self::JailRefusal => "jail_refusal",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// How a worker ended. `text` is raw: `collect` wraps and caps it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WorkerResult {

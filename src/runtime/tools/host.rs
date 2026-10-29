@@ -201,7 +201,7 @@ impl ToolHost {
     }
 
     /// What a call may see, for the chat whose origin directory is `origin`.
-    fn env(&self, origin: &Path) -> ToolEnv {
+    pub(crate) fn env(&self, origin: &Path) -> ToolEnv {
         ToolEnv {
             home: self.home.clone(),
             xdg_config_home: self.xdg_config_home.clone(),

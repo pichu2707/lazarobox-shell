@@ -190,12 +190,12 @@ S1e-1a bases on the S1d-3 branch.
 
 ### S1d-2 (PR 7, ~520 lines, base: S1d-1 branch): tasks 1d.3a, 1d.4a
 
-- [ ] 1d.3a RED `runtime/orchestra/tests.rs` (fake `Runner`, `tokio::time::pause`, temp HOME, real Hub), spawn path: spawn -> Done/Failed/TimedOut/Refused; worker same jail as chat; API keys survive scrub; no tool leak to workers; log hygiene (no content in logs). Spec: chat-engines / Same jail as chat, API keys survive the scrub; agent-orchestrator / Unusable orchestrator engine, Log hygiene.
-- [ ] 1d.4a GREEN `runtime/orchestra.rs`: `RunManager::{start, call}` (spawn/wait/collect); worker turn via `runner_with` + `Pipe`; events on their own channel `(PaneId, OrchestraEvent)`. REFACTOR + gates (S1d-2 closes here).
+- [x] 1d.3a RED `runtime/orchestra/tests.rs` (fake `Runner`, `tokio::time::pause`, temp HOME, real Hub), spawn path: spawn -> Done/Failed/TimedOut/Refused; worker same jail as chat; API keys survive scrub; no tool leak to workers; log hygiene (no content in logs). Spec: chat-engines / Same jail as chat, API keys survive the scrub; agent-orchestrator / Unusable orchestrator engine, Log hygiene. Done: 13 tests in `runtime/orchestra/tests.rs`; the scrub already kept the three API-key variables (they are not in `SCRUBBED`), so that scenario is one test in `chat/cli/tests.rs` and no jail code changed.
+- [x] 1d.4a GREEN `runtime/orchestra.rs`: `RunManager::{start, call}` (spawn/wait/collect); worker turn via `runner_with` + `Pipe`; events on their own channel `(PaneId, OrchestraEvent)`. REFACTOR + gates (S1d-2 closes here). Done: `start(pane, OrchScope)` returns `(RunId, OrchHandle)`, a per-run handle that implements `Orchestra` (the trait's `call` names no pane, so the turn is bound in the handle; `turn` travels in the scope's approver); an unusable `orchestrate` engine starts no run and returns the guidance. A worker turn is the chat's `Runner` inside `chat::in_session` (the task-locals a chat turn gets), read through a fresh `Pipe`, cut at the spec's deadline; events are `OrchestraEvent::{Worker(row), Halted}` on an unbounded channel (`Ended` comes with `cancel`/`shutdown` in S1d-3); the log is a content-free `LogLine` (ids, kind, status, class). The `cancel` tool answers "not available yet" until S1d-3.
 
 #### Obligations from the S1c-1 review (S1d-2)
 
-- [ ] The worker-open path MUST pass `toolset.families()` to `Hub::open`, never `FamilySet::LEGACY`. Add a test (or a `debug_assert!`) that `Family::Pane` is absent from every worker and orchestrator session.
+- [x] The worker-open path MUST pass `toolset.families()` to `Hub::open`, never `FamilySet::LEGACY`. Add a test (or a `debug_assert!`) that `Family::Pane` is absent from every worker and orchestrator session. Done: both a `debug_assert!` in `open_session` and test `a_worker_session_lists_only_the_read_tools_and_refuses_the_rest` (real Hub: lists `find_dir`, `list_dir`, `read_file` only, refuses forged `spawn_agent` and `run_in_pane`); the orchestrator's set is pinned in `core/ai/orchestra/tests.rs`.
 - Note: user MCP tools can no longer reach a worker by construction; `HubKey::allows_external` (false for `WorkerKey`) makes `Hub::open` ignore the caller's `Slot`. Keep the worker path passing `Slot::default()` anyway.
 
 ### S1d-3 (PR 8, ~480 lines, base: S1d-2 branch): tasks 1d.3b, 1d.4b, 1d.5
@@ -204,10 +204,14 @@ S1e-1a bases on the S1d-3 branch.
 - [ ] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`.
 - [ ] 1d.5 GREEN `runtime/chat.rs` (`with_orchestra`, `cancel`/`shutdown` forward), `runtime.rs` wiring. REFACTOR + gates (S1d-3 closes here).
 
+#### Obligations from the S1d-2 review (S1d-3)
+
+- [ ] Replacing a run on the same pane MUST send `Ended` for the old run (today its worker is killed with no app event; test `replacing_a_run_kills_the_old_worker` pins the kill).
+
 #### Obligations from the S1b-2 security review (S1d-2, S1d-3)
 
-- [ ] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker.
-- [ ] (S1d-2) RunIds are allocated monotonically and never reused across restarts; a resumed run re-asks the scope.
+- [x] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker. Done: `collect` reads 8 bytes of `/dev/urandom` per call (as `tools::new_nonce` does) and returns no text when it cannot; test `every_collect_wraps_under_a_fresh_nonce_the_worker_never_saw`.
+- [x] (S1d-2) RunIds are allocated monotonically and never reused across restarts; a resumed run re-asks the scope. Done: a run id is the wall clock in microseconds, always above the last id handed out; a read scope lives in memory with its run only, so a later run or process has none until the user answers again; tests `run_ids_grow_with_the_clock_and_never_repeat`, `a_scope_belongs_to_its_run_and_a_new_run_asks_again`.
 - [ ] (S1d-3) Worker error text (failed/timed-out) is wrapped with `label::wrap` too, not only Done text.
 
 ## S1e-1: app/core wiring (3 chained PRs: S1e-1a = PR 9, S1e-1b = PR 10, S1e-1c = PR 11; ~900 lines re-estimated in total)
@@ -306,6 +310,7 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 
 ### S9: run view and persistence (3 PRs, ~900, risk High, decision: Yes) depends on S4
 - [ ] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run.
+- Note (S1d-2 review): run ids are wall-clock microseconds kept above the last one issued, which holds within one process only; once runs are stored, persist the highest id issued and start above it, so a clock set back across a restart cannot reuse an id.
 
 ### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 and S7b plus coding-tools M2 and M3
 - [ ] 10.1 README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"), CHANGELOG. Spec: agent-orchestrator / README written once [manual].

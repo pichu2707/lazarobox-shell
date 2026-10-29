@@ -518,6 +518,25 @@ impl Drop for EndTurn {
     }
 }
 
+/// The adapter future of a turn inside the task-locals of its tool session:
+/// the dispatch a server engine runs its tool loop on, and the count of calls
+/// waiting for the user that the adapter's timers read. A worker turn of the
+/// run manager is wrapped the same way.
+pub(crate) fn in_session(
+    adapter: BoxFuture<'static, ()>,
+    pending: Option<Pending>,
+    dispatch: Option<Arc<dyn Dispatch>>,
+) -> BoxFuture<'static, ()> {
+    let adapter = match dispatch {
+        Some(dispatch) => Box::pin(ollama::DISPATCH.scope(dispatch, adapter)),
+        None => adapter,
+    };
+    match pending {
+        Some(pending) => Box::pin(TURN.scope(pending, adapter)),
+        None => adapter,
+    }
+}
+
 /// One turn: runs the adapter, filters its events and forwards them tagged.
 /// The adapter future lives in this task, so dropping the task drops it.
 /// `events` is the turn's channel (the sender the adapter gets is a clone, and
@@ -553,15 +572,7 @@ async fn run_turn(
         }
         runner(request, tx).await
     };
-    // A server engine runs its tool loop in the adapter, on this dispatch.
-    let adapter: BoxFuture<'static, ()> = match dispatch {
-        Some(dispatch) => Box::pin(ollama::DISPATCH.scope(dispatch, adapter)),
-        None => Box::pin(adapter),
-    };
-    let adapter: BoxFuture<'static, ()> = match pending {
-        Some(pending) => Box::pin(TURN.scope(pending, adapter)),
-        None => Box::pin(adapter),
-    };
+    let adapter = in_session(Box::pin(adapter), pending, dispatch);
     let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
