@@ -92,10 +92,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
         ]
     );
     assert_eq!(hint(&m), HINT_KIND);
-    assert_eq!(
-        HINT_KIND,
-        "←/→ kind · Tab · Ctrl+S send · Ctrl+O open · Esc"
-    );
+    assert_eq!(HINT_KIND, "←/→ kind · Tab next · Ctrl+S send · Esc back");
     // The focused text field draws its cursor.
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[2], "› Title");
@@ -108,7 +105,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
     assert_eq!(hint(&m), HINT_ATTACH);
     assert_eq!(
         HINT_ATTACH,
-        "Space attach · Ctrl+S send · Ctrl+O open · Esc"
+        "Space attach · Tab next · Ctrl+S send · Esc back"
     );
     // Every footer fits the 48 columns of the narrow popup.
     for h in [
@@ -358,6 +355,19 @@ fn a_missing_title_reads_as_the_footer_error() {
     // Letters are typed, not menu keys.
     assert_eq!(send(&mut m, KeyCode::Char('s')), MenuCommand::None);
     assert_eq!(texts(&m)[3], "  s▏");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_feedback_form() {
+    let mut m = on_row();
+    send(&mut m, KeyCode::Enter);
+    send(&mut m, KeyCode::Tab);
+    send(&mut m, KeyCode::Char('a'));
+    send(&mut m, KeyCode::Char('b'));
+    assert_eq!(texts(&m)[3], "  ab▏");
+    key_with(&mut m, KeyCode::Char('h'), KeyModifiers::CONTROL);
+    assert_eq!(texts(&m)[3], "  a▏");
 }
 
 // Spec (config-menu, Feedback): the engines attached are the detected ones,

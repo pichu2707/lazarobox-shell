@@ -63,6 +63,7 @@ fn app(memory: bool, summarize: Option<&str>) -> App {
     if memory {
         a.update(AppEvent::Memory(MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok(PROJECT.into()),
         }));
     }

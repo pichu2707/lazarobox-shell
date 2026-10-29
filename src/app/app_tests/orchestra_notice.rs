@@ -24,12 +24,15 @@ fn noticed() -> App {
     toggle(&mut a);
     let effects = ask(&mut a, "plan it");
     assert!(orchestrates(&effects), "{effects:?}");
+    // The send was an Enter: let it go, so the next Enter is a new press.
+    let_go();
     a
 }
 
 /// Ends the run in flight and starts the next one.
 fn next_run(a: &mut App) -> Vec<Effect> {
     a.update(finish(chat_of(a).turn()));
+    let_go();
     ask(a, "again")
 }
 

@@ -135,6 +135,7 @@ pub(super) fn ready(answer: &str) -> App {
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     assert!(chat_of(&a).note_editor().is_some(), "the editor opened");
@@ -144,6 +145,7 @@ pub(super) fn ready(answer: &str) -> App {
 fn resolve() -> Effect {
     Effect::Memory(MemCmd::Resolve {
         pane: chat_id(),
+        epoch: 0,
         cwd: CWD.into(),
     })
 }
@@ -151,6 +153,7 @@ fn resolve() -> Effect {
 fn project_reply(result: Result<String, ProjectError>) -> AppEvent {
     AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result,
     })
 }
@@ -243,6 +246,7 @@ fn the_first_save_key_asks_for_the_project_and_opens_the_editor_on_the_reply() {
         effects,
         [Effect::Memory(MemCmd::Context {
             pane: chat_id(),
+            epoch: 0,
             project: PROJECT.into()
         })],
         "the view had no context yet, so it asks for it"
@@ -294,6 +298,7 @@ fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
     let mut a = with_answer(true, "x");
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));
@@ -358,6 +363,7 @@ fn a_reply_for_a_pane_that_is_gone_changes_nothing() {
     let mut a = with_answer(true, "x");
     let gone = AppEvent::Memory(MemReply::Project {
         pane: PaneId::for_test(9),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     });
     assert_eq!(a.update(gone), vec![]);
@@ -403,6 +409,15 @@ fn keys_in_the_editor_edit_the_editor_and_never_the_composer() {
     assert_eq!(chat_of(&a).note_editor().unwrap().field(), Field::Content);
     a.update(plain(KeyCode::Enter));
     assert_eq!(chat_of(&a).note_editor().unwrap().content(), "body\n");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_note_editor() {
+    let mut a = ready("body");
+    type_text(&mut a, "Ab");
+    a.update(ctrl('h'));
+    assert_eq!(chat_of(&a).note_editor().unwrap().title(), "A");
 }
 
 #[test]
@@ -856,6 +871,7 @@ fn link_session(conversation: i64) -> Effect {
         conversation,
         session_id: SESSION.into(),
         project: PROJECT.into(),
+        replace: false,
     })
 }
 
@@ -912,6 +928,122 @@ fn links_wait_for_the_conversation_and_follow_it() {
             link_note(7, 41, "chat/decision/one", "One")
         ]
     );
+}
+
+const OTHER_SESSION: &str = "lazarobox-ffffffffffffffffffffffffffffffff";
+
+// chat-folder D6: the project follows the folder, so the session does too.
+#[test]
+fn a_folder_change_ends_the_session_and_links_the_next_one_in_the_new_project() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
+
+    let effects = a.apply_folder(chat_id(), "/srv/other".into());
+    assert!(
+        effects.contains(&Effect::Memory(MemCmd::End {
+            session: SESSION.into(),
+            project: PROJECT.into(),
+            summary: "Notes: One".into(),
+            cwd: None,
+        })),
+        "{effects:?}"
+    );
+    assert!(effects.contains(&Effect::Memory(MemCmd::Resolve {
+        pane: chat_id(),
+        cwd: "/srv/other".into(),
+        epoch: 1,
+    })));
+    assert!(chat_of(&a).session().is_none());
+
+    // The project of the new folder answers; the next note opens a session
+    // there and the link replaces the stored one.
+    a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 1,
+        result: Ok("other".into()),
+    }));
+    pause(&mut a);
+    press(&mut a, "n");
+    type_text(&mut a, "Two");
+    a.update(ctrl('s'));
+    let effects = a.update(saved_reply(
+        &a,
+        OTHER_SESSION,
+        42,
+        "chat/decision/two",
+        "Two",
+    ));
+    assert_eq!(
+        effects,
+        vec![
+            Effect::Store(StoreCmd::LinkSession {
+                pane: chat_id(),
+                conversation: 7,
+                session_id: OTHER_SESSION.into(),
+                project: "other".into(),
+                replace: true,
+            }),
+            Effect::Store(StoreCmd::LinkNote {
+                pane: chat_id(),
+                conversation: 7,
+                project: "other".into(),
+                topic_key: "chat/decision/two".into(),
+                observation_id: 42,
+                title: "Two".into(),
+            }),
+        ]
+    );
+}
+
+// A note saved before the conversation had an id is linked when it appears,
+// even if the folder changed in between (under the project it was saved in).
+#[test]
+fn an_unlinked_note_survives_a_folder_change() {
+    let mut a = ready("body");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
+    a.apply_folder(chat_id(), "/srv/other".into());
+    assert_eq!(
+        a.update(created(7, false, 0)),
+        vec![link_note(7, 41, "chat/decision/one", "One")]
+    );
+}
+
+// A save answered after the folder changed (its wait ran out first) belongs to
+// the old project: it must not adopt the old session or record its note.
+#[test]
+fn a_late_save_answer_of_the_old_folder_is_ignored() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    let late = saved_reply(&a, SESSION, 41, "chat/decision/one", "One");
+    a.apply_folder(chat_id(), "/srv/other".into());
+    a.take_dirty();
+    assert_eq!(a.update(late), vec![]);
+    assert!(chat_of(&a).session().is_none());
+    assert!(!systems(&a).iter().any(|l| l.contains("saved note")));
+
+    for reply in [
+        MemReply::SaveFailed {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: "boom".into(),
+        },
+        MemReply::SaveUnavailable {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: Reason::NotRunning,
+        },
+    ] {
+        let before = systems(&a);
+        assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
+        assert_eq!(systems(&a), before);
+    }
 }
 
 #[test]

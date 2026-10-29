@@ -5,6 +5,7 @@ use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, Tools, availability, tools_for},
+    folder::{Command, parse_command},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -118,9 +119,12 @@ impl App {
     }
 
     /// A key in TERMINAL with a chat pane focused. Nothing here reaches a
-    /// PTY, and a key the table does not list is swallowed. A held key keeps
-    /// editing and scrolling but never sends, cancels, yanks or toggles.
+    /// PTY, and a key the table does not list is swallowed. `repeat` marks a
+    /// held key, a Repeat or the same key again within the hold window (see
+    /// `Hold`): it keeps editing and scrolling but never sends, cancels,
+    /// yanks, toggles, saves or answers. Ctrl+H is Backspace in every field.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let key = backspace_alias(key);
         let id = self.tab().focus;
         // A pending approval takes every key first.
         if self.has_approval(id) {
@@ -128,11 +132,19 @@ impl App {
         }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
-        // its keys to a question it hides.
+        // its keys to a question it hides. A held key never answers it.
+        let offered = if repeat {
+            KeyEvent {
+                kind: KeyEventKind::Repeat,
+                ..key
+            }
+        } else {
+            key
+        };
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
-            && let Some(effects) = self.answer_server_offer(key)
+            && let Some(effects) = self.answer_server_offer(offered)
         {
             return effects;
         }
@@ -147,21 +159,6 @@ impl App {
         }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
-        let debounced = matches!(
-            (key.code, mods),
-            (KeyCode::Esc, KeyModifiers::NONE)
-                | (
-                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's' | 'g' | 'o'),
-                    KeyModifiers::CONTROL
-                )
-        );
-        // A held key arrives as Repeat (Kitty) or as Presses close together.
-        let repeat = if debounced {
-            self.held_chat_key_dropped(&key, repeat)
-        } else {
-            self.held_chat_key = None;
-            repeat
-        };
         // The failure alert of the pane's run, in the conversation view only:
         // after the debounce, so a held Esc answers it once.
         if !self.memory_view_open(id)
@@ -222,24 +219,6 @@ impl App {
             (KeyCode::End, _) if plain => self.edit_composer(|c| c.end()),
             _ => Vec::new(),
         }
-    }
-
-    /// Whether `key`, a debounced one-shot chat key, is part of a hold: a
-    /// Repeat, or the same key again within `HELD_EXIT_WINDOW` of the last
-    /// such event (every event of the hold renews the window).
-    fn held_chat_key_dropped(&mut self, key: &KeyEvent, repeat: bool) -> bool {
-        let now = (self.clock)();
-        let held = self.held_chat_key.is_some_and(|h| {
-            h.code == key.code
-                && h.modifiers == key.modifiers
-                && now.saturating_duration_since(h.last) <= HELD_EXIT_WINDOW
-        });
-        self.held_chat_key = Some(HeldExit {
-            code: key.code,
-            modifiers: key.modifiers,
-            last: now,
-        });
-        repeat || held
     }
 
     /// A paste into the focused chat's composer.
@@ -320,7 +299,17 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let text = chat.composer().text();
+        let mut text = chat.composer().text();
+        // `/cd` is the user's own command: it never reaches the engine, and
+        // works whatever the engine state.
+        match parse_command(&text) {
+            Command::Cd(arg) => return self.cd_submit(id, &arg),
+            Command::Escaped(unescaped) => text = unescaped,
+            Command::Plain => {}
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
         if availability == Availability::Checking || chat.prompt().is_none() {
             if !text.trim().is_empty() {
                 self.drop_parked_send(id);

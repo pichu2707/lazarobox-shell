@@ -35,10 +35,11 @@ pub const TOO_LONG_BODY: &str = "Too long for GitHub: shorten the description";
 pub const NO_GH_TOO_LONG: &str = "No gh, and too long for a link: shorten it";
 
 /// The footer, by the focused field; each fits the 48 columns of the
-/// narrow popup.
-pub const HINT_KIND: &str = "←/→ kind · Tab · Ctrl+S send · Ctrl+O open · Esc";
+/// narrow popup and says what Esc does. Ctrl+O works on every field; only
+/// the text fields have room to name it.
+pub const HINT_KIND: &str = "←/→ kind · Tab next · Ctrl+S send · Esc back";
 pub const HINT_TEXT: &str = "Tab next · Ctrl+S send · Ctrl+O open · Esc back";
-pub const HINT_ATTACH: &str = "Space attach · Ctrl+S send · Ctrl+O open · Esc";
+pub const HINT_ATTACH: &str = "Space attach · Tab next · Ctrl+S send · Esc back";
 /// The footer while the issue is being sent; every key waits for the
 /// answer.
 pub const SENDING: &str = "Sending to GitHub…";

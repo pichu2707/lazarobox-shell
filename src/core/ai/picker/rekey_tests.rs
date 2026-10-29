@@ -82,8 +82,9 @@ fn the_window_is_refitted_after_the_list_shrinks() {
     let before = p.key(&draft, Some(&d1));
     let d2 = det(&[]);
     p.reanchor(before, &draft, Some(&d2));
-    assert_eq!(p.rows(&draft, Some(&d2)).len(), 10);
-    assert_eq!((p.cursor(), p.offset()), (9, 0));
+    // The 10 curated rows and the download row.
+    assert_eq!(p.rows(&draft, Some(&d2)).len(), 11);
+    assert_eq!((p.cursor(), p.offset()), (9, 1));
 }
 
 #[test]
