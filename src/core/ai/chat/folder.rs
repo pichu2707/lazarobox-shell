@@ -2,9 +2,63 @@
 //! disk is read by the runtime, which hands the resolved path and the secret
 //! roots of one tool call to [`judge`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::core::ai::tools::paths::SecretRoots;
+use crate::core::ai::tools::paths::{SecretRoots, normalize};
+
+/// The argument of `/cd`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CdArg {
+    /// `/cd` alone.
+    Missing,
+    /// The rest of the line, trimmed, unquoted.
+    Path(String),
+}
+
+/// What a composer text is.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Command {
+    /// A normal message, sent as typed.
+    Plain,
+    /// `//cd …`: a message that starts with `/cd`, sent with one slash less.
+    Escaped(String),
+    /// The user-only `/cd` command.
+    Cd(CdArg),
+}
+
+/// Reads a composer text. Only the exact token `/cd` is a command (the text
+/// is `/cd` or `/cd` followed by whitespace); `//cd` escapes it.
+pub fn parse_command(text: &str) -> Command {
+    let text = text.trim();
+    let (token, rest) = match text.find(char::is_whitespace) {
+        Some(at) => (&text[..at], text[at..].trim()),
+        None => (text, ""),
+    };
+    match token {
+        "/cd" if rest.is_empty() => Command::Cd(CdArg::Missing),
+        "/cd" => Command::Cd(CdArg::Path(
+            rest.lines().next().unwrap_or("").trim().to_owned(),
+        )),
+        "//cd" => Command::Escaped(text[1..].to_owned()),
+        _ => Command::Plain,
+    }
+}
+
+/// The folder a typed path names, by text alone: `~` and `~/x` from `home`,
+/// a relative path from `current` (`None` when there is no folder to read it
+/// against), `.` and `..` folded.
+pub fn expand(arg: &str, home: &Path, current: Option<&Path>) -> Option<PathBuf> {
+    let path = if arg == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = arg.strip_prefix("~/") {
+        home.join(rest)
+    } else if Path::new(arg).is_absolute() {
+        PathBuf::from(arg)
+    } else {
+        current?.join(arg)
+    };
+    Some(normalize(&path))
+}
 
 /// What a resolved, existing directory is for a chat.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
