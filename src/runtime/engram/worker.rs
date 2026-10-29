@@ -202,17 +202,25 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
 
     async fn handle(&mut self, cmd: MemCmd) {
         match cmd {
-            MemCmd::Resolve { pane, cwd } => {
+            MemCmd::Resolve { pane, cwd, epoch } => {
                 let reply = match self.resolve(&cwd).await {
-                    Ok(result) => MemReply::Project { pane, result },
-                    Err(reason) => unavailable(pane, reason),
+                    Ok(result) => MemReply::Project {
+                        pane,
+                        epoch,
+                        result,
+                    },
+                    Err(reason) => unavailable(pane, epoch, reason),
                 };
                 self.say(reply).await;
             }
-            MemCmd::Context { pane, project } => {
+            MemCmd::Context {
+                pane,
+                project,
+                epoch,
+            } => {
                 let reply = match self.context(&project).await {
-                    Ok(block) => MemReply::Context { pane, block },
-                    Err(reason) => unavailable(pane, reason),
+                    Ok(block) => MemReply::Context { pane, epoch, block },
+                    Err(reason) => unavailable(pane, epoch, reason),
                 };
                 self.say(reply).await;
             }
@@ -355,7 +363,12 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 self.say(MemReply::ServerOffer(offer)).await;
             }
             Decision::Notice(reason) => {
-                self.say(MemReply::Unavailable { pane: None, reason }).await
+                self.say(MemReply::Unavailable {
+                    pane: None,
+                    epoch: None,
+                    reason,
+                })
+                .await
             }
             Decision::Nothing => {}
         }
@@ -618,9 +631,10 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     }
 }
 
-fn unavailable(pane: PaneId, reason: Reason) -> MemReply {
+fn unavailable(pane: PaneId, epoch: u32, reason: Reason) -> MemReply {
     MemReply::Unavailable {
         pane: Some(pane),
+        epoch: Some(epoch),
         reason,
     }
 }

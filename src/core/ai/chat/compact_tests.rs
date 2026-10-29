@@ -451,6 +451,16 @@ fn coverage_is_by_transcript_position_not_by_filtered_position() {
     assert_eq!(marker_count(&state), 1);
 }
 
+// a folder change waits for the run (chat-folder D4) ---------------------------
+
+#[test]
+fn a_running_compaction_blocks_a_folder_change() {
+    let mut state = overflowing(10);
+    assert_eq!(state.folder_busy(false), None);
+    begun(&mut state);
+    assert_eq!(state.folder_busy(false), Some("the model is answering"));
+}
+
 // a late summary after a turn change, no send in between (F7) -----------------
 
 #[test]

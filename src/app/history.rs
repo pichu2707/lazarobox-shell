@@ -102,7 +102,7 @@ impl App {
     }
 
     /// The effect that prepares chat `id`'s system prompt for its profile.
-    fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
+    pub(super) fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
         let chat = self.panes.get(&id)?.chat_state()?;
         Some(Effect::PreparePrompt {
             pane: id,

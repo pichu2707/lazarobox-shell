@@ -30,6 +30,7 @@ mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod feedback;
+pub mod folder;
 pub mod gguf;
 pub mod gh;
 pub mod hf;
@@ -126,6 +127,8 @@ const MEMORY_CHANNEL: usize = 64;
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the path checks of runs to the event loop.
 const RUN_CHANNEL: usize = 16;
+/// Folder probes in flight at once (one per `/cd`, resume or picker).
+const FOLDER_CHANNEL: usize = 8;
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
 /// Longest the app waits for a prompt job before it uses the built-in prompt.
@@ -358,6 +361,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_install_env(Some(update::install_env(&cli_env.path)))
         .with_cargo_check(|cargo| chat::trusted_cargo_path(cargo).is_some());
     let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
+    let (folder_tx, folder_rx) = mpsc::channel(FOLDER_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -419,6 +423,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
+        .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
         .with_config_path(config_path)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
@@ -634,6 +639,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         prompt: prompt_rx,
         update: update_rx,
         run: run_rx,
+        folder: folder_rx,
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
@@ -861,6 +867,8 @@ struct Inbox {
     update: mpsc::Receiver<Option<String>>,
     /// What the path checks of runs found.
     run: mpsc::Receiver<(PaneId, RunEvent)>,
+    /// What the folder probes found.
+    folder: mpsc::Receiver<folder::Answer>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
     /// What became of the Feedback issue sent with `gh`.
@@ -916,6 +924,7 @@ async fn run_loop(
         prompt: mut prompt_rx,
         update: mut update_rx,
         run: mut run_rx,
+        folder: mut folder_rx,
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
@@ -1016,6 +1025,11 @@ async fn run_loop(
             // this never reads a closed channel.
             Some((pane, event)) = run_rx.recv() => {
                 if step(&mut app, AppEvent::Run(pane, event), panes) {
+                    return Ok(());
+                }
+            }
+            Some((pane, purpose, result)) = folder_rx.recv() => {
+                if step(&mut app, AppEvent::FolderProbed { pane, purpose, result }, panes) {
                     return Ok(());
                 }
             }
@@ -1251,6 +1265,7 @@ struct Panes {
     chats: Option<Chats>,
     /// Starts the path checks of runs. `None` refuses every run (unit tests).
     run_checks: Option<run_check::Checker>,
+    folder_probes: Option<folder::Prober>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -1297,6 +1312,7 @@ impl Panes {
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             run_checks: None,
+            folder_probes: None,
             memory: Memory::off(),
             store: None,
             sessions: Vec::new(),
@@ -1370,6 +1386,11 @@ impl Panes {
     }
 
     /// Sets what checks the runs of `Effect::CheckRun`.
+    fn with_folder_probes(mut self, prober: folder::Prober) -> Self {
+        self.folder_probes = Some(prober);
+        self
+    }
+
     fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
         self.run_checks = Some(checker);
         self
@@ -1674,6 +1695,19 @@ impl Panes {
                         )),
                     }
                 }
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start(pane, path, purpose),
+                    // No runtime to probe with: the folder cannot be judged.
+                    None => feedback.push(AppEvent::FolderProbed {
+                        pane,
+                        purpose,
+                        result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
                 Effect::EndToolSession(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.end_session(pane);
@@ -3338,6 +3372,7 @@ mod tests {
     fn memory_effect() -> Effect {
         Effect::Memory(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         })
     }
@@ -5278,11 +5313,13 @@ mod tests {
         );
         memory.send(MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(
             rx.try_recv().expect("answered at once"),
             MemReply::Unavailable {
+                epoch: Some(0),
                 pane: Some(PaneId::FIRST),
                 reason: Reason::RestartNeeded,
             }
@@ -5326,6 +5363,7 @@ mod tests {
             );
             memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
                 pane: PaneId::FIRST,
+                epoch: 0,
                 cwd: "/x".into(),
             });
             memory.shutdown(Duration::from_secs(1)).await;
@@ -5360,6 +5398,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -5368,6 +5407,7 @@ mod tests {
         let told = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(crate::core::ai::memory::port::MemReply::Unavailable {
+                    epoch: None,
                     pane: None,
                     ..
                 }) = rx.recv().await
