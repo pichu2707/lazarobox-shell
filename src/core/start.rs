@@ -88,6 +88,9 @@ pub fn resolve(
         return fallback(format!("{DIR_FLAG}: missing value"));
     }
     if let Some(raw) = &args.dir {
+        if raw.contains('\u{fffd}') {
+            return fallback(format!("{DIR_FLAG}: folder name is not valid UTF-8"));
+        }
         let path = absolute(raw, cwd, home);
         return match kind(&path) {
             Kind::Dir => StartDir { path, notice: None },

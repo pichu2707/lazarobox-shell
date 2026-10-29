@@ -125,3 +125,13 @@ fn a_config_folder_that_is_gone_falls_back_with_a_notice() {
         );
     }
 }
+
+#[test]
+fn a_lossy_value_says_it_is_not_utf8() {
+    let got = go(&dir_arg("/caf\u{fffd}"), Some("/b"));
+    assert_eq!(got.path, PathBuf::from("/c"));
+    assert_eq!(
+        got.notice.as_deref(),
+        Some("--dir: folder name is not valid UTF-8")
+    );
+}

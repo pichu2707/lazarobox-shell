@@ -107,10 +107,10 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
                 let value = it.next().and_then(|v| v.to_str());
                 terminal = Some(terminal_value(value)?);
             }
-            "--dir" => dir = Some(dir_value(it.next().and_then(|v| v.to_str()))?),
+            "--dir" => dir = Some(dir_value(it.next().map(OsString::as_os_str))?),
             _ => match (arg.strip_prefix("--terminal="), arg.strip_prefix("--dir=")) {
                 (Some(value), _) => terminal = Some(terminal_value(Some(value))?),
-                (_, Some(value)) => dir = Some(dir_value(Some(value))?),
+                (_, Some(value)) => dir = Some(dir_value(Some(OsStr::new(value)))?),
                 _ => return Err(format!("unknown argument: {arg}")),
             },
         }
@@ -122,9 +122,10 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
     }
 }
 
-fn dir_value(value: Option<&str>) -> Result<String, String> {
-    match value {
-        Some(v) if !v.is_empty() && !v.starts_with('-') => Ok(v.to_string()),
+fn dir_value(value: Option<&OsStr>) -> Result<String, String> {
+    match value.map(|v| v.to_str().ok_or(v)) {
+        Some(Ok(v)) if !v.is_empty() && !v.starts_with('-') => Ok(v.to_string()),
+        Some(Err(_)) => Err("--dir: folder name is not valid UTF-8".into()),
         _ => Err("--dir needs a folder".into()),
     }
 }
@@ -303,8 +304,13 @@ pub fn plan_install(choice: &Choice, bin: &Path, dir: Option<&Path>) -> Result<P
         Some(dir) => {
             let text = dir
                 .to_str()
-                .filter(|_| dir.is_absolute())
-                .ok_or_else(|| format!("unsupported folder: {}", dir.display()))?;
+                .filter(|t| dir.is_absolute() && t.trim() == *t)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported folder (must be absolute, no leading or trailing whitespace): {}",
+                        dir.display()
+                    )
+                })?;
             (
                 Some(format!("Path={}", entry_string(text)?)),
                 dir_argument(text)?,
