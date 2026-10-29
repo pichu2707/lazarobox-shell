@@ -16,7 +16,7 @@ pub mod worker;
 pub use worker::{StoreHandle, spawn, spawn_at};
 
 /// The schema version this build writes and understands.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// How long a write waits for another instance before it gives up.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
@@ -72,6 +72,54 @@ CREATE TABLE memory_notes (
     PRIMARY KEY (project, topic_key)
 ) WITHOUT ROWID;
 CREATE INDEX memory_notes_by_conversation ON memory_notes(conversation_id);
+";
+
+/// Schema v3 (1.0 freeze) drops the closed-list CHECKs on `profile`, `role` and
+/// `status`, so a new profile, role (`tool`) or status needs no table rebuild
+/// later. The allowed values are validated in Rust when a row is written. Done
+/// with SQLite's documented 12-step ALTER procedure for `conversations`,
+/// `messages` and `tags`; the caller turns foreign keys off around it. Rowids,
+/// ids, the `folder` column and every other constraint are carried over.
+const SCHEMA_V3: &str = "
+CREATE TABLE new_conversations (
+    id         INTEGER PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    profile    TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    folder     TEXT
+);
+INSERT INTO new_conversations(id, created_at, updated_at, profile, title, folder)
+    SELECT id, created_at, updated_at, profile, title, folder FROM conversations;
+CREATE TABLE new_messages (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    engine          TEXT NOT NULL,
+    model           TEXT,
+    status          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    UNIQUE (conversation_id, seq)
+);
+INSERT INTO new_messages(rowid, conversation_id, seq, role, content, engine, model, status, created_at)
+    SELECT rowid, conversation_id, seq, role, content, engine, model, status, created_at FROM messages;
+CREATE TABLE new_tags (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    tag             TEXT NOT NULL,
+    is_project      INTEGER NOT NULL CHECK (is_project IN (0, 1)),
+    PRIMARY KEY (conversation_id, tag)
+) WITHOUT ROWID;
+INSERT INTO new_tags(conversation_id, tag, is_project)
+    SELECT conversation_id, tag, is_project FROM tags;
+DROP TABLE messages;
+DROP TABLE tags;
+DROP TABLE conversations;
+ALTER TABLE new_conversations RENAME TO conversations;
+ALTER TABLE new_messages RENAME TO messages;
+ALTER TABLE new_tags RENAME TO tags;
+CREATE INDEX tags_by_tag ON tags(tag);
+CREATE INDEX conversations_by_activity ON conversations(updated_at);
 ";
 
 /// Why the store cannot be used. The text is short and free of paths and
@@ -325,27 +373,87 @@ fn refuse_newer(conn: &Connection, supported: i64) -> Result<(), StoreError> {
     }
 }
 
-/// Brings the database to the current schema; a newer one is refused.
+/// Brings the database to the current schema; a newer one is refused. Returns
+/// how many orphan rows the v3 rebuild dropped.
 #[cfg(test)]
-fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+fn migrate(conn: &mut Connection) -> Result<usize, StoreError> {
     migrate_with(conn, || {})
 }
 
 /// [`migrate`] with a hook just before the write lock is taken, where another
 /// instance could get in first.
 #[cfg(test)]
-fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(), StoreError> {
+fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<usize, StoreError> {
     migrate_to(conn, SCHEMA_VERSION, before_lock)
 }
 
+/// Adds the nullable `conversations.folder` column when the file lacks it. It
+/// is not a schema version: an older build never selects it and its inserts
+/// name their columns, so it keeps working on the same file (chat-folder D8).
+/// It runs on every open with `target >= 2`, so a later schema step (v3) may
+/// assume `conversations.folder` exists.
+fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+    let present: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'folder')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        tx.execute_batch("ALTER TABLE conversations ADD COLUMN folder TEXT")?;
+    }
+    Ok(())
+}
+
 /// Creates or upgrades the schema up to `target`, every step in one
-/// transaction: a fresh database gets v1 and v2 together, a v1 one only the
-/// additions. A schema newer than `target` is refused.
+/// transaction: a fresh database gets every version together, an older one only
+/// the additions. A schema newer than `target` is refused.
+///
+/// The v3 rebuild drops tables other tables point at, so foreign keys are off
+/// for the whole migration (SQLite ignores that pragma inside a transaction)
+/// and put back as they were afterwards, whatever the outcome. If putting them
+/// back fails after a committed migration, the open still succeeds: that is a
+/// fact about this connection only, and the store is correct on disk.
+///
+/// Returns how many orphan rows (messages or tags of a conversation that no
+/// longer exists) the v3 rebuild dropped. After a successful rebuild of an
+/// existing store the file is vacuumed, best effort: the rebuild leaves the old
+/// pages on the freelist and the file would stay twice its size.
 fn migrate_to(
     conn: &mut Connection,
     target: i64,
     before_lock: impl FnOnce(),
-) -> Result<(), StoreError> {
+) -> Result<usize, StoreError> {
+    let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    if keys {
+        conn.pragma_update(None, "foreign_keys", false)?;
+    }
+    let migrated = migrate_locked(conn, target, before_lock);
+    if keys {
+        let _ = conn.pragma_update(None, "foreign_keys", true);
+    }
+    let (dropped, rebuilt) = migrated?;
+    if rebuilt {
+        vacuum(conn);
+    }
+    Ok(dropped)
+}
+
+/// Gives the freed pages back to the file. The scratch copy SQLite builds
+/// stays in memory, so no chat text lands in a temporary file. A failure is
+/// ignored: the store is fine, only bigger.
+fn vacuum(conn: &Connection) {
+    let _ = conn.pragma_update(None, "temp_store", "MEMORY");
+    let _ = conn.execute_batch("VACUUM");
+    let _ = conn.pragma_update(None, "temp_store", "DEFAULT");
+}
+
+/// The migration proper: the orphans it dropped and whether it rebuilt an
+/// existing store.
+fn migrate_locked(
+    conn: &mut Connection,
+    target: i64,
+    before_lock: impl FnOnce(),
+) -> Result<(usize, bool), StoreError> {
     before_lock();
     // The version is read under the write lock, so two instances on a fresh
     // store cannot both decide to create the schema.
@@ -360,11 +468,41 @@ fn migrate_to(
     if version < 2 && target >= 2 {
         tx.execute_batch(SCHEMA_V2)?;
     }
+    if target >= 2 {
+        ensure_folder(&tx)?;
+    }
+    let mut dropped = 0;
+    let rebuilt = (1..3).contains(&version) && target >= 3;
+    if version < 3 && target >= 3 {
+        // A row whose conversation is gone can never be listed or resumed, and
+        // would fail the check below, locking the whole history out. It is
+        // dropped before the copy and counted. Only the rebuilt tables are
+        // checked: the others are not touched by this step.
+        for table in ["messages", "tags"] {
+            dropped += tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE conversation_id NOT IN (SELECT id FROM conversations)"
+                ),
+                [],
+            )?;
+        }
+        tx.execute_batch(SCHEMA_V3)?;
+        for table in ["messages", "tags"] {
+            let broken: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check(?1))",
+                [table],
+                |r| r.get(0),
+            )?;
+            if broken {
+                return Err(StoreError::Sqlite("foreign key check failed"));
+            }
+        }
+    }
     if version < target {
         tx.pragma_update(None, "user_version", target)?;
     }
     tx.commit()?;
-    Ok(())
+    Ok((dropped, rebuilt))
 }
 
 #[cfg(test)]

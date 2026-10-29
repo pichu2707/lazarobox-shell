@@ -10,6 +10,83 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
+- `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
+  before the terminal or the nesting guard are touched.
+- Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
+  `config.toml` choose where the first shell starts (flag, then config, then
+  the launch folder). An invalid folder does not stop the app: it starts in
+  the launch folder and shows a notice inside lazarobox.
+- `install-desktop --dir <folder>` writes `Path=` and `--dir=` in the
+  launcher; running it again without `--dir` removes both.
+
+### Changed
+
+- When the jail refuses a codex layout, the full reason (`y` in the menu, and the chat) now names the layout and what to do, for example `codex (standalone) is installed in a layout the jail cannot isolate: … would be both run and written; reinstall it with the official installer, npm or Homebrew`. The short form on the menu row is unchanged.
+- `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
+- An unknown option or command now prints one line on stderr and exits 2
+  instead of silently starting the TUI.
+- `chat.db` schema 3: the closed-list checks on `profile`, `role` and `status`
+  are gone (the values are still validated when written), so a new profile,
+  role or status can be added without rebuilding tables. Opening an older
+  file rebuilds `conversations`, `messages` and `tags` once, in one
+  transaction, keeping every row and id. A build that only knows schema 2
+  refuses a schema 3 file and leaves it untouched. The migration drops
+  messages or tags whose conversation no longer exists (they could never be
+  shown) and vacuums the file afterwards. Resuming a conversation leaves out
+  messages of a role this version does not know and says how many.
+
+### Fixed
+
+- The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
+- The nesting guard no longer treats the value of `--dir` as a subcommand.
+
+### Docs
+
+- README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
+  `config.toml`, the `chat.db` format with forward migration, the public CLI
+  and the key bindings; what is not: `__*` subcommands, log text, UI layout),
+  an upgrade note, a single key-bindings reference for every view (the
+  `openspec/` link is gone), a security and threat-model index, and macOS
+  stated as not officially supported in 1.0.
+- `SECURITY.md`: supported versions and private vulnerability reporting.
+- `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
+## [0.30.0] - 2026-10-29
+
+### Added
+
+- Ollama downloads: with the Ollama server running, its model level ends in
+  `download from Ollama…`. It lists up to 20 of the most popular models of
+  the Ollama library that fit this PC's memory (embedding and cloud-only
+  models left out), then the exact size of each tag from its registry
+  manifest, then a confirmation with the license title, a link to read it,
+  the models folder and the free space. Nothing is pulled before `y`. The
+  pull goes through the local Ollama server (`POST /api/pull` on
+  `127.0.0.1`), with progress on the row and in the status bar, a cancel
+  prompt that keeps what Ollama pulled, and one detection when it ends.
+  When the library page cannot be read, the built-in list is shown instead.
+- One download runs at a time across Hugging Face and Ollama: while one
+  runs, the other entry row says `a download is already running`.
+
+### Changed
+
+- The loopback client may POST to `/api/pull`, for the Ollama download only;
+  chat requests still refuse that path.
+
+### Fixed
+
+- A held key no longer repeats a decision: on prompts, confirmations and
+  menus, a key held down acts once, and only a new press acts again.
+  `Ctrl+H` works as Backspace in text fields.
+- Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
+  key repeat of a held key (about 600-760 ms) can never answer one.
+- The feedback form's footers say what `Esc` does on every screen.
+
 ### Internal
 
 - Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
@@ -1348,7 +1425,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0

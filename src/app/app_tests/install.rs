@@ -94,6 +94,8 @@ fn at_confirm_install() -> App {
         Ok(InstallReply::Downloaded),
     ));
     drawn(&mut a);
+    // The download took a while: the next `y` is a new press.
+    let_go();
     a
 }
 
@@ -142,6 +144,7 @@ fn replies_walk_resolve_download_install_and_the_offer() {
         Ok(InstallReply::Downloaded),
     ));
     drawn(&mut a);
+    let_go();
     let asked = a.update(key('y'));
     assert_eq!(
         installs(&asked),
@@ -162,6 +165,7 @@ fn a_reply_opened_prompt_ignores_y_until_a_frame_drew_it() {
     let early = a.update(key('y'));
     assert!(installs(&early).is_empty(), "{early:?}");
     drawn(&mut a);
+    let_go();
     let late = a.update(key('y'));
     assert_eq!(
         installs(&late),
@@ -304,6 +308,7 @@ fn y_on_the_offer_asks_for_the_popular_models() {
         Ok(InstallReply::Installed),
     ));
     drawn(&mut a);
+    let_go();
     let effects = a.update(key('y'));
     assert!(
         effects

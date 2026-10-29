@@ -218,7 +218,7 @@ No data migration. New `[ai.tools]` booleans default to false, and older builds 
 
 ## Open Questions
 
-- [ ] The S8 meaning of `Evidence.digest` (assumed: the cleaned tail text, not a hash). Confirm with the orchestrator owner.
+- [x] The S8 meaning of `Evidence.digest`: the cleaned tail text (<= 2 KiB), not a hash. Decided by the user and implemented.
 - [ ] How Landlock handles pathname UNIX sockets on the target kernels (D15). Decide on seccomp hardening after X-c.
 - [ ] The Ollama path collapses duplicate JSON keys before parse (stream.rs:328). The review shows the final content, so this cannot bypass the review; P0 should still add the raw-key check.
 - [ ] macOS `run_command` (user decision needed): the toolchain jail needs Seatbelt support for `rwx` (allow `file-write*` and `process-exec` in one subpath, plus toolchain roots), BindTcp and rlimits. X-c1 refuses `rwx` on macOS (`ExecFault::Macos`, `SbplError::Rwx`) and X-d1 already refuses a run without a jail; a macOS slice is not planned.

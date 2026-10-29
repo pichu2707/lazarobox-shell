@@ -255,6 +255,7 @@ fn a_binary_outside_cargo_only_shows_the_command_and_copies_it() {
         let mut a = on_updates(Some("0.15.4"), Some(distro_env()));
         assert!(a.update(enter()).is_empty(), "nothing runs");
         assert_eq!(footer(&a), Fallback::NotCargoInstall.footer());
+        let_go();
         let copy = a.update(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         let sequence = crate::core::copy::osc52(INSTALL_COMMAND).unwrap();
         assert_eq!(copy, vec![Effect::SetClipboard(sequence)], "{code:?}");

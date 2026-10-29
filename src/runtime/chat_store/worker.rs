@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc as std_mpsc,
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -26,6 +26,7 @@ use crate::core::{
             },
             tags::Tags,
         },
+        config::Profile,
         sanitize::clean,
     },
     layout::PaneId,
@@ -96,6 +97,7 @@ impl Worker {
                 extras,
                 first,
                 origin,
+                folder,
                 open,
             } => {
                 // The pane may have sent before its list answered.
@@ -107,8 +109,13 @@ impl Worker {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
                 };
+                // The column is open-ended since schema 3: the known profiles
+                // are checked here, before anything is written.
+                if Profile::from_id(&profile).is_none() {
+                    return Some(self.failure(pane));
+                }
                 let tags = Tags::new(tag, extras);
-                let made = create(conn, &profile, &tags, &first, &open);
+                let made = create(conn, &profile, &tags, &first, folder.as_deref(), &open);
                 Some(match made {
                     Ok((conversation, created_at, gone)) => {
                         self.failing = false;
@@ -147,11 +154,11 @@ impl Worker {
                 conversation,
                 session_id,
                 project,
+                replace,
             } => {
-                let reply = self
-                    .conn()
-                    .ok()
-                    .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
+                let reply = self.conn().ok().and_then(|conn| {
+                    link_session(conn, conversation, (&session_id, &project), replace).ok()
+                });
                 Some(match reply {
                     Some((session_id, project)) => StoreReply::SessionLinked {
                         pane,
@@ -211,6 +218,18 @@ impl Worker {
                     None => StoreReply::TagsFailed { pane },
                 })
             }
+            StoreCmd::SetFolder {
+                pane,
+                conversation,
+                folder,
+            } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
+                if let Ok(conn) = self.conn() {
+                    // A failed write only means a resume asks again.
+                    let _ = replace_folder(conn, conversation, &folder);
+                }
+                None
+            }
             StoreCmd::List { pane, origin } => {
                 // The walk to the repository root is filesystem IO: it is
                 // done here, not on the UI thread.
@@ -235,6 +254,8 @@ impl Worker {
                         extras,
                         messages,
                         session,
+                        folder,
+                        skipped,
                     }) => StoreReply::Resumed {
                         pane,
                         conversation,
@@ -243,6 +264,8 @@ impl Worker {
                         extras,
                         messages,
                         session,
+                        folder,
+                        skipped,
                     },
                     None => StoreReply::ResumeFailed { pane },
                 })
@@ -295,6 +318,7 @@ impl Worker {
             StoreCmd::Resume { pane, .. } => (*pane, Panicked::Resume),
             StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
+            StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -307,7 +331,11 @@ impl Worker {
                 // left a transaction open, leaves it in an unknown state.
                 let keep = matches!(
                     on_panic,
-                    Panicked::Link(_) | Panicked::Resume | Panicked::Delete | Panicked::SetTags
+                    Panicked::Link(_)
+                        | Panicked::Resume
+                        | Panicked::Delete
+                        | Panicked::SetTags
+                        | Panicked::SetFolder
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -321,6 +349,7 @@ impl Worker {
                     Panicked::Resume => StoreReply::ResumeFailed { pane },
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
+                    Panicked::SetFolder => return None,
                 })
             }
         }
@@ -342,6 +371,7 @@ enum Panicked {
     Resume,
     Delete,
     SetTags,
+    SetFolder,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -386,6 +416,7 @@ fn create(
     profile: &str,
     tags: &Tags,
     first: &StoredMessage,
+    folder: Option<&Path>,
     open: &[i64],
 ) -> Result<(i64, i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -425,9 +456,14 @@ fn create(
     let text = clean(&first.text);
     let stamp = now();
     tx.execute(
-        "INSERT INTO conversations(created_at, updated_at, profile, title)
-         VALUES (?1, ?1, ?2, ?3)",
-        (stamp, profile, title_of(&text)),
+        "INSERT INTO conversations(created_at, updated_at, profile, title, folder)
+         VALUES (?1, ?1, ?2, ?3, ?4)",
+        (
+            stamp,
+            profile,
+            title_of(&text),
+            folder.and_then(Path::to_str),
+        ),
     )?;
     let id = tx.last_insert_rowid();
     insert_tags(&tx, id, tags)?;
@@ -482,6 +518,24 @@ fn replace_tags(
     Ok(stamp)
 }
 
+/// Replaces the folder of a conversation and bumps its last activity. A
+/// conversation that does not exist is an error. A path that is not UTF-8 is
+/// stored as `NULL` (a resume then asks).
+fn replace_folder(
+    conn: &mut Connection,
+    conversation: i64,
+    folder: &Path,
+) -> Result<(), rusqlite::Error> {
+    let touched = conn.execute(
+        "UPDATE conversations SET folder = ?2, updated_at = ?3 WHERE id = ?1",
+        (conversation, folder.to_str(), now()),
+    )?;
+    if touched == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
 /// Appends a message and bumps the conversation's last activity.
 fn append(
     conn: &mut Connection,
@@ -514,16 +568,28 @@ fn is_session_id(id: &str) -> bool {
 fn link_session(
     conn: &mut Connection,
     conversation: i64,
-    session_id: &str,
-    project: &str,
+    (session_id, project): (&str, &str),
+    replace: bool,
 ) -> Result<(String, String), rusqlite::Error> {
     if !is_session_id(session_id) {
         return Err(rusqlite::Error::InvalidParameterName("session id".into()));
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // The stored pair wins (a resume) unless the conversation changed project.
+    let (verb, tail) = if replace {
+        (
+            "INSERT",
+            "ON CONFLICT(conversation_id) DO UPDATE
+             SET session_id = excluded.session_id, project = excluded.project",
+        )
+    } else {
+        ("INSERT OR IGNORE", "")
+    };
     tx.execute(
-        "INSERT OR IGNORE INTO memory_sessions(conversation_id, session_id, project)
-         VALUES (?1, ?2, ?3)",
+        &format!(
+            "{verb} INTO memory_sessions(conversation_id, session_id, project)
+             VALUES (?1, ?2, ?3) {tail}"
+        ),
         (conversation, session_id, clean(project)),
     )?;
     let stored = tx.query_row(
@@ -618,6 +684,10 @@ struct Resumed {
     messages: Vec<Msg>,
     /// The engram `(session id, project)` pair of its notes, if it has one.
     session: Option<(String, String)>,
+    /// The folder it was kept under, when one was stored.
+    folder: Option<PathBuf>,
+    /// Rows left out for a role this build does not know.
+    skipped: usize,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -625,6 +695,11 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
     let tx = conn.transaction()?;
     let profile: String = tx.query_row(
         "SELECT profile FROM conversations WHERE id = ?1",
+        [conversation],
+        |r| r.get(0),
+    )?;
+    let folder: Option<String> = tx.query_row(
+        "SELECT folder FROM conversations WHERE id = ?1",
         [conversation],
         |r| r.get(0),
     )?;
@@ -639,27 +714,34 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         .prepare("SELECT tag FROM tags WHERE conversation_id = ?1 AND is_project = 0 ORDER BY tag")?
         .query_map([conversation], |r| r.get(0))?
         .collect::<Result<Vec<String>, _>>()?;
-    let messages = tx
-        .prepare(
+    // Role and status are open-ended since schema 3. A row of a role this
+    // build does not know (a newer one wrote it) is left out and counted rather
+    // than shown as the assistant's; an unknown status reads as a cut message.
+    let mut skipped = 0;
+    let mut messages = Vec::new();
+    {
+        let mut stmt = tx.prepare(
             "SELECT role, content, status FROM messages
              WHERE conversation_id = ?1 ORDER BY seq",
-        )?
-        .query_map([conversation], |r| {
-            let role: String = r.get(0)?;
+        )?;
+        let mut rows = stmt.query([conversation])?;
+        while let Some(r) = rows.next()? {
+            let role = match r.get::<_, String>(0)?.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             let status: String = r.get(2)?;
-            Ok(Msg {
-                role: if role == "user" {
-                    Role::User
-                } else {
-                    Role::Assistant
-                },
+            messages.push(Msg {
+                role,
                 text: r.get(1)?,
-                // The column is constrained to the known names; an unknown one
-                // reads as a cut message rather than a finished one.
                 status: MsgStatus::from_name(&status).unwrap_or(MsgStatus::Interrupted),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+            });
+        }
+    }
     // A read only: the resume never writes a link.
     let session = tx
         .query_row(
@@ -674,6 +756,8 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         extras,
         messages,
         session,
+        folder: folder.map(PathBuf::from),
+        skipped,
     })
 }
 

@@ -16,6 +16,7 @@ pub mod compact;
 pub mod composer;
 pub mod copy;
 pub mod engine;
+pub mod folder;
 pub mod gemini;
 pub mod guidance;
 pub mod history;
@@ -1304,6 +1305,8 @@ mod anchor_tests;
 mod compact_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod folder_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]
