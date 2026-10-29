@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
+  before the terminal or the nesting guard are touched.
+
+### Changed
+
+- An unknown option or command now prints one line on stderr and exits 2
+  instead of silently starting the TUI.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added
