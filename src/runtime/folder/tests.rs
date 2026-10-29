@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::ai::chat::folder::Verdict;
+use crate::core::ai::chat::folder::{Probed, Purpose, Verdict};
 use crate::runtime::tools::ToolEnv;
 use std::{
     fs,
@@ -92,6 +92,34 @@ fn root_is_root_even_without_home_and_a_relative_path_is_not_found() {
         probe(&f.env, Path::new(".")).unwrap_err(),
         Refusal::NotFound
     );
+}
+
+#[tokio::test]
+async fn a_probe_that_hangs_answers_not_found_after_the_bound() {
+    let slow = || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        Ok(Probed {
+            path: PathBuf::from("/late"),
+            verdict: Verdict::Concrete,
+        })
+    };
+    let started = std::time::Instant::now();
+    let got = bounded(std::time::Duration::from_millis(30), slow).await;
+    assert_eq!(got, Err(Refusal::NotFound));
+    assert!(started.elapsed() < std::time::Duration::from_millis(300));
+    assert_eq!(TIMEOUT, std::time::Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_prober_answers_off_the_loop_through_its_channel() {
+    let f = fixture();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let prober = Prober::new(f.env.clone(), tx);
+    let pane = crate::core::layout::PaneId::FIRST;
+    prober.start(pane, f.root.join("home/project"), Purpose::Cd);
+    let (got_pane, purpose, result) = rx.recv().await.expect("an answer");
+    assert_eq!((got_pane, purpose), (pane, Purpose::Cd));
+    assert_eq!(result.unwrap().verdict, Verdict::Concrete);
 }
 
 // The verdict must match the building blocks the tool host judges a root by
