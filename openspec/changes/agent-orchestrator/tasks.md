@@ -200,19 +200,19 @@ S1e-1a bases on the S1d-3 branch.
 
 ### S1d-3 (PR 8, ~480 lines, base: S1d-2 branch): tasks 1d.3b, 1d.4b, 1d.5
 
-- [ ] 1d.3b RED `runtime/orchestra/tests.rs`, control path: cancel kills the process; halt then retry relaunches same spec with the previous error appended as untrusted data; worker read outside scope reaches the approver; Ctrl+C cancels all; shutdown. Spec: agent-orchestrator / Retry relaunches the same spec, Ctrl+C cancels all.
-- [ ] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`.
+- [x] 1d.3b RED `runtime/orchestra/tests.rs`, control path: cancel kills the process; halt then retry relaunches same spec with the previous error appended as untrusted data; worker read outside scope reaches the approver; Ctrl+C cancels all; shutdown. Spec: agent-orchestrator / Retry relaunches the same spec, Ctrl+C cancels all. Done: 10 tests (retry, paused until decided, cancel choice, cancel one by tool, cancel after done, worker read asks and cancel denies it, shutdown, dropped manager, replaced run `Ended`, timed-out error wrapped); each observed failing against stubs before GREEN.
+- [x] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`. Done: `decide(pane, UserChoice)` drives `Run::decide` (`Retry` stores the alert text, and the relaunch's prompt is the spec's followed by it under `label::wrap`; `Cancel` ends the run); `cancel(pane)` and a replaced run end through one path: workers `cancelled`, turns aborted, sessions closed (their asks end denied), rows, then `OrchestraEvent::Ended{run}`, nothing after; `shutdown()` ends every run at the call, refuses later starts, drops the worker hub and returns a future that resolves once every worker turn is gone; the `cancel` tool cancels one worker (`already ended: <status>` for a finished one); a dropped run aborts its turns (S1d-2 advisory A4).
 - [ ] 1d.5 GREEN `runtime/chat.rs` (`with_orchestra`, `cancel`/`shutdown` forward), `runtime.rs` wiring. REFACTOR + gates (S1d-3 closes here).
 
 #### Obligations from the S1d-2 review (S1d-3)
 
-- [ ] Replacing a run on the same pane MUST send `Ended` for the old run (today its worker is killed with no app event; test `replacing_a_run_kills_the_old_worker` pins the kill).
+- [x] Replacing a run on the same pane MUST send `Ended` for the old run (today its worker is killed with no app event; test `replacing_a_run_kills_the_old_worker` pins the kill). Done: a replaced run ends like a cancelled one, its worker's `cancelled` row then `Ended`; test `replacing_a_run_sends_ended_for_the_old_run`.
 
 #### Obligations from the S1b-2 security review (S1d-2, S1d-3)
 
 - [x] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker. Done: `collect` reads 8 bytes of `/dev/urandom` per call (as `tools::new_nonce` does) and returns no text when it cannot; test `every_collect_wraps_under_a_fresh_nonce_the_worker_never_saw`.
 - [x] (S1d-2) RunIds are allocated monotonically and never reused across restarts; a resumed run re-asks the scope. Done: a run id is the wall clock in microseconds, always above the last id handed out; a read scope lives in memory with its run only, so a later run or process has none until the user answers again; tests `run_ids_grow_with_the_clock_and_never_repeat`, `a_scope_belongs_to_its_run_and_a_new_run_asks_again`.
-- [ ] (S1d-3) Worker error text (failed/timed-out) is wrapped with `label::wrap` too, not only Done text.
+- [x] (S1d-3) Worker error text (failed/timed-out) is wrapped with `label::wrap` too, not only Done text. Done: the orchestrator never gets a worker's error text (`wait` says `awaiting_user`, `collect` says `ended <status> with no text`); the only model that does is the retried worker, under a fresh `label::wrap` nonce, or not at all when no nonce can be drawn; tests `retry_relaunches_the_same_spec_with_the_error_wrapped`, `a_timed_out_worker_error_reaches_a_model_only_wrapped`.
 
 ## S1e-1: app/core wiring (3 chained PRs: S1e-1a = PR 9, S1e-1b = PR 10, S1e-1c = PR 11; ~900 lines re-estimated in total)
 

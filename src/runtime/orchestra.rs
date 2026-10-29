@@ -21,11 +21,17 @@ use std::{
     io::Read,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use futures::{FutureExt, future::BoxFuture};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, join_all},
+};
 use tokio::{
     sync::{Notify, mpsc},
     task::JoinHandle,
@@ -57,12 +63,16 @@ use crate::core::{
         jail,
         orchestra::{
             RunId, WorkerId, WorkerKey,
-            run::{CollectError, Refusal, Roster, Run, RunState, WorkerEvent},
+            run::{
+                CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunState, UserChoice,
+                WorkerEvent,
+            },
             scope::ReadScope,
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
         tools::{
+            label,
             paths::SecretRoots,
             registry::Family,
             wiring::{McpWire, Secret},
@@ -125,6 +135,9 @@ pub enum OrchestraEvent {
         class: ErrorClass,
         text: String,
     },
+    /// The run is over: cancelled, replaced by a new run of the pane, or
+    /// ended by quitting. Its last rows came before; nothing of it follows.
+    Ended { run: RunId },
 }
 
 /// Where the run manager's events go.
@@ -192,6 +205,19 @@ struct Live {
     shown: HashMap<WorkerId, WorkerStatus>,
     /// The failure the last alert showed.
     alerted: Option<WorkerId>,
+    /// The error of a retried worker's failed attempt, which its next prompt
+    /// is followed by (wrapped).
+    retry: HashMap<WorkerId, String>,
+}
+
+impl Drop for Live {
+    /// The backstop of a run dropped without being ended, its manager's
+    /// included: its worker turns would otherwise run on to their deadline.
+    fn drop(&mut self) {
+        for task in self.tasks.values() {
+            task.abort();
+        }
+    }
 }
 
 /// What worker turns need to offer tools: the host that runs the calls and
@@ -216,6 +242,8 @@ pub struct RunManager {
     scratch: fn(&Path) -> bool,
     ids: Mutex<RunIds>,
     runs: Mutex<HashMap<PaneId, Live>>,
+    /// Set by `shutdown`, under the `runs` lock: no run starts after it.
+    closed: AtomicBool,
     /// Woken whenever a worker's status changes, for `wait`.
     changed: Notify,
 }
@@ -231,6 +259,7 @@ impl RunManager {
             scratch: jail::is_scratch,
             ids: Mutex::default(),
             runs: Mutex::default(),
+            closed: AtomicBool::new(false),
             changed: Notify::new(),
         }
     }
@@ -254,10 +283,11 @@ impl RunManager {
     }
 
     /// Starts the run of an orchestrator turn of `pane`, replacing any run
-    /// the pane had. Its handle is what the turn's host (`TurnScope::
-    /// orchestra`) calls. The turn itself runs on `orchestrate`: when that
-    /// engine is unusable no run starts, no other engine is tried, and the
-    /// error is the engine guidance.
+    /// the pane had, which ends as [`RunManager::cancel`] ends it. Its handle
+    /// is what the turn's host (`TurnScope::orchestra`) calls. The turn itself
+    /// runs on `orchestrate`: when that engine is unusable no run starts, no
+    /// other engine is tried, and the error is the engine guidance. After
+    /// `shutdown` no run starts.
     pub fn start(
         self: &Arc<Self>,
         pane: PaneId,
@@ -278,10 +308,17 @@ impl RunManager {
             tasks: HashMap::new(),
             shown: HashMap::new(),
             alerted: None,
+            retry: HashMap::new(),
         };
-        let old = lock(&self.runs).insert(pane, live);
+        let old = {
+            let mut runs = lock(&self.runs);
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(ENDED.to_owned());
+            }
+            runs.insert(pane, live)
+        };
         if let Some(old) = old {
-            self.retire(old);
+            self.end(pane, old);
         }
         Ok((run, self.handle(pane, run)))
     }
@@ -308,15 +345,87 @@ impl RunManager {
         ReadScope::new(run, &secrets, origin, &inputs, &self.scratch).0
     }
 
-    /// Ends a replaced run's worker turns and their sessions.
-    fn retire(&self, live: Live) {
-        for (worker, task) in live.tasks {
-            task.abort();
-            self.close_session(WorkerKey {
-                run: live.run.id(),
-                worker,
-            });
+    /// Ctrl+C on `pane`: ends its run, if it has one. Returns at once.
+    pub fn cancel(self: &Arc<Self>, pane: PaneId) {
+        let live = lock(&self.runs).remove(&pane);
+        if let Some(live) = live {
+            self.end(pane, live);
         }
+    }
+
+    /// The user's answer to the failure that halted the run of `pane`.
+    /// `Retry` relaunches the failed worker on its spec, its prompt followed
+    /// by the failure's text wrapped as untrusted data; `Cancel` ends the run.
+    /// `NotHalted` when no failure waits for the user, and nothing changes.
+    pub fn decide(self: &Arc<Self>, pane: PaneId, choice: UserChoice) -> Result<(), NotHalted> {
+        let mut runs = lock(&self.runs);
+        let live = runs.get_mut(&pane).ok_or(NotHalted)?;
+        let RunState::Halted { worker, text, .. } = live.run.state() else {
+            return Err(NotHalted);
+        };
+        let (worker, text) = (*worker, text.clone());
+        let retry = choice == UserChoice::Retry;
+        live.run.decide(now(), choice)?;
+        if *live.run.state() == RunState::Cancelled {
+            let live = runs.remove(&pane);
+            drop(runs);
+            if let Some(live) = live {
+                self.end(pane, live);
+            }
+            return Ok(());
+        }
+        if retry {
+            live.retry.insert(worker, text);
+        } else {
+            live.retry.remove(&worker);
+        }
+        // A failure after a decision alerts again, the same worker's too.
+        live.alerted = None;
+        self.sync(pane, live);
+        Ok(())
+    }
+
+    /// Quitting: ends every run now (see [`RunManager::cancel`]) and starts
+    /// none after. The future resolves once every worker turn is gone, its
+    /// adapter dropped and so its process group killed.
+    pub fn shutdown(self: &Arc<Self>) -> BoxFuture<'static, ()> {
+        let ended: Vec<_> = {
+            let mut runs = lock(&self.runs);
+            self.closed.store(true, Ordering::SeqCst);
+            runs.drain().collect()
+        };
+        let tasks: Vec<_> = ended
+            .into_iter()
+            .flat_map(|(pane, live)| self.end(pane, live))
+            .collect();
+        // No session is left: dropping the hub removes its sockets.
+        if let Some(tooling) = &self.tooling {
+            lock(&tooling.hub).take();
+        }
+        join_all(tasks).map(drop).boxed()
+    }
+
+    /// Ends a run already taken out of `runs`: its workers end `cancelled`,
+    /// their turns are aborted (which drops their adapters and kills their
+    /// process groups) and their sessions closed (which denies their asks
+    /// and drops their calls in flight). Their rows go out, then `Ended`;
+    /// nothing of the run follows, since no call or turn finds it any more.
+    /// Returns the aborted turns, for `shutdown` to wait on.
+    fn end(self: &Arc<Self>, pane: PaneId, mut live: Live) -> Vec<JoinHandle<()>> {
+        let run = live.run.id();
+        live.run.cancel_run(now());
+        let tasks: Vec<_> = live
+            .tasks
+            .drain()
+            .map(|(worker, task)| {
+                task.abort();
+                self.close_session(WorkerKey { run, worker });
+                task
+            })
+            .collect();
+        self.sync(pane, &mut live);
+        self.send(pane, OrchestraEvent::Ended { run });
+        tasks
     }
 
     /// Runs `f` on the run `run` of `pane`; `None` once it ended or was
@@ -340,8 +449,7 @@ impl RunManager {
                 return self.clone().wait(pane, run, ids, timeout).boxed();
             }
             OrchCall::Collect { id } => self.collect(pane, run, id),
-            // Cancelling a worker is the control path (S1d-3).
-            OrchCall::Cancel { .. } => error("cancel is not available yet"),
+            OrchCall::Cancel { id } => self.cancel_worker(pane, run, id),
         };
         async move { now }.boxed()
     }
@@ -431,6 +539,28 @@ impl RunManager {
         collected.unwrap_or_else(|| error(ENDED))
     }
 
+    /// Cancels one worker: its turn is aborted and its session closed, and
+    /// its slot goes to the next queued worker. One that already ended stays
+    /// as it was.
+    fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
+        let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
+            CancelOutcome::Cancelled => {
+                if let Some(task) = live.tasks.remove(&id) {
+                    task.abort();
+                }
+                self.close_session(WorkerKey { run, worker: id });
+                self.sync(pane, live);
+                fine(format!("worker {}: cancelled", id.0))
+            }
+            CancelOutcome::AlreadyEnded => {
+                let status = live.run.status(id).map_or("", WorkerStatus::label);
+                fine(format!("worker {} already ended: {status}", id.0))
+            }
+            CancelOutcome::Unknown => error(format!("no worker {}", id.0)),
+        });
+        cancelled.unwrap_or_else(|| error(ENDED))
+    }
+
     /// Brings the app and the processes in line with the run after a change:
     /// a row (and a log line) for each worker whose status moved, a turn for
     /// each worker that now runs, the alert of a new failure, and a wake-up
@@ -510,6 +640,14 @@ impl RunManager {
         let Some(spec) = live.run.spec(id).cloned() else {
             return;
         };
+        let mut prompt = spec.prompt.clone();
+        if let Some(failure) = live.retry.remove(&id) {
+            // Wrapped or left out: an error text never reaches a model bare.
+            if let Some(bytes) = nonce_bytes() {
+                let wrapped = label::wrap(&label::nonce_from(bytes), &failure);
+                prompt = format!("{prompt}\n\n{wrapped}");
+            }
+        }
         let mut request = ChatRequest {
             engine: spec.engine.clone(),
             model: spec.model.clone(),
@@ -517,7 +655,7 @@ impl RunManager {
             memory: None,
             messages: vec![ChatMessage {
                 role: Role::User,
-                content: spec.prompt.clone(),
+                content: prompt,
             }],
             tools: tools_for(&spec.engine, true, Some(live.origin.clone()), MCP_VERIFIED),
             families: spec.toolset.families(),
@@ -766,6 +904,13 @@ fn nonce_bytes() -> Option<[u8; 8]> {
 /// The run's clock: tokio's, so a paused test clock moves the deadlines.
 fn now() -> std::time::Instant {
     Instant::now().into_std()
+}
+
+fn fine(text: impl Into<String>) -> Outcome {
+    Outcome {
+        text: text.into(),
+        is_error: false,
+    }
 }
 
 fn error(text: impl Into<String>) -> Outcome {
