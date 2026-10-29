@@ -65,19 +65,6 @@ Ctrl+C MUST cancel the orchestrator turn and all workers of the run (existing ch
 - GIVEN a run with two workers and worker 1 selected
 - WHEN the cancel-worker key is pressed
 - THEN worker 1 is cancelled and worker 2 keeps running
-p='openspec/changes/agent-orchestrator/specs/modal-input/spec.md'
-s=open(p).read()
-old="In a chat pane the provider notice MUST accept with Enter or `y` and dismiss with Esc; the run-start scope prompt MUST approve with `y` and deny with `n` or Esc. These keys apply only while the view is shown and MUST NOT reach any PTY."
-assert s.count(old)==1
-s=s.replace(old,"In a chat pane the provider notice MUST accept with Enter or `y` and dismiss with Esc; the run-start scope prompt MUST approve with `y` and deny with `n` or Esc. These keys apply only while the view is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer either view: the notice is accepted only by `y` pressed after an arm delay (as approvals), or only while the composer is empty, so an Enter that sends a message never accepts it; S1e-1b picks one of the two and applies the same guard to the scope prompt (key audit, 2026-10-29).")
-old="Ctrl+O is not bound in the chat key table today (bound: Enter, Esc, Ctrl+C, Ctrl+Y, Ctrl+B, Ctrl+R, Ctrl+J, Alt+Enter, Ctrl+U, PageUp, PageDown)"
-assert s.count(old)==1
-s=s.replace(old,"Ctrl+O is not bound in the chat key table today (bound: Enter, Esc, Ctrl+C, Ctrl+Y, Ctrl+B, Ctrl+R, Ctrl+J, Alt+Enter, Ctrl+U, PageUp, PageDown, and on main Ctrl+G, the orphan batch review of coding-tools)")
-old="While a failure alert is shown: `r` MUST retry, `c` or Esc MUST cancel the run; [S2] `m` MUST open the picker at model level (change model) and `p` at engine level (change provider). Other keys MUST NOT answer the alert."
-assert s.count(old)==1
-s=s.replace(old, old+" The letter keys (`r`, `c`, and [S2] `m`, `p`) MUST act only while the composer is empty or after an arm delay (as approvals), so text being typed cannot pick an option (key audit, 2026-10-29).")
-s=s.rstrip("\n")+"\n"+open('/dev/stdin').read()
-open(p,'w').write(s)
 
 ## MODIFIED Requirements
 
