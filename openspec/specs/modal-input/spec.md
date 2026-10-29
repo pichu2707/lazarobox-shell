@@ -11,7 +11,7 @@ In TERMINAL every key except the prefix MUST be delivered to the focused pane. F
 
 Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY, RESIZE and in MENU for navigation and cycling keys only; it MUST be ignored for Enter and Esc in MENU, for `v`, `V`, `y`, Esc, `q` and `i` in COPY, and in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action, confirms, toggles a selection, yanks or exits. On a chat pane Repeat is handled like Press for editing and scrolling keys, and ignored for Enter (send), Esc and Ctrl+C (cancel), Ctrl+Y and Ctrl+B (yank).
 
-A held key MUST act once wherever only a Press may act. Terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, so a Press of the identical key (same code and modifiers) that arrives within 500 ms of the previous key event (inclusive; every event of the hold renews the window) is part of the hold. Any other key, a Release of that key, a paste, or a gap over 500 ms ends the hold. MENU, every confirmation and the chat pane (the conversation view, approval prompts, the batch and commit reviews, the `engram serve` offer, the conversation list and the tag, note and summary editors) MUST handle a Press that is part of a hold like a Repeat: a held key never saves, cancels, discards, sends, yanks, toggles or answers more than once, and a key held from before a prompt opened never answers it once it arms. Typing and navigation keys act on every Press as before. Shell panes, PREFIX, group pending and COPY keep the Repeat rule above. Tradeoff: a deliberate second press of the same decision key within 500 ms of the first is dropped too (press it again after a pause).
+A held key MUST act once wherever only a Press may act. Terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, so a Press of the identical key (same code and modifiers) that arrives within 500 ms of the previous key event (inclusive; every event of the hold renews the window) is part of the hold. Any other key, a Release of that key, a paste, or a gap over 500 ms ends the hold. MENU, every confirmation and the chat pane (the conversation view, approval prompts, the batch and commit reviews, the `engram serve` offer, the conversation list and the tag, note and summary editors) MUST handle a Press that is part of a hold like a Repeat: a held key never saves, cancels, discards, sends, yanks, toggles or answers more than once, and a key held from before a prompt opened never answers it once it arms: a prompt arms 800 ms after it opened, later than the usual OS initial repeat delay (X11 660 ms, KDE 600 ms), so the first repeat, which comes past the hold window and reads as a new press, still finds it unarmed. An OS repeat delay over 800 ms can answer it once. Typing and navigation keys act on every Press as before. Shell panes, PREFIX, group pending and COPY keep the Repeat rule above. Tradeoff: a deliberate second press of the same decision key within 500 ms of the first is dropped too (press it again after a pause).
 
 A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank), closed MENU, answered a confirmation or left RESIZE MUST NOT leak into TERMINAL: while it is held (its Repeat events, or its Presses within the hold window) it MUST be dropped, until its Release, any other Press, a paste, or a gap over 500 ms. A yank that leaves COPY open (selection over the cap, or no text) does not start it. Tradeoff: a deliberate retype of that key within 500 ms is dropped too.
 
@@ -28,9 +28,14 @@ Ctrl+H MUST act as Backspace in every text field: the chat composer, the note, s
 - THEN no action is dispatched and the state is unchanged
 
 #### Scenario: A held decision key acts once [auto]
-- GIVEN a terminal that sends a held key as Presses, and a tool approval prompt that arms 400 ms after it opened
+- GIVEN a terminal that sends a held key as Presses, and a tool approval prompt that arms 800 ms after it opened
 - WHEN `y`, `n` or Esc arrives as a Press every 50 ms from the moment the prompt opened, for 1 s
 - THEN none of them answers the prompt, and a new Press more than 500 ms after the last one answers it
+
+#### Scenario: The first OS repeat does not answer a prompt [auto]
+- GIVEN a tool approval prompt that opened at t0, and a key held from t0+100 ms with an OS initial repeat delay of 660 ms
+- WHEN `y`, `n` or Esc arrives as a Press at t0+100 ms, then at t0+760 ms and every 25 ms after it until t0+1500 ms
+- THEN none of them answers the prompt
 
 #### Scenario: A held Esc backs out of a picker once [auto]
 - GIVEN MENU at the model level of a task picker
