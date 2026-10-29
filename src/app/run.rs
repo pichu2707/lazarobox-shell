@@ -8,8 +8,9 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_KEYS, Origin, Press,
-            READ_KEYS, RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_CHECKING_KEYS,
+            FOLDER_KEYS, Origin, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS,
+            exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -542,10 +543,23 @@ impl App {
             }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
-            ApprovalAsk::Folder { from, to, note } => Some(ApprovalPrompt {
+            ApprovalAsk::Folder {
+                from,
+                to,
+                note,
+                checking,
+            } => Some(ApprovalPrompt {
                 target: "Change folder?".to_owned(),
-                command: format!("{from} -> {}", sanitize::clean(&to.to_string_lossy())),
-                keys: FOLDER_KEYS,
+                command: if *checking {
+                    format!("checking {}…", sanitize::clean(&to.to_string_lossy()))
+                } else {
+                    format!("{from} -> {}", sanitize::clean(&to.to_string_lossy()))
+                },
+                keys: if *checking {
+                    FOLDER_CHECKING_KEYS
+                } else {
+                    FOLDER_KEYS
+                },
                 armed,
                 why: None,
                 notice: note.clone(),

@@ -252,3 +252,54 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 - GIVEN `[ai]\nnotify = "yes"` (or an integer, or a table)
 - WHEN the config is read
 - THEN notify is `false` and the problem is `ai.notify: expected a boolean`
+
+### Requirement: Managed llama-server
+`[ai.servers.llamacpp]` MAY hold `managed` (boolean, default `false`) and `model` (string, the path of the model file `llama-server` loads, used as written: it SHOULD be absolute, since `~` is not expanded and a relative path is read from lazarobox's working directory). With `managed = true` and a non-empty `model`, lazarobox manages the server (see chat-engines), and llamacpp's port defaults to 39281 instead of 8080; `port` still overrides it. Under any other server id, `managed` and `model` MUST be ignored like any unknown key. A wrong value MUST leave the server unmanaged and report one problem under the existing startup-notice rules: `ai.servers.llamacpp.managed: expected true or false`, `ai.servers.llamacpp.model: expected a path to a model file` (also when `managed` is off), or `ai.servers.llamacpp.model: required when managed = true` (missing or empty).
+
+#### Scenario: A managed llama-server is opt-in [auto]
+- GIVEN no `managed`, `managed = false`, or a `model` without `managed`
+- WHEN it is parsed
+- THEN nothing is managed, llamacpp keeps its port and no notice is produced
+
+#### Scenario: A managed llama-server has its own port [auto]
+- GIVEN `managed = true` and `model = "/m/q.gguf"`
+- WHEN it is parsed
+- THEN the server is managed with that model on port 39281, or on `port` when it is set
+
+#### Scenario: A wrong managed value turns it off with its problem [auto]
+- GIVEN `managed = "yes"`, `managed = true` without a model or with `model = ""`, or `model = 1`
+- WHEN it is parsed
+- THEN nothing is managed, llamacpp keeps port 8080 and the notice names the matching problem
+
+### Requirement: Server ports
+The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) with `port` (integer from 1 to 65535, default the catalog port). Detection and chat both use it, always on `127.0.0.1`. Unknown ids and unknown keys under `ai.servers` MUST be ignored. A wrong type or out-of-range value MUST fall back to the catalog port for that server only and report a problem under the existing startup-notice rules, with the problems `ai.servers.<id>.port: expected an integer from 1 to 65535`, `ai.servers.<id>: expected a table` when the server entry is not a table, and `ai.servers: expected a table` when `ai.servers` is not a table. The menu MUST NOT write `ai.servers` and every save MUST keep it byte for byte. The ports are read at startup.
+
+#### Scenario: Server ports default to the catalog [auto]
+- GIVEN a file with no `[ai.servers]`, or an empty one
+- WHEN it is parsed
+- THEN the ports are 11434, 1234, 8080 and 8000 and no notice is produced
+
+#### Scenario: Server ports are read [auto]
+- GIVEN `[ai.servers.llamacpp] port = 39080` and `[ai.servers.ollama] port = 11500`
+- WHEN it is parsed
+- THEN those two servers use those ports and the others keep their catalog port
+
+#### Scenario: Unknown servers and keys are ignored [auto]
+- GIVEN `[ai.servers.claude]`, `[ai.servers.nope]` and `[ai.servers.vllm]` with `port = 8001` and `host = "0.0.0.0"`
+- WHEN it is parsed
+- THEN only vllm changes (port 8001, host unchanged) and no notice is produced
+
+#### Scenario: A wrong server value falls back alone [auto]
+- GIVEN `ai.servers = 1`, `[ai.servers] llamacpp = 39080`, `port = 0`, `port = 70000` and `port = "39080"` in separate files
+- WHEN each is parsed
+- THEN every server keeps its catalog port and the notice names the matching problem
+
+#### Scenario: A turn goes to the configured port [auto]
+- GIVEN llamacpp and ollama configured on two different fake servers
+- WHEN a llamacpp turn runs
+- THEN only the llamacpp fake receives a connection
+
+#### Scenario: Saves keep the table [auto]
+- GIVEN a file with commented `[ai.servers.*]` tables, one of them invalid
+- WHEN the menu saves other keys
+- THEN the tables are unchanged byte for byte, and a file without them gains none
