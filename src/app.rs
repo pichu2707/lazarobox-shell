@@ -13,6 +13,7 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            folder::{Probed, Purpose as FolderPurpose, Refusal},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -54,6 +55,7 @@ mod chat;
 mod chat_copy;
 mod compact;
 mod context;
+mod folder;
 mod history;
 mod hub;
 mod install;
@@ -167,6 +169,13 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// The answer to `Effect::ProbeFolder`: the resolved folder and its
+    /// verdict, or why it is refused.
+    FolderProbed {
+        pane: PaneId,
+        purpose: FolderPurpose,
+        result: Result<Probed, Refusal>,
+    },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
     /// The store thread answered a command of a pane.
@@ -360,6 +369,13 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Resolve and judge a folder of chat `pane` (chat-folder): the runtime
+    /// answers with one `AppEvent::FolderProbed`.
+    ProbeFolder {
+        pane: PaneId,
+        path: PathBuf,
+        purpose: FolderPurpose,
+    },
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
     BatchClose(PaneId),
@@ -748,6 +764,13 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// The folder a resumed conversation was stored with while the runtime
+    /// probes it, by chat: `(token, conversation, stored folder)`.
+    resume_folders: HashMap<PaneId, (u64, i64, PathBuf)>,
+    /// The `/cd` a chat waits for the probe of.
+    cd_requests: HashMap<PaneId, folder::CdRequest>,
+    /// The last token handed to a folder probe.
+    folder_seq: u64,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -869,6 +892,9 @@ impl App {
             menu: None,
             launch_cwd: None,
             home: None,
+            resume_folders: HashMap::new(),
+            cd_requests: HashMap::new(),
+            folder_seq: 0,
             hostname: None,
             dir_exists: |_| true,
             shell: None,
@@ -1653,6 +1679,11 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
+            AppEvent::FolderProbed {
+                pane,
+                purpose,
+                result,
+            } => self.on_folder_probed(pane, purpose, result),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -2348,6 +2379,7 @@ impl App {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_folder_state(id);
             self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
@@ -2560,6 +2592,7 @@ impl App {
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_folder_state(id);
                 self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
@@ -3140,13 +3173,16 @@ mod app_tests {
         let replies = [
             MemReply::Project {
                 pane: gone,
+                epoch: 0,
                 result: Err(ProjectError::NotGit),
             },
             MemReply::Context {
                 pane: gone,
+                epoch: 0,
                 block: None,
             },
             MemReply::Unavailable {
+                epoch: None,
                 pane: Some(gone),
                 reason: Reason::Busy,
             },
@@ -8134,6 +8170,9 @@ mod app_tests {
 
     /// A resumed conversation and its engram session (engram-memory 9.6).
     mod chat_resume_memory;
+
+    /// The chat folder: busy refusals and the change (chat-folder).
+    mod chat_folder;
 
     /// The update notice: statusline mark and menu note.
     mod update;

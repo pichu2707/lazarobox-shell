@@ -135,6 +135,7 @@ mod tests {
     fn resolve() -> MemCmd {
         MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         }
     }
@@ -233,6 +234,7 @@ mod tests {
         assert_eq!(
             rx.try_recv().expect("an answer at once"),
             MemReply::Unavailable {
+                epoch: Some(0),
                 pane: Some(PaneId::FIRST),
                 reason: Reason::RestartNeeded,
             }

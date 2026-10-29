@@ -455,6 +455,8 @@ fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
         extras: vec!["sql".into()],
         messages: Vec::new(),
         session: None,
+        folder: None,
+        skipped: 0,
     }));
     press(&mut a, "T");
     assert_eq!(editor_text(&a), "proj, sql");
@@ -598,6 +600,7 @@ fn with_memory() -> App {
     a.update(AppEvent::Memory(
         crate::core::ai::memory::port::MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok("lazarobox-shell".into()),
         },
     ));

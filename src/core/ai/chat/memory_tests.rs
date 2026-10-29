@@ -266,3 +266,73 @@ fn a_system_line_is_added_to_the_transcript() {
     );
     assert_ne!(state.generation(), generation);
 }
+
+// a folder change resets the memory of the chat (chat-folder D6) -------------
+
+fn known_project(state: &mut ChatState) {
+    state.start_resolving(false);
+    state.project_resolved(Ok("old".into()));
+    state.start_context_at(Instant::now());
+    let text = "<project-memory>- [decision] **A**</project-memory>".to_owned();
+    state.inject_memory(crate::core::ai::memory::context::ContextBlock {
+        bytes: text.len(),
+        notes: 1,
+        text,
+    });
+    state.finish_context();
+    state.degrade_once("memory unavailable".into());
+}
+
+#[test]
+fn a_folder_change_forgets_the_project_the_block_and_the_degraded_line() {
+    let mut state = chat();
+    known_project(&mut state);
+    assert_eq!(state.project(), Some("old"));
+    let epoch = state.memory_epoch();
+    state.reset_memory_for_folder();
+    assert_eq!(state.memory_epoch(), epoch + 1);
+    assert_eq!(state.readiness(), &Readiness::Unknown);
+    assert!(state.memory.injected().is_none());
+    assert!(
+        !state
+            .entries()
+            .iter()
+            .any(|e| matches!(e, Entry::Memory(_)))
+    );
+    // The context may be asked again, and the degraded line shown again.
+    assert!(state.start_context_at(Instant::now()));
+    assert!(state.degrade_once("memory unavailable".into()));
+}
+
+#[test]
+fn a_folder_change_leaves_the_session_to_be_replaced_by_the_next_one() {
+    let mut state = chat();
+    state.adopt_session("lazarobox-aa", "old");
+    assert!(
+        state
+            .take_session_link()
+            .is_some_and(|(_, replace)| !replace)
+    );
+    state.reset_memory_for_folder();
+    assert!(state.session().is_none());
+    assert!(state.adopt_session("lazarobox-bb", "new"));
+    let (session, replace) = state.take_session_link().expect("to link");
+    assert_eq!((session.project.as_str(), replace), ("new", true));
+    assert!(state.take_session_link().is_none(), "once");
+}
+
+#[test]
+fn the_epoch_wraps_instead_of_overflowing() {
+    let mut state = chat();
+    state.memory.epoch = u32::MAX;
+    state.reset_memory_for_folder();
+    assert_eq!(state.memory_epoch(), 0);
+}
+
+#[test]
+fn set_folder_resets_the_memory_too() {
+    let mut state = chat();
+    known_project(&mut state);
+    state.set_folder("/w/b".into());
+    assert_eq!(state.readiness(), &Readiness::Unknown);
+}

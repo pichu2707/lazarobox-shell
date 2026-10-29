@@ -6,6 +6,7 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -139,6 +140,18 @@ pub enum ApprovalAsk {
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+    /// Change the chat folder (the user's `/cd`, never a tool call). `from`
+    /// is the current folder as one sanitized line, `to` the resolved folder
+    /// that becomes the chat's on `y`, and `note` a fact the user must see
+    /// (a broad folder). Only `y` answers; every other key cancels. After
+    /// `y` the ask stays up with `checking` set while the folder is resolved
+    /// once more: only Esc answers then.
+    Folder {
+        from: String,
+        to: PathBuf,
+        note: Option<String>,
+        checking: bool,
+    },
 }
 
 /// Where a read leads, as the host found it on the real path (every link
@@ -729,6 +742,10 @@ pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 pub const READ_KEYS: &str = "y read it · n deny";
 /// The keys of a search prompt.
 pub const SEARCH_KEYS: &str = "y search · n deny";
+/// The keys of the folder prompt: nothing but `y` changes it.
+pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
+/// The keys of the folder prompt while the folder is checked after `y`.
+pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 

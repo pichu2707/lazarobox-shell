@@ -152,7 +152,7 @@ pub fn check_path(home: &Path, real: &Path) -> PathVerdict {
 
 /// Removes `.` and resolves `..` by text alone, without touching the disk.
 /// A `..` at the root stays at the root.
-fn normalize(path: &Path) -> PathBuf {
+pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
@@ -375,6 +375,12 @@ impl SecretRoots {
         self.roots
             .iter()
             .any(|root| starts_with_folded(root, dir, fold))
+    }
+
+    /// Whether an already resolved path is (under) the real target of a secret
+    /// root, wherever it lies. Pure.
+    pub fn holds_secret(&self, real: &Path) -> bool {
+        self.under_root(real)
     }
 
     fn under_root(&self, real: &Path) -> bool {
