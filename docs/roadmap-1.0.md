@@ -1,84 +1,114 @@
 # Roadmap to 1.0.0
 
-Status: draft, 2026-10-25. Current release: 0.23.0.
+Status: draft, 2026-10-29. Current release: 0.30.0.
 
 ## What 1.0 promises
 
 **A coding agent in the terminal that is stable and safe.** From a chat pane, a model can
 search the project, write files behind a reviewed batch, run allowed commands in a sandbox,
-and use git, with the user approving every change that touches disk or history.
+and use git, with the user approving every change that touches disk or history. The chat
+and its tools work wherever lazarobox is launched.
 
 1.0 also promises stability:
-- no breaking change to `config.toml`, to the chat history database or to the key bindings
-  without a migration;
+- no breaking change to `config.toml`, to the chat history database, to the key bindings
+  or to the CLI flags without a migration;
 - documented security boundaries.
 
 The agent orchestrator (several coordinated AIs) is **1.1**, built on top of these tools.
 
 ## Scope
 
-### 1. coding-tools (blocking)
+### 1. coding-tools: close (blocking)
 
-Change: `openspec/changes/coding-tools`. Chain: `feat/coding-tools-*` on the tracker
-`feat/coding-tools`.
+Change: `openspec/changes/coding-tools`.
 
-| Milestone | Release | Slices | State |
-|---|---|---|---|
-| P0, T, M1 search | 0.23.0 | P0a, P0b, T, M1-a..c | Published |
-| M2 write | 0.24.0 | W-a..W-e4 | Open PRs #310, #312-#317 (W-e4 in review fixes) |
-| | | W-f, W-g, W-h, M5-a | To do (W-f..W-h edit `host.rs`) |
-| M3 run | 0.25.0 | X-a, X-b, X-c1, X-c2, X-c3, X-d1, X-d2 | To do |
-| M4 git | 0.26.0 | G-a, G-b, G-c, G-d, M5-b | To do |
-| Close | | Z.1 archive `agent-tools`, then `coding-tools`; Z.2 repoint orchestrator deps; Z.3 | To do |
-
-There is a go/no-go checkpoint on the review UX after W-h, using the app for real.
-
-**Remaining: 16 PRs**, about 6,200 lines by the plan's estimates. Real slices have come in
-above estimate, and 2 of the last 4 needed a size exception.
-
-### 2. Open manual checks and bugs (blocking)
-
-| Item | Where | Owner |
+| Milestone | Release | State |
 |---|---|---|
-| Issue #180: AI models not detected correctly | GitHub | User |
-| macOS Seatbelt checklist sent to the #180 tester (4.6) | `macos-seatbelt-jail` | User, waiting on tester |
-| Real `llama-server` model pick flow (1.6) | `llamacpp-pick-model` | User |
-| Kitty, Landlock and per-engine final passes (1b.11, 2d.9, 2d.10, 2e-3.13, 4c.6, 4c.7) | `agent-tools` | User, on a real machine |
+| M1 search | 0.23.0 | Published |
+| M2 write | 0.24.0 | Published |
+| M3 run | 0.25.0 | Published |
+| M4 git | 0.26.0 | Published |
+| Everything else | 0.29.0 | Finished |
 
-`agent-tools` 2i.1 (opencode adapter) is deferred and not part of 1.0.
+Remaining:
 
-### 3. Stabilization (blocking)
+| Item | What |
+|---|---|
+| Z.1 | Archive `agent-tools`, then `coding-tools` |
+| Z.2 | Repoint the orchestrator dependencies |
+| Z.3 | Decided: `Evidence.digest` is the cleaned output tail |
+
+### 2. chat-folder (blocking)
+
+Change: `openspec/changes/chat-folder`. Closes issue #394 (`/cd`).
+
+**Goal:** the chat and its tools work wherever lazarobox is launched: rofi, desktop
+launcher or terminal.
+
+| PR | Content | Lines |
+|---|---|---|
+| A1 | Validator, probe, `set_folder`, busy state, memory epoch | ~345 |
+| A2 | `/cd` + confirm, folder in `chat.db`, resume | ~320 |
+| A3 | Start dir: `--dir`, `[workspace] dir`, `install-desktop --dir` (independent) | ~290 |
+| B1 | Picker core | ~330 |
+| B2 | Picker integration + README | ~285 |
+
+Order: A1 → A2 → B1 → B2. A3 runs in parallel.
+
+### 3. Close open SDD changes (blocking)
+
+Finish or classify the loose tasks, then archive every completed change.
+
+- `llamacpp-tools`
+- `feedback`
+- `hf-download`
+- `llama-server-install`
+- `managed-llama-server-options`
+- `process-watcher`
+- `quit-names-pane-jobs`
+
+### 4. Open manual checks (blocking)
+
+| Item | Where | Owner | State |
+|---|---|---|---|
+| Issue #180: AI models not detected correctly | GitHub | User | Closed (done) |
+| macOS Seatbelt checklist (4.6) | `macos-seatbelt-jail` | User | Open |
+| Real `llama-server` model pick flow (1.6) | `llamacpp-pick-model` | User | Open |
+| Kitty, Landlock and per-engine final passes (1b.11, 2d.9, 2d.10, 2e-3.13, 4c.6, 4c.7) | `agent-tools` | User, on a real machine | Open |
+
+### 5. Stabilization (blocking)
 
 - **Config freeze:** review every `config.toml` key and default. Remove or rename what is
   odd now, because after 1.0 it needs a migration.
 - **Storage:** check that the chat history schema has a versioned migration path.
-- **Keys:** audit the key table across chat, review view, menu and panes for conflicts. This
-  includes Ctrl+G now and Ctrl+O for the 1.1 orchestrator.
-- **Docs:** README and threat model for all four tool families (M5-a, M5-b), an upgrade
-  note, and the macOS tester checklist.
+- **Keys:** audit the key table across chat, review view, menu and panes for conflicts.
+  Ctrl+G is in use now. Ctrl+O is reserved for the 1.1 orchestrator.
+- **CLI flags:** review every flag and subcommand option, because they are now stable.
+- **Docs:** README and threat model, an upgrade note, and the macOS tester checklist.
 - **Release candidate:** ship `1.0.0-rc.1` to crates.io, run it daily for a few days on
   Linux and macOS, then ship `1.0.0`.
 
 ### Out of scope (1.x)
 
-- The agent orchestrator, plus worker batches (deferred D20 in coding-tools): 1.1.
-- Issue #282, Hugging Face model download.
+- The agent orchestrator, plus worker batches: 1.1.
+- Issue #366, chat memory sync to Google Drive.
+- Issue #345, the OpenCode engine (and `agent-tools` 2i.1).
 - Issue #268, the WSL Start-menu app.
-- `agent-tools` 2i.1, the opencode adapter.
+
+Issue #282 (Hugging Face download) shipped, so it is no longer listed.
 
 ## Order
 
-1. Finish M2: W-f, W-g, W-h, the UX checkpoint, M5-a. Merge the chain, release 0.24.0.
-2. M3 run: X-a..X-d2. Release 0.25.0.
-3. M4 git: G-a..G-d, M5-b. Release 0.26.0. Z.1..Z.3.
-4. Stabilization, plus the manual checks and #180 in parallel (user).
-5. `1.0.0-rc.1`, then `1.0.0`.
+1. chat-folder: A1 and A3 in parallel, then A2, B1, B2.
+2. Close the SDD changes (including Z.1..Z.3).
+3. Stabilization, plus the user manual checks in parallel.
+4. `1.0.0-rc.1`, then `1.0.0`.
 
 ## Risks
 
-- **`host.rs` slices** (W-f..W-h, X-d1, X-d2, G-c, G-d): each one needs a seam spike first.
-  The orchestrator chain rebases on them later, for 1.1.
-- **M3 sandbox:** it touches the jail on both Linux (Landlock) and macOS (Seatbelt). macOS
-  coverage depends on CI and the external tester.
+- **chat-folder must not touch `host/*.rs`.** That is the rebase point with the
+  agent-orchestrator chain.
+- **`chat.db` gets a new nullable `folder` column (A2).** It must land before the storage
+  freeze.
 - **macOS-only failures** that Linux cannot see, such as case-insensitive file systems or
-  `/tmp`. These have already happened twice in M2, so watch the macOS CI on every PR.
+  `/tmp`. These have already happened twice, so watch the macOS CI on every PR.
