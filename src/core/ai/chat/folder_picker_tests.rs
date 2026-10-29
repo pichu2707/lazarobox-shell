@@ -71,6 +71,13 @@ fn at_most_twelve_rows() {
     assert_eq!(rows[0].path, PathBuf::from("/h/00"));
 }
 
+fn names(names: &[String]) -> Completion {
+    Completion {
+        names: names.to_vec(),
+        truncated: false,
+    }
+}
+
 fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -93,8 +100,8 @@ fn row(path: &str) -> Row {
 }
 
 fn picker(rows: &[&str]) -> FolderPicker {
-    let mut p = FolderPicker::new(PathBuf::from("/h"), Some(PathBuf::from("/h/base")));
-    p.set_rows(rows.iter().map(|r| row(r)).collect());
+    let mut p = FolderPicker::new(1, PathBuf::from("/h"), Some(PathBuf::from("/h/base")));
+    p.set_rows(1, rows.iter().map(|r| row(r)).collect());
     p
 }
 
@@ -107,9 +114,9 @@ fn probed(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
 
 #[test]
 fn rows_arrive_with_the_first_selected_and_up_down_move_within_them() {
-    let mut p = FolderPicker::new(PathBuf::from("/h"), None);
+    let mut p = FolderPicker::new(1, PathBuf::from("/h"), None);
     assert!(p.gathering());
-    p.set_rows(vec![row("/h/a"), row("/h/b"), row("/h/c")]);
+    p.set_rows(1, vec![row("/h/a"), row("/h/b"), row("/h/c")]);
     assert!(!p.gathering());
     assert_eq!(p.selected(), 0);
     key(&mut p, KeyCode::Up);
@@ -200,7 +207,7 @@ fn a_refused_path_keeps_the_text_and_says_why() {
     let mut p = picker(&["/h/a"]);
     type_in(&mut p, "/etc");
     key(&mut p, KeyCode::Enter);
-    assert_eq!(p.on_probed(probed("/etc", Verdict::Outside)), None);
+    assert_eq!(p.on_probed(1, probed("/etc", Verdict::Outside)), None);
     assert_eq!(p.field().text(), "/etc");
     assert_eq!(p.error(), Some("not allowed"));
     // The next edit clears the reason and the picker decides again.
@@ -210,7 +217,7 @@ fn a_refused_path_keeps_the_text_and_says_why() {
         key(&mut p, KeyCode::Enter),
         PickerOutcome::Probe(_)
     ));
-    assert_eq!(p.on_probed(Err(Refusal::NotFound)), None);
+    assert_eq!(p.on_probed(1, Err(Refusal::NotFound)), None);
     assert_eq!(p.error(), Some("folder not found"));
 }
 
@@ -219,11 +226,11 @@ fn an_accepted_folder_comes_back_and_a_late_answer_is_ignored() {
     let mut p = picker(&["/h/a"]);
     key(&mut p, KeyCode::Enter);
     assert_eq!(
-        p.on_probed(probed("/h/a", Verdict::Concrete)),
+        p.on_probed(1, probed("/h/a", Verdict::Concrete)),
         Some(PathBuf::from("/h/a"))
     );
     // Nothing is being probed any more.
-    assert_eq!(p.on_probed(probed("/h/a", Verdict::Concrete)), None);
+    assert_eq!(p.on_probed(1, probed("/h/a", Verdict::Concrete)), None);
 }
 
 #[test]
@@ -254,9 +261,13 @@ fn tab_asks_for_the_directories_of_the_typed_folder() {
 fn a_completion_extends_the_field_to_the_common_prefix() {
     let mut p = picker(&[]);
     type_in(&mut p, "~/pro");
-    assert!(p.on_completed("~/pro", &["project-a".into(), "project-b".into()]));
+    assert!(p.on_completed(
+        1,
+        "~/pro",
+        &names(&["project-a".into(), "project-b".into()])
+    ));
     assert_eq!(p.field().text(), "~/project-");
-    assert!(p.on_completed("~/project-", &["project-a".into()]));
+    assert!(p.on_completed(1, "~/project-", &names(&["project-a".into()])));
     assert_eq!(p.field().text(), "~/project-a/");
 }
 
@@ -266,6 +277,82 @@ fn a_stale_completion_is_dropped() {
     type_in(&mut p, "~/pro");
     key(&mut p, KeyCode::Tab);
     type_in(&mut p, "x");
-    assert!(!p.on_completed("~/pro", &["project".into()]));
+    assert!(!p.on_completed(1, "~/pro", &names(&["project".into()])));
     assert_eq!(p.field().text(), "~/prox");
+}
+
+#[test]
+fn one_completion_is_in_flight_and_a_held_tab_asks_for_none() {
+    let mut p = picker(&[]);
+    type_in(&mut p, "~/pro");
+    assert_eq!(p.on_key(&press(KeyCode::Tab), true), PickerOutcome::Handled);
+    assert!(matches!(
+        key(&mut p, KeyCode::Tab),
+        PickerOutcome::Complete { .. }
+    ));
+    // Waiting for the answer: another Tab asks for nothing.
+    assert_eq!(key(&mut p, KeyCode::Tab), PickerOutcome::Handled);
+    assert!(p.on_completed(1, "~/pro", &names(&[])));
+    assert!(matches!(
+        key(&mut p, KeyCode::Tab),
+        PickerOutcome::Complete { .. }
+    ));
+}
+
+#[test]
+fn a_stale_answer_still_frees_the_completion() {
+    let mut p = picker(&[]);
+    type_in(&mut p, "~/pro");
+    key(&mut p, KeyCode::Tab);
+    type_in(&mut p, "x");
+    assert!(!p.on_completed(1, "~/pro", &names(&["project".into()])));
+    assert!(matches!(
+        key(&mut p, KeyCode::Tab),
+        PickerOutcome::Complete { .. }
+    ));
+}
+
+#[test]
+fn truncated_names_do_not_extend_the_field() {
+    let mut p = picker(&[]);
+    type_in(&mut p, "~/d");
+    let cut = Completion {
+        names: vec!["d001".into(), "d002".into()],
+        truncated: true,
+    };
+    assert!(p.on_completed(1, "~/d", &cut));
+    assert_eq!(p.field().text(), "~/d");
+}
+
+#[test]
+fn answers_for_another_picker_are_dropped() {
+    let mut p = picker(&["/h/a"]);
+    p.set_rows(2, vec![row("/h/z")]);
+    assert_eq!(p.rows(), [row("/h/a")]);
+    key(&mut p, KeyCode::Enter);
+    assert_eq!(p.on_probed(2, probed("/h/a", Verdict::Concrete)), None);
+    assert_eq!(
+        p.on_probed(1, probed("/h/a", Verdict::Concrete)),
+        Some(PathBuf::from("/h/a"))
+    );
+    let mut q = picker(&[]);
+    type_in(&mut q, "~/pro");
+    key(&mut q, KeyCode::Tab);
+    assert!(!q.on_completed(2, "~/pro", &names(&["project".into()])));
+    assert_eq!(q.field().text(), "~/pro");
+    assert!(q.on_completed(1, "~/pro", &names(&["project".into()])));
+}
+
+#[test]
+fn the_typed_text_is_trimmed_before_it_is_completed() {
+    let mut p = picker(&[]);
+    type_in(&mut p, "  ~/pro ");
+    assert_eq!(
+        key(&mut p, KeyCode::Tab),
+        PickerOutcome::Complete {
+            text: "~/pro".into(),
+            dir: PathBuf::from("/h"),
+            prefix: "pro".into()
+        }
+    );
 }

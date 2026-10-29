@@ -61,6 +61,19 @@ pub fn merge(found: Vec<(Source, Result<Probed, Refusal>)>) -> Vec<Row> {
     rows
 }
 
+/// How many recent folders to ask the store for: more than [`ROWS_MAX`], since
+/// `merge` drops what a chat may not use before it caps the rows.
+pub const RECENT_ASK: usize = 40;
+
+/// The directory names a completion found.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Completion {
+    pub names: Vec<String>,
+    /// More matched than were listed: the names are not all of them, so they
+    /// say nothing about a common prefix.
+    pub truncated: bool,
+}
+
 /// What the picker is waiting for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -92,6 +105,9 @@ pub enum PickerOutcome {
 /// The picker state: candidate rows, one selected, and a typed path.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FolderPicker {
+    /// Names this picker; answers for another (a closed one on the same
+    /// pane) are dropped.
+    id: u64,
     home: PathBuf,
     /// What a relative typed path reads against.
     base: Option<PathBuf>,
@@ -100,11 +116,14 @@ pub struct FolderPicker {
     field: Composer,
     error: Option<&'static str>,
     state: State,
+    /// A completion was asked for and has not answered.
+    completing: bool,
 }
 
 impl FolderPicker {
-    pub fn new(home: PathBuf, base: Option<PathBuf>) -> Self {
+    pub fn new(id: u64, home: PathBuf, base: Option<PathBuf>) -> Self {
         Self {
+            id,
             home,
             base,
             rows: Vec::new(),
@@ -112,7 +131,12 @@ impl FolderPicker {
             field: Composer::with_cap(FIELD_CAP),
             error: None,
             state: State::Gathering,
+            completing: false,
         }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -138,7 +162,10 @@ impl FolderPicker {
     }
 
     /// The gathered rows arrived: row 0 is pre-selected.
-    pub fn set_rows(&mut self, rows: Vec<Row>) {
+    pub fn set_rows(&mut self, id: u64, rows: Vec<Row>) {
+        if id != self.id {
+            return;
+        }
         self.rows = rows;
         self.selected = 0;
         if self.state == State::Gathering {
@@ -159,7 +186,9 @@ impl FolderPicker {
         }
         match code {
             KeyCode::Enter if mods == KeyModifiers::NONE && !repeat => return self.choose(),
-            KeyCode::Tab if mods == KeyModifiers::NONE => return self.complete(),
+            KeyCode::Tab if mods == KeyModifiers::NONE && !repeat && !self.completing => {
+                return self.complete();
+            }
             KeyCode::Up if plain => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down if plain => {
                 self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1));
@@ -207,7 +236,7 @@ impl FolderPicker {
 
     /// Tab: the part of the text up to the last `/` names the folder to list.
     fn complete(&mut self) -> PickerOutcome {
-        let text = self.field.text();
+        let text = self.field.text().trim().to_owned();
         let (dir_part, prefix) = text.split_at(text.rfind('/').map_or(0, |at| at + 1));
         let dir = if dir_part.is_empty() {
             self.base.clone()
@@ -215,11 +244,14 @@ impl FolderPicker {
             expand(dir_part, &self.home, self.base.as_deref())
         };
         match dir {
-            Some(dir) => PickerOutcome::Complete {
-                dir,
-                prefix: prefix.to_owned(),
-                text,
-            },
+            Some(dir) => {
+                self.completing = true;
+                PickerOutcome::Complete {
+                    dir,
+                    prefix: prefix.to_owned(),
+                    text,
+                }
+            }
             None => {
                 self.error = Some(Refusal::NotFound.text());
                 PickerOutcome::Handled
@@ -236,8 +268,8 @@ impl FolderPicker {
 
     /// The probe of the chosen folder answered. A folder the chat may use
     /// comes back to be applied; a refused one keeps the text and the reason.
-    pub fn on_probed(&mut self, result: Result<Probed, Refusal>) -> Option<PathBuf> {
-        if self.state != State::Accepting {
+    pub fn on_probed(&mut self, id: u64, result: Result<Probed, Refusal>) -> Option<PathBuf> {
+        if id != self.id || self.state != State::Accepting {
             return None;
         }
         self.state = State::Ready;
@@ -252,9 +284,17 @@ impl FolderPicker {
 
     /// The completion asked for `text` answered with `names`. A reply for
     /// text the field no longer holds is dropped (`false`).
-    pub fn on_completed(&mut self, text: &str, names: &[String]) -> bool {
-        if self.state != State::Ready || self.field.text() != text {
+    pub fn on_completed(&mut self, id: u64, text: &str, found: &Completion) -> bool {
+        if id != self.id {
             return false;
+        }
+        self.completing = false;
+        let names = &found.names;
+        if self.state != State::Ready || self.field.text().trim() != text {
+            return false;
+        }
+        if found.truncated {
+            return true;
         }
         let Some(first) = names.first() else {
             return true;
