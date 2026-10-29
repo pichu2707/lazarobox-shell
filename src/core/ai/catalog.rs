@@ -1,9 +1,11 @@
 //! Static model catalogs for the AI picker.
 //!
 //! The Ollama list is informational and may be out of date: it is never
-//! fetched or refreshed, and lazarobox never downloads, pulls or installs a
-//! model. LM Studio, llama.cpp and vLLM ids depend on local files, so they
-//! have no curated entries.
+//! fetched or refreshed. lazarobox pulls an Ollama model only from the
+//! `download from Ollama…` screens (ollama-download), which read the Ollama
+//! library page and show this list instead when the page cannot be read.
+//! LM Studio, llama.cpp and vLLM ids depend on local files, so they have no
+//! curated entries.
 
 /// Well-known Ollama tags, shown as `download required` when not detected.
 /// Informational and possibly stale. Explicit size tags avoid the

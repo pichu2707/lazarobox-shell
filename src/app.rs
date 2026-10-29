@@ -13,6 +13,7 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
+            folder::{Probed, Purpose as FolderPurpose, Refusal},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -28,6 +29,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        ollama_lib::{self, Pull},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -36,7 +38,7 @@ use crate::core::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
         join, osc52,
     },
-    keys::{encode_key, encode_paste},
+    keys::{Hold, backspace_alias, encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
         pane_at, tile,
@@ -53,6 +55,7 @@ mod chat;
 mod chat_copy;
 mod compact;
 mod context;
+mod folder;
 mod history;
 mod hub;
 mod install;
@@ -72,12 +75,6 @@ use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
-
-/// How long after leaving COPY a Press of the same key is taken as the key
-/// still being held (OS auto-repeat arrives as plain Press events when the
-/// terminal reports no event types). Trade-off: a deliberate retype of the
-/// exit key within this window is dropped.
-const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 /// The notice once the llama-server a menu save turned on answers.
@@ -173,6 +170,13 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// The answer to `Effect::ProbeFolder`: the resolved folder and its
+    /// verdict, or why it is refused.
+    FolderProbed {
+        pane: PaneId,
+        purpose: FolderPurpose,
+        result: Result<Probed, Refusal>,
+    },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
     /// The store thread answered a command of a pane.
@@ -214,12 +218,16 @@ pub enum AppEvent {
     /// The Hub answered `Effect::HubAsk` (or the request failed, with its
     /// message). It names the request it answers.
     HubReply(Ask, Result<Answer, String>),
-    /// The bytes on disk of the running Hugging Face download, and its total.
+    /// The Ollama library answered `Effect::OllamaAsk` (or the request
+    /// failed, with its message). It names the request it answers.
+    OllamaReply(ollama_lib::Ask, Result<ollama_lib::Answer, String>),
+    /// The bytes done of the running download (Hugging Face or an Ollama
+    /// pull), and its total.
     DownloadProgress {
         done: u64,
         total: u64,
     },
-    /// The running Hugging Face download ended.
+    /// The running download (Hugging Face or an Ollama pull) ended.
     DownloadEnd(End),
     /// The bytes on disk of the llama-server archive that downloads, for the
     /// request `id`.
@@ -372,6 +380,13 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Resolve and judge a folder of chat `pane` (chat-folder): the runtime
+    /// answers with one `AppEvent::FolderProbed`.
+    ProbeFolder {
+        pane: PaneId,
+        path: PathBuf,
+        purpose: FolderPurpose,
+    },
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
     BatchClose(PaneId),
@@ -441,8 +456,19 @@ pub enum Effect {
     /// runtime reports `AppEvent::DownloadProgress` and one
     /// `AppEvent::DownloadEnd`.
     Download(Box<Job>),
-    /// Stop the running Hugging Face download; its partial file stays.
+    /// Stop the running download; a Hugging Face partial file stays, and
+    /// Ollama keeps the parts it pulled.
     CancelDownload,
+    /// Ask the Ollama library, from the picker's Ollama screens; the
+    /// runtime answers with one `AppEvent::OllamaReply`.
+    OllamaAsk(ollama_lib::Ask),
+    /// Pull this model through the Ollama server on `127.0.0.1:port`.
+    /// Emitted only while no download runs; the runtime reports
+    /// `AppEvent::DownloadProgress` and one `AppEvent::DownloadEnd`.
+    Pull {
+        pull: Box<Pull>,
+        port: u16,
+    },
     /// Run one step of the llama-server install wizard, or the newer build
     /// check; the runtime answers
     /// with `AppEvent::InstallReply` (and `InstallProgress` while it
@@ -717,6 +743,8 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The `config.toml` a menu save writes, named in its notice.
+    config_path: Option<PathBuf>,
     /// The privacy notice of the rolling summary was shown in this run.
     summary_notice_shown: bool,
     /// A quiet save (the rolling summary) failed and the user was told.
@@ -747,20 +775,27 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// The folder a resumed conversation was stored with while the runtime
+    /// probes it, by chat: `(token, conversation, stored folder)`.
+    resume_folders: HashMap<PaneId, (u64, i64, PathBuf)>,
+    /// The `/cd` a chat waits for the probe of.
+    cd_requests: HashMap<PaneId, folder::CdRequest>,
+    /// The last token handed to a folder probe.
+    folder_seq: u64,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
     /// passes the real check.
     dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
-    /// The key whose Press left COPY: its Repeat events are dropped in
-    /// TERMINAL until its Release or any other Press, and so are its Presses
-    /// arriving within `HELD_EXIT_WINDOW` of the previous such event.
-    held_exit: Option<HeldExit>,
-    /// The same debounce for the one-shot keys of a chat (cancel, yank,
-    /// reasoning toggle): a terminal without key event types delivers a held
-    /// key as Presses.
-    held_chat_key: Option<HeldExit>,
+    /// The key whose Press left COPY, the menu, a confirm or RESIZE: while
+    /// it is held (see `hold`) it is dropped in TERMINAL, until its Release
+    /// or any other Press, so it never reaches the pane as typed text.
+    held_exit: Option<KeyCode>,
+    /// Tells a held key from a new press: a terminal without key event types
+    /// delivers a held key as Presses. One-shot decisions take a held key as
+    /// a repeat, so a held key acts once.
+    hold: Hold,
     /// The engines whose requests carry tools (`MCP_VERIFIED`).
     tool_engines: &'static [&'static str],
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
@@ -832,14 +867,6 @@ pub struct App {
     newer_checked: bool,
 }
 
-/// The key that left COPY and when it was last seen.
-#[derive(Debug, Clone, Copy)]
-struct HeldExit {
-    code: KeyCode,
-    modifiers: KeyModifiers,
-    last: Instant,
-}
-
 impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
@@ -860,6 +887,7 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            config_path: None,
             summary_notice_shown: false,
             summary_failure_shown: false,
             still_running: Vec::new(),
@@ -875,11 +903,14 @@ impl App {
             menu: None,
             launch_cwd: None,
             home: None,
+            resume_folders: HashMap::new(),
+            cd_requests: HashMap::new(),
+            folder_seq: 0,
             hostname: None,
             dir_exists: |_| true,
             shell: None,
             held_exit: None,
-            held_chat_key: None,
+            hold: Hold::default(),
             tool_engines: MCP_VERIFIED,
             utf8_locale: false,
             cwd_readable: cfg!(target_os = "linux"),
@@ -1063,6 +1094,12 @@ impl App {
         self.refresh_screen();
         // Nothing runs yet, so there is no PTY to tell about the new size.
         self.relayout();
+        self
+    }
+
+    /// The `config.toml` menu saves write to.
+    pub fn with_config_path(mut self, config_path: Option<PathBuf>) -> Self {
+        self.config_path = config_path;
         self
     }
 
@@ -1436,6 +1473,8 @@ impl App {
     /// Test-only: types `text` into the composer of chat pane `id`.
     #[cfg(test)]
     pub(crate) fn chat_type(&mut self, id: PaneId, text: &str) {
+        // Typed text is other keys: it ends any hold, as a paste does.
+        self.hold.end();
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.composer_mut().paste(text);
             self.dirty = true;
@@ -1651,6 +1690,11 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
+            AppEvent::FolderProbed {
+                pane,
+                purpose,
+                result,
+            } => self.on_folder_probed(pane, purpose, result),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -1664,6 +1708,12 @@ impl App {
             // Results of a save are stale when the menu is gone.
             AppEvent::ConfigSaved if self.menu.is_some() => {
                 self.dirty = true;
+                // Where the file is, so the user can find it; a notice from
+                // the save itself (the managed start) replaces it.
+                self.notice = self
+                    .config_path
+                    .as_deref()
+                    .map(|path| format!("saved to {}", self.home_label(path)));
                 self.close_menu(Outcome::Saved)
             }
             AppEvent::ConfigSaveFailed(message) => {
@@ -1736,6 +1786,7 @@ impl App {
                 }
             }
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
+            AppEvent::OllamaReply(ask, answer) => self.on_ollama_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
             AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
@@ -1798,60 +1849,60 @@ impl App {
     /// Release is always ignored. Repeat acts like Press where holding a key
     /// is meaningful (TERMINAL typing, COPY scrolling) and is dropped where a
     /// held key could trigger a one-shot decision (PREFIX, GROUP, CONFIRM).
+    /// A terminal without key event types sends a held key as Presses: the
+    /// menu, a confirm and the chat views take those as a repeat too
+    /// (`held`), so a held decision key acts once. Navigation and typing act
+    /// on every one.
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let repeat = match key.kind {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
             KeyEventKind::Release => {
-                if self.held_exit.is_some_and(|h| h.code == key.code) {
+                if self.held_exit == Some(key.code) {
                     self.held_exit = None;
                 }
-                if self.held_chat_key.is_some_and(|h| h.code == key.code) {
-                    self.held_chat_key = None;
-                }
+                self.hold.release(key.code);
                 return Vec::new();
             }
         };
-        if repeat {
-            // A held key that left COPY must not reach the shell as typed text.
-            if self.input == InputMode::Terminal
-                && self.held_exit.is_some_and(|h| h.code == key.code)
-            {
+        let held = self.hold.track(&key, (self.clock)());
+        if let Some(code) = self.held_exit {
+            // A held key that left COPY, the menu or a prompt must not reach
+            // the pane as typed text.
+            if held && code == key.code && self.input == InputMode::Terminal {
                 return Vec::new();
             }
-        } else if let Some(held) = self.held_exit.take() {
-            // Terminals that report no event types deliver auto-repeat as
-            // Presses: the same key within the window is still the hold.
-            let now = (self.clock)();
-            let same = held.code == key.code && held.modifiers == key.modifiers;
-            // `held_exit` is only armed on entering TERMINAL and every Press
-            // takes it, so the mode is always TERMINAL here.
-            debug_assert_eq!(self.input, InputMode::Terminal);
-            if same && now.saturating_duration_since(held.last) <= HELD_EXIT_WINDOW {
-                self.held_exit = Some(HeldExit { last: now, ..held });
-                return Vec::new();
+            if !repeat {
+                self.held_exit = None;
             }
         }
         self.dirty |= self.notice.take().is_some();
-        if repeat
-            && matches!(
-                self.input,
-                InputMode::Prefix | InputMode::Group(_) | InputMode::Confirm(_)
-            )
+        if repeat && matches!(self.input, InputMode::Prefix | InputMode::Group(_))
+            || held && matches!(self.input, InputMode::Confirm(_))
         {
             return Vec::new();
         }
         self.dirty = true;
-        match self.input {
-            InputMode::Terminal => self.on_terminal_key(key, repeat),
+        let modal = matches!(
+            self.input,
+            InputMode::Menu | InputMode::Confirm(_) | InputMode::Resize
+        );
+        let effects = match self.input {
+            InputMode::Terminal => self.on_terminal_key(key, held),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
             InputMode::ChatCopy(state) => self.on_chat_copy_key(state, &key, repeat),
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
-            InputMode::Menu => self.on_menu_key(&key, repeat),
+            InputMode::Menu => self.on_menu_key(&key, held),
+        };
+        // The rest of the hold of the key that closed a modal view is not
+        // typed into the pane under it.
+        if modal && self.input == InputMode::Terminal {
+            self.hold_exit(&key);
         }
+        effects
     }
 
     /// Opens the menu: captures the live config as the original.
@@ -1990,6 +2041,8 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::OllamaAsk(ask) => vec![Effect::OllamaAsk(ask)],
+            MenuCommand::Pull(pull) => self.start_pull(pull),
             MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) => {
@@ -2337,6 +2390,7 @@ impl App {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_folder_state(id);
             self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
@@ -2549,6 +2603,7 @@ impl App {
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_folder_state(id);
                 self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
@@ -2716,11 +2771,7 @@ impl App {
     }
 
     fn hold_exit(&mut self, key: &KeyEvent) {
-        self.held_exit = Some(HeldExit {
-            code: key.code,
-            modifiers: key.modifiers,
-            last: (self.clock)(),
-        });
+        self.held_exit = Some(key.code);
     }
 
     /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
@@ -2752,6 +2803,7 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
+        self.hold.end();
         if self.input == InputMode::Terminal && self.focused_is_chat() {
             self.chat_paste(text);
             return Vec::new();
@@ -2977,8 +3029,10 @@ mod app_tests {
         pty::PtyEvent,
     };
 
+    /// A test app reads the mock clock (`at`, `let_go`), so a key pressed
+    /// twice is a hold unless the test lets time pass between the presses.
     fn app() -> App {
-        App::new(80, 25)
+        timed(App::new(80, 25))
     }
 
     fn key(c: char) -> AppEvent {
@@ -3130,13 +3184,16 @@ mod app_tests {
         let replies = [
             MemReply::Project {
                 pane: gone,
+                epoch: 0,
                 result: Err(ProjectError::NotGit),
             },
             MemReply::Context {
                 pane: gone,
+                epoch: 0,
                 block: None,
             },
             MemReply::Unavailable {
+                epoch: None,
                 pane: Some(gone),
                 reason: Reason::Busy,
             },
@@ -4284,6 +4341,27 @@ mod app_tests {
         a.with_clock(mock_now)
     }
 
+    /// `HOLD_WINDOW` in ms: the same key again within it is still the hold.
+    fn hold_ms() -> u64 {
+        u64::try_from(crate::core::keys::HOLD_WINDOW.as_millis()).unwrap()
+    }
+
+    /// Lets the mock clock run past the hold window: the next key is a new,
+    /// deliberate press and not the last one still held.
+    fn let_go() {
+        NOW_MS.with(|n| n.set(n.get() + hold_ms() + 1));
+    }
+
+    /// A gate that arms at `armed` ms: `answer` 1 ms before does nothing,
+    /// the same key at `armed` is still that hold and does nothing either,
+    /// and only a new press after the hold window may act. Returns the
+    /// effects of that new press.
+    fn early_held_then_new(a: &mut App, armed: u64, answer: &AppEvent) -> Vec<Effect> {
+        assert_eq!(at(a, armed - 1, answer.clone()), vec![], "{answer:?} early");
+        assert_eq!(at(a, armed, answer.clone()), vec![], "{answer:?} held");
+        at(a, armed + hold_ms() + 1, answer.clone())
+    }
+
     fn q_pty() -> Vec<Effect> {
         vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
     }
@@ -4420,6 +4498,102 @@ mod app_tests {
             at(&mut a, 0, key('q'));
             assert_eq!(at(&mut a, 100, ev.clone()).len(), 1, "{ev:?}");
         }
+    }
+
+    // modal-input: a held key acts once. Without key event types a held key
+    // arrives as Presses, the same key again within the window.
+    #[test]
+    fn a_held_esc_backs_out_of_the_picker_once_and_keeps_the_menu() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = timed(ai_app());
+        at(&mut a, 0, ctrl_space());
+        at(&mut a, 0, key('m'));
+        at(&mut a, 0, AppEvent::EnginesDetected(machine()));
+        to_level_two(&mut a);
+        for ms in [0, 100, 200, 300] {
+            at(&mut a, ms, esc());
+        }
+        assert_eq!(a.input(), InputMode::Menu, "the draft is not discarded");
+        assert!(footer_of(&a).contains("Enter choose"), "{}", footer_of(&a));
+    }
+
+    #[test]
+    fn a_held_esc_that_closed_the_menu_never_reaches_the_pane() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = timed(launched(80, 25));
+        at(&mut a, 0, ctrl_space());
+        at(&mut a, 0, key('m'));
+        at(&mut a, 0, esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(at(&mut a, 100, esc()), vec![]);
+        assert_eq!(
+            at(&mut a, 700, esc()),
+            vec![Effect::WritePty(PaneId::FIRST, b"\x1b".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_held_key_answers_a_confirm_once() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = timed(split_right());
+        for ev in [ctrl_space(), key('w'), key('q')] {
+            at(&mut a, 0, ev);
+        }
+        // The key that opened the prompt, still held, does not decline it.
+        assert_eq!(at(&mut a, 100, key('q')), vec![]);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
+        assert!(!at(&mut a, 700, key('y')).is_empty());
+        assert!(a.pane(id2()).is_none());
+        // The `y` still held is not typed into the pane that took the focus.
+        assert_eq!(at(&mut a, 800, key('y')), vec![]);
+    }
+
+    #[test]
+    fn held_navigation_keys_still_move_in_the_menu() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = timed(menu_app());
+        let selected = |a: &App| {
+            a.menu()
+                .unwrap()
+                .rows(&a.config)
+                .into_iter()
+                .find_map(|row| match row {
+                    crate::core::menu::Row::Item {
+                        label,
+                        selected: true,
+                        ..
+                    } => Some(label.to_string()),
+                    _ => None,
+                })
+        };
+        let mut seen = vec![selected(&a)];
+        for ms in [0, 30, 60] {
+            at(&mut a, ms, key('j'));
+            seen.push(selected(&a));
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "every held j moves: {seen:?}");
+    }
+
+    #[test]
+    fn a_repeat_event_moves_but_never_closes_the_menu() {
+        let mut a = menu_app();
+        a.update(kind(KeyCode::Esc, KeyEventKind::Repeat));
+        assert_eq!(a.input(), InputMode::Menu);
+        let before = a.menu().cloned();
+        a.update(kind(KeyCode::Char('j'), KeyEventKind::Repeat));
+        assert_ne!(a.menu().cloned(), before);
+    }
+
+    // Shell panes get the byte a ^H terminal sent, as before.
+    #[test]
+    fn ctrl_h_still_reaches_a_shell_as_the_backspace_byte() {
+        let mut a = app();
+        let ctrl_h = AppEvent::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(
+            a.update(ctrl_h),
+            vec![Effect::WritePty(PaneId::FIRST, vec![0x08])]
+        );
     }
 
     // copy-mode-scrollback: a horizontal motion also brings an off-screen
@@ -4866,7 +5040,7 @@ mod app_tests {
     /// An app with no tool engine: the tests that offer tools opt in with
     /// `with_tool_engines`, so none depends on which engines are verified.
     fn launched(cols: u16, rows: u16) -> App {
-        App::new(cols, rows)
+        timed(App::new(cols, rows))
             .with_env(Some("/bin/zsh"), None, LAUNCH.into())
             .with_tool_engines(&[])
     }
@@ -6683,6 +6857,7 @@ mod app_tests {
         let mut a = menu_app();
         a.update(key('l'));
         let first = a.update(key('s'));
+        let_go();
         let second = a.update(key('s'));
         assert_eq!(first, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
         assert_eq!(second, first);
@@ -6731,6 +6906,7 @@ mod app_tests {
         a.update(key('l'));
         a.update(key('s'));
         a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
+        let_go();
         let retry = a.update(key('s'));
         assert_eq!(a.menu().and_then(MenuState::error), None, "cleared");
         assert_eq!(retry, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
@@ -7173,7 +7349,9 @@ mod app_tests {
         assert_eq!(a.update(key('R')), Vec::<Effect>::new(), "uppercase, bare");
         let held = kind(KeyCode::Char('r'), KeyEventKind::Repeat);
         assert_eq!(a.update(held), Vec::<Effect>::new(), "repeat");
+        let_go();
         assert_eq!(a.update(key('r')), vec![Effect::RedetectEngines], "press");
+        let_go();
         assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
         // Only the refreshing cue differs from before the press.
         let mut expected = before.unwrap();
@@ -7190,7 +7368,9 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         goto_row(&mut a, "code");
         let enter = || code(KeyCode::Enter);
+        // Every key is a deliberate press, not the last one still held.
         let quiet = |a: &mut App, event: AppEvent| {
+            let_go();
             assert_eq!(a.update(event.clone()), Vec::<Effect>::new(), "{event:?}");
         };
         // Open, move, choose an engine, move, back out, and choose again.
@@ -7985,6 +8165,9 @@ mod app_tests {
     /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
     mod managed_start;
 
+    /// A menu save names the file it wrote.
+    mod save_notice;
+
     /// Save as note (engram-memory M7b).
     mod chat_notes;
 
@@ -8003,6 +8186,9 @@ mod app_tests {
     /// A resumed conversation and its engram session (engram-memory 9.6).
     mod chat_resume_memory;
 
+    /// The chat folder: busy refusals and the change (chat-folder).
+    mod chat_folder;
+
     /// The update notice: statusline mark and menu note.
     mod update;
 
@@ -8014,6 +8200,7 @@ mod app_tests {
 
     /// A Hugging Face download from the llamacpp picker (config-menu).
     mod hf_download;
+    mod ollama_download;
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;

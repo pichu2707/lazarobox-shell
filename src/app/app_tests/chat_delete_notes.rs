@@ -453,6 +453,7 @@ fn another_commands_unavailable_is_not_taken_for_the_delete_failure() {
     a.update(key('a'));
     a.update(deleted(30, note_rows(3)));
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));

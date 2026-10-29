@@ -606,7 +606,7 @@ pub fn spawn_detection(
 }
 
 /// Why the jailed CLI `id`, found at `file`, would run without its jail.
-fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<String> {
+fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<super::chat::JailNote> {
     let cli = match id {
         "claude" => Cli::Claude,
         "codex" => Cli::Codex,
@@ -614,6 +614,24 @@ fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<String> {
         _ => return None,
     };
     super::chat::jail_note(env, cli, file)
+}
+
+/// The version output of a CLI. With a lister, codex is asked through its
+/// jail: the standalone install puts the program inside codex's own writable
+/// state folder, so it is never run outside the jail. Without one (no jail
+/// context, tests) the plain run stays.
+async fn cli_version(
+    id: &str,
+    file: &Path,
+    search: &OsStr,
+    lister: Option<&Lister<'_>>,
+) -> Option<Vec<u8>> {
+    match (id, lister) {
+        ("codex", Some(l)) => super::chat::run_version(l.env, VERSION_TIMEOUT, VERSION_CAP)
+            .await
+            .ok(),
+        _ => version(file, search).await,
+    }
 }
 
 async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Probe {
@@ -628,7 +646,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
             // Only a resolved absolute path is ever run. Only codex has a
             // model listing, and it runs next to the version probe, so a slow
             // listing never adds to the version's time.
-            let (stdout, listing, jail) = match &found {
+            let (stdout, listing, note, install) = match &found {
                 Some(file) => {
                     let list = async {
                         match (lister, target.id) {
@@ -636,18 +654,24 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
                             _ => None,
                         }
                     };
-                    let (stdout, listing) = tokio::join!(version(file, path), list);
-                    let jail = lister.and_then(|l| jail_note_of(target.id, l.env, file));
-                    (stdout, listing, jail)
+                    let (stdout, listing) =
+                        tokio::join!(cli_version(target.id, file, path, lister), list);
+                    let note = lister.and_then(|l| jail_note_of(target.id, l.env, file));
+                    let install = lister
+                        .filter(|_| target.id == "codex")
+                        .and_then(|l| super::chat::codex_install(l.env, file));
+                    (stdout, listing, note, install)
                 }
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
                 listing,
-                jail,
+                jail: note.as_ref().map(|n| n.short.clone()),
+                jail_full: note.map(|n| n.full),
+                install,
             }
         }
     }
@@ -1460,6 +1484,79 @@ mod tests {
             };
             assert_eq!(note, &expected, "{notes:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn codex_is_never_run_for_its_version_without_a_jail() {
+        let lab = lab();
+        let ran = lab.rec.join("ran");
+        write_script(
+            &lab.bin,
+            "codex",
+            &format!("touch '{}'\necho codex 0.5.0", ran.display()),
+            0o755,
+        );
+        let env = env_of(&lab, false);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(codex.status, Status::Available);
+        assert_eq!(codex.version, None);
+        assert!(!ran.exists(), "codex ran outside the jail");
+    }
+
+    #[tokio::test]
+    async fn the_version_runs_through_the_jail_helper() {
+        let lab = lab();
+        fake_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(codex.version.as_deref(), Some("codex 0.5.0"));
+        assert!(
+            helper_args(&lab)
+                .iter()
+                .any(|a| a == "--version" || a == "debug")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_standalone_layout_is_read_from_the_real_path_and_the_state_folder() {
+        let lab = lab();
+        let real = lab
+            .home
+            .join(".codex/packages/standalone/releases/1.0.0/bin");
+        fs::create_dir_all(&real).unwrap();
+        write_script(&real, "codex", "echo codex 1.0.0", 0o755);
+        std::os::unix::fs::symlink(real.join("codex"), lab.bin.join("codex")).unwrap();
+        let env = env_of(&lab, false);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(
+            codex.diagnostics.install,
+            Some(crate::core::ai::codex_install::CodexInstall::Standalone)
+        );
+        // Without a jail the full reason says what to do, whatever the layout.
+        assert!(codex.diagnostics.jail_full.is_some());
+        let d = detect_in(&cli_targets(&["claude"]), &join(&[&lab.bin]), None).await;
+        assert!(d.engines.iter().all(|e| e.diagnostics.install.is_none()));
     }
 
     #[tokio::test]
