@@ -320,7 +320,7 @@ const WORKER_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 30..=3600;
 pub struct OrchestratorConfig {
     pub enabled: bool,
     /// The one-time provider notice was accepted.
-    pub notice_accepted: bool,
+    pub acknowledged: bool,
     pub worker_timeout_secs: u32,
 }
 
@@ -328,7 +328,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            notice_accepted: false,
+            acknowledged: false,
             worker_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
         }
     }
@@ -861,7 +861,7 @@ fn read_orchestrator(table: &Table, problems: &mut Vec<String>) -> OrchestratorC
         Some(_) => problems.push(format!("ai.orchestrator.{name}: expected a boolean")),
     };
     flag("enabled", &mut orch.enabled);
-    flag("notice_accepted", &mut orch.notice_accepted);
+    flag("acknowledged", &mut orch.acknowledged);
     match section.get("worker_timeout_secs") {
         None => {}
         Some(Value::Integer(n)) if WORKER_TIMEOUT_RANGE.contains(n) => {
@@ -2926,26 +2926,36 @@ mod tests {
         }
         let defaults = OrchestratorConfig::default();
         assert!(!defaults.enabled);
-        assert!(!defaults.notice_accepted);
+        assert!(!defaults.acknowledged);
         assert_eq!(defaults.worker_timeout_secs, 600);
     }
 
     #[test]
     fn the_orchestrator_keys_are_read() {
         let (config, problems) = read_text(
-            "[ai.orchestrator]\nenabled = true\nnotice_accepted = true\nworker_timeout_secs = 30\n",
+            "[ai.orchestrator]\nenabled = true\nacknowledged = true\nworker_timeout_secs = 30\n",
         );
         assert_eq!(problems, Vec::<String>::new());
         assert_eq!(
             config.orchestrator,
             OrchestratorConfig {
                 enabled: true,
-                notice_accepted: true,
+                acknowledged: true,
                 worker_timeout_secs: 30,
             }
         );
         let (config, _) = read_text("[ai.orchestrator]\nworker_timeout_secs = 3600\n");
         assert_eq!(config.orchestrator.worker_timeout_secs, 3600);
+    }
+
+    // S5 (config freeze, 2026-10-29): the key is `acknowledged`, as in
+    // `[ai.memory]`; the chain-only `notice_accepted` never shipped and is not
+    // read (an unknown key, ignored).
+    #[test]
+    fn the_old_notice_key_is_not_an_alias() {
+        let (config, problems) = read_text("[ai.orchestrator]\nnotice_accepted = true\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, Vec::<String>::new());
     }
 
     // Spec (configuration): Bad value falls back, other keys stay.
@@ -2963,13 +2973,13 @@ mod tests {
             );
         }
         let (config, problems) =
-            read_text("[ai.orchestrator]\nenabled = \"yes\"\nnotice_accepted = 1\n");
+            read_text("[ai.orchestrator]\nenabled = \"yes\"\nacknowledged = 1\n");
         assert_eq!(config.orchestrator, OrchestratorConfig::default());
         assert_eq!(
             problems,
             [
                 "ai.orchestrator.enabled: expected a boolean",
-                "ai.orchestrator.notice_accepted: expected a boolean"
+                "ai.orchestrator.acknowledged: expected a boolean"
             ]
         );
         let (config, problems) = read_text("[ai]\norchestrator = 3\n");

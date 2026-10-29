@@ -84,9 +84,9 @@ impl App {
         if !accepted {
             return Some(Vec::new());
         }
-        self.ai.orchestrator.notice_accepted = true;
+        self.ai.orchestrator.acknowledged = true;
         self.orch_saves += 1;
-        let edit = ConfigEdit::orchestrator_flag("notice_accepted", true);
+        let edit = ConfigEdit::orchestrator_flag("acknowledged", true);
         Some(vec![Effect::SaveConfig(vec![edit])])
     }
 
@@ -96,7 +96,7 @@ impl App {
     pub(super) fn on_notice_saved(&mut self, failed: Option<String>) -> Vec<Effect> {
         self.orch_saves = self.orch_saves.saturating_sub(1);
         if let Some(message) = failed {
-            self.ai.orchestrator.notice_accepted = false;
+            self.ai.orchestrator.acknowledged = false;
             self.notice = Some(message);
             self.dirty = true;
         }
@@ -204,7 +204,7 @@ impl App {
             chat.set_orch_turn(turn);
         }
         // The run starts now, whatever the notice's answer (it never blocks).
-        if !self.ai.orchestrator.notice_accepted {
+        if !self.ai.orchestrator.acknowledged {
             self.orch_notice = Some(id);
             self.dirty = true;
         }

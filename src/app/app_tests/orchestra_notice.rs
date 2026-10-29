@@ -8,7 +8,7 @@ use super::*;
 use crate::core::config::ConfigEdit;
 
 fn acceptance() -> Effect {
-    Effect::SaveConfig(vec![ConfigEdit::orchestrator_flag("notice_accepted", true)])
+    Effect::SaveConfig(vec![ConfigEdit::orchestrator_flag("acknowledged", true)])
 }
 
 fn orchestrates(effects: &[Effect]) -> bool {
@@ -40,7 +40,7 @@ fn the_notice_is_shown_when_the_first_run_starts_and_does_not_hold_it() {
     let a = noticed();
     assert!(a.orch_notice(chat_id()));
     assert!(chat_of(&a).orch_turn_in_flight(), "the run started");
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
 }
 
 // agent-orchestrator / Shown once, never blocks; modal-input / Notice keys;
@@ -52,7 +52,7 @@ fn enter_or_y_with_an_empty_composer_accepts_and_saves_the_notice() {
         let effects = a.update(accept);
         assert_eq!(effects, vec![acceptance()]);
         assert!(!a.orch_notice(chat_id()), "the notice is gone");
-        assert!(a.ai().orchestrator.notice_accepted);
+        assert!(a.ai().orchestrator.acknowledged);
         assert_eq!(composer(&a), "", "nothing was typed");
         assert!(chat_of(&a).orch_turn_in_flight(), "the run goes on");
         assert_eq!(a.update(AppEvent::ConfigSaved), Vec::new());
@@ -66,7 +66,7 @@ fn enter_or_y_with_an_empty_composer_accepts_and_saves_the_notice() {
 #[test]
 fn an_accepted_notice_is_not_shown_at_a_run() {
     let mut ai = orch_ai();
-    ai.orchestrator.notice_accepted = true;
+    ai.orchestrator.acknowledged = true;
     let mut a = orch_app_with(ai);
     toggle(&mut a);
     assert!(orchestrates(&ask(&mut a, "plan it")));
@@ -80,7 +80,7 @@ fn esc_dismisses_without_accepting_and_the_next_run_shows_it_again() {
     let mut a = noticed();
     assert_eq!(a.update(plain(KeyCode::Esc)), Vec::new());
     assert!(!a.orch_notice(chat_id()));
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
     assert!(chat_of(&a).orch_turn_in_flight(), "Esc answered the notice");
     assert!(orchestrates(&next_run(&mut a)));
     assert!(a.orch_notice(chat_id()), "shown again");
@@ -97,7 +97,7 @@ fn keys_typed_into_a_message_never_answer_the_notice() {
     assert!(!effects.contains(&acceptance()), "{effects:?}");
     a.update(plain(KeyCode::Esc));
     assert!(a.orch_notice(chat_id()), "still shown");
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
 }
 
 // modal-input / Notice keys: a held key does not answer it.
@@ -109,7 +109,7 @@ fn a_held_enter_does_not_answer_the_notice() {
         Vec::new()
     );
     assert!(a.orch_notice(chat_id()));
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
 }
 
 // S7: a pane that does not orchestrate never shows the notice, and its Esc
@@ -125,7 +125,7 @@ fn a_chat_turn_shows_no_notice_and_esc_still_cancels_it() {
         effects.contains(&Effect::ChatCancel(chat_id())),
         "{effects:?}"
     );
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
 }
 
 // The notice's save is answered to the notice: it never closes, or shows its
@@ -147,7 +147,7 @@ fn a_failed_notice_save_leaves_it_unaccepted_and_says_why() {
     let mut a = noticed();
     a.update(plain(KeyCode::Enter));
     a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
-    assert!(!a.ai().orchestrator.notice_accepted);
+    assert!(!a.ai().orchestrator.acknowledged);
     assert_eq!(a.notice(), Some("save failed: disk full"));
     assert!(orchestrates(&next_run(&mut a)));
     assert!(a.orch_notice(chat_id()));

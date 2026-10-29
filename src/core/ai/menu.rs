@@ -263,7 +263,7 @@ impl AiMenu {
     /// Records the acceptance of the provider notice in the draft; it is
     /// written with the next save.
     pub fn accept_notice(&mut self) {
-        self.draft.orchestrator.notice_accepted = true;
+        self.draft.orchestrator.acknowledged = true;
     }
 
     /// The orchestrator flags whose draft differs from the saved ones, as
@@ -272,7 +272,7 @@ impl AiMenu {
         let (old, new) = (self.original.orchestrator, self.draft.orchestrator);
         [
             ("enabled", old.enabled, new.enabled),
-            ("notice_accepted", old.notice_accepted, new.notice_accepted),
+            ("acknowledged", old.acknowledged, new.acknowledged),
         ]
         .into_iter()
         .filter(|(_, old, new)| old != new)

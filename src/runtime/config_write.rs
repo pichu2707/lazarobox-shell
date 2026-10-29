@@ -700,12 +700,12 @@ mod tests {
         let path = config_in(&dir);
         save_config(
             Some(&path),
-            &[ConfigEdit::orchestrator_flag("notice_accepted", true)],
+            &[ConfigEdit::orchestrator_flag("acknowledged", true)],
         )
         .unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "[ai.orchestrator]\nnotice_accepted = true\n"
+            "[ai.orchestrator]\nacknowledged = true\n"
         );
     }
 

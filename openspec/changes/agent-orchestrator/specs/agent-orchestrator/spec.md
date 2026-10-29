@@ -54,15 +54,15 @@ In an orchestrating pane, a chat turn MUST be an orchestrator turn that runs on 
 - THEN nothing is sent, the engine guidance is shown, the `chat` engine is not contacted and assignments are unchanged
 
 ### Requirement: One-time provider notice [S1]
-The first time the orchestrator would start a run while `[ai.orchestrator] notice_accepted` is `false`, an informational notice MUST be shown saying that providers recommend API keys for automation and that consumer-account logins carry risk. The notice MUST be accepted with one key, persisted as `notice_accepted = true`, and never shown again once accepted. It MUST NOT block: the run starts without waiting for the answer, no engine is refused because of it, and no API key is required. (The README statement is a [S10] requirement; see Final documentation.)
+The first time the orchestrator would start a run while `[ai.orchestrator] acknowledged` is `false`, an informational notice MUST be shown saying that providers recommend API keys for automation and that consumer-account logins carry risk. The notice MUST be accepted with one key, persisted as `acknowledged = true`, and never shown again once accepted. It MUST NOT block: the run starts without waiting for the answer, no engine is refused because of it, and no API key is required. (The README statement is a [S10] requirement; see Final documentation.)
 
 #### Scenario: Shown once, never blocks [auto]
-- GIVEN `notice_accepted = false` and an orchestrating pane
+- GIVEN `acknowledged = false` and an orchestrating pane
 - WHEN the first run starts
 - THEN the notice is shown, the first worker is spawned without waiting for the key, and after acceptance the key is saved as `true`
 
 #### Scenario: Not shown again [auto]
-- GIVEN `notice_accepted = true`
+- GIVEN `acknowledged = true`
 - WHEN a run starts
 - THEN no notice is shown
 

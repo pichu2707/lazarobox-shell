@@ -18,12 +18,12 @@ The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same 
 - THEN `orchestrate` is unassigned and falls back to `general`
 
 ### Requirement: Orchestrator keys [S1, S3]
-The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `notice_accepted` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) and `run_timeout_mins` (integer, default 60, valid range 1 to 480). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
+The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) and `run_timeout_mins` (integer, default 60, valid range 1 to 480). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
 
 #### Scenario: Defaults [auto]
 - GIVEN no `[ai.orchestrator]` table
 - WHEN the configuration is loaded
-- THEN `enabled` and `notice_accepted` are false, `worker_timeout_secs` is 600, `max_parallel` is 2, `max_workers` is 8 and `run_timeout_mins` is 60
+- THEN `enabled` and `acknowledged` are false, `worker_timeout_secs` is 600, `max_parallel` is 2, `max_workers` is 8 and `run_timeout_mins` is 60
 
 #### Scenario: Bad value falls back [auto]
 - GIVEN `max_parallel = 0` and `enabled = true`
