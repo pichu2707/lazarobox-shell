@@ -29,6 +29,9 @@ pub fn guidance(availability: &Availability) -> Option<String> {
         Availability::NoJail { engine, reason } => {
             format!("{engine}: not available on this system yet: {reason}")
         }
+        Availability::Refused { engine, reason } => {
+            format!("{engine}: the jail refuses to start it: {reason}")
+        }
         Availability::GatedOff { engine } => format!("{engine}: gated off"),
         Availability::Outdated { engine, version } => format!(
             "{engine} {version} is too old for lazarobox (it needs {} or newer); \
@@ -109,6 +112,18 @@ mod tests {
         .unwrap();
         assert!(text.contains("opencode"), "{text}");
         assert!(text.contains("not supported in chat yet"), "{text}");
+    }
+
+    #[test]
+    fn a_refused_layout_is_the_exact_line() {
+        assert_eq!(
+            guidance(&Availability::Refused {
+                engine: s("codex"),
+                reason: s("codex (standalone) cannot be isolated"),
+            })
+            .as_deref(),
+            Some("codex: the jail refuses to start it: codex (standalone) cannot be isolated")
+        );
     }
 
     #[test]
