@@ -115,7 +115,7 @@ fn cd_purposes(effects: &[Effect]) -> Vec<u64> {
         .into_iter()
         .filter_map(|(_, purpose)| match purpose {
             Purpose::Cd(token) => Some(token),
-            Purpose::Resume(_) => None,
+            Purpose::Resume(_) | Purpose::Confirm(_) => None,
         })
         .collect()
 }
@@ -303,6 +303,19 @@ fn asking() -> App {
     a
 }
 
+/// `y` and the answer of the check that follows it: the same folder again.
+fn yes(a: &mut App) -> Vec<Effect> {
+    let effects = a.update(key('y'));
+    let Some((path, Purpose::Confirm(token))) = probes(&effects).into_iter().next() else {
+        return effects;
+    };
+    a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Confirm(token),
+        result: concrete(&path.to_string_lossy()),
+    })
+}
+
 fn pending_ask(a: &App) -> Option<ApprovalAsk> {
     super::run_pane::chat(a, id2())
         .approvals()
@@ -342,7 +355,7 @@ fn a_broad_folder_typed_by_the_user_is_confirmed_with_a_note() {
 #[test]
 fn y_changes_the_folder_and_clears_the_composer() {
     let mut a = asking();
-    a.update(key('y'));
+    yes(&mut a);
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
     assert_eq!(composer(&a), "");
     assert_eq!(pending_ask(&a), None);
@@ -471,7 +484,7 @@ fn stored() -> App {
 fn confirm(a: &mut App, target: &str) -> Vec<Effect> {
     ask(a, &format!("/cd {target}"));
     probed(a, concrete(target));
-    a.update(key('y'))
+    yes(a)
 }
 
 #[test]
@@ -767,7 +780,7 @@ fn a_late_resume_answer_does_not_undo_a_cd_the_user_confirmed() {
     let token = resume_purposes(&effects)[0];
     ask(&mut a, "/cd /w/b");
     probed(&mut a, concrete("/w/b"));
-    a.update(key('y'));
+    yes(&mut a);
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
     resume_answer(&mut a, token, probed_as("/w/stored", Verdict::Concrete));
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
@@ -805,4 +818,79 @@ fn only_the_latest_of_two_cd_commands_is_answered() {
     assert_eq!(pending_ask(&a), None);
     probed_for(&mut a, second, concrete("/w/x"));
     assert!(pending_ask(&a).is_some());
+}
+
+// ---- the check at `y` (chat-folder A2) -------------------------------------
+
+#[test]
+fn y_checks_the_folder_again_before_changing_it() {
+    let mut a = asking();
+    let effects = a.update(key('y'));
+    let asked = probes(&effects);
+    assert_eq!(asked.len(), 1, "{effects:?}");
+    assert_eq!(asked[0].0, PathBuf::from("/w/b"));
+    assert!(matches!(asked[0].1, Purpose::Confirm(_)));
+    // Nothing moves until the check answers.
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    assert_eq!(composer(&a), "/cd /w/b");
+}
+
+fn confirm_answer(result: Result<Probed, Refusal>) -> App {
+    let mut a = asking();
+    let effects = a.update(key('y'));
+    let Some((_, Purpose::Confirm(token))) = probes(&effects).into_iter().next() else {
+        panic!("expected the check, got {effects:?}");
+    };
+    a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Confirm(token),
+        result,
+    });
+    a
+}
+
+#[test]
+fn a_folder_that_changed_since_it_was_checked_is_refused() {
+    for result in [
+        concrete("/w/elsewhere"),
+        Err(Refusal::NotFound),
+        probed_as("/w/b", Verdict::Outside),
+    ] {
+        let a = confirm_answer(result.clone());
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")), "{result:?}");
+        assert_eq!(composer(&a), "/cd /w/b");
+        assert!(
+            lines(&a).contains(&"/cd refused: folder changed since it was checked".to_owned()),
+            "{result:?}: {:?}",
+            lines(&a)
+        );
+    }
+}
+
+#[test]
+fn the_same_folder_at_the_check_changes_it() {
+    let a = confirm_answer(concrete("/w/b"));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    assert_eq!(composer(&a), "");
+}
+
+#[test]
+fn a_stale_check_answer_changes_nothing() {
+    let mut a = asking();
+    let effects = a.update(key('y'));
+    let Some((_, Purpose::Confirm(token))) = probes(&effects).into_iter().next() else {
+        panic!("expected the check");
+    };
+    // The user typed another command before the check came back.
+    let_go_edit(&mut a);
+    a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Confirm(token),
+        result: concrete("/w/b"),
+    });
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+fn let_go_edit(a: &mut App) {
+    type_text(a, "x");
 }

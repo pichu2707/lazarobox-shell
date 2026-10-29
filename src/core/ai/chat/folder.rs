@@ -25,6 +25,9 @@ pub enum Purpose {
     /// The user typed `/cd`; the token names the request, so a stale
     /// answer (an earlier or an edited command) is told apart.
     Cd(u64),
+    /// The check made when the user presses `y`: the folder is resolved once
+    /// more, and must still be the one that was asked about.
+    Confirm(u64),
     /// A conversation was resumed with a stored folder; the token names the
     /// request, so the answer of an earlier resume is told apart.
     Resume(u64),

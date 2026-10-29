@@ -20,6 +20,8 @@ fn refused(reason: &str) -> String {
 pub(super) struct CdRequest {
     pub(super) token: u64,
     arg: String,
+    /// The folder the user confirmed, while the last check of it runs.
+    confirm: Option<PathBuf>,
 }
 
 /// A send waits for memory: it must not leave under another folder.
@@ -134,6 +136,7 @@ impl App {
                             CdRequest {
                                 token,
                                 arg: typed.clone(),
+                                confirm: None,
                             },
                         );
                         return vec![Effect::ProbeFolder {
@@ -159,23 +162,27 @@ impl App {
         result: Result<Probed, Refusal>,
     ) -> Vec<Effect> {
         let busy = self.folder_busy(id);
-        let current = self.cd_requests.get(&id);
+        let current = self.cd_requests.get(&id).map(|r| (r.token, r.arg.clone()));
+        let confirming = self.cd_requests.get(&id).and_then(|r| r.confirm.clone());
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         match purpose {
             Purpose::Resume(token) => self.on_resume_probed(id, token, result, busy),
-            Purpose::Cd(token) => {
+            Purpose::Cd(token) | Purpose::Confirm(token) => {
                 // Only the answer of the latest command, still in the
                 // composer as it was submitted, counts.
                 let same = match (current, parse_command(&chat.composer().text())) {
-                    (Some(request), Command::Cd(CdArg::Path(arg))) => {
-                        request.token == token && request.arg == arg
+                    (Some((latest, submitted)), Command::Cd(CdArg::Path(arg))) => {
+                        latest == token && submitted == arg
                     }
                     _ => false,
                 };
                 if !same {
                     return Vec::new();
+                }
+                if matches!(purpose, Purpose::Confirm(_)) {
+                    return self.on_confirm_probed(id, confirming, result, busy);
                 }
                 self.dirty = true;
                 let verdict = typed(result.as_ref().map(|probed| probed.verdict).map_err(|r| *r));
@@ -206,6 +213,34 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// The check made at `y` answered: the folder is changed only when it is
+    /// still the one the user saw, and the chat is still free.
+    fn on_confirm_probed(
+        &mut self,
+        id: PaneId,
+        confirmed: Option<PathBuf>,
+        result: Result<Probed, Refusal>,
+        busy: Option<&'static str>,
+    ) -> Vec<Effect> {
+        self.cd_requests.remove(&id);
+        self.dirty = true;
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let same = result.ok().filter(|probed| {
+            Some(&probed.path) == confirmed.as_ref() && typed(Ok(probed.verdict)).is_ok()
+        });
+        match (busy, same) {
+            (Some(reason), _) => chat.push_system_line(refused(reason)),
+            (None, None) => chat.push_system_line(refused("folder changed since it was checked")),
+            (None, Some(probed)) => {
+                chat.composer_mut().clear();
+                return self.apply_folder(id, probed.path);
+            }
+        }
+        Vec::new()
     }
 
     /// A conversation was resumed: its stored folder is judged by the
@@ -321,9 +356,18 @@ impl App {
             }
             return Vec::new();
         }
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.composer_mut().clear();
-        }
-        self.apply_folder(id, to.clone())
+        // The folder is resolved once more before it is taken.
+        self.folder_seq += 1;
+        let token = self.folder_seq;
+        let Some(request) = self.cd_requests.get_mut(&id) else {
+            return Vec::new();
+        };
+        request.token = token;
+        request.confirm = Some(to.clone());
+        vec![Effect::ProbeFolder {
+            pane: id,
+            path: to.clone(),
+            purpose: Purpose::Confirm(token),
+        }]
     }
 }
