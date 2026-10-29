@@ -25,19 +25,35 @@ use crate::{
 /// thread is left to finish on its own.
 pub const TIMEOUT: Duration = Duration::from_secs(3);
 
-/// What a probe answers: the pane, why it was asked, and the verdict.
-pub type Answer = (PaneId, Purpose, Result<Probed, Refusal>);
+/// What the folder worker answers.
+#[derive(Debug)]
+pub enum Answer {
+    /// One folder: the pane, why it was asked, and the verdict.
+    Probed(PaneId, Purpose, Result<Probed, Refusal>),
+    /// The picker candidates, each judged.
+    Many(PaneId, Vec<(Source, Result<Probed, Refusal>)>),
+    /// The directory names that complete the field text the pane sent.
+    Completed(PaneId, String, Vec<String>),
+}
 
-/// Runs `work` on the blocking pool for at most `bound`; a probe that is too
-/// slow, or whose thread dies, is `folder not found`.
+/// Runs `work` on the blocking pool for at most `bound`; `None` when it is
+/// too slow or its thread dies (the thread is left to finish on its own).
+pub async fn within<T: Send + 'static>(
+    bound: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    timeout(bound, tokio::task::spawn_blocking(work))
+        .await
+        .ok()?
+        .ok()
+}
+
+/// [`within`] for a probe: too slow, or a dead thread, is `folder not found`.
 pub async fn bounded(
     bound: Duration,
     work: impl FnOnce() -> Result<Probed, Refusal> + Send + 'static,
 ) -> Result<Probed, Refusal> {
-    match timeout(bound, tokio::task::spawn_blocking(work)).await {
-        Ok(Ok(result)) => result,
-        _ => Err(Refusal::NotFound),
-    }
+    within(bound, work).await.unwrap_or(Err(Refusal::NotFound))
 }
 
 /// Starts the probes of the app off the event loop and sends their answers.
@@ -57,7 +73,31 @@ impl Prober {
         let (env, tx) = (self.env.clone(), self.tx.clone());
         tokio::spawn(async move {
             let result = bounded(TIMEOUT, move || probe(&env, &path)).await;
-            let _ = tx.send((pane, purpose, result)).await;
+            let _ = tx.send(Answer::Probed(pane, purpose, result)).await;
+        });
+    }
+
+    /// Judges the picker candidates (see [`probe_many`]) and sends exactly one
+    /// answer; too slow is an empty list.
+    pub fn start_many(&self, pane: PaneId, paths: Vec<(Source, PathBuf)>, git: bool) {
+        let (env, tx) = (self.env.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let found = within(TIMEOUT, move || probe_many(&env, &paths, git))
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(Answer::Many(pane, found)).await;
+        });
+    }
+
+    /// Lists the completions of `text` (see [`complete`]) and sends exactly
+    /// one answer; too slow is an empty list.
+    pub fn start_completion(&self, pane: PaneId, text: String, dir: PathBuf, prefix: String) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let names = within(TIMEOUT, move || complete(&dir, &prefix))
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(Answer::Completed(pane, text, names)).await;
         });
     }
 }

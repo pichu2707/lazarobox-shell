@@ -117,9 +117,38 @@ async fn a_prober_answers_off_the_loop_through_its_channel() {
     let prober = Prober::new(f.env.clone(), tx);
     let pane = crate::core::layout::PaneId::FIRST;
     prober.start(pane, f.root.join("home/project"), Purpose::Cd);
-    let (got_pane, purpose, result) = rx.recv().await.expect("an answer");
+    let Some(Answer::Probed(got_pane, purpose, result)) = rx.recv().await else {
+        panic!("expected a probe answer");
+    };
     assert_eq!((got_pane, purpose), (pane, Purpose::Cd));
     assert_eq!(result.unwrap().verdict, Verdict::Concrete);
+}
+
+#[tokio::test]
+async fn a_prober_answers_the_candidates_and_the_completions_through_its_channel() {
+    let f = git_fixture();
+    let home = f.root.join("home");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let prober = Prober::new(f.env.clone(), tx);
+    let pane = crate::core::layout::PaneId::FIRST;
+    prober.start_many(
+        pane,
+        vec![(Source::PaneRoot, home.join("project/src"))],
+        true,
+    );
+    let Some(Answer::Many(got, found)) = rx.recv().await else {
+        panic!("expected the candidates");
+    };
+    assert_eq!(got, pane);
+    assert_eq!(found[0].1.as_ref().unwrap().path, home.join("project"));
+    prober.start_completion(pane, "~/pro".into(), home, "pro".into());
+    let Some(Answer::Completed(got, text, names)) = rx.recv().await else {
+        panic!("expected the completions");
+    };
+    assert_eq!(
+        (got, text.as_str(), names),
+        (pane, "~/pro", vec!["project".to_owned()])
+    );
 }
 
 // The verdict must match the building blocks the tool host judges a root by

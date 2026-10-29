@@ -14,6 +14,7 @@ use crate::core::{
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             folder::{Probed, Purpose as FolderPurpose, Refusal},
+            folder_picker::Source as PickerSource,
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -175,6 +176,18 @@ pub enum AppEvent {
         pane: PaneId,
         purpose: FolderPurpose,
         result: Result<Probed, Refusal>,
+    },
+    /// The answer to `Effect::ProbeFolders`: every candidate, judged.
+    FoldersProbed {
+        pane: PaneId,
+        found: Vec<(PickerSource, Result<Probed, Refusal>)>,
+    },
+    /// The answer to `Effect::CompleteFolder`: the directory names for the
+    /// field text that was sent.
+    FolderCompleted {
+        pane: PaneId,
+        text: String,
+        names: Vec<String>,
     },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
@@ -375,6 +388,23 @@ pub enum Effect {
         pane: PaneId,
         path: PathBuf,
         purpose: FolderPurpose,
+    },
+    /// Judge the folder picker candidates of chat `pane`; with `git`, the pane
+    /// folders move up to their git roots. Answered with one
+    /// `AppEvent::FoldersProbed`.
+    ProbeFolders {
+        pane: PaneId,
+        paths: Vec<(PickerSource, PathBuf)>,
+        git: bool,
+    },
+    /// List the directories that complete the picker's field `text`: those of
+    /// `dir` that start with `prefix`. Answered with one
+    /// `AppEvent::FolderCompleted`.
+    CompleteFolder {
+        pane: PaneId,
+        text: String,
+        dir: PathBuf,
+        prefix: String,
     },
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
@@ -1669,6 +1699,8 @@ impl App {
                 purpose,
                 result,
             } => self.on_folder_probed(pane, purpose, result),
+            // The picker takes both up (PR B2).
+            AppEvent::FoldersProbed { .. } | AppEvent::FolderCompleted { .. } => Vec::new(),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()

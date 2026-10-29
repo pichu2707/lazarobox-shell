@@ -973,8 +973,17 @@ async fn run_loop(
                     return Ok(());
                 }
             }
-            Some((pane, purpose, result)) = folder_rx.recv() => {
-                if step(&mut app, AppEvent::FolderProbed { pane, purpose, result }, panes) {
+            Some(answer) = folder_rx.recv() => {
+                let event = match answer {
+                    folder::Answer::Probed(pane, purpose, result) => {
+                        AppEvent::FolderProbed { pane, purpose, result }
+                    }
+                    folder::Answer::Many(pane, found) => AppEvent::FoldersProbed { pane, found },
+                    folder::Answer::Completed(pane, text, names) => {
+                        AppEvent::FolderCompleted { pane, text, names }
+                    }
+                };
+                if step(&mut app, event, panes) {
                     return Ok(());
                 }
             }
@@ -1651,6 +1660,26 @@ impl Panes {
                         pane,
                         purpose,
                         result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeFolders { pane, paths, git } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, paths, git),
+                    None => feedback.push(AppEvent::FoldersProbed {
+                        pane,
+                        found: Vec::new(),
+                    }),
+                },
+                Effect::CompleteFolder {
+                    pane,
+                    text,
+                    dir,
+                    prefix,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_completion(pane, text, dir, prefix),
+                    None => feedback.push(AppEvent::FolderCompleted {
+                        pane,
+                        text,
+                        names: Vec::new(),
                     }),
                 },
                 Effect::EndToolSession(pane) => {
