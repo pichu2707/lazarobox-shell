@@ -429,3 +429,11 @@ fn a_text_only_turn_refuses_even_our_own_tool() {
         [failed(TOOL_REFUSED)]
     );
 }
+
+#[test]
+fn stats_with_only_one_count_emit_nothing_never_a_zero() {
+    for stats in ["{\"input_tokens\":7}", "{\"output_tokens\":3}"] {
+        let end = format!("{{\"type\":\"result\",\"status\":\"success\",\"stats\":{stats}}}\n");
+        assert_eq!(whole(&end), [done()], "{stats}");
+    }
+}

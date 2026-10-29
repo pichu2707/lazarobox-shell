@@ -130,19 +130,17 @@ impl GeminiDecoder {
 }
 
 /// What the `result` line's `stats` report as used. `input_tokens` already
-/// counts the cached ones. `None` when no token count is there.
+/// counts the cached ones. `None` unless both counts are there: a missing one is not zero.
 fn usage(value: &Value) -> Option<Usage> {
     let stats = &value["stats"];
     let (input, output) = (
         stats["input_tokens"].as_u64(),
         stats["output_tokens"].as_u64(),
     );
-    if input.is_none() && output.is_none() {
-        return None;
-    }
+    let (input, output) = input.zip(output)?;
     Some(Usage {
-        input: input.unwrap_or(0),
-        output: output.unwrap_or(0),
+        input,
+        output,
         cost_micros: None,
     })
 }

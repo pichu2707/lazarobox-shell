@@ -1246,3 +1246,16 @@ fn a_late_id_after_the_name_is_kept_and_a_choice_without_delta_is_ignored() {
     assert_eq!(calls[0].id.as_deref(), Some("late"));
     assert!(calls[0].call.is_ok());
 }
+
+#[test]
+fn an_ollama_final_line_with_one_count_emits_nothing_never_a_zero() {
+    // A cached prompt omits `prompt_eval_count`.
+    for counts in ["\"eval_count\":3", "\"prompt_eval_count\":30"] {
+        let line = format!("{{\"done\":true,\"done_reason\":\"stop\",{counts}}}\n");
+        assert_eq!(
+            ndjson(&[line.as_bytes()]),
+            [StreamEvent::Done(Finish::Stop)],
+            "{counts}"
+        );
+    }
+}

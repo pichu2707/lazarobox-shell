@@ -594,3 +594,15 @@ fn text_that_mentions_a_tool_use_is_just_text() {
     let line = text_line("{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Bash\\\"}");
     assert!(answer(&whole(&format!("{line}{}", result_line("x", "")))).contains("tool_use"));
 }
+
+#[test]
+fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
+    for counts in [
+        "{\"input_tokens\":7}",
+        "{\"output_tokens\":3}",
+        "{\"cache_read_input_tokens\":9,\"output_tokens\":3}",
+    ] {
+        let text = result_line("x", &format!(",\"usage\":{counts},\"total_cost_usd\":0.5"));
+        assert_eq!(whole(&text), [delta("x"), done()], "{counts}");
+    }
+}

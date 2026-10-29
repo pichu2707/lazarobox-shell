@@ -216,18 +216,16 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
 }
 
 /// What the final Ollama line reports as used. `None` when it holds no count
-/// (a cached prompt can omit `prompt_eval_count`; a server may omit both).
+/// unless both are there (a cached prompt omits `prompt_eval_count`).
 fn ollama_usage(value: &Value) -> Option<Usage> {
     let (input, output) = (
         value["prompt_eval_count"].as_u64(),
         value["eval_count"].as_u64(),
     );
-    if input.is_none() && output.is_none() {
-        return None;
-    }
+    let (input, output) = input.zip(output)?;
     Some(Usage {
-        input: input.unwrap_or(0),
-        output: output.unwrap_or(0),
+        input,
+        output,
         cost_micros: None,
     })
 }

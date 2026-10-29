@@ -67,19 +67,17 @@ pub struct CodexDecoder {
 }
 
 /// What `turn.completed` reports as used. `input_tokens` already counts the
-/// cached ones. `None` when the line holds no token count at all.
+/// cached ones. `None` unless both counts are there: a missing one is not zero.
 fn usage(value: &Value) -> Option<Usage> {
     let counts = &value["usage"];
     let (input, output) = (
         counts["input_tokens"].as_u64(),
         counts["output_tokens"].as_u64(),
     );
-    if input.is_none() && output.is_none() {
-        return None;
-    }
+    let (input, output) = input.zip(output)?;
     Some(Usage {
-        input: input.unwrap_or(0),
-        output: output.unwrap_or(0),
+        input,
+        output,
         cost_micros: None,
     })
 }

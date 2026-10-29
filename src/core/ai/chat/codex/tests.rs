@@ -443,3 +443,12 @@ fn a_text_only_turn_refuses_our_mcp_tool_call_too() {
         assert_eq!(whole(&ours(event)), [failed(TOOL_REFUSED)], "{event}");
     }
 }
+
+#[test]
+fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
+    for counts in ["{\"input_tokens\":7}", "{\"output_tokens\":3}"] {
+        let end = format!("{{\"type\":\"turn.completed\",\"usage\":{counts}}}\n");
+        let text = format!("{}{end}", message_line("a"));
+        assert_eq!(whole(&text), [delta("a"), done()], "{counts}");
+    }
+}
