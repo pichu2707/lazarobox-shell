@@ -76,6 +76,7 @@ Para abrir lazarobox desde un menú de aplicaciones (rofi, GNOME, KDE…) sin te
 ```bash
 lazarobox-shell install-desktop                       # instala el lanzador "Lazarobox"
 lazarobox-shell install-desktop --terminal alacritty  # fuerza una terminal concreta
+lazarobox-shell install-desktop --dir ~/proyecto      # el lanzador abre lazarobox en esa carpeta
 lazarobox-shell install-desktop --uninstall           # lo quita
 ```
 
@@ -90,6 +91,23 @@ La terminal se elige en este orden:
 5. Si no hay ninguna, el lanzador usa `Terminal=true` y el escritorio decide qué terminal abrir.
 
 Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Lazarobox está probado en Kitty: en otras terminales algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
+
+Con `--dir <carpeta>` el lanzador incluye `Path=<carpeta>` y también `--dir=<carpeta>` en `Exec`, para que la carpeta se respete aunque la terminal ignore `Path=`. La ruta puede ser relativa o empezar por `~`; se resuelve al instalar y debe ser una carpeta que exista (si no, el comando falla con una línea en stderr y no escribe nada). No se admiten espacios al principio o al final de la ruta. Volver a ejecutar `install-desktop` sin `--dir` quita ambas cosas.
+
+### Carpeta de inicio
+
+lazarobox arranca en la primera de estas carpetas:
+
+1. `lazarobox-shell --dir <carpeta>` (absoluta, relativa a donde lo lanzas, o con `~`).
+2. `dir` en `[workspace]` de `config.toml` (absoluta o con `~`; una cadena vacía es "sin definir").
+3. La carpeta desde la que se lanza.
+
+```toml
+[workspace]
+dir = "~/proyecto"
+```
+
+Si `--dir` o `dir` no son válidos (no existe, no es una carpeta, falta el valor), lazarobox no se cierra ni escribe en stderr: arranca en la carpeta desde la que se lanza y muestra un aviso dentro de la aplicación. Un `--dir` inválido no recurre al valor de `[workspace]`. `--dir` solo se reconoce en el arranque normal y en `install-desktop`.
 
 ### Anidamiento
 

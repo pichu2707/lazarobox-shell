@@ -424,3 +424,29 @@ fn a_dir_in_the_exec_line_escapes_percent_and_dollar() {
         plan.contents
     );
 }
+
+#[test]
+fn a_dir_with_edge_whitespace_is_refused() {
+    let choice = pick(None, None, &["kitty"]);
+    for bad in ["/w/proj ", "/w/proj\u{a0}", "/w/proj\u{3000}"] {
+        let result = plan_install(&choice, Path::new(BIN), Some(Path::new(bad)));
+        assert!(result.is_err(), "{bad:?}");
+    }
+    assert!(plan_install(&choice, Path::new(BIN), Some(Path::new("/w/a b"))).is_ok());
+}
+
+#[test]
+fn a_non_utf8_dir_value_has_its_own_message() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = OsString::from_vec(vec![b'/', 0xff]);
+    let args = vec![OsString::from("--dir"), bad];
+    assert_eq!(
+        parse_args(&args),
+        Err("--dir: folder name is not valid UTF-8".to_string())
+    );
+}
+
+#[test]
+fn dir_before_uninstall_is_refused_too() {
+    assert!(parse_args(&os(&["--dir", "/w", "--uninstall"])).is_err());
+}

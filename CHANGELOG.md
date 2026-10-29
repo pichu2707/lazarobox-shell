@@ -14,11 +14,21 @@ baseline.
 
 - `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
   before the terminal or the nesting guard are touched.
+- Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
+  `config.toml` choose where the first shell starts (flag, then config, then
+  the launch folder). An invalid folder does not stop the app: it starts in
+  the launch folder and shows a notice inside lazarobox.
+- `install-desktop --dir <folder>` writes `Path=` and `--dir=` in the
+  launcher; running it again without `--dir` removes both.
 
 ### Changed
 
 - An unknown option or command now prints one line on stderr and exits 2
   instead of silently starting the TUI.
+
+### Fixed
+
+- The nesting guard no longer treats the value of `--dir` as a subcommand.
 
 ## [0.30.0] - 2026-10-29
 

@@ -312,3 +312,34 @@ fn reinstalling_without_dir_removes_a_previous_one() {
         "{written}"
     );
 }
+
+#[test]
+fn install_dir_with_shell_special_characters_stays_valid() {
+    let fx = Fixture::new();
+    for name in ["a$b", "a`b", "a\"b", "50%x"] {
+        let proj = fx.home.path().join(name);
+        fs::create_dir(&proj).unwrap();
+        let options = install_in(proj.to_str().unwrap());
+        fx.run(&options, None, None, &["kitty"]).0.unwrap();
+        let written = fs::read_to_string(fx.target()).unwrap();
+        assert!(written.contains("\nPath="), "{name}: {written}");
+        let exec = written.lines().find(|l| l.starts_with("Exec=")).unwrap();
+        assert!(exec.contains("\"--dir="), "{name}: {exec}");
+        match name {
+            "a$b" => assert!(exec.contains("a\\\\$b"), "{exec}"),
+            "a`b" => assert!(exec.contains("a\\\\`b"), "{exec}"),
+            "a\"b" => assert!(exec.contains("a\\\\\"b"), "{exec}"),
+            _ => assert!(exec.contains("50%%x"), "{exec}"),
+        }
+    }
+}
+
+#[test]
+fn install_dir_with_uninstall_is_a_parse_error_and_touches_nothing() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let before = fs::read_to_string(fx.target()).unwrap();
+    let args: Vec<OsString> = ["--dir", "/w", "--uninstall"].map(OsString::from).to_vec();
+    assert!(parse_args(&args).is_err());
+    assert_eq!(fs::read_to_string(fx.target()).unwrap(), before);
+}
