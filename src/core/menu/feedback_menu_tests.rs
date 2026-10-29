@@ -92,10 +92,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
         ]
     );
     assert_eq!(hint(&m), HINT_KIND);
-    assert_eq!(
-        HINT_KIND,
-        "←/→ kind · Tab · Ctrl+S send · Ctrl+O open · Esc"
-    );
+    assert_eq!(HINT_KIND, "←/→ kind · Tab next · Ctrl+S send · Esc back");
     // The focused text field draws its cursor.
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[2], "› Title");
@@ -108,7 +105,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
     assert_eq!(hint(&m), HINT_ATTACH);
     assert_eq!(
         HINT_ATTACH,
-        "Space attach · Ctrl+S send · Ctrl+O open · Esc"
+        "Space attach · Tab next · Ctrl+S send · Esc back"
     );
     // Every footer fits the 48 columns of the narrow popup.
     for h in [
