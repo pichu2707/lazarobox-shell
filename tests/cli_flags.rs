@@ -78,5 +78,8 @@ fn version_wins_over_what_follows_and_ignores_force() {
 
 #[test]
 fn the_internal_shim_is_not_rejected() {
-    assert_ne!(run(&["__mcp-serve"]).status.code(), Some(2));
+    // The shim's own usage error (also exit 2), not the CLI's rejection.
+    let err = String::from_utf8_lossy(&run(&["__mcp-serve"]).stderr).into_owned();
+    assert!(err.contains("usage: lazarobox-shell __mcp-serve"), "{err}");
+    assert!(!err.contains("unknown"), "{err}");
 }
