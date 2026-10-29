@@ -271,11 +271,24 @@ pub async fn each(
 /// The most completions listed.
 pub const COMPLETIONS_MAX: usize = 50;
 
+/// The most entries a completion checks against the disk.
+const EXAMINED_MAX: usize = COMPLETIONS_MAX * 4;
+
+/// A control character, or a format one (zero width, bidi override, BOM)
+/// that would make a name read as something else.
+fn unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
 /// The names of the directories in `dir` that start with `prefix`, sorted, at
 /// most [`COMPLETIONS_MAX`]. Hidden ones only when `prefix` starts with `.`.
 /// Nothing is listed unless `dir` is a folder a chat may work in or HOME, and
 /// an entry whose real path the tools would refuse (a link into `~/.ssh`) is
-/// left out, as is a name with a control character.
+/// left out, as is a name with a control or invisible format character. A
+/// folder above HOME or outside it (`/home`, `/usr`) lists nothing. At most
+/// [`EXAMINED_MAX`] entries are checked; reaching it marks the list truncated.
 pub fn complete(roots: &SecretRoots, dir: &Path, prefix: &str) -> Completion {
     let none = Completion::default();
     let Ok(real) = std::fs::canonicalize(dir) else {
@@ -296,11 +309,15 @@ pub fn complete(roots: &SecretRoots, dir: &Path, prefix: &str) -> Completion {
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| name.starts_with(prefix) && (hidden || !name.starts_with('.')))
-        .filter(|name| !name.chars().any(char::is_control))
+        .filter(|name| !name.chars().any(unsafe_char))
         .collect();
     names.sort();
     let mut found = Completion::default();
-    for name in names {
+    for (seen, name) in names.into_iter().enumerate() {
+        if seen == EXAMINED_MAX {
+            found.truncated = true;
+            break;
+        }
         let allowed = std::fs::canonicalize(real.join(&name))
             .is_ok_and(|entry| entry.is_dir() && roots.judge_real(&entry));
         if !allowed {

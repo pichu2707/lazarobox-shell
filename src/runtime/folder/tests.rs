@@ -462,3 +462,59 @@ fn completion_skips_links_into_secret_folders_and_names_with_control_characters(
     assert!(!got.contains(&"innocent".to_owned()), "{got:?}");
     assert!(!got.iter().any(|n| n.contains('\n')), "{got:?}");
 }
+
+#[test]
+fn completion_examines_a_bounded_number_of_entries() {
+    let f = fixture();
+    let home = f.root.join("home");
+    // None of these may be listed: every one is a link into a secret folder.
+    for n in 0..COMPLETIONS_MAX * 4 + 20 {
+        symlink(home.join(".ssh"), home.join(format!("l{n:03}"))).unwrap();
+    }
+    let got = complete(&roots_of(&f), &home, "l");
+    assert!(got.names.is_empty());
+    assert!(
+        got.truncated,
+        "the cap was hit, so the list is not complete"
+    );
+}
+
+#[test]
+fn hidden_secret_folders_are_never_completed_and_never_listed_inside() {
+    let f = fixture();
+    let home = f.root.join("home");
+    for sub in [".gnupg/private", ".config/gh", ".config/ok"] {
+        fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    let roots = roots_of(&f);
+    let hidden = complete(&roots, &home, ".").names;
+    assert!(!hidden.contains(&".ssh".to_owned()), "{hidden:?}");
+    assert!(!hidden.contains(&".gnupg".to_owned()), "{hidden:?}");
+    assert!(complete(&roots, &home.join(".gnupg"), "").names.is_empty());
+    assert!(
+        complete(&roots, &home.join(".config/gh"), "")
+            .names
+            .is_empty()
+    );
+}
+
+#[test]
+fn names_with_invisible_format_characters_are_dropped() {
+    let f = fixture();
+    let home = f.root.join("home");
+    for name in [
+        "evil\u{202e}gpj",
+        "zero\u{200b}width",
+        "bom\u{feff}",
+        "fine",
+    ] {
+        fs::create_dir_all(home.join(name)).unwrap();
+    }
+    let got = listed(&f, &home, "");
+    assert!(got.contains(&"fine".to_owned()), "{got:?}");
+    assert!(
+        got.iter()
+            .all(|n| !n.contains(['\u{202e}', '\u{200b}', '\u{feff}'])),
+        "{got:?}"
+    );
+}
