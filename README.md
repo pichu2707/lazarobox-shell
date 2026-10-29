@@ -151,13 +151,126 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 | `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
 | `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
 | `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `?`                       | Reservada para el futuro visor de órdenes; hoy no hace nada          |
 | `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
 
 **Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
 
 **Backspace que llega como `Ctrl+H`.** Algunas terminales mandan `^H` para Backspace. En los campos de texto (el mensaje del chat, las notas, el resumen, las etiquetas y los campos del menú) `Ctrl+H` borra como Backspace; un panel de shell recibe el byte tal cual.
 
-**`Esc` no significa lo mismo en todas partes.** En un shell llega al programa; en el prefijo y las confirmaciones cancela, y en RESIZE sale; en COPY limpia la selección y una segunda pulsación sale; en el menú vuelve un nivel y, arriba del todo, descarta lo no guardado y lo cierra; en el chat cancela la respuesta en curso, rechaza una aprobación o una revisión (tras su retardo), en la lista de conversaciones empieza una nueva y en los editores (etiquetas, resumen, nota) descarta lo escrito. La tabla completa está en `openspec/specs/modal-input/spec.md` («Esc per view»).
+### Referencia de teclas por vista
+
+Esta sección y la tabla del prefijo de arriba son la **referencia única** de teclas; las demás secciones del README la enlazan en lugar de repetirla. El prefijo `Ctrl+Espacio` **no se puede configurar**. Salvo que se diga otra cosa, las teclas se pulsan sin modificadores (`y` es la minúscula; `Y` no cuenta).
+
+**Chat, conversación**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Enter` | Envía el mensaje |
+| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje |
+| `Ctrl+U` | Borra el mensaje |
+| `Esc` / `Ctrl+C` | Cancela la respuesta en curso; sin respuesta en curso no hacen nada |
+| `Ctrl+R` | Muestra u oculta el último bloque de razonamiento del modelo |
+| `Ctrl+Y` / `Ctrl+B` | Copia la última respuesta / su último bloque de código (OSC 52) |
+| `PageUp` / `PageDown` | Desplaza la conversación |
+| `Ctrl+G` | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+| `←` `→` `Home` `End` `Backspace` `Delete` | Editan el mensaje (`Ctrl+H` borra como `Backspace`) |
+
+**Aprobación de una herramienta o de un comando** (incluida la confirmación de `Ctrl+Espacio` `e`). Mientras espera, el resto de teclas no hacen nada. Un aviso recién abierto no acepta aún `y`, `n` ni `Esc` (por si la tecla era para el mensaje); `Ctrl+C` funciona siempre.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Aprueba |
+| `n` / `Esc` | Rechaza |
+| `p` | En un comando, pasa al siguiente panel de shell como destino (da la vuelta al llegar al último) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Revisión de un lote o de un commit**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` `k` / `↓` `j` | Desplaza una fila |
+| `PageUp` / `PageDown` / `Home` / `End` | Desplaza por páginas / al principio / al final |
+| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo |
+| `n` / `Esc` | Rechaza, tras el mismo retardo (en el acto si el lote no se puede revisar) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Lista de conversaciones**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `j` `↓` / `k` `↑` | Mueve la selección |
+| `Enter` | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
+| `n` / `Esc` | Empieza una conversación nueva |
+| `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
+| `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
+| `t` | Edita las etiquetas de la fila |
+
+**Editores del chat**
+
+| Editor | Teclas |
+| :--- | :--- |
+| Etiquetas (`Ctrl+Espacio` `T`, o `t` en la lista) | Una línea separada por comas. `Enter` guarda, `Esc` descarta, `Ctrl+U` borra la línea |
+| Nota (`Ctrl+Espacio` `n`) | `Tab` / `Shift+Tab` cambian de campo; en el campo de categoría, `←` `→` la cambian. `Enter` guarda desde el título y añade una línea en el contenido; `Ctrl+S` guarda; `Esc` cierra sin guardar |
+| Resumen (`Ctrl+Espacio` `s`) | `Enter` añade una línea; `Ctrl+S` aprueba (también en la segunda pasada de ocultación de secretos); `Esc` descarta |
+| Oferta de `engram serve` | Con el mensaje vacío: `y` la acepta; `n` / `Esc` la dejan para después. Cualquier otra tecla se escribe en el mensaje |
+
+En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas del contenido; `Ctrl+C` nunca sale de lazarobox.
+
+**Menú** (`Ctrl+Espacio` `m`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Tab` / `Shift+Tab` | Pestaña siguiente / anterior |
+| `j` `↓` / `k` `↑` | Fila siguiente / anterior |
+| `l` `→` `Espacio` / `h` `←` | Valor siguiente / anterior de la fila (`Enter` también avanza al siguiente) |
+| `s` | Guarda en `config.toml` (`Enter` nunca guarda ni cierra el menú) |
+| `Enter` | En filas con acción: abre el selector de IA, actualiza (**Updates**), abre el formulario (**Feedback**) o pide el token (Hugging Face) |
+| `r` | En **Updates**, comprueba ahora; en las filas de IA, vuelve a detectar los motores y modelos |
+| `t` | En **Notify** y **Sound**, comprueba y lanza un aviso de prueba |
+| `d` | En la fila de la cuenta de Hugging Face, olvida el token |
+| `Esc` | Ver «`Esc` según la vista» |
+
+**Modo COPY** (`Ctrl+Espacio` `[`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `h` `j` `k` `l` | Mueve el cursor |
+| `0` / `$` | Inicio / final de la línea |
+| `gg` / `G` | Primera / última línea |
+| `Ctrl+D` / `Ctrl+U` | Media página abajo / arriba |
+| `v` / `V` | Empieza la selección por caracteres / por líneas |
+| `y` | Copia la selección (OSC 52) y sale |
+| `Esc` | Limpia la selección; sin selección, sale |
+| `q` / `i` | Salen (en un panel de chat, `i` no hace nada) |
+| `Ctrl+Y` / `Ctrl+B` | Solo en el chat: copian la última respuesta / su último bloque de código sin salir |
+
+**Modo RESIZE** (`Ctrl+Espacio` `w` `r`): `h` `j` `k` `l` mueven el borde del panel una celda; `Esc` sale. Cualquier otra tecla, incluido `Ctrl+Espacio`, se ignora y el modo sigue.
+
+**Confirmaciones** (salir, cerrar panel, cerrar pestaña): solo `y` confirma. `n`, `Esc`, `Y` o cualquier otra tecla la rechazan.
+
+**`Esc` según la vista.** No significa lo mismo en todas partes; así queda en la 1.0:
+
+| Vista | `Esc` |
+| :--- | :--- |
+| Panel de shell | Llega al programa (byte `0x1b`) |
+| Prefijo o grupo pendiente | Cancela, sin escribir nada |
+| Confirmaciones de salir, cerrar panel y cerrar pestaña | Rechaza, como cualquier tecla que no sea `y` |
+| RESIZE | Sale |
+| COPY (shell y chat) | Limpia la selección; sin selección, sale |
+| Menú, nivel superior | Cancela: descarta lo no guardado y cierra el menú |
+| Menú: selector de tarea, asistente de instalación, pantallas de Hugging Face | Vuelve un nivel (desde la lista de populares de Hugging Face, al campo de búsqueda) |
+| Menú: campo del token de Hugging Face | Cierra el campo; una comprobación en curso se cancela y no se guarda nada |
+| Menú: formulario de Feedback | Lo cierra, de vuelta a su fila (también tras enviar) |
+| Chat, conversación | Cancela la respuesta en curso; sin ella, no hace nada |
+| Chat, aprobación de herramienta y confirmación de `Ctrl+Espacio` `e` | Rechaza, cuando el aviso ya acepta respuesta |
+| Chat, revisión de un lote o de un commit | Rechaza, pasado el retardo (un lote huérfano se descarta) |
+| Chat, oferta de `engram serve` | Para después, como `n` |
+| Chat, lista de conversaciones | Empieza una conversación nueva, como `n` |
+| Chat, editor de etiquetas y borrador de resumen | Descarta la edición |
+| Chat, editor de notas | Lo cierra sin guardar |
+
+Una `Esc` mantenida actúa una sola vez en todas estas vistas salvo en un panel de shell.
 
 ---
 
@@ -386,18 +499,7 @@ Con el servidor de Ollama en marcha (detectado como `available`), la lista de mo
 
 Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`), con los servidores locales **llama.cpp** (`llama-server`), **LM Studio** y **vLLM**, que hablan por HTTP con `127.0.0.1`, y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
 
-Teclas dentro del chat:
-
-| Tecla                  | Acción                                              |
-| :--------------------- | :-------------------------------------------------- |
-| `Enter`                | Envía el mensaje                                    |
-| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
-| `Ctrl+U`               | Borra el mensaje                                    |
-| `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
-| `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
-| `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
-| `PageUp` / `PageDown`  | Desplaza la conversación                            |
-| `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) están en la [referencia de teclas](#referencia-de-teclas-por-vista).
 
 **La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
 
@@ -890,14 +992,7 @@ Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que s
 
 ![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
 
-| Tecla        | Acción                                                                          |
-| :----------- | :------------------------------------------------------------------------------ |
-| `Enter`      | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
-| `n` / `Esc`  | Empieza una conversación nueva                                                  |
-| `a`          | Alterna entre las conversaciones del proyecto y las de todos los proyectos      |
-| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar. Con memoria activada, `ENGRAM_HTTP_TOKEN` definido y notas guardadas, la pregunta ofrece también `a`: borra la conversación y después sus notas en engram (ver «Memoria») |
-| `t`          | Edita las etiquetas de la fila                                                  |
-| `Ctrl+Espacio` `T` | Edita las etiquetas de la conversación abierta                            |
+Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `d` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
