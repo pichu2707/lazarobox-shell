@@ -22,8 +22,9 @@ pub struct Probed {
 /// Why a folder is being probed, so the answer reaches the right flow.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Purpose {
-    /// The user typed `/cd`.
-    Cd,
+    /// The user typed `/cd`; the token names the request, so a stale
+    /// answer (an earlier or an edited command) is told apart.
+    Cd(u64),
     /// A conversation was resumed with a stored folder; the token names the
     /// request, so the answer of an earlier resume is told apart.
     Resume(u64),

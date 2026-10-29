@@ -765,6 +765,8 @@ pub struct App {
     /// The folder a resumed conversation was stored with while the runtime
     /// probes it, by chat: `(token, conversation, stored folder)`.
     resume_folders: HashMap<PaneId, (u64, i64, PathBuf)>,
+    /// The `/cd` a chat waits for the probe of.
+    cd_requests: HashMap<PaneId, folder::CdRequest>,
     /// The last token handed to a folder probe.
     folder_seq: u64,
     /// This machine's hostname: OSC 7 reports naming it count as local.
@@ -888,6 +890,7 @@ impl App {
             launch_cwd: None,
             home: None,
             resume_folders: HashMap::new(),
+            cd_requests: HashMap::new(),
             folder_seq: 0,
             hostname: None,
             dir_exists: |_| true,

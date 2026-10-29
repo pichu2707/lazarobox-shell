@@ -15,6 +15,13 @@ fn refused(reason: &str) -> String {
     format!("/cd refused: {reason}")
 }
 
+/// The `/cd` a chat waits for the answer of: its token and the argument as
+/// submitted, to tell an edited or repeated command from the one that asked.
+pub(super) struct CdRequest {
+    pub(super) token: u64,
+    arg: String,
+}
+
 /// A send waits for memory: it must not leave under another folder.
 const PARKED: &str = "a message is waiting to be sent";
 
@@ -105,6 +112,7 @@ impl App {
         let home = self.home.clone();
         // The user's own `/cd` outranks a resume answer still on its way.
         self.resume_folders.remove(&id);
+        self.cd_requests.remove(&id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -119,10 +127,19 @@ impl App {
                 };
                 match path {
                     Some(path) => {
+                        self.folder_seq += 1;
+                        let token = self.folder_seq;
+                        self.cd_requests.insert(
+                            id,
+                            CdRequest {
+                                token,
+                                arg: typed.clone(),
+                            },
+                        );
                         return vec![Effect::ProbeFolder {
                             pane: id,
                             path,
-                            purpose: Purpose::Cd,
+                            purpose: Purpose::Cd(token),
                         }];
                     }
                     None => refused(Refusal::NotFound.text()),
@@ -142,14 +159,22 @@ impl App {
         result: Result<Probed, Refusal>,
     ) -> Vec<Effect> {
         let busy = self.folder_busy(id);
+        let current = self.cd_requests.get(&id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         match purpose {
             Purpose::Resume(token) => self.on_resume_probed(id, token, result, busy),
-            Purpose::Cd => {
-                // The answer of a command the composer no longer holds is stale.
-                if !matches!(parse_command(&chat.composer().text()), Command::Cd(_)) {
+            Purpose::Cd(token) => {
+                // Only the answer of the latest command, still in the
+                // composer as it was submitted, counts.
+                let same = match (current, parse_command(&chat.composer().text())) {
+                    (Some(request), Command::Cd(CdArg::Path(arg))) => {
+                        request.token == token && request.arg == arg
+                    }
+                    _ => false,
+                };
+                if !same {
                     return Vec::new();
                 }
                 self.dirty = true;
@@ -255,6 +280,7 @@ impl App {
     /// The pane is gone: nothing it asked about is answered any more.
     pub(super) fn drop_folder_state(&mut self, id: PaneId) {
         self.resume_folders.remove(&id);
+        self.cd_requests.remove(&id);
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.

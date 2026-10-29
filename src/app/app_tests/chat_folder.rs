@@ -104,6 +104,22 @@ fn probes(effects: &[Effect]) -> Vec<(PathBuf, Purpose)> {
         .collect()
 }
 
+/// The token of the `/cd` probe the chat waits for.
+fn cd_token(a: &App) -> u64 {
+    a.cd_requests.get(&id2()).map_or(0, |request| request.token)
+}
+
+/// The token a `/cd` probe was asked with.
+fn cd_purposes(effects: &[Effect]) -> Vec<u64> {
+    probes(effects)
+        .into_iter()
+        .filter_map(|(_, purpose)| match purpose {
+            Purpose::Cd(token) => Some(token),
+            Purpose::Resume(_) => None,
+        })
+        .collect()
+}
+
 fn has_send(effects: &[Effect]) -> bool {
     effects.iter().any(|e| matches!(e, Effect::ChatSend { .. }))
 }
@@ -124,9 +140,14 @@ fn in_folder() -> App {
 }
 
 fn probed(a: &mut App, result: Result<Probed, Refusal>) -> Vec<Effect> {
+    let token = cd_token(a);
+    probed_for(a, token, result)
+}
+
+fn probed_for(a: &mut App, token: u64, result: Result<Probed, Refusal>) -> Vec<Effect> {
     a.update(AppEvent::FolderProbed {
         pane: id2(),
-        purpose: Purpose::Cd,
+        purpose: Purpose::Cd(token),
         result,
     })
 }
@@ -144,7 +165,10 @@ fn cd_is_not_a_message_and_asks_for_a_probe() {
     let before = messages(&a);
     let effects = ask(&mut a, "/cd /w/b");
     assert!(!has_send(&effects), "{effects:?}");
-    assert_eq!(probes(&effects), vec![(PathBuf::from("/w/b"), Purpose::Cd)]);
+    assert_eq!(
+        probes(&effects),
+        vec![(PathBuf::from("/w/b"), Purpose::Cd(cd_token(&a)))]
+    );
     assert_eq!(messages(&a), before);
     assert_eq!(composer(&a), "/cd /w/b");
 }
@@ -300,6 +324,7 @@ fn a_valid_cd_opens_the_confirmation_with_both_folders() {
 #[test]
 fn a_broad_folder_typed_by_the_user_is_confirmed_with_a_note() {
     let mut a = in_folder();
+    a.home = Some("/h".into());
     ask(&mut a, "/cd ~");
     probed(
         &mut a,
@@ -756,4 +781,28 @@ fn a_late_resume_answer_does_not_beat_a_cd_being_typed() {
     ask(&mut a, "/cd /w/b");
     resume_answer(&mut a, token, probed_as("/w/stored", Verdict::Concrete));
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn an_answer_for_a_command_edited_since_is_dropped() {
+    let mut a = in_folder();
+    let effects = ask(&mut a, "/cd proj");
+    let token = cd_purposes(&effects)[0];
+    type_text(&mut a, "y");
+    probed_for(&mut a, token, concrete("/w/a/proj"));
+    assert_eq!(pending_ask(&a), None);
+    assert!(!lines(&a).iter().any(|l| l.starts_with("already in")));
+}
+
+#[test]
+fn only_the_latest_of_two_cd_commands_is_answered() {
+    let mut a = in_folder().with_clock(mock_now);
+    let first = cd_purposes(&ask(&mut a, "/cd /w/x"))[0];
+    let_go();
+    let second = cd_purposes(&a.update(plain(KeyCode::Enter)))[0];
+    assert_ne!(first, second);
+    probed_for(&mut a, first, concrete("/w/x"));
+    assert_eq!(pending_ask(&a), None);
+    probed_for(&mut a, second, concrete("/w/x"));
+    assert!(pending_ask(&a).is_some());
 }

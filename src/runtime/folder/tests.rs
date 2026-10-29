@@ -116,9 +116,9 @@ async fn a_prober_answers_off_the_loop_through_its_channel() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let prober = Prober::new(f.env.clone(), tx);
     let pane = crate::core::layout::PaneId::FIRST;
-    prober.start(pane, f.root.join("home/project"), Purpose::Cd);
+    prober.start(pane, f.root.join("home/project"), Purpose::Cd(1));
     let (got_pane, purpose, result) = rx.recv().await.expect("an answer");
-    assert_eq!((got_pane, purpose), (pane, Purpose::Cd));
+    assert_eq!((got_pane, purpose), (pane, Purpose::Cd(1)));
     assert_eq!(result.unwrap().verdict, Verdict::Concrete);
 }
 
