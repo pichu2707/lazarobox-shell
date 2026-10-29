@@ -95,6 +95,14 @@ Deviations and notes:
 - Production size of A2 after the fixes: 561 added / 33 removed lines gross (`git diff --numstat`, tests and snapshots excluded; comments and blanks included, roughly 170 of them), 179 added in the fixes. Over the 400 soft limit, under the 600 hard limit.
 - Tests: 7148 lib tests green. RED was seen at compile level (new variants/fields) for each batch; the behavioural assertions were written with the code in the same step.
 
+### Batch 2c: PR A2 review round 2
+
+- The folder ask stays up after `y` with `checking: true` (`ApprovalAsk::Folder{.., checking}`, prompt `checking <f>…`, keys `Esc cancels`): while the last check runs only Esc answers (`/cd cancelled`), every other key is swallowed, so the composer cannot be edited under the pending answer. The answer closes the ask before the busy check.
+- A refused or bare `/cd` no longer drops the pending resume folder; only the `/cd` that emits a probe does. Decline and busy-at-`y` remove the `/cd` request. `debug_assert` where a folder ask has no request.
+- New tests: second `y`, a char, Enter and Esc while checking; busy between `y` and the answer; duplicate answer applies once; n/Esc clear the request; bare/refused `/cd` keeps the resume folder; a restore into another project still saves under the session project (comment on read vs write project in `restore_memory_for_folder`).
+- Size of A2 against A1 after round 2: 617 added / 33 removed gross, 509 added excluding comments and blank lines (tests and snapshots excluded). Over the 400 soft limit; the gross figure passes 600, the code-only figure does not.
+- 7157 lib tests green.
+
 ### Batch 3b: PR B1 review fixes (W1-W5, S)
 
 Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test and this file).
@@ -116,7 +124,6 @@ Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test a
 - Tests only: listing HOME with `.` leaves out `.ssh` and `.gnupg`; `.gnupg` and `.config/gh` list nothing inside.
 - Left for B2: a flight or debounce for the single-folder `start` and a session-unique picker id allocator.
 - 7194 lib tests green.
-
 ## Remaining
 
 A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.

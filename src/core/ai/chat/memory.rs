@@ -583,6 +583,10 @@ impl ChatState {
     /// nothing changes. Otherwise memory is asked again for the new folder,
     /// and the resumed session is kept: its notes stay in it (engram
     /// rejects a session under another project).
+    ///
+    /// Two projects can coexist afterwards: the one resolved from the folder
+    /// (`readiness`) is only what the chat READS (the context block and the
+    /// badge), while a save WRITES under the session's own project.
     pub fn restore_memory_for_folder(&mut self) {
         let kept = self.memory.session.clone();
         if let (Some(session), Some(project)) = (&kept, self.project())

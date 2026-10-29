@@ -292,9 +292,9 @@ Spec: git-tools "add", "commit", "Two toggles".
 
 ## Closing tasks (after the chain is merged)
 
-- [ ] Z.1 Archive `agent-tools` FIRST (its base spec lives only in the unarchived `changes/agent-tools/`), then archive `coding-tools`. Order is mandatory (user decision).
-- [ ] Z.2 Repoint rows 5 and 7 of the agent-orchestrator design and S7/S8/S10 dependencies in its `tasks.md` from "write-tools SDD"/"test-runner SDD" to `coding-tools` (S7 needs M2, S8 needs M3). Edit in the orchestrator's own change, not here.
-- [ ] Z.3 Confirm the `Evidence.digest` meaning (cleaned tail text) with the orchestrator owner.
+- [ ] Z.1 Archive `agent-tools` FIRST (its base spec lives only in the unarchived `changes/agent-tools/`), then archive `coding-tools`. Order is mandatory (user decision). BLOCKED (2026-10-29): agent-tools still has open manual tasks (1b.11, 2d.9, 2d.10, 2e-3.13, 4c.6, 4c.7), so it cannot be archived yet.
+- [ ] Z.2 [deferred 1.1] Repoint rows 5 and 7 of the agent-orchestrator design and S7/S8/S10 dependencies in its `tasks.md` from "write-tools SDD"/"test-runner SDD" to `coding-tools` (S7 needs M2, S8 needs M3). Edit in the orchestrator's own change, not here.
+- [x] Z.3 Decided: `Evidence.digest` is the cleaned tail text (<= 2 KiB, char-boundary cut, redacted); see `src/core/ai/tools/run.rs` `digest()` and the digest tests, and verify-report.md.
 
 ## Dependency summary
 

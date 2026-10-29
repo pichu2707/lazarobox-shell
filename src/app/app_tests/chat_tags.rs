@@ -456,6 +456,7 @@ fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
         messages: Vec::new(),
         session: None,
         folder: None,
+        skipped: 0,
     }));
     press(&mut a, "T");
     assert_eq!(editor_text(&a), "proj, sql");
