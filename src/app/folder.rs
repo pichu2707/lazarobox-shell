@@ -25,6 +25,18 @@ impl App {
             .is_some_and(|chat| chat.memory_epoch() == epoch)
     }
 
+    /// Whether save `token` of chat `id` was sent before its folder changed.
+    pub(super) fn save_is_stale(
+        &self,
+        id: PaneId,
+        token: crate::core::ai::memory::port::SaveId,
+    ) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.save_is_stale(token))
+    }
+
     /// Makes `new` (probed, resolved) the folder of chat `id` and asks for
     /// what the old one pinned: the system prompt, the memory project and the
     /// tool session (whose approvals belong to the old folder). Every other

@@ -998,6 +998,39 @@ fn a_folder_change_ends_the_session_and_links_the_next_one_in_the_new_project() 
     );
 }
 
+// A save answered after the folder changed (its wait ran out first) belongs to
+// the old project: it must not adopt the old session or record its note.
+#[test]
+fn a_late_save_answer_of_the_old_folder_is_ignored() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    let late = saved_reply(&a, SESSION, 41, "chat/decision/one", "One");
+    a.apply_folder(chat_id(), "/srv/other".into());
+    a.take_dirty();
+    assert_eq!(a.update(late), vec![]);
+    assert!(chat_of(&a).session().is_none());
+    assert!(!systems(&a).iter().any(|l| l.contains("saved note")));
+
+    for reply in [
+        MemReply::SaveFailed {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: "boom".into(),
+        },
+        MemReply::SaveUnavailable {
+            pane: chat_id(),
+            id: crate::core::ai::memory::port::SaveId(1),
+            reason: Reason::NotRunning,
+        },
+    ] {
+        let before = systems(&a);
+        assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
+        assert_eq!(systems(&a), before);
+    }
+}
+
 #[test]
 fn the_stored_pair_of_a_resumed_conversation_wins() {
     let mut a = ready("body");

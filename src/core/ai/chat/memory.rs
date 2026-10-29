@@ -186,6 +186,9 @@ pub struct ChatMemory {
     /// Bumped when the chat folder changes: a project or context reply from
     /// an older epoch belongs to the old folder and is ignored.
     pub(super) epoch: u32,
+    /// Save tokens up to this one were sent under an older folder: their
+    /// answers are ignored.
+    save_floor: u64,
     /// The next session link replaces the stored one: the project changed.
     relink: bool,
 }
@@ -211,6 +214,7 @@ impl ChatMemory {
             degraded: false,
             epoch: 0,
             relink: false,
+            save_floor: 0,
         }
     }
 
@@ -537,6 +541,11 @@ impl ChatState {
         Some((session, std::mem::take(&mut self.memory.relink)))
     }
 
+    /// Whether the save with token `id` was sent before the folder changed.
+    pub fn save_is_stale(&self, id: SaveId) -> bool {
+        id.0 <= self.memory.save_floor
+    }
+
     /// The epoch the memory requests of this view carry.
     pub fn memory_epoch(&self) -> u32 {
         self.memory.epoch
@@ -558,6 +567,8 @@ impl ChatState {
         memory.session = None;
         memory.session_linked = false;
         memory.relink = true;
+        memory.save_floor = memory.saves_sent;
+        memory.pending_saves.clear();
         memory.notes.clear();
         memory.ended = false;
         self.approved_summary = None;
