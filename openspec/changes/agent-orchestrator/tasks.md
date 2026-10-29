@@ -235,7 +235,7 @@ State and key handling only; no rendering (snapshots land in S1e-2).
 | PR | Tasks | Est. | Base | Why |
 |----|-------|------|------|-----|
 | S1e-1a | 1e1.1-1e1.4 (Ctrl+O toggle, `orch` flag, send path, `app/orchestra.rs` skeleton) | ~330 | S1d-3 branch | Smallest end-to-end behavior: an orchestrating pane sends `Task::Orchestrate` |
-| S1e-1b | 1e1.5-1e1.6 (notice and scope state, keys, config write effect) | ~300 | S1e-1a branch | One concern: first-run notice and scope prompts |
+| S1e-1b | 1e1.5-1e1.6 (notice state, keys, config write effect; read scope from the chat origin) | ~300 | S1e-1a branch | One concern: first-run notice and the read scope of a run (no scope prompt, user decision 2026-10-29) |
 | S1e-1c | 1e1.7-1e1.8 (failure state, retry/cancel keys, `Entry::Worker`, event handling) | ~300 | S1e-1b branch | Failure handling plus the `Entry` enum widening |
 
 S1e-2 bases on the S1e-1c branch.
@@ -249,9 +249,9 @@ S1e-2 bases on the S1e-1c branch.
 
 ### S1e-1b (PR 10, ~300 lines, base: S1e-1a branch): tasks 1e1.5-1e1.6
 
-- [ ] 1e1.5 RED notice and scope state/key tests: notice shown once and never blocks, Enter/y accepts and persists, Esc dismisses and shows again; scope prompt blocks reads until answered, keys, denied scope. Spec: agent-orchestrator / Shown once never blocks, Not shown again, Not accepted is shown again; modal-input / Notice keys, Scope keys; chat-pane / Prompt blocks reads until answered; config-menu / Accept persists, Dismiss does not accept.
-- [ ] 1e1.6 GREEN `app/orchestra.rs` notice/scope state, key handling, config write effect. REFACTOR + gates (S1e-1b closes here).
-- [ ] The provider notice is accepted only with `y` after an arm delay (as approvals), or only with an empty composer; Enter typed as part of a message must not accept it (key audit, 2026-10-29).
+- [ ] 1e1.5 RED notice state/key tests and read scope tests: notice shown once and never blocks, Enter/y accepts and persists only with an empty composer, Esc dismisses and shows again, a typed Enter never accepts; a run starts with no prompt, its scope root is the chat origin, a refused origin gives no root, a worker read outside the scope follows the approval mode as a chat read. Spec: agent-orchestrator / Shown once never blocks, Not shown again, Not accepted is shown again, No prompt at run start, Refused origin gives no root, Outside read follows the mode as a chat read; modal-input / Notice keys, Typed Enter does not accept; chat-pane / Worker starts without a prompt; config-menu / Accept persists, Dismiss does not accept.
+- [ ] 1e1.6 GREEN `app/orchestra.rs` notice state, key handling, config write effect; `runtime/chat.rs` scope roots from the chat origin; `WorkerRead` routed by the approval mode. REFACTOR + gates (S1e-1b closes here).
+- [ ] The provider notice is accepted only with `y` after an arm delay (as approvals), or only with an empty composer; Enter typed as part of a message must not accept it (key audit, 2026-10-29). Picked: only with an empty composer (modal-input, Notice keys).
 - [ ] Rename `[ai.orchestrator] notice_accepted` to `acknowledged`, as `[ai.memory]` does (config freeze, 2026-10-29).
 
 ### S1e-1c (PR 11, ~300 lines, base: S1e-1b branch): tasks 1e1.7-1e1.8
@@ -262,22 +262,22 @@ S1e-2 bases on the S1e-1c branch.
 
 #### Obligations from the S1b-2 security review (S1e-1b)
 
-- [ ] Scope roots come only from the user's prompt, never from model/worker text; `dropped` entries are sanitized (`clean`/`clip`) before display.
+- [ ] Scope roots come only from the chat origin (no scope prompt, user decision 2026-10-29), never from model/worker text; a dropped root's reason is sanitized (`clean`/`clip`) before display.
 - [ ] (suggestion) Consider refusing or flagging roots that are ancestors of secret roots or credential parents (~/.config, ~/.local, ~/Library, ~/.mozilla), per `jail::too_broad`.
 
 ## S1e-2: UI, snapshots, prompts (PR 12, ~600 lines re-estimated, `size:exception: approved`)
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines | ~600 (was ~250), excluding `.snap` files. Production ~260: ORCH badge beside `mode_badge` (`ui/components/chat.rs:155-165`) ~30, new `ui/components/worker.rs` ~80, notice/scope/alert views ~150. Tests ~250 (TestBackend + insta, five groups). Final `orchestrate.md` wording for two profiles ~100. CHANGELOG ~3. Snapshot files are excluded but add review load |
+| Estimated changed lines | ~600 (was ~250), excluding `.snap` files. Production ~260: ORCH badge beside `mode_badge` (`ui/components/chat.rs:155-165`) ~30, new `ui/components/worker.rs` ~80, notice/alert views ~150. Tests ~250 (TestBackend + insta, five groups). Final `orchestrate.md` wording for two profiles ~100. CHANGELOG ~3. Snapshot files are excluded but add review load |
 | 400-line budget risk | Medium (~600, over 400) |
 | Chained PRs recommended | Yes (already the S1 chain) |
 | Decision needed before apply | No (decided, user 2026-10-21: NOT split; one PR with `size:exception: approved`) |
 
 Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1.
 
-- [ ] 1e2.1 RED insta snapshots (TestBackend): ORCH badge follows gate AND flag; worker row per status; notice and scope prompt views; failure alert content (raw error, r/c keys); approval label shown. Spec: chat-pane / Badge follows both switches, Row rendered, Alert content, Label shown.
-- [ ] 1e2.2 GREEN `ui/components/chat.rs` (badge beside `mode_badge`, notice, scope, alert views), `ui/components/worker.rs`.
+- [ ] 1e2.1 RED insta snapshots (TestBackend): ORCH badge follows gate AND flag; worker row per status; notice view; failure alert content (raw error, r/c keys); approval label shown. Spec: chat-pane / Badge follows both switches, Row rendered, Alert content, Label shown.
+- [ ] 1e2.2 GREEN `ui/components/chat.rs` (badge beside `mode_badge`, notice, alert views), `ui/components/worker.rs`.
 - [ ] 1e2.3 RED+GREEN prompt test then final `prompts/*/orchestrate.md` wording (built-ins exist per profile, docs deferred). Spec: prompt-profiles / Built-ins exist, Docs deferred.
 - [ ] 1e2.4 CHANGELOG Internal line (no README). REFACTOR + gates + manual smoke with fake runner.
 

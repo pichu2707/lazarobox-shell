@@ -137,50 +137,55 @@ Until write tools exist, every worker MUST be offered only the read-only tools (
 - THEN it is exactly `find_dir`, `list_dir`, `read_file`
 
 #### Scenario: Writes wait for the batch review [S7, auto]
-- GIVEN a `code` worker with a write tool and a read scope approved
+- GIVEN a `code` worker with a write tool and a run's read scope
 - WHEN it calls a write tool inside the scope
 - THEN the change is staged with the worker label and nothing is written before the user approves the batch
 
-### Requirement: Run-start read scope [S1]
-When a run starts, the user MUST be shown a read scope for approval before any worker reads: a list of root folders (by default the chat origin folder) and a statement that reads inside it are pre-approved for this run only. The scope MUST apply the path policy deny-lists of agent-tools to every candidate path, checking both the requested path (`~` expanded, relative resolved, `.` and `..` folded) and the resolved real path; a path is inside the scope only if both are inside an approved root and neither is excluded. A root that is itself excluded or outside `$HOME` MUST be dropped and the user told. Approving MUST apply to this run only and expire with it. Denying MUST leave an empty scope, so every worker read asks.
+### Requirement: Read scope of a run [S1]
+A run MUST start with no prompt and no key: its read scope is set at run start, without asking (user decision, 2026-10-29). Its roots default to the chat origin folder. Roots MUST come only from the chat origin (and, later, from the user), never from model or worker text. Every root MUST pass the path policy (`paths::resolve`: the secret roots, `CREDENTIAL_DIRS`, outside `$HOME`); a root that is excluded, outside `$HOME`, `$HOME` itself or a broad scratch folder gives no root, and the reason is kept for display, sanitized (`clean`/`clip`). Refusing roots that are ancestors of secret roots or credential parents (`jail::too_broad`) is to be considered. Reads inside the scope MUST run without asking, for this run only, and the scope expires with the run. The scope MUST apply the path policy deny-lists of agent-tools to every candidate path, checking both the requested path (`~` expanded, relative resolved, `.` and `..` folded) and the resolved real path; a path is inside the scope only if both are inside a root and neither is excluded.
+
+#### Scenario: No prompt at run start [auto]
+- GIVEN an orchestrating pane whose chat origin is `~/dev/app`
+- WHEN a run starts
+- THEN no prompt is shown, no key is awaited, and the run's scope root is `~/dev/app`
 
 #### Scenario: Read inside the scope runs without asking [auto]
-- GIVEN an approved scope `~/dev/app` and a worker reading `~/dev/app/src/a.rs` on a cloud engine
+- GIVEN a run whose chat origin is `~/dev/app` and a worker reading `~/dev/app/src/a.rs` on a cloud engine in `ask` mode
 - WHEN `read_file` is called
 - THEN it runs with no approval prompt
 
 #### Scenario: Deny-list wins inside the scope [auto]
-- GIVEN an approved scope `~/dev/app` containing `.env` and a symlink `link` to `~/.ssh/id_ed25519`
+- GIVEN a scope `~/dev/app` containing `.env` and a symlink `link` to `~/.ssh/id_ed25519`
 - WHEN `read_file` is called on each
 - THEN both are refused with the one identical refusal message and no approval is offered
 
 #### Scenario: Requested and resolved path both checked [auto]
-- GIVEN an approved scope `~/dev/app` and `~/dev/app/x` is a symlink to `~/other/y`
+- GIVEN a scope `~/dev/app` and `~/dev/app/x` is a symlink to `~/other/y`
 - WHEN `read_file` is called on `~/dev/app/x`
-- THEN the read is outside the scope and asks
+- THEN the read is outside the scope and follows the approval mode
 
-#### Scenario: Excluded root dropped [auto]
-- GIVEN a proposed scope root `~/.aws`
-- WHEN the scope prompt is built
-- THEN the root is dropped and the prompt says so
+#### Scenario: Refused origin gives no root [auto]
+- GIVEN an orchestrating pane whose chat origin is `$HOME` (or excluded, such as `~/.aws`)
+- WHEN a run starts
+- THEN the scope has no root, the reason is kept sanitized, and every worker read follows the approval mode
 
 #### Scenario: Scope expires with the run [auto]
-- GIVEN a run that ended with an approved scope
-- WHEN a new run starts
-- THEN the scope prompt is shown again and the old scope grants nothing
+- GIVEN a run that ended
+- WHEN a worker of it reads inside its old scope, or a new run starts
+- THEN the old scope grants nothing, and the new run has its own scope from the chat origin
 
-#### Scenario: Denied scope [auto]
-- GIVEN the user denies the scope
-- WHEN a worker reads any file
-- THEN the read asks
-
-### Requirement: Reads outside the scope ask [S1, S3]
-A worker read outside the approved scope MUST ask the user, never be silently allowed and never be silently denied. The prompt MUST show the sanitized path and a worker label with kind and engine>model. [S1] With one worker there is one pending prompt. [S3] With several workers the prompts MUST form a FIFO queue, one visible at a time, each labelled `worker n/m <kind> <engine>><model>`; a timer MUST NOT approve. Declining, timing out or cancelling MUST end as `denied` and no file is opened. Cancelling a worker MUST deny its pending and queued asks.
+### Requirement: Reads outside the scope follow the approval mode [S1, S3]
+A worker read outside the run's scope MUST follow the pane's approval mode exactly as a chat read does (chat-auto-permissions: `run` lets go only what it lets go for a chat read; otherwise the read asks), never be allowed by a timer and never be silently denied. When it asks, the prompt MUST show the sanitized path and a worker label with kind and engine>model. [S1] With one worker there is one pending prompt. [S3] With several workers the prompts MUST form a FIFO queue, one visible at a time, each labelled `worker n/m <kind> <engine>><model>`; a timer MUST NOT approve. Declining, timing out or cancelling MUST end as `denied` and no file is opened. Cancelling a worker MUST deny its pending and queued asks.
 
 #### Scenario: Outside read asks with a label [auto]
-- GIVEN a scope `~/dev/app` and a `review` worker on `claude>opus` reading `~/dev/other/a.rs`
+- GIVEN a scope `~/dev/app`, a pane in `ask` mode and a `review` worker on `claude>opus` (cloud) reading `~/dev/other/a.rs`
 - WHEN `read_file` is called
 - THEN an approval shows the sanitized path and the label with `review` and `claude>opus`, and the file is not opened before `y`
+
+#### Scenario: Outside read follows the mode as a chat read [auto]
+- GIVEN a worker read outside the scope and the same read made by the chat in the same pane and mode
+- WHEN `read_file` is called in `ask`, `auto` and `run`
+- THEN the approval mode answers the worker's read exactly as it answers the chat's (prompts, lets go or denies alike), and only a prompt shows the worker label
 
 #### Scenario: Never silently decided [auto]
 - GIVEN an outside read pending
@@ -390,7 +395,7 @@ The run MUST follow the ODD steps in order: `authorize`, `explore`, `resolve`, `
 Until S7, `implement` MUST produce only drafts and review findings, and the orchestrator MUST NOT claim code was written or tests passed.
 
 #### Scenario: Read-only goal spawns no code worker [auto]
-- GIVEN the goal `explain how the scope prompt works`
+- GIVEN the goal `explain how the read scope works`
 - WHEN the orchestrator calls `spawn_agent` with kind `code`
 - THEN it is refused as outside a read-only goal
 

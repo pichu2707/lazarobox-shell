@@ -35,13 +35,13 @@ A worker MUST appear as a transcript row (kind, `engine>model`, status, elapsed)
 - WHEN the pane is rendered
 - THEN a row shows `review`, `claude>opus`, `running` and `12s`
 
-### Requirement: Run-start scope prompt [S1]
-At run start the pane MUST show the read scope prompt (roots, "reads inside are pre-approved for this run", dropped roots with the reason) and accept approve or deny by key only. While it is shown no worker reads and no worker starts reading. The composer text MUST be kept.
+### Requirement: Announced workers [S1]
+A worker MUST be announced by its transcript row and start at once: no prompt, key or answer is needed to start a run or a worker (user decision, 2026-10-29: "lo avisas pero no pides permisos"). Its reads follow the run's read scope and the pane's approval mode (agent-orchestrator, Read scope of a run). The composer text MUST be kept.
 
-#### Scenario: Prompt blocks reads until answered [auto]
-- GIVEN a run started and the scope prompt shown
-- WHEN a worker would read a file
-- THEN the read waits for the answer and nothing is opened before it
+#### Scenario: Worker starts without a prompt [auto]
+- GIVEN an orchestrating pane whose composer holds `draft`
+- WHEN the orchestrator spawns a `review` worker
+- THEN its row is shown, the worker starts with no prompt and no key pressed, and the composer still holds `draft`
 
 ### Requirement: Failure alert [S1, S2]
 A worker failure MUST show an inline alert in the pane with the worker label, the error class [S2] and the provider message, and the options: [S1] retry, cancel; [S2] retry, change model, change provider, cancel. The alert stays until the user chooses; it is not dismissed by a timer or by new output. While it is shown the pane MUST say the run is paused. When a run-scoped override is active the pane MUST show it in the run state and mark the affected worker rows (`engine>model` plus an override marker).
