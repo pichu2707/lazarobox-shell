@@ -11,7 +11,11 @@ In TERMINAL every key except the prefix MUST be delivered to the focused pane. F
 
 Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY, RESIZE and in MENU for navigation and cycling keys only; it MUST be ignored for Enter and Esc in MENU, for `v`, `V`, `y`, Esc, `q` and `i` in COPY, and in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action, confirms, toggles a selection, yanks or exits. On a chat pane Repeat is handled like Press for editing and scrolling keys, and ignored for Enter (send), Esc and Ctrl+C (cancel), Ctrl+Y and Ctrl+B (yank).
 
-A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST NOT leak into TERMINAL: its Repeat events MUST be dropped until its Release or any other Press arrives. Because terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, a Press of the identical key (same code and modifiers) MUST also be dropped when it arrives within 500 ms of the exit or of the previous dropped one, so a long hold keeps being dropped. Any other Press, a Release of that key, a paste, or a gap over 500 ms ends the debounce. A yank that leaves COPY open (selection over the cap, or no text) does not start it. Tradeoff: a deliberate retype of the exit key within 500 ms of leaving COPY is dropped too.
+A held key MUST act once wherever only a Press may act. Terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, so a Press of the identical key (same code and modifiers) that arrives within 500 ms of the previous key event (inclusive; every event of the hold renews the window) is part of the hold. Any other key, a Release of that key, a paste, or a gap over 500 ms ends the hold. MENU, every confirmation and the chat pane (the conversation view, approval prompts, the batch and commit reviews, the `engram serve` offer, the conversation list and the tag, note and summary editors) MUST handle a Press that is part of a hold like a Repeat: a held key never saves, cancels, discards, sends, yanks, toggles or answers more than once, and a key held from before a prompt opened never answers it once it arms. Typing and navigation keys act on every Press as before. Shell panes, PREFIX, group pending and COPY keep the Repeat rule above. Tradeoff: a deliberate second press of the same decision key within 500 ms of the first is dropped too (press it again after a pause).
+
+A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank), closed MENU, answered a confirmation or left RESIZE MUST NOT leak into TERMINAL: while it is held (its Repeat events, or its Presses within the hold window) it MUST be dropped, until its Release, any other Press, a paste, or a gap over 500 ms. A yank that leaves COPY open (selection over the cap, or no text) does not start it. Tradeoff: a deliberate retype of that key within 500 ms is dropped too.
+
+Ctrl+H MUST act as Backspace in every text field: the chat composer, the note, summary and tag editors, and the menu's text fields (the `custom…` model field, the Hugging Face search and token fields, the Feedback form). Terminals that send `^H` (0x08) for Backspace report it as Ctrl+H. A shell pane MUST still receive the 0x08 byte as it came.
 
 #### Scenario: Passthrough
 - GIVEN TERMINAL
@@ -22,6 +26,21 @@ A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST
 - GIVEN PREFIX, group pending, or any confirmation
 - WHEN a Repeat event arrives
 - THEN no action is dispatched and the state is unchanged
+
+#### Scenario: A held decision key acts once [auto]
+- GIVEN a terminal that sends a held key as Presses, and a tool approval prompt that arms 400 ms after it opened
+- WHEN `y`, `n` or Esc arrives as a Press every 50 ms from the moment the prompt opened, for 1 s
+- THEN none of them answers the prompt, and a new Press more than 500 ms after the last one answers it
+
+#### Scenario: A held Esc backs out of a picker once [auto]
+- GIVEN MENU at the model level of a task picker
+- WHEN Esc arrives as a Press at 0, 100, 200 and 300 ms
+- THEN the picker goes back one level only and the menu stays open, so its draft is not discarded
+
+#### Scenario: Ctrl+H is Backspace in a text field [auto]
+- GIVEN the chat composer, a note, summary or tag editor, or a text field of the menu, holding `ab`
+- WHEN Ctrl+H is pressed
+- THEN the field holds `a`; on a shell pane Ctrl+H writes `[0x08]` to the PTY
 
 #### Scenario: Release ignored
 - GIVEN any mode
@@ -200,7 +219,16 @@ After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (la
 | `[` | enter COPY |
 | `m` | open the config menu (enter MENU) |
 | `c` | open a chat pane (split right) |
+| `n` | save a note of the chat (see Save-note prefix key) |
+| `o` | expand or collapse the memory block (see Memory keys) |
+| `s` | the end-of-conversation summary (see Memory keys) |
+| `T` | edit the tags of the conversation (see Chat pane input) |
+| `e` | run the last shell code block of the chat in a pane (confirm; see pane-commands) |
+| `a` | cycle the chat's approval mode `ask`, `auto`, `run` (see agent-tools) |
 | `q` | quit (confirm) |
+| Ctrl+Space | send the prefix key itself: a NUL byte (0x00) to the focused shell pane (see Prefix key) |
+
+`n`, `o`, `s`, `T`, `e` and `a` are root leaves left out of the key hint (the root hint is already 79 columns wide); on a pane that is not a chat they only show a notice.
 
 The root of the prefix tree also contains the leaf bindings `m` with description `menu`, entering MENU, and `c` with description `chat`, opening a chat pane; the root key hint therefore includes `m menu` and `c chat`, in that table order, before `q quit`. The pinned list of root hint entries changes from `w t g b [ m q` to `w t g b [ m c q`.
 
@@ -362,7 +390,7 @@ Any change of focused pane or active tab MUST exit COPY (the pane being left ret
 - THEN mode is still RESIZE
 
 ### Requirement: MENU mode
-`m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.
+`m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly, and so MUST a Press that is part of a hold, see TERMINAL mode); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.
 
 #### Scenario: Enter MENU [auto]
 - GIVEN PREFIX
@@ -403,11 +431,17 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
 | Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
+| Ctrl+G | open the review of an orphan write batch (the badge `orphan N · Ctrl+G` names it) |
+| Ctrl+H | Backspace (see TERMINAL mode) |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
+New chat keys live behind the prefix (user rule 2026-10-13), not on direct Ctrl+letter chords. The chords in the table above predate the rule or are its allowed exceptions; a new direct chord MUST be added to this list of allowed exceptions, with its reason, or live behind the prefix:
 
-Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y, Ctrl+B and Ctrl+T, and is an open question until confirmed on a real terminal (manual check M8).
+- Ctrl+G: a direct shortcut on purpose (user decision 2026-10-29): the orphan badge names it, it only acts when an orphan batch exists, and it opens a review that still needs full coverage and the arm delay before anything is applied.
+
+The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord, because of that rule, and `t` is already the TAB group. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
+
+Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y and Ctrl+B, and is an open question until confirmed on a real terminal (manual check M8).
 
 #### Scenario: Typing edits the composer [auto]
 - GIVEN a focused idle chat pane
@@ -648,6 +682,33 @@ Repeat MUST be handled like Press for `j`, `k`, Ctrl+d and Ctrl+u and ignored fo
 - GIVEN COPY on a shell pane
 - WHEN `v`, `y` and `h` are pressed
 - THEN they select, yank and move as before
+
+### Requirement: Esc per view
+Esc means a different thing in each view; this table documents the meanings 1.0 keeps (user decision 2026-10-29: no behavior change). A held Esc acts once in every view below except a shell pane (see TERMINAL mode).
+
+| View | Esc |
+|---|---|
+| TERMINAL, shell pane | sent to the program (0x1b) |
+| PREFIX, group pending | cancels; the key is swallowed |
+| quit, close-pane and close-tab confirmations | declines, like any key but `y` |
+| RESIZE | leaves to TERMINAL |
+| COPY, chat COPY | clears the selection; with none, leaves COPY |
+| MENU, top level | cancels: the unsaved draft is discarded and the menu closes |
+| MENU, task picker, install wizard, Hugging Face screens | goes back one level (from the Hugging Face popular list, to its search field) |
+| MENU, Hugging Face token field | closes the field; a token check in flight is cancelled and nothing is saved |
+| MENU, Feedback form | closes the form, back to its row (also after a send) |
+| chat, conversation view | cancels the running stream; with none, does nothing |
+| chat, tool approval and `Prefix e` confirmation | declines, once the prompt is armed |
+| chat, batch and commit review | rejects, once the review delay is over (an orphan batch is discarded) |
+| chat, `engram serve` offer | later, like `n` |
+| chat, conversation list | starts a new conversation, like `n` |
+| chat, tag editor and summary draft | discards the edit |
+| chat, note editor | closes it without saving |
+
+#### Scenario: Esc backs out one step in the menu [auto]
+- GIVEN MENU in a task picker at the model level
+- WHEN Esc is pressed
+- THEN the picker goes back to the engine level and the menu stays open
 
 ### Requirement: Mouse events by mode
 Mouse wheel events MUST be handled only in TERMINAL and COPY (see mouse-input); in every other mode they are ignored and no state changes. A wheel event MUST NEVER change the mode, and in COPY it MUST NEVER exit COPY. Click and drag events are never handled.
