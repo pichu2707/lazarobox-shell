@@ -185,15 +185,39 @@ fn y_on_a_model_or_custom_row_copies_nothing() {
 }
 
 #[test]
-fn y_on_an_engine_row_copies_its_no_jail_reason_and_enter_still_enters() {
-    let d = codex(None, Some(LONG));
+fn y_on_a_claude_row_that_runs_bare_copies_its_reason_and_enter_still_enters() {
+    let mut claude = state("claude", Status::Available, &["default"]);
+    claude.diagnostics.jail = Some(LONG.to_owned());
+    let d = Detection {
+        engines: vec![claude],
+        ..Default::default()
+    };
     let draft = AiConfig::default();
     let mut p = Picker::open(Target::Task(Task::Code), &draft, Some(&d));
     let rows = p.rows(&draft, Some(&d));
-    p.cursor = index_of(&rows, engine_key("codex"));
+    p.cursor = index_of(&rows, engine_key("claude"));
     assert_eq!(p.copy(&draft, Some(&d)), Outcome::Copy(LONG.to_owned()));
     assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
     assert!(matches!(p.level, Level::Models { .. }));
+}
+
+#[test]
+fn a_refused_codex_row_copies_the_full_reason_and_cannot_be_entered() {
+    let mut d = codex(None, Some("…/bin is run and written"));
+    d.engines[0].diagnostics.jail_full = Some(LONG.to_owned());
+    let draft = AiConfig::default();
+    let mut p = Picker::open(Target::Task(Task::Code), &draft, Some(&d));
+    let rows = p.rows(&draft, Some(&d));
+    let row = &rows[index_of(&rows, engine_key("codex"))];
+    assert!(!row.enabled);
+    assert_eq!(
+        row.mark,
+        Mark::Status("refused · …/bin is run and written".to_owned())
+    );
+    p.cursor = index_of(&rows, engine_key("codex"));
+    assert_eq!(p.copy(&draft, Some(&d)), Outcome::Copy(LONG.to_owned()));
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
+    assert!(matches!(p.level, Level::Engines));
 }
 
 #[test]
