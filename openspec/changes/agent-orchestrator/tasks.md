@@ -204,6 +204,10 @@ S1e-1a bases on the S1d-3 branch.
 - [ ] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`.
 - [ ] 1d.5 GREEN `runtime/chat.rs` (`with_orchestra`, `cancel`/`shutdown` forward), `runtime.rs` wiring. REFACTOR + gates (S1d-3 closes here).
 
+#### Obligations from the S1d-2 review (S1d-3)
+
+- [ ] Replacing a run on the same pane MUST send `Ended` for the old run (today its worker is killed with no app event; test `replacing_a_run_kills_the_old_worker` pins the kill).
+
 #### Obligations from the S1b-2 security review (S1d-2, S1d-3)
 
 - [x] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker. Done: `collect` reads 8 bytes of `/dev/urandom` per call (as `tools::new_nonce` does) and returns no text when it cannot; test `every_collect_wraps_under_a_fresh_nonce_the_worker_never_saw`.
@@ -306,6 +310,7 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 
 ### S9: run view and persistence (3 PRs, ~900, risk High, decision: Yes) depends on S4
 - [ ] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run.
+- Note (S1d-2 review): run ids are wall-clock microseconds kept above the last one issued, which holds within one process only; once runs are stored, persist the highest id issued and start above it, so a clock set back across a restart cannot reuse an id.
 
 ### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 and S7b plus coding-tools M2 and M3
 - [ ] 10.1 README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"), CHANGELOG. Spec: agent-orchestrator / README written once [manual].

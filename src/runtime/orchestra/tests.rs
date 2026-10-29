@@ -24,7 +24,7 @@ use crate::{
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
         orchestra::Toolset,
-        tools::registry::FamilySet,
+        tools::{label, registry::FamilySet},
     },
     runtime::tools::{Limits, Unwired},
 };
@@ -42,6 +42,10 @@ enum Script {
     Answer(&'static str),
     /// Streams the text, then fails with the message.
     Fail(&'static str, &'static str),
+    /// The jail refuses the turn with the reason.
+    Jail(&'static str),
+    /// Streams the text, then ends with no final event.
+    Cut(&'static str),
     /// Never ends, like a process that hangs.
     Hang,
 }
@@ -94,6 +98,11 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                 Script::Answer(text) => (text, StreamEvent::Done(Finish::Stop)),
                 Script::Fail(text, error) => {
                     (text, StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::Jail(reason) => ("", StreamEvent::Error(ChatError::Jail(reason.into()))),
+                Script::Cut(text) => {
+                    let _ = tx.send(StreamEvent::Delta(text.into())).await;
+                    return;
                 }
                 Script::Hang => {
                     let _dropped = OnDrop(mine);
@@ -635,9 +644,10 @@ async fn every_collect_wraps_under_a_fresh_nonce_the_worker_never_saw() {
     }
 }
 
-// S1b-2 security obligation: run ids grow and are never reused, not by a
-// later process either (it starts from a later clock), even if the clock
-// stalls or goes back.
+// S1b-2 security obligation: run ids grow and are never reused. Within one
+// process that holds even if the clock stalls or goes back; a later process
+// starts from a later clock, which holds only while the clock is not set back
+// across the restart (S9 persists the highest id).
 #[test]
 fn run_ids_grow_with_the_clock_and_never_repeat() {
     let mut ids = RunIds::default();
@@ -690,4 +700,169 @@ async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
         .unwrap();
     assert!(third.0 > second.0);
     assert_eq!(fresh.allows(first, &secrets, home, "~/dev/app/a.rs"), None);
+}
+
+/// A log that keeps its lines.
+fn kept() -> (Log, Arc<Mutex<Vec<String>>>) {
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = lines.clone();
+    let log: Log = Arc::new(move |line| sink.lock().unwrap().push(line.to_string()));
+    (log, lines)
+}
+
+// Spec (agent-orchestrator, Log hygiene; D10): a jail refusal is its own
+// class; the log names the class and none of the reason, which only the
+// alert shows.
+#[tokio::test]
+async fn a_jail_refusal_logs_its_class_only() {
+    let (log, lines) = kept();
+    let mut lab = lab_with(Script::Jail("SECRET-REASON /home/me"), |m, _| {
+        m.with_log(log)
+    });
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let id = run.0;
+    assert_eq!(
+        lines.lock().unwrap().clone(),
+        [
+            format!("run {id} worker 1 review running"),
+            format!("run {id} worker 1 review failed jail_refusal"),
+        ]
+    );
+    let events = lab.sent();
+    let halted = OrchestraEvent::Halted {
+        run,
+        worker: WorkerId(1),
+        class: ErrorClass::JailRefusal,
+        text: jail_error("SECRET-REASON /home/me"),
+    };
+    assert_eq!(events.last(), Some(&halted));
+}
+
+// Spec (agent-orchestrator, Failure stops the run): an engine that stops
+// with no final event ends `failed` with the interrupted text, never `done`.
+#[tokio::test]
+async fn a_turn_with_no_final_event_ends_failed() {
+    let mut lab = lab(Script::Cut("half an answer"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let collected = handle.call(collect(1)).await;
+    assert_eq!(collected, error("worker 1 ended failed with no text"));
+    let events = lab.sent();
+    let statuses: Vec<_> = events.iter().filter_map(status_of).collect();
+    assert_eq!(statuses, [WorkerStatus::Running, WorkerStatus::Failed]);
+    let halted = OrchestraEvent::Halted {
+        run,
+        worker: WorkerId(1),
+        class: ErrorClass::Other,
+        text: INTERRUPTED.into(),
+    };
+    assert_eq!(events.last(), Some(&halted));
+}
+
+// Spec (agent-orchestrator, Collect caps text): an answer past the pipe's
+// cap still ends the worker `done`, and `collect` hands over 32 KiB at most
+// with the cap marker.
+#[tokio::test]
+async fn a_huge_answer_ends_done_and_collect_is_capped() {
+    let huge: &'static str = Box::leak("a".repeat(2 << 20).into_boxed_str());
+    let lab = lab(Script::Answer(huge));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let collected = handle.call(collect(1)).await;
+    assert!(!collected.is_error);
+    assert!(collected.text.contains(label::CAP_MARKER));
+    let start = collected.text.find("\naaa").unwrap() + 1;
+    let end = collected.text.find(label::CAP_MARKER).unwrap() - 1;
+    assert_eq!(&collected.text[start..end], "a".repeat(label::OUTPUT_CAP));
+}
+
+// Spec (agent-orchestrator, limits: S1 runs one worker at a time): a second
+// spawn queues, and starts exactly once when the first ends.
+#[tokio::test]
+async fn a_queued_worker_starts_once_after_the_first() {
+    let mut lab = lab(Script::Answer("x"));
+    let (_, handle) = lab.start(codex_review());
+    let first = handle.call(spawn(Task::Review, "one")).await;
+    let second = handle.call(spawn(Task::General, "two")).await;
+    assert_eq!(
+        (first, second),
+        (fine("worker 1: running"), fine("worker 2: queued"))
+    );
+    assert_eq!(handle.call(wait(2)).await, fine("2: done"));
+    let prompts: Vec<_> = lab
+        .seen
+        .requests()
+        .into_iter()
+        .map(|r| r.messages[0].content.clone())
+        .collect();
+    assert_eq!(prompts, ["one", "two"]);
+    let rows: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Worker(row) => Some((row.id.0, row.status)),
+            OrchestraEvent::Halted { .. } => None,
+        })
+        .collect();
+    let running = |id| {
+        rows.iter()
+            .filter(|row| **row == (id, WorkerStatus::Running))
+            .count()
+    };
+    assert_eq!((running(1), running(2)), (1, 1), "{rows:?}");
+}
+
+// Spec (tasks.md 1d.3a, no tool leak; S1c-1 obligation): a worker on a server
+// engine gets its toolset's families through the dispatch, no socket, and
+// never the pane family.
+#[tokio::test]
+async fn an_ollama_worker_session_offers_no_pane_family() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Review, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let lab = lab_with(Script::Hang, tooled);
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    assert_eq!(
+        handle.call(spawn(Task::Review, "check")).await,
+        fine("worker 1: running")
+    );
+    let request = lab.seen.first().await;
+    assert_eq!(request.engine, "ollama");
+    assert_eq!(request.families, Toolset::ReadOnly.families());
+    assert!(!request.families.contains(Family::Pane));
+    let Tools::On { mcp, .. } = &request.tools else {
+        panic!("{:?}", request.tools);
+    };
+    assert!(mcp.is_none(), "a server engine gets no socket");
+    assert!(!lab.home.path().join("run").exists(), "no hub was made");
+}
+
+// Spec (agent-orchestrator, Cancel: workers do not outlive their run): a new
+// run on the same pane kills the old run's worker, and the old handle
+// answers that its run ended.
+#[tokio::test]
+async fn replacing_a_run_kills_the_old_worker() {
+    let lab = lab(Script::Hang);
+    let (_, old) = lab.start(codex_review());
+    old.call(spawn(Task::Review, "check")).await;
+    lab.seen.first().await;
+    let (_, new) = lab.start(codex_review());
+    for _ in 0..100 {
+        if lab.seen.dropped.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        lab.seen.dropped.load(Ordering::SeqCst),
+        "the old worker is killed"
+    );
+    assert_eq!(old.call(wait(1)).await, error(ENDED));
+    assert_eq!(new.call(collect(1)).await, error("no worker 1"));
 }
