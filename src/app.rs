@@ -58,6 +58,7 @@ mod hub;
 mod install;
 mod notes;
 mod offer;
+mod orchestra;
 mod review;
 mod run;
 mod scroll;
@@ -7938,6 +7939,9 @@ mod app_tests {
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
+
+    /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
+    mod orchestra_toggle;
 
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;

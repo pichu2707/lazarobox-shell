@@ -351,6 +351,9 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
+    /// The pane's ORCH mode (agent-orchestrator D2): off for a new pane, kept
+    /// in memory only, never saved or restored.
+    orch: bool,
 }
 
 impl ChatState {
@@ -400,7 +403,17 @@ impl ChatState {
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
+            orch: false,
         }
+    }
+
+    /// The pane's ORCH mode, whatever the global gate says.
+    pub fn orch(&self) -> bool {
+        self.orch
+    }
+
+    pub fn set_orch(&mut self, on: bool) {
+        self.orch = on;
     }
 
     /// The context window of the engine the next turns go to, in tokens.
