@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/tool_approval.rs
+expression: screen
+---
+                                       │› q
+                                       │
+                                       │hello
+                                       │
+                                       │› q
+                                       │
+                                       │» tool args
+                                       │
+                                       │waiting for the model…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │worker review claude>opus: send a file's
+                                       │read ~/dev/other/a.rs
+                                       │y read it · n deny
+ ◐ CHAT  /launch                 ⠋ thinking llama3:8b 1s  ollama › llama3:8b
