@@ -87,7 +87,7 @@ The one-time provider notice MUST be an informational view or inline notice with
 #### Scenario: Accept persists [auto]
 - GIVEN the notice is shown
 - WHEN the accept key is pressed
-- THEN `notice_accepted` is true in the draft and saved with the next save, and the notice is gone
+- THEN `notice_accepted` is true and written to the config file at once (one config write, whose result never closes or marks a menu opened meanwhile), and the notice is gone; a failed write leaves it false and says why
 
 #### Scenario: Dismiss does not accept [auto]
 - GIVEN the notice is shown

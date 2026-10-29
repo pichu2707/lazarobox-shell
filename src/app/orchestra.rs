@@ -1,6 +1,7 @@
 //! The orchestrator in a chat pane (agent-orchestrator D2, D5): the pane's
-//! ORCH mode, its Ctrl+O toggle and the task a send runs on. State and keys
-//! only; the badge and the hint are drawn by the UI.
+//! ORCH mode, its Ctrl+O toggle, the task a send runs on and the one-time
+//! provider notice (D12). State and keys only; the badge, the hint and the
+//! notice are drawn by the UI.
 
 use super::*;
 use crate::core::ai::{
@@ -48,6 +49,58 @@ impl App {
             .get(&id)
             .and_then(PaneState::chat_state)
             .is_some_and(ChatState::orch_turn_in_flight)
+    }
+
+    /// Whether the provider notice is shown in pane `id`.
+    pub fn orch_notice(&self, id: PaneId) -> bool {
+        self.orch_notice == Some(id)
+    }
+
+    /// A key on chat `id` for the provider notice shown there: Enter or `y`
+    /// accepts it (written at once), Esc dismisses it (it shows again at the
+    /// next run). Only a fresh, unmodified press with an empty composer
+    /// answers it; `None` leaves every other key to the chat.
+    pub(super) fn answer_orch_notice(
+        &mut self,
+        id: PaneId,
+        key: &KeyEvent,
+        repeat: bool,
+    ) -> Option<Vec<Effect>> {
+        let fresh = !repeat && key.kind == KeyEventKind::Press;
+        if !self.orch_notice(id) || !fresh || key.modifiers != KeyModifiers::NONE {
+            return None;
+        }
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state)?;
+        if !chat.composer().text().is_empty() {
+            return None;
+        }
+        let accepted = match key.code {
+            KeyCode::Enter | KeyCode::Char('y') => true,
+            KeyCode::Esc => false,
+            _ => return None,
+        };
+        self.orch_notice = None;
+        self.dirty = true;
+        if !accepted {
+            return Some(Vec::new());
+        }
+        self.ai.orchestrator.notice_accepted = true;
+        self.orch_saves += 1;
+        let edit = ConfigEdit::orchestrator_flag("notice_accepted", true);
+        Some(vec![Effect::SaveConfig(vec![edit])])
+    }
+
+    /// The result of the write of an accepted notice. A failed one persisted
+    /// nothing: the notice is not accepted, so the next run shows it again,
+    /// and the error is told.
+    pub(super) fn on_notice_saved(&mut self, failed: Option<String>) -> Vec<Effect> {
+        self.orch_saves = self.orch_saves.saturating_sub(1);
+        if let Some(message) = failed {
+            self.ai.orchestrator.notice_accepted = false;
+            self.notice = Some(message);
+            self.dirty = true;
+        }
+        Vec::new()
     }
 
     /// The ORCH hint of the chat footer of pane `id`; `None` with the gate
@@ -149,6 +202,11 @@ impl App {
             .map_or_else(|| self.ai.profile(), |c| c.profile());
         if let Some(chat) = chat {
             chat.set_orch_turn(turn);
+        }
+        // The run starts now, whatever the notice's answer (it never blocks).
+        if !self.ai.orchestrator.notice_accepted {
+            self.orch_notice = Some(id);
+            self.dirty = true;
         }
         Effect::OrchestrateSend {
             pane: id,
