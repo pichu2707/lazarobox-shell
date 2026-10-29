@@ -26,4 +26,4 @@ expression: screen
                                        │worker review claude>opus: send a file's
                                        │read ~/dev/other/a.rs
                                        │y read it · n deny
- ◐ CHAT  /launch                 ⠋ thinking llama3:8b 1s  ollama › llama3:8b
+ ◐ CHAT  /launch                 ⠋ thinking llama3:8b 0s  ollama › llama3:8b

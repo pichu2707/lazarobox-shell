@@ -6,7 +6,7 @@ use std::{
     ffi::OsString,
     fmt,
     io::{self, ErrorKind},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use toml::{Table, Value};
@@ -178,6 +178,9 @@ impl fmt::Display for ConfigError {
 pub struct Parsed {
     pub config: Config,
     pub ai: AiConfig,
+    /// `[workspace] dir`: absolute, `~` already expanded; `None` when unset
+    /// or invalid. Whether the folder exists is checked at startup.
+    pub workspace_dir: Option<PathBuf>,
     pub problems: Vec<String>,
 }
 
@@ -194,6 +197,16 @@ impl Config {
     /// Like [`Config::parse`], with the value of `ENGRAM_PORT` given: a valid
     /// one is the default memory port. Callers read the environment once.
     pub fn parse_with_port_env(text: &str, port_env: Option<&str>) -> Result<Parsed, ConfigError> {
+        Self::parse_with_home(text, port_env, None)
+    }
+
+    /// Like [`Config::parse_with_port_env`], with `$HOME` given so that a
+    /// `~` in `[workspace] dir` expands. Without it such a path is relative.
+    pub fn parse_with_home(
+        text: &str,
+        port_env: Option<&str>,
+        home: Option<&Path>,
+    ) -> Result<Parsed, ConfigError> {
         let table: Table = text.parse().map_err(|error: toml::de::Error| {
             let message = error.message().lines().next().unwrap_or_default().trim();
             ConfigError(
@@ -223,6 +236,7 @@ impl Config {
         let update_check =
             read_update_check(&table, &mut problems).unwrap_or(defaults.update_check);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
+        let workspace_dir = read_workspace(&table, &mut problems, home);
         Ok(Parsed {
             config: Self {
                 bars: BarPositions { statusline, tabbar },
@@ -230,6 +244,7 @@ impl Config {
                 update_check,
             },
             ai,
+            workspace_dir,
             problems,
         })
     }
@@ -247,44 +262,95 @@ impl Config {
         read: io::Result<String>,
         port_env: Option<&str>,
     ) -> (Self, AiConfig, Option<String>) {
+        let (config, ai, notice, _) = Self::load_with_workspace(read, port_env, None);
+        (config, ai, notice)
+    }
+
+    /// Like [`Config::load_with_ai`], and `[workspace] dir` too (`home` lets
+    /// a `~` expand).
+    pub fn load_with_workspace(
+        read: io::Result<String>,
+        port_env: Option<&str>,
+        home: Option<&Path>,
+    ) -> (Self, AiConfig, Option<String>, Option<PathBuf>) {
         let text = match read {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                return (Self::default(), AiConfig::default(), None);
+                return (Self::default(), AiConfig::default(), None, None);
             }
             Err(error) => {
-                return (
-                    Self::default(),
-                    AiConfig::default(),
-                    Some(format!("config: {error}")),
-                );
+                let notice = Some(format!("config: {error}"));
+                return (Self::default(), AiConfig::default(), notice, None);
             }
         };
-        match Self::parse_with_port_env(&text, port_env) {
+        match Self::parse_with_home(&text, port_env, home) {
             Ok(Parsed {
                 config,
                 ai,
+                workspace_dir,
                 problems,
             }) if !problems.is_empty() => {
                 let head = match problems.len() {
                     1 => "config".to_owned(),
                     n => format!("config ({n} problems)"),
                 };
-                (config, ai, Some(format!("{head}: {}", problems[0])))
+                let notice = Some(format!("{head}: {}", problems[0]));
+                (config, ai, notice, workspace_dir)
             }
-            Ok(Parsed { config, ai, .. }) if ai.memory.enabled && !ai.memory.acknowledged => (
+            Ok(Parsed {
                 config,
                 ai,
-                Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned()),
-            ),
-            Ok(Parsed { config, ai, .. }) => (config, ai, None),
+                workspace_dir,
+                ..
+            }) if ai.memory.enabled && !ai.memory.acknowledged => {
+                let notice = Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned());
+                (config, ai, notice, workspace_dir)
+            }
+            Ok(Parsed {
+                config,
+                ai,
+                workspace_dir,
+                ..
+            }) => (config, ai, None, workspace_dir),
             Err(error) => (
                 Self::default(),
                 AiConfig::default(),
                 Some(format!("config: {error}")),
+                None,
             ),
         }
     }
+}
+
+/// `workspace.dir`, or `None` (with a problem noted) when it is invalid. An
+/// empty string is unset. `~` expands against `home`.
+fn read_workspace(
+    table: &Table,
+    problems: &mut Vec<String>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let section = match table.get("workspace")? {
+        Value::Table(section) => section,
+        _ => {
+            problems.push("workspace: expected a table".to_owned());
+            return None;
+        }
+    };
+    let Value::String(raw) = section.get("dir")? else {
+        problems.push("workspace.dir: expected a string".to_owned());
+        return None;
+    };
+    let path = match (raw.as_str(), raw.strip_prefix("~/"), home) {
+        ("", ..) => return None,
+        ("~", _, Some(home)) => home.to_path_buf(),
+        (_, Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(raw),
+    };
+    if !path.is_absolute() {
+        problems.push("workspace.dir: expected an absolute path".to_owned());
+        return None;
+    }
+    Some(path)
 }
 
 /// `updates.check`, or `None` (with a problem noted) when it is missing or
@@ -843,5 +909,62 @@ mod tests {
             notice.as_deref(),
             Some("config: ai.memory: expected a table")
         );
+    }
+
+    fn workspace(text: &str, home: Option<&str>) -> (Option<std::path::PathBuf>, Vec<String>) {
+        let parsed = Config::parse_with_home(text, None, home.map(std::path::Path::new)).unwrap();
+        (parsed.workspace_dir, parsed.problems)
+    }
+
+    // Spec (configuration): Workspace key.
+    #[test]
+    fn workspace_dir_defaults_to_unset() {
+        assert_eq!(workspace("", None), (None, vec![]));
+        assert_eq!(workspace("[workspace]\n", None), (None, vec![]));
+        assert_eq!(workspace("[workspace]\ndir = \"\"", None), (None, vec![]));
+    }
+
+    #[test]
+    fn workspace_dir_takes_absolute_and_tilde() {
+        let abs = workspace("[workspace]\ndir = \"/w/proj\"", Some("/h"));
+        assert_eq!(abs, (Some("/w/proj".into()), vec![]));
+        let tilde = workspace("[workspace]\ndir = \"~/code\"", Some("/h"));
+        assert_eq!(tilde, (Some("/h/code".into()), vec![]));
+        let alone = workspace("[workspace]\ndir = \"~\"", Some("/h"));
+        assert_eq!(alone, (Some("/h".into()), vec![]));
+    }
+
+    #[test]
+    fn workspace_dir_rejects_relative_and_wrong_types_for_that_key_only() {
+        let relative = workspace("[workspace]\ndir = \"proj\"", Some("/h"));
+        assert_eq!(
+            relative,
+            (
+                None,
+                vec!["workspace.dir: expected an absolute path".into()]
+            )
+        );
+        let no_home = workspace("[workspace]\ndir = \"~/x\"", None);
+        assert_eq!(no_home.0, None);
+        let number = workspace("[workspace]\ndir = 3", None);
+        assert_eq!(
+            number,
+            (None, vec!["workspace.dir: expected a string".into()])
+        );
+        let table = workspace("workspace = 3", None);
+        assert_eq!(table, (None, vec!["workspace: expected a table".into()]));
+    }
+
+    #[test]
+    fn workspace_ignores_unknown_keys_and_counts_problems() {
+        let ok = workspace("[workspace]\ncolour = \"red\"\ndir = \"/w\"", None);
+        assert_eq!(ok, (Some("/w".into()), vec![]));
+        let (_, _, notice, dir) = Config::load_with_workspace(
+            Ok("[workspace]\ndir = 3\n[statusline]\nposition = \"middle\"".into()),
+            None,
+            None,
+        );
+        assert_eq!(dir, None);
+        assert!(notice.unwrap().starts_with("config (2 problems): "));
     }
 }

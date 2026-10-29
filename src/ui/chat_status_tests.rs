@@ -284,12 +284,14 @@ fn the_memory_segment_follows_the_state_of_the_chat() {
     );
     app.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok("lazarobox-shell".into()),
     }));
     assert!(status(&app).contains("· mem: ready"), "{}", status(&app));
 
     let mut app = memory_app();
     app.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));
@@ -302,6 +304,7 @@ fn the_memory_segment_follows_the_state_of_the_chat() {
     let mut app = memory_app();
     app.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Err(ProjectError::NotGit),
     }));
     assert!(

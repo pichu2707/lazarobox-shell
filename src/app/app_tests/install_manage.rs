@@ -45,6 +45,7 @@ fn picker_on_engines(a: &mut App, detection: Detection) {
 /// Enter on llamacpp's engine row: the effects of opening its model level.
 fn open_llamacpp(a: &mut App) -> Vec<Effect> {
     goto_pick(a, "llamacpp");
+    let_go();
     a.update(enter())
 }
 
@@ -92,6 +93,7 @@ fn confirming_remove_asks_the_runtime_and_a_removed_reply_detects_again() {
     picker_on_engines(&mut a, llamacpp(OWNED));
     open_llamacpp(&mut a);
     goto_pick(&mut a, REMOVE_ROW);
+    let_go();
     assert!(a.update(enter()).is_empty());
     a.frame_drawn();
     let asked = a.update(key('y'));

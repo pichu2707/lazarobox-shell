@@ -817,6 +817,7 @@ fn a_short_pane_ignores_y_and_enlarging_it_enables_y_again() {
     assert_eq!(a.update(key('y')), vec![]);
     assert!(pending(&a).is_some());
     resize(&mut a, 80, 30);
+    let_go();
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
 }
 
@@ -827,6 +828,7 @@ fn a_narrow_pane_with_a_path_of_100_characters_needs_height_for_it() {
     resize(&mut a, 40, 6);
     assert_eq!(a.update(key('y')), vec![]);
     resize(&mut a, 40, 25);
+    let_go();
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
 }
 
@@ -923,25 +925,95 @@ mod guard {
         }
     }
 
+    // A key held from before the prompt opened, sent as Presses, never
+    // answers it once it arms.
+    #[test]
+    fn a_held_answer_key_never_answers_the_prompt() {
+        for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+            let (mut a, _) = asked(run("cd x"));
+            for ms in (0..=1_000).step_by(50) {
+                assert_eq!(at(&mut a, ms, answer.clone()), vec![], "{answer:?} at {ms}");
+            }
+            assert!(pending(&a).is_some(), "still waiting");
+        }
+    }
+
+    // Real OS auto-repeat: the first repeat comes after the initial delay
+    // (X11 660 ms, KDE 600 ms), past the hold window, so it reads as a new
+    // press; the prompt must not be armed by then (modal-input).
+    #[test]
+    fn a_key_held_with_the_os_repeat_delay_never_answers_the_prompt() {
+        for (first, delay) in [(100, 660), (0, 600), (100, 501)] {
+            for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+                let (mut a, _) = asked(run("cd x"));
+                assert_eq!(at(&mut a, first, answer.clone()), vec![]);
+                for ms in (first + delay..=1_500).step_by(25) {
+                    let got = at(&mut a, ms, answer.clone());
+                    assert_eq!(got, vec![], "{answer:?} at {ms} (delay {delay})");
+                }
+                assert!(pending(&a).is_some(), "still waiting");
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_p_cycles_the_target_once() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = launched(80, 25).with_ai(ollama()).with_clock(mock_now);
+        press(&mut a, "wv");
+        press(&mut a, "wh");
+        press(&mut a, "c");
+        let chat_id = a.focused();
+        super::super::run_pane::answer(&mut a, chat_id, super::super::run_pane::BLOCK);
+        press(&mut a, "e");
+        let target = |a: &App| super::super::run_pane::chat(a, chat_id).run_target();
+        let first = target(&a);
+        at(&mut a, 0, key('p'));
+        let cycled = target(&a);
+        assert_ne!(cycled, first);
+        for ms in [100, 200] {
+            at(&mut a, ms, key('p'));
+            assert_eq!(target(&a), cycled, "p at {ms}");
+        }
+    }
+
     #[test]
     fn a_y_after_the_delay_approves() {
-        let (mut a, turn) = asked(run("cd x"));
-        assert_eq!(at(&mut a, 10, key('y')), vec![]);
-        assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+        let sent = |turn| {
             vec![
                 Effect::WritePty(PaneId::FIRST, b"cd x".to_vec()),
-                decision(turn, 1, Decision::Sent)
+                decision(turn, 1, Decision::Sent),
             ]
+        };
+        let (mut a, turn) = asked(run("cd x"));
+        assert_eq!(at(&mut a, 10, key('y')), vec![]);
+        // The same `y` held until the delay is still the hold: it never answers.
+        for t in (260..ms(ARM_DELAY)).step_by(250).chain([ms(ARM_DELAY)]) {
+            assert_eq!(at(&mut a, t, key('y')), vec![], "held at {t}");
+        }
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY) + hold_ms() + 1, key('y')),
+            sent(turn)
         );
+        // A first press at exactly the delay approves.
+        let (mut b, turn) = asked(run("cd x"));
+        assert_eq!(at(&mut b, ms(ARM_DELAY), key('y')), sent(turn));
     }
 
     #[test]
     fn a_read_is_guarded_the_same_way() {
         let (mut a, turn) = asked(read("/home/u/a.txt"));
         assert_eq!(at(&mut a, 5, key('y')), vec![]);
+        for t in (255..ms(ARM_DELAY)).step_by(250).chain([ms(ARM_DELAY)]) {
+            assert_eq!(at(&mut a, t, key('y')), vec![], "held at {t}");
+        }
         assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+            at(&mut a, ms(ARM_DELAY) + hold_ms() + 1, key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+        let (mut b, turn) = asked(read("/home/u/a.txt"));
+        assert_eq!(
+            at(&mut b, ms(ARM_DELAY), key('y')),
             vec![decision(turn, 1, Decision::Sent)]
         );
     }

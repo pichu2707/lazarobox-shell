@@ -841,3 +841,78 @@ On the `Notify` or `Sound` row, `t` (Press only, not Repeat) MUST send a test no
 - GIVEN `Updates` selected with a newer version known and none installed
 - WHEN Enter is pressed
 - THEN an update is requested; with no newer version known, Enter has no effect
+
+### Requirement: Engines without a chat adapter are not selectable
+This amends level 1 of the Task picker. An available engine that chat has no adapter for (today only `opencode`; see chat-engines, ChatEngine contract) MUST still be listed in catalog order with its status text `detected · not in chat yet`, but its row MUST be disabled: the cursor reaches it, Enter does nothing (the picker stays at level 1 and the draft is unchanged), and the footer reads `detected · not in chat yet · not selectable`. Every engine with an adapter, `lmstudio`, `llamacpp` and `vllm` included, is selectable as before. An assigned engine that is not detected keeps its `(not detected)` row, selectable.
+
+#### Scenario: A detected engine without an adapter is listed but disabled [auto]
+- GIVEN llamacpp available with one model and opencode available
+- WHEN level 1 opens
+- THEN `llamacpp available · 1 model` is selectable and `opencode detected · not in chat yet` is listed but disabled
+
+#### Scenario: Enter on it does nothing [auto]
+- GIVEN the cursor on the opencode row of level 1
+- WHEN Enter is pressed
+- THEN the picker stays at level 1 on that row and the draft is unchanged
+
+#### Scenario: The footer gives its status as the reason [auto]
+- GIVEN the cursor on the opencode row of level 1
+- WHEN the footer is drawn
+- THEN it reads `detected · not in chat yet · not selectable`
+
+### Requirement: Stopped servers in the picker
+This amends level 1 and level 2 of the Task picker. Level 1 MUST list, after the available engines and before the assigned engines that are not detected, every server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) whose binary is on PATH but that did not answer on its port, in catalog order, with the status text `not running`, selectable. Such an engine is listed once, even when a task has it assigned. Level 2 of that engine MUST show, after its assigned models (disabled), a note instead of `engine not detected`: `<id> not running on 127.0.0.1:<port> · start it, then press r: <command>`, where `<port>` is the port detection used (see configuration, Server ports) and `<command>` starts that server on that port on `127.0.0.1`: `ollama serve` (or `OLLAMA_HOST=127.0.0.1:<port> ollama serve` off its default port), `lms server start --port <port>`, `llama-server --port <port> -m <model.gguf>`, `vllm serve <model> --host 127.0.0.1 --port <port>`. The note follows the copyable-note rules (wrapped, not selectable, Enter or `y` copies the whole text). lazarobox never runs that command. With the cursor on one of its saved models (disabled), the footer reads `not running · not selectable`. A server that is not installed keeps `engine not detected`.
+
+#### Scenario: A stopped server is listed [auto, TestBackend + insta]
+- GIVEN ollama and llamacpp installed but not answering, lmstudio not installed, claude available
+- WHEN level 1 opens
+- THEN after claude come `ollama not running` and `llamacpp not running`, both selectable, and lmstudio is not listed
+
+#### Scenario: Choosing a stopped server says how to start it [auto]
+- GIVEN `[ai.servers.llamacpp] port = 39080`, llamacpp installed but not answering, and chat assigned to `llamacpp` / `qwen`
+- WHEN level 2 of llamacpp opens
+- THEN it shows `qwen` disabled and current (footer `not running · not selectable`), then the note `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`, and Enter on the note copies it
+
+#### Scenario: A server that is not installed is unchanged [auto]
+- GIVEN llamacpp not installed
+- WHEN level 2 of llamacpp opens
+- THEN its last row is `engine not detected`
+
+### Requirement: Ollama download row
+The model level of the `ollama` picker MUST end with a row `download from Ollama…` (key `PickKey::OllamaDownload`, mark Plain). It is shown when Ollama is `available` (its server answered detection) and is enabled then. While a pull runs, the row reads `↓ <percent>% <model>:<tag> · <license title>` instead, and Enter on it asks `cancel the download? (y/n)`. While a Hugging Face download runs, the row stays but Enter on it says `a download is already running`. Likewise, while an Ollama pull runs, the llamacpp row `download from Hugging Face…` keeps its label and Enter on it says `a download is already running`.
+
+#### Scenario: Row only with a running server [auto]
+- GIVEN ollama `available`, then ollama `not running`
+- WHEN its model level is opened
+- THEN the last row is `download from Ollama…` in the first case, and absent in the second
+
+### Requirement: Ollama screens
+Enter on `download from Ollama…` opens, in the picker, these levels in turn. Esc on each goes back one level, and no level writes a config edit.
+1. **Popular.**
+   - Title: `Ollama: most popular for this PC`.
+   - Footer: `j/k move · Enter choose · Esc back`, and `asking ollama.com…` while asking.
+   - Rows, up to 20: `<name>  <pulls> pulls  <sizes that fit>`, for example `llama3.2  86.3M pulls  1b 3b`.
+   - Nothing that fits reads the info row `no popular model fits this PC`.
+   - The fallback adds its info row first.
+2. **Sizes.**
+   - Title: `Ollama: <name>`.
+   - Rows: `<name>:<tag>  <exact size>`. A tag too big for this PC ends with ` · too big for this PC` and stays choosable.
+   - Enter opens the confirmation.
+3. **Confirm.** Info rows, then the footer `y download · n back`:
+   - `download <name>:<tag> (<size>)`
+   - `license: <title>`, one per license layer, or `license: not stated`
+   - `read it: https://ollama.com/library/<name>:<tag>`
+   - `to: <Ollama models folder>`, or `to: the Ollama server's models folder`
+   - `free: <free space>`, or `free: unknown`
+
+   `y` starts the pull and goes back to the ollama model level. `n` or Esc goes back.
+
+#### Scenario: Pick without typing [auto]
+- GIVEN the Popular reply with `llama3.2` (`1b`, `3b`) and 8 GB of RAM
+- WHEN Enter, Enter on `llama3.2`, Enter on `llama3.2:3b`, then `y`
+- THEN the effects are the library ask, the sizes ask, the license ask and one pull of `llama3.2:3b`, in order, and nothing is pulled before `y`
+
+#### Scenario: Late reply dropped [auto]
+- GIVEN the Sizes request in flight
+- WHEN Esc is pressed and its reply arrives
+- THEN the reply is dropped and the Popular screen stays

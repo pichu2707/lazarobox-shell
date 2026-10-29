@@ -43,7 +43,7 @@ fn a_disabled_row_takes_the_cursor_and_enter_does_nothing() {
     assert_eq!(cursor_label(&m), "llama3.2:3b");
     let draft = m.ai_draft();
     enter(&mut m);
-    assert_eq!(title(&m), "Model for code (ollama) 2/11");
+    assert_eq!(title(&m), "Model for code (ollama) 2/12");
     assert_eq!(cursor_label(&m), "llama3.2:3b");
     assert_eq!(m.ai_draft(), draft);
 }

@@ -115,13 +115,19 @@ fn y_arms_at_full_coverage_plus_the_review_delay() {
     let (mut a, turn) = asked(60);
     read_all(&mut a, 100);
     assert_eq!(review(&a).remaining(), 0);
-    assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
     assert_eq!(
-        at(&mut a, ms(ARM_DELAY), key('y')),
+        early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
         vec![decision(turn, 1, Decision::Sent)]
     );
     assert_eq!(pending(&a), None);
     assert!(chat(&a, id2()).approvals().review().is_none());
+    // A first press at exactly the delay approves.
+    let (mut b, turn) = asked(60);
+    read_all(&mut b, 100);
+    assert_eq!(
+        at(&mut b, ms(ARM_DELAY), key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
 }
 
 #[test]
@@ -131,6 +137,20 @@ fn a_held_y_never_approves() {
     let held = super::chat_live::repeat(KeyCode::Char('y'), KeyModifiers::NONE);
     assert_eq!(at(&mut a, 5_000, held), vec![]);
     assert!(pending(&a).is_some());
+}
+
+// A held key sent as Presses: the decision is never taken by the hold.
+#[test]
+fn a_held_answer_key_sent_as_presses_never_answers() {
+    for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+        let (mut a, _) = asked(2);
+        read_all(&mut a, 100);
+        let end = ms(ARM_DELAY) + 1_000;
+        for t in (100..=end).step_by(100) {
+            assert_eq!(at(&mut a, t, answer.clone()), vec![], "{answer:?} at {t}");
+        }
+        assert!(pending(&a).is_some(), "{answer:?}");
+    }
 }
 
 #[test]
@@ -247,10 +267,13 @@ fn n_and_esc_wait_for_the_review_delay_too() {
     for rejecting in [key('n'), plain(KeyCode::Esc)] {
         let (mut a, turn) = asked(5);
         let wait = ms(ARM_DELAY);
-        assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
-        assert!(pending(&a).is_some());
         assert_eq!(
-            at(&mut a, wait, rejecting),
+            early_held_then_new(&mut a, wait, &rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
+        );
+        let (mut b, turn) = asked(5);
+        assert_eq!(
+            at(&mut b, wait, rejecting),
             vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
     }
@@ -272,12 +295,17 @@ fn the_other_asks_answer_after_the_short_delay() {
         },
     ];
     for ask in asks {
-        let (mut a, turn) = live();
-        announce_now(&mut a, turn, 1, ask);
         let wait = ms(ASK_ARM_DELAY);
-        assert_eq!(at(&mut a, wait - 1, key('y')), vec![]);
+        let (mut a, turn) = live();
+        announce_now(&mut a, turn, 1, ask.clone());
         assert_eq!(
-            at(&mut a, wait, key('y')),
+            early_held_then_new(&mut a, wait, &key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+        let (mut b, turn) = live();
+        announce_now(&mut b, turn, 1, ask);
+        assert_eq!(
+            at(&mut b, wait, key('y')),
             vec![decision(turn, 1, Decision::Sent)]
         );
     }
@@ -320,14 +348,23 @@ fn a_review_in_a_background_tab_counts_and_arms_only_once_it_is_shown() {
 
 #[test]
 fn the_delay_starts_at_the_first_draw_not_at_the_ask() {
-    let (mut a, turn) = asked_unseen(2);
-    paint_at(&mut a, 500);
-    read_all(&mut a, 500);
-    assert_eq!(review(&a).remaining(), 0);
+    let drawn_late = || {
+        let (mut a, turn) = asked_unseen(2);
+        paint_at(&mut a, 500);
+        read_all(&mut a, 500);
+        assert_eq!(review(&a).remaining(), 0);
+        (a, turn)
+    };
+    let (mut a, _) = drawn_late();
     assert_eq!(at(&mut a, ms(ARM_DELAY), key('y')), vec![], "ask + delay");
-    assert_eq!(at(&mut a, 500 + ms(ARM_DELAY) - 1, key('y')), vec![]);
+    let (mut b, turn) = drawn_late();
     assert_eq!(
-        at(&mut a, 500 + ms(ARM_DELAY), key('y')),
+        early_held_then_new(&mut b, 500 + ms(ARM_DELAY), &key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
+    let (mut c, turn) = drawn_late();
+    assert_eq!(
+        at(&mut c, 500 + ms(ARM_DELAY), key('y')),
         vec![decision(turn, 1, Decision::Sent)]
     );
 }
@@ -339,11 +376,13 @@ fn n_and_esc_wait_for_the_delay_from_the_first_draw_on_a_reviewable_batch() {
         assert_eq!(at(&mut a, 60_000, rejecting.clone()), vec![], "not drawn");
         paint_at(&mut a, 60_000);
         assert_eq!(
-            at(&mut a, 60_000 + ms(ARM_DELAY) - 1, rejecting.clone()),
-            vec![]
+            early_held_then_new(&mut a, 60_000 + ms(ARM_DELAY), &rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
+        let (mut b, turn) = asked_unseen(5);
+        paint_at(&mut b, 60_000);
         assert_eq!(
-            at(&mut a, 60_000 + ms(ARM_DELAY), rejecting),
+            at(&mut b, 60_000 + ms(ARM_DELAY), rejecting),
             vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
     }
@@ -672,9 +711,8 @@ mod orphan {
         paint_at(&mut a, 0);
         assert_eq!(at(&mut a, 60_000, key('y')), vec![], "rows unseen");
         read_all(&mut a, 100);
-        assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
         assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+            early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
             vec![Effect::BatchApply {
                 pane: id2(),
                 id: batch_id()
@@ -683,6 +721,18 @@ mod orphan {
         assert_eq!(pending(&a), None);
         assert!(chat(&a, id2()).approvals().review().is_none());
         assert_eq!(chat(&a, id2()).orphan(), None);
+        // A first press at exactly the delay applies it.
+        let mut b = orphaned(60);
+        b.update(review_event(60));
+        paint_at(&mut b, 0);
+        read_all(&mut b, 100);
+        assert_eq!(
+            at(&mut b, ms(ARM_DELAY), key('y')),
+            vec![Effect::BatchApply {
+                pane: id2(),
+                id: batch_id()
+            }]
+        );
     }
 
     #[test]
@@ -692,9 +742,8 @@ mod orphan {
             a.update(review_event(5));
             paint_at(&mut a, 0);
             let wait = ms(ARM_DELAY);
-            assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
             assert_eq!(
-                at(&mut a, wait, rejecting),
+                early_held_then_new(&mut a, wait, &rejecting),
                 vec![Effect::BatchDiscard {
                     pane: id2(),
                     id: batch_id()
@@ -702,6 +751,16 @@ mod orphan {
             );
             assert_eq!(pending(&a), None);
             assert_eq!(system_lines(&a), Vec::<String>::new(), "the notice speaks");
+            let mut b = orphaned(5);
+            b.update(review_event(5));
+            paint_at(&mut b, 0);
+            assert_eq!(
+                at(&mut b, wait, rejecting),
+                vec![Effect::BatchDiscard {
+                    pane: id2(),
+                    id: batch_id()
+                }]
+            );
         }
     }
 
@@ -709,7 +768,8 @@ mod orphan {
     fn ctrl_c_closes_the_view_and_leaves_the_orphan_alone() {
         let mut a = orphaned(5);
         a.update(review_event(5));
-        assert_eq!(a.update(ctrl('c')), vec![]);
+        // A new Ctrl+C, not the one that cancelled the turn still held.
+        assert_eq!(at(&mut a, 1_000, ctrl('c')), vec![]);
         assert_eq!(pending(&a), None);
         assert_eq!(badge(&a), Some(Badge::Orphan(5)));
         let again = at(&mut a, 5_000, ctrl('g'));

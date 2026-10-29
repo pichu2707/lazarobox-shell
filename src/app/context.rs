@@ -36,7 +36,12 @@ impl App {
             return Vec::new();
         };
         chat.start_resolving_at(false, now);
-        vec![Effect::Memory(MemCmd::Resolve { pane: id, cwd })]
+        let epoch = chat.memory_epoch();
+        vec![Effect::Memory(MemCmd::Resolve {
+            pane: id,
+            cwd,
+            epoch,
+        })]
     }
 
     /// The project of chat `id` is known or is not usable. Returns the context
@@ -53,6 +58,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        let epoch = chat.memory_epoch();
         match result {
             Ok(project) => chat
                 .start_context_at(now)
@@ -60,6 +66,7 @@ impl App {
                     Effect::Memory(MemCmd::Context {
                         pane: id,
                         project: project.clone(),
+                        epoch,
                     })
                 })
                 .into_iter()

@@ -194,6 +194,7 @@ fn a_failed_open_copies_the_link_and_stops_opening() {
         a.menu().unwrap().footer(),
         Footer::Hint("The browser did not open: link copied".into())
     );
+    let_go();
     let effects = a.update(ctrl_o);
     assert!(
         matches!(effects.as_slice(), [Effect::SetClipboard(_)]),

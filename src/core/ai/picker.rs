@@ -14,14 +14,24 @@ use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
-use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, status_text};
+use super::{
+    CATALOG, Detection, Engine, Kind, Status, gguf, hf, is_refused, ollama_lib, start_command,
+    status_text,
+};
 
 mod hub;
 mod install;
 mod manage;
-pub use hub::{Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
+mod ollama;
+pub use hub::{
+    Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, Source, shown,
+};
 pub use install::{COPY_ROW, InstallAsk, Reply as InstallReply, Wizard};
 pub use manage::{INSTALL_ROW, REMOVE_ROW};
+pub use ollama::{
+    BUSY, Confirm as OllamaConfirm, FALLBACK, HINT_ASKING_OLLAMA, NONE_FITS, OLLAMA_ROW, Ollama,
+    Screen as OllamaScreen,
+};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,12 +78,14 @@ pub enum PickKey {
     },
     /// The `download from Hugging Face…` entry of llamacpp.
     HfDownload,
+    /// The `download from Ollama…` entry of ollama.
+    OllamaDownload,
     /// The `install llama-server…` entry of llamacpp.
     InstallLlama,
     /// The `remove the llama.cpp install` entry of llamacpp.
     RemoveLlama,
-    /// A repo or a choice of the Hugging Face screens, by its index in the
-    /// reply.
+    /// A repo or a choice of the Hugging Face screens, or a model or a size
+    /// of the Ollama screens, by its index in the reply.
     Hub(usize),
 }
 
@@ -224,7 +236,7 @@ pub fn engine_rows(
             push(
                 engine.id,
                 Mark::Status(text),
-                adapter_for(engine.id).is_some(),
+                adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
             );
         }
     }
@@ -236,7 +248,7 @@ pub fn engine_rows(
             push(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
-                adapter_for(engine.id).is_some(),
+                adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
             );
         }
     }
@@ -296,6 +308,16 @@ pub fn model_rows(
             } else {
                 Mark::Status(HF_NEEDS_SERVER.to_owned())
             },
+            enabled: true,
+            current: false,
+        });
+    }
+    // Last, while the Ollama server answers: the pull goes through it.
+    if engine == "ollama" && has_status(detection, engine, Status::Available) {
+        rows.push(PickRow {
+            key: PickKey::OllamaDownload,
+            label: OLLAMA_ROW.to_owned(),
+            mark: Mark::Plain,
             enabled: true,
             current: false,
         });
@@ -652,7 +674,12 @@ fn jail_reason(detection: Option<&Detection>, id: &str) -> Option<String> {
         .engines
         .iter()
         .find(|s| s.id == id && s.status == Status::Available)
-        .and_then(|s| s.diagnostics.jail.as_deref())
+        .and_then(|s| {
+            s.diagnostics
+                .jail_full
+                .as_deref()
+                .or(s.diagnostics.jail.as_deref())
+        })
         .map(sanitize)
         .filter(|why| !why.is_empty())
 }
@@ -691,6 +718,8 @@ pub enum Level {
     },
     /// The Hugging Face screens, over llamacpp's model rows.
     Hub(Hub),
+    /// The Ollama screens, over ollama's model rows.
+    Ollama(Ollama),
     /// The llama-server install wizard, over llamacpp's model rows.
     Install(Wizard),
 }
@@ -716,6 +745,14 @@ pub enum Outcome {
     Download(Box<hf::Job>),
     /// Stop the download that runs.
     CancelDownload,
+    /// Send this request to the Ollama library; the picker waits for its
+    /// reply.
+    OllamaAsk(ollama_lib::Ask),
+    /// Start this pull (`y` on the Ollama Confirm screen).
+    Pull(Box<ollama_lib::Pull>),
+    /// An entry row was chosen while the other source downloads: say
+    /// [`BUSY`].
+    Busy,
     /// Run this install step; the picker waits for its reply.
     Install(InstallAsk),
 }
@@ -728,7 +765,7 @@ pub struct Picker {
     pub level: Level,
     cursor: usize,
     offset: usize,
-    /// The download that runs, shown on llamacpp's entry row.
+    /// The download that runs, shown on its entry row.
     download: Option<Running>,
     /// `cancel the download? (y/n)` waits for an answer.
     cancel_prompt: bool,
@@ -763,14 +800,19 @@ impl Picker {
             Level::Engines => engine_rows(self.target, draft, detection),
             Level::Models { engine } | Level::Custom { engine, .. } => {
                 let mut rows = model_rows(engine, self.target, draft, detection);
-                if let Some(download) = &self.download
-                    && let Some(row) = rows.iter_mut().find(|r| r.key == PickKey::HfDownload)
-                {
-                    row.label = download.label();
+                if let Some(download) = &self.download {
+                    let entry = match download.source {
+                        Source::HuggingFace => PickKey::HfDownload,
+                        Source::Ollama => PickKey::OllamaDownload,
+                    };
+                    if let Some(row) = rows.iter_mut().find(|r| r.key == entry) {
+                        row.label = download.label();
+                    }
                 }
                 rows
             }
             Level::Hub(hub) => hub.rows(),
+            Level::Ollama(ollama) => ollama.rows(),
             Level::Install(wizard) => wizard.rows(),
         }
     }
@@ -849,6 +891,7 @@ impl Picker {
                         Outcome::Stay
                     }
                     PickKey::HfDownload => self.open_hub(),
+                    PickKey::OllamaDownload => self.open_ollama(),
                     key @ (PickKey::InstallLlama | PickKey::RemoveLlama) => {
                         self.open_manage(key, detection);
                         Outcome::Stay
@@ -857,6 +900,7 @@ impl Picker {
                 }
             }
             Level::Hub(_) => self.hub_enter(),
+            Level::Ollama(_) => self.ollama_enter(),
             Level::Install(_) => self.install_enter(draft, detection),
             Level::Custom { engine, text } => match validate_custom(&text) {
                 Some(model) => Outcome::Commit(Assignment {
@@ -874,7 +918,7 @@ impl Picker {
     pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
         if matches!(
             self.level,
-            Level::Custom { .. } | Level::Hub(_) | Level::Install(_)
+            Level::Custom { .. } | Level::Hub(_) | Level::Ollama(_) | Level::Install(_)
         ) {
             return Outcome::Stay;
         }
@@ -915,6 +959,7 @@ impl Picker {
                 Outcome::Stay
             }
             Level::Hub(_) => self.hub_back(draft, detection),
+            Level::Ollama(_) => self.ollama_back(draft, detection),
             Level::Install(_) => self.install_back(draft, detection),
         }
     }
@@ -1014,7 +1059,9 @@ impl Picker {
     /// `r`: ask for a new detection, except where `r` is typed.
     pub fn refresh(&self) -> Outcome {
         match self.level {
-            Level::Custom { .. } | Level::Hub(_) | Level::Install(_) => Outcome::Stay,
+            Level::Custom { .. } | Level::Hub(_) | Level::Ollama(_) | Level::Install(_) => {
+                Outcome::Stay
+            }
             _ => Outcome::Refresh,
         }
     }
@@ -1034,6 +1081,8 @@ mod machine_tests;
 mod manage_tests;
 #[cfg(test)]
 mod note_tests;
+#[cfg(test)]
+mod ollama_tests;
 #[cfg(test)]
 mod rekey_tests;
 #[cfg(test)]
@@ -1349,6 +1398,16 @@ mod tests {
 
     // --- model_rows ------------------------------------------------------
 
+    fn ollama_row() -> PickRow {
+        row(
+            PickKey::OllamaDownload,
+            OLLAMA_ROW,
+            Mark::Plain,
+            true,
+            false,
+        )
+    }
+
     #[test]
     fn detected_models_come_first_then_the_curated_rest() {
         let draft = AiConfig::default();
@@ -1358,6 +1417,8 @@ mod tests {
             model("mistral:7b", Mark::Downloaded, true, false),
         ];
         expected.extend(curated_rows(&["mistral:7b"]));
+        // A running server ends with the download row.
+        expected.push(ollama_row());
         assert_eq!(
             model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
             expected
@@ -1371,6 +1432,8 @@ mod tests {
         let d = ollama(&["llama3:latest"]);
         let mut expected = vec![model("llama3:latest", Mark::Downloaded, true, true)];
         expected.extend(curated_rows(&[]));
+        // A running server ends with the download row.
+        expected.push(ollama_row());
         assert_eq!(
             model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
             expected
@@ -1390,6 +1453,8 @@ mod tests {
             missing("mistral:7b"),
         ];
         expected.extend(curated_rows(&["mistral:7b"]));
+        // A running server ends with the download row.
+        expected.push(ollama_row());
         assert_eq!(
             model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
             expected
