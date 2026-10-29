@@ -1,6 +1,6 @@
 //! The one-time provider notice of an orchestrating pane (agent-orchestrator
-//! D12): shown when a run starts, never blocking it; Enter or `y` accepts
-//! and saves, Esc dismisses, only with an empty composer. State asserts only.
+//! D12): shown when a run starts, never blocking it; Enter accepts and
+//! saves, Esc dismisses, only with an empty composer. State asserts only.
 
 use super::chat_live::{ask, chat_id, chat_of, composer, finish, plain, repeat, type_text};
 use super::orchestra_send::{orch_ai, orch_app, orch_app_with, toggle};
@@ -46,10 +46,10 @@ fn the_notice_is_shown_when_the_first_run_starts_and_does_not_hold_it() {
 // agent-orchestrator / Shown once, never blocks; modal-input / Notice keys;
 // config-menu / Accept persists.
 #[test]
-fn enter_or_y_with_an_empty_composer_accepts_and_saves_the_notice() {
-    for accept in [plain(KeyCode::Enter), key('y')] {
+fn enter_with_an_empty_composer_accepts_and_saves_the_notice() {
+    {
         let mut a = noticed();
-        let effects = a.update(accept);
+        let effects = a.update(plain(KeyCode::Enter));
         assert_eq!(effects, vec![acceptance()]);
         assert!(!a.orch_notice(chat_id()), "the notice is gone");
         assert!(a.ai().orchestrator.acknowledged);
@@ -60,6 +60,18 @@ fn enter_or_y_with_an_empty_composer_accepts_and_saves_the_notice() {
         assert!(orchestrates(&next_run(&mut a)));
         assert!(!a.orch_notice(chat_id()));
     }
+}
+
+// modal-input / Notice keys (user decision, 2026-10-29: Enter only): `y`
+// with an empty composer is typed, and the notice stays unaccepted.
+#[test]
+fn y_is_typed_and_does_not_accept_the_notice() {
+    let mut a = noticed();
+    let effects = a.update(key('y'));
+    assert!(!effects.contains(&acceptance()), "{effects:?}");
+    assert_eq!(composer(&a), "y", "`y` went to the composer");
+    assert!(a.orch_notice(chat_id()), "still shown");
+    assert!(!a.ai().orchestrator.acknowledged);
 }
 
 // agent-orchestrator / Not shown again.

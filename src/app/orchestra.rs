@@ -128,8 +128,8 @@ impl App {
         self.orch_notice == Some(id)
     }
 
-    /// A key on chat `id` for the provider notice shown there: Enter or `y`
-    /// accepts it (written at once), Esc dismisses it (it shows again at the
+    /// A key on chat `id` for the provider notice shown there: Enter accepts
+    /// it (written at once; `y` is typed, user decision 2026-10-29), Esc dismisses it (it shows again at the
     /// next run). Only a fresh, unmodified press with an empty composer
     /// answers it; `None` leaves every other key to the chat.
     pub(super) fn answer_orch_notice(
@@ -147,7 +147,7 @@ impl App {
             return None;
         }
         let accepted = match key.code {
-            KeyCode::Enter | KeyCode::Char('y') => true,
+            KeyCode::Enter => true,
             KeyCode::Esc => false,
             _ => return None,
         };
