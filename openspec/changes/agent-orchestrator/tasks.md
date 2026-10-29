@@ -208,6 +208,11 @@ S1e-1a bases on the S1d-3 branch.
 
 - [x] Replacing a run on the same pane MUST send `Ended` for the old run (today its worker is killed with no app event; test `replacing_a_run_kills_the_old_worker` pins the kill). Done: a replaced run ends like a cancelled one, its worker's `cancelled` row then `Ended`; test `replacing_a_run_sends_ended_for_the_old_run`.
 
+#### Advisories from the S1d-3 verifier (2026-10-29), for later slices
+
+- [ ] After a retry, an already queued worker starts before the retried one (`Run::enqueue` puts the retry at the back); decide in S2 whether a retry should start first.
+- [ ] When no nonce can be drawn, `decide(Retry)` sends the plain prompt without the error; consider returning an error as `collect` does (S2).
+
 #### Obligations from the S1b-2 security review (S1d-2, S1d-3)
 
 - [x] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker. Done: `collect` reads 8 bytes of `/dev/urandom` per call (as `tools::new_nonce` does) and returns no text when it cannot; test `every_collect_wraps_under_a_fresh_nonce_the_worker_never_saw`.
