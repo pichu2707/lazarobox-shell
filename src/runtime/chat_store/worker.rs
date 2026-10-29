@@ -450,7 +450,12 @@ fn create(
     tx.execute(
         "INSERT INTO conversations(created_at, updated_at, profile, title, folder)
          VALUES (?1, ?1, ?2, ?3, ?4)",
-        (stamp, profile, title_of(&text), folder.and_then(Path::to_str)),
+        (
+            stamp,
+            profile,
+            title_of(&text),
+            folder.and_then(Path::to_str),
+        ),
     )?;
     let id = tx.last_insert_rowid();
     insert_tags(&tx, id, tags)?;

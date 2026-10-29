@@ -1660,8 +1660,11 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
-            // Nothing asks for a probe yet (the `/cd` flow comes next).
-            AppEvent::FolderProbed { .. } => Vec::new(),
+            AppEvent::FolderProbed {
+                pane,
+                purpose,
+                result,
+            } => self.on_folder_probed(pane, purpose, result),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()

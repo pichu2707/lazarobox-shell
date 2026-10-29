@@ -5,6 +5,7 @@ use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, Tools, availability, tools_for},
+    folder::{Command, parse_command},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -276,7 +277,17 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let text = chat.composer().text();
+        let mut text = chat.composer().text();
+        // `/cd` is the user's own command: it never reaches the engine, and
+        // works whatever the engine state.
+        match parse_command(&text) {
+            Command::Cd(arg) => return self.cd_submit(id, &arg),
+            Command::Escaped(unescaped) => text = unescaped,
+            Command::Plain => {}
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
         if availability == Availability::Checking || chat.prompt().is_none() {
             if !text.trim().is_empty() {
                 self.drop_parked_send(id);
