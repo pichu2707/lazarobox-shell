@@ -9,7 +9,7 @@ use super::orchestra_send::{orch_ai, orch_app_with, toggle};
 use super::*;
 use crate::app::orchestra::OrchHint;
 use crate::core::ai::{
-    chat::OrchAlert,
+    chat::{Entry, OrchAlert},
     orchestra::{
         RunId, WorkerId,
         event::{OrchestraEvent, WorkerRow},
@@ -254,4 +254,41 @@ fn an_idle_chat_keeps_its_keys() {
     a.update(key('r'));
     a.update(key('c'));
     assert_eq!(composer(&a), "rc");
+}
+
+// agent-orchestrator / Row follows the status; Not in history: the run's rows
+// land in the chat, one per worker, and the next orchestrator turn carries
+// none of them.
+#[test]
+fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
+    let (mut a, turn) = running();
+    for status in [
+        WorkerStatus::Queued,
+        WorkerStatus::Running,
+        WorkerStatus::Done,
+    ] {
+        a.update(event(row(RUN, 1, status)));
+    }
+    let rows: Vec<_> = chat_of(&a)
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Worker(row) => Some(row.status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows, [WorkerStatus::Done]);
+    a.update(delta(turn, "all done"));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let request = match ask(&mut a, "next").as_slice() {
+        [.., Effect::OrchestrateSend { request, .. }] => request.clone(),
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    let sent: Vec<&str> = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, ["plan it", "all done", "next"]);
 }

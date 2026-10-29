@@ -64,7 +64,10 @@ impl App {
             return Vec::new();
         };
         match event {
-            OrchestraEvent::Worker(row) => chat.set_orch_run(Some(row.run)),
+            OrchestraEvent::Worker(row) => {
+                chat.set_orch_run(Some(row.run));
+                chat.worker_row(row);
+            }
             OrchestraEvent::Halted {
                 run,
                 worker,

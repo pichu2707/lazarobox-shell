@@ -46,7 +46,7 @@ use std::{
 use crate::core::{
     ai::{
         config::{ApprovalMode, Profile},
-        orchestra::{RunId, WorkerId, worker::ErrorClass},
+        orchestra::{RunId, WorkerId, event::WorkerRow, worker::ErrorClass},
         tools::stage::BatchId,
     },
     layout::PaneId,
@@ -165,6 +165,9 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// A worker of the pane's orchestrator run, updated in place as its
+    /// status changes: shown, never stored, never sent as history.
+    Worker(WorkerRow),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -467,6 +470,21 @@ impl ChatState {
         self.orch_alert = alert;
     }
 
+    /// A worker's status changed: its row, keyed by run and worker, shows the
+    /// new state in place; a worker seen for the first time gets a row at
+    /// the end of the transcript.
+    pub fn worker_row(&mut self, row: WorkerRow) {
+        let shown = self.entries.iter_mut().find_map(|e| match e {
+            Entry::Worker(shown) if (shown.run, shown.id) == (row.run, row.id) => Some(shown),
+            _ => None,
+        });
+        match shown {
+            Some(shown) => *shown = row,
+            None => self.entries.push(Entry::Worker(row)),
+        }
+        self.generation += 1;
+    }
+
     /// The context window of the engine the next turns go to, in tokens.
     pub fn set_window(&mut self, window: Option<usize>) {
         self.window = window;
@@ -715,7 +733,11 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_) => None,
         })
     }
 
@@ -1212,7 +1234,11 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_) => None,
         })
     }
 
@@ -1302,3 +1328,5 @@ mod tool_tests;
 mod wait_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_row_tests;
