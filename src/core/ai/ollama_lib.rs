@@ -303,7 +303,8 @@ impl Card {
     /// (a `cloud` model with no size runs only in Ollama's cloud).
     fn listable(&self) -> bool {
         let has = |c: &str| self.capabilities.iter().any(|x| x == c);
-        !has("embedding") && !(has("cloud") && self.sizes.is_empty())
+        let cloud_only = has("cloud") && self.sizes.is_empty();
+        !(has("embedding") || cloud_only)
     }
 }
 
