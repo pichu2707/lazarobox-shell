@@ -378,6 +378,8 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            // The picker takes it up (PR B2).
+            StoreReply::RecentFolders { .. } => Vec::new(),
         }
     }
 

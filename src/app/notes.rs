@@ -423,7 +423,8 @@ impl App {
             | StoreReply::Deleted { .. }
             | StoreReply::DeleteFailed { .. }
             | StoreReply::TagsSaved { .. }
-            | StoreReply::TagsFailed { .. } => Vec::new(),
+            | StoreReply::TagsFailed { .. }
+            | StoreReply::RecentFolders { .. } => Vec::new(),
         }
     }
 

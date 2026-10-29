@@ -108,6 +108,10 @@ pub enum StoreCmd {
         conversation: Option<i64>,
         folder: PathBuf,
     },
+    /// The folders conversations were kept under, newest activity first, at
+    /// most `limit`. Read-only. Answered with `RecentFolders`; a store that
+    /// cannot be read answers an empty list.
+    RecentFolders { pane: PaneId, limit: usize },
     /// The conversations of the store, newest last activity first, and the
     /// project tag of `origin` (resolved on the store thread: it walks the
     /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
@@ -257,6 +261,11 @@ pub enum StoreReply {
     },
     TagsFailed {
         pane: PaneId,
+    },
+    /// The answer to `RecentFolders`: each folder once, newest first.
+    RecentFolders {
+        pane: PaneId,
+        folders: Vec<PathBuf>,
     },
 }
 

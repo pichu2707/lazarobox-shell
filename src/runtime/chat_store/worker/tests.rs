@@ -2096,6 +2096,61 @@ fn set_folder_for_a_conversation_that_is_gone_changes_nothing() {
     assert_eq!(worker.handle(set_folder(None, "/work/x")), None);
 }
 
+fn recent(worker: &mut Worker, limit: usize) -> Vec<PathBuf> {
+    match worker.handle(StoreCmd::RecentFolders {
+        pane: pane(),
+        limit,
+    }) {
+        Some(StoreReply::RecentFolders { folders, .. }) => folders,
+        other => panic!("expected RecentFolders, got {other:?}"),
+    }
+}
+
+fn stamp(conn: &Connection, id: i64, at: i64) {
+    conn.execute(
+        "UPDATE conversations SET updated_at = ?2 WHERE id = ?1",
+        (id, at),
+    )
+    .unwrap();
+}
+
+#[test]
+fn recent_folders_come_newest_first_each_once_and_skip_unset_ones() {
+    let (_dir, mut worker, conn) = fixture();
+    let a1 = created_id(worker.handle(create_in("/work/a")));
+    let b = created_id(worker.handle(create_in("/work/b")));
+    let a2 = created_id(worker.handle(create_in("/work/a")));
+    let c = created_id(worker.handle(create_in("/work/c")));
+    // The fixture's own conversation has no folder.
+    for (id, at) in [(a1, 10), (b, 20), (a2, 30), (c, 25)] {
+        stamp(&conn, id, at);
+    }
+    assert_eq!(
+        recent(&mut worker, 12),
+        ["/work/a", "/work/c", "/work/b"].map(PathBuf::from)
+    );
+}
+
+#[test]
+fn recent_folders_honor_the_limit() {
+    let (_dir, mut worker, conn) = fixture();
+    for (n, folder) in ["/w/1", "/w/2", "/w/3"].into_iter().enumerate() {
+        let id = created_id(worker.handle(create_in(folder)));
+        stamp(&conn, id, 100 + i64::try_from(n).unwrap());
+    }
+    assert_eq!(recent(&mut worker, 2), ["/w/3", "/w/2"].map(PathBuf::from));
+    assert!(recent(&mut worker, 0).is_empty());
+}
+
+#[test]
+fn recent_folders_are_empty_when_the_store_cannot_be_read() {
+    let (_dir, mut worker, conn) = fixture();
+    created_id(worker.handle(create_in("/work/a")));
+    conn.execute_batch("ALTER TABLE conversations RENAME COLUMN folder TO gone")
+        .unwrap();
+    assert!(recent(&mut worker, 12).is_empty());
+}
+
 #[test]
 fn resume_returns_the_stored_folder_or_none() {
     let (_dir, mut worker, _conn) = fixture();
