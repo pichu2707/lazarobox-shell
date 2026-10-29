@@ -309,7 +309,7 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 - [ ] 5.2 `FeatureDoc` (specs verbatim, tasks with `S#`, log with `L1` = goal), one handoff per run, a correction appends to the log and rewrites one `S#`; ODD playbooks `prompts/*/orchestrate*.md`. Spec: agent-orchestrator / A large goal needs its document, Specs keep the user's words; orchestrator-handoffs / A correction keeps the log; prompt-profiles / Playbook per step.
 
 ### S6: usage (1-2 PRs, ~450, risk Medium) depends on S1
-- [ ] 6.1 `StreamEvent::Usage` in claude/codex/gemini/Ollama decoders, per-worker and per-run rows. Spec: chat-engines / Claude result usage, No usage reported; agent-orchestrator / Usage summed.
+- [x] 6.1 `StreamEvent::Usage` in claude/codex/gemini/Ollama decoders, per-worker and per-run rows. (done in one PR, branch feat/agent-orchestrator-s6) Spec: chat-engines / Claude result usage, No usage reported; agent-orchestrator / Usage summed.
 
 ### S7: write integration (2 PRs, ~500, risk Medium, decision: No) depends on coding-tools M2 (merged, #342) and S1 only (moved up, user 2026-10-29)
 
