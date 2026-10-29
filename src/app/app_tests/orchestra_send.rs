@@ -289,3 +289,26 @@ fn with_the_gate_off_the_chat_send_is_unchanged() {
     assert_chat_turn(&expected, id);
     assert_eq!(ask(&mut flagged, "hello"), expected);
 }
+
+// A send that waited for the first detection and is then refused (tools off)
+// goes nowhere and keeps its text in the composer, like a direct send
+// (review R3/R4, 2026-10-29).
+#[test]
+fn a_waiting_orchestrator_send_refused_after_detection_keeps_its_text() {
+    let mut ai = orch_ai();
+    ai.set_tools_enabled(false);
+    let mut a = launched(80, 25)
+        .with_ai(ai)
+        .with_tool_engines(&["claude", "ollama"])
+        .with_clock(mock_now);
+    press(&mut a, "c");
+    a.update(prompt_ready(chat_id()));
+    toggle(&mut a);
+    assert_eq!(sends(&ask(&mut a, "plan it")), 0, "the send waits");
+    let effects = a.update(detected());
+    assert_eq!(sends(&effects), 0, "{effects:?}");
+    assert_eq!(composer(&a), "plan it", "the text is kept");
+    assert_eq!(chat_of(&a).messages().count(), 0);
+    let text = a.chat_guidance(chat_id()).expect("the refusal");
+    assert!(text.contains("tools"), "{text}");
+}
