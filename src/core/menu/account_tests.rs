@@ -145,6 +145,24 @@ fn ctrl_o_opens_the_token_link_or_copies_it_without_an_opener() {
     );
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_token_field() {
+    let mut m = on_row(TokenFacts::default(), None);
+    send(&mut m, KeyCode::Enter);
+    press(&mut m, 'h');
+    press(&mut m, 'f');
+    m.on_key(
+        &KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        false,
+        &mut Config::default(),
+    );
+    assert!(
+        m.rows(&Config::default())
+            .contains(&Row::Field("•".to_owned()))
+    );
+}
+
 #[test]
 fn the_field_takes_typing_backspace_and_ctrl_u() {
     let mut m = on_row(TokenFacts::default(), None);
