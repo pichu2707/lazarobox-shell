@@ -4,11 +4,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ChatState, Phase};
+use super::{ChatState, Phase, store::StoreCmd};
 use crate::core::ai::{
     sanitize::clean,
     tools::paths::{SecretRoots, normalize},
 };
+use crate::core::layout::PaneId;
 
 /// A folder the runtime resolved and judged.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -170,6 +171,12 @@ impl ChatState {
              messages may not exist; tool paths are now relative to {to}."
         ));
         FolderChange { old, prompt_now }
+    }
+
+    /// The command that keeps `folder` with the conversation, when it is
+    /// stored already (a fresh one carries the folder in its `Create`).
+    pub fn store_set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {
+        self.store.set_folder(pane, folder)
     }
 
     /// Why the folder cannot change now, in the order the user is told (design

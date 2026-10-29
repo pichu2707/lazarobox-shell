@@ -401,3 +401,108 @@ fn the_confirmation_shows_the_old_and_the_new_folder() {
     assert!(shot.contains("/w/a") && shot.contains("/w/b"), "{shot}");
     insta::assert_snapshot!("folder_confirmation_60x10", shot);
 }
+
+// ---- what a confirmed change reaches (chat-folder A2) ----------------------
+
+fn requests(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::ChatSend { request, .. } => Some(request.system.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `in_folder` with history on and the first exchange stored as 30.
+fn stored() -> App {
+    let mut a = super::chat_history::conversation();
+    let first = ask(&mut a, "hello");
+    let turn = super::chat_history::sent_turn(&first);
+    a.update(super::chat_history::created(id2(), 30));
+    a.update(super::chat_history::delta(id2(), turn, "hi"));
+    a.update(super::chat_history::finish(id2(), turn));
+    a.apply_folder(id2(), "/w/a".into());
+    a.update(super::chat_history::prompt_for(id2()));
+    a
+}
+
+fn confirm(a: &mut App, target: &str) -> Vec<Effect> {
+    ask(a, &format!("/cd {target}"));
+    probed(a, concrete(target));
+    a.update(key('y'))
+}
+
+#[test]
+fn a_confirmed_change_stores_the_folder_of_the_conversation() {
+    let mut a = stored();
+    let effects = confirm(&mut a, "/w/b");
+    let saved: Vec<_> = super::chat_history::stores(&effects);
+    assert!(
+        saved.contains(&StoreCmd::SetFolder {
+            pane: id2(),
+            conversation: Some(30),
+            folder: "/w/b".into(),
+        }),
+        "{saved:?}"
+    );
+}
+
+#[test]
+fn a_chat_not_stored_yet_sends_no_set_folder() {
+    let mut a = in_folder();
+    let effects = a.apply_folder(id2(), "/w/b".into());
+    assert!(super::chat_history::stores(&effects).is_empty());
+}
+
+#[test]
+fn the_next_send_carries_the_notice_once_and_the_conversation_goes_on() {
+    let mut a = stored();
+    let before = messages(&a);
+    confirm(&mut a, "/w/b");
+    a.update(super::chat_history::prompt_for(id2()));
+    let first = ask(&mut a, "one");
+    let sent = requests(&first);
+    assert!(sent[0].contains("changed from /w/a to /w/b"), "{}", sent[0]);
+    let turn = super::chat_history::sent_turn(&first);
+    a.update(super::chat_history::delta(id2(), turn, "ok"));
+    a.update(super::chat_history::finish(id2(), turn));
+    let second = ask(&mut a, "two");
+    assert!(!requests(&second)[0].contains("changed from"));
+    let turn = super::chat_history::sent_turn(&second);
+    a.update(super::chat_history::delta(id2(), turn, "ok"));
+    a.update(super::chat_history::finish(id2(), turn));
+    // Four more messages in the same conversation, and no second `Create`.
+    assert_eq!(messages(&a), before + 4);
+    assert!(
+        !super::chat_history::stores(&first)
+            .iter()
+            .any(|c| matches!(c, StoreCmd::Create { .. }))
+    );
+}
+
+#[test]
+fn a_pane_opened_from_the_chat_starts_in_the_new_folder() {
+    let mut a = in_folder();
+    a.apply_folder(id2(), "/w/b".into());
+    let effects = a.new_tab();
+    let cwds: Vec<_> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SpawnPane(_, spec) => Some(spec.cwd.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cwds, vec![PathBuf::from("/w/b")]);
+}
+
+#[test]
+fn nothing_the_model_can_call_changes_the_folder() {
+    let tools = crate::core::ai::tools::registry(&[]);
+    assert!(!tools.is_empty());
+    assert!(
+        !tools
+            .iter()
+            .any(|t| t.name == "cd" || t.name.contains("folder"))
+    );
+}

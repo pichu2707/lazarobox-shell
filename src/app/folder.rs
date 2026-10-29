@@ -41,6 +41,7 @@ impl App {
     /// tool session (whose approvals belong to the old folder). Every other
     /// consumer reads the folder when it needs it (design D1).
     pub(super) fn apply_folder(&mut self, id: PaneId, new: PathBuf) -> Vec<Effect> {
+        let history = self.history;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -53,9 +54,13 @@ impl App {
                 cwd: None,
             })
         });
+        let store = chat.store_set_folder(id, new.clone());
         let change = chat.set_folder(new);
         let session = chat.take_tool_session();
         let mut effects: Vec<Effect> = end.into_iter().collect();
+        if history {
+            effects.extend(store.map(Effect::Store));
+        }
         if change.prompt_now {
             effects.extend(self.prepare_prompt(id));
         }
