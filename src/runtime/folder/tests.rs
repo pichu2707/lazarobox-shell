@@ -137,7 +137,7 @@ async fn a_prober_answers_the_candidates_and_the_completions_through_its_channel
         vec![(Source::PaneRoot, home.join("project/src"))],
         true,
     );
-    let Some(Answer::Many(got, 7, found)) = rx.recv().await else {
+    let Some(Answer::Many(got, 7, found, false)) = rx.recv().await else {
         panic!("expected the candidates");
     };
     assert_eq!(got, pane);
@@ -409,8 +409,8 @@ async fn a_second_request_while_the_first_is_stuck_answers_empty_at_once() {
     let mut seen = 0;
     while seen < 2 {
         match rx.recv().await.expect("an answer") {
-            Answer::Many(_, 1, found) => assert!(found.is_empty()),
-            Answer::Completed(_, 1, _, found) => assert_eq!(found, Completion::default()),
+            Answer::Many(_, 1, found, busy) => assert!(found.is_empty() && busy),
+            Answer::Completed(_, 1, _, found) => assert!(found.busy && found.names.is_empty()),
             other => panic!("unexpected {other:?}"),
         }
         seen += 1;
@@ -517,4 +517,118 @@ fn names_with_invisible_format_characters_are_dropped() {
             .all(|n| !n.contains(['\u{202e}', '\u{200b}', '\u{feff}'])),
         "{got:?}"
     );
+}
+
+// ---- the flight of a request (review round 2) -------------------------------
+
+const SLOW: std::time::Duration = std::time::Duration::from_millis(300);
+const BOUND: std::time::Duration = std::time::Duration::from_millis(30);
+
+async fn free_soon(flight: &Flight) {
+    for _ in 0..100 {
+        if let Some(held) = flight.start() {
+            drop(held);
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the flight was never freed");
+}
+
+fn quick_prober(f: &Fixture) -> (Prober, tokio::sync::mpsc::Receiver<Answer>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let mut prober = Prober::new(f.env.clone(), tx);
+    prober.bound = BOUND;
+    (prober, rx)
+}
+
+fn slow_candidate(prober: &Prober, id: u64) {
+    prober.many_with(
+        crate::core::layout::PaneId::FIRST,
+        id,
+        vec![(Source::Recent, PathBuf::from("/h/slow"))],
+        |_roots| {
+            |_source, path: &Path| {
+                std::thread::sleep(SLOW);
+                Some(Ok(Probed {
+                    path: path.to_path_buf(),
+                    verdict: Verdict::Concrete,
+                }))
+            }
+        },
+    );
+}
+
+#[tokio::test]
+async fn a_slow_candidate_times_out_and_keeps_the_flight_until_its_thread_ends() {
+    let f = fixture();
+    let (prober, mut rx) = quick_prober(&f);
+    slow_candidate(&prober, 1);
+    let Some(Answer::Many(_, 1, found, busy)) = rx.recv().await else {
+        panic!("expected the candidates");
+    };
+    assert!(!busy);
+    assert!(found.iter().all(|(_, r)| r.is_err()), "{found:?}");
+    // The thread still runs: a second request is turned away, not queued.
+    assert!(prober.many.start().is_none());
+    slow_candidate(&prober, 2);
+    let Some(Answer::Many(_, 2, found, busy)) = rx.recv().await else {
+        panic!("expected the candidates");
+    };
+    assert!(found.is_empty() && busy);
+    free_soon(&prober.many).await;
+}
+
+#[tokio::test]
+async fn a_slow_listing_times_out_and_a_second_one_is_busy_until_it_ends() {
+    let f = fixture();
+    let (prober, mut rx) = quick_prober(&f);
+    let pane = crate::core::layout::PaneId::FIRST;
+    prober.completion_with(pane, 1, "a".into(), |_roots| {
+        std::thread::sleep(SLOW);
+        Completion {
+            names: vec!["late".into()],
+            ..Completion::default()
+        }
+    });
+    let Some(Answer::Completed(_, 1, _, found)) = rx.recv().await else {
+        panic!("expected the completions");
+    };
+    assert_eq!(found, Completion::default());
+    prober.completion_with(pane, 2, "b".into(), |_roots| Completion::default());
+    let Some(Answer::Completed(_, 2, _, found)) = rx.recv().await else {
+        panic!("expected the completions");
+    };
+    assert!(found.busy && found.names.is_empty());
+    free_soon(&prober.completions).await;
+}
+
+#[tokio::test]
+async fn a_panicking_listing_frees_the_flight() {
+    let f = fixture();
+    let (prober, mut rx) = quick_prober(&f);
+    let pane = crate::core::layout::PaneId::FIRST;
+    prober.completion_with(pane, 1, String::new(), |_roots| panic!("boom"));
+    let Some(Answer::Completed(_, 1, _, found)) = rx.recv().await else {
+        panic!("expected the completions");
+    };
+    assert_eq!(found, Completion::default());
+    free_soon(&prober.completions).await;
+}
+
+#[tokio::test]
+async fn a_panicking_candidate_frees_the_flight() {
+    let f = fixture();
+    let (prober, mut rx) = quick_prober(&f);
+    prober.many_with(
+        crate::core::layout::PaneId::FIRST,
+        1,
+        vec![(Source::Recent, PathBuf::from("/h/x"))],
+        |_roots| |_source, _path: &Path| -> Option<Result<Probed, Refusal>> { panic!("boom") },
+    );
+    let Some(Answer::Many(_, 1, found, busy)) = rx.recv().await else {
+        panic!("expected the candidates");
+    };
+    assert!(!busy && found.iter().all(|(_, r)| r.is_err()));
+    free_soon(&prober.many).await;
 }

@@ -108,6 +108,15 @@ Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test a
 - TDD note: W1 and W5 were seen failing against the old `complete` before the fix; the signature changes (ids, `Completion`) were RED at compile level; the stalled-candidate and single-flight tests were written together with the code.
 - 7187 lib tests green.
 
+### Batch 3c: PR B1 review round 2
+
+- Busy signal: `Completion.busy` and `Answer::Many(.., busy)` / `AppEvent::FoldersProbed{busy}` say a request was turned away because an earlier one is still on the disk (B2 shows it; no UI here).
+- `complete` checks at most `EXAMINED_MAX` (4 x `COMPLETIONS_MAX`) entries and marks the list truncated when it stops there; names with Unicode format characters (zero width, bidi override, BOM, soft hyphen) are dropped with the control ones; the doc says `AboveHome`/`Outside` folders list nothing.
+- Test seams: `Prober.bound` (the request bound, `TIMEOUT` outside tests), `many_with` and `completion_with` take the judging closure. Tests: a slow candidate times out and keeps the flight until its thread ends; a second request is turned away busy; a slow or panicking listing/candidate frees the flight. Mutation checks: dropping the hold in `each` or in the listing fails them.
+- Tests only: listing HOME with `.` leaves out `.ssh` and `.gnupg`; `.gnupg` and `.config/gh` list nothing inside.
+- Left for B2: a flight or debounce for the single-folder `start` and a session-unique picker id allocator.
+- 7194 lib tests green.
+
 ## Remaining
 
 A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.

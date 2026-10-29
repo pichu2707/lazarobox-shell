@@ -72,6 +72,8 @@ pub struct Completion {
     /// More matched than were listed: the names are not all of them, so they
     /// say nothing about a common prefix.
     pub truncated: bool,
+    /// An earlier request was still on the disk, so nothing was listed.
+    pub busy: bool,
 }
 
 /// What the picker is waiting for.

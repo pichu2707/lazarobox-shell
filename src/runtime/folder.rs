@@ -38,8 +38,9 @@ pub const TIMEOUT: Duration = Duration::from_secs(3);
 pub enum Answer {
     /// One folder: the pane, why it was asked, and the verdict.
     Probed(PaneId, Purpose, Result<Probed, Refusal>),
-    /// The picker candidates (pane, picker id), each judged.
-    Many(PaneId, u64, Vec<(Source, Result<Probed, Refusal>)>),
+    /// The picker candidates (pane, picker id), each judged, and whether an
+    /// earlier request was still on the disk, so none was made.
+    Many(PaneId, u64, Vec<(Source, Result<Probed, Refusal>)>, bool),
     /// The directory names that complete the field text the picker sent
     /// (pane, picker id, text).
     Completed(PaneId, u64, String, Completion),
@@ -95,6 +96,8 @@ pub struct Prober {
     tx: mpsc::Sender<Answer>,
     many: Flight,
     completions: Flight,
+    /// How long a request may take; [`TIMEOUT`] outside tests.
+    bound: Duration,
 }
 
 impl Prober {
@@ -104,6 +107,7 @@ impl Prober {
             tx,
             many: Flight::default(),
             completions: Flight::default(),
+            bound: TIMEOUT,
         }
     }
 
@@ -119,38 +123,53 @@ impl Prober {
 
     /// Judges the picker candidates, each bounded on its own (see
     /// [`candidate`]), and sends exactly one answer. While an earlier request
-    /// is still stuck on the disk the answer is empty.
+    /// is still stuck on the disk the answer is empty and says it is busy.
     pub fn start_many(&self, pane: PaneId, id: u64, paths: Vec<(Source, PathBuf)>, git: bool) {
+        self.many_with(pane, id, paths, move |roots| {
+            move |source, path: &Path| candidate(&roots, source, path, git)
+        });
+    }
+
+    /// [`Self::start_many`] with the judging of one candidate chosen by
+    /// `make` from the loaded roots.
+    fn many_with<W>(
+        &self,
+        pane: PaneId,
+        id: u64,
+        paths: Vec<(Source, PathBuf)>,
+        make: impl FnOnce(SecretRoots) -> W + Send + 'static,
+    ) where
+        W: Fn(Source, &Path) -> Option<Result<Probed, Refusal>> + Send + Sync + 'static,
+    {
         let (env, tx, held) = (self.env.clone(), self.tx.clone(), self.many.start());
+        let bound = self.bound;
         tokio::spawn(async move {
-            let found = match held {
-                Some(held) => {
-                    let kept = held.clone();
-                    let roots = within(TIMEOUT, move || {
-                        let _held = kept;
-                        load_roots(&env).ok()
+            let busy = held.is_none();
+            let mut found = Vec::new();
+            if let Some(held) = held {
+                let kept = held.clone();
+                let roots = within(bound, move || {
+                    let _held = kept;
+                    load_roots(&env).ok()
+                })
+                .await
+                .flatten();
+                if let Some(roots) = roots {
+                    let work = make(roots);
+                    found = each(paths, bound, move |source, path| {
+                        let _held = &held;
+                        work(source, path)
                     })
-                    .await
-                    .flatten();
-                    match roots {
-                        Some(roots) => {
-                            each(paths, TIMEOUT, move |source, path| {
-                                let _held = &held;
-                                candidate(&roots, source, path, git)
-                            })
-                            .await
-                        }
-                        None => Vec::new(),
-                    }
+                    .await;
                 }
-                None => Vec::new(),
-            };
-            let _ = tx.send(Answer::Many(pane, id, found)).await;
+            }
+            let _ = tx.send(Answer::Many(pane, id, found, busy)).await;
         });
     }
 
     /// Lists the completions of `text` (see [`complete`]) and sends exactly
-    /// one answer; too slow, or one still running, is an empty list.
+    /// one answer; too slow is an empty list, and one still running is an
+    /// empty list marked busy.
     pub fn start_completion(
         &self,
         pane: PaneId,
@@ -159,18 +178,33 @@ impl Prober {
         dir: PathBuf,
         prefix: String,
     ) {
+        self.completion_with(pane, id, text, move |roots| complete(roots, &dir, &prefix));
+    }
+
+    /// [`Self::start_completion`] with the listing chosen by `work`.
+    fn completion_with(
+        &self,
+        pane: PaneId,
+        id: u64,
+        text: String,
+        work: impl FnOnce(&SecretRoots) -> Completion + Send + 'static,
+    ) {
         let (env, tx, held) = (self.env.clone(), self.tx.clone(), self.completions.start());
+        let bound = self.bound;
         tokio::spawn(async move {
             let names = match held {
-                Some(held) => within(TIMEOUT, move || {
+                Some(held) => within(bound, move || {
                     let _held = held;
                     load_roots(&env)
-                        .map(|roots| complete(&roots, &dir, &prefix))
+                        .map(|roots| work(&roots))
                         .unwrap_or_default()
                 })
                 .await
                 .unwrap_or_default(),
-                None => Completion::default(),
+                None => Completion {
+                    busy: true,
+                    ..Completion::default()
+                },
             };
             let _ = tx.send(Answer::Completed(pane, id, text, names)).await;
         });

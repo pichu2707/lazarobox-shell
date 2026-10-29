@@ -978,8 +978,8 @@ async fn run_loop(
                     folder::Answer::Probed(pane, purpose, result) => {
                         AppEvent::FolderProbed { pane, purpose, result }
                     }
-                    folder::Answer::Many(pane, id, found) => {
-                        AppEvent::FoldersProbed { pane, id, found }
+                    folder::Answer::Many(pane, id, found, busy) => {
+                        AppEvent::FoldersProbed { pane, id, found, busy }
                     }
                     folder::Answer::Completed(pane, id, text, found) => {
                         AppEvent::FolderCompleted { pane, id, text, found }
@@ -1674,6 +1674,7 @@ impl Panes {
                     None => feedback.push(AppEvent::FoldersProbed {
                         pane,
                         id,
+                        busy: false,
                         found: Vec::new(),
                     }),
                 },

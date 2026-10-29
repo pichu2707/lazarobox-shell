@@ -183,6 +183,8 @@ pub enum AppEvent {
         /// The picker that asked.
         id: u64,
         found: Vec<(PickerSource, Result<Probed, Refusal>)>,
+        /// An earlier request was still on the disk, so none was made.
+        busy: bool,
     },
     /// The answer to `Effect::CompleteFolder`: the directory names for the
     /// field text that was sent.

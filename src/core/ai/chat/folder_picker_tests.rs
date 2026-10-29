@@ -74,6 +74,7 @@ fn at_most_twelve_rows() {
 fn names(names: &[String]) -> Completion {
     Completion {
         names: names.to_vec(),
+        busy: false,
         truncated: false,
     }
 }
@@ -319,6 +320,7 @@ fn truncated_names_do_not_extend_the_field() {
     let cut = Completion {
         names: vec!["d001".into(), "d002".into()],
         truncated: true,
+        busy: false,
     };
     assert!(p.on_completed(1, "~/d", &cut));
     assert_eq!(p.field().text(), "~/d");
