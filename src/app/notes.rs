@@ -171,6 +171,7 @@ impl App {
             // own answer follows and takes it as its reason.
             MemReply::Unavailable {
                 pane: None,
+                epoch: None,
                 reason: reason @ (Reason::NoBinary | Reason::OldBinary),
             } => {
                 if self.ai.memory.active() {
@@ -217,6 +218,9 @@ impl App {
                 refused,
                 ..
             } => self.on_notes_deleted(id, *ok, *failed, *refused),
+            MemReply::Unavailable {
+                epoch: Some(epoch), ..
+            } if !self.memory_epoch_is(id, *epoch) => {}
             MemReply::Unavailable { reason, .. } => {
                 let reason = match (&self.no_server, reason) {
                     (Some(cause), Reason::NotRunning) => cause.clone(),

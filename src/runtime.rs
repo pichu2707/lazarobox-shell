@@ -5169,6 +5169,7 @@ mod tests {
         assert_eq!(
             rx.try_recv().expect("answered at once"),
             MemReply::Unavailable {
+                epoch: Some(0),
                 pane: Some(PaneId::FIRST),
                 reason: Reason::RestartNeeded,
             }
@@ -5256,6 +5257,7 @@ mod tests {
         let told = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(crate::core::ai::memory::port::MemReply::Unavailable {
+                    epoch: None,
                     pane: None,
                     ..
                 }) = rx.recv().await

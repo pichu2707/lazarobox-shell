@@ -104,6 +104,10 @@ impl MemCmd {
             },
             other => MemReply::Unavailable {
                 pane: other.pane(),
+                epoch: match other {
+                    MemCmd::Resolve { epoch, .. } | MemCmd::Context { epoch, .. } => Some(*epoch),
+                    _ => None,
+                },
                 reason,
             },
         }
@@ -257,8 +261,11 @@ pub enum MemReply {
     /// asks the user (see `offer::ServerOffer`). At most once per run.
     ServerOffer(Offer),
     /// Memory cannot be used; `pane` is `None` for a global state.
+    /// `epoch` is set when the failed command was a `Resolve` or `Context`
+    /// (see `MemCmd`): a failure of an older epoch is ignored.
     Unavailable {
         pane: Option<PaneId>,
+        epoch: Option<u32>,
         reason: Reason,
     },
 }
@@ -396,6 +403,7 @@ mod tests {
                 port: 7437,
             }),
             MemReply::Unavailable {
+                epoch: None,
                 pane: None,
                 reason: Reason::Busy,
             },
@@ -448,6 +456,7 @@ mod tests {
         };
         assert_eq!(end.pane(), None);
         let busy = |pane| MemReply::Unavailable {
+            epoch: Some(0),
             pane,
             reason: Reason::Busy,
         };

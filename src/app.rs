@@ -3152,6 +3152,7 @@ mod app_tests {
                 block: None,
             },
             MemReply::Unavailable {
+                epoch: None,
                 pane: Some(gone),
                 reason: Reason::Busy,
             },

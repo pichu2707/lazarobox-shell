@@ -184,6 +184,7 @@ fn context(a: &mut App, block: Option<ContextBlock>) -> Vec<Effect> {
 
 fn unavailable(a: &mut App, reason: Reason) -> Vec<Effect> {
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason,
     }))
@@ -510,6 +511,38 @@ fn replies_of_the_old_folder_are_ignored_and_the_new_ones_are_not() {
         block: Some(block(3)),
     }));
     assert_eq!(head(&a).as_deref(), Some("▸ memory (3 notes)"));
+}
+
+#[test]
+fn a_failure_reply_of_the_old_folder_does_not_degrade_the_new_one() {
+    let (mut a, _) = opened(true);
+    a.apply_folder(chat_id(), "/srv/other".into());
+    let stale = a.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        epoch: Some(0),
+        reason: Reason::NotRunning,
+    }));
+    assert_eq!(stale, vec![]);
+    assert!(matches!(
+        chat_of(&a).readiness(),
+        Readiness::Resolving { .. }
+    ));
+    // The real answer still lands.
+    let fresh = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 1,
+        result: Ok("other".into()),
+    }));
+    assert_eq!(memory_cmds(&fresh).len(), 1);
+    // A failure of the current epoch still applies.
+    let (mut b, _) = opened(true);
+    b.apply_folder(chat_id(), "/srv/other".into());
+    b.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        epoch: Some(1),
+        reason: Reason::NotRunning,
+    }));
+    assert!(matches!(chat_of(&b).readiness(), Readiness::Unavailable(_)));
 }
 
 #[test]
@@ -1051,7 +1084,11 @@ fn a_server_outcome_with_no_chat_open_is_a_notice() {
 // 10.5: a missing or old binary is the reason, not 'not running' ------------------
 
 fn global_notice(reason: Reason) -> AppEvent {
-    AppEvent::Memory(MemReply::Unavailable { pane: None, reason })
+    AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
+        pane: None,
+        reason,
+    })
 }
 
 #[test]

@@ -224,6 +224,7 @@ fn memory_off_shows_only_its_notice() {
 fn memory_not_ready_shows_why_and_sends_no_request() {
     let mut a = with_answer(true, "x");
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));

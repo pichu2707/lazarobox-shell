@@ -291,6 +291,7 @@ fn the_memory_segment_follows_the_state_of_the_chat() {
 
     let mut app = memory_app();
     app.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));

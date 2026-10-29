@@ -298,6 +298,7 @@ fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
     let mut a = with_answer(true, "x");
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));

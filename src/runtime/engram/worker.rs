@@ -209,7 +209,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                         epoch,
                         result,
                     },
-                    Err(reason) => unavailable(pane, reason),
+                    Err(reason) => unavailable(pane, epoch, reason),
                 };
                 self.say(reply).await;
             }
@@ -220,7 +220,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             } => {
                 let reply = match self.context(&project).await {
                     Ok(block) => MemReply::Context { pane, epoch, block },
-                    Err(reason) => unavailable(pane, reason),
+                    Err(reason) => unavailable(pane, epoch, reason),
                 };
                 self.say(reply).await;
             }
@@ -363,7 +363,12 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 self.say(MemReply::ServerOffer(offer)).await;
             }
             Decision::Notice(reason) => {
-                self.say(MemReply::Unavailable { pane: None, reason }).await
+                self.say(MemReply::Unavailable {
+                    pane: None,
+                    epoch: None,
+                    reason,
+                })
+                .await
             }
             Decision::Nothing => {}
         }
@@ -626,9 +631,10 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     }
 }
 
-fn unavailable(pane: PaneId, reason: Reason) -> MemReply {
+fn unavailable(pane: PaneId, epoch: u32, reason: Reason) -> MemReply {
     MemReply::Unavailable {
         pane: Some(pane),
+        epoch: Some(epoch),
         reason,
     }
 }

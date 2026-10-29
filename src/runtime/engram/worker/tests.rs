@@ -665,6 +665,7 @@ async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds()
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -673,6 +674,7 @@ async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds()
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(2)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -709,6 +711,7 @@ async fn an_old_or_foreign_server_is_unavailable_with_its_reason() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::OldServer { port: PORT }
         }
     );
@@ -725,6 +728,7 @@ async fn an_old_or_foreign_server_is_unavailable_with_its_reason() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::Foreign { port: PORT }
         }
     );
@@ -748,6 +752,7 @@ async fn a_transport_failure_after_ready_sets_down() {
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(2)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -773,6 +778,7 @@ async fn a_full_queue_answers_busy_at_once() {
         rig.rx.try_recv().unwrap(),
         MemReply::Unavailable {
             pane: Some(pane(99)),
+            epoch: Some(0),
             reason: Reason::Busy
         }
     );
@@ -837,6 +843,7 @@ async fn a_silent_health_probe_gives_up_at_300_ms() {
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -903,6 +910,7 @@ async fn a_panic_while_handling_still_gives_a_reply_and_the_worker_lives() {
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -1038,6 +1046,7 @@ async fn a_context_server_error_is_unavailable_and_degrades_the_health() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -1065,6 +1074,7 @@ async fn any_non_200_context_other_than_unknown_project_is_unavailable() {
             rig.answer().await,
             MemReply::Unavailable {
                 pane: Some(pane(1)),
+                epoch: Some(0),
                 reason: Reason::NoAnswer
             },
             "{status}"
@@ -1420,7 +1430,11 @@ async fn take_the_offer(rig: &mut Rig) {
 }
 
 fn unavailable_global(reason: Reason) -> MemReply {
-    MemReply::Unavailable { pane: None, reason }
+    MemReply::Unavailable {
+        pane: None,
+        epoch: None,
+        reason,
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -1440,6 +1454,7 @@ async fn a_down_server_with_a_3x_binary_gets_one_offer_with_the_absolute_path() 
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -1478,6 +1493,7 @@ async fn a_missing_or_1x_binary_is_told_once_and_never_offered() {
             rig.next().await,
             MemReply::Unavailable {
                 pane: Some(pane(1)),
+                epoch: Some(0),
                 reason: Reason::NotRunning
             }
         );
