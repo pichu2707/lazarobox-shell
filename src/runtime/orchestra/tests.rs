@@ -692,8 +692,8 @@ fn run_ids_grow_with_the_clock_and_never_repeat() {
 }
 
 // S1b-2 security obligation: a run's read scope lives with its run only. A
-// later run, or a run of an earlier process resumed, has no scope until the
-// user answers again: its reads ask.
+// later run, or a run of an earlier process resumed, gets only its own scope:
+// the old one grants nothing.
 #[tokio::test]
 async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
     let lab = lab_with(Script::Answer("x"), |m, home| RunManager {

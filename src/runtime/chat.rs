@@ -774,8 +774,8 @@ impl Chats {
 
     /// Starts orchestrator turn `turn` of `pane` (agent-orchestrator D5): a
     /// turn like [`Chats::send`] whose session also reaches the run it
-    /// starts, which replaces any run of the pane. The read scope is empty
-    /// until the scope prompt exists (S1e-1b), so every worker read asks.
+    /// starts, which replaces any run of the pane. Nothing is asked: the
+    /// run's read scope is the chat origin, when the path policy allows it.
     /// Without a run manager it runs as a plain turn; when the run cannot
     /// start (quitting) the turn ends at once with the reason.
     pub fn send_orchestrated(
@@ -891,8 +891,10 @@ impl Chats {
                 let scope = OrchScope {
                     roster: orch.roster,
                     origin: origin.clone(),
-                    // No scope prompt yet (S1e-1b): every worker read asks.
-                    roots: Vec::new(),
+                    // The run's reads run unasked in the chat origin, which
+                    // must pass the path policy; nothing is asked (D6). An
+                    // origin that is not UTF-8 gives no root.
+                    roots: origin.to_str().map(str::to_owned).into_iter().collect(),
                     deadline: orch.deadline,
                     profile: orch.profile,
                     events: events.clone(),

@@ -67,7 +67,7 @@ use crate::core::{
                 CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunState, UserChoice,
                 WorkerEvent,
             },
-            scope::ReadScope,
+            scope::{Dropped, ReadScope},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
@@ -88,14 +88,15 @@ const ENDED: &str = "run ended";
 /// goes out.
 const NO_NONCE: &str = "the result cannot be wrapped now";
 
-/// What an orchestrator turn hands its run when it starts, the scope prompt
-/// already answered.
+/// What an orchestrator turn hands its run when it starts. Nothing is asked:
+/// the run starts at once (agent-orchestrator, Read scope of a run).
 pub struct OrchScope {
     /// The availability of every task, from the menu and the run's override.
     pub roster: Roster,
     /// The chat's origin: what a worker's relative path is read against.
     pub origin: PathBuf,
-    /// The read-scope roots the user approved; empty when denied.
+    /// The read-scope roots, as typed: the chat origin by default, never
+    /// model or worker text. Each one passes the path policy or is dropped.
     pub roots: Vec<String>,
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
@@ -193,6 +194,8 @@ fn clock_micros() -> u64 {
 struct Live {
     run: Run,
     scope: ReadScope,
+    /// The roots the scope refused, sanitized, with why.
+    dropped: Vec<Dropped>,
     origin: PathBuf,
     profile: Profile,
     events: mpsc::Sender<StreamEvent>,
@@ -276,6 +279,14 @@ impl RunManager {
         self
     }
 
+    /// Judges broad scratch folders with `scratch` instead of the jail's:
+    /// tests build their homes under `/tmp`, which the jail counts as one.
+    #[cfg(test)]
+    pub(crate) fn with_scratch(mut self, scratch: fn(&Path) -> bool) -> Self {
+        self.scratch = scratch;
+        self
+    }
+
     /// Sends a line to `log` for every change of a worker's status.
     pub fn with_log(mut self, log: Log) -> Self {
         self.log = Some(log);
@@ -297,8 +308,10 @@ impl RunManager {
             return Err(reason);
         }
         let run = lock(&self.ids).next(clock_micros());
+        let (read_scope, dropped) = self.read_scope(run, &scope.origin, &scope.roots);
         let live = Live {
-            scope: self.read_scope(run, &scope.origin, &scope.roots),
+            scope: read_scope,
+            dropped,
             run: Run::new(run, scope.roster, scope.deadline),
             origin: scope.origin,
             profile: scope.profile,
@@ -331,18 +344,27 @@ impl RunManager {
         })
     }
 
-    /// The read scope of `run` over the approved roots; it grants nothing
-    /// without tooling or when the secret roots cannot be built.
-    fn read_scope(&self, run: RunId, origin: &Path, roots: &[String]) -> ReadScope {
+    /// The read scope of `run` over `roots`, with the roots it dropped; it
+    /// grants nothing without tooling or when the secret roots cannot be
+    /// built.
+    fn read_scope(&self, run: RunId, origin: &Path, roots: &[String]) -> (ReadScope, Vec<Dropped>) {
         let Some(tooling) = &self.tooling else {
-            return ReadScope::denied(run);
+            return (ReadScope::denied(run), Vec::new());
         };
         let Ok(secrets) = load_roots(&tooling.host.env(origin)) else {
-            return ReadScope::denied(run);
+            return (ReadScope::denied(run), Vec::new());
         };
         let inputs: Vec<&str> = roots.iter().map(String::as_str).collect();
-        // The roots it drops were shown by the scope prompt.
-        ReadScope::new(run, &secrets, origin, &inputs, &self.scratch).0
+        ReadScope::new(run, &secrets, origin, &inputs, &self.scratch)
+    }
+
+    /// The read scope of the run of `pane`, for display: the roots its reads
+    /// run unasked under, and the roots it dropped with why. `None` without a
+    /// run.
+    pub fn scope(&self, pane: PaneId) -> Option<(Vec<PathBuf>, Vec<Dropped>)> {
+        let runs = lock(&self.runs);
+        let live = runs.get(&pane)?;
+        Some((live.scope.roots(), live.dropped.clone()))
     }
 
     /// Ctrl+C on `pane`: ends its run, if it has one. Returns at once.

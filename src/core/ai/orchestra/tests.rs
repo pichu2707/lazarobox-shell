@@ -5,7 +5,7 @@ use serde_json::json;
 use super::run::{
     CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
 };
-use super::scope::ReadScope;
+use super::scope::{Dropped, REFUSED_ROOT, ReadScope, TOO_BROAD, UNSHOWN};
 use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
@@ -457,7 +457,7 @@ fn no_scratch(_: &std::path::Path) -> bool {
     false
 }
 
-fn scope_of(h: &Home, inputs: &[&str]) -> (ReadScope, Vec<String>) {
+fn scope_of(h: &Home, inputs: &[&str]) -> (ReadScope, Vec<Dropped>) {
     ReadScope::new(RunId(1), &h.secrets, &h.home, inputs, &no_scratch)
 }
 
@@ -522,7 +522,20 @@ fn roots_that_are_excluded_or_too_broad_are_dropped_and_named() {
         &["~/.aws", "~", "scratchy", "/", "missing", "app"],
         &scratch,
     );
-    assert_eq!(dropped, ["~/.aws", "~", "scratchy", "/", "missing"]);
+    let named: Vec<(&str, &str)> = dropped
+        .iter()
+        .map(|d| (d.root.as_str(), d.reason))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("~/.aws", REFUSED_ROOT),
+            ("~", TOO_BROAD),
+            ("scratchy", TOO_BROAD),
+            ("/", REFUSED_ROOT),
+            ("missing", REFUSED_ROOT),
+        ]
+    );
     assert!(allows(&h, &scope, "app/src/a.rs"));
     assert!(!allows(&h, &scope, "other/y"));
     assert!(!allows(&h, &scope, "scratchy"));
@@ -555,6 +568,21 @@ fn the_scope_expires_with_its_run_and_grants_nothing_to_another() {
     );
 }
 
+// Spec (agent-orchestrator, Read scope of a run): a dropped root's reason is
+// kept for display, sanitized; the roots it keeps are listed as requested.
+#[test]
+fn a_dropped_root_is_named_sanitized_with_its_reason() {
+    let h = home();
+    let inputs = ["app\x1b[31m\nx", "~/app"];
+    let (scope, dropped) = scope_of(&h, &inputs);
+    assert_eq!(scope.roots(), [h.home.join("app")]);
+    assert_eq!(dropped.len(), 1);
+    let Dropped { root, reason } = &dropped[0];
+    assert!(!root.contains('\x1b') && !root.contains('\n'), "{root:?}");
+    assert!(root.starts_with("app"), "{root:?}");
+    assert!([REFUSED_ROOT, UNSHOWN].contains(reason), "{reason}");
+}
+
 #[test]
 fn a_denied_scope_grants_nothing() {
     let h = home();
@@ -571,7 +599,13 @@ fn the_production_scope_drops_the_scratch_folders_of_the_jail() {
     };
     let h = home_in(dir);
     let (scope, dropped) = ReadScope::for_run(RunId(1), &h.secrets, &h.home, &["app"]);
-    assert_eq!(dropped, ["app"]);
+    assert_eq!(
+        dropped,
+        [Dropped {
+            root: "app".into(),
+            reason: TOO_BROAD
+        }]
+    );
     assert!(!allows(&h, &scope, "app/src/a.rs"));
 }
 

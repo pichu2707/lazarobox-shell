@@ -842,3 +842,62 @@ async fn an_orchestrator_turn_without_a_session_ends_its_run() {
     assert!(ended, "the run ends with the turn");
     assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
 }
+
+// agent-orchestrator / No prompt at run start, Refused origin gives no root:
+// an orchestrator turn starts its run at once with the chat origin as the
+// run's read-scope root; a refused origin (here `$HOME`) gives no root and
+// its reason is kept.
+#[tokio::test]
+async fn an_orchestrator_run_scopes_its_reads_to_the_chat_origin() {
+    use crate::core::ai::{
+        chat::engine::{Availability, OrchSend},
+        config::{Profile, Task},
+        orchestra::{
+            run::Roster,
+            scope::{Dropped, TOO_BROAD},
+        },
+    };
+    let lab = lab();
+    let app = lab.home.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    for (origin, roots, dropped) in [
+        (app.clone(), vec![app.clone()], vec![]),
+        (
+            lab.home.clone(),
+            vec![],
+            vec![Dropped {
+                root: lab.home.display().to_string(),
+                reason: TOO_BROAD,
+            }],
+        ),
+    ] {
+        let (chats, _rx) = tooled(&lab, idle());
+        let events = tokio::sync::mpsc::unbounded_channel().0;
+        let manager = Arc::new(
+            RunManager::new(idle(), None, events)
+                .with_tools(lab.host.clone(), vec![lab.dir.path().join("wrun")])
+                // The lab lives under `/tmp`, a scratch folder of the jail.
+                .with_scratch(|_| false),
+        );
+        let mut chats = chats.with_orchestra(manager.clone());
+        let orch = OrchSend {
+            roster: Roster::new(vec![(
+                Task::Orchestrate,
+                Availability::Ready {
+                    engine: "claude".into(),
+                    model: None,
+                },
+            )]),
+            profile: Profile::default(),
+            deadline: Duration::from_secs(30),
+        };
+        let mut req = with_tools(&lab);
+        if let Tools::On { origin: o, .. } = &mut req.tools {
+            *o = Some(origin.clone());
+        }
+        chats.send_orchestrated(pane(1), 1, req, orch);
+        let got = manager.scope(pane(1)).expect("the run started at once");
+        assert_eq!(got, (roots, dropped), "{origin:?}");
+        manager.cancel(pane(1));
+    }
+}
