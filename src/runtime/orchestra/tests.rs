@@ -1129,6 +1129,44 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     assert_eq!(story, [(1, Some(Running)), (1, Some(Cancelled)), (0, None)]);
 }
 
+// Spec (agent-orchestrator, Ctrl+C cancels all): with an orchestrator turn
+// and a running worker, Ctrl+C on the pane cancels both: the turn's adapter
+// and the worker's are dropped (their process groups killed), the worker
+// ends `cancelled`, and the run ends.
+#[tokio::test]
+async fn ctrl_c_cancels_the_orchestrator_turn_and_every_worker() {
+    let mut lab = lab(Script::Hang);
+    let (turn_runner, turn_seen) = fake(Script::Hang);
+    let (tx, mut chat_rx) = mpsc::channel(chat::APP_CHANNEL);
+    let mut chats = chat::Chats::new(turn_runner, tx).with_orchestra(lab.manager.clone());
+    let request = ChatRequest {
+        engine: "claude".into(),
+        model: Some("opus".into()),
+        system: String::new(),
+        memory: None,
+        messages: Vec::new(),
+        tools: Tools::Off,
+        families: FamilySet::LEGACY,
+    };
+    chats.send(pane(), 1, request);
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.seen.first().await;
+    turn_seen.first().await;
+    chats.cancel(pane());
+    assert!(killed(&turn_seen).await, "the orchestrator turn is killed");
+    assert!(killed(&lab.seen).await, "the worker is killed");
+    let events = lab.sent();
+    use WorkerStatus::*;
+    assert_eq!(
+        story(&events),
+        [(1, Some(Running)), (1, Some(Cancelled)), (0, None)]
+    );
+    assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
+    assert!(chat_rx.try_recv().is_err(), "the turn sends nothing more");
+    assert_eq!(handle.call(wait(1)).await, error(ENDED));
+}
+
 // Spec (agent-orchestrator, Cancel: quitting kills every worker; tasks.md
 // 1d.3b shutdown): `shutdown` ends every run, and once it returns no worker
 // turn is left: every adapter is dropped and every socket gone. No event

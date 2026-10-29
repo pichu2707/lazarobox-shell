@@ -63,6 +63,7 @@ use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
+use orchestra::RunManager;
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -390,6 +391,25 @@ pub async fn run() -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
+    // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+    // `<data>/run`. Without a private folder every turn runs as text.
+    let socket_dirs = mcp::candidate_dirs(
+        env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        store_dir.as_deref(),
+    );
+    // The runs of orchestrating panes (D1): worker turns go through the chat's
+    // runner, prompt overrides and socket folders. Nothing starts a run before
+    // the send path (S1e-1a), which also hands its events to the app; until
+    // then nobody listens and they are dropped.
+    let orchestra = Arc::new(
+        RunManager::new(
+            runner.clone(),
+            config_dir.clone(),
+            mpsc::unbounded_channel().0,
+        )
+        .with_tools(tool_host.clone(), socket_dirs.clone()),
+    );
     tokio::spawn({
         let live = live.clone();
         async move {
@@ -541,29 +561,19 @@ pub async fn run() -> io::Result<()> {
             );
         }))
         .with_chats(
-            Chats::new(
-                chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
-                chat_tx,
-            )
-            .with_live(live.clone())
-            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
-            // `<data>/run`. Without a private folder every turn runs as text.
-            .with_tools(
-                tool_host,
-                mcp::candidate_dirs(
-                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
-                    store_dir.as_deref(),
+            Chats::new(runner, chat_tx)
+                .with_live(live.clone())
+                .with_tools(tool_host, socket_dirs)
+                .with_orchestra(orchestra)
+                // The user's servers, started only by a turn with tools on. They
+                // need a home to run in: without `$HOME` none is started.
+                .with_servers(
+                    servers_home
+                        .as_ref()
+                        .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
+                    servers_home.clone().unwrap_or_default(),
+                    chat::wires_for(cli_env.clone()),
                 ),
-            )
-            // The user's servers, started only by a turn with tools on. They
-            // need a home to run in: without `$HOME` none is started.
-            .with_servers(
-                servers_home
-                    .as_ref()
-                    .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
-                servers_home.clone().unwrap_or_default(),
-                chat::wires_for(cli_env.clone()),
-            ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
         // The picker's Hugging Face screens: curl from the same PATH as the
