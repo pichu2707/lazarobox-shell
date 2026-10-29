@@ -15,4 +15,5 @@ pub mod osc7;
 pub mod pane;
 pub mod prefix;
 pub mod pty;
+pub mod start;
 pub mod update;
