@@ -114,7 +114,7 @@ fn wait_collect_and_cancel_validate_their_ids() {
 }
 
 #[test]
-fn the_registry_is_exactly_the_four_tools_and_workers_are_read_only() {
+fn the_registry_is_exactly_the_four_tools_and_only_code_workers_write() {
     let names: Vec<_> = registry_for(Toolset::Orchestrator)
         .into_iter()
         .map(|spec| spec.name)
@@ -122,7 +122,11 @@ fn the_registry_is_exactly_the_four_tools_and_workers_are_read_only() {
         .collect();
     assert_eq!(names, ["spawn_agent", "wait", "collect", "cancel"]);
     for task in Task::SET_ALL {
-        assert_eq!(Toolset::for_kind(task), Toolset::ReadOnly);
+        let want = match task {
+            Task::Code => Toolset::Code,
+            _ => Toolset::ReadOnly,
+        };
+        assert_eq!(Toolset::for_kind(task), want, "{task:?}");
     }
 }
 
@@ -752,8 +756,8 @@ fn each_toolset_maps_to_its_families() {
     use crate::core::ai::tools::registry::{Family, FamilySet};
     let read = FamilySet::EMPTY.with(Family::Read);
     assert_eq!(Toolset::ReadOnly.families(), read);
-    // Nothing beyond the reads until the write tools exist.
-    assert_eq!(Toolset::Code.families(), read);
+    // The reads and the write family (S7), nothing else.
+    assert_eq!(Toolset::Code.families(), read.with(Family::Write));
     let orchestrator = Toolset::Orchestrator.families();
     assert_eq!(orchestrator, read.with(Family::Orchestra));
     assert!(!orchestrator.contains(Family::Pane));

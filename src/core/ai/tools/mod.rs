@@ -2053,17 +2053,16 @@ mod tests {
         assert!(tools.iter().all(|t| t.access == Access::Read));
     }
 
-    // A worker gets the three read tools: no pane, no orchestration, and
-    // `Code` offers nothing more until the write tools exist.
+    // A worker gets the three read tools: no pane, no orchestration. A
+    // `code` worker gets the coding-tools write tools too (S7), and still no
+    // pane, exec, git or orchestration tool.
     #[test]
-    fn a_worker_is_offered_the_three_read_tools_only() {
-        for toolset in [Toolset::ReadOnly, Toolset::Code] {
-            assert_eq!(
-                names(&registry_for(toolset)),
-                ["find_dir", "list_dir", "read_file"],
-                "{toolset:?}"
-            );
-        }
+    fn a_worker_is_offered_the_read_tools_and_a_code_worker_the_write_tools() {
+        let read = ["find_dir", "list_dir", "read_file"];
+        assert_eq!(names(&registry_for(Toolset::ReadOnly)), read);
+        let write = ["create_dir", "write_file", "edit_file", "propose_batch"];
+        let code: Vec<_> = read.iter().chain(&write).copied().collect();
+        assert_eq!(names(&registry_for(Toolset::Code)), code);
     }
 
     // Spec: off equals 0.18.0. The default list never shows an orchestration

@@ -30,9 +30,12 @@ pub struct WorkerKey {
 /// The tools a session is offered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Toolset {
-    /// `find_dir`, `list_dir` and `read_file`: what every worker gets.
+    /// `find_dir`, `list_dir` and `read_file`: what every worker but a
+    /// `code` one gets.
     ReadOnly,
-    /// Reserved for the write-tools SDD (S7): not offered yet.
+    /// The read tools and the coding-tools write tools (S7): `create_dir`,
+    /// `write_file`, `edit_file` and `propose_batch`. Writes are staged in
+    /// the pane's batch and reach the disk only through the user's review.
     Code,
     /// The four orchestration tools, for the orchestrator turn only.
     Orchestrator,
@@ -45,16 +48,19 @@ impl Toolset {
     pub fn families(self) -> FamilySet {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
-            // `Code` adds nothing until the write tools exist (S7).
-            Self::ReadOnly | Self::Code => read,
+            Self::ReadOnly => read,
+            Self::Code => read.with(Family::Write),
             Self::Orchestrator => read.with(Family::Orchestra),
         }
     }
 
-    /// The toolset of a worker kind. Read-only for every kind until write
-    /// tools exist.
-    pub fn for_kind(_task: Task) -> Self {
-        Self::ReadOnly
+    /// The toolset of a worker kind: `Code` for a `code` worker, read-only
+    /// for every other kind.
+    pub fn for_kind(task: Task) -> Self {
+        match task {
+            Task::Code => Self::Code,
+            _ => Self::ReadOnly,
+        }
     }
 }
 

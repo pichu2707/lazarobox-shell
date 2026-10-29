@@ -59,6 +59,8 @@ enum Script {
     /// The first two turns fail with these messages, in order; later turns
     /// answer `fixed`.
     FailTwice(&'static str, &'static str),
+    /// Waits until the test releases it (`Seen::release`), then answers.
+    Held(&'static str),
 }
 
 /// What the fake engine saw.
@@ -67,6 +69,8 @@ struct Seen {
     requests: Mutex<Vec<ChatRequest>>,
     /// A hanging turn was dropped: its process group would be killed.
     dropped: AtomicBool,
+    /// Lets a `Held` turn answer.
+    release: Notify,
 }
 
 impl Seen {
@@ -137,6 +141,10 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                 Script::Hang => {
                     let _dropped = OnDrop(mine);
                     return std::future::pending().await;
+                }
+                Script::Held(text) => {
+                    mine.release.notified().await;
+                    (text, StreamEvent::Done(Finish::Stop))
                 }
             };
             let _ = tx.send(StreamEvent::Delta(text.into())).await;
@@ -1614,4 +1622,253 @@ async fn a_queued_worker_does_not_start_while_halted() {
         matches!(event, OrchestraEvent::Worker(row) if row.id == WorkerId(2) && row.status == WorkerStatus::Running)
     });
     assert!(!started);
+}
+
+// S7: code workers write through the user's batch review ------------------
+
+/// `orchestrate` on claude, `code` on codex.
+fn codex_code() -> Roster {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Code, "codex", "default"),
+    ];
+    roster(
+        &assigned,
+        vec![found("claude", &[]), found("codex", &[])],
+        JAIL,
+    )
+}
+
+/// A tooled lab whose run is rooted at `~/dev/app` (the chat origin and the
+/// read scope), with its asks going to `waits` and each worker's deadline
+/// `deadline`.
+fn writing_lab(script: Script) -> Lab {
+    let lab = lab_with(script, |m, home| RunManager {
+        scratch: |_| false,
+        ..tooled(m, home)
+    });
+    std::fs::create_dir_all(lab.home.path().join("dev/app")).unwrap();
+    lab
+}
+
+impl Lab {
+    fn app(&self) -> PathBuf {
+        self.home.path().join("dev/app")
+    }
+
+    fn start_writing(&self, waits: &Arc<Waits>, deadline: Duration) -> OrchHandle {
+        let pending = Pending::new();
+        let scope = OrchScope {
+            origin: self.app(),
+            approver: waits.approver(pane(), 7, pending.clone()),
+            pending,
+            deadline,
+            ..self.scope(codex_code(), &["~/dev/app"])
+        };
+        self.manager.start(pane(), scope).unwrap().1
+    }
+
+    fn host(&self) -> Arc<ToolHost> {
+        self.manager.tooling.as_ref().unwrap().host.clone()
+    }
+}
+
+/// The socket of the first worker, connected as its CLI would be.
+async fn worker_client(seen: &Seen) -> Client {
+    let request = seen.first().await;
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &request.tools
+    else {
+        panic!("{:?}", request.tools);
+    };
+    ready(wire).await
+}
+
+fn tool_call(id: u32, name: &str, arguments: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": name, "arguments": arguments}})
+}
+
+fn reply_text(reply: &Value) -> &str {
+    reply["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+const TEN_MINUTES: Duration = Duration::from_secs(600);
+
+// Spec (agent-orchestrator, Worker toolsets [S7]; Read-only subset): a
+// `code` worker is offered the read tools and the coding-tools write tools,
+// never `run_in_pane`, an orchestration tool or a user server tool; every
+// other kind keeps exactly the three read tools.
+#[tokio::test]
+async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
+    let lab = writing_lab(Script::Hang);
+    let handle = lab.start_writing(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write it")).await;
+    let request = lab.seen.first().await;
+    assert_eq!(request.families, Toolset::Code.families());
+    assert!(!request.families.contains(Family::Pane));
+    let mut client = worker_client(&lab.seen).await;
+    let listed = exchange(
+        &mut client,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let names: Vec<_> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "find_dir",
+            "list_dir",
+            "read_file",
+            "create_dir",
+            "write_file",
+            "edit_file",
+            "propose_batch"
+        ]
+    );
+    for task in Task::SET_ALL {
+        let want = if task == Task::Code {
+            Toolset::Code
+        } else {
+            Toolset::ReadOnly
+        };
+        assert_eq!(Toolset::for_kind(task), want, "{task:?}");
+    }
+}
+
+// Spec (agent-orchestrator, Files changed listed [S7]): a `code` worker that
+// staged two files is collected with both listed with their sizes, and
+// neither is on disk: nothing was approved.
+#[tokio::test]
+async fn collect_lists_both_staged_files_and_neither_is_on_disk() {
+    let lab = writing_lab(Script::Held("staged both"));
+    let handle = lab.start_writing(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a and b")).await;
+    let mut client = worker_client(&lab.seen).await;
+    for (id, path, text) in [(1, "a.txt", "one\n"), (2, "src/b.txt", "second\n")] {
+        if id == 2 {
+            let folder = tool_call(9, "create_dir", json!({"path": "src"}));
+            let made = exchange(&mut client, folder).await;
+            assert!(reply_text(&made).starts_with("staged src"), "{made}");
+        }
+        let call = tool_call(id, "write_file", json!({"path": path, "content": text}));
+        let reply = exchange(&mut client, call).await;
+        assert!(reply_text(&reply).starts_with("staged"), "{reply}");
+    }
+    lab.seen.release.notify_one();
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let collected = handle.call(collect(1)).await;
+    assert!(!collected.is_error, "{collected:?}");
+    let text = &collected.text;
+    assert!(
+        text.contains("\nfiles changed:\n- a.txt (4 bytes, diff "),
+        "{text}"
+    );
+    assert!(text.contains("\n- src (folder, diff "), "{text}");
+    assert!(text.contains("\n- src/b.txt (7 bytes, diff "), "{text}");
+    assert_eq!(text.matches("): not applied").count(), 3, "{text}");
+    assert!(text.contains("staged both"));
+    assert!(!lab.app().join("a.txt").exists());
+    assert!(!lab.app().join("src").exists());
+}
+
+// Spec (agent-orchestrator, Writes wait for the batch review [S7]): a
+// `code` worker's write inside the scope is staged and its `propose_batch`
+// reaches the orchestrator turn's approver as a batch labelled with the
+// worker; nothing is on disk while it waits. The approval mode's answer
+// (`run` included) never approves it; only the user's `y` writes it, and
+// `collect` then lists it applied.
+#[tokio::test]
+async fn a_code_workers_batch_waits_for_the_users_review() {
+    for answer in [Decision::Unprompted, Decision::Sent] {
+        let mut lab = writing_lab(Script::Held("done"));
+        let waits = Waits::new();
+        let handle = lab.start_writing(&waits, TEN_MINUTES);
+        handle.call(spawn(Task::Code, "write a")).await;
+        let mut client = worker_client(&lab.seen).await;
+        let call = tool_call(
+            1,
+            "write_file",
+            json!({"path": "a.txt", "content": "one\n"}),
+        );
+        let staged = exchange(&mut client, call).await;
+        assert!(reply_text(&staged).starts_with("staged a.txt"), "{staged}");
+        let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+        client.1.write_all(propose.as_bytes()).await.unwrap();
+        let id = loop {
+            let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+            match event.unwrap().unwrap() {
+                StreamEvent::ToolCall {
+                    id,
+                    approval: Some(ask),
+                    ..
+                } => {
+                    let ApprovalAsk::Batch(review) = *ask else {
+                        panic!("{ask:?}");
+                    };
+                    assert_eq!(review.label(), Some("code codex>default"));
+                    break id;
+                }
+                _ => continue,
+            }
+        };
+        assert!(
+            !lab.app().join("a.txt").exists(),
+            "nothing before the answer"
+        );
+        assert!(waits.decide(pane(), 7, id, answer));
+        let mut reply = String::new();
+        let read = timeout(Duration::from_secs(5), client.0.read_line(&mut reply));
+        read.await.unwrap().unwrap();
+        let sent = answer == Decision::Sent;
+        assert_eq!(
+            lab.app().join("a.txt").exists(),
+            sent,
+            "{answer:?}: {reply}"
+        );
+        lab.seen.release.notify_one();
+        assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+        let state = if sent { "applied" } else { "not applied" };
+        let collected = handle.call(collect(1)).await.text;
+        assert!(collected.contains("- a.txt (4 bytes, diff "), "{collected}");
+        assert!(
+            collected.contains(&format!("): {state}\n")),
+            "{answer:?}: {collected}"
+        );
+    }
+}
+
+// Spec (agent-orchestrator, Worker toolsets [S7]): the review time counts
+// against the worker's deadline. A worker that times out while its batch
+// waits for the user leaves the batch as an orphan the user can still
+// review; nothing is written.
+#[tokio::test]
+async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
+    let lab = writing_lab(Script::Hang);
+    let handle = lab.start_writing(&Waits::new(), Duration::from_millis(1500));
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, call).await;
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    // A timeout halts the run like any failure.
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let status = lock(&lab.manager.runs)[&pane()].run.status(WorkerId(1));
+    assert_eq!(status, Some(WorkerStatus::TimedOut));
+    let host = lab.host();
+    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
+    let (_, review) = host.review_batch(key, false).expect("an orphan to review");
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    assert!(!lab.app().join("a.txt").exists());
 }
