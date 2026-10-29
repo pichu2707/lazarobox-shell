@@ -83,6 +83,9 @@ pub const APP_CHANNEL: usize = 256;
 pub const EMPTY_ERROR: &str = "the engine reported an error";
 /// What the placeholder adapter says until the real ones land.
 pub const NO_ADAPTER: &str = "no engine adapter is available yet";
+/// Why an orchestrator turn ends when its tool session could not open.
+pub const NO_SESSION: &str =
+    "the orchestrator tools could not start, so this turn cannot orchestrate: press Ctrl+O to chat";
 
 /// An event of a turn, tagged with its pane and turn id.
 pub type Tagged = (PaneId, u64, StreamEvent);
@@ -896,10 +899,20 @@ impl Chats {
                     approver: approver.clone(),
                     pending: pending.clone(),
                 };
-                Some(manager.start(pane, scope)?.1)
+                match manager.start(pane, scope) {
+                    Ok((_, handle)) => Some(handle),
+                    Err(reason) => {
+                        // The pane's earlier session must not stay open.
+                        if let Some(hub) = tooling.hub.as_mut() {
+                            hub.close(pane);
+                        }
+                        return Err(reason);
+                    }
+                }
             }
             _ => None,
         };
+        let orchestrated = orchestra.is_some();
         let scope = TurnScope {
             events: events.clone(),
             locality,
@@ -930,11 +943,17 @@ impl Chats {
         if tooling.hub.is_none() {
             tooling.hub = Hub::new(&tooling.dirs).ok();
         }
-        let Some(hub) = tooling.hub.as_mut() else {
-            return Ok(None);
-        };
-        // No session means no tools for this turn: it runs as text.
-        let Ok(started) = hub.open(pane, dispatch, slot.clone(), request.families) else {
+        // No session means no tools for this turn: a chat turn runs as text,
+        // an orchestrator turn cannot orchestrate, so its run ends with it.
+        let started = tooling.hub.as_mut().and_then(|hub| {
+            hub.open(pane, dispatch, slot.clone(), request.families)
+                .ok()
+        });
+        let Some(started) = started else {
+            if orchestrated && let Some(manager) = &self.orchestra {
+                manager.cancel(pane);
+                return Err(NO_SESSION.to_owned());
+            }
             return Ok(None);
         };
         tooling.started.insert(pane, started);

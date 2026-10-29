@@ -793,3 +793,52 @@ async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
     }
     assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
 }
+
+// An orchestrator turn whose tool session cannot open could not orchestrate:
+// its run ends with it and the turn ends with the reason, untouched by any
+// engine.
+#[tokio::test]
+async fn an_orchestrator_turn_without_a_session_ends_its_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    // A plain file where the socket folder should be: no hub can start.
+    let blocked = lab.dir.path().join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = Chats::new(capturing(seen.clone()), tx)
+        .with_tools(lab.host.clone(), vec![blocked])
+        .with_orchestra(manager);
+    let ready = Availability::Ready {
+        engine: "claude".into(),
+        model: None,
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, ready)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    assert_eq!(
+        event,
+        StreamEvent::Error(ChatError::Failed(NO_SESSION.into()))
+    );
+    let ended = std::iter::from_fn(|| ended.try_recv().ok())
+        .any(|(at, event)| at == pane(1) && matches!(event, OrchestraEvent::Ended { .. }));
+    assert!(ended, "the run ends with the turn");
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}
