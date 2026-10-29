@@ -2,7 +2,7 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use super::{
     adapters::{self, adapter_for},
@@ -11,8 +11,9 @@ use super::{
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
-    config::{AiConfig, Task},
+    config::{AiConfig, Profile, Task},
     jail::JailSupport,
+    orchestra::run::Roster,
     status_text,
     tools::{
         Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
@@ -53,6 +54,18 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+}
+
+/// What an orchestrator turn hands the runtime beside its request (D5): the
+/// availability of every task as the app resolved it from the menu, and what
+/// the run's workers need. The runtime never reads the configuration.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchSend {
+    pub roster: Roster,
+    /// The conversation's profile: the workers' prompts come from it.
+    pub profile: Profile,
+    /// Each worker's deadline (`worker_timeout_secs`).
+    pub deadline: Duration,
 }
 
 /// Whether a turn offers tools.

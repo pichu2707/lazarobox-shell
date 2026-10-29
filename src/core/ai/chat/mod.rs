@@ -351,6 +351,12 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
+    /// The pane's ORCH mode (agent-orchestrator D2): off for a new pane, kept
+    /// in memory only, never saved or restored.
+    orch: bool,
+    /// The turn that went out as an orchestrator turn, while it is the last
+    /// one sent.
+    orch_turn: Option<u64>,
 }
 
 impl ChatState {
@@ -400,7 +406,29 @@ impl ChatState {
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
+            orch: false,
+            orch_turn: None,
         }
+    }
+
+    /// The pane's ORCH mode, whatever the global gate says.
+    pub fn orch(&self) -> bool {
+        self.orch
+    }
+
+    pub fn set_orch(&mut self, on: bool) {
+        self.orch = on;
+    }
+
+    /// Turn `turn`, just sent, is an orchestrator turn.
+    pub fn set_orch_turn(&mut self, turn: u64) {
+        self.orch_turn = Some(turn);
+    }
+
+    /// Whether an orchestrator turn of this chat is still in flight: its run
+    /// is active (in S1 a run ends with its turn).
+    pub fn orch_turn_in_flight(&self) -> bool {
+        self.phase != Phase::Idle && self.orch_turn == Some(self.turn)
     }
 
     /// The context window of the engine the next turns go to, in tokens.

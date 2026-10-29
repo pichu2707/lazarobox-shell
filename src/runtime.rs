@@ -1484,6 +1484,16 @@ impl Panes {
                         chats.send(pane, turn, request);
                     }
                 }
+                Effect::OrchestrateSend {
+                    pane,
+                    turn,
+                    request,
+                    orch,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_orchestrated(pane, turn, request, *orch);
+                    }
+                }
                 Effect::ChatCompact {
                     pane,
                     turn,

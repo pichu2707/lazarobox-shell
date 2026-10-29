@@ -251,11 +251,14 @@ S1e-2 bases on the S1e-1c branch.
 
 - [ ] 1e1.5 RED notice and scope state/key tests: notice shown once and never blocks, Enter/y accepts and persists, Esc dismisses and shows again; scope prompt blocks reads until answered, keys, denied scope. Spec: agent-orchestrator / Shown once never blocks, Not shown again, Not accepted is shown again; modal-input / Notice keys, Scope keys; chat-pane / Prompt blocks reads until answered; config-menu / Accept persists, Dismiss does not accept.
 - [ ] 1e1.6 GREEN `app/orchestra.rs` notice/scope state, key handling, config write effect. REFACTOR + gates (S1e-1b closes here).
+- [ ] The provider notice is accepted only with `y` after an arm delay (as approvals), or only with an empty composer; Enter typed as part of a message must not accept it (key audit, 2026-10-29).
+- [ ] Rename `[ai.orchestrator] notice_accepted` to `acknowledged`, as `[ai.memory]` does (config freeze, 2026-10-29).
 
 ### S1e-1c (PR 11, ~300 lines, base: S1e-1b branch): tasks 1e1.7-1e1.8
 
 - [ ] 1e1.7 RED failure state tests: `OrchestraEvent::Halted` stores raw error; r retry, c/Esc/Ctrl+C cancel drive `RunManager::decide`/`cancel`; alert persists until answered; `Entry::Worker` rows follow status and stay out of history. Spec: agent-orchestrator / Row follows the status, Not in history, Error shown as it came; chat-pane / Alert persists; modal-input / Retry key, Cancel keys, Ctrl+C.
 - [ ] 1e1.8 GREEN `core/ai/chat/mod.rs` (`Entry::Worker`), `app/orchestra.rs` event handling. REFACTOR + gates.
+- [ ] The failure alert keys (`r`, `c`, and in S2 `m`, `p`) act only with an empty composer or after an arm delay, so typed text cannot pick an option (key audit, 2026-10-29).
 
 #### Obligations from the S1b-2 security review (S1e-1b)
 
@@ -324,3 +327,5 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 ## Dependency graph
 
 S1a -> S1b -> S1b-2 -> S1c-1 -> S1c-2 -> S1d-1 -> S1d-2 -> S1d-3 -> S1e-1a -> S1e-1b -> S1e-1c -> S1e-2 (12 PRs, sequential, no parallel work inside the chain; each PR's base is the previous branch; decided by the user 2026-10-21). Then S2, S3, S6 depend only on S1 (sequential in the chain, parallelizable in analysis). S4 after S3; S5 after S4; S9 after S4; S7 needs coding-tools M2 (merged); S7b needs S7 and S4; S8 needs coding-tools M3 and S7; S10 last.
+
+coding-tools Z.2 (2026-10-29): rows 5 and 7 of `design.md` and the S7, S8 and S10 dependencies above already name `coding-tools` (S7 needs M2, S8 needs M3) since ef8a52c; no "write-tools SDD" or "test-runner SDD" dependency is left in this change, so Z.2 can be ticked in `coding-tools/tasks.md`.
