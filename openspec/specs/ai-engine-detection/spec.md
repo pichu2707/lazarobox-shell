@@ -7,7 +7,7 @@ Finds which AI engines exist on the machine: four local model servers and four a
 ## Requirements
 
 ### Requirement: Engine catalog
-The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP on `127.0.0.1` only. A server's binary name is used only for the PATH lookup and is never executed.
+The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP on `127.0.0.1` only, on their catalog port (`ollama` 11434, `lmstudio` 1234, `llamacpp` 8080, `vllm` 8000) unless `[ai.servers.<id>] port` sets another one (see configuration, Server ports). A server's binary name is used only for the PATH lookup and is never executed.
 
 | id | kind | endpoint (GET) | binary on PATH |
 |---|---|---|---|
@@ -21,6 +21,11 @@ The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP o
 | `opencode` | cli | none | `opencode` |
 
 `/health` MUST NOT be used to decide availability, because its `{"status":"ok"}` body is not specific to llama.cpp.
+
+#### Scenario: A configured port is probed [auto]
+- GIVEN `[ai.servers.llamacpp] port` set to the port of a fake server that lists one model owned by `llamacpp`
+- WHEN detection runs
+- THEN llamacpp is `available` with that model, and the fake recorded one `GET /v1/models`
 
 #### Scenario: Catalog integrity [auto]
 - GIVEN the catalog
@@ -326,7 +331,7 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one). It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
 
 #### Scenario: Traffic audit [auto]
 - GIVEN a recording fake server per endpoint
@@ -359,9 +364,9 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 - THEN ollama is `available · N models`, the three CLIs are `available` with versions, opencode is `not installed`, llamacpp is not `available` (the foreign service is not counted)
 
 ### Requirement: Documented limits
-The user documentation MUST state that custom endpoints and ports are not supported in this phase and that shell aliases are not detected (the binary must be on PATH).
+The user documentation MUST state that custom endpoints and hosts are not supported (the host is always `127.0.0.1`), how to set a server's port, and that shell aliases are not detected (the binary must be on PATH).
 
 #### Scenario: Docs mention limits [manual]
 - GIVEN the README
 - WHEN it is read
-- THEN it names both limits
+- THEN it names the limits above
