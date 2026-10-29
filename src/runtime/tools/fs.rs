@@ -28,7 +28,8 @@ use crate::{
             tools::{
                 Call, Lines,
                 paths::{
-                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config,
+                    real_target, resolve,
                 },
             },
         },
@@ -185,6 +186,39 @@ thread_local! {
     static OPEN_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
+/// A test's way to change the disk at the last moment before a read: a hook
+/// runs once, just before the next `read_file` against its origin judges its
+/// path, on whatever thread the read runs.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Mutex, PoisonError},
+    };
+
+    type Hook = Box<dyn FnOnce() + Send>;
+
+    static BEFORE_READ: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+    /// Runs `hook` once, before the next read whose origin is `origin`.
+    pub(crate) fn before_read(origin: &Path, hook: impl FnOnce() + Send + 'static) {
+        let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+        hooks.push((origin.to_path_buf(), Box::new(hook)));
+    }
+
+    pub(super) fn fire(origin: &Path) {
+        let ready: Vec<Hook> = {
+            let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+            let (ready, kept) = std::mem::take(&mut *hooks)
+                .into_iter()
+                .partition(|(at, _)| at == origin);
+            *hooks = kept;
+            ready.into_iter().map(|(_, hook)| hook).collect()
+        };
+        ready.into_iter().for_each(|hook| hook());
+    }
+}
+
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
@@ -211,10 +245,35 @@ pub fn execute_over(
     cancel: &AtomicBool,
     view: Option<&StagedView>,
 ) -> Result<String, Failure> {
+    execute_within(call, env, limits, cancel, view, Within::Anywhere)
+}
+
+/// Where a `read_file` may lead. The other tools keep their own bounds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Within {
+    /// Anywhere the path guard allows.
+    Anywhere,
+    /// Only inside the real root of the chat (`ToolEnv::origin`), judged on
+    /// the path the read opens: a read the approval mode let go because it
+    /// stayed in the root.
+    Root,
+}
+
+/// [`execute_over`] with a `read_file` kept [`Within`] a bound.
+pub fn execute_within(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+    within: Within,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits, view),
+        Call::ReadFile { path, lines } => {
+            read_file(&roots, env, path, *lines, limits, view, within)
+        }
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits).map(plain),
         // Whether `grep` may run is decided before this, by `ask_for`; `glob`
@@ -231,6 +290,12 @@ pub fn execute_over(
         | Call::CreateDir { .. }
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
+        | Call::RunCommand { .. }
+        | Call::GitStatus
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        | Call::GitAdd { .. }
+        | Call::GitCommit { .. }
         | Call::ProposeBatch => Err(Failure::NotReadTool),
     }
 }
@@ -280,11 +345,15 @@ pub fn open_checked_errno(
         .strip_prefix(roots.home())
         .map_err(|_| (Failure::Refused, None))?;
     let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
-        let failure = match error.kind() {
-            // No safe open on this platform: the tool cannot work at all.
-            std::io::ErrorKind::Unsupported => Failure::Unreadable,
-            _ => Failure::Refused,
-        };
+        // No safe open on this platform: the tool cannot work at all. An OS
+        // error of that kind is about the file (macOS opens a socket with
+        // `EOPNOTSUPP`), so it is refused like any other.
+        let failure =
+            if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+                Failure::Unreadable
+            } else {
+                Failure::Refused
+            };
         (failure, error.raw_os_error())
     })?;
     match fd_path(&fd) {
@@ -293,6 +362,10 @@ pub fn open_checked_errno(
     }
 }
 
+/// Reads a file. Kept [`Within::Root`], the path is judged in the same step
+/// as the open: the open follows no link in any component and the descriptor
+/// is proved to be the real path that was judged inside the root, so a link
+/// swapped in at any moment cannot lead the read outside it.
 fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
@@ -300,9 +373,19 @@ fn read_file(
     window: Option<Lines>,
     limits: &Limits,
     view: Option<&StagedView>,
+    within: Within,
 ) -> Result<String, Failure> {
+    let root = match within {
+        Within::Anywhere => None,
+        Within::Root => Some(env.origin.canonicalize().map_err(|_| Failure::Refused)?),
+    };
+    let inside = |real: &Path| root.as_ref().is_none_or(|root| real.starts_with(root));
     // A staged text goes through the same cut, clean and redaction as a file.
-    if let Some(text) = view.and_then(|v| v.file(roots, &env.origin, path)) {
+    // It is in memory, so judging where it would be written is enough.
+    let staged = view.and_then(|v| v.file(roots, &env.origin, path));
+    if let Some(text) = staged.filter(|_| {
+        root.is_none() || real_target(roots, &env.origin, path).is_some_and(|real| inside(&real))
+    }) {
         let bytes = text.as_bytes().to_vec();
         let body = match window {
             Some(window) => window_text(bytes, window, limits),
@@ -310,11 +393,13 @@ fn read_file(
         }?;
         return Ok(format!("{MARKER}\n{body}"));
     }
+    #[cfg(test)]
+    hooks::fire(&env.origin);
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
     // Judged on the real path, so a link to it is refused too.
-    if is_git_config(&real) {
+    if is_git_config(&real) || !inside(&real) {
         return Err(Failure::Refused);
     }
     let file = std::fs::File::from(open_checked(roots, &real, false)?);
@@ -1202,6 +1287,33 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
+    }
+
+    // A read kept within the root is judged on the file it opens: a link in
+    // the root that leads out of it, or a path that climbs out, reads nothing.
+    #[test]
+    fn a_read_kept_within_the_root_refuses_what_leads_out_of_it() {
+        let f = fixture();
+        let mut e = env(&f.home);
+        e.origin = f.home.join("dev/app");
+        fs::write(f.home.join("dev/other.txt"), "other").unwrap();
+        symlink(
+            f.home.join("dev/other.txt"),
+            f.home.join("dev/app/link.txt"),
+        )
+        .unwrap();
+        let read_in = |path: &str, within| {
+            let call = Call::ReadFile {
+                path: path.into(),
+                lines: None,
+            };
+            let cancel = AtomicBool::new(false);
+            execute_within(&call, &e, &Limits::default(), &cancel, None, within)
+        };
+        assert_eq!(read_in("link.txt", Within::Anywhere).unwrap(), "other");
+        assert_eq!(read_in("link.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("../other.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("main.rs", Within::Root).unwrap(), "fn main() {}\n");
     }
 
     #[test]

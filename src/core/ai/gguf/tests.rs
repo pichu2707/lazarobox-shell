@@ -141,3 +141,21 @@ fn the_label_of_a_model_is_its_file_name() {
     assert_eq!(label(Path::new("/m/qwen.gguf")), "qwen.gguf");
     assert_eq!(label(Path::new("/")), "/");
 }
+
+// Spec (model-download): downloads go to the same hub cache the scan reads.
+#[test]
+fn the_hub_dir_is_the_last_model_dir() {
+    let env = DirsEnv {
+        home: Some(PathBuf::from("/h")),
+        hf_home: Some(PathBuf::from("/hf")),
+        ..DirsEnv::default()
+    };
+    assert_eq!(hub_dir(&env), Some(PathBuf::from("/hf/hub")));
+    assert_eq!(model_dirs(&env).last(), hub_dir(&env).as_ref());
+    assert_eq!(hub_dir(&DirsEnv::default()), None);
+    let relative = DirsEnv {
+        hf_hub_cache: Some(PathBuf::from("hub")),
+        ..DirsEnv::default()
+    };
+    assert_eq!(hub_dir(&relative), None);
+}

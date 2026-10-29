@@ -540,16 +540,29 @@ async fn run_managed(
 }
 
 /// A managed llama-server whose program is `program` (its folder is the
-/// `PATH`), with a probe that answers 200 once `ready` exists.
+/// `PATH`) and a model file next to it, with a probe that answers 200 once
+/// `ready` exists.
 fn managed_at(program: &std::path::Path, port: u16, ready: std::path::PathBuf) -> Arc<Managed> {
     let probe: managed::Probe = Arc::new(move |_| {
-        let up = ready.exists();
-        Box::pin(async move { up.then_some(200) })
+        let seen = if ready.exists() {
+            managed::Seen::Ready(None)
+        } else {
+            managed::Seen::Silent
+        };
+        Box::pin(async move { seen })
     });
+    managed_probed(program, port, probe)
+}
+
+/// [`managed_at`] with its probe given.
+fn managed_probed(program: &std::path::Path, port: u16, probe: managed::Probe) -> Arc<Managed> {
+    // The model is checked before a start: one next to the program.
+    let model = program.with_file_name("q.gguf");
+    std::fs::write(&model, b"GGUF").unwrap();
     Arc::new(Managed::with(
         program.file_name().unwrap().to_owned(),
         format!("{}:/usr/bin:/bin", program.parent().unwrap().display()).into(),
-        "/m/q.gguf".into(),
+        model,
         port,
         None,
         probe,
@@ -626,6 +639,46 @@ async fn a_turn_uses_the_managed_server_turned_on_while_running() {
     let pid = managed.pid().await.expect("the server runs");
     chats.shutdown(Duration::from_secs(5)).await;
     assert!(crate::runtime::proc::process_state(pid as libc::pid_t).is_none());
+}
+
+// Spec S12 (managed-llama-server-followups): another model answering on
+// the configured port: the turn talks to the server started on the next one.
+#[tokio::test]
+async fn a_turn_talks_to_the_port_its_server_started_on() {
+    let llamacpp = Recorder::start(reply(LLAMACPP)).await;
+    let base = llamacpp.port - 1;
+    let dir = tempfile::tempdir().unwrap();
+    let (program, started) = (dir.path().join("llama-server"), dir.path().join("started"));
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", started.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &program,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let ours = llamacpp.port;
+    let probe: managed::Probe = Arc::new(move |port| {
+        let seen = if port == base {
+            managed::Seen::Ready(Some("/m/other.gguf".into()))
+        } else if port == ours && started.exists() {
+            managed::Seen::Ready(None)
+        } else {
+            managed::Seen::Silent
+        };
+        Box::pin(async move { seen })
+    });
+    let managed = managed_probed(&program, base, probe);
+    let mut req = request("qwen2.5");
+    req.engine = "llamacpp".into();
+    let ports = ServerPorts::default().with("llamacpp", base);
+    let (events, mut chats) = run_managed(ports, managed.clone(), req).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(llamacpp.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(managed.port(), ours);
+    chats.shutdown(Duration::from_secs(5)).await;
 }
 
 // Spec: A failed start says why.

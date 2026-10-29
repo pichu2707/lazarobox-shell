@@ -116,6 +116,7 @@ fn bash_job(script: &str, args: &[&Path], tweak: impl FnOnce(&mut JailSpec)) -> 
     argv.extend(args.iter().map(|a| a.as_os_str().to_owned()));
     JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv,
@@ -292,6 +293,29 @@ echo out > "$2/f"; echo "outside=$?""#;
     assert!(denied(&out), "{}", report(&out));
     assert_eq!(fs::read_to_string(w.rw.join("f")).unwrap(), "in\n");
     assert!(!w.outside.join("f").exists());
+}
+
+#[test]
+fn a_write_exception_inside_rw_is_read_only_and_the_rest_of_rw_stays_writable() {
+    if !jail_available() {
+        return;
+    }
+    let w = world();
+    let packages = w.rw.join("packages");
+    fs::create_dir(&packages).unwrap();
+    fs::write(packages.join("bin"), "kept\n").unwrap();
+    let script = r#"echo in > "$1/f"; echo "state=$?"
+echo out > "$2/f"; echo "packages=$?"
+read -r a < "$2/bin" && echo "read=$a""#;
+    let out = run(&bash_job(script, &[&w.rw, &packages], |s| {
+        s.rw.push(w.rw.clone());
+        s.rw_except.push(packages.clone());
+    }));
+    let text = stdout(&out);
+    assert!(text.contains("state=0"), "{}", report(&out));
+    assert!(text.contains("packages=1"), "{}", report(&out));
+    assert!(text.contains("read=kept"), "{}", report(&out));
+    assert!(!packages.join("f").exists());
 }
 
 #[test]
@@ -490,6 +514,7 @@ fn a_program_beyond_rx_is_a_jail_error_through_the_helper() {
     let marker = w.rw.join("ran");
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec {
             rw: vec![w.rw.clone()],
             ..JailSpec::default()
@@ -608,6 +633,7 @@ fn node_starts_under_the_profile() {
     };
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec: JailSpec {
             rx: vec![node.clone()],
             ro_files: node_ro_files(),
@@ -638,6 +664,7 @@ fn run_shim(with_env_in_rx: bool) -> Option<(Output, World)> {
     }
     let job = JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program: shim,
         argv: Vec::new(),
@@ -677,4 +704,136 @@ fn an_npm_shim_is_refused_when_env_is_not_in_rx() {
         report(&out)
     );
     assert_jail_error(&out);
+}
+
+/// The state folder, its read-only `packages`, and a writable scratch folder
+/// with a planted `evil` tree, like the layout of the standalone codex.
+struct State {
+    w: World,
+    state: PathBuf,
+    packages: PathBuf,
+    tmp: PathBuf,
+}
+
+fn state_world() -> State {
+    let w = world();
+    let state = w.rw.clone();
+    let packages = state.join("packages");
+    fs::create_dir(&packages).unwrap();
+    fs::write(packages.join("bin"), "kept\n").unwrap();
+    let tmp = w.outside.clone();
+    fs::create_dir_all(tmp.join("evil/packages")).unwrap();
+    fs::write(tmp.join("evil/packages/bin"), "planted\n").unwrap();
+    fs::write(tmp.join("file"), "x\n").unwrap();
+    State {
+        w,
+        state,
+        packages,
+        tmp,
+    }
+}
+
+/// `script` sees `$1` = state, `$2` = scratch. mv, rm, ln, chmod and mkdir
+/// may run, nothing else but bash.
+fn run_in_state(s: &State, script: &str) -> Output {
+    let tools = ["mv", "rm", "ln", "chmod", "mkdir", "rmdir"].map(|t| canon(format!("/bin/{t}")));
+    run(&bash_job(script, &[&s.state, &s.tmp], |spec| {
+        spec.rx.extend(tools);
+        spec.rw.push(s.state.clone());
+        spec.rw.push(s.tmp.clone());
+        spec.rw_except.push(s.packages.clone());
+    }))
+}
+
+#[test]
+fn the_state_folder_and_its_packages_cannot_be_renamed_replaced_or_edited() {
+    if !jail_available() {
+        return;
+    }
+    // Each attack runs alone in a fresh world, so one failure names itself.
+    // `mv state tmp/old` then `mv tmp/evil state` is the replacement attack:
+    // its first step must already fail. The second step alone proves nothing:
+    // `mv tmp/evil state` with an existing `state` moves `evil` inside it,
+    // which the jail allows. Planting the tree inside `packages` is the move
+    // that must fail.
+    let attacks: [(&str, &str); 9] = [
+        ("rename the state folder away", r#"/bin/mv "$1" "$2/old""#),
+        (
+            "move a planted tree into packages",
+            r#"/bin/mv "$2/evil" "$1/packages/evil""#,
+        ),
+        ("rename packages", r#"/bin/mv "$1/packages" "$1/p2""#),
+        ("remove packages", r#"/bin/rm -rf "$1/packages""#),
+        (
+            "replace packages with a link",
+            r#"/bin/rm -rf "$1/packages" && /bin/ln -s "$2/evil/packages" "$1/packages""#,
+        ),
+        (
+            "chmod a file under packages",
+            r#"/bin/chmod 000 "$1/packages/bin""#,
+        ),
+        (
+            "hard link a file into packages",
+            r#"/bin/ln "$2/file" "$1/packages/hard""#,
+        ),
+        (
+            "hard link a file out of packages",
+            r#"/bin/ln "$1/packages/bin" "$2/hard" && echo planted >> "$2/hard""#,
+        ),
+        ("truncate a file under packages", r#": > "$1/packages/bin""#),
+    ];
+    for (name, script) in attacks {
+        let s = state_world();
+        let out = run_in_state(&s, &format!("{script}; echo \"status=$?\""));
+        let ctx = format!("{name}\n{}", report(&out));
+        assert!(!stdout(&out).contains("status=0"), "{ctx}");
+        assert!(denied(&out), "{ctx}");
+        // Nothing changed on disk, whatever the exit code says.
+        assert!(s.state.is_dir() && !s.tmp.join("old").exists(), "{ctx}");
+        assert!(fs::symlink_metadata(&s.packages).unwrap().is_dir(), "{ctx}");
+        assert_eq!(
+            fs::read_to_string(s.packages.join("bin")).unwrap(),
+            "kept\n",
+            "{ctx}"
+        );
+        assert_eq!(
+            fs::metadata(s.packages.join("bin"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            fs::metadata(s.tmp.join("file"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            "{ctx}"
+        );
+        assert!(!s.packages.join("hard").exists(), "{ctx}");
+        assert!(!s.packages.join("evil").exists(), "{ctx}");
+        assert!(s.tmp.join("evil/packages/bin").exists(), "{ctx}");
+        assert!(!s.tmp.join("hard").exists(), "{ctx}");
+        drop(s.w);
+    }
+}
+
+#[test]
+fn the_rest_of_the_state_folder_stays_writable_next_to_a_read_only_packages() {
+    if !jail_available() {
+        return;
+    }
+    let s = state_world();
+    let out = run_in_state(
+        &s,
+        r#"echo '{}' > "$1/new.json"; echo "file=$?"
+/bin/mkdir "$1/sessions"; echo "dir=$?"
+echo x > "$1/sessions/x"; echo "nested=$?"
+read -r a < "$1/packages/bin"; echo "read=$a""#,
+    );
+    let text = stdout(&out);
+    for want in ["file=0", "dir=0", "nested=0", "read=kept"] {
+        assert!(text.contains(want), "{want}\n{}", report(&out));
+    }
+    assert!(s.state.join("new.json").is_file());
+    assert!(s.state.join("sessions/x").is_file());
 }

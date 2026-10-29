@@ -12,35 +12,10 @@ use crate::{
     core::{
         ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
-        menu::{
-            CAUTION_ROWS, CHROME, Footer, MENU_BODY, MenuState, NOTE_ROWS, Row, TAB_BAR, fits_size,
-        },
+        menu::{CAUTION_ROWS, Footer, MenuState, NOTE_ROWS, Row, popup_layout},
     },
     ui::theme::LazaroboxTheme,
 };
-
-/// Widest popup wanted without an AI section.
-pub const WANT_WIDTH: u16 = 51;
-/// With the AI section the `r refresh` hint needs eleven more columns.
-pub const WANT_WIDTH_AI: u16 = 62;
-
-/// `want_w` x `want_h` centred in `area`, clamped to the area.
-pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
-    let width = want_w.min(area.width);
-    let height = want_h.min(area.height);
-    Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    )
-}
-
-/// Whether `area` is big enough for the full popup of `rows` body rows (the
-/// blank row is the first thing dropped, so the height may lose one).
-pub fn fits(area: Rect, rows: usize) -> bool {
-    fits_size(area.width, area.height, rows)
-}
 
 /// Draws `MenuState::rows` in a bordered box, or a one-line fallback.
 pub struct MenuPopup<'a> {
@@ -259,32 +234,21 @@ impl Widget for MenuPopup<'_> {
         let rows = self.menu.rows(self.config);
         let labels = self.menu.tab_labels();
         let tabbed = labels.len() > 1;
-        // Tabbed, the body is fixed (the bar and the tallest view); with a
-        // single tab it is just the rows, as before tabs existed.
-        let body = if tabbed {
-            MENU_BODY.max(TAB_BAR + rows.len())
-        } else {
-            rows.len()
-        };
-        if !fits(area, body) {
+        let note = self.menu.update_note();
+        let note_rows = note.as_ref().map_or(0, |lines| lines.len());
+        // The same layout the click hit-test reads (`MenuState::on_click`).
+        let Some(layout) = popup_layout(
+            area.into(),
+            rows.len(),
+            tabbed,
+            self.menu.has_ai(),
+            note_rows,
+        ) else {
             self.render_fallback(area, buf);
             return;
-        }
-        let want_width = if self.menu.has_ai() {
-            WANT_WIDTH_AI
-        } else {
-            WANT_WIDTH
         };
-        // Tabbed, the update note lives inside the fixed body. Single tab,
-        // it is extra rows: it never makes the popup fall back.
-        let note = self.menu.update_note();
-        let extra = if tabbed {
-            0
-        } else {
-            note.as_ref().map_or(0, |lines| lines.len())
-        };
-        let want_height = (body + extra) as u16 + CHROME;
-        let popup = popup_area(area, want_width, want_height);
+        let (body, extra) = (layout.body, layout.extra);
+        let popup = Rect::from(layout.popup);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
         let block = Block::default()
@@ -293,7 +257,7 @@ impl Widget for MenuPopup<'_> {
             .title(" Menu ")
             .title_style(accent)
             .style(Style::default().bg(self.theme.bg_panel));
-        let inner = block.inner(popup);
+        let inner = Rect::from(layout.inner);
         block.render(popup, buf);
 
         // The bar (tabbed), the body rows, the update note when all of it
@@ -307,7 +271,7 @@ impl Widget for MenuPopup<'_> {
         let used = body + extra.min(note.as_ref().map_or(0, |lines| lines.len()));
         let blank = usize::from(inner.height) > used + 1;
         let width = usize::from(inner.width);
-        let bar = if tabbed {
+        if tabbed {
             let names: Vec<&str> = labels.iter().map(String::as_str).collect();
             let hint = (!self.menu.in_sub_level()).then_some(TAB_HINT);
             let segments = tab_line(&names, self.menu.active_tab(), width, hint, self.theme);
@@ -317,13 +281,10 @@ impl Widget for MenuPopup<'_> {
                 buf.set_stringn(x, inner.y, text, room, *style);
                 x += cells(text) as u16;
             }
-            TAB_BAR
-        } else {
-            0
-        };
+        }
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
-            let y = inner.y + (bar + offset) as u16;
+            let y = layout.first_row + offset as u16;
             if y >= inner.bottom() {
                 break;
             }
@@ -367,7 +328,17 @@ impl Widget for MenuPopup<'_> {
 mod tests {
     use super::*;
 
-    use crate::core::menu::MIN_WIDTH;
+    use crate::core::menu::{self, CHROME, MENU_BODY, MIN_WIDTH, fits_size};
+
+    /// The popup box the layout centres in `area` (`menu::popup_area`).
+    fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
+        menu::popup_area(area.into(), want_w, want_h).into()
+    }
+
+    /// Whether the full popup of `rows` body rows fits `area`.
+    fn fits(area: Rect, rows: usize) -> bool {
+        fits_size(area.width, area.height, rows)
+    }
 
     /// The AI popup's height: its fixed body plus the chrome.
     const POPUP_H: u16 = MENU_BODY as u16 + CHROME;
@@ -444,7 +415,7 @@ mod tests {
     // Spec: Settings rows; Footer hint.
     #[test]
     fn snapshot_settings_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
     }
 
     #[test]
@@ -455,12 +426,12 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
     }
 
     #[test]
     fn selected_row_is_reversed_and_the_others_are_not() {
-        let buf = draw(51, 8, &fresh());
+        let buf = draw(51, 9, &fresh());
         let reversed = |y| buf[(2, y)].modifier.contains(Modifier::REVERSED);
         assert!(!reversed(1));
         assert!(reversed(2));
@@ -469,7 +440,7 @@ mod tests {
 
     #[test]
     fn the_mouse_row_is_drawn_like_the_other_settings() {
-        let buf = draw(51, 8, &fresh());
+        let buf = draw(51, 9, &fresh());
         let theme = LazaroboxTheme::default();
         assert_ne!(buf[(2, 4)].fg, theme.text_muted);
         assert_eq!(buf[(2, 4)].fg, buf[(2, 3)].fg);
@@ -480,7 +451,7 @@ mod tests {
     fn snapshot_error_replaces_the_hint_and_is_clipped() {
         let mut menu = fresh();
         menu.set_error("config.toml: statusline is not a table; fix it before saving".into());
-        let buf = draw(51, 8, &menu);
+        let buf = draw(51, 9, &menu);
         assert!(!text(&buf).contains("j/k move"));
         insta::assert_snapshot!(text(&buf));
     }
@@ -506,11 +477,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_8_shows_the_full_popup() {
-        let buf = draw(24, 8, &fresh());
+    fn exactly_24_by_9_shows_the_full_popup() {
+        let buf = draw(24, 9, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 8, &fresh());
+        let below = draw(23, 9, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -547,6 +518,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "ollama" {
                         Status::Available
@@ -616,6 +588,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: match e.id {
                         "ollama" | "claude" => Status::Available,
@@ -691,6 +664,29 @@ mod tests {
     fn snapshot_ai_task_list_with_the_cursor_on_settings() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &mixed())));
     }
+
+    #[test]
+    fn snapshot_models_level_of_llamacpp_without_llama_server() {
+        let mut menu = picker_of("code", 0);
+        let on = |menu: &MenuState, name: &str| {
+            menu.rows(&Config::default())
+                .iter()
+                .any(|r| matches!(r, Row::Pick { label, selected: true, .. } if label == name))
+        };
+        for _ in 0..10 {
+            if on(&menu, "llamacpp") {
+                break;
+            }
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        assert!(on(&menu, "llamacpp"));
+        press(&mut menu, &[KeyCode::Enter]);
+        // Down to the Hugging Face row, so its mark is drawn selected.
+        press(&mut menu, &[KeyCode::Char('j')]);
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu)));
+    }
+
+    mod install;
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
@@ -809,6 +805,59 @@ mod tests {
             assert_eq!(border.len(), 2);
             assert_eq!(border[1] - border[0] + 1, usize::from(POPUP_H));
             assert_eq!(l[border[0]].trim().chars().count(), 62);
+        }
+    }
+
+    // Spec (open-links S2): a click finds a row where it is drawn, because
+    // the hit-test reads the same layout as the renderer.
+    #[test]
+    fn the_layout_puts_every_row_where_it_is_drawn() {
+        let mut field = with_ai("llama3:8b").with_hf(Default::default(), None);
+        goto(&mut field, "Hugging Face");
+        press(&mut field, &[KeyCode::Enter]);
+        let config = Config::default();
+        for menu in [fresh(), mixed(), field] {
+            for (w, h) in [
+                (80, 24),
+                (40, MIN_HEIGHT),
+                (MIN_WIDTH, MIN_HEIGHT),
+                (120, 40),
+            ] {
+                let screen = crate::core::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                };
+                let Some(layout) = menu.popup_layout(&config, screen) else {
+                    assert!(text(&draw(w, h, &menu)).contains("MENU"), "{w}x{h}");
+                    continue;
+                };
+                let buf = draw(w, h, &menu);
+                let inner = layout.inner;
+                for (index, row) in menu.rows(&config).iter().enumerate() {
+                    let y = layout.first_row + index as u16;
+                    if y >= inner.y + inner.height {
+                        break;
+                    }
+                    let start = match row {
+                        Row::Title(t) | Row::Text(t) => format!(" {t}"),
+                        Row::Field(t) => format!(" {t}"),
+                        Row::Item { label, .. } => format!(" {label}"),
+                        Row::Pick { label, .. } => format!(" {label}"),
+                    };
+                    let drawn: String = (inner.x..inner.x + inner.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect();
+                    // The first cells, before any clipping.
+                    let head: String = start.chars().take(8).collect();
+                    let head = head.trim_end();
+                    assert!(
+                        drawn.starts_with(head),
+                        "{w}x{h} row {index}: {drawn:?} vs {head:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -1065,6 +1114,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: if e.id == "ollama" {
@@ -1104,6 +1154,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "codex" {
                         Status::Available
@@ -1221,6 +1272,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "claude" {
                         Status::Available
@@ -1283,6 +1335,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: vec!["m".to_owned()],
@@ -1467,14 +1520,14 @@ mod tests {
 
     #[test]
     fn titles_are_still_drawn_for_a_single_tab() {
-        let shown = lines(&draw(51, 8, &fresh()));
+        let shown = lines(&draw(51, 9, &fresh()));
         assert!(shown[1].starts_with("│ Settings"), "{}", shown[1]);
         assert!(!shown[1].contains("│ Settings │"), "no bar: {}", shown[1]);
     }
 
     #[test]
-    fn the_popup_is_twenty_two_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 22);
+    fn the_popup_is_twenty_three_rows_on_both_tabs_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 23);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         views.extend(sub_levels());
         for menu in &views {
@@ -1483,7 +1536,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 22);
+            assert_eq!(border[1] - border[0] + 1, 23);
         }
     }
 
@@ -1491,21 +1544,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[17].contains("lazarobox 0.16.0 is available."),
-            "{}",
-            l[17]
-        );
-        assert!(
-            l[18].contains("Go to Updates and press Enter."),
+            l[18].contains("lazarobox 0.16.0 is available."),
             "{}",
             l[18]
         );
+        assert!(
+            l[19].contains("Go to Updates and press Enter."),
+            "{}",
+            l[19]
+        );
         assert_eq!(
-            l[19].trim_matches(|c| c == '│' || c == ' '),
+            l[20].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[20].contains("s save"), "footer: {}", l[20]);
+        assert!(l[21].contains("s save"), "footer: {}", l[21]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1524,10 +1577,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[17]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[18]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[20]),
+            body(&l[21]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1539,10 +1592,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[17]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[18]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[20]),
+            body(&l[21]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1587,7 +1640,7 @@ mod tests {
         let border: Vec<usize> = (0..l.len())
             .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
             .collect();
-        assert_eq!(border[1] - border[0] + 1, 9, "5 rows and the chrome");
+        assert_eq!(border[1] - border[0] + 1, 10, "6 rows and the chrome");
     }
 
     #[test]
@@ -1615,6 +1668,68 @@ mod tests {
     #[test]
     fn snapshot_ai_tab() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &ai_tab())));
+    }
+
+    // Spec (config-menu, Hugging Face account row): Account row.
+    #[test]
+    fn snapshot_the_account_row_is_last_and_not_connected() {
+        let mut menu = ai_tab();
+        menu.goto("Hugging Face");
+        let shown = text(&draw(62, POPUP_H, &menu));
+        let at = |label: &str| {
+            shown
+                .lines()
+                .position(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("no {label}"))
+        };
+        assert!(at("Approval") < at("Hugging Face"));
+        let row = shown.lines().nth(at("Hugging Face")).unwrap();
+        assert!(row.contains("not connected"), "{row}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Spec (config-menu, Hugging Face account row): The field hides the token.
+    #[test]
+    fn snapshot_the_token_field_hides_the_token() {
+        let mut menu = ai_tab();
+        menu.goto("Hugging Face");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu.on_paste("hf_abc");
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains(" ••••••"), "{shown}");
+        assert!(shown.contains("paste a Hugging Face token"), "{shown}");
+        // The link to create a token fits on one line, so terminals that
+        // detect URLs keep it clickable.
+        assert!(
+            shown.contains(" https://huggingface.co/settings/tokens/new?tokenType=read "),
+            "{shown}"
+        );
+        // No run of cells holds the token, nor any part of it.
+        assert!(!shown.contains("hf_"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Spec (config-menu, Feedback): the form fits the narrow popup, with what
+    // is attached shown.
+    #[test]
+    fn snapshot_the_feedback_form_in_the_narrow_popup() {
+        let mut menu =
+            MenuState::open(&Config::default()).with_feedback(crate::core::menu::feedback::Facts {
+                version: "0.25.1".to_owned(),
+                os: "linux".to_owned(),
+                wsl: true,
+                shell: Some("zsh".to_owned()),
+                terminal: Some("WezTerm".to_owned()),
+                engines: Some(vec!["ollama 0.12.3 available".to_owned()]),
+            });
+        menu.goto("Feedback");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Tab]);
+        menu.on_paste("Scroll jumps to the top");
+        press(&mut menu, &[KeyCode::Tab]);
+        menu.on_paste("When a long answer streams, the view jumps back to the first line.");
+        let shown = text(&draw(51, 24, &menu));
+        assert!(shown.contains("› Description"), "{shown}");
+        insta::assert_snapshot!(shown);
     }
 
     // Spec (config-menu): `run` only changes the value of the row, never the

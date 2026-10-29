@@ -11,7 +11,10 @@
 //! and never from parsing text. Free calls run at once. A call that needs the
 //! user (see [`ask_for`]) goes to the turn's [`Approver`] first; nothing
 //! about it runs until the answer is `Sent`. Which calls need the user is D17:
-//! the pure [`ask_for`] decides, from the call and the engine's locality.
+//! the pure [`ask_for`] decides, from the call and the engine's locality. A
+//! read also tells its ask where it leads (inside the chat's root or not), and
+//! a local read that leads outside the root asks too; the host never applies
+//! the approval mode, the app does (`approval::answers_itself`).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -31,18 +34,18 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, ToolEnv, stage::Stages};
+use super::{Limits, ToolEnv, fs::Within, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
-            approval::{ApprovalAsk, ask_for},
+            approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
             Call, Locality, command,
             edit::EditError,
             label,
-            paths::display_target,
+            paths::{REFUSED, display_target},
             registry::FamilySet,
             report::{self, RunReport},
             stage::StageKey,
@@ -132,6 +135,8 @@ pub struct ToolHost {
     next: AtomicU64,
     /// The staged batches of every chat: in memory, never saved.
     stages: Arc<Mutex<Stages>>,
+    /// Who may run a command now, and what the sandbox is.
+    exec: exec::Exec,
 }
 
 impl ToolHost {
@@ -158,6 +163,7 @@ impl ToolHost {
             limits,
             next: AtomicU64::new(1),
             stages: Arc::default(),
+            exec: exec::Exec::system(),
         })
     }
 
@@ -239,9 +245,33 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
     (Outcome { text, is_error }, status, clip(summary))
 }
 
-/// What a call is told when the path it reads cannot be shown to the user
-/// exactly as it would be opened.
-const UNSHOWABLE: &str = "path cannot be shown safely";
+/// How the host takes an answer of [`Decision::Unprompted`]: only as the facts
+/// of its own ask allow, whatever the app replies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unprompted {
+    /// No ask the host made allows it: it is denied and nothing runs.
+    Never,
+    /// A cloud read whose ask said it stays in a concrete root: kept in that
+    /// root by the read itself.
+    InRoot,
+    /// A cloud read whose ask said its path is refused: it returns the
+    /// refusal and opens nothing, even if the path appeared since.
+    Refused,
+    /// A local read outside the root, which runs free in `ask` and `auto`
+    /// as it always has, or the search of a concrete root: run as it is.
+    AsIs,
+}
+
+impl Unprompted {
+    fn of_read(reach: Reach, cloud: bool) -> Self {
+        match (reach, cloud) {
+            (Reach::Root, true) => Self::InRoot,
+            (Reach::Refused, true) => Self::Refused,
+            (Reach::Other | Reach::Unshowable, false) => Self::AsIs,
+            _ => Self::Never,
+        }
+    }
+}
 
 /// What the model is told when its command was typed.
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
@@ -318,24 +348,46 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut ask = None;
     let mut sealed = None;
     let mut approves = None;
+    let mut pinned = None;
+    let mut reviewed = None;
+    // How an answer of the approval mode is taken: only as the facts this
+    // ask carried allow.
+    let mut unprompted = Unprompted::Never;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
-            // A cloud read asks with the path as it will be opened: resolved,
-            // and only when the display shows it unchanged.
-            (Call::ReadFile { path, lines }, Locality::Cloud) => {
-                let home = host.home.as_deref().map(Path::new);
-                match home.and_then(|home| display_target(home, &scope.origin, path)) {
-                    Some(shown) => {
-                        approves = Some(shown.clone());
-                        ask = ask_for(
-                            &Call::ReadFile {
+            // A read asks with the path as it will be opened: resolved, and
+            // only when the display shows it unchanged. The ask carries where
+            // the read leads, for the approval mode. A cloud read always asks;
+            // a local one only when it leads outside the root.
+            (Call::ReadFile { path, .. }, locality) => {
+                let reach = files::reach(&host, &scope, path).await;
+                let cloud = locality == Locality::Cloud;
+                if cloud || reach == Reach::Other {
+                    let home = host.home.as_deref().map(Path::new);
+                    match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                        Some(shown) => {
+                            if cloud {
+                                approves = Some(shown.clone());
+                            }
+                            unprompted = Unprompted::of_read(reach, cloud);
+                            ask = Some(ApprovalAsk::Read {
                                 path: shown,
-                                lines: *lines,
-                            },
-                            Locality::Cloud,
-                        )
+                                reach,
+                                cloud,
+                            });
+                        }
+                        // A local read ran free before `run` asked for it:
+                        // the app decides, with nothing shown.
+                        None if !cloud => {
+                            unprompted = Unprompted::of_read(reach, cloud);
+                            ask = Some(ApprovalAsk::Read {
+                                path: String::new(),
+                                reach: Reach::Unshowable,
+                                cloud,
+                            });
+                        }
+                        None => checked = Err(UNSHOWABLE.into()),
                     }
-                    None => checked = Err(UNSHOWABLE.into()),
                 }
             }
             // An edit that can only fail is refused before it asks. A missing
@@ -349,15 +401,33 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 match home.and_then(|home| display_target(home, &scope.origin, path)) {
                     Some(shown) => {
                         if !files::lock_set(&scope.allowed).contains(&shown) {
-                            ask = Some(ApprovalAsk::Read {
-                                path: shown.clone(),
-                            });
+                            ask = Some(ApprovalAsk::read(shown.clone()));
                         }
                         approves = Some(shown);
                     }
                     None => checked = Err(UNSHOWABLE.into()),
                 }
             }
+            // A command is judged before it asks: a refusal never opens a prompt.
+            (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
+                Ok(plan) => {
+                    ask = ask_for(valid, locality);
+                    if let Some(ask) = ask.as_mut() {
+                        exec::fill(&host, &plan, ask);
+                    }
+                    pinned = plan.pin;
+                }
+                Err(why) => checked = Err(why.into()),
+            },
+            // A git verb is judged before it asks: a refusal opens no prompt. An
+            // add or a commit builds its own ask (a commit keeps it to compare).
+            (call, locality) if call.uses_git() => match git::plan(&host, &scope, call).await {
+                Ok(planned) => {
+                    reviewed = planned.clone();
+                    ask = planned.or_else(|| ask_for(call, locality));
+                }
+                Err(why) => checked = Err(why.into()),
+            },
             // A batch is sealed before the ask: the user reviews what was sealed.
             (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
                 Ok((batch, review)) => {
@@ -366,6 +436,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 Err(why) => checked = Err(why.into()),
             },
+            // A search asks with how concrete the root it walks is: the
+            // approval mode lets only the search of a concrete root go.
+            (Call::Grep { .. }, Locality::Cloud) => {
+                let found = files::search_reach(&host, &scope).await;
+                ask = ask_for(valid, Locality::Cloud);
+                if let Some(ApprovalAsk::Search { reach, .. }) = ask.as_mut() {
+                    *reach = found;
+                }
+                if found == Reach::Root {
+                    unprompted = Unprompted::AsIs;
+                }
+            }
             (valid, locality) => ask = ask_for(valid, locality),
         }
     }
@@ -486,6 +568,39 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
+                // Only after `y`: the sandbox starts here and nowhere else.
+                (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    exec::run(&host, &scope, &call, pinned.take()).await
+                }
+                // Only after `y` on a cloud engine, at once on a local one.
+                (Decision::Sent, call) if call.uses_git() => {
+                    git::run(&host, &scope, &call, reviewed.take()).await
+                }
+                // The approval mode answers only a read or a search, never
+                // for the user: nothing is added to the reads the user
+                // allowed, and only what the ask allowed runs. A read it let
+                // go because it stayed in the root is kept there by the read
+                // itself, judged on the file it opens.
+                (Decision::Unprompted, call @ Call::ReadFile { .. })
+                    if unprompted == Unprompted::InRoot =>
+                {
+                    files::run_within(&host, &scope, call, Within::Root).await
+                }
+                (Decision::Unprompted, Call::ReadFile { .. })
+                    if unprompted == Unprompted::Refused =>
+                {
+                    ended(ToolStatus::Error, REFUSED.to_owned(), REFUSED)
+                }
+                (Decision::Unprompted, call @ (Call::ReadFile { .. } | Call::Grep { .. }))
+                    if unprompted == Unprompted::AsIs =>
+                {
+                    files::run(&host, &scope, call).await
+                }
+                (Decision::Unprompted, _) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_APPROVED}"),
+                    NOT_APPROVED,
+                ),
                 (Decision::Sent | Decision::Typed(_), call) => {
                     files::run(&host, &scope, call).await
                 }
@@ -496,12 +611,21 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+mod exec;
 mod files;
+mod gate;
+mod git;
 mod orphan;
 
+#[cfg(test)]
+mod exec_tests;
 #[cfg(test)]
 mod external_tests;
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod gate_tests;
+#[cfg(test)]
+mod git_tests;
 #[cfg(test)]
 mod tests;

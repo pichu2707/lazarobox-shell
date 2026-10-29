@@ -173,6 +173,7 @@ mod tests {
             enabled,
             acknowledged,
             port,
+            save_summaries: false,
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
                 title: "t".into(),
                 content: "c".into(),
             },
+            topic_key: None,
         };
         rig.memory.send(save);
         assert_eq!(

@@ -173,6 +173,7 @@ fn first_answer_streaming() -> App {
     a.update(cwd_event(CWD));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
@@ -552,6 +553,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
         conversation: 7,
         evicted: false,
         evicted_notes: 0,
+        created_at: 1_000,
     }));
     approve_summary(&mut a, "alone");
     press(&mut a, "q");
@@ -709,6 +711,7 @@ fn the_reasoning_of_the_conversation_never_reaches_the_summary_request() {
 fn detected() -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
+            binary: None,
             id: "ollama",
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],

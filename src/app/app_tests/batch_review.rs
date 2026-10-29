@@ -263,6 +263,7 @@ fn the_other_asks_answer_after_the_short_delay() {
         ApprovalAsk::Search {
             pattern: "x".into(),
             dir: ".".into(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
         },
         ApprovalAsk::External {
             server: "s".into(),

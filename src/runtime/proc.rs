@@ -1,6 +1,36 @@
 //! Child-process helpers shared by the runtime's probes and, later, the chat
 //! CLI engines.
 
+/// Makes reads of `fd` return at once (`WouldBlock`) instead of waiting.
+pub fn nonblocking(fd: &impl std::os::fd::AsRawFd) {
+    // SAFETY: `fcntl` on a descriptor the caller owns reads and sets flags.
+    unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+}
+
+/// Makes `command`'s child get `fd` as descriptor `target`, open. The
+/// parent's `fd` stays close-on-exec, so no other child gets it.
+pub fn hand_over(command: &mut tokio::process::Command, fd: std::os::fd::RawFd, target: i32) {
+    // SAFETY: between fork and exec only `dup2` and `fcntl` run (both
+    // async-signal-safe), on a descriptor the parent keeps open.
+    unsafe {
+        command.pre_exec(move || {
+            // `dup2` onto itself keeps the close-on-exec flag: clear it.
+            if fd == target {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else if libc::dup2(fd, target) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Kills a process group on `kill()` or, while still armed, on drop.
 ///
 /// Put it after the `Child` it guards so it drops first: a dropped future then
@@ -36,7 +66,10 @@ impl GroupKill {
     pub fn new(pgid: libc::pid_t) -> Option<Self> {
         // SAFETY: getpgrp has no preconditions and cannot fail.
         let own = unsafe { libc::getpgrp() };
-        Self::checked(pgid, own)
+        let guard = Self::checked(pgid, own)?;
+        // The watcher stops it if lazarobox ends before it is reaped.
+        crate::runtime::watch::register(pgid);
+        Some(guard)
     }
 
     /// `new` with our own group given, so the refusal rules are testable.
@@ -63,7 +96,9 @@ impl GroupKill {
     /// Disarms the guard: neither `kill` nor drop signals the group any more.
     /// MANDATORY right after the leader is reaped.
     pub fn disarm(&mut self) {
-        self.0 = None;
+        if let Some(pgid) = self.0.take() {
+            crate::runtime::watch::unregister(pgid);
+        }
     }
 
     /// Whether `kill` and drop would still signal the group.
@@ -103,11 +138,103 @@ impl GroupKill {
         self.kill();
         self.reap(child).await
     }
+
+    /// The leader's exit status once it has exited on its own, `None` while
+    /// it runs. Before reaping it, the group gets SIGKILL for what the
+    /// leader left in it: until the reap, the leader's pid (the group id)
+    /// cannot be reused. A leader already reaped, or one the check cannot
+    /// see, is only reaped and disarmed: its pid may be another process's
+    /// by now. Disarms once reaped.
+    pub fn reap_if_exited(
+        &mut self,
+        child: &mut tokio::process::Child,
+    ) -> Option<std::io::Result<std::process::ExitStatus>> {
+        let state = child
+            .id()
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .and_then(exited_unreaped);
+        match state {
+            Some(false) => return None,
+            Some(true) => self.kill(),
+            None => {}
+        }
+        let status = child.try_wait();
+        self.disarm();
+        match status {
+            Ok(Some(status)) => Some(Ok(status)),
+            Ok(None) => Some(Err(std::io::Error::other("exited but not reaped"))),
+            Err(error) => Some(Err(error)),
+        }
+    }
+}
+
+/// Whether the child `pid` has exited, without reaping it. `None` when it
+/// cannot be told (no such child: reaped elsewhere).
+fn exited_unreaped(pid: libc::pid_t) -> Option<bool> {
+    // SAFETY: an all-zero siginfo_t is a valid value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a writable siginfo_t; WNOWAIT leaves the child
+    // waitable, so nothing is reaped here.
+    let read = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // SAFETY: waitid filled `info` (or left it zeroed, with WNOHANG).
+    (read == 0).then(|| unsafe { info.si_pid() } != 0)
 }
 
 impl Drop for GroupKill {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+/// When process `pid` started, in units only comparable with each other: what
+/// tells it apart from a later process that reuses its pid. A zombie still
+/// has one on Linux; `None` once it is gone, or where it cannot be read.
+pub fn start_time(pid: libc::pid_t) -> Option<u64> {
+    stat(pid).map(|(start, _)| start)
+}
+
+/// Whether `pid` is still the process that started at `start` and has not
+/// ended: false for a zombie, a reused pid or a process that is gone.
+pub fn running(pid: libc::pid_t, start: u64) -> bool {
+    stat(pid) == Some((start, false))
+}
+
+/// The start time of `pid` and whether it is a zombie.
+fn stat(pid: libc::pid_t) -> Option<(u64, bool)> {
+    #[cfg(target_os = "linux")]
+    {
+        // pid (comm) state ppid ... starttime is field 22; comm may hold
+        // spaces and parentheses, so count from the last ')'.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+        let state = fields.next()?;
+        let start = fields.nth(18)?.parse().ok()?;
+        Some((start, matches!(state, "Z" | "X")))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is a writable buffer of exactly `size` bytes.
+        let read = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        (read == size).then(|| {
+            let start = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
+            (start, info.pbi_status == libc::SZOMB)
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -243,6 +370,61 @@ mod tests {
         assert!(!group.is_armed(), "reaping disarms the guard");
     }
 
+    #[tokio::test]
+    async fn reap_if_exited_leaves_a_running_leader_alone_and_reaps_an_ended_one() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("sleep starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        assert!(group.reap_if_exited(&mut child).is_none());
+        assert!(group.is_armed(), "a running leader keeps the guard armed");
+        // SAFETY: a plain signal to the sleep this test started.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let status = loop {
+            if let Some(status) = group.reap_if_exited(&mut child) {
+                break status.expect("reaped");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(!group.is_armed(), "reaping disarms the guard");
+        assert_eq!(child.id(), None, "reaped");
+    }
+
+    // A leader already reaped elsewhere: its pid may belong to another
+    // process now, so the guard is only disarmed, never fired.
+    #[tokio::test]
+    async fn reap_if_exited_never_signals_a_leader_reaped_elsewhere() {
+        let mut child = tokio::process::Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("true starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        child.wait().await.expect("reaped");
+        // A fake target: a signal here would show up as a dead sentinel.
+        let mut sentinel = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("sleep starts");
+        let target = sentinel.id().expect("a pid") as libc::pid_t;
+        group.0 = Some(target);
+        assert!(group.reap_if_exited(&mut child).is_some());
+        assert!(!group.is_armed(), "disarmed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            sentinel.try_wait().expect("try_wait").is_none(),
+            "the group was signalled"
+        );
+        crate::runtime::watch::unregister(pid);
+    }
+
     #[cfg(target_os = "linux")]
     /// Kills the recorded pid when dropped, so a failed assertion cannot leak
     /// a `sleep 300`.
@@ -309,5 +491,44 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(is_gone(grandchild), "the group's grandchild is killed");
+    }
+
+    #[test]
+    fn start_time_tells_a_process_apart_and_ends_with_it() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let first = start_time(pid).expect("a running child has one");
+        assert_eq!(start_time(pid), Some(first), "stable while it runs");
+        let own = start_time(std::process::id() as libc::pid_t).expect("ours too");
+        assert_ne!(own, 0);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(start_time(pid), None, "gone once reaped");
+    }
+
+    #[test]
+    fn running_is_false_for_a_zombie_and_for_another_start() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let start = start_time(pid).unwrap();
+        assert!(running(pid, start));
+        assert!(
+            !running(pid, start + 1),
+            "a reused pid is not the same process"
+        );
+        // SAFETY: kill only sends a signal to our own child.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        while process_state(pid) != Some('Z') {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!running(pid, start), "a zombie has ended");
+        child.wait().unwrap();
+        assert!(!running(pid, start));
     }
 }

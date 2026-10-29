@@ -913,6 +913,7 @@ fn jailed(
     };
     let args = JailArgs {
         min_abi: None,
+        arg0: None,
         spec,
         program,
         argv,

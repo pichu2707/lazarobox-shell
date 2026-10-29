@@ -3,6 +3,7 @@ use crate::core::ai::EngineState;
 
 pub(super) fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| m.to_string()).collect(),

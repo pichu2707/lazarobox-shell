@@ -6,9 +6,13 @@ pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
+pub mod integrity;
 pub mod open;
 pub mod pending;
+pub mod runner;
+pub mod scratch;
 pub mod search;
 pub mod stage;
 pub mod staged;
@@ -51,7 +55,8 @@ impl Drop for CancelOnDrop {
 
 /// Extra time past `Limits::time` before the caller gives up on the thread.
 const GRACE: Duration = if cfg!(test) {
-    Duration::from_millis(30)
+    // Room for a busy CI runner to start the blocking thread.
+    Duration::from_millis(150)
 } else {
     Duration::from_millis(500)
 };
@@ -81,11 +86,22 @@ pub async fn run_over(
     limits: Limits,
     view: Option<staged::StagedView>,
 ) -> Result<String, Failure> {
+    run_within(call, env, limits, view, fs::Within::Anywhere).await
+}
+
+/// [`run_over`] with a `read_file` kept [`Within`](fs::Within) a bound.
+pub async fn run_within(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+    within: fs::Within,
+) -> Result<String, Failure> {
     let cancel = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancel.clone());
     let bound = limits.time + GRACE;
     let work = tokio::task::spawn_blocking(move || {
-        fs::execute_over(&call, &env, &limits, &cancel, view.as_ref())
+        fs::execute_within(&call, &env, &limits, &cancel, view.as_ref(), within)
     });
     let text = tokio::time::timeout(bound, work)
         .await
@@ -140,7 +156,7 @@ mod tests {
         (dir, home)
     }
 
-    // Needs the file tools: they open files with below HOME without a link, Linux and macOS.
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_result_is_wrapped_with_a_fresh_nonce_per_call() {
@@ -179,7 +195,7 @@ mod tests {
         );
     }
 
-    // Needs the file tools: they open files with below HOME without a link, Linux and macOS.
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
@@ -209,7 +225,7 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
-    // Needs the file tools: they open files with below HOME without a link, Linux and macOS.
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
@@ -232,7 +248,7 @@ mod tests {
         }
     }
 
-    // Needs the file tools: they open files with below HOME without a link, Linux and macOS.
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {

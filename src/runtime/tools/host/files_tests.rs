@@ -202,7 +202,8 @@ async fn edits_chain_on_the_staged_text_and_leave_the_disk_alone() {
 
 // Spec (code-search/code-write): the read tools see the batch of the chat's
 // key as soon as the Write family is on, marked as pending.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// Staging needs the write side, Linux only for now.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_read_tools_see_the_staged_batch() {
     let w = world();
@@ -632,7 +633,7 @@ async fn a_cloud_edit_asks_once_per_file_per_turn() {
     assert!(!first.is_error, "{first:?}");
     let asks = approver.asks();
     assert!(
-        matches!(asks.as_slice(), [ApprovalAsk::Read { path }] if path.ends_with("/b.txt")),
+        matches!(asks.as_slice(), [ApprovalAsk::Read { path, .. }] if path.ends_with("/b.txt")),
         "{asks:?}"
     );
     assert!(!format!("{asks:?}").contains("SECRET"));
@@ -875,7 +876,8 @@ async fn a_write_call_with_the_family_off_is_unknown_and_stages_nothing() {
 
 // The Write family off: the read tools get no view, so a batch staged earlier
 // under the same key is not shown (and not forgeable text either).
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// Staging needs the write side, Linux only for now.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn with_the_family_off_the_read_tools_see_no_batch() {
     let w = world();
