@@ -11,7 +11,10 @@ use tokio::{sync::mpsc, time::timeout};
 
 use crate::{
     core::{
-        ai::chat::folder::{Probed, Purpose, Refusal, judge},
+        ai::chat::{
+            folder::{Probed, Purpose, Refusal, judge},
+            folder_picker::Source,
+        },
         layout::PaneId,
     },
     runtime::tools::{ToolEnv, fs::load_roots},
@@ -81,6 +84,63 @@ pub fn probe(env: &ToolEnv, path: &Path) -> Result<Probed, Refusal> {
         path: real,
         verdict,
     })
+}
+
+/// The git root that holds `start`: the nearest folder up from it with a
+/// `.git` (a folder, or the file of a worktree). The walk stops below HOME and
+/// `/`, so HOME itself, a dotfiles repo there, is never a root.
+pub fn walk_git(home: &Path, start: &Path) -> Option<PathBuf> {
+    let (home, start) = (
+        std::fs::canonicalize(home).ok()?,
+        std::fs::canonicalize(start).ok()?,
+    );
+    start
+        .ancestors()
+        .take_while(|dir| *dir != home && dir.starts_with(&home))
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+/// Probes every candidate. With `git`, a `PaneRoot` candidate is first
+/// moved up to its git root and dropped when it has none.
+pub fn probe_many(
+    env: &ToolEnv,
+    paths: &[(Source, PathBuf)],
+    git: bool,
+) -> Vec<(Source, Result<Probed, Refusal>)> {
+    let home = env.home.as_deref().map(Path::new);
+    paths
+        .iter()
+        .filter_map(|(source, path)| {
+            let path = if git && *source == Source::PaneRoot {
+                walk_git(home?, path)?
+            } else {
+                path.clone()
+            };
+            Some((*source, probe(env, &path)))
+        })
+        .collect()
+}
+
+/// The most completions listed.
+pub const COMPLETIONS_MAX: usize = 50;
+
+/// The names of the directories in `dir` that start with `prefix`, sorted, at
+/// most [`COMPLETIONS_MAX`]. Hidden ones only when `prefix` starts with `.`.
+pub fn complete(dir: &Path, prefix: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let hidden = prefix.starts_with('.');
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(prefix) && (hidden || !name.starts_with('.')))
+        .filter(|name| dir.join(name).is_dir())
+        .collect();
+    names.sort();
+    names.truncate(COMPLETIONS_MAX);
+    names
 }
 
 #[cfg(test)]

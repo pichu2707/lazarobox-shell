@@ -150,3 +150,155 @@ fn the_verdict_matches_the_tool_root_policy() {
         assert_eq!(broad_home, !concrete, "{sub}");
     }
 }
+
+// ---- the picker's data sources (chat-folder, PR B1) -------------------------
+
+use crate::core::ai::chat::folder_picker::{Source, merge};
+
+/// The fixture plus a git repository, a worktree (its `.git` is a file), a
+/// plain folder, and a dotfiles repo in HOME itself.
+fn git_fixture() -> Fixture {
+    let f = fixture();
+    let home = f.root.join("home");
+    for sub in [
+        "project/.git",
+        "project/src/deep",
+        "wt/sub",
+        "plain/x",
+        ".git",
+    ] {
+        fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    fs::write(home.join("wt/.git"), "gitdir: /elsewhere").unwrap();
+    f
+}
+
+#[test]
+fn the_walk_finds_a_repository_or_a_worktree_and_stops_below_home() {
+    let f = git_fixture();
+    let home = f.root.join("home");
+    let walk = |sub: &str| walk_git(&home, &home.join(sub));
+    assert_eq!(walk("project/src/deep"), Some(home.join("project")));
+    assert_eq!(walk("project"), Some(home.join("project")));
+    assert_eq!(walk("wt/sub"), Some(home.join("wt")));
+    // HOME has a `.git` and is still never a root.
+    assert_eq!(walk("plain/x"), None);
+    assert_eq!(walk_git(&home, &home), None);
+    assert_eq!(walk_git(&home, &f.root.join("srv/x")), None);
+    assert_eq!(walk_git(&home, Path::new("/")), None);
+    assert_eq!(walk("gone"), None);
+}
+
+#[test]
+fn many_paths_are_judged_one_by_one() {
+    let f = git_fixture();
+    let home = f.root.join("home");
+    let got = probe_many(
+        &f.env,
+        &[
+            (Source::Recent, home.join("project")),
+            (Source::Recent, home.clone()),
+            (Source::Recent, Path::new("/").to_path_buf()),
+            (Source::Recent, home.join("gone")),
+            (Source::LastShell, home.join(".ssh")),
+        ],
+        false,
+    );
+    let verdicts: Vec<_> = got
+        .iter()
+        .map(|(_, r)| r.as_ref().map(|p| p.verdict).map_err(|e| *e))
+        .collect();
+    assert_eq!(
+        verdicts,
+        [
+            Ok(Verdict::Concrete),
+            Ok(Verdict::Home),
+            Err(Refusal::Root),
+            Err(Refusal::NotFound),
+            Err(Refusal::NotAllowed),
+        ]
+    );
+    assert_eq!(got[4].0, Source::LastShell);
+}
+
+#[test]
+fn the_git_walk_moves_pane_folders_to_their_root_and_drops_the_rest() {
+    let f = git_fixture();
+    let home = f.root.join("home");
+    let got = probe_many(
+        &f.env,
+        &[
+            (Source::PaneRoot, home.join("project/src/deep")),
+            (Source::PaneRoot, home.join("plain/x")),
+            (Source::Recent, home.join("plain")),
+        ],
+        true,
+    );
+    let paths: Vec<_> = got
+        .iter()
+        .map(|(s, r)| (*s, r.as_ref().unwrap().path.clone()))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            (Source::PaneRoot, home.join("project")),
+            (Source::Recent, home.join("plain")),
+        ]
+    );
+}
+
+#[test]
+fn what_the_picker_lists_is_only_what_the_validator_calls_concrete() {
+    let f = git_fixture();
+    let home = f.root.join("home");
+    let found = probe_many(
+        &f.env,
+        &[
+            (Source::Recent, home.clone()),
+            (Source::Recent, f.root.clone()),
+            (Source::Recent, Path::new("/").to_path_buf()),
+            (Source::Recent, Path::new("/usr").to_path_buf()),
+            (Source::Recent, f.root.join("srv/x")),
+            (Source::Recent, home.join("gone")),
+            (Source::Recent, home.join(".ssh")),
+            (Source::Recent, home.join("project/src")),
+            (Source::LastShell, home.join("link")),
+        ],
+        false,
+    );
+    let rows = merge(found);
+    let listed: Vec<_> = rows.iter().map(|r| r.path.clone()).collect();
+    // `link` is a symlink to `project`, listed under its real path.
+    assert_eq!(listed, [home.join("project/src"), home.join("project")]);
+}
+
+#[test]
+fn completion_lists_directories_only_and_hides_dot_folders_unless_asked() {
+    let f = fixture();
+    let home = f.root.join("home");
+    for sub in ["alpha", "alps", "beta", ".alpine"] {
+        fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    fs::write(home.join("alpha.txt"), "x").unwrap();
+    assert_eq!(complete(&home, "al"), ["alpha", "alps"]);
+    assert_eq!(
+        complete(&home, ""),
+        ["alpha", "alps", "beta", "link", "project"]
+    );
+    assert_eq!(complete(&home, ".al"), [".alpine"]);
+    assert_eq!(complete(&home, "zzz"), Vec::<String>::new());
+    assert!(complete(&home.join("nope"), "").is_empty());
+    assert!(complete(&home.join("note.txt"), "").is_empty());
+}
+
+#[test]
+fn completion_is_capped() {
+    let f = fixture();
+    let home = f.root.join("home");
+    for n in 0..COMPLETIONS_MAX + 10 {
+        fs::create_dir_all(home.join(format!("d{n:03}"))).unwrap();
+    }
+    let got = complete(&home, "d");
+    assert_eq!(got.len(), COMPLETIONS_MAX);
+    assert_eq!(got[0], "d000");
+}
