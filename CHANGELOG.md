@@ -10,6 +10,26 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Ollama downloads: with the Ollama server running, its model level ends in
+  `download from Ollama…`. It lists up to 20 of the most popular models of
+  the Ollama library that fit this PC's memory (embedding and cloud-only
+  models left out), then the exact size of each tag from its registry
+  manifest, then a confirmation with the license title, a link to read it,
+  the models folder and the free space. Nothing is pulled before `y`. The
+  pull goes through the local Ollama server (`POST /api/pull` on
+  `127.0.0.1`), with progress on the row and in the status bar, a cancel
+  prompt that keeps what Ollama pulled, and one detection when it ends.
+  When the library page cannot be read, the built-in list is shown instead.
+- One download runs at a time across Hugging Face and Ollama: while one
+  runs, the other entry row says `a download is already running`.
+
+### Changed
+
+- The loopback client may POST to `/api/pull`, for the Ollama download only;
+  chat requests still refuse that path.
+
 ## [0.29.0] - 2026-10-28
 
 ### Added
