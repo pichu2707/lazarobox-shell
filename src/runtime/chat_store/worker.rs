@@ -26,6 +26,7 @@ use crate::core::{
             },
             tags::Tags,
         },
+        config::Profile,
         sanitize::clean,
     },
     layout::PaneId,
@@ -108,6 +109,11 @@ impl Worker {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
                 };
+                // The column is open-ended since schema 3: the known profiles
+                // are checked here, before anything is written.
+                if Profile::from_id(&profile).is_none() {
+                    return Some(self.failure(pane));
+                }
                 let tags = Tags::new(tag, extras);
                 let made = create(conn, &profile, &tags, &first, folder.as_deref(), &open);
                 Some(match made {
@@ -249,6 +255,7 @@ impl Worker {
                         messages,
                         session,
                         folder,
+                        skipped,
                     }) => StoreReply::Resumed {
                         pane,
                         conversation,
@@ -258,6 +265,7 @@ impl Worker {
                         messages,
                         session,
                         folder,
+                        skipped,
                     },
                     None => StoreReply::ResumeFailed { pane },
                 })
@@ -678,6 +686,8 @@ struct Resumed {
     session: Option<(String, String)>,
     /// The folder it was kept under, when one was stored.
     folder: Option<PathBuf>,
+    /// Rows left out for a role this build does not know.
+    skipped: usize,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -704,27 +714,34 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         .prepare("SELECT tag FROM tags WHERE conversation_id = ?1 AND is_project = 0 ORDER BY tag")?
         .query_map([conversation], |r| r.get(0))?
         .collect::<Result<Vec<String>, _>>()?;
-    let messages = tx
-        .prepare(
+    // Role and status are open-ended since schema 3. A row of a role this
+    // build does not know (a newer one wrote it) is left out and counted rather
+    // than shown as the assistant's; an unknown status reads as a cut message.
+    let mut skipped = 0;
+    let mut messages = Vec::new();
+    {
+        let mut stmt = tx.prepare(
             "SELECT role, content, status FROM messages
              WHERE conversation_id = ?1 ORDER BY seq",
-        )?
-        .query_map([conversation], |r| {
-            let role: String = r.get(0)?;
+        )?;
+        let mut rows = stmt.query([conversation])?;
+        while let Some(r) = rows.next()? {
+            let role = match r.get::<_, String>(0)?.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             let status: String = r.get(2)?;
-            Ok(Msg {
-                role: if role == "user" {
-                    Role::User
-                } else {
-                    Role::Assistant
-                },
+            messages.push(Msg {
+                role,
                 text: r.get(1)?,
-                // The column is constrained to the known names; an unknown one
-                // reads as a cut message rather than a finished one.
                 status: MsgStatus::from_name(&status).unwrap_or(MsgStatus::Interrupted),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+            });
+        }
+    }
     // A read only: the resume never writes a link.
     let session = tx
         .query_row(
@@ -740,6 +757,7 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         messages,
         session,
         folder: folder.map(PathBuf::from),
+        skipped,
     })
 }
 

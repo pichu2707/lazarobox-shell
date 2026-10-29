@@ -31,6 +31,15 @@ baseline.
 - `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
 - An unknown option or command now prints one line on stderr and exits 2
   instead of silently starting the TUI.
+- `chat.db` schema 3: the closed-list checks on `profile`, `role` and `status`
+  are gone (the values are still validated when written), so a new profile,
+  role or status can be added without rebuilding tables. Opening an older
+  file rebuilds `conversations`, `messages` and `tags` once, in one
+  transaction, keeping every row and id. A build that only knows schema 2
+  refuses a schema 3 file and leaves it untouched. The migration drops
+  messages or tags whose conversation no longer exists (they could never be
+  shown) and vacuums the file afterwards. Resuming a conversation leaves out
+  messages of a role this version does not know and says how many.
 
 ### Fixed
 
@@ -47,7 +56,6 @@ baseline.
   stated as not officially supported in 1.0.
 - `SECURITY.md`: supported versions and private vulnerability reporting.
 - `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
-
 ## [0.30.0] - 2026-10-29
 
 ### Added

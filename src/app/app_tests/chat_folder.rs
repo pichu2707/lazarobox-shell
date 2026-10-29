@@ -592,6 +592,7 @@ fn resumed_for(conversation_id: i64, folder: Option<&str>) -> AppEvent {
         messages,
         session,
         folder: folder.map(PathBuf::from),
+        skipped: 0,
     })
 }
 

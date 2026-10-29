@@ -15,6 +15,15 @@ use crate::core::{ai::sanitize::clean, layout::PaneId};
 pub const RETENTION_LIMIT: usize = 200;
 /// System line for a new conversation that made the store evict the oldest.
 pub const EVICTED_LINE: &str = "oldest conversation removed (limit 200)";
+/// System line for a resumed conversation whose stored profile this build does
+/// not know.
+pub const UNKNOWN_PROFILE_LINE: &str =
+    "saved profile is unknown to this version; keeping the current one";
+/// System line for messages a resume left out because this build does not
+/// know their role.
+pub fn skipped_line(count: usize) -> String {
+    format!("{count} saved message(s) from a newer version are not shown")
+}
 /// System line for a write that failed in the middle of a session.
 pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 /// System line for a conversation another pane deleted while this one has it
@@ -232,6 +241,9 @@ pub enum StoreReply {
         /// The folder the conversation was kept under; `None` for one stored
         /// before the column existed.
         folder: Option<PathBuf>,
+        /// Stored messages of a role this build does not know (written by a
+        /// newer one): left out, so they never show as someone else's words.
+        skipped: usize,
     },
     ResumeFailed {
         pane: PaneId,
