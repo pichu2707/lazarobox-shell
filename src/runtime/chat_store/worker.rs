@@ -147,11 +147,11 @@ impl Worker {
                 conversation,
                 session_id,
                 project,
+                replace,
             } => {
-                let reply = self
-                    .conn()
-                    .ok()
-                    .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
+                let reply = self.conn().ok().and_then(|conn| {
+                    link_session(conn, conversation, (&session_id, &project), replace).ok()
+                });
                 Some(match reply {
                     Some((session_id, project)) => StoreReply::SessionLinked {
                         pane,
@@ -514,16 +514,24 @@ fn is_session_id(id: &str) -> bool {
 fn link_session(
     conn: &mut Connection,
     conversation: i64,
-    session_id: &str,
-    project: &str,
+    (session_id, project): (&str, &str),
+    replace: bool,
 ) -> Result<(String, String), rusqlite::Error> {
     if !is_session_id(session_id) {
         return Err(rusqlite::Error::InvalidParameterName("session id".into()));
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // The stored pair wins (a resume) unless the conversation changed project.
+    let verb = if replace {
+        "INSERT OR REPLACE"
+    } else {
+        "INSERT OR IGNORE"
+    };
     tx.execute(
-        "INSERT OR IGNORE INTO memory_sessions(conversation_id, session_id, project)
-         VALUES (?1, ?2, ?3)",
+        &format!(
+            "{verb} INTO memory_sessions(conversation_id, session_id, project)
+             VALUES (?1, ?2, ?3)"
+        ),
         (conversation, session_id, clean(project)),
     )?;
     let stored = tx.query_row(

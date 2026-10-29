@@ -74,6 +74,9 @@ pub enum StoreCmd {
         conversation: i64,
         session_id: String,
         project: String,
+        /// The conversation moved to another project (a folder change): the
+        /// stored pair is replaced instead of kept.
+        replace: bool,
     },
     /// Records that `conversation` wrote the note `(project, topic_key)`. The
     /// row is upserted, so the last writer owns it. Only ids and the title are

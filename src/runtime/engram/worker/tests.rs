@@ -235,6 +235,7 @@ fn pane(n: u32) -> PaneId {
 fn resolve(n: u32, cwd: &str) -> MemCmd {
     MemCmd::Resolve {
         pane: pane(n),
+        epoch: 0,
         cwd: cwd.into(),
     }
 }
@@ -319,7 +320,11 @@ async fn commands_run_in_fifo_order() {
     }
     for n in 1..=3 {
         match rig.answer().await {
-            MemReply::Project { pane: p, result } => {
+            MemReply::Project {
+                pane: p,
+                epoch: 0,
+                result,
+            } => {
                 assert_eq!(p, pane(n));
                 assert_eq!(result, Ok("widget".to_string()));
             }
@@ -508,12 +513,14 @@ async fn a_context_for_an_unknown_project_is_no_memory_yet() {
     );
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     assert_eq!(
         rig.answer().await,
         MemReply::Context {
             pane: pane(1),
+            epoch: 0,
             block: None
         }
     );
@@ -524,6 +531,7 @@ async fn a_context_is_returned_as_a_block() {
     let mut rig = up();
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     match rig.answer().await {
@@ -799,6 +807,7 @@ async fn each_call_class_has_its_own_limit() {
     rig.link.send(resolve(1, "/a"));
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     rig.link.send(save(1, None));
@@ -887,6 +896,7 @@ async fn a_panic_while_handling_still_gives_a_reply_and_the_worker_lives() {
     rig.link.send(resolve(1, "/a"));
     rig.link.send(MemCmd::Context {
         pane: pane(2),
+        epoch: 0,
         project: "widget".into(),
     });
     assert_eq!(
@@ -1012,6 +1022,7 @@ async fn a_context_server_error_is_unavailable_and_degrades_the_health() {
         .on("GET /context", Act::Reply(500, b"boom".to_vec()));
     let context = |n| MemCmd::Context {
         pane: pane(n),
+        epoch: 0,
         project: "widget".into(),
     };
     rig.link.send(context(1));
@@ -1047,6 +1058,7 @@ async fn any_non_200_context_other_than_unknown_project_is_unavailable() {
             .on("GET /context", Act::Reply(status, body.to_vec()));
         rig.link.send(MemCmd::Context {
             pane: pane(1),
+            epoch: 0,
             project: "widget".into(),
         });
         assert_eq!(
@@ -1068,12 +1080,14 @@ async fn a_200_context_that_cannot_be_read_is_no_memory_and_stays_healthy() {
     for n in 1..=2 {
         rig.link.send(MemCmd::Context {
             pane: pane(n),
+            epoch: 0,
             project: "widget".into(),
         });
         assert_eq!(
             rig.answer().await,
             MemReply::Context {
                 pane: pane(n),
+                epoch: 0,
                 block: None
             }
         );

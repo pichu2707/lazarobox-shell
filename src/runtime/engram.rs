@@ -135,6 +135,7 @@ mod tests {
     fn resolve() -> MemCmd {
         MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         }
     }

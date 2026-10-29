@@ -39,6 +39,7 @@ fn ready_chat() -> App {
     let mut a = with_answer(true, "We use Axum.");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     a.take_dirty();
@@ -161,6 +162,7 @@ fn without_an_answer_there_is_nothing_to_summarize() {
     press(&mut a, "c");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     assert_eq!(press(&mut a, "s"), vec![]);
@@ -193,6 +195,7 @@ fn first_answer_streaming() -> App {
     ));
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     type_text(&mut a, "q");
@@ -565,6 +568,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
                 conversation: 7,
                 session_id: SESSION.into(),
                 project: PROJECT.into(),
+                replace: false,
             }),
             end_summary("alone"),
             Effect::BatchClose(chat_id()),

@@ -802,6 +802,7 @@ fn link_session(conversation: i64, session_id: &str) -> StoreCmd {
         conversation,
         session_id: session_id.into(),
         project: "proj".into(),
+        replace: false,
     }
 }
 
@@ -887,6 +888,7 @@ fn a_resume_returns_the_stored_project_even_when_another_was_proposed() {
         conversation: id,
         session_id: SESSION_B.into(),
         project: "other".into(),
+        replace: false,
     });
     let Some(StoreReply::SessionLinked {
         session_id,
@@ -897,6 +899,35 @@ fn a_resume_returns_the_stored_project_even_when_another_was_proposed() {
         panic!("expected SessionLinked, got {reply:?}");
     };
     assert_eq!((session_id.as_str(), project.as_str()), (SESSION_A, "proj"));
+}
+
+// A folder change moves the conversation to another project: the new pair
+// replaces the stored one (engram rejects a session under another project).
+#[test]
+fn a_replacing_link_overwrites_the_stored_pair() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    let reply = worker.handle(StoreCmd::LinkSession {
+        pane: pane(),
+        conversation: id,
+        session_id: SESSION_B.into(),
+        project: "other".into(),
+        replace: true,
+    });
+    let Some(StoreReply::SessionLinked {
+        session_id,
+        project,
+        ..
+    }) = reply
+    else {
+        panic!("expected SessionLinked, got {reply:?}");
+    };
+    assert_eq!(
+        (session_id.as_str(), project.as_str()),
+        (SESSION_B, "other")
+    );
+    assert_eq!(count(&conn, "memory_sessions"), 1);
 }
 
 #[test]

@@ -160,6 +160,7 @@ impl ChatState {
         };
         let (from, to) = (show(old.as_deref()), show(Some(&new)));
         let prompt_now = self.invalidate_prompt();
+        self.reset_memory_for_folder();
         if !self.tags_edited && self.store.is_fresh() {
             self.tag = None;
         }

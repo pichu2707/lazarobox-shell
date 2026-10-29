@@ -183,6 +183,11 @@ pub struct ChatMemory {
     context_since: Option<Instant>,
     /// The `memory unavailable` line was shown for this view.
     degraded: bool,
+    /// Bumped when the chat folder changes: a project or context reply from
+    /// an older epoch belongs to the old folder and is ignored.
+    epoch: u32,
+    /// The next session link replaces the stored one: the project changed.
+    relink: bool,
 }
 
 impl ChatMemory {
@@ -204,6 +209,8 @@ impl ChatMemory {
             resolving_since: None,
             context_since: None,
             degraded: false,
+            epoch: 0,
+            relink: false,
         }
     }
 
@@ -519,13 +526,43 @@ impl ChatState {
 
     /// The session that still has to be linked, once. `None` when there is
     /// none or it was handed to the store already.
-    pub fn take_session_link(&mut self) -> Option<SessionRef> {
+    /// The flag says the stored link is replaced (the folder, so the project,
+    /// changed since the conversation had one).
+    pub fn take_session_link(&mut self) -> Option<(SessionRef, bool)> {
         if self.memory.session_linked {
             return None;
         }
         let session = self.memory.session.clone()?;
         self.memory.session_linked = true;
-        Some(session)
+        Some((session, std::mem::take(&mut self.memory.relink)))
+    }
+
+    /// The epoch the memory requests of this view carry.
+    pub fn memory_epoch(&self) -> u32 {
+        self.memory.epoch
+    }
+
+    /// The folder changed, so the project did: forget what memory knew (the
+    /// project, the block and its line, the degraded mark, the session and
+    /// its notes) and make every reply still on its way stale. The caller
+    /// takes the end of the old session first (`take_end`).
+    pub fn reset_memory_for_folder(&mut self) {
+        let memory = &mut self.memory;
+        memory.epoch += 1;
+        memory.readiness = Readiness::Unknown;
+        memory.resolving_since = None;
+        memory.injected = None;
+        memory.context = Fetch::Idle;
+        memory.context_since = None;
+        memory.degraded = false;
+        memory.session = None;
+        memory.session_linked = false;
+        memory.relink = true;
+        memory.notes.clear();
+        memory.ended = false;
+        self.approved_summary = None;
+        self.entries.retain(|e| !matches!(e, Entry::Memory(_)));
+        self.generation += 1;
     }
 
     /// A save is about to be sent under `project`: its token, to put on the

@@ -202,16 +202,24 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
 
     async fn handle(&mut self, cmd: MemCmd) {
         match cmd {
-            MemCmd::Resolve { pane, cwd } => {
+            MemCmd::Resolve { pane, cwd, epoch } => {
                 let reply = match self.resolve(&cwd).await {
-                    Ok(result) => MemReply::Project { pane, result },
+                    Ok(result) => MemReply::Project {
+                        pane,
+                        epoch,
+                        result,
+                    },
                     Err(reason) => unavailable(pane, reason),
                 };
                 self.say(reply).await;
             }
-            MemCmd::Context { pane, project } => {
+            MemCmd::Context {
+                pane,
+                project,
+                epoch,
+            } => {
                 let reply = match self.context(&project).await {
-                    Ok(block) => MemReply::Context { pane, block },
+                    Ok(block) => MemReply::Context { pane, epoch, block },
                     Err(reason) => unavailable(pane, reason),
                 };
                 self.say(reply).await;

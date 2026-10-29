@@ -26,10 +26,20 @@ pub struct SaveId(pub u64);
 /// runtime executes them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MemCmd {
-    /// Resolve the engram project of a pane's origin directory.
-    Resolve { pane: PaneId, cwd: String },
+    /// Resolve the engram project of a pane's origin directory. `epoch` is
+    /// the memory epoch of the chat (see `ChatState::memory_epoch`), echoed
+    /// by the reply so a folder change can tell a stale answer.
+    Resolve {
+        pane: PaneId,
+        cwd: String,
+        epoch: u32,
+    },
     /// Fetch the context block of a project.
-    Context { pane: PaneId, project: String },
+    Context {
+        pane: PaneId,
+        project: String,
+        epoch: u32,
+    },
     /// Save a note. `session` is `None` until the conversation has one. `cwd`
     /// is the directory of the chat: the session registers with it.
     /// `topic_key` is an optional caller-supplied key: a later save under the
@@ -195,11 +205,13 @@ pub enum MemReply {
     /// The project of a pane, or why there is none.
     Project {
         pane: PaneId,
+        epoch: u32,
         result: Result<String, ProjectError>,
     },
     /// The context block of a pane, `None` when there is no memory yet.
     Context {
         pane: PaneId,
+        epoch: u32,
         block: Option<ContextBlock>,
     },
     /// A note was saved (or updated: same id). `id` is the token of the save
@@ -303,10 +315,12 @@ mod tests {
         let cmds = [
             MemCmd::Resolve {
                 pane,
+                epoch: 0,
                 cwd: "/x".into(),
             },
             MemCmd::Context {
                 pane,
+                epoch: 0,
                 project: "p".into(),
             },
             MemCmd::Save {
@@ -339,9 +353,14 @@ mod tests {
             },
             MemReply::Project {
                 pane,
+                epoch: 0,
                 result: Err(ProjectError::NotGit),
             },
-            MemReply::Context { pane, block: None },
+            MemReply::Context {
+                pane,
+                epoch: 0,
+                block: None,
+            },
             MemReply::Saved {
                 pane,
                 id: SaveId(1),
@@ -415,6 +434,7 @@ mod tests {
         let pane = PaneId::FIRST;
         let resolve = MemCmd::Resolve {
             pane,
+            epoch: 0,
             cwd: "/x".into(),
         };
         assert_eq!(resolve.pane(), Some(pane));
@@ -462,7 +482,15 @@ mod tests {
             offer: false,
         };
         assert_eq!(health.pane(), None);
-        assert_eq!(MemReply::Context { pane, block: None }.pane(), Some(pane));
+        assert_eq!(
+            MemReply::Context {
+                pane,
+                epoch: 0,
+                block: None
+            }
+            .pane(),
+            Some(pane)
+        );
         let offer = Offer {
             path: "/usr/bin/engram".into(),
             port: 7437,

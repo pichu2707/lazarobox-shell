@@ -598,6 +598,7 @@ fn with_memory() -> App {
     a.update(AppEvent::Memory(
         crate::core::ai::memory::port::MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok("lazarobox-shell".into()),
         },
     ));

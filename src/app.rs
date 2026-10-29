@@ -3143,10 +3143,12 @@ mod app_tests {
         let replies = [
             MemReply::Project {
                 pane: gone,
+                epoch: 0,
                 result: Err(ProjectError::NotGit),
             },
             MemReply::Context {
                 pane: gone,
+                epoch: 0,
                 block: None,
             },
             MemReply::Unavailable {

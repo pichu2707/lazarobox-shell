@@ -57,8 +57,14 @@ impl App {
         }
         let probe = |chat: &mut ChatState, want_note: bool| {
             chat.start_resolving_at(want_note, now);
-            cwd.clone()
-                .map(|cwd| Effect::Memory(MemCmd::Resolve { pane: id, cwd }))
+            let epoch = chat.memory_epoch();
+            cwd.clone().map(|cwd| {
+                Effect::Memory(MemCmd::Resolve {
+                    pane: id,
+                    cwd,
+                    epoch,
+                })
+            })
         };
         match chat.readiness().clone() {
             Readiness::Ready(_) => {
@@ -187,6 +193,9 @@ impl App {
         }
         self.dirty = true;
         match reply {
+            // An answer asked under the folder the chat left is not for it.
+            MemReply::Project { epoch, .. } | MemReply::Context { epoch, .. }
+                if !self.memory_epoch_is(id, *epoch) => {}
             MemReply::Project { result, .. } => return self.on_project_reply(id, result),
             MemReply::Context { block, .. } => self.on_context(id, block),
             MemReply::SaveUnavailable {
@@ -327,12 +336,13 @@ impl App {
         let Some(conversation) = chat.conversation() else {
             return Vec::new();
         };
-        let session = chat.take_session_link().map(|session| {
+        let session = chat.take_session_link().map(|(session, replace)| {
             Effect::Store(StoreCmd::LinkSession {
                 pane: id,
                 conversation,
                 session_id: session.id,
                 project: session.project,
+                replace,
             })
         });
         let notes = chat.take_unlinked_notes().into_iter().map(|note| {

@@ -161,7 +161,12 @@ impl App {
                 continue;
             };
             chat.start_resolving_at(false, now);
-            effects.push(Effect::Memory(MemCmd::Resolve { pane: id, cwd }));
+            let epoch = chat.memory_epoch();
+            effects.push(Effect::Memory(MemCmd::Resolve {
+                pane: id,
+                cwd,
+                epoch,
+            }));
         }
         effects
     }

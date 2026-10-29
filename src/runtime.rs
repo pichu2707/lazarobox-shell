@@ -3222,6 +3222,7 @@ mod tests {
     fn memory_effect() -> Effect {
         Effect::Memory(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         })
     }
@@ -5162,6 +5163,7 @@ mod tests {
         );
         memory.send(MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(
@@ -5210,6 +5212,7 @@ mod tests {
             );
             memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
                 pane: PaneId::FIRST,
+                epoch: 0,
                 cwd: "/x".into(),
             });
             memory.shutdown(Duration::from_secs(1)).await;
@@ -5244,6 +5247,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);

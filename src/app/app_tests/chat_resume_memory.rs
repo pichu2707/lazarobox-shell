@@ -66,6 +66,7 @@ fn resumed_chat(session: Option<(&str, &str)>) -> App {
     a.update(resumed_with(session));
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     a
