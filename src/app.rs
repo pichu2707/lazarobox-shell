@@ -763,8 +763,10 @@ pub struct App {
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
     /// The folder a resumed conversation was stored with while the runtime
-    /// probes it, by chat: `(conversation, stored folder)`.
-    resume_folders: HashMap<PaneId, (i64, PathBuf)>,
+    /// probes it, by chat: `(token, conversation, stored folder)`.
+    resume_folders: HashMap<PaneId, (u64, i64, PathBuf)>,
+    /// The last token handed to a folder probe.
+    folder_seq: u64,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -886,6 +888,7 @@ impl App {
             launch_cwd: None,
             home: None,
             resume_folders: HashMap::new(),
+            folder_seq: 0,
             hostname: None,
             dir_exists: |_| true,
             shell: None,
@@ -2358,6 +2361,7 @@ impl App {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_folder_state(id);
             self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
@@ -2570,6 +2574,7 @@ impl App {
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_folder_state(id);
                 self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {

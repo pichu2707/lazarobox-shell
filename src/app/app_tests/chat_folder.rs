@@ -527,6 +527,10 @@ fn nothing_the_model_can_call_changes_the_folder() {
 
 /// The resume of conversation 30 with `folder` stored.
 fn resumed_in(folder: Option<&str>) -> AppEvent {
+    resumed_for(30, folder)
+}
+
+fn resumed_for(conversation_id: i64, folder: Option<&str>) -> AppEvent {
     let AppEvent::Store(StoreReply::Resumed {
         pane,
         conversation,
@@ -536,7 +540,7 @@ fn resumed_in(folder: Option<&str>) -> AppEvent {
         messages,
         session,
         ..
-    }) = super::chat_history::resumed(id2(), 30, "programmer")
+    }) = super::chat_history::resumed(id2(), conversation_id, "programmer")
     else {
         unreachable!("resumed builds a Resumed reply");
     };
@@ -552,12 +556,35 @@ fn resumed_in(folder: Option<&str>) -> AppEvent {
     })
 }
 
+/// The token of the resume probe the chat waits for.
+fn resume_token(a: &App) -> u64 {
+    a.resume_folders.get(&id2()).map_or(0, |entry| entry.0)
+}
+
 fn resume_probed(a: &mut App, result: Result<Probed, Refusal>) -> Vec<Effect> {
+    let token = resume_token(a);
+    resume_answer(a, token, result)
+}
+
+fn resume_answer(a: &mut App, token: u64, result: Result<Probed, Refusal>) -> Vec<Effect> {
     a.update(AppEvent::FolderProbed {
         pane: id2(),
-        purpose: Purpose::Resume,
+        purpose: Purpose::Resume(token),
         result,
     })
+}
+
+fn resume_purposes(effects: &[Effect]) -> Vec<u64> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::ProbeFolder {
+                purpose: Purpose::Resume(token),
+                ..
+            } => Some(*token),
+            _ => None,
+        })
+        .collect()
 }
 
 fn probed_as(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
@@ -581,7 +608,10 @@ fn a_stored_folder_is_probed_when_the_conversation_is_resumed() {
     let effects = a.update(resumed_in(Some("/w/stored")));
     assert_eq!(
         probes(&effects),
-        vec![(PathBuf::from("/w/stored"), Purpose::Resume)]
+        vec![(
+            PathBuf::from("/w/stored"),
+            Purpose::Resume(resume_token(&a))
+        )]
     );
     // Nothing changes until the probe answers.
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
@@ -683,5 +713,47 @@ fn a_probe_answer_for_another_conversation_is_ignored() {
         .open_list();
     a.update(super::chat_history::resumed(id2(), 20, "programmer"));
     resume_probed(&mut a, probed_as("/w/stored", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+}
+
+#[test]
+fn resume_answers_out_of_order_never_cross_conversations() {
+    let mut a = resuming();
+    let first = a.update(resumed_for(30, Some("/w/one")));
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .open_list();
+    let second = a.update(resumed_for(20, Some("/w/two")));
+    let (one, two) = (resume_purposes(&first)[0], resume_purposes(&second)[0]);
+    assert_ne!(one, two);
+    // The answer of the first resume comes while the second waits.
+    resume_answer(&mut a, one, probed_as("/w/one", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    resume_answer(&mut a, two, probed_as("/w/two", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/two")));
+}
+
+#[test]
+fn a_late_resume_answer_does_not_undo_a_cd_the_user_confirmed() {
+    let mut a = resuming();
+    let effects = a.update(resumed_in(Some("/w/stored")));
+    let token = resume_purposes(&effects)[0];
+    ask(&mut a, "/cd /w/b");
+    probed(&mut a, concrete("/w/b"));
+    a.update(key('y'));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    resume_answer(&mut a, token, probed_as("/w/stored", Verdict::Concrete));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+}
+
+#[test]
+fn a_late_resume_answer_does_not_beat_a_cd_being_typed() {
+    let mut a = resuming();
+    let effects = a.update(resumed_in(Some("/w/stored")));
+    let token = resume_purposes(&effects)[0];
+    ask(&mut a, "/cd /w/b");
+    resume_answer(&mut a, token, probed_as("/w/stored", Verdict::Concrete));
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
 }

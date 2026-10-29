@@ -24,8 +24,9 @@ pub struct Probed {
 pub enum Purpose {
     /// The user typed `/cd`.
     Cd,
-    /// A conversation was resumed with a stored folder.
-    Resume,
+    /// A conversation was resumed with a stored folder; the token names the
+    /// request, so the answer of an earlier resume is told apart.
+    Resume(u64),
 }
 
 /// The argument of `/cd`.

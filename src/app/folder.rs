@@ -64,6 +64,8 @@ impl App {
     /// [`apply_folder`](Self::apply_folder), writing the folder to the store
     /// only when `keep`: a resume takes the folder from the store.
     fn change_folder(&mut self, id: PaneId, new: PathBuf, keep: bool) -> Vec<Effect> {
+        // A resume answer still on its way must not undo this choice.
+        self.resume_folders.remove(&id);
         let history = self.history && keep;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -101,6 +103,8 @@ impl App {
     pub(super) fn cd_submit(&mut self, id: PaneId, arg: &CdArg) -> Vec<Effect> {
         let busy = self.folder_busy(id);
         let home = self.home.clone();
+        // The user's own `/cd` outranks a resume answer still on its way.
+        self.resume_folders.remove(&id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -142,7 +146,7 @@ impl App {
             return Vec::new();
         };
         match purpose {
-            Purpose::Resume => self.on_resume_probed(id, result, busy),
+            Purpose::Resume(token) => self.on_resume_probed(id, token, result, busy),
             Purpose::Cd => {
                 // The answer of a command the composer no longer holds is stale.
                 if !matches!(parse_command(&chat.composer().text()), Command::Cd(_)) {
@@ -193,12 +197,14 @@ impl App {
             chat.push_system_line("no stored folder".to_owned());
             return None;
         };
+        self.folder_seq += 1;
+        let token = self.folder_seq;
         self.resume_folders
-            .insert(id, (conversation, folder.to_path_buf()));
+            .insert(id, (token, conversation, folder.to_path_buf()));
         Some(Effect::ProbeFolder {
             pane: id,
             path: folder.to_path_buf(),
-            purpose: Purpose::Resume,
+            purpose: Purpose::Resume(token),
         })
     }
 
@@ -208,10 +214,15 @@ impl App {
     fn on_resume_probed(
         &mut self,
         id: PaneId,
+        token: u64,
         result: Result<Probed, Refusal>,
         busy: Option<&'static str>,
     ) -> Vec<Effect> {
-        let Some((conversation, stored)) = self.resume_folders.remove(&id) else {
+        // Only the answer of the latest resume counts.
+        if self.resume_folders.get(&id).map(|entry| entry.0) != Some(token) {
+            return Vec::new();
+        }
+        let Some((_, conversation, stored)) = self.resume_folders.remove(&id) else {
             return Vec::new();
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -239,6 +250,11 @@ impl App {
         };
         chat.push_system_line(line);
         Vec::new()
+    }
+
+    /// The pane is gone: nothing it asked about is answered any more.
+    pub(super) fn drop_folder_state(&mut self, id: PaneId) {
+        self.resume_folders.remove(&id);
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.
