@@ -16,7 +16,7 @@ pub mod worker;
 pub use worker::{StoreHandle, spawn, spawn_at};
 
 /// The schema version this build writes and understands.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// How long a write waits for another instance before it gives up.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
@@ -72,6 +72,54 @@ CREATE TABLE memory_notes (
     PRIMARY KEY (project, topic_key)
 ) WITHOUT ROWID;
 CREATE INDEX memory_notes_by_conversation ON memory_notes(conversation_id);
+";
+
+/// Schema v3 (1.0 freeze) drops the closed-list CHECKs on `profile`, `role` and
+/// `status`, so a new profile, role (`tool`) or status needs no table rebuild
+/// later. The allowed values are validated in Rust when a row is written. Done
+/// with SQLite's documented 12-step ALTER procedure for `conversations`,
+/// `messages` and `tags`; the caller turns foreign keys off around it. Rowids,
+/// ids, the `folder` column and every other constraint are carried over.
+const SCHEMA_V3: &str = "
+CREATE TABLE new_conversations (
+    id         INTEGER PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    profile    TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    folder     TEXT
+);
+INSERT INTO new_conversations(id, created_at, updated_at, profile, title, folder)
+    SELECT id, created_at, updated_at, profile, title, folder FROM conversations;
+CREATE TABLE new_messages (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    engine          TEXT NOT NULL,
+    model           TEXT,
+    status          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    UNIQUE (conversation_id, seq)
+);
+INSERT INTO new_messages(rowid, conversation_id, seq, role, content, engine, model, status, created_at)
+    SELECT rowid, conversation_id, seq, role, content, engine, model, status, created_at FROM messages;
+CREATE TABLE new_tags (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    tag             TEXT NOT NULL,
+    is_project      INTEGER NOT NULL CHECK (is_project IN (0, 1)),
+    PRIMARY KEY (conversation_id, tag)
+) WITHOUT ROWID;
+INSERT INTO new_tags(conversation_id, tag, is_project)
+    SELECT conversation_id, tag, is_project FROM tags;
+DROP TABLE messages;
+DROP TABLE tags;
+DROP TABLE conversations;
+ALTER TABLE new_conversations RENAME TO conversations;
+ALTER TABLE new_messages RENAME TO messages;
+ALTER TABLE new_tags RENAME TO tags;
+CREATE INDEX tags_by_tag ON tags(tag);
+CREATE INDEX conversations_by_activity ON conversations(updated_at);
 ";
 
 /// Why the store cannot be used. The text is short and free of paths and
@@ -354,9 +402,32 @@ fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
 }
 
 /// Creates or upgrades the schema up to `target`, every step in one
-/// transaction: a fresh database gets v1 and v2 together, a v1 one only the
-/// additions. A schema newer than `target` is refused.
+/// transaction: a fresh database gets every version together, an older one only
+/// the additions. A schema newer than `target` is refused.
+///
+/// The v3 rebuild drops tables other tables point at, so foreign keys are off
+/// for the whole migration (SQLite ignores that pragma inside a transaction)
+/// and put back as they were afterwards, whatever the outcome.
 fn migrate_to(
+    conn: &mut Connection,
+    target: i64,
+    before_lock: impl FnOnce(),
+) -> Result<(), StoreError> {
+    let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    if keys {
+        conn.pragma_update(None, "foreign_keys", false)?;
+    }
+    let migrated = migrate_locked(conn, target, before_lock);
+    if keys {
+        let restored = conn.pragma_update(None, "foreign_keys", true);
+        migrated?;
+        restored?;
+        return Ok(());
+    }
+    migrated
+}
+
+fn migrate_locked(
     conn: &mut Connection,
     target: i64,
     before_lock: impl FnOnce(),
@@ -377,6 +448,17 @@ fn migrate_to(
     }
     if target >= 2 {
         ensure_folder(&tx)?;
+    }
+    if version < 3 && target >= 3 {
+        tx.execute_batch(SCHEMA_V3)?;
+        let broken: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+            [],
+            |r| r.get(0),
+        )?;
+        if broken {
+            return Err(StoreError::Sqlite("foreign key check failed"));
+        }
     }
     if version < target {
         tx.pragma_update(None, "user_version", target)?;

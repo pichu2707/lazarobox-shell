@@ -316,10 +316,10 @@ fn message(conn: &Connection, conv: i64, seq: i64, status: &str) -> rusqlite::Re
 }
 
 #[test]
-fn a_fresh_store_gets_schema_v2() {
+fn a_fresh_store_gets_schema_v3() {
     let dir = TempDir::new().unwrap();
     let conn = open_as(&store_path(&dir), me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
     assert_eq!(
         names(&conn, "table"),
         [
@@ -339,7 +339,7 @@ fn a_fresh_store_gets_schema_v2() {
 }
 
 #[test]
-fn the_status_enum_and_the_profile_are_checked() {
+fn every_current_status_is_stored() {
     let dir = TempDir::new().unwrap();
     let conn = open_as(&store_path(&dir), me()).unwrap();
     conversation(&conn, 1);
@@ -349,12 +349,6 @@ fn the_status_enum_and_the_profile_are_checked() {
     {
         message(&conn, 1, seq as i64, ok).unwrap();
     }
-    assert!(message(&conn, 1, 100, "partial").is_err());
-    let bad_profile = conn.execute(
-        "INSERT INTO conversations(created_at, updated_at, profile, title) VALUES (1, 1, 'x', 't')",
-        [],
-    );
-    assert!(bad_profile.is_err());
 }
 
 #[test]
@@ -401,7 +395,7 @@ fn reopening_keeps_the_data_and_the_version() {
     drop(conn);
 
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
     let n: i64 = conn
         .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
         .unwrap();
@@ -415,7 +409,7 @@ fn an_empty_database_at_version_zero_is_migrated() {
     fs::create_dir(db.parent().unwrap()).unwrap();
     drop(Connection::open(&db).unwrap());
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
     assert_eq!(names(&conn, "table").len(), 5);
 }
 
@@ -426,11 +420,11 @@ fn a_newer_schema_makes_the_store_unavailable_and_is_left_alone() {
     drop(open_as(&db, me()).unwrap());
     Connection::open(&db)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 3")
+        .execute_batch("PRAGMA user_version = 4")
         .unwrap();
     let before = fs::read(&db).unwrap();
 
-    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(3)));
+    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(4)));
     assert_eq!(fs::read(&db).unwrap(), before);
 }
 
@@ -476,7 +470,7 @@ fn a_symlinked_ancestor_of_the_data_directory_is_fine() {
     let db = dir.path().join("alias").join("lazarobox").join("chat.db");
 
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
     assert!(real.join("lazarobox").join("chat.db").is_file());
 }
 
@@ -493,7 +487,7 @@ fn two_instances_migrating_a_fresh_store_both_succeed() {
         migrate(&mut a).unwrap();
     })
     .unwrap();
-    assert_eq!(pragma_text(&b, "user_version"), "2");
+    assert_eq!(pragma_text(&b, "user_version"), "3");
 }
 
 #[test]
@@ -507,12 +501,12 @@ fn a_newer_wal_database_is_not_rewritten_before_the_refusal() {
             .query_row("PRAGMA journal_mode = wal", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
-        conn.execute_batch("PRAGMA user_version = 3").unwrap();
+        conn.execute_batch("PRAGMA user_version = 4").unwrap();
     }
     let before = fs::read(&db).unwrap();
     let wal_before = side(&db, "-wal").exists();
 
-    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(3)));
+    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(4)));
     assert!(fs::read(&db).unwrap() == before, "the main file changed");
     assert_eq!(side(&db, "-wal").exists(), wal_before);
 }
@@ -559,13 +553,13 @@ fn v1_store(db: &Path) {
 }
 
 #[test]
-fn a_v1_database_opens_as_v2_with_every_row_intact() {
+fn a_v1_database_opens_as_v3_with_every_row_intact() {
     let dir = TempDir::new().unwrap();
     let db = store_path(&dir);
     v1_store(&db);
 
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
     assert_eq!(count(&conn, "conversations"), 2);
     assert_eq!(count(&conn, "messages"), 2);
     assert_eq!(count(&conn, "tags"), 1);
@@ -598,7 +592,7 @@ fn a_v1_only_opener_refuses_a_v2_file_and_leaves_its_bytes() {
     drop(open_as(&db, me()).unwrap());
     let before = fs::read(&db).unwrap();
 
-    assert_eq!(open_with(&db, me(), 1).err(), Some(StoreError::Newer(2)));
+    assert_eq!(open_with(&db, me(), 1).err(), Some(StoreError::Newer(3)));
     assert!(fs::read(&db).unwrap() == before, "the v2 file changed");
     for suffix in ["-journal", "-wal", "-shm"] {
         assert!(!side(&db, suffix).exists());
@@ -748,7 +742,7 @@ fn a_v2_file_without_the_column_gets_it_and_keeps_its_rows() {
     let conn = open_as(&db, me()).unwrap();
     assert!(columns(&conn).contains(&"folder".to_owned()));
     assert_eq!(count(&conn, "conversations"), 1);
-    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
 }
 
 #[test]
@@ -774,8 +768,9 @@ fn a_v1_database_gets_the_folder_column_when_it_becomes_v2() {
 fn an_older_build_still_opens_a_file_that_has_the_column() {
     let dir = TempDir::new().unwrap();
     let db = store_path(&dir);
-    drop(open_as(&db, me()).unwrap());
+    drop(open_with(&db, me(), 2).unwrap());
     let conn = open_with(&db, me(), 2).unwrap();
+    assert!(columns(&conn).contains(&"folder".to_owned()));
     assert_eq!(pragma_text(&conn, "user_version"), "2");
     // The old build's INSERT names its columns and ignores the new one.
     conn.execute(
@@ -784,4 +779,203 @@ fn an_older_build_still_opens_a_file_that_has_the_column() {
         [],
     )
     .unwrap();
+}
+
+// ---- schema v3 and the fixture files (1.0 storage freeze) -------------------
+
+const FIXTURE_V1: &str = include_str!("../../../tests/fixtures/chat_store/v1.sql");
+const FIXTURE_V2: &str = include_str!("../../../tests/fixtures/chat_store/v2.sql");
+
+/// Builds `chat.db` from a checked-in fixture script, as an old build left it.
+fn from_fixture(dir: &TempDir, script: &str) -> PathBuf {
+    let db = store_path(dir);
+    fs::create_dir(db.parent().unwrap()).unwrap();
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch(script)
+        .unwrap();
+    db
+}
+
+/// Every row of `select`, one line each, values debug-quoted.
+fn dump(conn: &Connection, select: &str) -> Vec<String> {
+    let mut stmt = conn.prepare(select).unwrap();
+    let cols = stmt.column_count();
+    stmt.query_map([], |r| {
+        let mut line = Vec::new();
+        for i in 0..cols {
+            let v: rusqlite::types::Value = r.get(i)?;
+            line.push(format!("{v:?}"));
+        }
+        Ok(line.join("|"))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+const TABLE_DUMPS: [&str; 6] = [
+    "SELECT id, created_at, updated_at, profile, title FROM conversations ORDER BY id",
+    "SELECT rowid, * FROM messages ORDER BY rowid",
+    "SELECT * FROM tags ORDER BY conversation_id, tag",
+    "SELECT * FROM memory_sessions ORDER BY conversation_id",
+    "SELECT * FROM memory_notes ORDER BY project, topic_key",
+    "SELECT id, folder FROM conversations ORDER BY id",
+];
+
+/// The v1 fixture has no memory tables and no folder column yet.
+fn snapshot(db: &Path, v1: bool) -> Vec<Vec<String>> {
+    let conn = Connection::open(db).unwrap();
+    TABLE_DUMPS
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if v1 && i >= 3 {
+                Vec::new()
+            } else {
+                dump(&conn, s)
+            }
+        })
+        .collect()
+}
+
+fn assert_v3_intact(db: &Path, before: &[Vec<String>], v1: bool) {
+    let conn = open_as(db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
+    for (i, select) in TABLE_DUMPS.iter().enumerate() {
+        if v1 && i >= 3 {
+            continue;
+        }
+        assert_eq!(&dump(&conn, select), &before[i], "{select}");
+    }
+    let broken = dump(&conn, "SELECT * FROM pragma_foreign_key_check");
+    assert!(broken.is_empty(), "{broken:?}");
+    let indexes = names(&conn, "index");
+    for want in [
+        "tags_by_tag",
+        "conversations_by_activity",
+        "memory_notes_by_conversation",
+    ] {
+        assert!(indexes.iter().any(|n| n == want), "{want} in {indexes:?}");
+    }
+    // Foreign keys are back on and still cascade after the rebuild.
+    assert_eq!(pragma_text(&conn, "foreign_keys"), "1");
+    conn.execute("DELETE FROM conversations WHERE id = 1", [])
+        .unwrap();
+    assert_eq!(
+        count(&conn, "messages"),
+        before[1].len() as i64 - 3,
+        "the cascade removed conversation 1's three messages"
+    );
+}
+
+#[test]
+fn a_v2_fixture_migrates_to_v3_keeping_every_row_id_and_folder() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    let before = snapshot(&db, false);
+    assert_eq!(before[1].len(), 6);
+    assert!(before[5][0].contains("/home/u/work/parser"));
+    assert_v3_intact(&db, &before, false);
+}
+
+#[test]
+fn a_v1_fixture_migrates_to_v3_with_every_row_intact_and_a_folder_column() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V1);
+    let before = snapshot(&db, true);
+    assert_v3_intact(&db, &before, true);
+    let conn = open_as(&db, me()).unwrap();
+    assert!(columns(&conn).contains(&"folder".to_owned()));
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+}
+
+#[test]
+fn v3_has_no_enum_checks_so_a_new_role_profile_or_status_is_a_plain_insert() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    conn.execute(
+        "INSERT INTO conversations(id, created_at, updated_at, profile, title)
+         VALUES (1, 1, 1, 'reviewer', 't')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+         VALUES (1, 1, 'tool', 'c', 'e', NULL, 'partial', 1)",
+        [],
+    )
+    .unwrap();
+    // What stays enforced: uniqueness, the foreign key and not-null.
+    assert!(message(&conn, 1, 1, "complete").is_err());
+    assert!(message(&conn, 99, 1, "complete").is_err());
+    assert!(
+        conn.execute(
+            "INSERT INTO conversations(created_at, updated_at, profile, title)
+             VALUES (1, 1, NULL, 't')",
+            [],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reopening_a_v3_store_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    drop(open_as(&db, me()).unwrap());
+    let first = snapshot(&db, false);
+    let conn = open_as(&db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
+    drop(conn);
+    assert_eq!(snapshot(&db, false), first);
+}
+
+#[test]
+fn a_v2_build_refuses_a_v3_file_and_leaves_its_bytes() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    let before = fs::read(&db).unwrap();
+
+    assert_eq!(open_with(&db, me(), 2).err(), Some(StoreError::Newer(3)));
+    assert!(fs::read(&db).unwrap() == before, "the v3 file changed");
+    for suffix in ["-journal", "-wal", "-shm"] {
+        assert!(!side(&db, suffix).exists());
+    }
+}
+
+#[test]
+fn two_instances_migrating_a_v2_store_migrate_it_once() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    let before = snapshot(&db, false);
+    let mut b = Connection::open(&db).unwrap();
+    b.busy_timeout(BUSY_TIMEOUT).unwrap();
+
+    migrate_with(&mut b, || {
+        let mut a = Connection::open(&db).unwrap();
+        migrate(&mut a).unwrap();
+    })
+    .unwrap();
+    assert_eq!(pragma_text(&b, "user_version"), "3");
+    drop(b);
+    assert_v3_intact(&db, &before, false);
+}
+
+#[test]
+fn a_failed_v3_rebuild_rolls_back_to_the_untouched_v2_file() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    // A leftover table of the scratch name makes the rebuild fail midway.
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE new_messages(x)")
+        .unwrap();
+    let before = snapshot(&db, false);
+
+    assert!(open_as(&db, me()).is_err());
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(snapshot(&db, false), before);
 }

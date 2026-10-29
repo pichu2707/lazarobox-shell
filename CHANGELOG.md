@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- `chat.db` schema 3: the closed-list checks on `profile`, `role` and `status`
+  are gone (the values are still validated when written), so a new profile,
+  role or status can be added without rebuilding tables. Opening an older
+  file rebuilds `conversations`, `messages` and `tags` once, in one
+  transaction, keeping every row and id. A build that only knows schema 2
+  refuses a schema 3 file and leaves it untouched.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added
