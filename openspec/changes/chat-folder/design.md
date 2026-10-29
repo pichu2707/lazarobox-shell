@@ -1,0 +1,94 @@
+# Design: chat-folder (picker, `/cd`, start dir)
+
+Inputs: `proposal.md`, `exploration.md` (#3430), user decisions #3431, sibling specs under `specs/` (read in draft form). Base: working tree `feat/coding-tools-m5b` (full coding-tools chain). The `host/*.rs` files are left untouched (rebase point with agent-orchestrator S1c-2).
+
+## Technical Approach
+
+Today the chat folder is `ChatState.origin_cwd`, set once in `ChatState::new` (`core/ai/chat/mod.rs:358`). It has no setter. Every consumer already reads it lazily at the moment it is used: `offer_tools` (`app/tool.rs:398`), `check_run` → `run_scope` (`app/auto_run.rs:154`), `prepare_prompt` (`app/history.rs:105`), `begin_memory` (`app/context.rs:32`), notes, summary, offer, compact, `store_cmds` (`core/ai/chat/history.rs:140`), the tab label and the statusline (`app.rs:666`), and the panes opened from a chat (`effective_cwd`). The tool host gets the origin per turn (`TurnScope.origin`).
+
+So one setter plus a few invalidations is enough. Three things are pinned and must be reset: the system prompt (`set_prompt` pins it once), the memory readiness and block, and the engram session. Pure rules live in `core`, IO lives in `runtime`, and the app stays pure (`App` "never touches IO", `app.rs:697`). Every folder check therefore goes `Effect::ProbeFolder` → runtime → `AppEvent::FolderProbed`.
+
+## Architecture Decisions
+
+| # | Topic | Options and tradeoff | Decision |
+|---|---|---|---|
+| D1 | Single setter | (a) Rebuild the `ChatState`: this loses the transcript and the store link. (b) Have each consumer cache and reset its own copy. (c) **One setter that invalidates what is pinned.** | `ChatState::set_folder(new) -> FolderChange { old, prompt_now: bool }`. It does these things: sets `origin_cwd`, calls `invalidate_prompt()` (the body of `adopt_profile` l.254-258 moved into its own function: take the prompt, or set `reprepare_prompt`), calls `memory.reset_for_folder()` (D6), clears `tag` when `!tags_edited && store.is_fresh()` so a new conversation proposes its tag from the new folder, pushes the system line `folder changed: <old> -> <new>`, and calls `tell(notice)` (D7). The app wrapper `App::apply_folder(id, new)` then emits: `PreparePrompt` when `prompt_now`, `begin_memory`, `StoreCmd::SetFolder`, `Effect::EndToolSession` when `take_tool_session()` (this drops any per-session state of the old root), and `dirty`. Nothing else needs to change, because every consumer re-reads the folder. |
+| D2 | One validator, no cycle | (a) Make `root_of`/`concrete_root` `pub(crate)` and call them. But they refuse HOME and folders outside HOME, which the picker must accept, and the change would touch `host/*.rs`. (b) **Pure verdict in core plus one runtime probe built on the same building blocks.** | `core/ai/chat/folder.rs::judge(real: &Path, roots: &SecretRoots) -> Result<Verdict, Refusal>` (pure). `Verdict = Concrete \| Home \| AboveHome \| Outside`. `Refusal = NotFound \| NotAFolder \| NotAllowed \| Root`. `SecretRoots` already lives in core (`core/ai/tools/paths.rs:313`), so there is no core→runtime edge. `runtime/folder.rs::probe(env, path)` canonicalizes the path, checks `is_dir`, then calls `tools::fs::load_roots(env)` (the same snapshot the tools build) and `judge`. Inside HOME, "not allowed" is `!roots.judge_real(real)`. Outside HOME it is a new `SecretRoots::holds_secret(real)` (the private `under_root`, made public). A test pins the equivalence: for directories under a temp HOME, `judge == Concrete` ⇔ `root_of` is `Ok`, and `Home\|AboveHome` ⇔ `concrete_root` is `None`. |
+| D3 | "Broad or unknown" and "explicit" | — | **Amended 2026-10-28 (user decision): broad = `Home`, `AboveHome` (including every ancestor such as `/home`), AND `Outside` (system folders and anything outside HOME, the same criterion the tools use to refuse a root); all of them open the picker, none is ever a candidate row, and a typed or `/cd` choice of `Outside` is refused with `not allowed` (`Refusal::NotAllowed`).** `Home` (real == real HOME) and `AboveHome` (`home.starts_with(real)`, the same predicate as `concrete_root` l.257 and `run_check` l.126) stay explicit-only. `Root` (`/`) is refused outright (spec). On macOS the comparison is case-folded (`starts_with_folded`). **Unknown** means one of: the origin is `None`; the probe fails; or the source pane is a shell with `emu.cwd() == None && !(cwd_readable && proc_cwd.is_some())`. That last case is macOS without OSC 7: `cwd_readable` is false off Linux (`app.rs:874`) and `proc_cwd` is only the launch seed. A foreign OSC 7 (ssh) is already rejected by `core/osc7.rs:28`, and the local poll value is then correct for local tools, so no extra flag is added. **Explicit** means the user typed the path (picker field or `/cd`). `Home`, `AboveHome` and `Outside` are never candidate rows. (The draft accepted `Outside` with the notice `tools only reach folders inside your home`; that notice is dropped.) |
+| D4 | Busy refusal (`ChatState::folder_busy() -> Option<&'static str>` + app checks) | — | Checked in order, both at `/cd` time and again at `y`. (1) An approval is pending (`approvals().pending()`, `app/run.rs:82`) → `an approval is pending`. (2) A run slot: any pty pane with `run.chat == id` (`RunSlot`, `auto_run.rs:157`) → `a command is running`. (3) `phase != Idle` → `the model is answering`. This covers a stream, a tool call in flight (so the runtime `RunGate`/`Permit` is held only inside a turn), a summary or compaction holding the slot (`summarizing`), and `compaction.running()`. (4) `batch_badge().is_some() \|\| orphan().is_some()` → `writes are staged or proposed`. (5) `!memory.pending_save_ids().is_empty()` → `a note is still being saved`. This one is extra to the spec: a save answer adopts a session under the old project. It is bounded by `MEMORY_WAIT`. A parked send cannot coexist, because editing the composer drops it (`drop_parked_send`). |
+| D5 | Composer slash command | (a) Treat every leading `/` as a command: this breaks messages like `/etc/hosts …`. (b) **Only the exact token `/cd`.** | Parse in `chat_submit` (`app/chat.rs:296`), before the availability check, with the pure `folder::parse_command(text) -> Option<CdArg>`. It matches `^/cd(\s+(.*))?$` on the trimmed first line. The text `//cd …` is the escape: it is sent as `/cd …` with one slash stripped. Only this case is stripped; any other `//` is left alone. Other `/…` text is a normal message. The argument is the rest of the line, trimmed, with no quoting. `~` and `~/` expand from `app.home`. A relative path is joined to the current folder and then normalized by text. Bare `/cd` gives `usage: /cd <folder>`, and the same folder gives `already in <f>`. The flow: parse → busy check → `ProbeFolder{purpose: Cd}` → verdict → open the confirm. Tab completion lands in PR B (D10). |
+| D6 | Memory follows the folder | (a) Keep the session and send new saves under the old project: the spec rejects this. (b) **End the old session, reset, re-resolve, and drop stale replies by epoch.** | `ChatMemory::reset_for_folder()` does the following: bump `epoch`; set readiness to `Unknown`; clear `injected` and `context`; clear `degraded`; remove `Entry::Memory`. When the session has notes, the app first emits the existing end effects (`take_end` → `MemCmd::End`, `app/notes.rs:435`). It then clears `session`, `session_linked`, `notes` and `ended`. `MemCmd::Resolve/Context` and their replies carry `epoch`; a mismatch is ignored. Store: `LinkSession` gains `replace: bool`, and an upsert replaces the row in `memory_sessions` (PK `conversation_id`). Engram rejects a session under another project, so the link must follow. `memory_notes` rows keep their project. |
+| D7 | Model notice and stale paths | Add a guard that rewrites or blocks old paths: this is brittle. **Notice plus the existing policy.** | `tell("The chat's folder changed from <old> to <new>. Paths from earlier messages may not exist; tool paths are now relative to <new>.")` uses the existing once-only, never-stored channel (`mod.rs:505`). The re-prepared prompt carries the new workspace block. There is no path guard: each tool resolves against the new `TurnScope.origin`, and an old absolute path falls under `OUTSIDE_ROOT` or a read ask. Approvals in `allowed` are keyed by the resolved path, so they do not carry over. Paths are cleaned before display (`clean`). |
+| D8 | chat.db folder | (a) Bump to v3: older builds then refuse the whole store (`refuse_newer`, `chat_store.rs:321`), which breaks the "ignored by older builds" rollback promise. (b) **Additive column, still v2.** | `ensure_folder(tx)` inside `migrate_to`'s immediate transaction: if `PRAGMA table_info(conversations)` has no `folder`, run `ALTER TABLE conversations ADD COLUMN folder TEXT`. Nullable, so old rows read `NULL`. No query uses `SELECT *` (verified), so an older build ignores the column. `Create` gains `folder`. The new `SetFolder{pane, conversation: Option<i64>, folder}` resolves like `SetTags`. `Resumed` gains `folder`. The new `RecentFolders{pane, limit}` runs `SELECT folder, MAX(updated_at) … GROUP BY folder ORDER BY 2 DESC LIMIT 12`. |
+| D9 | Resume | — | `on_resumed` (`app/history.rs:417`) emits `ProbeFolder{purpose: Resume}` for the stored folder. Concrete only: `set_folder` without asking (the stored choice). Broad (including an explicit `$HOME`, which shows the picker on every resume, and `Outside`), `NULL` or refused: the system line `stored folder not available: <f>` or `no stored folder`, and the folder stays as it is. In PR B the picker then opens over the conversation. When the chat is busy (D4), the folder is kept and the line says so. |
+| D10 | Picker | Gather candidates in the app: this needs IO. Run `git rev-parse --show-toplevel` per pane: it spawns a process, reads git config, and would need the jail. **Pure `.git` walk.** | Pure `core/ai/chat/folder_picker.rs`: `FolderPicker{base, rows ≤ 12, selected, field, error, state: Gathering\|Ready\|Accepting(token)}`, with `on_key → PickerOutcome{None, Probe(path), Complete(text), Cancel}`. Keys: Up/Down select, characters/Backspace/Ctrl+U edit the field, Tab completes, Enter takes the field if it is non-empty, else the selected row (no rows and an empty field does nothing), Esc cancels. A paste goes to the field. Candidates: the app collects the tab's shell `effective_cwd`s and `Tab.last_shell` (when it is not HOME), then sends `StoreCmd::RecentFolders` (skipped with history off; a failure counts as empty), then `ProbeFolders{paths, walk_git}`. The runtime walks up from each pane cwd until `.git` (dir or file, so worktrees count) or HOME/`/`, and judges every path. The pure `merge` keeps the order last-used, pane git roots, recent, last shell; dedupes by real path; keeps `Concrete\|Outside` only; and pre-selects row 0. The runtime lists completions with `read_dir` (directories only, hidden ones only with a `.` prefix, cap 50). A stale reply (the field changed) is dropped. |
+| D11 | Open flow with the picker | — | `open_chat_pane` (`app/chat.rs:19`) still creates the pane and calls `request_detection`. Detection needs no folder, so it runs while the picker is open. Then it emits `ProbeFolder{purpose: Open}` and **defers** `begin_memory`, `show_server_offer`, `PreparePrompt` and `Store List`. Concrete: set the canonical path and run the deferred steps. Broad (`Home`, `AboveHome`, `Outside`) or unknown: open the picker, and the keys go to it right after the approval check in `on_chat_key`. Accept: probe again, `set_folder`, run the deferred steps. Esc: keep the folder, add the line `chat folder is <f>; use /cd <folder> to change it`, run the deferred steps. No send can start, because the composer is hidden. A chat opened from a chat inherits `origin_cwd`, so the picker shows when that folder is broad. |
+| D12 | Start dir | — | `core/start.rs` (pure): `parse_args(argv) -> StartArgs{dir}` accepts `--dir X` and `--dir=X`, and `resolve(dir, cwd, home, is_dir)`. `main.rs` resolves `--dir` before the nesting check. **Amended 2026-10-28 (user decision): an invalid or valueless `--dir` never exits.** `resolve` returns `StartDir{path, notice: Option<String>}`: on error the path is the launch cwd and the notice (`--dir: folder not found: <p>`, `not a folder`, `missing value`) travels to `runtime::run` and is shown as a startup notice inside lazarobox; nothing goes to stderr and nothing exits. A missing `Path=` folder is handled by the terminal (it starts in its own cwd). **`install-desktop --dir` writes BOTH `Path=<dir>` and `--dir=<dir>` in `Exec`** (the `Exec` value is escaped by the same Desktop Entry rules; no dir means neither). `install-desktop` itself still fails with one stderr line and exit 1 on a bad `--dir`, because it runs from a shell. **`nesting::guarded_start` must skip the value after `--dir`**: today `--dir /a` makes the start exempt from the guard, because `/a` has no `-`. `runtime::run(start: Option<PathBuf>)`: the flag wins, then a valid `[workspace] dir` (with a notice when it is invalid), then `env::current_dir` (l.231). The result is fed to `with_env` as the launch cwd. There is no `chdir`. Config: `Config` is `Copy`, so the dir goes into `Parsed.workspace_dir: Option<PathBuf>` through `read_workspace` (absolute or `~`). `install-desktop --dir`: `Options::Install{terminal, dir}`, `plan_install(choice, bin, dir)`, an `@PATH@` template line that is omitted when there is no dir, and an `@DIR_ARG@` slot in `Exec` that is empty without a dir. The value is a Desktop Entry *string*: escape `\` as `\\`, a leading space as `\s`, and refuse control characters. Spaces are kept verbatim. |
+
+## Data Flow
+
+    composer "/cd p" --parse--> busy? --ProbeFolder{Cd}--> runtime::folder::probe(load_roots, judge)
+         --FolderProbed--> confirm (ApprovalAsk::Folder{from,to}) --y + busy?--> App::apply_folder
+         --> ChatState::set_folder --> PreparePrompt | MemCmd::End + Resolve(epoch) | Store SetFolder | EndToolSession
+
+    open chat --ProbeFolder{Open}--> broad? --> picker --RecentFolders/ProbeFolders--> rows
+         --Enter--> ProbeFolder{Accept} --> set_folder + deferred open steps
+
+## File Changes
+
+| File | Action | Description |
+|---|---|---|
+| `src/core/ai/chat/folder.rs` | Create | `judge`, `Verdict`/`Refusal`, `parse_command`, `expand`, line and notice texts |
+| `src/core/ai/chat/folder_picker.rs` | Create | Picker state machine, `merge` (PR B) |
+| `src/core/ai/chat/{mod,history,memory,store}.rs` | Modify | `set_folder`, `invalidate_prompt`, `folder_busy`, `reset_for_folder` + epoch, `SetFolder`/`RecentFolders`/`replace` |
+| `src/core/ai/chat/approval.rs` | Modify | `ApprovalAsk::Folder{from,to,note}`, keys `y change folder · n keep` |
+| `src/core/ai/tools/paths.rs` | Modify | `SecretRoots::holds_secret` (public wrapper of `under_root`) |
+| `src/app/folder.rs` | Create | `/cd` flow, `apply_folder`, probe replies, picker wiring |
+| `src/app/{chat,history,context,run}.rs`, `src/app.rs` | Modify | submit hook, deferred open, resume, epoch, Effect/AppEvent variants |
+| `src/runtime/folder.rs` | Create | probe, `.git` walk, completion |
+| `src/runtime/chat_store.rs`, `chat_store/worker.rs` | Modify | `ensure_folder`, SQL for the new commands |
+| `src/runtime/engram/*` (memory worker) | Modify | echo `epoch` |
+| `src/core/start.rs`, `src/core/nesting.rs`, `src/main.rs`, `src/runtime.rs` | Create/Modify | `--dir` and precedence |
+| `src/core/config.rs` | Modify | `[workspace] dir` |
+| `src/core/desktop.rs`, `desktop/lazarobox.desktop`, `src/runtime/desktop.rs` | Modify | `--dir`, `Path=` |
+| `src/ui/components/chat/{approval,folder}.rs` | Modify/Create | confirm text, picker render |
+| `README.md` | Modify | Spanish docs; replace the workaround at about l.331-336 |
+
+## Testing Strategy (Strict TDD, `cargo test`)
+
+| Layer | What | Approach |
+|---|---|---|
+| Unit | `parse_command` cases, `expand`/relative/`..`, `judge` (Home, AboveHome, `/`, Outside, secret, case-fold on macOS cfg), `folder_busy` per reason, `set_folder` invalidations, picker transitions, `merge` order and dedupe, Path escaping, `start::resolve`, `guarded_start` with `--dir` | pure functions, fixed `SecretRoots` from temp dirs |
+| Integration | probe vs `root_of`/`concrete_root` equivalence; `.git` walk (dir, worktree file); completion lists directories only; `ensure_folder` on a v2 file and on an older-build open (`open_with(…, 2)` still works); `SetFolder`/`Resumed`/`RecentFolders` | tempdir HOME, existing `chat_store/tests.rs` pattern |
+| App | `/cd` emits no `ChatSend`; confirm `y`/others; re-check at `y`; notice once; stale epoch reply dropped; session relink; deferred open; Esc line; resume paths | `app_tests/*` with fake runtime answers (as in `chat_live.rs`) |
+| Snapshot | confirm 60x10, picker (rows, empty, error, gathering) | `TestBackend` + insta |
+| Manual | rofi launch, `Path=` in kitty, gnome-terminal and wezterm, macOS without OSC 7 | verify phase |
+
+macOS: no `/proc` poll, so most shells without OSC 7 open the picker. `Path=` is Linux-only, while `--dir` and the config work on macOS too. WSL: `/mnt/c/...` is `Outside` (accepted; tools refuse it). Start-menu launch stays out of scope (#268).
+
+## Migration / Rollout
+
+The schema change is additive (D8) and needs no version bump; old rows have `folder = NULL`. Production lines, tests excluded:
+
+| Slice | Content | Est. |
+|---|---|---|
+| A1 | `folder.rs` judge/parse, runtime probe, `set_folder`, `folder_busy`, memory epoch and reset, session relink | ~330 |
+| A2 | `/cd` command, confirm ask and render, `apply_folder`, chat.db folder, resume (no picker) | ~320 |
+| A3 | `--dir`, nesting fix, `[workspace] dir`, `install-desktop --dir`, README | ~260 |
+| B1 | picker core, `merge`, `RecentFolders`, `.git` walk, completion | ~330 |
+| B2 | open/resume integration, keys, render, `/cd` Tab completion | ~280 |
+
+The orchestrator's grouping is **PR A (A1+A2+A3) ≈ 910, above 600**, and **PR B (B1+B2) ≈ 610, at or above 600**. Five PRs of 260 to 330 lines each are recommended.
+
+## Resolved by the user (2026-10-28)
+
+- `install-desktop --dir` writes both `Path=` and `--dir=<dir>` in `Exec` (D12).
+- Extra busy reason `a note is still being saved` accepted (D4). `/cd` is refused while the model is answering.
+- Broad folders include ancestors of HOME and the system/outside folders the tools refuse (D3); typed choices of them follow the tools' refusal rules.
+- A project change ends the old engram session and opens a new one (D6).
+- Invalid or missing `--dir` and `Path=` start in the launch cwd with an in-app notice, no exit 1 (D12).
+- A resumed chat with an explicit `$HOME` shows the picker every time (D9).
+
+## Open Questions
+
+- [ ] Typed ancestors of HOME other than `/` (for example `/home`): tasks assume explicit-only like HOME (accepted when typed, never a row). Confirm or refuse them.
