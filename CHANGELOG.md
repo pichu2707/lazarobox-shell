@@ -10,7 +10,28 @@ baseline.
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-10-30
+
+First release candidate for 1.0.0. It is published to crates.io, but cargo
+does not install a pre-release unless asked for it (`cargo install
+lazarobox-shell --version 1.0.0-rc.1`). Use it, report what turns up, and
+1.0.0 follows from the last good candidate. From 1.0.0 on, `config.toml`, the
+`chat.db` format, the public CLI and the key bindings follow the stability
+promise described in the README.
+
 ### Added
+
+- Chat folder: the chat now asks for its folder instead of silently using the
+  folder it was launched from. When it opens (or resumes a conversation)
+  with no usable folder, for example from a desktop launcher that starts in
+  `$HOME`, a picker offers the last used project, the repository roots of the
+  panes, recent chat folders and a typed path with `Tab` completion; `Esc`
+  keeps the current folder. `/cd <folder>` changes the folder of an open
+  chat: it is your command (it never reaches the model), asks `y` showing the
+  old and the new folder, and waits while a write, an approval or a command
+  is pending. The chat remembers its last folder and a resumed conversation
+  opens in it. To send a message that really starts with `/cd`, type
+  `//cd`.
 
 - The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
 - A menu save says where it wrote in the statusline (`saved to
@@ -48,6 +69,7 @@ baseline.
 
 ### Docs
 
+- README: the chat folder picker and `/cd`, and the key reference for both.
 - README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
   `config.toml`, the `chat.db` format with forward migration, the public CLI
   and the key bindings; what is not: `__*` subcommands, log text, UI layout),
@@ -1412,7 +1434,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
 [0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
