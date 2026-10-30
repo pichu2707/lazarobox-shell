@@ -976,3 +976,97 @@ async fn a_panicking_call_gets_an_error_result_and_the_loop_goes_on() {
         .clone();
     assert_eq!(tool["content"], ollama::FAILED);
 }
+
+// A tool call written as text (local-model-writes D3) ------------------------
+
+fn written(name: &str) -> String {
+    format!("```json\n{{\"name\": \"{name}\", \"arguments\": {{\"query\": \"curso\"}}}}\n```")
+}
+
+fn reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::text_call::TEXT_CALL_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// D3: one more request in the same turn, with the answer and the reminder;
+// the text itself is never run.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_tool_call_written_as_text_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(&written("find_dir")),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "only the real call runs");
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], written("find_dir"));
+    assert!(messages[n - 2].get("tool_calls").is_none());
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::text_call::reminder("find_dir")
+    );
+    assert!(
+        bodies[1]["tools"].is_array(),
+        "the reminder still offers tools"
+    );
+}
+
+// D3: at most one reminder a turn: a second text call ends the turn.
+#[tokio::test]
+async fn a_second_tool_call_written_as_text_ends_the_turn() {
+    let fake = fake(vec![text(&written("find_dir"))]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 1);
+    assert_eq!(tool_calls(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// D3: an answer that only names a tool, a tool not offered, or a turn
+// without tools ends the turn as before.
+#[tokio::test]
+async fn an_answer_that_is_not_a_call_to_an_offered_tool_ends_the_turn() {
+    for (answer, tools) in [
+        ("Use find_dir to look for it.".to_owned(), true),
+        (r#"{"name": "find_dir"}"#.to_owned(), true),
+        (written("rm_rf"), true),
+        (written("find_dir"), false),
+    ] {
+        let fake = fake(vec![text(&answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), 1, "{answer}");
+        assert_eq!(reminders(&events), 0, "{answer}");
+    }
+}
+
+// D3: the reminder counts toward the turn's request cap: a text call in the
+// last allowed reply ends the turn.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_text_call_in_the_last_allowed_reply_gets_no_reminder() {
+    let mut steps = vec![calls("find_dir", json!({"query": "curso"})); ollama::MAX_ROUNDS - 1];
+    steps.push(text(&written("find_dir")));
+    let fake = fake(steps).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), ollama::MAX_ROUNDS);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}

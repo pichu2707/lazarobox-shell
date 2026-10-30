@@ -34,6 +34,7 @@ pub mod streams;
 pub mod summary;
 pub mod tag_editor;
 pub mod tags;
+pub mod text_call;
 pub mod tool;
 pub mod transcript;
 pub mod workspace;
