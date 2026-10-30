@@ -744,6 +744,43 @@ async fn the_sanitizer_cleans_the_text_of_every_round() {
     assert_eq!(answer, "one \ntwo", "rounds are told apart");
 }
 
+// Reasoning leaked into the answer after a tool round (qwen3 on Ollama): the
+// text before a bare `</think>` goes out as reasoning, the rest as the
+// answer, and only the answer is echoed back.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reasoning_leaked_after_a_tool_round_is_shown_as_reasoning() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text("So the path is curso.\n</think>\n\nFound it"),
+        text("next turn"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::ThinkingDelta("So the path is curso.".into()),
+            StreamEvent::Delta("Found it".into()),
+            done(),
+        ],
+        "{events:?}"
+    );
+}
+
+// The first round of a turn still streams its text as it comes.
+#[tokio::test]
+async fn the_first_round_passes_a_close_tag_through_as_text() {
+    let fake = fake(vec![text("a</think>b")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("a</think>b".into()), done()]);
+}
+
 #[tokio::test]
 async fn the_answer_cap_covers_the_whole_turn_and_stops_the_loop() {
     let block = "a".repeat(64 * 1024);

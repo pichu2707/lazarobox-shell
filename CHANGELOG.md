@@ -12,6 +12,10 @@ baseline.
 
 ### Changed
 
+- With Ollama and llama.cpp, reasoning that a model leaks into its answer
+  after a tool round, closed by a bare `</think>`, is now shown as reasoning
+  instead of as part of the answer. In those rounds the answer appears whole
+  at the end of the round.
 - With Ollama and llama.cpp, a model that writes a tool call as JSON text
   instead of making it is asked once, in the same turn, to call the tool. The
   chat shows `the model wrote a tool call as text; it was asked to call the
