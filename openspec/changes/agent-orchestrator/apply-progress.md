@@ -210,7 +210,7 @@ Status: task 2.3 done (S2 complete), plus the two S2a follow-ups. Chain (feature
 | Branch | Fix | Test | RED |
 |--------|-----|------|-----|
 | s2b-1 | notes die with their alert (Ctrl+C, `Ended`) via `ChatState::drop_orch_alert` | `a_note_does_not_leak_into_the_next_alert` | note still `RetryFailed` |
-| s2b-1 | `Dropped` said only with no other run in the pane, neutral text (`an earlier run already moved on: ...`) | `a_dropped_answer_of_an_older_run_is_not_said_in_a_newer_one` | line pushed |
+| s2b-1 | `Dropped` is always said with neutral text (`an earlier run already moved on: your answer was not applied`), also when another run is current in the pane (no silent no-op) | `a_dropped_answer_of_an_older_run_is_said_neutrally_in_a_newer_one` | line missing while another run was current |
 | s2b-1 | no run manager: `OrchestraEvent::Unavailable` -> `orchestration is not available: your answer was not applied` | runtime `an_answer_with_no_run_manager_is_told`, app `an_unavailable_orchestration_is_said` | compile error (variant) |
 | s2b-1 | window mark no longer pre-empts auth/conflict evidence | `a_window_mark_beside_an_auth_status_is_auth` | RateLimit instead of Auth |
 | s2b-2 | one halt, with the count, for the queued workers an unavailable engine refuses; doc: `decide` replaces the whole roster, no `Running` case | thickened `a_relaunch_on_an_unavailable_engine_refuses_the_queued_workers_too` (halt worker, `3 workers refused: ...`, retry, relaunch on a ready engine) | halted on worker 2 |
