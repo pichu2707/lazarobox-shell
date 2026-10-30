@@ -1,6 +1,5 @@
 //! The ORCH mode of a chat pane (agent-orchestrator D2): the Ctrl+O toggle,
-//! its debounce and the global gate. State asserts only; the badge is drawn
-//! in S1e-2.
+//! its debounce and the global gate, and the ORCH badge on screen.
 
 use super::chat_live::{
     answered, ask, chat_id, chat_of, composer, ctrl, delta, ready_app, repeat, type_text,
@@ -33,6 +32,43 @@ fn orch(a: &App, id: PaneId) -> bool {
 
 fn no_pty_write(effects: &[Effect]) -> bool {
     effects.iter().all(|e| !matches!(e, Effect::WritePty(..)))
+}
+
+/// The whole screen as the app draws it, one trimmed row per line.
+pub(super) fn screen(a: &App) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..buf.area.height)
+        .map(|y| {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// chat-pane / Badge follows both switches: gate off (with the pane's mode
+// on), gate on with ORCH off, then both on.
+#[test]
+fn the_orch_badge_follows_the_gate_and_the_pane_mode() {
+    let mut a = orch_app();
+    toggle(&mut a);
+    assert!(orch(&a, chat_id()));
+    a.ai.orchestrator.enabled = false;
+    assert!(!screen(&a).contains("ORCH"), "gate off:\n{}", screen(&a));
+    a.ai.orchestrator.enabled = true;
+    toggle(&mut a);
+    assert!(!orch(&a, chat_id()));
+    assert!(!screen(&a).contains("ORCH"), "ORCH off:\n{}", screen(&a));
+    toggle(&mut a);
+    let shown = screen(&a);
+    assert!(shown.lines().next().unwrap().ends_with(" ORCH"), "{shown}");
+    insta::assert_snapshot!("orch_badge_on_screen", shown);
 }
 
 // modal-input / Ctrl+O toggles: on, then off; a second later is a new press.

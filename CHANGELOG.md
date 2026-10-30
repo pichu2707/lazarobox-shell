@@ -87,6 +87,13 @@ baseline.
   key repeat of a held key (about 600-760 ms) can never answer one.
 - The feedback form's footers say what `Esc` does on every screen.
 
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+
 ## [0.29.0] - 2026-10-28
 
 ### Added

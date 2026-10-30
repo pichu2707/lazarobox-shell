@@ -160,6 +160,39 @@ fn a_worker_read_ask_shows_the_label_and_the_path() {
     assert!(prompt.keys.contains("y read it"), "{prompt:?}");
 }
 
+// Spec (chat-pane, Label shown): the screen shows the worker's prompt with
+// its label (kind and `engine>model`; the `n/m` count of the queue is S3) and
+// the sanitized path.
+#[test]
+fn the_screen_shows_a_worker_read_prompt_with_its_label() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::WorkerRead {
+        path: "~/dev/other/a.rs".to_owned(),
+        label: "review claude>opus".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    };
+    announce(&mut a, turn, 1, ask);
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, &a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let screen = (0..buf.area.height)
+        .map(|y| {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("worker review claude>opus"), "{screen}");
+    assert!(screen.contains("read ~/dev/other/a.rs"), "{screen}");
+    assert!(screen.contains("y read it"), "{screen}");
+    insta::assert_snapshot!("worker_read_prompt_80x25", screen);
+}
+
 // y on a run: one write, then the answer that says it was typed.
 #[test]
 fn y_types_the_command_and_answers_sent() {

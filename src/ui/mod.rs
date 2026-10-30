@@ -74,6 +74,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                     .now(app.now())
                     .guidance(guidance.as_deref())
                     .approval(approval.as_ref())
+                    .orchestrating(app.orchestrating(id))
                     .copy(marks);
                 // The composer owns the real cursor of a focused chat, and the
                 // COPY cursor on the transcript replaces it in chat COPY. MENU

@@ -7,8 +7,9 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        OrchAlert,
+        Entry, OrchAlert,
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
+        transcript::worker_label,
     },
     orchestra::{Toolset, run::Roster},
 };
@@ -17,6 +18,14 @@ use crate::core::ai::{
 /// could not offer the orchestration tools.
 const TOOLS_OFF: &str =
     "ORCH needs tools: turn them on in the menu (Ctrl+Space m), or press Ctrl+O to chat";
+
+/// The provider notice (agent-orchestrator D12) with the keys that answer
+/// it: Enter accepts, Esc dismisses (`y` is typed).
+const NOTICE: &str = "Providers recommend API keys for automation; \
+     consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
+
+/// The keys of the failure alert: `r` retries, `c` or Esc cancels.
+const ALERT_KEYS: &str = "r retry \u{b7} c/Esc cancel";
 
 /// What the chat footer says about ORCH while the gate is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -124,6 +133,20 @@ impl App {
         chat.set_orch_alert(None);
         self.dirty = true;
         Some(vec![Effect::OrchDecide { pane: id, choice }])
+    }
+
+    /// What pane `id` shows above its composer about its run, in the order
+    /// the keys answer: the provider notice, then the failure alert. `None`
+    /// when neither is up. Like the `engram serve` offer it is guidance, so
+    /// paging counts its rows.
+    pub(super) fn orch_guidance(&self, id: PaneId) -> Option<String> {
+        let chat = self.panes.get(&id)?.chat_state()?;
+        let notice = self.orch_notice(id).then(|| NOTICE.to_owned());
+        let alert = chat.orch_alert().map(|alert| alert_text(chat, alert));
+        match (notice, alert) {
+            (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
+            (notice, alert) => notice.or(alert),
+        }
     }
 
     /// Whether the provider notice is shown in pane `id`.
@@ -294,4 +317,24 @@ impl App {
             }),
         }
     }
+}
+
+/// The failure alert as one paragraph: the run is paused, the worker by its
+/// row's label and how it ended, the error as it came (a control character,
+/// a line break included, drawn as a space) and the keys.
+fn alert_text(chat: &ChatState, alert: &OrchAlert) -> String {
+    let row = chat.entries().iter().find_map(|entry| match entry {
+        Entry::Worker(row) if (row.run, row.id) == (alert.run, alert.worker) => Some(row),
+        _ => None,
+    });
+    let (worker, ended) = row.map_or_else(
+        || (format!("{}", alert.worker.0), "failed"),
+        |row| (worker_label(row), row.status.label()),
+    );
+    let text: String = alert
+        .text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!("run paused: worker {worker} {ended}: {text} \u{b7} {ALERT_KEYS}")
 }

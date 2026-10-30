@@ -9,6 +9,7 @@ use super::{
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
+use crate::core::ai::orchestra::worker::WorkerStatus;
 
 /// What a transcript line is, which decides its style.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -119,15 +120,20 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
     (out, starts)
 }
 
-/// A worker row as text: `review codex>gpt-5 running`, then how long it ran
-/// once it ended (`done 12.3s`).
-fn worker_line(row: &WorkerRow) -> String {
+/// A worker as its row and its alert name it: `review codex>gpt-5`.
+pub fn worker_label(row: &WorkerRow) -> String {
     let engine = match (row.engine.as_str(), &row.model) {
         ("", _) => "no engine".to_owned(),
         (engine, Some(model)) => format!("{engine}>{model}"),
         (engine, None) => engine.to_owned(),
     };
-    let mut line = format!("{} {engine} {}", row.kind.id(), row.status.label());
+    format!("{} {engine}", row.kind.id())
+}
+
+/// A worker row as text: `review codex>gpt-5 running`, then how long it ran
+/// once it ended (`done 12.3s`).
+fn worker_line(row: &WorkerRow) -> String {
+    let mut line = format!("{} {}", worker_label(row), row.status.label());
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
     }
@@ -188,17 +194,19 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 push_wrapped(out, kind, "  ", "    ", &text, width);
             }
         }
-        // Plain text for now, so yank and COPY carry it like a tool row; the
-        // worker row's own look comes with the UI (S1e-2).
+        // Plain text, so yank and COPY carry it like a tool row; a worker
+        // that ended badly is drawn like a tool result that failed.
         Entry::Worker(row) => {
-            push_wrapped(
-                out,
-                LineKind::Tool,
-                TOOL_PREFIX,
-                "  ",
-                &worker_line(row),
-                width,
-            );
+            let kind = match row.status {
+                WorkerStatus::Failed | WorkerStatus::TimedOut | WorkerStatus::Refused => {
+                    LineKind::ToolAlert
+                }
+                WorkerStatus::Queued
+                | WorkerStatus::Running
+                | WorkerStatus::Done
+                | WorkerStatus::Cancelled => LineKind::Tool,
+            };
+            push_wrapped(out, kind, TOOL_PREFIX, "  ", &worker_line(row), width);
         }
         Entry::Reasoning(block) => {
             let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());
