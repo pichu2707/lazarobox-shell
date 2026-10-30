@@ -115,13 +115,9 @@ impl App {
                 }));
             }
             // The run it names is over: the pane's own alert is not touched.
-            // Said only when the pane has no other run, so the line is not
-            // read as part of a newer one.
-            OrchestraEvent::Dropped { run } => {
-                if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.push_system_line(MOVED_ON.to_owned());
-                }
-            }
+            // Always said (never a silent no-op); the wording is neutral so it
+            // is not read as part of a newer run.
+            OrchestraEvent::Dropped { .. } => chat.push_system_line(MOVED_ON.to_owned()),
             OrchestraEvent::Unavailable => chat.push_system_line(NO_ORCHESTRA.to_owned()),
             // Only the run it names ends: a replaced run ends after the new
             // one started.
