@@ -2,6 +2,7 @@
 //! orchestration tool calls and the read scope. No IO beyond the path checks
 //! of `scope`; time comes in as explicit `Instant`s.
 
+pub mod event;
 pub mod run;
 pub mod scope;
 pub mod tools;

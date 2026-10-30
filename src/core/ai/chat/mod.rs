@@ -47,6 +47,7 @@ use std::{
 use crate::core::{
     ai::{
         config::{ApprovalMode, Profile},
+        orchestra::{RunId, WorkerId, event::WorkerRow, worker::ErrorClass},
         tools::stage::BatchId,
     },
     layout::PaneId,
@@ -55,6 +56,17 @@ use composer::Composer;
 use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
+
+/// A worker failure that halted the pane's run, until the user answers it
+/// (agent-orchestrator, Failure stops the run): the error as it came, only
+/// sanitized and capped by the pipe, never replaced by a generic text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchAlert {
+    pub run: RunId,
+    pub worker: WorkerId,
+    pub class: ErrorClass,
+    pub text: String,
+}
 
 /// Columns the batch badge leaves free on the right of the pane: the widest
 /// mode badge (` AUTO `) and a gap.
@@ -154,6 +166,9 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// A worker of the pane's orchestrator run, updated in place as its
+    /// status changes: shown, never stored, never sent as history.
+    Worker(WorkerRow),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -358,6 +373,11 @@ pub struct ChatState {
     /// The turn that went out as an orchestrator turn, while it is the last
     /// one sent.
     orch_turn: Option<u64>,
+    /// The pane's run, from its first event until its `Ended`.
+    orch_run: Option<RunId>,
+    /// The failure the run waits on, until the user answers it or the run
+    /// ends.
+    orch_alert: Option<OrchAlert>,
 }
 
 impl ChatState {
@@ -409,6 +429,8 @@ impl ChatState {
             orphan: None,
             orch: false,
             orch_turn: None,
+            orch_run: None,
+            orch_alert: None,
         }
     }
 
@@ -426,10 +448,42 @@ impl ChatState {
         self.orch_turn = Some(turn);
     }
 
-    /// Whether an orchestrator turn of this chat is still in flight: its run
-    /// is active (in S1 a run ends with its turn).
+    /// Whether an orchestrator turn of this chat is still in flight.
     pub fn orch_turn_in_flight(&self) -> bool {
         self.phase != Phase::Idle && self.orch_turn == Some(self.turn)
+    }
+
+    /// The pane's run, from its first event until its `Ended`.
+    pub fn orch_run(&self) -> Option<RunId> {
+        self.orch_run
+    }
+
+    pub fn set_orch_run(&mut self, run: Option<RunId>) {
+        self.orch_run = run;
+    }
+
+    /// The failure alert shown in the pane, until it is answered.
+    pub fn orch_alert(&self) -> Option<&OrchAlert> {
+        self.orch_alert.as_ref()
+    }
+
+    pub fn set_orch_alert(&mut self, alert: Option<OrchAlert>) {
+        self.orch_alert = alert;
+    }
+
+    /// A worker's status changed: its row, keyed by run and worker, shows the
+    /// new state in place; a worker seen for the first time gets a row at
+    /// the end of the transcript.
+    pub fn worker_row(&mut self, row: WorkerRow) {
+        let shown = self.entries.iter_mut().find_map(|e| match e {
+            Entry::Worker(shown) if (shown.run, shown.id) == (row.run, row.id) => Some(shown),
+            _ => None,
+        });
+        match shown {
+            Some(shown) => *shown = row,
+            None => self.entries.push(Entry::Worker(row)),
+        }
+        self.generation += 1;
     }
 
     /// The context window of the engine the next turns go to, in tokens.
@@ -680,7 +734,11 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_) => None,
         })
     }
 
@@ -1177,7 +1235,11 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_) => None,
         })
     }
 
@@ -1269,3 +1331,5 @@ mod tool_tests;
 mod wait_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_row_tests;

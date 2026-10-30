@@ -147,15 +147,16 @@ impl TurnScope {
     /// Whether this turn may call `call` (D7, the filter's second place after
     /// the tool list): an orchestration call has a run manager to go to (D3);
     /// a worker's or the orchestrator's call has its family in the turn's
-    /// families, and a user server tool is only ever a chat's. A chat turn's
-    /// families are checked where they always were: the write and exec gate
-    /// (`files::gate`).
+    /// families, and a user server tool is a chat's or the orchestrator's
+    /// (asked `y` as in a chat, user decision 2026-10-29), never a worker's.
+    /// A chat turn's families are checked where they always were: the write
+    /// and exec gate (`files::gate`).
     fn offers(&self, call: &Call) -> bool {
         let orchestrated = self.orchestra.is_some() || self.read_scope.is_some();
         match (call, call.family()) {
             (Call::Orchestra(_), _) if self.orchestra.is_none() => false,
             (_, Some(family)) => !orchestrated || self.families.contains(family),
-            (_, None) => !orchestrated,
+            (_, None) => self.read_scope.is_none(),
         }
     }
 }

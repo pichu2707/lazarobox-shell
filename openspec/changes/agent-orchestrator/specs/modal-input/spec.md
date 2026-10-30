@@ -5,12 +5,17 @@ Slice tags as in agent-orchestrator.
 ## ADDED Requirements
 
 ### Requirement: Notice keys [S1]
-In a chat pane the provider notice MUST accept with Enter or `y` and dismiss with Esc. These keys apply only while the notice is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer it: the notice takes a key only while the composer is empty (as the `engram serve` offer); with text in the composer every key goes to the composer and its usual action, so an Enter that sends a message never accepts it (key audit, 2026-10-29: of the two guards, S1e-1b picks the empty composer). A held key (Repeat) does not answer it. There is no run-start scope prompt and so no scope keys (user decision, 2026-10-29).
+In a chat pane the provider notice MUST accept with Enter only and dismiss with Esc; `y` does not answer it and is typed into the composer like any letter (user decision, 2026-10-29). These keys apply only while the notice is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer it: the notice takes a key only while the composer is empty (as the `engram serve` offer); with text in the composer every key goes to the composer and its usual action, so an Enter that sends a message never accepts it (key audit, 2026-10-29: of the two guards, S1e-1b picks the empty composer). A held key (Repeat) does not answer it. There is no run-start scope prompt and so no scope keys (user decision, 2026-10-29).
 
 #### Scenario: Notice keys [auto]
 - GIVEN the notice shown and an empty composer
-- WHEN Enter or `y` is pressed (or Esc)
+- WHEN Enter is pressed (or Esc)
 - THEN it is accepted (or dismissed without accepting)
+
+#### Scenario: `y` does not accept [auto]
+- GIVEN the notice shown and an empty composer
+- WHEN `y` is pressed
+- THEN `y` is typed into the composer, and the notice is still shown and not accepted
 
 #### Scenario: Typed Enter does not accept [auto]
 - GIVEN the notice shown and the composer holding `hello`

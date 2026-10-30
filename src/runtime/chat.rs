@@ -57,6 +57,7 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
+        orchestra::{RunId, run::UserChoice},
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
@@ -664,7 +665,9 @@ pub fn wires_for(cli: CliEnv) -> Wires {
 
 /// A turn's tool session: what its adapter timers see, the dispatch of a
 /// server engine (Ollama), and where its user servers will be put.
-type Opened = (Pending, Option<Arc<dyn Dispatch>>, Slot);
+/// A turn's session: its pending asks, the dispatch of a server engine, the
+/// slot of its user servers, and the run an orchestrator turn started.
+type Opened = (Pending, Option<Arc<dyn Dispatch>>, Slot, Option<RunId>);
 
 /// The running turns, by pane. Each turn is one task that owns its adapter
 /// future: aborting the task drops the future, which closes the socket or
@@ -816,14 +819,19 @@ impl Chats {
                 return;
             }
         };
-        let (pending, dispatch, external) = match opened {
-            Some((pending, dispatch, slot)) => (
+        let (pending, dispatch, external, run) = match opened {
+            Some((pending, dispatch, slot, run)) => (
                 Some(pending),
                 dispatch,
                 self.externals.start_for(slot, &request),
+                run,
             ),
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
+        // The run of an orchestrator turn hears when the turn is over: it then
+        // ends by itself once it has nothing left to do. An aborted turn says
+        // nothing: Ctrl+C ended its run, a new turn replaced it.
+        let ended = run.zip(self.orchestra.clone());
         // Tell the engine's adapter which session is this turn's. Without a
         // session the request keeps `mcp: None` and the turn runs as text.
         if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
@@ -835,7 +843,7 @@ impl Chats {
                 unwire: started.end.clone(),
             }));
         }
-        let task = tokio::spawn(run_turn(
+        let turn = run_turn(
             self.runner.clone(),
             self.tx.clone(),
             Turn {
@@ -848,7 +856,13 @@ impl Chats {
             channel,
             pending,
             dispatch,
-        ));
+        );
+        let task = tokio::spawn(async move {
+            turn.await;
+            if let Some((run, manager)) = ended {
+                manager.turn_ended(pane, run);
+            }
+        });
         self.turns.insert(pane, task);
     }
 
@@ -902,7 +916,7 @@ impl Chats {
                     pending: pending.clone(),
                 };
                 match manager.start(pane, scope) {
-                    Ok((_, handle)) => Some(handle),
+                    Ok((run, handle)) => Some((run, handle)),
                     Err(reason) => {
                         // The pane's earlier session must not stay open.
                         if let Some(hub) = tooling.hub.as_mut() {
@@ -914,6 +928,7 @@ impl Chats {
             }
             _ => None,
         };
+        let (run, orchestra) = orchestra.unzip();
         let orchestrated = orchestra.is_some();
         let scope = TurnScope {
             events: events.clone(),
@@ -940,7 +955,7 @@ impl Chats {
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
             }
-            return Ok(Some((pending, Some(dispatch), slot)));
+            return Ok(Some((pending, Some(dispatch), slot, run)));
         }
         if tooling.hub.is_none() {
             tooling.hub = Hub::new(&tooling.dirs).ok();
@@ -959,7 +974,7 @@ impl Chats {
             return Ok(None);
         };
         tooling.started.insert(pane, started);
-        Ok(Some((pending, None, slot)))
+        Ok(Some((pending, None, slot, run)))
     }
 
     /// The user's answer to a call that waits: the app's `ToolDecision`.
@@ -1093,6 +1108,15 @@ impl Chats {
             task.abort();
         }
         self.waits.end_pane(pane);
+    }
+
+    /// The user's answer to the failure that halted the run of `pane`
+    /// (`RunManager::decide`). `false` when no failure waits there (the run
+    /// ended meanwhile, or no run manager is attached): nothing changes.
+    pub fn decide_run(&self, pane: PaneId, choice: UserChoice) -> bool {
+        self.orchestra
+            .as_ref()
+            .is_some_and(|orchestra| orchestra.decide(pane, choice).is_ok())
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been

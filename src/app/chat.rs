@@ -159,6 +159,17 @@ impl App {
         }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
+        // The failure alert of the pane's run, in the conversation view only:
+        // after the debounce, so a held Esc answers it once.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_alert(id, &key, repeat)
+        {
+            return effects;
+        }
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -401,18 +412,24 @@ impl App {
         self.on_prompt_for(id, resolved)
     }
 
-    /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
-    /// when idle.
+    /// Esc and Ctrl+C: stop the stream and drop a parked send, and end the
+    /// pane's orchestrator run; do nothing when idle with no run.
     pub(super) fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_parked_send(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         let follow = chat.cancel();
+        // A run outlives its turn: Ctrl+C ends it too, which answers its
+        // failure alert.
+        let run = chat.orch_run().is_some();
+        chat.set_orch_alert(None);
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             effects.extend(self.cancel_chat(id));
+        } else if run {
+            effects.push(Effect::ChatCancel(id));
         }
         effects
     }

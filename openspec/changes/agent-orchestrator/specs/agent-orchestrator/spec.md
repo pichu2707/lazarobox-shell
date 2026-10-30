@@ -384,6 +384,24 @@ Ctrl+C in the chat pane MUST cancel the orchestrator turn and every worker of th
 - WHEN `cancel` is called
 - THEN the result says it already ended and its status is unchanged
 
+### Requirement: A run ends by itself [S1]
+A run MUST end by itself, as a cancel does but with nothing left to stop, once its orchestrator turn has ended and none of its workers is queued or running (user decision, 2026-10-29): the pane then has no active run and Ctrl+O works again with no key pressed. A run halted on a failure MUST NOT end by itself: the alert still needs an answer, and after a retry the run ends once the relaunched worker is done. Ctrl+C, the alert's cancel keys and a new run of the pane end it as before.
+
+#### Scenario: Turn and workers done [auto]
+- GIVEN an orchestrator turn whose workers all finished
+- WHEN the turn ends
+- THEN the run ends once and Ctrl+O toggles the mode again
+
+#### Scenario: A worker still runs [auto]
+- GIVEN an orchestrator turn that ended with a worker still running
+- WHEN the worker finishes
+- THEN the run ends then, not before
+
+#### Scenario: Halted run waits [auto]
+- GIVEN an orchestrator turn that ended with the run halted on a failure
+- WHEN time passes
+- THEN the run stays until the alert is answered
+
 ### Requirement: ODD flow [S5]
 The run MUST follow the ODD steps in order: `authorize`, `explore`, `resolve`, `classify`, `track` (large goals only), `implement`, `close`. A step MUST NOT be recorded as done without a handoff for it.
 - `authorize`: a goal that asks to investigate, explain, review, compare or plan is read-only, and no `code` worker MUST be spawned for it.

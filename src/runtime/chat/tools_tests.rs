@@ -843,6 +843,51 @@ async fn an_orchestrator_turn_without_a_session_ends_its_run() {
     assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
 }
 
+// S9 (user decision, 2026-10-29): when an orchestrator turn that spawned
+// nothing ends, its run ends by itself.
+#[tokio::test]
+async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, OrchSend},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = chats.with_orchestra(manager.clone());
+    let orch = OrchSend {
+        roster: Roster::new(vec![(
+            Task::Orchestrate,
+            Availability::Ready {
+                engine: "claude".into(),
+                model: None,
+            },
+        )]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    assert!(manager.scope(pane(1)).is_some(), "the run started");
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends")
+        .expect("an event");
+    assert_eq!((at, turn, event), (pane(1), 1, done()));
+    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+        .await
+        .expect("the run ends with its turn")
+        .expect("an event");
+    assert_eq!(at, pane(1));
+    assert!(matches!(event, OrchestraEvent::Ended { .. }), "{event:?}");
+    assert!(manager.scope(pane(1)).is_none());
+}
+
 // agent-orchestrator / No prompt at run start, Refused origin gives no root:
 // an orchestrator turn starts its run at once with the chat origin as the
 // run's read-scope root; a refused origin (here `$HOME`) gives no root and

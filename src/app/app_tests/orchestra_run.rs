@@ -1,0 +1,294 @@
+//! The run of an orchestrating pane as the app sees it (agent-orchestrator
+//! D1, D5): the run manager's events, the failure alert and its keys, and
+//! the run's lifetime. State asserts only; the alert is drawn in S1e-2.
+
+use super::chat_live::{
+    ask, chat_id, chat_of, code, composer, ctrl, delta, finish, plain, ready_app, repeat, type_text,
+};
+use super::orchestra_send::{orch_ai, orch_app_with, toggle};
+use super::*;
+use crate::app::orchestra::OrchHint;
+use crate::core::ai::{
+    chat::{Entry, OrchAlert},
+    orchestra::{
+        RunId, WorkerId,
+        event::{OrchestraEvent, WorkerRow},
+        run::UserChoice,
+        worker::{ErrorClass, WorkerStatus},
+    },
+};
+
+const RUN: RunId = RunId(7);
+
+/// An orchestrating pane whose notice was accepted earlier, its first
+/// orchestrator turn in flight; returns the turn.
+fn running() -> (App, u64) {
+    let mut ai = orch_ai();
+    ai.orchestrator.acknowledged = true;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    let turn = match ask(&mut a, "plan it").as_slice() {
+        [.., Effect::OrchestrateSend { turn, .. }] => *turn,
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    (a, turn)
+}
+
+fn event(event: OrchestraEvent) -> AppEvent {
+    AppEvent::Orchestra(chat_id(), event)
+}
+
+fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
+    OrchestraEvent::Worker(WorkerRow {
+        run,
+        id: WorkerId(id),
+        kind: Task::Review,
+        engine: "codex".into(),
+        model: Some("gpt-5".into()),
+        status,
+        elapsed: None,
+    })
+}
+
+fn halted(run: RunId, text: &str) -> OrchestraEvent {
+    OrchestraEvent::Halted {
+        run,
+        worker: WorkerId(1),
+        class: ErrorClass::Conflict,
+        text: text.into(),
+    }
+}
+
+/// A run whose worker 1 failed with `409 conflict: session busy`.
+fn alerted() -> (App, u64) {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(row(RUN, 1, WorkerStatus::Failed)));
+    assert_eq!(
+        a.update(event(halted(RUN, "409 conflict: session busy"))),
+        vec![]
+    );
+    (a, turn)
+}
+
+fn decide(choice: UserChoice) -> Effect {
+    Effect::OrchDecide {
+        pane: chat_id(),
+        choice,
+    }
+}
+
+fn alert(a: &App) -> Option<&OrchAlert> {
+    chat_of(a).orch_alert()
+}
+
+// agent-orchestrator / Error shown as it came: the alert holds the provider
+// message exactly as it came, with the worker and the class.
+#[test]
+fn a_failure_shows_its_alert_with_the_error_as_it_came() {
+    let (a, _) = alerted();
+    assert_eq!(
+        alert(&a),
+        Some(&OrchAlert {
+            run: RUN,
+            worker: WorkerId(1),
+            class: ErrorClass::Conflict,
+            text: "409 conflict: session busy".into(),
+        })
+    );
+    assert_eq!(chat_of(&a).orch_run(), Some(RUN));
+}
+
+// chat-pane / Alert persists: time, sibling rows and the orchestrator's own
+// output leave the alert as it was.
+#[test]
+fn the_alert_stays_through_time_and_other_output() {
+    let (mut a, turn) = alerted();
+    let before = alert(&a).cloned();
+    a.update(AppEvent::AnimTick);
+    a.update(event(row(RUN, 2, WorkerStatus::Running)));
+    a.update(event(row(RUN, 2, WorkerStatus::Done)));
+    a.update(delta(turn, "waiting for you"));
+    a.update(AppEvent::MemoryTick);
+    assert_eq!(alert(&a).cloned(), before);
+    assert!(before.is_some());
+}
+
+// modal-input / Retry key: `r` with an empty composer asks the run manager
+// to relaunch the worker; the alert is answered.
+#[test]
+fn r_retries_the_failed_worker() {
+    let (mut a, _) = alerted();
+    assert_eq!(a.update(key('r')), vec![decide(UserChoice::Retry)]);
+    assert_eq!(alert(&a), None);
+    assert_eq!(composer(&a), "", "the key was not typed");
+    assert_eq!(chat_of(&a).orch_run(), Some(RUN), "the run goes on");
+}
+
+// modal-input / Cancel keys: `c` or Esc cancels the run.
+#[test]
+fn c_or_esc_cancels_the_run() {
+    for cancel in [key('c'), plain(KeyCode::Esc)] {
+        let (mut a, _) = alerted();
+        assert_eq!(a.update(cancel), vec![decide(UserChoice::Cancel)]);
+        assert_eq!(alert(&a), None);
+        assert_eq!(composer(&a), "");
+        // The run is over once its `Ended` comes.
+        a.update(event(OrchestraEvent::Ended { run: RUN }));
+        assert_eq!(chat_of(&a).orch_run(), None);
+    }
+}
+
+// modal-input / Failure alert keys (key audit, 2026-10-29): with text in the
+// composer the letters are typed, never taken as an answer.
+#[test]
+fn letters_typed_into_a_message_never_answer_the_alert() {
+    let (mut a, _) = alerted();
+    type_text(&mut a, "a");
+    for typed in ['r', 'c'] {
+        assert_eq!(a.update(key(typed)), vec![]);
+    }
+    assert_eq!(composer(&a), "arc");
+    assert!(alert(&a).is_some(), "still shown");
+}
+
+// modal-input / Failure alert keys: other keys do not answer the alert, and
+// a held or modified letter does not either.
+#[test]
+fn other_keys_do_not_answer_the_alert() {
+    let (mut a, _) = alerted();
+    let effects = a.update(key('x'));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::OrchDecide { .. })),
+        "{effects:?}"
+    );
+    a.update(plain(KeyCode::Backspace));
+    a.update(repeat(KeyCode::Char('r'), KeyModifiers::NONE));
+    a.update(code(KeyCode::Char('c'), KeyModifiers::ALT));
+    assert!(alert(&a).is_some(), "still shown");
+}
+
+// modal-input / Ctrl+C: it cancels the orchestrator turn and the run, alert
+// or not, as the chat cancel always did.
+#[test]
+fn ctrl_c_cancels_the_turn_and_the_run_and_answers_the_alert() {
+    let (mut a, _) = alerted();
+    let effects = a.update(ctrl('c'));
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+    assert!(!effects.contains(&decide(UserChoice::Cancel)));
+    assert_eq!(alert(&a), None);
+}
+
+// modal-input / Ctrl+C: a run outlives its turn, and Ctrl+C or Esc still
+// ends it once the turn is over.
+#[test]
+fn ctrl_c_or_esc_ends_a_run_that_outlived_its_turn() {
+    for cancel in [ctrl('c'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = running();
+        a.update(event(row(RUN, 1, WorkerStatus::Running)));
+        a.update(finish(turn));
+        assert_eq!(a.update(cancel), vec![Effect::ChatCancel(chat_id())]);
+    }
+}
+
+// chat-pane / Toggle blocked during a run: the run lasts until its `Ended`,
+// past the orchestrator turn that started it (S1e-1a L5 closed).
+#[test]
+fn the_run_stays_active_after_its_turn_until_it_ends() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(finish(turn));
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::CancelRunFirst));
+    assert_eq!(toggle(&mut a), vec![]);
+    assert!(chat_of(&a).orch(), "the mode stays on");
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::Toggle));
+    toggle(&mut a);
+    assert!(!chat_of(&a).orch(), "with the run over the key works again");
+}
+
+// A replaced run ends after the new one started: its `Ended` leaves the new
+// run, and the new run's alert, in place.
+#[test]
+fn the_end_of_another_run_leaves_the_current_one() {
+    let (mut a, _) = alerted();
+    let old = RunId(3);
+    a.update(event(OrchestraEvent::Ended { run: old }));
+    assert_eq!(chat_of(&a).orch_run(), Some(RUN));
+    assert!(alert(&a).is_some());
+}
+
+// S6: events for a pane that is not a chat, or no longer exists, change
+// nothing.
+#[test]
+fn events_of_a_pane_that_is_not_a_chat_are_dropped() {
+    let mut a = ready_app();
+    let shell = PaneId::FIRST;
+    assert_ne!(shell, chat_id());
+    for gone in [shell, PaneId::for_test(99)] {
+        let events = [
+            row(RUN, 1, WorkerStatus::Running),
+            halted(RUN, "boom"),
+            OrchestraEvent::Ended { run: RUN },
+        ];
+        for e in events {
+            assert_eq!(a.update(AppEvent::Orchestra(gone, e)), vec![]);
+        }
+    }
+    assert_eq!(chat_of(&a).orch_run(), None);
+    assert_eq!(alert(&a), None);
+}
+
+// S6: in a pane that does not orchestrate, Esc and Ctrl+C on an idle chat
+// still do nothing, and `r`/`c` are typed.
+#[test]
+fn an_idle_chat_keeps_its_keys() {
+    let mut a = ready_app();
+    assert_eq!(a.update(plain(KeyCode::Esc)), vec![]);
+    assert_eq!(a.update(ctrl('c')), vec![]);
+    a.update(key('r'));
+    a.update(key('c'));
+    assert_eq!(composer(&a), "rc");
+}
+
+// agent-orchestrator / Row follows the status; Not in history: the run's rows
+// land in the chat, one per worker, and the next orchestrator turn carries
+// none of them.
+#[test]
+fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
+    let (mut a, turn) = running();
+    for status in [
+        WorkerStatus::Queued,
+        WorkerStatus::Running,
+        WorkerStatus::Done,
+    ] {
+        a.update(event(row(RUN, 1, status)));
+    }
+    let rows: Vec<_> = chat_of(&a)
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Worker(row) => Some(row.status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows, [WorkerStatus::Done]);
+    a.update(delta(turn, "all done"));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let request = match ask(&mut a, "next").as_slice() {
+        [.., Effect::OrchestrateSend { request, .. }] => request.clone(),
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    let sent: Vec<&str> = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, ["plan it", "all done", "next"]);
+}
