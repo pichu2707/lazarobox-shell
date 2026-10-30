@@ -314,11 +314,17 @@ fn chat_folder(env: &ToolEnv) -> String {
         .as_deref()
         .map(Path::new)
         .filter(|home| home.parent().is_some());
-    match home.and_then(|home| env.origin.strip_prefix(home).ok()) {
+    let shown = match home.and_then(|home| env.origin.strip_prefix(home).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => env.origin.display().to_string(),
-    }
+    };
+    // A folder name is the user's, but a control character in it must not
+    // reach the model's text as one.
+    shown
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 /// The one text of every write refusal, with the chat's folder, so a model

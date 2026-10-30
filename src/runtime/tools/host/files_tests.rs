@@ -1243,5 +1243,14 @@ async fn a_missing_parent_folder_is_named_after_the_policy_passed() {
     // A path the policy refuses keeps the one text, even below a missing folder.
     let secret = d.call(write("nope/.env", "t")).await;
     assert_eq!(secret.text, HINTED);
+    let deps = d.call(write("node_modules/gone/x.js", "t")).await;
+    assert_eq!(deps.text, HINTED);
+    // A link on the way, in the root or out of it or dangling, is never named.
+    std::os::unix::fs::symlink(w.proj.join("gone"), w.proj.join("dangling")).unwrap();
+    std::os::unix::fs::symlink("/tmp", w.proj.join("out")).unwrap();
+    for path in ["dangling/x.txt", "out/missing/x.txt"] {
+        let linked = d.call(write(path, "t")).await;
+        assert_eq!(linked.text, HINTED, "{path}");
+    }
     assert_eq!(w.staged(), 0);
 }
