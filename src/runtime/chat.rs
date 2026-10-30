@@ -1111,6 +1111,11 @@ impl Chats {
         self.waits.end_pane(pane);
     }
 
+    /// Whether a run manager is attached: without one no answer can be applied.
+    pub fn orchestrates(&self) -> bool {
+        self.orchestra.is_some()
+    }
+
     /// The user's answer to the failure that halted run `run` of `pane`
     /// (`RunManager::decide`). `false` when it was not applied (the run
     /// ended or was replaced, no failure waits, or no run manager is

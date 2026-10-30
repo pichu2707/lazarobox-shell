@@ -1636,7 +1636,11 @@ impl Panes {
                 // Returns at once: a run that is not halted any more ignores it.
                 Effect::OrchDecide { pane, run, choice } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide_run(pane, run, choice);
+                        if chats.orchestrates() {
+                            chats.decide_run(pane, run, choice);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
                     }
                 }
                 // Both return at once; the answer lands on a waiting call, or
@@ -4681,6 +4685,23 @@ mod tests {
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
         }
+    }
+
+    // No silent no-op: an answer to a failure with no run manager attached
+    // is told to the pane, never dropped without a word.
+    #[tokio::test]
+    async fn an_answer_with_no_run_manager_is_told() {
+        use crate::core::ai::orchestra::{RunId, run::UserChoice};
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let (_, feedback) = panes.apply(vec![Effect::OrchDecide {
+            pane: id(1),
+            run: RunId(1),
+            choice: UserChoice::Retry,
+        }]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::Unavailable)]
+        );
     }
 
     // The effect writes to the target, not to the chat, and only at a prompt.

@@ -30,7 +30,8 @@ const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
 /// Said when the run manager dropped an answer: its run is over.
-const MOVED_ON: &str = "the run already moved on: your answer was not applied";
+const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
+const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -114,7 +115,14 @@ impl App {
                 }));
             }
             // The run it names is over: the pane's own alert is not touched.
-            OrchestraEvent::Dropped { .. } => chat.push_system_line(MOVED_ON.to_owned()),
+            // Said only when the pane has no other run, so the line is not
+            // read as part of a newer one.
+            OrchestraEvent::Dropped { run } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(MOVED_ON.to_owned());
+                }
+            }
+            OrchestraEvent::Unavailable => chat.push_system_line(NO_ORCHESTRA.to_owned()),
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
@@ -122,7 +130,7 @@ impl App {
                     chat.set_orch_run(None);
                 }
                 if chat.orch_alert().is_some_and(|alert| alert.run == run) {
-                    chat.set_orch_alert(None);
+                    chat.drop_orch_alert();
                 }
             }
         }
@@ -155,8 +163,7 @@ impl App {
             _ => return None,
         };
         let run = alert.run;
-        chat.set_orch_alert(None);
-        chat.set_orch_note(None);
+        chat.drop_orch_alert();
         self.dirty = true;
         Some(vec![Effect::OrchDecide {
             pane: id,
