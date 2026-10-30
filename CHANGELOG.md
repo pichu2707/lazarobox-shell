@@ -12,6 +12,10 @@ baseline.
 
 ### Changed
 
+- With Ollama and llama.cpp, reasoning that a model leaks into its answer
+  after a tool round, closed by a bare `</think>`, is now shown as reasoning
+  instead of as part of the answer. In those rounds the answer appears whole
+  at the end of the round.
 - In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
   command: lazarobox presses Enter, waits for it and returns its output to the
   model, like a safe command that runs on its own. The prompt says

@@ -20,6 +20,7 @@ use crate::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{ToolExchange, ToolRound, ollama_round_body, openai_round_body},
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
+            leaked_thinking::{LeakedThinking, Piece},
             prompts,
             stream::{
                 CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
@@ -203,16 +204,18 @@ async fn rounds(
             profile.body(plain, &history, false)
         };
         let path = profile.path();
+        // A round after tool results may leak reasoning into its text.
+        let hold = !history.is_empty();
         let reply = match profile {
             Profile::Ollama => {
                 let decoder = OllamaToolDecoder::server_with(external.clone())
                     .with_families(request.families);
-                round(timeouts, port, path, &body, gap, decoder, tx).await
+                round(timeouts, port, path, &body, gap, hold, decoder, tx).await
             }
             Profile::OpenAi => {
                 let decoder = OpenAiToolDecoder::server_with(external.clone())
                     .with_families(request.families);
-                round(timeouts, port, path, &body, gap, decoder, tx).await
+                round(timeouts, port, path, &body, gap, hold, decoder, tx).await
             }
         };
         let finish = match reply.end {
@@ -302,12 +305,15 @@ struct Reply {
 /// end of the stream is held back, because a reply with tool calls is not the
 /// end of the turn. `gap` puts a line break before the first text, to part it
 /// from the text of the round before. What is kept to echo back is capped.
+/// `hold` sorts reasoning leaked into the text ([`LeakedThinking`]).
+#[allow(clippy::too_many_arguments)]
 async fn round<D: StreamDecoder + ToolCalls + Send>(
     timeouts: &Timeouts,
     port: u16,
     path: &str,
     body: &[u8],
     gap: bool,
+    hold: bool,
     mut decoder: D,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> Reply {
@@ -330,27 +336,48 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
         let (mut text, mut thinking) = (String::new(), String::new());
         let mut end = None;
         let mut gap = gap;
+        let mut split = LeakedThinking::new(hold, ANSWER_CAP);
+        let mut sort = |piece: Piece, text: &mut String, thinking: &mut String| match piece {
+            Piece::Answer(t) => {
+                push_capped(text, &t, ANSWER_CAP);
+                let lead = std::mem::take(&mut gap) && !t.is_empty();
+                StreamEvent::Delta(if lead { format!("\n{t}") } else { t })
+            }
+            Piece::Reasoning(t) => {
+                push_capped(thinking, &t, REASONING_CAP);
+                StreamEvent::ThinkingDelta(t)
+            }
+        };
         while let Some(event) = events.recv().await {
-            match event {
-                StreamEvent::Done(finish) => end = Some(Ok(finish)),
-                StreamEvent::Error(error) => end = Some(Err(error)),
+            let out = match event {
+                StreamEvent::Done(finish) => {
+                    end = Some(Ok(finish));
+                    continue;
+                }
+                StreamEvent::Error(error) => {
+                    end = Some(Err(error));
+                    continue;
+                }
+                StreamEvent::Delta(t) => split.push(&t),
+                StreamEvent::ThinkingDelta(t) => vec![Piece::Reasoning(t)],
                 other => {
-                    let other = match other {
-                        StreamEvent::Delta(t) => {
-                            push_capped(&mut text, &t, ANSWER_CAP);
-                            let lead = std::mem::take(&mut gap) && !t.is_empty();
-                            StreamEvent::Delta(if lead { format!("\n{t}") } else { t })
-                        }
-                        StreamEvent::ThinkingDelta(t) => {
-                            push_capped(&mut thinking, &t, REASONING_CAP);
-                            StreamEvent::ThinkingDelta(t)
-                        }
-                        other => other,
-                    };
                     if tx.send(other).await.is_err() {
                         return (text, thinking, None);
                     }
+                    continue;
                 }
+            };
+            for piece in out {
+                let event = sort(piece, &mut text, &mut thinking);
+                if tx.send(event).await.is_err() {
+                    return (text, thinking, None);
+                }
+            }
+        }
+        for piece in split.finish() {
+            let event = sort(piece, &mut text, &mut thinking);
+            if tx.send(event).await.is_err() {
+                return (text, thinking, None);
             }
         }
         (text, thinking, end)
