@@ -412,7 +412,7 @@ pub struct ChatState {
     /// ends.
     orch_alert: Option<OrchAlert>,
     /// Why the last answer to the alert did not go through.
-    orch_note: Option<OrchNote>,
+    orch_notes: Vec<OrchNote>,
     /// The detached picker opened from the alert (`m`, `p`).
     orch_picker: Option<FailurePicker>,
     /// What the user picked from an alert, for the run it was picked in.
@@ -475,7 +475,7 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             orch_alert: None,
-            orch_note: None,
+            orch_notes: Vec::new(),
             orch_picker: None,
             orch_overrides: None,
             clean_end: false,
@@ -519,12 +519,35 @@ impl ChatState {
         self.orch_alert = alert;
     }
 
-    pub fn orch_note(&self) -> Option<&OrchNote> {
-        self.orch_note.as_ref()
+    /// The notes shown with the alert: at most one of each kind.
+    pub fn orch_notes(&self) -> &[OrchNote] {
+        &self.orch_notes
     }
 
-    pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
-        self.orch_note = note;
+    /// Replaces the note of the same kind and leaves the other kind as it is.
+    pub fn set_orch_note(&mut self, note: OrchNote) {
+        let kind = std::mem::discriminant(&note);
+        self.orch_notes
+            .retain(|known| std::mem::discriminant(known) != kind);
+        self.orch_notes.push(note);
+    }
+
+    /// The alert is answered, replaced or gone: its picker and notes go too.
+    pub fn drop_orch_alert(&mut self) {
+        self.orch_alert = None;
+        self.orch_picker = None;
+        self.orch_notes.clear();
+    }
+
+    /// The picker is opened again: what it said last time is stale.
+    pub fn clear_picker_note(&mut self) {
+        self.orch_notes
+            .retain(|note| !matches!(note, OrchNote::Picker(_)));
+    }
+
+    /// A new orchestrator turn replaces the run: it starts from the menu.
+    pub fn clear_orch_overrides(&mut self) {
+        self.orch_overrides = None;
     }
 
     pub fn orch_picker(&self) -> Option<&FailurePicker> {
@@ -557,23 +580,17 @@ impl ChatState {
         self.orch_overrides = Some((run, overrides));
     }
 
-    /// `run` is over: its overrides, picker and note go with it.
+    /// `run` is over: its overrides, picker and notes go with it when it is
+    /// the pane's run, whether its alert is still up or not.
     pub fn end_orch_run(&mut self, run: RunId) {
-        if self
-            .orch_overrides
-            .as_ref()
-            .is_some_and(|(known, _)| *known == run)
-        {
+        let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
+        if self.orch_run != Some(run) && !alerted {
+            return;
+        }
+        if self.orch_overrides.as_ref().is_some_and(|(r, _)| *r == run) {
             self.orch_overrides = None;
         }
-        if self
-            .orch_alert
-            .as_ref()
-            .is_some_and(|alert| alert.run == run)
-        {
-            self.orch_picker = None;
-            self.orch_note = None;
-        }
+        self.drop_orch_alert();
     }
 
     /// A worker's status changed: its row, keyed by run and worker, shows the

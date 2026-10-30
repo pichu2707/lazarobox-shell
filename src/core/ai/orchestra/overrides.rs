@@ -37,10 +37,6 @@ pub enum Picked {
 pub struct RunOverrides(Vec<(Task, Assignment)>);
 
 impl RunOverrides {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// The choice for `task` replaces an earlier one.
     pub fn set(&mut self, task: Task, assignment: Assignment) {
         self.0.retain(|(known, _)| *known != task);
@@ -51,6 +47,17 @@ impl RunOverrides {
         self.0
             .iter()
             .find_map(|(known, assignment)| (*known == task).then_some(assignment))
+    }
+
+    /// Whether a worker of `task` on `engine` and `model` runs on the
+    /// override: its engine is the picked one and, when a model was picked,
+    /// its model too. A choice of "use general" names no engine to match.
+    pub fn is_on(&self, task: Task, engine: &str, model: Option<&str>) -> bool {
+        let Some(picked) = self.get(task) else {
+            return false;
+        };
+        picked.engine.as_deref() == Some(engine)
+            && picked.model.as_deref().is_none_or(|m| Some(m) == model)
     }
 
     /// `config` with the overrides on top: a copy, the menu is untouched.
@@ -112,11 +119,6 @@ impl FailurePicker {
 
     pub fn task(&self) -> Task {
         self.task
-    }
-
-    /// Why the last key did nothing, if it did nothing.
-    pub fn note(&self) -> Option<&'static str> {
-        self.note
     }
 
     pub fn step(&mut self, forward: bool) {
@@ -191,7 +193,7 @@ impl FailurePicker {
             .map(|note| format!(" {note} \u{b7}"))
             .unwrap_or_default();
         format!(
-            "{title}: {} \u{b7}{note} j/k move \u{b7} Enter choose \u{b7} Esc back",
+            "{title}: {} \u{b7}{note} j/k move \u{b7} Enter choose \u{b7} Esc cancel",
             shown.join(" \u{b7} ")
         )
     }

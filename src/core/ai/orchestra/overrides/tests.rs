@@ -97,7 +97,7 @@ fn a_custom_model_is_not_offered_here_and_the_picker_stays_usable() {
     }
     assert!(picker.view().contains("[custom…]"), "{}", picker.view());
     assert_eq!(picker.enter(), Picked::Open);
-    assert_eq!(picker.note(), Some(NOT_HERE));
+    assert!(picker.view().contains(NOT_HERE));
     assert_eq!(picker.title(), "Model for review (claude)");
 }
 
@@ -121,7 +121,7 @@ fn an_override_replaces_its_task_on_a_copy_of_the_config() {
     menu.set(Task::Code, assigned("codex", "default"));
     let before = menu.clone();
     let mut over = RunOverrides::default();
-    assert!(over.is_empty());
+    assert_eq!(over.get(Task::Review), None);
     over.set(Task::Review, assigned("claude", "sonnet"));
     let applied = over.apply(&menu);
     assert_eq!(applied.get(Task::Review), &assigned("claude", "sonnet"));

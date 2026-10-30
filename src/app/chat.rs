@@ -437,7 +437,7 @@ impl App {
         // A run outlives its turn: Ctrl+C ends it too, which answers its
         // failure alert.
         let run = chat.orch_run().is_some();
-        chat.set_orch_alert(None);
+        chat.drop_orch_alert();
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
