@@ -408,8 +408,8 @@ fn stage(
 }
 
 /// [`stage`] of a chat, with the disk read given, so a test can watch when it
-/// happens. Only the Linux test uses it.
-#[cfg(all(test, target_os = "linux"))]
+/// happens. Only the Linux and macOS test uses it.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn stage_with_probe(
     stages: &Mutex<Stages>,
     key: StageKey,
