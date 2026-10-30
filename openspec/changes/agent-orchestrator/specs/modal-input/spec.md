@@ -4,18 +4,18 @@ Slice tags as in agent-orchestrator.
 
 ## ADDED Requirements
 
-### Requirement: Notice and scope keys [S1]
-In a chat pane the provider notice MUST accept with Enter or `y` and dismiss with Esc; the run-start scope prompt MUST approve with `y` and deny with `n` or Esc. These keys apply only while the view is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer either view: the notice is accepted only by `y` pressed after an arm delay (as approvals), or only while the composer is empty, so an Enter that sends a message never accepts it; S1e-1b picks one of the two and applies the same guard to the scope prompt (key audit, 2026-10-29).
+### Requirement: Notice keys [S1]
+In a chat pane the provider notice MUST accept with Enter or `y` and dismiss with Esc. These keys apply only while the notice is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer it: the notice takes a key only while the composer is empty (as the `engram serve` offer); with text in the composer every key goes to the composer and its usual action, so an Enter that sends a message never accepts it (key audit, 2026-10-29: of the two guards, S1e-1b picks the empty composer). A held key (Repeat) does not answer it. There is no run-start scope prompt and so no scope keys (user decision, 2026-10-29).
 
 #### Scenario: Notice keys [auto]
-- GIVEN the notice shown
-- WHEN Enter is pressed (or Esc)
+- GIVEN the notice shown and an empty composer
+- WHEN Enter or `y` is pressed (or Esc)
 - THEN it is accepted (or dismissed without accepting)
 
-#### Scenario: Scope keys [auto]
-- GIVEN the scope prompt shown
-- WHEN `y` (or `n`) is pressed
-- THEN the scope is approved (or denied, leaving an empty scope)
+#### Scenario: Typed Enter does not accept [auto]
+- GIVEN the notice shown and the composer holding `hello`
+- WHEN Enter is pressed
+- THEN Enter acts on the composer as it does without the notice, and the notice is still shown and not accepted
 
 ### Requirement: ORCH toggle key [S1]
 In a chat pane, Ctrl+O MUST toggle the pane's ORCH mode when the global orchestrator gate is on, as a one-shot key (a held key does not toggle again, like the other debounced chat keys). Ctrl+O is not bound in the chat key table today (bound: Enter, Esc, Ctrl+C, Ctrl+Y, Ctrl+B, Ctrl+R, Ctrl+J, Alt+Enter, Ctrl+U, PageUp, PageDown, and on main Ctrl+G, the orphan batch review of coding-tools) and MUST NOT shadow any of them. It MUST be handled before the key can reach a PTY and be shown in the chat footer hint while the gate is on. With the gate off it does nothing.

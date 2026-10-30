@@ -1706,23 +1706,23 @@ other = 1
     fn the_orchestrator_flags_are_written_as_booleans() {
         let flags = [
             ConfigEdit::orchestrator_flag("enabled", true),
-            ConfigEdit::orchestrator_flag("notice_accepted", true),
+            ConfigEdit::orchestrator_flag("acknowledged", true),
         ];
         let out = apply_edit(None, &flags).unwrap();
         assert_eq!(
             out,
-            "[ai.orchestrator]\nenabled = true\nnotice_accepted = true\n"
+            "[ai.orchestrator]\nenabled = true\nacknowledged = true\n"
         );
         let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
         assert_eq!(notice, None);
-        assert!(ai.orchestrator.enabled && ai.orchestrator.notice_accepted);
+        assert!(ai.orchestrator.enabled && ai.orchestrator.acknowledged);
         // Alone, in place; the hand-edited timeout is never touched.
         let existing = "[ai.orchestrator]\nworker_timeout_secs = 90  # mine\n";
         let out = apply_edit(
             Some(existing),
-            &[ConfigEdit::orchestrator_flag("notice_accepted", true)],
+            &[ConfigEdit::orchestrator_flag("acknowledged", true)],
         )
         .unwrap();
-        assert_eq!(out, format!("{existing}notice_accepted = true\n"));
+        assert_eq!(out, format!("{existing}acknowledged = true\n"));
     }
 }

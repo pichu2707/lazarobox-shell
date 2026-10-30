@@ -112,7 +112,7 @@ impl ConfigEdit {
     }
 
     /// An edit of an owned orchestrator flag (`ai.orchestrator.enabled` or
-    /// `.notice_accepted`). `worker_timeout_secs` is owned but never edited.
+    /// `.acknowledged`). `worker_timeout_secs` is owned but never edited.
     pub fn orchestrator_flag(key: &'static str, on: bool) -> Self {
         Self {
             table: ORCHESTRATOR_TABLE,
@@ -146,8 +146,7 @@ impl ConfigEdit {
             || (self.table == TOOLS_TABLE
                 && (self.key == "enabled" || ToolToggle::ALL.iter().any(|t| t.key() == self.key)))
             || (self.table == LLAMACPP_TABLE && self.key == "managed")
-            || (self.table == ORCHESTRATOR_TABLE
-                && matches!(self.key, "enabled" | "notice_accepted"))
+            || (self.table == ORCHESTRATOR_TABLE && matches!(self.key, "enabled" | "acknowledged"))
     }
 }
 

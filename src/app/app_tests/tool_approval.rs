@@ -149,6 +149,8 @@ fn a_worker_read_ask_shows_the_label_and_the_path() {
     let ask = ApprovalAsk::WorkerRead {
         path: "/home/u/dev/other/a.rs".to_owned(),
         label: "review claude>opus".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
     };
     announce(&mut a, turn, 1, ask.clone());
     assert_eq!(pending(&a).map(|(got, _)| got), Some(ask));

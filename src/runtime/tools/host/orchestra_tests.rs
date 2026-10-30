@@ -16,7 +16,7 @@ use super::{
 use crate::core::{
     ai::{
         chat::{
-            approval::{ApprovalAsk, worker_label},
+            approval::{ApprovalAsk, Reach, worker_label},
             engine::Availability,
         },
         config::Task,
@@ -301,12 +301,34 @@ impl Orchestra for Hands {
     }
 }
 
-/// The ask of a worker read of `path` (under the fixture's home).
+/// The ask of a worker read of `path` (under the fixture's home) on a cloud
+/// engine whose chat origin is the home itself: a read there is `Broad`, as
+/// a chat read of it is.
 fn worker_ask(home: &Path, path: &str) -> ApprovalAsk {
+    worker_ask_as(home, path, Reach::Broad, true)
+}
+
+/// The ask of a worker read of `path` that leads to `reach`, on a cloud
+/// engine or not.
+fn worker_ask_as(home: &Path, path: &str, reach: Reach, cloud: bool) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
         path: home.join(path).to_str().unwrap().to_owned(),
         label: "review claude>opus".into(),
+        reach,
+        cloud,
     }
+}
+
+/// A worker turn like [`worker`] whose chat origin is `~/dev/app`, the root
+/// of its scope, as a run's is.
+fn worker_in_app(
+    locality: Locality,
+    home: &Path,
+    handle: Arc<dyn Orchestra>,
+) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
+    let (mut scope, rx) = worker(locality, home, handle);
+    scope.origin = home.join("dev/app");
+    (scope, rx)
 }
 
 // Spec (agent-tools, Inside runs, outside asks; D6): on a cloud engine a
@@ -406,12 +428,14 @@ async fn an_outside_read_asks_with_the_label_and_opens_nothing_before_y() {
     }
 }
 
-// Spec (S10, the user's choice): a worker read outside the scope asks on a
-// local engine too, with its label; one inside still runs unasked there.
+// Spec (agent-orchestrator, Outside read follows the mode as a chat read):
+// on a local engine a worker read outside the scope asks as a chat read
+// outside its root does, with the facts the approval mode reads and the
+// label; one inside still runs unasked there.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_worker_read_outside_the_scope_asks_on_a_local_engine_too() {
+async fn a_worker_read_outside_the_scope_on_a_local_engine_asks_as_a_chat_read() {
     let (_dir, home, host) = fixture();
     project(&home);
     let handle = Scoped::over(&home, &["~/dev/app"]);
@@ -419,12 +443,12 @@ async fn a_worker_read_outside_the_scope_asks_on_a_local_engine_too() {
         ("~/dev/other/a.rs", true, "outside the scope"),
         ("~/dev/app/a.rs", false, "inside the scope"),
     ] {
-        let (mut scope, mut rx) = worker(Locality::Local, &home, handle.clone());
+        let (mut scope, mut rx) = worker_in_app(Locality::Local, &home, handle.clone());
         let approver = Scripted::new(Decision::Denied("declined"));
         scope.approver = approver.clone();
         let out = host.dispatch(scope).call(read(input)).await;
         let (_, ask, status, _) = pair(&events(&mut rx));
-        let want = outside.then(|| worker_ask(&home, "dev/other/a.rs"));
+        let want = outside.then(|| worker_ask_as(&home, "dev/other/a.rs", Reach::Other, false));
         assert_eq!(ask, want, "{input}");
         assert_eq!(
             *approver.asked.lock().unwrap(),
@@ -441,28 +465,44 @@ async fn a_worker_read_outside_the_scope_asks_on_a_local_engine_too() {
     }
 }
 
-// Regression: the approval mode never answers a worker read. An unprompted
-// answer to a read outside the scope ends `denied`, on a cloud or a local
-// engine, and the file is never read.
+// Spec (agent-orchestrator, Outside read follows the mode as a chat read):
+// an answer of the approval mode (`Unprompted`) to a worker read outside the
+// scope is taken exactly as for a chat read: a local read outside the root
+// runs, a cloud read outside the root is denied and reads nothing, and a
+// cloud read the path guard refuses returns the refusal and opens nothing.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn an_unprompted_answer_to_a_worker_read_is_denied_and_reads_nothing() {
+async fn an_unprompted_answer_to_a_worker_read_is_taken_as_for_a_chat_read() {
     let (_dir, home, host) = fixture();
     project(&home);
+    std::fs::write(home.join("dev/other/.env"), "SECRET=1").unwrap();
     let handle = Scoped::over(&home, &["~/dev/app"]);
-    for locality in [Locality::Cloud, Locality::Local] {
-        let (mut scope, mut rx) = worker(locality, &home, handle.clone());
+    for (locality, input, reach, ran) in [
+        (Locality::Local, "dev/other/a.rs", Reach::Other, true),
+        (Locality::Cloud, "dev/other/a.rs", Reach::Other, false),
+        (Locality::Cloud, "dev/other/.env", Reach::Refused, false),
+    ] {
+        let (mut scope, mut rx) = worker_in_app(locality, &home, handle.clone());
         let approver = Scripted::new(Decision::Unprompted);
         scope.approver = approver.clone();
-        let out = host.dispatch(scope).call(read("~/dev/other/a.rs")).await;
+        let out = host.dispatch(scope).call(read(&format!("~/{input}"))).await;
         let (_, ask, status, _) = pair(&events(&mut rx));
-        let want = worker_ask(&home, "dev/other/a.rs");
-        assert_eq!(ask, Some(want.clone()), "{locality:?}");
-        assert_eq!(*approver.asked.lock().unwrap(), vec![want], "{locality:?}");
-        assert_eq!(status, ToolStatus::Denied, "{locality:?}");
-        assert_eq!(out.text, format!("denied: {NOT_APPROVED}"), "{locality:?}");
-        assert!(!out.text.contains("outside the scope"), "{locality:?}");
+        let cloud = locality == Locality::Cloud;
+        let want = worker_ask_as(&home, input, reach, cloud);
+        assert_eq!(ask, Some(want.clone()), "{input} {locality:?}");
+        assert_eq!(*approver.asked.lock().unwrap(), vec![want], "{input}");
+        assert_eq!(out.text.contains("outside the scope"), ran, "{out:?}");
+        assert!(!out.text.contains("SECRET"), "{out:?}");
+        let status_want = match (ran, reach) {
+            (true, _) => ToolStatus::Ok,
+            (false, Reach::Refused) => ToolStatus::Error,
+            (false, _) => ToolStatus::Denied,
+        };
+        assert_eq!(status, status_want, "{input} {locality:?}");
+        if reach == Reach::Other && !ran {
+            assert_eq!(out.text, format!("denied: {NOT_APPROVED}"));
+        }
     }
 }
 
@@ -594,9 +634,9 @@ async fn a_scoped_read_is_paged_and_keeps_its_refusals() {
 }
 
 // Obligation (S1b-2 security review): a denied scope, the scope of an ended
-// run and a turn of another run make the host ask, on a local engine too:
-// never allowed in silence, and never refused in silence (after `y` the
-// file is read).
+// run and a turn of another run grant nothing: the read asks as the same chat
+// read would (here a cloud one), never allowed and never refused in silence
+// (after `y` the file is read).
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -611,7 +651,7 @@ async fn a_denied_or_expired_scope_asks() {
         if case == "ended run" {
             handle.cancel();
         }
-        let (mut scope, mut rx) = worker(Locality::Local, &home, handle);
+        let (mut scope, mut rx) = worker(Locality::Cloud, &home, handle);
         if case == "another run" {
             scope.read_scope.as_mut().unwrap().run = RunId(2);
         }

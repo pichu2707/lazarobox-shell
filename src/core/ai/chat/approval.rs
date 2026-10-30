@@ -86,9 +86,16 @@ pub enum ApprovalAsk {
         reach: Reach,
         cloud: bool,
     },
-    /// A worker's read outside its run's scope: `path` as in `Read`, and the
-    /// worker's `label` (see [`worker_label`]). It asks on every engine.
-    WorkerRead { path: String, label: String },
+    /// A worker's read outside its run's scope: `path`, `reach` and `cloud`
+    /// as in `Read`, so the approval mode answers it exactly as the same chat
+    /// read (see [`answers_itself`]), and the worker's `label` (see
+    /// [`worker_label`]) for its prompt.
+    WorkerRead {
+        path: String,
+        label: String,
+        reach: Reach,
+        cloud: bool,
+    },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
     /// sanitized line. `reach` is [`Reach::Root`] when the host found the
@@ -214,8 +221,8 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
-/// A worker's read is not decided here: the host asks [`ApprovalAsk::WorkerRead`]
-/// on every engine when the read is outside the run's scope.
+/// A worker's read is not decided here: outside the run's scope the host asks
+/// [`ApprovalAsk::WorkerRead`] where a chat read would ask.
 /// The host also asks for a local read that leads outside the chat's root,
 /// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
@@ -638,10 +645,13 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// outside the root, on every engine; one whose path cannot be shown is
 /// denied, as no prompt may approve it. In `ask` and `auto`: only a local
 /// read outside the root, which runs free there as it always has; every
-/// other ask prompts. A command, a user tool, a batch and the ask of an edit
-/// are never answered here.
+/// other ask prompts. A worker's read outside its run's scope is answered
+/// exactly as the same chat read. A command, a user tool, a batch and the ask
+/// of an edit are never answered here.
 pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
-    let ApprovalAsk::Read { reach, cloud, .. } = ask else {
+    let (ApprovalAsk::Read { reach, cloud, .. } | ApprovalAsk::WorkerRead { reach, cloud, .. }) =
+        ask
+    else {
         let search = matches!(
             ask,
             ApprovalAsk::Search {
@@ -930,16 +940,32 @@ mod tests {
         assert_eq!(label.chars().count(), "code ollama>".len() + SHOWN_NAME + 1);
     }
 
-    // Spec (agent-orchestrator, Reads outside the scope ask): a worker's read
-    // ask is never typed, run or allowed by the approval mode: it prompts.
+    // Spec (agent-orchestrator, Outside read follows the mode as a chat read):
+    // a worker's read ask is never typed or run: where the mode does not
+    // answer it, it prompts, as the same chat read does.
     #[test]
-    fn a_worker_read_prompts_in_every_approval_mode() {
-        let ask = ApprovalAsk::WorkerRead {
-            path: "~/a".into(),
-            label: "review claude>opus".into(),
-        };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
-            assert_eq!(route(&ask, Origin::Tool, mode, FREE), Route::Prompt(None));
+    fn a_worker_read_routes_as_the_same_chat_read_in_every_mode() {
+        for (reach, cloud) in [
+            (Reach::Other, true),
+            (Reach::Root, true),
+            (Reach::Other, false),
+        ] {
+            let worker = ApprovalAsk::WorkerRead {
+                path: "~/a".into(),
+                label: "review claude>opus".into(),
+                reach,
+                cloud,
+            };
+            let chat = ApprovalAsk::Read {
+                path: "~/a".into(),
+                reach,
+                cloud,
+            };
+            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+                let got = route(&worker, Origin::Tool, mode, FREE);
+                assert_eq!(got, route(&chat, Origin::Tool, mode, FREE), "{mode:?}");
+                assert_eq!(got, Route::Prompt(None), "{mode:?}");
+            }
         }
     }
 
@@ -1413,15 +1439,20 @@ mod tests {
             (Other, false, None, free),
             (Unshowable, false, unshowable, free),
         ];
+        // A worker's read outside its run's scope follows the same table
+        // (agent-orchestrator, Outside read follows the mode as a chat read).
+        let worker = |reach, cloud| ApprovalAsk::WorkerRead {
+            path: "~/a".into(),
+            label: "review claude>opus".into(),
+            reach,
+            cloud,
+        };
         for (reach, cloud, run, others) in reads {
-            let ask = read(reach, cloud);
-            assert_eq!(answers_itself(&ask, Run), run, "{reach:?} cloud={cloud}");
-            for mode in [Ask, Auto] {
-                assert_eq!(
-                    answers_itself(&ask, mode),
-                    others,
-                    "{mode:?} {reach:?} {cloud}"
-                );
+            for ask in [read(reach, cloud), worker(reach, cloud)] {
+                assert_eq!(answers_itself(&ask, Run), run, "{ask:?}");
+                for mode in [Ask, Auto] {
+                    assert_eq!(answers_itself(&ask, mode), others, "{mode:?} {ask:?}");
+                }
             }
         }
         for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {

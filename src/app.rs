@@ -854,6 +854,12 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// The chat showing the provider notice of the orchestrator, until it is
+    /// accepted or dismissed (agent-orchestrator D12).
+    orch_notice: Option<PaneId>,
+    /// Config writes of an accepted notice still unanswered: their results
+    /// are the notice's, never the menu's (they come back in order).
+    orch_saves: usize,
     /// Why no server can be offered (no usable `engram` on the PATH), as the
     /// worker said once: it names the cause of every `engram is not running`.
     no_server: Option<Reason>,
@@ -938,6 +944,8 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            orch_notice: None,
+            orch_saves: 0,
             no_server: None,
             history: false,
             download: None,
@@ -1705,6 +1713,11 @@ impl App {
                 effects
             }
             AppEvent::SpawnFailed(..) => Vec::new(),
+            // The write of an accepted notice is answered to the notice.
+            AppEvent::ConfigSaved if self.orch_saves > 0 => self.on_notice_saved(None),
+            AppEvent::ConfigSaveFailed(message) if self.orch_saves > 0 => {
+                self.on_notice_saved(Some(message))
+            }
             // Results of a save are stale when the menu is gone.
             AppEvent::ConfigSaved if self.menu.is_some() => {
                 self.dirty = true;
@@ -8130,6 +8143,8 @@ mod app_tests {
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
+    /// The one-time provider notice of an orchestrating pane.
+    mod orchestra_notice;
     mod orchestra_send;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;

@@ -82,14 +82,14 @@ When the user picks `change model` or `change provider` in a worker failure aler
 - THEN no override exists, the alert is shown and no worker is relaunched
 
 ### Requirement: Provider notice view [S1]
-The one-time provider notice MUST be an informational view or inline notice with one accept key and a way to dismiss it; it MUST NOT stop the user from using the chat or the menu while it is shown, and dismissing without accepting MUST leave `notice_accepted` false.
+The one-time provider notice MUST be an informational view or inline notice with one accept key and a way to dismiss it; it MUST NOT stop the user from using the chat or the menu while it is shown, and dismissing without accepting MUST leave `acknowledged` false.
 
 #### Scenario: Accept persists [auto]
 - GIVEN the notice is shown
 - WHEN the accept key is pressed
-- THEN `notice_accepted` is true in the draft and saved with the next save, and the notice is gone
+- THEN `acknowledged` is true and written to the config file at once (one config write, whose result never closes or marks a menu opened meanwhile), and the notice is gone; a failed write leaves it false and says why
 
 #### Scenario: Dismiss does not accept [auto]
 - GIVEN the notice is shown
 - WHEN it is dismissed
-- THEN `notice_accepted` stays false
+- THEN `acknowledged` stays false

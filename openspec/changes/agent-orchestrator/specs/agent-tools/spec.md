@@ -21,10 +21,10 @@ The tool registry MUST offer by role: chat session = chat tools as before; orche
 - THEN it matches the role definition exactly
 
 ### Requirement: Pre-approved read scope [S1]
-A session MAY carry a run-scoped read scope. `read_file` for a path inside it MUST run without asking, also on a cloud engine; a worker read of a path outside it MUST ask with the worker label on every engine, local ones included (a denied or expired scope grants nothing, so every read asks). The scope MUST be evaluated with the Path policy on both the requested and the resolved path; an excluded path is refused whatever the scope, and no scope entry may make an excluded path readable. `find_dir` and `list_dir` keep their rules.
+A session MAY carry a run-scoped read scope (its roots default to the chat origin folder). `read_file` for a path inside it MUST run without asking, also on a cloud engine; a worker read of a path outside it MUST follow the chat's approval mode exactly as a chat read does, and when it asks, it asks with the worker label (an empty or expired scope grants nothing, so every read follows the mode). The scope MUST be evaluated with the Path policy on both the requested and the resolved path; an excluded path is refused whatever the scope, and no scope entry may make an excluded path readable. `find_dir` and `list_dir` keep their rules.
 
 #### Scenario: Inside runs, outside asks [auto]
-- GIVEN a scope `~/dev/app` and a cloud engine
+- GIVEN a scope `~/dev/app`, a cloud engine and the `ask` mode
 - WHEN `read_file` is called on a file inside and on one outside
 - THEN the first runs with no approval and the second asks
 

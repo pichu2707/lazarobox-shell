@@ -79,7 +79,7 @@ fn the_notice_acceptance_in_the_draft_is_an_edit_and_nothing_else_is() {
     m.ai.as_mut().unwrap().accept_notice();
     assert_eq!(
         m.edits(&Config::default()),
-        vec![ConfigEdit::orchestrator_flag("notice_accepted", true)]
+        vec![ConfigEdit::orchestrator_flag("acknowledged", true)]
     );
 }
 

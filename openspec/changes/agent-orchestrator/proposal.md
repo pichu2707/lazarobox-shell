@@ -68,7 +68,7 @@ The user works with strong models through their own CLIs and subscriptions and w
 ## Capabilities
 
 ### New Capabilities
-- `agent-orchestrator`: run lifecycle, orchestration tools, worker contract, limits, run-start read scope, failure alert and relaunch, provider notice, the ODD flow and the receipt-driven review.
+- `agent-orchestrator`: run lifecycle, orchestration tools, worker contract, limits, the read scope of a run (the chat origin, no prompt), failure alert and relaunch, provider notice, the ODD flow and the receipt-driven review.
 - `orchestrator-handoffs`: handoff content, engram topic keys, on-course check, behaviour when memory is off.
 
 ### Modified Capabilities
@@ -76,7 +76,7 @@ The user works with strong models through their own CLIs and subscriptions and w
 - `config-menu`: the Orchestrate row; the `Orchestrator` gate row; the picker opened from a failure notice (run-scoped override, never saved).
 - `configuration`, `config-persistence`: a sixth slot, `[ai.orchestrator]` keys, notice acceptance.
 - `chat-engines`: availability by task; provider error classification; usage events (S6).
-- `chat-pane`: worker rows, failure notice, scope prompt, badge, approval labels and queue.
+- `chat-pane`: worker rows (announced workers, no prompt), failure notice, badge, approval labels and queue.
 - `modal-input`: ORCH toggle key (Ctrl+O), notice option keys, failure alert keys (r retry, m model, p provider, c or Esc cancel), cancel keys.
 - `prompt-profiles`: orchestrate prompt, ODD playbooks and RDD lens prompts.
 - `chat-memory`, `engram-client`: handoff notes respect opt-in and redaction; topic-key upsert.

@@ -148,6 +148,15 @@ impl App {
         {
             return effects;
         }
+        // The provider notice of the orchestrator, likewise, and only while
+        // the composer is empty: a key typed into a message never answers it.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_notice(id, &key, repeat)
+        {
+            return effects;
+        }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
         // The tag editor is drawn first, so it takes the keys first.

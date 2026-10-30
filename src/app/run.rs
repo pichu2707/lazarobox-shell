@@ -470,7 +470,7 @@ impl App {
             }),
             // A worker's read outside its scope: the label names the worker,
             // its kind and `engine>model`, already sanitized.
-            ApprovalAsk::WorkerRead { path, label } => Some(ApprovalPrompt {
+            ApprovalAsk::WorkerRead { path, label, .. } => Some(ApprovalPrompt {
                 target: format!("worker {label}: send a file's text to the engine"),
                 command: format!("read {path}"),
                 keys: READ_KEYS,

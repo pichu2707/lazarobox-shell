@@ -23,7 +23,7 @@ fn assign(ai: &mut AiConfig, task: Task, engine: &str, model: Option<&str>) {
 
 /// `chat` on ollama / llama3:8b, `orchestrate` on claude / opus, tools on and
 /// the global gate on.
-fn orch_ai() -> AiConfig {
+pub(super) fn orch_ai() -> AiConfig {
     let mut ai = AiConfig::default();
     assign(&mut ai, Task::Chat, "ollama", Some("llama3:8b"));
     assign(&mut ai, Task::Orchestrate, "claude", Some("opus"));

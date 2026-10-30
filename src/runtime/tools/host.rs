@@ -17,8 +17,9 @@
 //! the approval mode, the app does (`approval::answers_itself`).
 //! A call the turn does not offer (its role's toolset, D7) is refused first,
 //! as an unknown tool, and an orchestration call goes to the turn's run
-//! manager (D3). A worker's read runs unasked inside its run's read scope and
-//! asks with the worker's label outside it, on every engine (D6).
+//! manager (D3). A worker's read runs unasked inside its run's read scope;
+//! outside it, it asks as the same chat read would, with the worker's label
+//! (D6).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -425,53 +426,48 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
         match (valid, scope.locality, &scope.read_scope) {
             // A worker read runs unasked inside its run's scope (D6). Outside
-            // it, or when the scope grants nothing, it asks with the worker's
-            // label on every engine, local ones too: never allowed and never
-            // refused in silence. The approval mode never answers it.
-            (Call::ReadFile { path, .. }, _, Some(worker)) => {
-                let env = host.env(&scope.origin);
-                scoped = super::in_scope(worker, env, path, &host.limits).await;
-                if scoped.is_none() {
-                    match shown(path) {
-                        Some(shown) => {
-                            ask = Some(ApprovalAsk::WorkerRead {
-                                path: shown,
-                                label: worker.label.clone(),
-                            })
-                        }
-                        None => checked = Err(UNSHOWABLE.into()),
-                    }
+            // it, or when the scope grants nothing, it asks as the same chat
+            // read would (D6, user decision 2026-10-29), labelled with the
+            // worker, so the approval mode answers it alike. A read asks with
+            // the path as it will be opened: resolved, and only when the
+            // display shows it unchanged. The ask carries where the read
+            // leads, for the approval mode. A cloud read always asks; a local
+            // one only when it leads outside the root.
+            (Call::ReadFile { path, .. }, locality, worker) => {
+                if let Some(worker) = worker {
+                    let env = host.env(&scope.origin);
+                    scoped = super::in_scope(worker, env, path, &host.limits).await;
                 }
-            }
-            // A read asks with the path as it will be opened: resolved, and
-            // only when the display shows it unchanged. The ask carries where
-            // the read leads, for the approval mode. A cloud read always asks;
-            // a local one only when it leads outside the root.
-            (Call::ReadFile { path, .. }, locality, None) => {
-                let reach = files::reach(&host, &scope, path).await;
+                let label = worker.as_ref().map(|worker| worker.label.clone());
+                let read = |path: String, reach: Reach, cloud: bool| match &label {
+                    Some(label) => ApprovalAsk::WorkerRead {
+                        path,
+                        label: label.clone(),
+                        reach,
+                        cloud,
+                    },
+                    None => ApprovalAsk::Read { path, reach, cloud },
+                };
+                let reach = if scoped.is_some() {
+                    Reach::Root
+                } else {
+                    files::reach(&host, &scope, path).await
+                };
                 let cloud = locality == Locality::Cloud;
-                if cloud || reach == Reach::Other {
+                if scoped.is_none() && (cloud || reach == Reach::Other) {
                     match shown(path) {
                         Some(shown) => {
                             if cloud {
                                 approves = Some(shown.clone());
                             }
                             unprompted = Unprompted::of_read(reach, cloud);
-                            ask = Some(ApprovalAsk::Read {
-                                path: shown,
-                                reach,
-                                cloud,
-                            });
+                            ask = Some(read(shown, reach, cloud));
                         }
                         // A local read ran free before `run` asked for it:
                         // the app decides, with nothing shown.
                         None if !cloud => {
                             unprompted = Unprompted::of_read(reach, cloud);
-                            ask = Some(ApprovalAsk::Read {
-                                path: String::new(),
-                                reach: Reach::Unshowable,
-                                cloud,
-                            });
+                            ask = Some(read(String::new(), Reach::Unshowable, cloud));
                         }
                         None => checked = Err(UNSHOWABLE.into()),
                     }
