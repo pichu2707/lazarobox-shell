@@ -16,6 +16,21 @@ baseline.
   after a tool round, closed by a bare `</think>`, is now shown as reasoning
   instead of as part of the answer. In those rounds the answer appears whole
   at the end of the round.
+- With Ollama and llama.cpp, a model that writes a tool call as JSON text
+  instead of making it is asked once, in the same turn, to call the tool. The
+  chat shows `the model wrote a tool call as text; it was asked to call the
+  tool`. The text is never run, and the extra request counts toward the
+  turn's limit.
+- A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
+  now names the chat's folder, so a model learns where its paths start:
+  `path not available (paths are relative to the chat's folder ~/proj)`. The
+  text is still the same for every reason. Only a missing parent folder of a
+  path the policy allowed is named: `the folder src/ does not exist`.
+- When a chat turn ends normally and the model left staged changes without
+  calling `propose_batch` (common with small local models), the batch review
+  opens by itself, with the same coverage check, arming delay and `y`/`n` as a
+  proposed batch. A cancelled, timed-out or failed turn, or a chat that already
+  waits on an approval, still leaves the orphan behind `Ctrl+G`.
 - In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
   command: lazarobox presses Enter, waits for it and returns its output to the
   model, like a safe command that runs on its own. The prompt says
