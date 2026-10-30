@@ -137,6 +137,35 @@ fn y_during_the_arm_delay_with_every_line_seen_stays_silent() {
 }
 
 #[test]
+fn a_hint_never_blocks_the_approval_nor_the_ready_wake() {
+    let (mut a, turn) = asked(60);
+    assert_eq!(at_drawn(&mut a, 100, key('y')), vec![], "locked");
+    read_all(&mut a, 900);
+    assert_eq!(review(&a).remaining(), 0);
+    // Still inside the 2 s of the hint, once the delay is over.
+    NOW_MS.with(|n| n.set(1_000));
+    assert!(review(&a).locked_hint((a.clock)()).is_none(), "all seen");
+    a.take_dirty();
+    a.wake_review();
+    assert!(a.take_dirty(), "the frame that shows `y ready`");
+    assert_eq!(
+        at(&mut a, 1_100, key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
+}
+
+#[test]
+fn y_on_a_batch_that_cannot_be_reviewed_says_so_for_two_seconds() {
+    let (mut a, _) = asked(2100);
+    assert_eq!(at(&mut a, 5_000, key('y')), vec![]);
+    NOW_MS.with(|n| n.set(6_999));
+    assert!(review(&a).refused_hint((a.clock)()));
+    NOW_MS.with(|n| n.set(7_000));
+    assert!(!review(&a).refused_hint((a.clock)()));
+    assert!(pending(&a).is_some(), "nothing was answered");
+}
+
+#[test]
 fn y_arms_at_full_coverage_plus_the_review_delay() {
     let (mut a, turn) = asked(60);
     read_all(&mut a, 100);
@@ -759,6 +788,16 @@ mod orphan {
                 id: batch_id()
             }]
         );
+    }
+
+    #[test]
+    fn y_on_an_orphan_review_that_cannot_be_approved_hints() {
+        let mut a = orphaned(2100);
+        a.update(review_event(2100));
+        paint_at(&mut a, 0);
+        assert_eq!(at(&mut a, 5_000, key('y')), vec![]);
+        NOW_MS.with(|n| n.set(6_000));
+        assert!(review(&a).refused_hint((a.clock)()));
     }
 
     #[test]

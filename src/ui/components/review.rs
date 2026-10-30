@@ -27,6 +27,9 @@ use crate::{
 // last key to go, then `y`, then the scroll hints.
 const KEYS_READY: &str = "n reject · y approve · ↑↓ PgUp PgDn scroll";
 const KEYS_LOCKED: &str = "n reject · y after scrolling · ↑↓ PgUp PgDn scroll";
+// Where `y after scrolling` no longer fits, `y locked` still says what it is.
+const KEYS_LOCKED_NARROW: &str = "n reject · y locked · ↑↓ PgUp PgDn scroll";
+const KEYS_LOCKED_HEAD: &str = "n reject · y after scrolling";
 const KEYS_DISCARD: &str = "n discard · ↑↓ PgUp PgDn scroll";
 
 /// `0.4s`, rounded up to a tenth.
@@ -36,17 +39,28 @@ fn seconds(left: Duration) -> String {
 }
 
 /// The counter row, and whether it is a warning.
-fn header(view: &ReviewView, now: Instant) -> (String, bool) {
+fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
     if !view.reviewable() {
-        return (WARN_TRUNCATED.to_owned(), true);
+        let text = if view.refused_hint(now) {
+            "y can't approve this batch · press n"
+        } else if view.review().doc().files() == 0 {
+            "empty batch: nothing to approve · press n"
+        } else {
+            WARN_TRUNCATED
+        };
+        return (text.to_owned(), true);
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
     if let Some(left) = view.locked_hint(now) {
-        return (
-            format!("y needs every line seen: {left} left, scroll ↓"),
-            false,
-        );
+        // The action first: a narrow pane cuts the row from the right.
+        let full = format!("scroll ↓ · {left} lines unseen · y needs all");
+        let text = if full.chars().count() <= width {
+            full
+        } else {
+            format!("scroll ↓ · {left} unseen")
+        };
+        return (text, false);
     }
     let gate = if remaining > 0 {
         format!("{remaining} remaining · ↓ to unlock y")
@@ -93,7 +107,7 @@ pub fn render(
         buf.set_stringn(area.x, area.y + row, text, width, style);
     };
     if area.height >= 2 {
-        let (text, warn) = header(view, now);
+        let (text, warn) = header(view, now, width);
         let colour = if warn {
             theme.warning_orange
         } else {
@@ -116,8 +130,10 @@ pub fn render(
         KEYS_DISCARD
     } else if view.can_approve(now) {
         KEYS_READY
-    } else {
+    } else if width >= KEYS_LOCKED_HEAD.chars().count() {
         KEYS_LOCKED
+    } else {
+        KEYS_LOCKED_NARROW
     };
     put(buf, area.height - 1, keys, base.fg(theme.text_muted));
 }
