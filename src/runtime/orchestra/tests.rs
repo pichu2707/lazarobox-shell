@@ -1819,7 +1819,10 @@ async fn races_keep_exactly_one_ended_as_the_last_event() {
         raced.unwrap();
         ended.unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let events = lab.sent();
+        // A dropped answer may follow `Ended`: it is no event of the run.
+        let events: Vec<_> = (lab.sent().into_iter())
+            .filter(|event| !matches!(event, OrchestraEvent::Dropped { .. }))
+            .collect();
         assert_eq!(ends(&events), 1, "round {round}: {events:?}");
         assert_eq!(
             events.last(),
