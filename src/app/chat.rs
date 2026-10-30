@@ -5,7 +5,7 @@ use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, Tools, availability, tools_for},
-    folder::{Command, parse_command},
+    folder::{Command, Purpose, parse_command},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -20,29 +20,21 @@ impl App {
     pub(super) fn open_chat_pane(&mut self) -> Vec<Effect> {
         let origin = self.focused_state().effective_cwd().map(Path::to_path_buf);
         let before = self.panes.len();
-        let chat = self.new_chat_state(origin);
+        let chat = self.new_chat_state(origin.clone());
         let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(chat)));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
-            effects.extend(self.begin_memory(self.tab().focus));
-            self.show_server_offer();
-            effects.push(Effect::PreparePrompt {
-                pane: self.tab().focus,
-                profile: self.ai.profile(),
-                origin: self
-                    .focused_state()
-                    .chat_state()
-                    .and_then(|c| c.origin_cwd().map(Path::to_path_buf)),
-                context: self.ai.context(),
-            });
-            if self.history {
-                let pane = self.tab().focus;
-                let origin = self
-                    .panes
-                    .get(&pane)
-                    .and_then(PaneState::chat_state)
-                    .and_then(|chat| chat.origin_cwd().map(Path::to_path_buf));
-                effects.push(Effect::Store(StoreCmd::List { pane, origin }));
+            // Detection needs no folder. The rest waits until the folder is
+            // settled: a broad or unknown one asks the user first.
+            let pane = self.tab().focus;
+            self.opening.insert(pane);
+            match origin {
+                Some(path) => effects.push(Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose: Purpose::Open,
+                }),
+                None => effects.extend(self.open_folder_picker(pane)),
             }
         }
         effects
@@ -130,6 +122,14 @@ impl App {
         if self.has_approval(id) {
             return self.on_approval_key(id, key, repeat);
         }
+        // The folder comes first: the picker takes every key, and a chat
+        // still probing its folder takes none.
+        if self.picker_open(id) {
+            return self.on_picker_key(id, &key, repeat);
+        }
+        if self.folder_pending(id) {
+            return Vec::new();
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides. A held key never answers it.
@@ -206,6 +206,14 @@ impl App {
         // A paste never answers an approval and never lands in the composer
         // while one waits.
         if self.has_approval(id) {
+            return;
+        }
+        if self.picker_open(id) {
+            self.picker_paste(id, text);
+            return;
+        }
+        // A chat that waits for its folder takes no text either.
+        if self.folder_pending(id) {
             return;
         }
         if self.tag_editor_open(id) {

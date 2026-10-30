@@ -68,7 +68,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
     a.update(prompt_for(id));
     listed(&mut a, id, rows());
     a.ai.set_approval(ApprovalMode::Auto);
-    a.update(resumed(id, 30, "programmer"));
+    a.update_settled(resumed(id, 30, "programmer"));
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Auto);
 
     // And the other way: the toggled chat goes back to ask.
@@ -76,7 +76,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
     set_mode(&mut a, ApprovalMode::Auto);
     a.focused_state_mut().chat_mut().unwrap().open_list();
     listed(&mut a, id, rows());
-    a.update(resumed(id, 10, "analyst"));
+    a.update_settled(resumed(id, 10, "analyst"));
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Ask);
 }
 

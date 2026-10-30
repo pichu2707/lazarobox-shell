@@ -115,7 +115,7 @@ fn cd_purposes(effects: &[Effect]) -> Vec<u64> {
         .into_iter()
         .filter_map(|(_, purpose)| match purpose {
             Purpose::Cd(token) => Some(token),
-            Purpose::Resume(_) | Purpose::Confirm(_) | Purpose::Pick(_) => None,
+            Purpose::Resume(_) | Purpose::Confirm(_) | Purpose::Pick(_) | Purpose::Open => None,
         })
         .collect()
 }
@@ -756,6 +756,127 @@ fn a_probe_answer_for_another_conversation_is_ignored() {
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
 }
 
+// ---- held keys and the resume picker (chat-folder B2) -----------------------
+
+#[test]
+fn a_held_y_never_confirms_and_leaves_the_ask_open() {
+    use super::chat_live::repeat;
+    let mut a = asking();
+    a.update(repeat(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+    assert!(pending_ask(&a).is_some());
+}
+
+#[test]
+fn the_enter_that_sent_cd_does_not_cancel_the_ask_but_a_fresh_key_does() {
+    // The probe answers while the Enter is still held: that key is not an answer.
+    let mut a = asking().with_clock(mock_now);
+    a.update(plain(KeyCode::Enter));
+    assert!(pending_ask(&a).is_some());
+    let_go();
+    a.update(plain(KeyCode::Esc));
+    assert_eq!(pending_ask(&a), None);
+}
+
+#[test]
+fn a_held_esc_or_n_still_cancels() {
+    use super::chat_live::repeat;
+    for code in [KeyCode::Esc, KeyCode::Char('n')] {
+        let mut a = asking();
+        a.update(repeat(code, KeyModifiers::NONE));
+        assert_eq!(pending_ask(&a), None, "{code:?}");
+    }
+}
+
+fn picker_over(a: &App) -> bool {
+    super::run_pane::chat(a, id2()).folder_picker().is_some()
+}
+
+#[test]
+fn a_stored_folder_that_cannot_be_used_opens_the_picker() {
+    for result in [
+        Err(Refusal::NotFound),
+        probed_as("/h", Verdict::Home),
+        probed_as("/usr", Verdict::Outside),
+    ] {
+        let mut a = resuming();
+        a.history = true;
+        a.update(resumed_in(Some("/w/stored")));
+        let effects = resume_probed(&mut a, result.clone());
+        assert!(picker_over(&a), "{result:?}");
+        assert!(lines(&a).contains(&"stored folder not available: /w/stored".to_owned()));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(StoreCmd::RecentFolders { pane, .. }) if *pane == id2()
+        )));
+    }
+}
+
+#[test]
+fn a_conversation_without_a_stored_folder_opens_the_picker() {
+    let mut a = resuming();
+    a.update(resumed_in(None));
+    assert!(picker_over(&a));
+    assert!(lines(&a).contains(&"no stored folder".to_owned()));
+}
+
+#[test]
+fn a_concrete_or_busy_resume_opens_no_picker() {
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    resume_probed(&mut a, probed_as("/w/stored", Verdict::Concrete));
+    assert!(!picker_over(&a));
+    let mut a = resuming();
+    a.update(resumed_in(Some("/w/stored")));
+    a.waiting_sends.push((id2(), "hi".into()));
+    resume_probed(&mut a, Err(Refusal::NotFound));
+    assert!(!picker_over(&a));
+}
+
+#[test]
+fn esc_on_the_resume_picker_keeps_the_pane_folder_and_accept_stores_the_choice() {
+    let mut a = resuming();
+    a.update(resumed_in(None));
+    a.update(plain(KeyCode::Esc));
+    assert!(!picker_over(&a));
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
+
+    let mut a = resuming();
+    a.update(resumed_in(None));
+    type_text(&mut a, "/w/b");
+    let effects = a.update(plain(KeyCode::Enter));
+    assert_eq!(
+        probes(&effects),
+        vec![(
+            PathBuf::from("/w/b"),
+            Purpose::Pick(
+                super::run_pane::chat(&a, id2())
+                    .folder_picker()
+                    .unwrap()
+                    .id()
+            )
+        )]
+    );
+    let effects = a.update(AppEvent::FolderProbed {
+        pane: id2(),
+        purpose: Purpose::Pick(
+            super::run_pane::chat(&a, id2())
+                .folder_picker()
+                .unwrap()
+                .id(),
+        ),
+        result: concrete("/w/b"),
+    });
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+    assert!(!picker_over(&a));
+    assert!(
+        super::chat_history::stores(&effects)
+            .iter()
+            .any(|cmd| matches!(cmd, StoreCmd::SetFolder { .. })),
+        "{effects:?}"
+    );
+}
+
 #[test]
 fn resume_answers_out_of_order_never_cross_conversations() {
     let mut a = resuming();
@@ -927,6 +1048,52 @@ fn a_second_y_while_checking_does_nothing_and_the_answer_still_applies() {
     confirm_reply(&mut a, token, "/w/b");
     assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
     assert_eq!(composer(&a), "");
+}
+
+#[test]
+fn a_held_y_while_checking_does_nothing() {
+    use super::chat_live::repeat;
+    let (mut a, token) = checking();
+    let effects = a.update(repeat(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(pending_ask(&a).is_some());
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")));
+}
+
+#[test]
+fn n_while_checking_does_nothing_fresh_or_held() {
+    use super::chat_live::repeat;
+    for held in [false, true] {
+        let (mut a, token) = checking();
+        let event = if held {
+            repeat(KeyCode::Char('n'), KeyModifiers::NONE)
+        } else {
+            plain(KeyCode::Char('n'))
+        };
+        let effects = a.update(event);
+        assert!(effects.is_empty(), "held {held}: {effects:?}");
+        assert!(pending_ask(&a).is_some(), "held {held}");
+        assert!(a.cd_requests.contains_key(&id2()), "held {held}");
+        assert!(
+            !lines(&a).contains(&"/cd cancelled".to_owned()),
+            "held {held}"
+        );
+        // The late reply of the check still applies.
+        confirm_reply(&mut a, token, "/w/b");
+        assert_eq!(folder_of(&a), Some(PathBuf::from("/w/b")), "held {held}");
+    }
+}
+
+#[test]
+fn a_held_esc_while_checking_cancels() {
+    use super::chat_live::repeat;
+    let (mut a, token) = checking();
+    a.update(repeat(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(lines(&a).contains(&"/cd cancelled".to_owned()));
+    assert_eq!(pending_ask(&a), None);
+    confirm_reply(&mut a, token, "/w/b");
+    assert_eq!(folder_of(&a), Some(PathBuf::from("/w/a")));
 }
 
 #[test]
