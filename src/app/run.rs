@@ -507,9 +507,13 @@ impl App {
         let why = approval.why().map(str::to_owned);
         match approval.ask() {
             ApprovalAsk::Run { command } => {
+                // Only a model's command runs on `y`, only in `run` mode, and
+                // only when nothing would make `y` type it instead.
+                let runs = approval.call().is_some()
+                    && chat.approval_mode() == ApprovalMode::Run
+                    && (chat.run_target())
+                        .is_some_and(|pane| self.y_run_blocker(pane, command).is_none());
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
-                // Only a model's command runs on `y`, and only in `run` mode.
-                let runs = approval.call().is_some() && chat.approval_mode() == ApprovalMode::Run;
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
