@@ -204,6 +204,63 @@ pub fn locality(engine: &str) -> Option<Locality> {
         .map(|e| e.kind.locality())
 }
 
+/// A token count as a row shows it: exact below a thousand, then `12.3k`,
+/// then `1.2M` (where `k` would round up to `1000.0k`).
+fn tokens(count: u64) -> String {
+    match count {
+        0..1000 => count.to_string(),
+        1000..999_950 => format!("{:.1}k", count as f64 / 1000.0),
+        _ => format!("{:.1}M", count as f64 / 1e6),
+    }
+}
+
+/// What a turn used, as the CLI or server reported it. Never estimated: an
+/// engine that reports nothing emits no `Usage` at all.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Usage {
+    /// Prompt tokens, cached ones included.
+    pub input: u64,
+    pub output: u64,
+    /// The cost in millionths of a US dollar, when the CLI reports one.
+    pub cost_micros: Option<u64>,
+}
+
+impl Usage {
+    /// The sum of two reports. The cost is known only when both reports
+    /// carry one: a missing cost is never counted as zero, and a partial sum
+    /// would read as the whole.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cost_micros: self
+                .cost_micros
+                .zip(other.cost_micros)
+                .map(|(a, b)| a.saturating_add(b)),
+        }
+    }
+
+    /// The report as a row shows it: `12.3k in 450 out $0.0049`. The cost is
+    /// left out when the engine did not report one.
+    pub fn label(&self) -> String {
+        let mut text = format!("{} in {} out", tokens(self.input), tokens(self.output));
+        if let Some(micros) = self.cost_micros {
+            // Under half a unit of the fourth decimal it would read `$0.0000`.
+            if (1..50).contains(&micros) {
+                text.push_str(" <$0.0001");
+            } else {
+                text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+            }
+        }
+        text
+    }
+
+    /// `cost_micros` of a cost in dollars, when it is a usable number.
+    pub fn micros(dollars: f64) -> Option<u64> {
+        (dollars.is_finite() && dollars >= 0.0).then(|| (dollars * 1e6).round() as u64)
+    }
+}
+
 /// What an adapter task reports about one turn.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum StreamEvent {
@@ -231,6 +288,9 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
+    /// What the turn used, once, just before `Done`. Absent when the engine
+    /// reports nothing.
+    Usage(Usage),
     Done(Finish),
     Error(ChatError),
 }
@@ -496,3 +556,5 @@ mod availability_tests;
 mod history_tests;
 #[cfg(test)]
 mod tools_tests;
+#[cfg(test)]
+mod usage_tests;

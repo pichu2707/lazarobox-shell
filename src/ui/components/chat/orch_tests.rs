@@ -153,6 +153,8 @@ fn worker(id: u32, kind: Task, status: WorkerStatus, elapsed: Option<u64>) -> Wo
         model: Some("opus".into()),
         status,
         elapsed: elapsed.map(Duration::from_secs),
+        usage: None,
+        partial: false,
     }
 }
 
@@ -199,7 +201,7 @@ fn a_worker_row_per_status_is_drawn_in_the_tool_colour_or_the_alert_colour() {
     for (status, alert) in [
         ("queued", false),
         ("running", false),
-        ("done 12.0s", false),
+        ("done 12.0s n/a", false),
         ("failed 12.0s", true),
         ("cancelled 12.0s", false),
         ("timed_out 12.0s", true),

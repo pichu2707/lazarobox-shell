@@ -104,6 +104,34 @@ Status: S1 is complete (S1d-1 to S1e-2) and S7 is complete (S7-1, S7-2). Mode: S
 - Tests that press Enter twice with the mock clock call `let_go()` between the presses, or the second Enter reads as a hold.
 - macOS CI failed three S7-2 tests (`a_code_workers_batch_waits_for_the_users_review`, `collect_lists_both_staged_files_and_neither_is_on_disk`, `a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan`) with `path not available`. Cause: staging probes the target with `write::open_target`, which is `Unsupported` off Linux by design (writes need `openat2` and `renameat2`). A symlinked HOME is not the cause (`a_write_is_staged_when_home_is_reached_through_a_link` passes on Linux). The tests are now Linux-only, like the host-level write tests.
 
+### S6: usage (PR 15, branch feat/agent-orchestrator-s6, stacked on #407)
+
+Status: 1 of 1 task done (6.1), in one PR (about 310 production lines, tests excluded). Three work-unit commits: decoders, core accounting, runtime plumbing and rows.
+
+| Step | Test files | RED | GREEN |
+|------|-----------|-----|-------|
+| Decoders | core/ai/chat/{claude,codex,gemini,stream}/tests.rs, engine/usage_tests.rs, runtime/chat/tests.rs | 6 failures (no `Usage` event) after the enum variant existed | claude result, codex `turn.completed`, gemini `result.stats`, Ollama final line each emit one `Usage` before `Done`; none where the CLI reports no count or the turn failed |
+| Core accounting | core/ai/orchestra/tests.rs | compile errors (`WorkerEvent::Usage`, `Run::usage`) | `WorkerEvent::Usage` sums on the slot across attempts; `WorkerResult.usage`; `Run::usage`, `Run::total_usage` |
+| Rows | core/ai/chat/worker_row_tests.rs, runtime/orchestra/tests.rs | compile errors (`RunUsage`), then `done.usage == None` | `WorkerRow.usage`, `Entry::RunUsage`, `drive` forwards every round's usage; 1 snapshot refreshed |
+
+Decisions (the spec leaves them open; the most conservative reading was taken):
+- `Usage { input, output, cost_micros: Option<u64> }`. The cost is in millionths of a dollar so `StreamEvent` stays `Eq`.
+- `input` means all prompt tokens, cached ones included, so the three CLIs read the same: codex and gemini already count cache in `input_tokens`; for claude it is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+- A report with neither an input nor an output count emits nothing (a claude `total_cost_usd` alone is not usage). A failed turn emits nothing. Gemini reports no cost; codex and Ollama neither.
+- Sums: a cost is known only when every summed report carries one; otherwise the cost is left out, never a partial total.
+- A `Done` worker with no usage shows `n/a`; other statuses show usage only when they have it. The run row appears once one worker is `Done`, shows `run n/a` when none reported, and moves to the end of the transcript as rows change.
+- A retried worker keeps the usage of its failed attempt (the tokens were spent). A worker cut off by its deadline reports none (its turn is dropped).
+- llama.cpp (OpenAI-style SSE) is not decoded: its `usage` chunk needs `stream_options`, outside this task.
+
+Open questions for the user: (1) is counting cache reads and writes as input right for claude, or should the row show fresh tokens only? (2) should a timed-out worker's partial usage be kept (needs the runtime to read events before the deadline)? (3) should llama.cpp usage be added (needs a request option)?
+
+#### S6 review fixes (PR 15 follow-up)
+
+- W1: all four decoders emit `Usage` only when both the input and the output count are present; a missing one is no longer read as zero (a cached Ollama prompt omits `prompt_eval_count`).
+- W2: a total never reads as complete when it is not. The run tracks, per worker, whether an attempt that ran ended without reporting (`gap`; cancelled and timed-out count, refused does not because it never ran). `Run::usage_partial`, `Run::total_partial`; the cost is dropped from a partial sum. `WorkerRow.partial` and `RunUsage.partial` render `(partial)`. The run row is marked partial while any worker is queued or running (chosen over deferring the row: simpler, and the row keeps updating).
+- Suggestions: `1.0M` tier (no `1000.0k`), `<$0.0001` for a cost under half a unit of the fourth decimal. Gemini: `result.stats` in the recorded fixtures has no separate thoughts count (total minus input minus output is unexplained there), so only `output_tokens` is read; revisit if the CLI documents a thoughts field.
+- W3 open question for the user (spec vs code): the spec says a failed turn emits nothing, and the decoders do that, but the runtime keeps the usage of earlier rounds and of failed attempts across a retry because those tokens were really spent. Keep usage of failed attempts?
+
 ### Carried-forward advisories
 
 - S1e-1b: a message starting with `y` while the notice was shown used to accept it (closed by the Enter-only change in S1e-1c). Roots that are ancestors of secret folders are not refused (`jail::too_broad` is still "to be considered"); each read inside is still checked. A chat origin that is not valid UTF-8 gives no root and no recorded reason.

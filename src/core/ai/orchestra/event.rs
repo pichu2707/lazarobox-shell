@@ -8,7 +8,7 @@ use super::{
     RunId, WorkerId,
     worker::{ErrorClass, WorkerStatus},
 };
-use crate::core::ai::config::Task;
+use crate::core::ai::{chat::engine::Usage, config::Task};
 
 /// A worker as its row shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -22,6 +22,12 @@ pub struct WorkerRow {
     pub status: WorkerStatus,
     /// How long it ran, once it ended.
     pub elapsed: Option<Duration>,
+    /// What the worker's engine reported using; `None` when it reported
+    /// nothing (shown as `n/a` once the worker is done).
+    pub usage: Option<Usage>,
+    /// Some attempt of the worker ended without reporting: `usage` (cost
+    /// omitted) covers only the attempts that did.
+    pub partial: bool,
 }
 
 /// What the run manager tells the app.

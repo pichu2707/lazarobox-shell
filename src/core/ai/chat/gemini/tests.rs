@@ -1,4 +1,4 @@
-use super::super::engine::{ChatError, Finish};
+use super::super::engine::{ChatError, Finish, Usage};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
 
@@ -49,18 +49,45 @@ fn error_line(message: &str) -> String {
     )
 }
 
+fn usage(input: u64, output: u64) -> StreamEvent {
+    StreamEvent::Usage(Usage {
+        input,
+        output,
+        cost_micros: None,
+    })
+}
+
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
+fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
     // The echoed user message and the init line are not part of the answer.
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+    assert_eq!(whole(PLAIN), [delta("ok"), usage(17318, 0), done()]);
+}
+
+#[test]
+fn a_result_without_token_counts_emits_no_usage_event() {
+    // `success_line` carries only a total: nothing to split, nothing guessed.
+    let text = format!("{}{}", assistant_line("a"), success_line());
+    assert_eq!(whole(&text), [delta("a"), done()]);
+    let bare = "{\"type\":\"result\",\"status\":\"success\"}\n";
+    assert_eq!(whole(bare), [done()]);
+}
+
+#[test]
+fn a_failed_result_emits_no_usage_event() {
+    let events = whole(QUOTA_ERROR);
+    assert!(
+        events.iter().all(|e| !matches!(e, StreamEvent::Usage(_))),
+        "{events:?}"
+    );
 }
 
 #[test]
 fn deltas_arrive_in_order_and_the_result_ends_the_turn() {
     let events = whole(MULTI);
-    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!(events.len(), 5, "{events:?}");
     assert_eq!(events[0], delta("1,2,3,4,5,6,7,8,9,10,11,12,13,"));
-    assert_eq!(events[3], done());
+    assert!(matches!(events[3], StreamEvent::Usage(_)));
+    assert_eq!(events[4], done());
     let text: String = events
         .iter()
         .filter_map(|e| match e {
@@ -74,7 +101,10 @@ fn deltas_arrive_in_order_and_the_result_ends_the_turn() {
 #[test]
 fn a_token_split_across_deltas_is_just_text() {
     // M2: the model answered 391 as "3" then "91".
-    assert_eq!(whole(SPLIT_TOKEN), [delta("3"), delta("91"), done()]);
+    assert_eq!(
+        whole(SPLIT_TOKEN),
+        [delta("3"), delta("91"), usage(14728, 3), done()]
+    );
 }
 
 #[test]
@@ -398,4 +428,12 @@ fn a_text_only_turn_refuses_even_our_own_tool() {
         whole(&calls_then_answers("mcp_lazarobox_read_file")),
         [failed(TOOL_REFUSED)]
     );
+}
+
+#[test]
+fn stats_with_only_one_count_emit_nothing_never_a_zero() {
+    for stats in ["{\"input_tokens\":7}", "{\"output_tokens\":3}"] {
+        let end = format!("{{\"type\":\"result\",\"status\":\"success\",\"stats\":{stats}}}\n");
+        assert_eq!(whole(&end), [done()], "{stats}");
+    }
 }

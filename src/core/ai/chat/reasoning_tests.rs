@@ -102,6 +102,7 @@ fn the_first_answer_text_collapses_the_block_once_with_the_seconds() {
             Entry::Memory(_) => "Memory".to_owned(),
             Entry::Tool(_) => "Tool".to_owned(),
             Entry::Worker(_) => "Worker".to_owned(),
+            Entry::RunUsage(_) => "RunUsage".to_owned(),
         })
         .collect();
     assert_eq!(kinds, ["User", "Reasoning", "Assistant"]);

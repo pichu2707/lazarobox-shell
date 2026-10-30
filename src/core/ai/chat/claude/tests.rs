@@ -1,4 +1,4 @@
-use super::super::engine::{ChatError, Finish};
+use super::super::engine::{ChatError, Finish, Usage};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
 
@@ -61,9 +61,48 @@ fn result_line(result: &str, extra: &str) -> String {
     )
 }
 
+fn usage(input: u64, output: u64, cost_micros: Option<u64>) -> StreamEvent {
+    StreamEvent::Usage(Usage {
+        input,
+        output,
+        cost_micros,
+    })
+}
+
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
+    // 2 fresh + 606 cache-creation + 0 cache-read prompt tokens, $0.004936.
+    assert_eq!(
+        whole(PLAIN),
+        [delta("ok"), usage(608, 4, Some(4936)), done()]
+    );
+}
+
+#[test]
+fn a_result_without_usage_emits_no_usage_event() {
+    let text = result_line("fine", "");
+    assert_eq!(whole(&text), [delta("fine"), done()]);
+}
+
+#[test]
+fn a_result_with_usage_but_no_cost_leaves_the_cost_unknown() {
+    let text = result_line("x", ",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}");
+    assert_eq!(whole(&text), [delta("x"), usage(7, 3, None), done()]);
+}
+
+#[test]
+fn a_failed_result_emits_no_usage_event() {
+    let events = whole(MODEL_ERROR);
+    assert!(
+        events.iter().all(|e| !matches!(e, StreamEvent::Usage(_))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_usage_object_with_no_counts_emits_nothing() {
+    let text = result_line("x", ",\"usage\":{},\"total_cost_usd\":0.5");
+    assert_eq!(whole(&text), [delta("x"), done()]);
 }
 
 #[test]
@@ -554,4 +593,16 @@ fn a_subagent_tool_use_is_judged_like_any_other() {
 fn text_that_mentions_a_tool_use_is_just_text() {
     let line = text_line("{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Bash\\\"}");
     assert!(answer(&whole(&format!("{line}{}", result_line("x", "")))).contains("tool_use"));
+}
+
+#[test]
+fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
+    for counts in [
+        "{\"input_tokens\":7}",
+        "{\"output_tokens\":3}",
+        "{\"cache_read_input_tokens\":9,\"output_tokens\":3}",
+    ] {
+        let text = result_line("x", &format!(",\"usage\":{counts},\"total_cost_usd\":0.5"));
+        assert_eq!(whole(&text), [delta("x"), done()], "{counts}");
+    }
 }
