@@ -1,7 +1,7 @@
-//! A next step announced in prose (#439). A small local model sometimes ends
-//! its answer with what it will do next ("I'll create the test next") and
-//! makes no call, so the turn ends with the step undone. The loop asks it
-//! once to do the step or to sum up.
+//! An answer that stops short (#439). A small local model sometimes ends its
+//! answer with what it will do next ("I'll create the test next"), or sends
+//! an empty one, and makes no call, so the turn ends with the step undone.
+//! The loop asks it once to do the step or to sum up.
 
 /// The system line a pane gets when the model was reminded.
 pub const NEXT_STEP_NOTICE: &str =
@@ -9,6 +9,24 @@ pub const NEXT_STEP_NOTICE: &str =
 
 /// The message that follows the answer in the reminder request.
 pub const NEXT_STEP_REMINDER: &str = "Your answer says what you will do next, but you made no tool call, so nothing happened. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.";
+
+/// The system line a pane gets when an empty answer was answered.
+pub const EMPTY_NOTICE: &str = "the model sent an empty answer; it was asked to go on";
+
+/// The message that follows an empty answer in the reminder request.
+pub const EMPTY_REMINDER: &str = "Your answer was empty. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.";
+
+/// The system line and the reminder for an answer that stopped short: an
+/// empty one, or one that announces a next step. `None` for anything else.
+pub fn go_on(text: &str) -> Option<(&'static str, &'static str)> {
+    if text.trim().is_empty() {
+        Some((EMPTY_NOTICE, EMPTY_REMINDER))
+    } else if announced_step(text) {
+        Some((NEXT_STEP_NOTICE, NEXT_STEP_REMINDER))
+    } else {
+        None
+    }
+}
 
 /// Words that announce an action the model is about to take, lowercased and
 /// matched as whole words.
@@ -163,6 +181,24 @@ mod tests {
         ] {
             assert!(!announced_step(text), "{text}");
         }
+    }
+
+    // #439: an empty answer gets its own words; a step announced gets the
+    // next-step ones; anything else nothing.
+    #[test]
+    fn go_on_picks_the_reminder_for_an_empty_or_announcing_answer() {
+        for empty in ["", "  \n\t"] {
+            assert_eq!(
+                go_on(empty),
+                Some((EMPTY_NOTICE, EMPTY_REMINDER)),
+                "{empty:?}"
+            );
+        }
+        assert_eq!(
+            go_on("I'll create the test next."),
+            Some((NEXT_STEP_NOTICE, NEXT_STEP_REMINDER))
+        );
+        assert_eq!(go_on("Done: the test passed."), None);
     }
 
     // Only the end of the answer counts: an early "I'll" followed by the

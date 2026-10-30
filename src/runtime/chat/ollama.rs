@@ -201,9 +201,10 @@ async fn rounds(
     // A tool call written as text gets one reminder a turn (local-model-writes
     // D3); the text is never run.
     let offered = offered_names(&tooled);
-    let mut reminded = false;
-    // So does a next step announced in prose without a call (#439).
-    let mut stepped = false;
+    let mut text_call_reminded = false;
+    // So does an answer that stops short: empty, or announcing a next step
+    // without a call (#439).
+    let mut go_on_reminded = false;
     let mut requests = 0;
     let limit = max_rounds(request.families);
     while requests < limit && !tx.is_closed() {
@@ -252,22 +253,24 @@ async fn rounds(
         // Without tools, whatever calls the reply holds are not run.
         if reply.calls.is_empty() || !offer {
             let room = offer && requests < limit;
-            let written = (room && !reminded)
+            let written = (room && !text_call_reminded)
                 .then(|| text_call::written_call(&reply.text, &offered))
                 .flatten();
-            let nudge = match written {
-                Some(name) => {
-                    reminded = true;
+            let short = (room && !go_on_reminded)
+                .then(|| next_step::go_on(&reply.text))
+                .flatten();
+            let reminder = match (written, short) {
+                (Some(name), _) => {
+                    text_call_reminded = true;
                     Some((text_call::TEXT_CALL_NOTICE, text_call::reminder(&name)))
                 }
-                None if room && !stepped && next_step::announced_step(&reply.text) => {
-                    stepped = true;
-                    let reminder = next_step::NEXT_STEP_REMINDER.to_owned();
-                    Some((next_step::NEXT_STEP_NOTICE, reminder))
+                (None, Some((notice, reminder))) => {
+                    go_on_reminded = true;
+                    Some((notice, reminder.to_owned()))
                 }
-                None => None,
+                (None, None) => None,
             };
-            let Some((notice, nudge)) = nudge else {
+            let Some((notice, reminder)) = reminder else {
                 let _ = tx.send(StreamEvent::Done(finish)).await;
                 return;
             };
@@ -279,7 +282,7 @@ async fn rounds(
                 thinking: reply.thinking,
                 text: reply.text,
                 exchanges: Vec::new(),
-                nudge: Some(nudge),
+                nudge: Some(reminder),
             });
             continue;
         }

@@ -1213,3 +1213,46 @@ async fn the_system_prompt_follows_the_families_of_the_turn() {
         );
     }
 }
+
+// #439: an empty answer with tools on gets one reminder in the same turn; it
+// shares the turn's one "go on" reminder with an announced step.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_empty_answer_after_a_tool_round_gets_one_reminder() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text(""),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::EMPTY_NOTICE.into());
+    assert_eq!(
+        events.iter().filter(|e| **e == line).count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(tool_calls(&events), 2);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 4);
+    let messages = bodies[2]["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        crate::core::ai::chat::next_step::EMPTY_REMINDER
+    );
+}
+
+#[tokio::test]
+async fn an_announcement_after_an_empty_answer_ends_the_turn() {
+    let fake = fake(vec![text(""), text(ANNOUNCED)]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(next_step_reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}

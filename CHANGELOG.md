@@ -26,6 +26,9 @@ baseline.
   once, in the same turn, to do that step or to sum up. The chat shows `the
   model said what it would do next without a tool call; it was asked to do
   it`. A question, an offer, a courtesy or a summary does not count (#439).
+- With Ollama and llama.cpp, an empty answer with tools on gets the same
+  single reminder; the chat shows `the model sent an empty answer; it was
+  asked to go on` (#439).
 - A turn that offers the write, exec or git write tools no longer tells the
   model it cannot change files, in the system prompt or in the `run_in_pane`
   description. The system prompt now names what its tools allow (write,
