@@ -5,6 +5,7 @@
 use crate::core::ai::{
     config::{Profile, Task},
     sanitize::clean,
+    tools::registry::{Family, FamilySet},
 };
 
 /// Why an override file was skipped.
@@ -92,12 +93,29 @@ const NO_TOOLS: &str = "You are a text assistant. You have no access to files, a
 /// tools by purpose, not by the name an engine gives them.
 const TOOLS: &str = include_str!("prompts/tools.md");
 
+/// The sentence of [`TOOLS`] that says the model cannot change files.
+const NO_CHANGES: &str =
+    "You cannot change files yourself; any change needs a command the user reviews and runs.";
+
+/// What a turn that offers the write, exec or git write tools says instead of
+/// [`NO_CHANGES`]: it can do the work, and must finish every step (#439).
+const CODING: &str = include_str!("prompts/coding.md");
+
 /// `system` for a turn that offers tools: the built-in "no access" sentence
 /// becomes the tools block. A prompt without that sentence (the user's own
 /// file) gets the block as a last bullet instead. Only a turn with tools calls
-/// this: any other keeps its prompt byte for byte.
-pub fn with_tools(system: &str) -> String {
-    let block = TOOLS.trim_end();
+/// this: any other keeps its prompt byte for byte. A turn that offers the
+/// write, exec or git write tools gets [`CODING`] instead of [`NO_CHANGES`].
+pub fn with_tools(system: &str, families: FamilySet) -> String {
+    let coding = [Family::Write, Family::Exec, Family::GitWrite]
+        .into_iter()
+        .any(|family| families.contains(family));
+    let block = if coding {
+        TOOLS.trim_end().replacen(NO_CHANGES, CODING.trim_end(), 1)
+    } else {
+        TOOLS.trim_end().to_owned()
+    };
+    let block = block.as_str();
     if system.trim().is_empty() {
         return block.to_owned();
     }

@@ -1102,7 +1102,7 @@ fn a_wired_cli_job_keeps_the_text_prompt_and_carries_the_tools_one_apart() {
         assert!(wired.stdin.contains("no access to files") || engine == "claude");
         let tools = wired.tools.expect(engine);
         assert_eq!(tools.args.len(), wired.args.len(), "{engine}");
-        let with = prompts::with_tools(&chat_system());
+        let with = prompts::with_tools(&chat_system(), on.families);
         let hit = if engine == "claude" {
             tools.args.contains(&with)
         } else {

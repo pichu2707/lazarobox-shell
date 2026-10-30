@@ -24,6 +24,7 @@ pub mod history;
 pub mod leaked_thinking;
 pub mod list;
 pub mod memory;
+pub mod next_step;
 pub mod note;
 pub mod notify;
 pub mod prompts;

@@ -21,6 +21,16 @@ baseline.
   chat shows `the model wrote a tool call as text; it was asked to call the
   tool`. The text is never run, and the extra request counts toward the
   turn's limit.
+- With Ollama and llama.cpp, a model whose answer ends by announcing its
+  next action ("I'll create the test next") without a tool call is asked
+  once, in the same turn, to do that step or to sum up. The chat shows `the
+  model said what it would do next without a tool call; it was asked to do
+  it`. A question or an offer to the user does not count (#439).
+- A turn that offers the write, exec or git write tools no longer tells the
+  model it cannot change files. The system prompt now says it can write,
+  test and commit with its tools, must do every step asked in the same turn,
+  and must not claim a file, test run or commit that no tool result shows
+  (#439).
 - A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
   now names the chat's folder, so a model learns where its paths start:
   `path not available (paths are relative to the chat's folder ~/proj)`. The

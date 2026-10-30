@@ -51,3 +51,24 @@ When a reply of the Ollama or llama.cpp tool loop holds no structured tool call,
 - GIVEN a text call in the last reply the cap allows
 - WHEN the loop reads it
 - THEN the turn ends with no reminder
+
+### Requirement: A next step announced in prose gets one reminder
+When a reply of the Ollama or llama.cpp tool loop holds no structured tool call and no text call, and the last sentence of its text announces an action the model is about to take (for example `I'll`, `I will`, `I need to`, `let me`, `next, I`, `now I`, `voy a`, `a continuación`, `lo siguiente`), the loop MUST send one more request in the same turn. That request MUST carry the reply as plain assistant text, then a user message: `Your answer says what you will do next, but you made no tool call, so nothing happened. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.` The pane MUST get the system line `the model said what it would do next without a tool call; it was asked to do it`. An answer that ends with a question, or whose last sentence is an offer to the user (`if you`, `let me know`, `do you want`, `would you like`, `si quieres`, `si lo deseas`, `si te parece`), MUST NOT get it. This MUST happen at most once per turn, apart from the text call reminder, MUST count toward the turn's request cap, and MUST NOT happen in the retry without tools (#439).
+
+#### Scenario: One reminder [auto]
+- GIVEN tools on and a reply that ends "I'll need to create a `test_fibonacci.py` file next."
+- WHEN the loop reads the reply
+- THEN a second request carries the text and the reminder, with tools still offered, and the call the model makes after it runs
+
+#### Scenario: Second announcement, question or offer [auto]
+- GIVEN a model that announces a step twice, or a reply that ends with a question or an offer, or a turn without tools
+- WHEN the loop reads it
+- THEN the turn ends with `Done`, after two requests for the second announcement and after one otherwise
+
+### Requirement: The tools prompt follows the coding families
+When a turn offers the write, exec or git write tools, the tools block of its system prompt MUST replace the sentence `You cannot change files yourself; any change needs a command the user reviews and runs.` with a block that says the model can write and edit files (staged until it proposes the batch), run tests and builds, and add and commit with git; that it must do every step the user asks in the same turn, one call after another; that it must not stop to say what it will do next; and that it must not claim a file, test run or commit that no tool result of the turn shows. A turn with only the read, search, git read and pane tools MUST keep the sentence (#439).
+
+#### Scenario: Coding families [auto]
+- GIVEN a turn that offers the write tools
+- WHEN its first request is sent
+- THEN its system message holds the coding block and not "cannot change files"

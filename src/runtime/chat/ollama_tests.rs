@@ -1124,3 +1124,92 @@ async fn a_text_call_in_the_retry_without_tools_gets_no_reminder() {
     assert_eq!(reminders(&events), 0);
     assert_eq!(events.last(), Some(&done()));
 }
+
+// A next step announced in prose (#439) --------------------------------------
+
+const ANNOUNCED: &str =
+    "The tests haven't been created yet. I'll need to create a `test_fibonacci.py` file next.";
+
+fn next_step_reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::NEXT_STEP_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// #439: one more request in the same turn, with the answer and the reminder.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_announced_next_step_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(ANNOUNCED),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(next_step_reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], ANNOUNCED);
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::next_step::NEXT_STEP_REMINDER
+    );
+    assert!(bodies[1]["tools"].is_array());
+}
+
+// #439: at most one reminder a turn; a question, an offer or a turn without
+// tools ends the turn as before.
+#[tokio::test]
+async fn a_second_announcement_a_question_or_no_tools_ends_the_turn() {
+    for (answer, tools, requests, reminded) in [
+        (ANNOUNCED, true, 2, 1),
+        ("Shall I commit it?", true, 1, 0),
+        ("If you want, I'll add more tests.", true, 1, 0),
+        (ANNOUNCED, false, 1, 0),
+    ] {
+        let fake = fake(vec![text(answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), requests, "{answer}");
+        assert_eq!(next_step_reminders(&events), reminded, "{answer}");
+        assert_eq!(events.last(), Some(&done()), "{answer}");
+    }
+}
+
+// #439: a turn that offers the write, exec or git write tools tells the model
+// it can change files and must finish every step; any other keeps the
+// "cannot change files" sentence.
+#[tokio::test]
+async fn the_system_prompt_follows_the_families_of_the_turn() {
+    use crate::core::ai::chat::prompts::with_tools;
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::LEGACY.with(Family::Write),
+        FamilySet::LEGACY.with(Family::Exec),
+        FamilySet::LEGACY.with(Family::GitWrite),
+    ] {
+        let fake = fake(vec![text("ok")]).await;
+        let mut lab = lab(fake.port);
+        let mut request = ask(&lab, true);
+        request.families = families;
+        lab.chats.send(pane(1), 1, request);
+        finish(&mut lab.rx).await;
+        let system = &fake.bodies()[0]["messages"][0];
+        assert_eq!(system["role"], "system");
+        assert_eq!(
+            system["content"],
+            with_tools("be brief", families),
+            "{families:?}"
+        );
+    }
+}
