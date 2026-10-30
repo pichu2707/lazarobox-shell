@@ -141,6 +141,7 @@ fn folder(path: &str) -> Call {
 const HINTED: &str = "path not available (paths are relative to the chat's folder ~/proj)";
 
 /// The write refusal for a missing parent `folder` that the policy allowed.
+#[cfg(target_os = "linux")]
 fn missing(folder: &str) -> String {
     format!(
         "path not available: the folder {folder}/ does not exist (paths are relative to the chat's folder ~/proj)"
