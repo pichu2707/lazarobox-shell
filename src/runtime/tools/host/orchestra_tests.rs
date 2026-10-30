@@ -1100,7 +1100,12 @@ async fn a_worker_write_outside_its_scope_or_into_a_secret_is_refused() {
     );
     for path in ["README.md", ".env", "../other/x.rs", "~/.ssh/new"] {
         let out = d.call(write_call(path, "x")).await;
-        assert_eq!((out.text.as_str(), out.is_error), (REFUSED, true), "{path}");
+        assert!(out.is_error, "{path}");
+        assert_eq!(
+            out.text,
+            format!("{REFUSED} (paths are relative to the chat's folder ~/dev/app)"),
+            "{path}"
+        );
     }
     let out = d.call(write_call("src/ok.rs", "ok")).await;
     assert!(!out.is_error, "{out:?}");
