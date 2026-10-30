@@ -4,7 +4,7 @@
 
 Let a model create and change files in one project root without touching the disk until the user approves. The model stages changes, closes the batch, and the user reviews it all-or-nothing. Linux only in v1. Tags: [auto] = `cargo test` (temp dirs, fake clocks); [manual] = real terminal; [design-confirm] = value or name that design must pin. Names marked (provisional) are pinned by design.
 
-Terms: "root" = the chat origin directory. "Batch" = the staged changes of one chat. "Proposed" = the model closed the batch with the propose tool. "Orphan" = a batch left staged after its turn was cancelled. "Refusal text" = `path not available`.
+Terms: "root" = the chat origin directory. "Batch" = the staged changes of one chat. "Proposed" = the model closed the batch with the propose tool. "Orphan" = a batch left staged after its turn ended without the user reviewing it (cancelled, failed, or ended with the batch never proposed; see local-model-writes D1 for the last case). "Refusal text" = `path not available`.
 
 ## Requirements
 
@@ -204,12 +204,17 @@ After approval the app MUST re-read every target and compare it with the snapsho
 - THEN two `Change` records carry path, kind, bytes and line counts
 
 ### Requirement: Orphan, close and quit
-A batch orphaned by a cancelled turn MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart.
+An orphan batch MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart. When a turn ends with the engine's `Done` and leaves a batch the model never proposed, the app MUST open that batch's review at once, through the same path, view, coverage gate and arming as an orphan review, unless the chat already waits on an approval; a cancelled or failed turn MUST leave the orphan to the user's own review key (local-model-writes D1).
 
 #### Scenario: Cancel leaves an orphan [auto]
 - GIVEN a staged batch and a turn that is cancelled
 - WHEN the pane is rendered
 - THEN the batch is still staged and the indicator is visible [TestBackend + insta]
+
+#### Scenario: A clean end opens the review of an unproposed batch [auto]
+- GIVEN a turn that staged a batch, never proposed it, and ended with `Done`
+- WHEN the runtime's poll first shows the batch as an orphan
+- THEN the batch review opens once, with no call to answer, and `y` applies it behind the coverage gate
 
 #### Scenario: Review an orphan [auto]
 - GIVEN an orphan batch

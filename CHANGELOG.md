@@ -12,6 +12,11 @@ baseline.
 
 ### Changed
 
+- When a chat turn ends normally and the model left staged changes without
+  calling `propose_batch` (common with small local models), the batch review
+  opens by itself, with the same coverage check, arming delay and `y`/`n` as a
+  proposed batch. A cancelled, timed-out or failed turn, or a chat that already
+  waits on an approval, still leaves the orphan behind `Ctrl+G`.
 - In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
   command: lazarobox presses Enter, waits for it and returns its output to the
   model, like a safe command that runs on its own. The prompt says
