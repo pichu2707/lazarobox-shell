@@ -12,10 +12,14 @@ baseline.
 
 ### Changed
 
-- The batch review no longer reads `y locked`: the counter says `scroll ↓ to
-  unlock y` (`↓ to unlock y` in narrow panes) and the keys row `y after
-  scrolling`. Pressing `y` with lines unseen still does nothing, but the
-  counter now says for 2 seconds how many lines are left.
+- The batch review no longer reads `y locked` in the counter: it says
+  `N remaining · ↓ to unlock y`, and the keys row `y after scrolling` (`y
+  locked` in panes too narrow for it). Pressing `y` with lines unseen still
+  does nothing, but for 2 seconds the counter says what to do first, `scroll ↓
+  · N lines unseen · y needs all` (`scroll ↓ · N unseen` in narrow panes). On a
+  batch that cannot be approved (too large or empty) `y` says `y can't approve
+  this batch · press n`, and an empty batch no longer reads "too large to
+  review".
 - Write works on Linux and macOS (APFS and HFS+); on any other system an
   approved batch writes nothing and says so. On macOS, a filesystem without an
   atomic no-replace rename (exFAT, SMB, NFS) answers "this system or volume does
