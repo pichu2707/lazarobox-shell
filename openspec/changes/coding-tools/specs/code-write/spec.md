@@ -17,7 +17,7 @@ Terms: "root" = the chat origin directory. "Batch" = the staged changes of one c
 - THEN no write tool is present and a call to `write_file` returns an error result
 
 ### Requirement: Root policy
-Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory. A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text `path not available`, so the result does not reveal whether a path exists.
+Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory. A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text, `path not available (paths are relative to the chat's folder <folder>)`, where `<folder>` is the chat origin with `$HOME` shown as `~`, so the result does not reveal whether a path exists. One case MAY say more: when the path passed this policy and the deny rules and only its parent folder is missing, the text MUST be `path not available: the folder <parent>/ does not exist (paths are relative to the chat's folder <folder>)`, with `<parent>` as the model wrote it (local-model-writes D2).
 
 #### Scenario: Origin refused [auto]
 - GIVEN origins `$HOME`, `/home`, `/usr` and a missing directory
@@ -33,6 +33,12 @@ Writes MUST be allowed only under one root: the chat origin directory. They MUST
 - GIVEN an existing denied path and a missing path outside the root
 - WHEN `edit_file` is called on each
 - THEN both results carry the identical text
+
+#### Scenario: Missing parent named [auto]
+- GIVEN a chat opened in `~/Descargas` with no `Descargas` folder inside it
+- WHEN `write_file` is called with `Descargas/fibonacci.py`
+- THEN it returns `path not available: the folder Descargas/ does not exist (paths are relative to the chat's folder ~/Descargas)` and nothing is staged
+- AND `nope/.env` below a missing `nope` returns the one refusal text
 
 ### Requirement: Deny rules
 A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.

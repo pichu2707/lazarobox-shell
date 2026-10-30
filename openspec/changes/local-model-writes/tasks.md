@@ -9,10 +9,10 @@
 
 ## 2. D2: write refusals that name the chat's folder
 
-- [ ] 2.1 RED: every write refusal reads `path not available (paths are relative to the chat's folder <~/folder>)`, the same text for every reason.
-- [ ] 2.2 RED: a missing parent folder after the path policy passed names that folder; a secret, linked or outside path keeps the plain text with the hint.
-- [ ] 2.3 Keep the error kind of a missing parent through `Disk::probe` instead of folding it into `Unreadable`.
-- [ ] 2.4 Docs: README write threat model, code-write refusal requirement.
+- [x] 2.1 RED: every write refusal reads `path not available (paths are relative to the chat's folder <~/folder>)`, the same text for every reason.
+- [x] 2.2 RED: a missing parent folder after the path policy passed names that folder; a secret, linked or outside path keeps the plain text with the hint.
+- [x] 2.3 Tell a missing parent apart after a failed probe: the parent of the resolved target is `NotFound` (`symlink_metadata`, no link followed); `Disk::probe` itself is unchanged.
+- [x] 2.4 Docs: README write threat model, code-write refusal requirement.
 
 ## 3. D3: one reminder for a tool call written as text (Ollama, llama.cpp)
 
