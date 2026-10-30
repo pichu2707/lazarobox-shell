@@ -21,6 +21,25 @@ baseline.
   chat shows `the model wrote a tool call as text; it was asked to call the
   tool`. The text is never run, and the extra request counts toward the
   turn's limit.
+- With Ollama and llama.cpp, a model whose answer ends by announcing its
+  next action ("I'll create the test next") without a tool call is asked
+  once, in the same turn, to do that step or to sum up. The chat shows `the
+  model said what it would do next without a tool call; it was asked to do
+  it`. A question, an offer, a courtesy or a summary does not count (#439).
+- With Ollama and llama.cpp, an empty answer with tools on, or one whose
+  last sentence starts with a sign-off such as "Ready for next steps." or
+  "Listo para el commit.", gets the same single reminder; the chat shows `the
+  model sent an empty answer; it was asked to go on` or `the model stopped
+  before finishing; it was asked to go on` (#439).
+- A turn that offers the write, exec or git write tools no longer tells the
+  model it cannot change files, in the system prompt or in the `run_in_pane`
+  description. The system prompt now names what its tools allow (write,
+  test, commit), says it must do every step asked in the same turn, and must
+  not claim a file, test run or commit that no tool result shows (#439).
+- The result of an applied batch now ends with `Continue with any step the
+  user asked for that is not finished yet.`, and the refusal of `run_command`
+  and the git tools while changes are staged now says `propose them first
+  with propose_batch, then call this tool again` (#439).
 - A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
   now names the chat's folder, so a model learns where its paths start:
   `path not available (paths are relative to the chat's folder ~/proj)`. The

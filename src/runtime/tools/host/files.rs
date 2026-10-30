@@ -203,6 +203,10 @@ pub(super) async fn run_within(
 
 const COULD_NOT: &str = "could not run";
 
+/// The last line of an applied batch's result: a small model tends to stop
+/// after the review, with the user's other steps undone (#439).
+const CONTINUE: &str = "Continue with any step the user asked for that is not finished yet.";
+
 /// Where a read of `input` leads, for its ask: the path guard's verdict, and
 /// whether the real path (every link followed) is inside the real root of the
 /// chat, and that root is concrete (see [`concrete_root`]). Read on the
@@ -465,8 +469,9 @@ pub(super) async fn answered(
         Ok(Err(why)) => return ended(ToolStatus::Error, why.clone(), &why),
         Err(_) => return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT),
     };
-    let text = result.summary();
+    let mut text = result.summary();
     let status = if result.applied() {
+        text = format!("{text}\n{CONTINUE}");
         ToolStatus::Ok
     } else {
         // Nothing was written, or the user must look: `sealed` closes the batch.

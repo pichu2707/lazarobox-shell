@@ -171,7 +171,7 @@ impl Adapter {
             // The same job once more with the tools prompt, to keep what
             // each engine does with its system prompt in one place.
             let mut with_tools = request.clone();
-            with_tools.system = prompts::with_tools(&request.system);
+            with_tools.system = prompts::with_tools(&request.system, request.families);
             if let Invocation::Process(other) = self.build_text(&with_tools, verified) {
                 job.tools = Some(Box::new(ToolsText {
                     args: other.args,

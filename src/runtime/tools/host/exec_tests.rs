@@ -367,6 +367,11 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
         out.is_error && out.text.contains("propose them first"),
         "{out:?}"
     );
+    // #439: the refusal says how to go on, so a small model retries.
+    assert_eq!(
+        out.text,
+        "staged changes are not proposed: propose them first with propose_batch, then call this tool again"
+    );
     assert!(asks.asked().is_empty());
     // Another chat is not affected.
     let (tx, _rx) = mpsc::channel(32);

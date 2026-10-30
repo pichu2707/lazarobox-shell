@@ -23,7 +23,7 @@ use crate::{
             },
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
             leaked_thinking::{LeakedThinking, Piece},
-            prompts,
+            next_step, prompts,
             stream::{
                 CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
                 ToolRequest,
@@ -189,7 +189,7 @@ async fn rounds(
         Tools::Off => Qualified::default(),
     };
     let mut tooled = request.clone();
-    tooled.system = prompts::with_tools(&plain.system);
+    tooled.system = prompts::with_tools(&plain.system, request.families);
     let mut used = 0;
     // The next text follows earlier text that did not end its line.
     let mut gap = false;
@@ -201,7 +201,10 @@ async fn rounds(
     // A tool call written as text gets one reminder a turn (local-model-writes
     // D3); the text is never run.
     let offered = offered_names(&tooled);
-    let mut reminded = false;
+    let mut text_call_reminded = false;
+    // So does an answer that stops short: empty, or announcing a next step
+    // without a call (#439).
+    let mut go_on_reminded = false;
     let mut requests = 0;
     let limit = max_rounds(request.families);
     while requests < limit && !tx.is_closed() {
@@ -249,17 +252,29 @@ async fn rounds(
         requests += 1;
         // Without tools, whatever calls the reply holds are not run.
         if reply.calls.is_empty() || !offer {
-            let written = (offer && !reminded && requests < limit)
+            let room = offer && requests < limit;
+            let written = (room && !text_call_reminded)
                 .then(|| text_call::written_call(&reply.text, &offered))
                 .flatten();
-            let Some(name) = written else {
+            let short = (room && !go_on_reminded)
+                .then(|| next_step::go_on(&reply.text))
+                .flatten();
+            let reminder = match (written, short) {
+                (Some(name), _) => {
+                    text_call_reminded = true;
+                    Some((text_call::TEXT_CALL_NOTICE, text_call::reminder(&name)))
+                }
+                (None, Some((notice, reminder))) => {
+                    go_on_reminded = true;
+                    Some((notice, reminder.to_owned()))
+                }
+                (None, None) => None,
+            };
+            let Some((notice, reminder)) = reminder else {
                 let _ = tx.send(StreamEvent::Done(finish)).await;
                 return;
             };
-            reminded = true;
-            let _ = tx
-                .send(StreamEvent::Notice(text_call::TEXT_CALL_NOTICE.into()))
-                .await;
+            let _ = tx.send(StreamEvent::Notice(notice.into())).await;
             if !reply.text.is_empty() {
                 gap = !reply.text.ends_with('\n');
             }
@@ -267,7 +282,7 @@ async fn rounds(
                 thinking: reply.thinking,
                 text: reply.text,
                 exchanges: Vec::new(),
-                nudge: Some(text_call::reminder(&name)),
+                nudge: Some(reminder),
             });
             continue;
         }
