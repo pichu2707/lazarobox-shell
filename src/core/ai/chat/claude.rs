@@ -109,7 +109,11 @@ fn rejected_limit(value: &Value) -> Option<String> {
     let info = &value["rate_limit_info"];
     (info["status"].as_str() == Some("rejected")).then(|| {
         let kind = error_message(info["rateLimitType"].as_str().unwrap_or(""));
-        if kind == "engine error" { "rejected".to_owned() } else { kind }
+        if kind == "engine error" {
+            "rejected".to_owned()
+        } else {
+            kind
+        }
     })
 }
 

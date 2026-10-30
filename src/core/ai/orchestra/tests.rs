@@ -365,18 +365,20 @@ fn a_second_failure_while_halted_surfaces_after_the_first_is_decided() {
         }
     );
     assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
-    // The final promote follows queue order: `mid`, `two`, then `one`.
+    // A retried worker goes to the front, the latest retry first: `one`, then
+    // `two`, then `mid` (user decision 2026-10-30).
     assert_eq!(run.state(), &RunState::Open);
-    assert_eq!(run.status(mid), Some(WorkerStatus::Running));
-    run.on_event(t0, mid, done());
-    assert_eq!(run.status(two), Some(WorkerStatus::Running));
-    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
-    run.on_event(t0, two, done());
     assert_eq!(run.status(one), Some(WorkerStatus::Running));
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
+    assert_eq!(run.status(mid), Some(WorkerStatus::Queued));
+    run.on_event(t0, one, done());
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    run.on_event(t0, two, done());
+    assert_eq!(run.status(mid), Some(WorkerStatus::Running));
 }
 
 #[test]
-fn queued_workers_start_in_spawn_order_and_a_retried_one_goes_to_the_back() {
+fn queued_workers_start_in_spawn_order_and_a_retried_one_goes_to_the_front() {
     let (t0, mut run) = (Instant::now(), run());
     let one = run.spawn(t0, Task::Review, "1").unwrap();
     let two = run.spawn(t0, Task::Review, "2").unwrap();
@@ -385,14 +387,13 @@ fn queued_workers_start_in_spawn_order_and_a_retried_one_goes_to_the_back() {
     // Nothing starts while halted.
     assert_eq!(run.status(two), Some(WorkerStatus::Queued));
     run.decide(t0, UserChoice::Retry).unwrap();
-    assert_eq!(run.status(two), Some(WorkerStatus::Running));
-    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
     assert_eq!(run.status(three), Some(WorkerStatus::Queued));
+    run.on_event(t0, one, done());
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
     run.on_event(t0, two, done());
     assert_eq!(run.status(three), Some(WorkerStatus::Running));
-    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
-    run.on_event(t0, three, done());
-    assert_eq!(run.status(one), Some(WorkerStatus::Running));
 }
 
 #[test]
@@ -722,7 +723,7 @@ fn a_refused_retry_goes_to_pending_behind_the_older_failure() {
 }
 
 #[test]
-fn relaunch_with_a_pending_failure_halts_again_on_it_and_requeues_behind_it() {
+fn relaunch_with_a_pending_failure_halts_again_on_it_and_its_retry_starts_first() {
     let (t0, mut run, one, refused) = halted_with_a_pending_failure();
     run.decide(t0, UserChoice::Relaunch(roster(ready("claude", "opus"))))
         .unwrap();
@@ -731,8 +732,8 @@ fn relaunch_with_a_pending_failure_halts_again_on_it_and_requeues_behind_it() {
     assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == one));
     run.decide(t0, UserChoice::Retry).unwrap();
     assert_eq!(run.state(), &RunState::Open);
-    assert_eq!(run.status(refused), Some(WorkerStatus::Running));
-    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
+    assert_eq!(run.status(refused), Some(WorkerStatus::Queued));
 }
 
 #[test]

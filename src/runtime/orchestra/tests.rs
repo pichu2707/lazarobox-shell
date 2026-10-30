@@ -24,10 +24,7 @@ use crate::{
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
-        orchestra::{
-            Toolset,
-            run::{NotHalted, UserChoice},
-        },
+        orchestra::{Toolset, run::UserChoice},
         tools::{label, registry::FamilySet},
     },
     runtime::tools::{Limits, Unwired, Waits},
@@ -1059,6 +1056,27 @@ async fn retry_relaunches_the_same_spec_with_the_error_wrapped() {
     assert!(collected.text.contains("fixed"), "{collected:?}");
 }
 
+// Spec (agent-orchestrator, Retry relaunches the same spec; user decision
+// 2026-10-30): with no nonce to draw, a retry is an error like `collect`, not
+// a relaunch with the plain prompt. The run stays halted and nothing starts.
+#[tokio::test]
+async fn a_retry_with_no_nonce_is_an_error_and_the_run_stays_halted() {
+    let lab = lab_with(Script::FailOnce("409 conflict: session busy"), |m, _| {
+        m.with_nonce(|| None)
+    });
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check the parser")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    assert_eq!(
+        lab.manager.decide(pane(), UserChoice::Retry),
+        Err(DecideError::NoNonce)
+    );
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    assert_eq!(lab.seen.requests().len(), 1);
+    // Cancel needs no nonce.
+    assert_eq!(lab.manager.decide(pane(), UserChoice::Cancel), Ok(()));
+}
+
 // Spec (modal-input, Retry key, Cancel keys; tasks.md 1e1.7): the app's
 // answer to a failure reaches the run through `Chats`: `Retry` relaunches the
 // worker, `Cancel` ends the run; with no failure waiting nothing changes.
@@ -1166,7 +1184,7 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
     let (_, handle) = lab.start(codex_review());
     assert_eq!(
         lab.manager.decide(pane(), UserChoice::Retry),
-        Err(NotHalted)
+        Err(DecideError::NotHalted)
     );
     handle.call(spawn(Task::Review, "check")).await;
     for _ in 0..2 {
@@ -1182,7 +1200,7 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
     assert_eq!(spawned, fine("worker 2: running"));
     assert_eq!(
         lab.manager.decide(pane(), UserChoice::Retry),
-        Err(NotHalted)
+        Err(DecideError::NotHalted)
     );
 }
 
@@ -1619,7 +1637,7 @@ async fn ctrl_c_twice_sends_ended_once() {
     assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
     assert_eq!(
         lab.manager.decide(pane(), UserChoice::Retry),
-        Err(NotHalted)
+        Err(DecideError::NotHalted)
     );
     assert_eq!(lab.seen.requests().len(), 1);
 }

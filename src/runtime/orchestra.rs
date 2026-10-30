@@ -64,13 +64,13 @@ use crate::core::{
         orchestra::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
+            errors::classify,
             run::{
                 CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunState, UserChoice,
                 WorkerEvent,
             },
             scope::{Dropped, ReadScope},
             tools::OrchCall,
-            errors::classify,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
         tools::{
@@ -207,6 +207,21 @@ struct Tooling {
     hub: Mutex<Option<Hub<WorkerKey>>>,
 }
 
+/// Why a decision about a failure was not applied.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DecideError {
+    /// No failure waits for the user.
+    NotHalted,
+    /// A retry needs a nonce to wrap the failure and none could be drawn.
+    NoNonce,
+}
+
+impl From<NotHalted> for DecideError {
+    fn from(_: NotHalted) -> Self {
+        Self::NotHalted
+    }
+}
+
 /// The runs of every orchestrating pane. Shared as an `Arc`: the handles it
 /// gives out and its workers' turns hold it weakly.
 pub struct RunManager {
@@ -219,6 +234,8 @@ pub struct RunManager {
     log: Option<Log>,
     /// Whether a read-scope root is a broad scratch folder (`jail::is_scratch`).
     scratch: fn(&Path) -> bool,
+    /// Where a nonce's bytes come from: the OS CSPRNG (a test swaps it).
+    nonce: fn() -> Option<[u8; 8]>,
     ids: Mutex<RunIds>,
     runs: Mutex<HashMap<PaneId, Live>>,
     /// Set by `shutdown`, under the `runs` lock: no run starts after it.
@@ -236,6 +253,7 @@ impl RunManager {
             tooling: None,
             log: None,
             scratch: jail::is_scratch,
+            nonce: nonce_bytes,
             ids: Mutex::default(),
             runs: Mutex::default(),
             closed: AtomicBool::new(false),
@@ -260,6 +278,13 @@ impl RunManager {
     #[cfg(test)]
     pub(crate) fn with_scratch(mut self, scratch: fn(&Path) -> bool) -> Self {
         self.scratch = scratch;
+        self
+    }
+
+    /// Draws nonce bytes with `nonce`, so a test can make the draw fail.
+    #[cfg(test)]
+    pub(crate) fn with_nonce(mut self, nonce: fn() -> Option<[u8; 8]>) -> Self {
+        self.nonce = nonce;
         self
     }
 
@@ -387,15 +412,24 @@ impl RunManager {
     /// The user's answer to the failure that halted the run of `pane`.
     /// `Retry` relaunches the failed worker on its spec, its prompt followed
     /// by the failure's text wrapped as untrusted data; `Cancel` ends the run.
-    /// `NotHalted` when no failure waits for the user, and nothing changes.
-    pub fn decide(self: &Arc<Self>, pane: PaneId, choice: UserChoice) -> Result<(), NotHalted> {
+    /// `NotHalted` when no failure waits for the user, and `NoNonce` when a
+    /// retry cannot wrap the failure for the model (as `collect`, never the
+    /// plain prompt); nothing changes in either case.
+    pub fn decide(self: &Arc<Self>, pane: PaneId, choice: UserChoice) -> Result<(), DecideError> {
         let mut runs = lock(&self.runs);
         let live = runs.get_mut(&pane).ok_or(NotHalted)?;
         let RunState::Halted { worker, text, .. } = live.run.state() else {
-            return Err(NotHalted);
+            return Err(NotHalted.into());
         };
         let (worker, text) = (*worker, text.clone());
         let retry = choice == UserChoice::Retry;
+        // Drawn before the run changes, so a failed draw leaves it halted.
+        let wrapped = if retry {
+            let bytes = (self.nonce)().ok_or(DecideError::NoNonce)?;
+            Some(label::wrap(&label::nonce_from(bytes), &text))
+        } else {
+            None
+        };
         live.run.decide(now(), choice)?;
         if *live.run.state() == RunState::Cancelled {
             let live = runs.remove(&pane);
@@ -405,11 +439,10 @@ impl RunManager {
             }
             return Ok(());
         }
-        if retry {
-            live.retry.insert(worker, text);
-        } else {
-            live.retry.remove(&worker);
-        }
+        match wrapped {
+            Some(wrapped) => live.retry.insert(worker, wrapped),
+            None => live.retry.remove(&worker),
+        };
         // A failure after a decision alerts again, the same worker's too.
         live.alerted = None;
         self.sync(pane, live);
@@ -550,7 +583,7 @@ impl RunManager {
     /// hands over no text: its error stays on the screen.
     fn collect(&self, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let collected = self.on_run(pane, run, |live| {
-            let Some(bytes) = nonce_bytes() else {
+            let Some(bytes) = (self.nonce)() else {
                 return error(NO_NONCE);
             };
             match live.run.collect_wrapped(bytes, id) {
@@ -674,12 +707,10 @@ impl RunManager {
             return;
         };
         let mut prompt = spec.prompt.clone();
-        if let Some(failure) = live.retry.remove(&id) {
-            // Wrapped or left out: an error text never reaches a model bare.
-            if let Some(bytes) = nonce_bytes() {
-                let wrapped = label::wrap(&label::nonce_from(bytes), &failure);
-                prompt = format!("{prompt}\n\n{wrapped}");
-            }
+        // Wrapped when the retry was decided: an error text never reaches a
+        // model bare.
+        if let Some(wrapped) = live.retry.remove(&id) {
+            prompt = format!("{prompt}\n\n{wrapped}");
         }
         let mut request = ChatRequest {
             engine: spec.engine.clone(),

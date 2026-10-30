@@ -212,8 +212,8 @@ S1e-1a bases on the S1d-3 branch.
 
 #### Advisories from the S1d-3 verifier (2026-10-29), for later slices
 
-- [ ] After a retry, an already queued worker starts before the retried one (`Run::enqueue` puts the retry at the back); decide in S2 whether a retry should start first.
-- [ ] When no nonce can be drawn, `decide(Retry)` sends the plain prompt without the error; consider returning an error as `collect` does (S2).
+- [x] After a retry, an already queued worker starts before the retried one (`Run::enqueue` puts the retry at the back); decide in S2 whether a retry should start first. Decided (user, 2026-10-30): the retried worker starts BEFORE the queued ones. Done in S2a: `Run::enqueue(.., front)`; `decide` queues at the front, `spawn` at the back; two tests changed to pin the new order.
+- [x] When no nonce can be drawn, `decide(Retry)` sends the plain prompt without the error; consider returning an error as `collect` does (S2). Decided (user, 2026-10-30): return an error, never the plain prompt. Done in S2a: `RunManager::decide` draws the nonce before the run changes and returns `DecideError::NoNonce` (the run stays halted, nothing relaunches); the wrapped failure is stored at decide time.
 
 #### Obligations from the S1b-2 security review (S1d-2, S1d-3)
 
@@ -290,8 +290,8 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 ## S2 to S10 (coarser; each slice RED tests first, then GREEN, one or more PRs on the chain)
 
 ### S2: failure alerts (2 PRs, ~540, risk High, decision before apply: Yes)
-- [ ] 2.1 Re-verify Gemini vs Antigravity CLI before starting (open risk).
-- [ ] 2.2 RED+GREEN `core/ai/orchestra/errors.rs` `classify` with golden fixtures per adapter, secret in message redacted; `core/ai/chat/claude.rs` keeps rate-limit text. Spec: chat-engines / Each adapter classifies, Secret in message; agent-orchestrator / 429 is its own class, Class table.
+- [x] 2.1 Re-verify Gemini vs Antigravity CLI before starting (open risk). Verified 2026-10-30: the Gemini CLI README says free individual and Google AI Pro/Ultra access moved to Antigravity CLI (`agy`) on 2026-06-18; Gemini CLI stays for Code Assist Standard/Enterprise and API-key/Vertex use. Decision: keep the Gemini adapter only in S2; an `agy` adapter is a follow-up (its error text is undocumented and the consumer-plan ToS for wrapping it is unclear).
+- [x] 2.2 (S2a) RED+GREEN `core/ai/orchestra/errors.rs` `classify` with golden fixtures per adapter, secret in message redacted; `core/ai/chat/claude.rs` keeps rate-limit text. Spec: chat-engines / Each adapter classifies, Secret in message; agent-orchestrator / 429 is its own class, Class table.
 - [ ] 2.3 RED+GREEN detached picker, `RunOverrides`, relaunch, later workers use override, (note from the S1b re-review: today `Relaunch` re-resolves only the halted worker, and already-queued workers keep their spawn-time spec; the override must reach them too), override marker, dropped at run end, abandoned picker, unavailable override engine, never persisted. Spec: config-menu / Change model opens level 2 .. Esc creates no override; config-persistence / A failure picker choice is never persisted; agent-orchestrator / Change provider relaunches .. Picker abandoned; modal-input / Change keys.
 
 ### S3: multiple workers (3 PRs, ~1,100, risk High, decision: Yes) depends on S1

@@ -109,7 +109,7 @@ Exploration approach C: async `spawn_agent` / `wait` / `collect` / `cancel` over
 | `PaneId` refactor blast radius (`app.rs` ~8k lines) | High | Isolated in S3; thin worker wrapper in S1 |
 | Prompt injection via worker output | High | Untrusted wrapper (design D11); orchestrator cannot approve; writes always ask |
 | Small local models cannot orchestrate | Med | Menu marks Ollama on the Orchestrate row as not recommended; documented |
-| Gemini CLI reportedly replaced by Antigravity CLI on 2026-06-18 (secondary source, FAQ) | Med | NOT resolved here: re-verify before S2; may need an `antigravity` engine follow-up |
+| Gemini CLI reportedly replaced by Antigravity CLI on 2026-06-18 (secondary source, FAQ) | Med | Re-verified 2026-10-30 (Gemini CLI README): confirmed for free/AI Pro/Ultra plans; S2 keeps the Gemini adapter only, an `agy` (Antigravity CLI) adapter is a follow-up |
 | Vision overreaches before write-tools/test-runner | Med | O7; S7/S8 gated; copy says "drafts" until then |
 | A review worker or refuter is talked into a pass by the change it reviews | Med | The candidate is wrapped as untrusted data; reviewers are read-only; a receipt never approves; the user decides the batch (S7b) |
 

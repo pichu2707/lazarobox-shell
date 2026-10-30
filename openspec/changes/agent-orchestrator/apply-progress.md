@@ -138,3 +138,26 @@ Open questions for the user: (1) is counting cache reads and writes as input rig
 - S1e-2: a running worker row shows no elapsed time; the label has no `n/m` count (S3) and the alert has no error class (S2); the "cancel the run first" footer hint is in state but not drawn; line breaks in an error are drawn as spaces; no manual smoke, TestBackend renders stand in.
 - S7-2 (verifier, none blocking): (1) a worker's batch can include the chat's leftover staged files, so the header mislabels them (the user still reviews every file, only the worker's own entries are marked `applied`); (2) an orphan approved later leaves the ledger at `not applied` and its header has no worker label; (3) a `Partial` apply marks every path `not applied`; (4) a timed-out worker's orphan may block staging for a later `code` worker in the same pane until the orchestrator turn ends (inferred, not probed); (5) several workers sharing one pane's batch is left to S3.
 - macOS: staging and applying worker writes is unsupported, so `code` workers cannot write there.
+
+## S2a: failure classification (PR 1 of 2 of S2, branch feat/agent-orchestrator-s2a) DONE
+
+Status: tasks 2.1 and 2.2 done, plus the two S1d-3 advisories (retry to the front, no plain-prompt retry). Task 2.3 (detached picker, `RunOverrides`) is S2b.
+
+### TDD cycle evidence
+
+| Task | Test files | RED | GREEN | Notes |
+|------|-----------|-----|-------|-------|
+| 2.2 classify | core/ai/orchestra/errors/tests.rs, fixtures in tests/fixtures/orchestra/ | compile error (`classify` missing) then 2 assertion failures (usage limit vs 429 order; codex 409 wording) | 8 pass | real fixtures: gemini quota/model, claude/codex model errors; 429/409 fixtures per adapter are synthetic (decoded through each real decoder) |
+| 2.2 claude rate-limit text | core/ai/chat/claude/tests.rs | 3 assertion failures (event ignored) | 41 claude tests pass | only a `rejected` `rate_limit_event` adds ` (rate limit: <type>)`; type cleaned through `error_message` |
+| 2.2 runtime wiring | runtime/orchestra/tests.rs | existing 409 test changed to expect `Conflict`; new 429 + redaction test | 50 pass | `failed(engine, error)` uses `classify`; a jail refusal keeps `jail_error` text |
+| retry to front | core/ai/orchestra/tests.rs | 2 tests changed to the new order, failed; a third (relaunch) failed after the change and was updated | pass | `Run::enqueue(.., front)` |
+| no nonce on Retry | runtime/orchestra/tests.rs | compile error (`with_nonce`, `DecideError`) | pass | `RunManager::decide` returns `DecideError::{NotHalted, NoNonce}`; nonce drawn before the run changes |
+
+Gates: fmt, clippy -D warnings (0), cargo test 7693 passed, 0 failed.
+
+### Deviations and decisions
+- Merge of origin/main into the S2a branch had 3 conflicts (app.rs, core/ai/chat/mod.rs, runtime/tools/host/files.rs), all both-sides additions; one test (`a_worker_write_outside_its_scope...`) now expects the folder-aware refusal text of local-model-writes.
+- `classify(engine, &ChatError) -> Classified {class, message}`; `engine` is not used by the table today (wording is matched across adapters).
+- Order: strong quota wording (insufficient_quota, exhausted your, credit balance, billing) > 429/rate limit > 409/conflict > 401/403/auth wording > quota/usage limit > timeout > other. A status code needs its own digits.
+- The codex decoder keeps only the inner provider message, so a codex 409 classifies only if the message says `conflict`.
+- `decide_run` still returns `bool`: a retry that fails with `NoNonce` leaves the alert open, and `r` can be pressed again.
