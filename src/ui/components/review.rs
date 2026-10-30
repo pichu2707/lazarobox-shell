@@ -26,7 +26,7 @@ use crate::{
 // The way out first: a narrow pane cuts the row from the right, so `n` is the
 // last key to go, then `y`, then the scroll hints.
 const KEYS_READY: &str = "n reject · y approve · ↑↓ PgUp PgDn scroll";
-const KEYS_LOCKED: &str = "n reject · y locked · ↑↓ PgUp PgDn scroll";
+const KEYS_LOCKED: &str = "n reject · y after scrolling · ↑↓ PgUp PgDn scroll";
 const KEYS_DISCARD: &str = "n discard · ↑↓ PgUp PgDn scroll";
 
 /// `0.4s`, rounded up to a tenth.
@@ -42,8 +42,14 @@ fn header(view: &ReviewView, now: Instant) -> (String, bool) {
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
+    if let Some(left) = view.locked_hint(now) {
+        return (
+            format!("y needs every line seen: {left} left, scroll ↓"),
+            false,
+        );
+    }
     let gate = if remaining > 0 {
-        format!("{remaining} remaining · y locked")
+        format!("{remaining} remaining · ↓ to unlock y")
     } else if left > Duration::ZERO {
         format!("y in {}", seconds(left))
     } else {

@@ -111,6 +111,36 @@ fn a_fresh_review_counts_what_remains_and_y_reads_as_locked() {
 }
 
 #[test]
+fn a_y_on_a_locked_gate_says_what_is_missing_for_two_seconds() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    draw(&mut chat, at(0), 60, 14);
+    let view = chat.approvals_mut().review_mut().unwrap();
+    let left = view.remaining();
+    view.y_pressed(at(900));
+    let hint = format!("y needs every line seen: {left} left, scroll ↓");
+    let shown = draw(&mut chat, at(2_899), 60, 14);
+    assert_eq!(rows(&shown)[0].trim_end(), hint);
+    let later = draw(&mut chat, at(2_900), 60, 14);
+    assert!(
+        rows(&later)[0].ends_with("↓ to unlock y"),
+        "{:?}",
+        rows(&later)
+    );
+}
+
+#[test]
+fn a_y_with_every_line_seen_shows_no_hint() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    page_to_the_end(&mut chat, (60, 14));
+    chat.approvals_mut()
+        .review_mut()
+        .unwrap()
+        .y_pressed(at(100));
+    let shown = draw(&mut chat, at(200), 60, 14);
+    assert!(rows(&shown)[0].contains("y in 0.6s"), "{:?}", rows(&shown));
+}
+
+#[test]
 fn everything_seen_but_the_delay_not_over_counts_down() {
     let mut chat = reviewing(numbered(30), 60, 14);
     page_to_the_end(&mut chat, (60, 14));
@@ -295,8 +325,8 @@ fn the_keys_row_keeps_n_first_then_y_then_the_scroll_hints() {
         (19, true, "n reject · y approv"),
         (24, true, "n reject · y approve · ↑"),
         (10, false, "n reject ·"),
-        (19, false, "n reject · y locked"),
-        (24, false, "n reject · y locked · ↑↓"),
+        (19, false, "n reject · y after"),
+        (24, false, "n reject · y after scrol"),
     ] {
         let mut chat = reviewing(numbered(3), usize::from(w), 6);
         if ready {

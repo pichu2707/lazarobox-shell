@@ -17,6 +17,9 @@ use super::review::{ARM_DELAY, BatchReview, Coverage, Layout, Row, layout};
 /// below.
 const CHROME: usize = 2;
 
+/// How long the hint for a `y` pressed with lines unseen stays in the counter.
+pub const HINT_FOR: Duration = Duration::from_secs(2);
+
 /// A scrolling key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Move {
@@ -40,6 +43,8 @@ pub struct ReviewView {
     drawn: Cell<Option<Drawn>>,
     /// Whether the wake-up for the end of the delay was given.
     woke: bool,
+    /// Until when the counter explains the `y` that found the gate locked.
+    hint_until: Option<Instant>,
 }
 
 /// A frame of the view: when, how big the area was and the first row on it.
@@ -84,7 +89,22 @@ impl ReviewView {
             top: 0,
             drawn: Cell::new(None),
             woke: false,
+            hint_until: None,
         }
+    }
+
+    /// A `y` was pressed at `now`. While lines are unseen it starts a hint
+    /// in the counter; it never approves, scrolls or counts anything.
+    pub fn y_pressed(&mut self, now: Instant) {
+        if self.reviewable() && self.remaining() > 0 {
+            self.hint_until = Some(now + HINT_FOR);
+        }
+    }
+
+    /// The lines still unseen while the hint of a locked `y` shows at `now`.
+    pub fn locked_hint(&self, now: Instant) -> Option<usize> {
+        let live = self.hint_until.is_some_and(|until| now < until);
+        (live && self.remaining() > 0).then(|| self.remaining())
     }
 
     /// The rows of the body in a pane `rows` high.
@@ -141,6 +161,14 @@ impl ReviewView {
     /// runs, and once more when it ends, so `y in 0.1s` becomes `y ready` by
     /// itself.
     pub fn wake(&mut self, now: Instant) -> bool {
+        // The hint needs a frame while it shows and one when it ends.
+        if self.hint_until.is_some() {
+            if self.locked_hint(now).is_some() {
+                return true;
+            }
+            self.hint_until = None;
+            return true;
+        }
         if self.coverage.started().is_none() {
             return false;
         }

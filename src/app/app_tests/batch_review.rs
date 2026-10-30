@@ -111,6 +111,32 @@ fn y_does_nothing_while_lines_are_unseen_however_late() {
 }
 
 #[test]
+fn y_on_a_locked_gate_hints_for_two_seconds_and_changes_nothing() {
+    let (mut a, _) = asked(200);
+    let (remaining, top) = (review(&a).remaining(), review(&a).top());
+    assert_eq!(at_drawn(&mut a, 5_000, key('y')), vec![]);
+    assert!(pending(&a).is_some());
+    assert_eq!(review(&a).remaining(), remaining);
+    assert_eq!(review(&a).top(), top);
+    let hint = |a: &App, t: u64| {
+        NOW_MS.with(|n| n.set(t));
+        review(a).locked_hint((a.clock)())
+    };
+    assert_eq!(hint(&a, 6_999), Some(remaining));
+    assert_eq!(hint(&a, 7_000), None);
+}
+
+#[test]
+fn y_during_the_arm_delay_with_every_line_seen_stays_silent() {
+    let (mut a, _) = asked(2);
+    read_all(&mut a, 100);
+    assert_eq!(review(&a).remaining(), 0);
+    assert_eq!(at(&mut a, 200, key('y')), vec![]);
+    NOW_MS.with(|n| n.set(300));
+    assert_eq!(review(&a).locked_hint((a.clock)()), None);
+}
+
+#[test]
 fn y_arms_at_full_coverage_plus_the_review_delay() {
     let (mut a, turn) = asked(60);
     read_all(&mut a, 100);
