@@ -17,6 +17,7 @@ pub mod composer;
 pub mod copy;
 pub mod engine;
 pub mod folder;
+pub mod folder_picker;
 pub mod gemini;
 pub mod guidance;
 pub mod history;
@@ -1215,6 +1216,8 @@ mod anchor_tests;
 mod compact_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod folder_picker_tests;
 #[cfg(test)]
 mod folder_tests;
 #[cfg(test)]

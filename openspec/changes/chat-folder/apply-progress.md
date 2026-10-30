@@ -63,6 +63,28 @@ Deviations and notes:
 - Resume: `App.resume_folders` keeps `(conversation, stored)` while the probe runs; stale answers are dropped; the resume path does not write `SetFolder` again; busy gives `stored folder not used: <reason>`; same folder is a no-op. `on_resumed` takes `(session, folder)` as a tuple (clippy too_many_arguments).
 - The `#[allow(dead_code)]` A1 left are removed.
 
+## Batch 3: PR B1 (tasks 4.1-4.8), branch `feat/chat-folder-b1`, base `feat/chat-folder-a2`
+
+| Task | Status | Commit |
+|---|---|---|
+| 4.1-4.2 `folder_picker::{Source, Row, merge}` | done | `feat(chat): merge folder candidates into picker rows` |
+| 4.3-4.4 `FolderPicker`, `PickerOutcome`, `on_key`, `paste`, `on_probed`, `on_completed` | done | `feat(chat): drive the folder picker with keys, a typed path and completion` |
+| 4.5-4.6 `StoreCmd::RecentFolders`, `StoreReply::RecentFolders`, `recent_folders` SQL | done | `feat(chat): read the folders earlier conversations were kept under` |
+| 4.7-4.8 `runtime/folder.rs` `walk_git`, `probe_many`, `complete` | done | `feat(chat): find git roots and list directories for the folder picker` |
+| 4.8 `Answer` enum, `Prober::{start_many, start_completion}`, `Effect::{ProbeFolders, CompleteFolder}`, `AppEvent::{FoldersProbed, FolderCompleted}` | done | `feat(chat): answer picker candidates and completions off the event loop` |
+
+Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (7162 lib tests) green. About 394 added non-comment, non-blank production lines.
+
+Deviations and notes:
+- `merge` keeps `Concrete` only (design D3 amendment), not `Concrete|Outside` as D10 still says; it takes already probed candidates `(Source, Result<Probed, Refusal>)`, so HOME, `/`, ancestors, outside, secret and deleted folders are dropped by the A1 verdict, never re-judged.
+- `Source` order: `LastUsed`, `PaneRoot`, `Recent`, `LastShell`; a stable sort, dedupe by the probed real path, cap 12.
+- The picker has no `Accepting(token)`: while a probe is pending only Esc acts, so a reply cannot be stale; `on_probed` outside that state is ignored. A stale completion is dropped by comparing the field text sent with the current one.
+- `PickerOutcome::{Handled, Probe(path), Complete{text, dir, prefix}, Cancel}`. The typed path goes through `expand` and the typed-flow `typed()` mapping (`Outside` -> `not allowed`; `Home` and `AboveHome` are accepted when typed).
+- `RecentFolders` is a read-only SELECT (`GROUP BY folder ORDER BY MAX(updated_at) DESC`); a failure or a panic answers an empty list; an unreachable store thread answers an empty list from `StoreHandle::send`. `migrate_to` and the schema version are untouched.
+- `walk_git(home, start)` canonicalizes both, stops below HOME (a `.git` in HOME is never a root) and `/`. `probe_many(env, paths, git)` applies the walk only to `PaneRoot` candidates and drops those without a repository.
+- `folder::Answer` is now an enum (`Probed`, `Many`, `Completed`) instead of a tuple; `bounded` is built on a new generic `within`. Probing the candidates and listing completions are bounded by the same 3 s `TIMEOUT` and answer an empty list when late.
+- `AppEvent::{FoldersProbed, FolderCompleted}` and the `RecentFolders` reply are ignored by the app until PR B2 wires the picker.
+
 ### Batch 2b: PR A2 review fixes (W1-W5, S1-S2)
 
 - W1/W2: `Purpose::Resume(token)`; `App.resume_folders` holds `(token, conversation, path)`; only the latest resume answer counts; `/cd` submit and any folder change drop the entry.
@@ -81,6 +103,27 @@ Deviations and notes:
 - Size of A2 against A1 after round 2: 617 added / 33 removed gross, 509 added excluding comments and blank lines (tests and snapshots excluded). Over the 400 soft limit; the gross figure passes 600, the code-only figure does not.
 - 7157 lib tests green.
 
+### Batch 3b: PR B1 review fixes (W1-W5, S)
+
+Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test and this file).
+
+- W1: `complete(roots, dir, prefix)` canonicalizes `dir` and lists nothing unless it is `Concrete` or `Home`; each entry is canonicalized and must pass `roots.judge_real`, so a link into `~/.ssh` is never suggested.
+- W2: `Tab` ignores a held key and waits for the answer (`completing`, freed by any answer of this picker, stale text included). In the runtime, `Prober` keeps one `Flight` per kind (candidates, completions), held by the blocking work itself until it really ends; a request that finds it taken answers empty at once, so a hung filesystem cannot fill the blocking pool.
+- W3: the roots load once per request; `each` bounds every candidate on its own (all in parallel), a stalled one is `folder not found` and `merge` drops it. `probe_many` is gone from production (tests keep a helper over `candidate`).
+- W4: `Completion{names, truncated}`; a truncated list is shown but never extends the field.
+- W5: names with control characters are dropped in `complete`.
+- S: `RECENT_ASK` = 40 for `RecentFolders`, `merge` caps at 12; the typed text is trimmed before completion; `FolderPicker::new(id, ..)`, and `set_rows`, `on_probed`, `on_completed` drop answers whose id is not the picker's (`Purpose::Pick(id)`, `Answer::{Many, Completed}` and the events carry it).
+- TDD note: W1 and W5 were seen failing against the old `complete` before the fix; the signature changes (ids, `Completion`) were RED at compile level; the stalled-candidate and single-flight tests were written together with the code.
+- 7187 lib tests green.
+
+### Batch 3c: PR B1 review round 2
+
+- Busy signal: `Completion.busy` and `Answer::Many(.., busy)` / `AppEvent::FoldersProbed{busy}` say a request was turned away because an earlier one is still on the disk (B2 shows it; no UI here).
+- `complete` checks at most `EXAMINED_MAX` (4 x `COMPLETIONS_MAX`) entries and marks the list truncated when it stops there; names with Unicode format characters (zero width, bidi override, BOM, soft hyphen) are dropped with the control ones; the doc says `AboveHome`/`Outside` folders list nothing.
+- Test seams: `Prober.bound` (the request bound, `TIMEOUT` outside tests), `many_with` and `completion_with` take the judging closure. Tests: a slow candidate times out and keeps the flight until its thread ends; a second request is turned away busy; a slow or panicking listing/candidate frees the flight. Mutation checks: dropping the hold in `each` or in the listing fails them.
+- Tests only: listing HOME with `.` leaves out `.ssh` and `.gnupg`; `.gnupg` and `.config/gh` list nothing inside.
+- Left for B2: a flight or debounce for the single-folder `start` and a session-unique picker id allocator.
+- 7194 lib tests green.
 ## Remaining
 
-A3 (3.1-3.8), B1 (4.1-4.8), B2 (5.1-5.7), closing 6.1-6.2.
+A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.

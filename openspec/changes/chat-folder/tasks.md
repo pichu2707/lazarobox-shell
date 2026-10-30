@@ -76,14 +76,14 @@ Order: A1 -> A2 -> B1 -> B2 sequential; A3 any time before B2. Each PR keeps `ca
 
 ## PR B1: picker core (~330, base `main` after A2)
 
-- [ ] 4.1 RED: `merge` order last-used, pane git roots, recent, last shell; dedupe by real path; keeps `Concrete` only (drops HOME, `/`, `/home`, `/usr`, deleted, secret); cap 12; row 0 pre-selected. (~0)
-- [ ] 4.2 GREEN: `core/ai/chat/folder_picker.rs`: `merge`, row type. (~70)
-- [ ] 4.3 RED: picker transitions: Up/Down, field edit, Ctrl+U, paste to field, Enter field wins over row, empty field + empty rows does nothing, Esc cancel, refused path keeps text and reason, stale completion dropped. (~0)
-- [ ] 4.4 GREEN: `FolderPicker` state machine and `on_key -> PickerOutcome`. (~110)
-- [ ] 4.5 RED: `StoreCmd::RecentFolders{limit}` returns folders newest first, groups duplicates, limit 12, store failure counts as empty. (~0)
-- [ ] 4.6 GREEN: `RecentFolders` SQL in `chat_store/worker.rs`. (~40)
-- [ ] 4.7 RED: runtime `.git` walk (dir and worktree file, stops at HOME and `/`), `ProbeFolders{paths, walk_git}` judges each path, completion lists directories only (hidden only with `.` prefix, cap 50). (~0)
-- [ ] 4.8 GREEN: `runtime/folder.rs` `probe_many`, `walk_git`, `complete`; matching `Effect`/`AppEvent` variants. (~110)
+- [x] 4.1 RED: `merge` order last-used, pane git roots, recent, last shell; dedupe by real path; keeps `Concrete` only (drops HOME, `/`, `/home`, `/usr`, deleted, secret); cap 12; row 0 pre-selected. (~0)
+- [x] 4.2 GREEN: `core/ai/chat/folder_picker.rs`: `merge`, row type. (~70)
+- [x] 4.3 RED: picker transitions: Up/Down, field edit, Ctrl+U, paste to field, Enter field wins over row, empty field + empty rows does nothing, Esc cancel, refused path keeps text and reason, stale completion dropped. (~0)
+- [x] 4.4 GREEN: `FolderPicker` state machine and `on_key -> PickerOutcome`. (~110)
+- [x] 4.5 RED: `StoreCmd::RecentFolders{limit}` returns folders newest first, groups duplicates, limit 12, store failure counts as empty. (~0)
+- [x] 4.6 GREEN: `RecentFolders` SQL in `chat_store/worker.rs`. (~40)
+- [x] 4.7 RED: runtime `.git` walk (dir and worktree file, stops at HOME and `/`), `ProbeFolders{paths, walk_git}` judges each path, completion lists directories only (hidden only with `.` prefix, cap 50). (~0)
+- [x] 4.8 GREEN: `runtime/folder.rs` `probe_many`, `walk_git`, `complete`; matching `Effect`/`AppEvent` variants. (~110)
 
 ## PR B2: picker integration, keys, render, docs (~285, base `main` after B1 and A3)
 

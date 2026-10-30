@@ -1028,8 +1028,19 @@ async fn run_loop(
                     return Ok(());
                 }
             }
-            Some((pane, purpose, result)) = folder_rx.recv() => {
-                if step(&mut app, AppEvent::FolderProbed { pane, purpose, result }, panes) {
+            Some(answer) = folder_rx.recv() => {
+                let event = match answer {
+                    folder::Answer::Probed(pane, purpose, result) => {
+                        AppEvent::FolderProbed { pane, purpose, result }
+                    }
+                    folder::Answer::Many(pane, id, found, busy) => {
+                        AppEvent::FoldersProbed { pane, id, found, busy }
+                    }
+                    folder::Answer::Completed(pane, id, text, found) => {
+                        AppEvent::FolderCompleted { pane, id, text, found }
+                    }
+                };
+                if step(&mut app, event, panes) {
                     return Ok(());
                 }
             }
@@ -1706,6 +1717,35 @@ impl Panes {
                         pane,
                         purpose,
                         result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeFolders {
+                    pane,
+                    id,
+                    paths,
+                    git,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, id, paths, git),
+                    None => feedback.push(AppEvent::FoldersProbed {
+                        pane,
+                        id,
+                        busy: false,
+                        found: Vec::new(),
+                    }),
+                },
+                Effect::CompleteFolder {
+                    pane,
+                    id,
+                    text,
+                    dir,
+                    prefix,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_completion(pane, id, text, dir, prefix),
+                    None => feedback.push(AppEvent::FolderCompleted {
+                        pane,
+                        id,
+                        text,
+                        found: Default::default(),
                     }),
                 },
                 Effect::EndToolSession(pane) => {
