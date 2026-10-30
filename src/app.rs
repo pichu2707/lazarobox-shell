@@ -8290,6 +8290,8 @@ mod app_tests {
 
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
+    /// The run-scoped override picked from a failure alert.
+    mod orchestra_override;
     /// The failure alert of a run, its keys and the run's events.
     mod orchestra_run;
     mod orchestra_send;

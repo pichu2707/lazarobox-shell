@@ -11,7 +11,12 @@ use crate::core::ai::{
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
         transcript::worker_label,
     },
-    orchestra::{Toolset, run::Roster},
+    config::Assignment,
+    orchestra::{
+        Toolset,
+        overrides::{Change, FailurePicker, Picked},
+        run::Roster,
+    },
 };
 
 /// Why an orchestrator turn is refused when the user's tools are off: it
@@ -25,11 +30,13 @@ const NOTICE: &str = "Providers recommend API keys for automation; \
      consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
 
 /// The keys of the failure alert: `r` retries, `c` or Esc cancels.
-const ALERT_KEYS: &str = "c/Esc cancel";
+const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
 /// Said when the run manager dropped an answer: its run is over.
+/// Said when a picker is asked for a worker whose row is gone.
+const NO_ROW: &str = "cannot change: that worker is not shown any more";
 const MOVED_ON: &str = "the run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
@@ -78,8 +85,11 @@ impl App {
             return Vec::new();
         };
         match event {
-            OrchestraEvent::Worker(row) => {
+            OrchestraEvent::Worker(mut row) => {
                 chat.set_orch_run(Some(row.run));
+                row.overridden = chat
+                    .orch_overrides()
+                    .is_some_and(|over| over.get(row.kind).is_some());
                 chat.worker_row(row);
             }
             OrchestraEvent::Halted {
@@ -89,6 +99,8 @@ impl App {
                 text,
             } => {
                 chat.set_orch_run(Some(run));
+                chat.set_orch_picker(None);
+                chat.set_orch_note(None);
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
                     worker,
@@ -105,6 +117,7 @@ impl App {
                 reason,
             } => {
                 chat.set_orch_run(Some(run));
+                chat.set_orch_picker(None);
                 chat.set_orch_note(Some(OrchNote::RetryFailed(reason)));
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
@@ -124,6 +137,7 @@ impl App {
                 if chat.orch_alert().is_some_and(|alert| alert.run == run) {
                     chat.set_orch_alert(None);
                 }
+                chat.end_orch_run(run);
             }
         }
         self.dirty = true;
@@ -141,17 +155,28 @@ impl App {
         key: &KeyEvent,
         repeat: bool,
     ) -> Option<Vec<Effect>> {
-        let fresh = !repeat && key.kind == KeyEventKind::Press;
-        if !fresh || key.modifiers != KeyModifiers::NONE {
+        if key.modifiers != KeyModifiers::NONE || key.kind == KeyEventKind::Release {
             return None;
         }
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
         let alert = chat.orch_alert()?;
+        if chat.orch_picker().is_some() {
+            return Some(self.on_failure_picker_key(id, key, repeat));
+        }
+        if repeat || key.kind != KeyEventKind::Press {
+            return None;
+        }
         let empty = chat.composer().text().is_empty();
         let choice = match key.code {
             KeyCode::Char('r') if empty => UserChoice::Retry,
             KeyCode::Char('c') if empty => UserChoice::Cancel,
             KeyCode::Esc => UserChoice::Cancel,
+            KeyCode::Char('m') if empty => {
+                return Some(self.open_failure_picker(id, Change::Model));
+            }
+            KeyCode::Char('p') if empty => {
+                return Some(self.open_failure_picker(id, Change::Provider));
+            }
             _ => return None,
         };
         let run = alert.run;
@@ -165,6 +190,103 @@ impl App {
         }])
     }
 
+    /// The roster of a request: the menu's assignments with the pane's run
+    /// overrides on top, never saved.
+    fn roster(&self, id: PaneId) -> Roster {
+        let overrides = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.orch_overrides());
+        let config = overrides.map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
+        Roster::new(
+            Task::ALL
+                .iter()
+                .map(|&task| {
+                    let engines = self.engines.as_ref();
+                    (task, availability_for(task, &config, engines, self.jail))
+                })
+                .collect(),
+        )
+    }
+
+    /// `m` or `p` on the alert: the menu picker of the failed worker's task,
+    /// detached from the menu. A worker whose row is gone says so.
+    fn open_failure_picker(&mut self, id: PaneId, change: Change) -> Vec<Effect> {
+        self.dirty = true;
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Vec::new();
+        };
+        let failed = chat.orch_alert().and_then(|alert| {
+            chat.entries().iter().find_map(|entry| match entry {
+                Entry::Worker(row) if (row.run, row.id) == (alert.run, alert.worker) => Some(row),
+                _ => None,
+            })
+        });
+        let picker = failed.map(|row| {
+            let config = chat
+                .orch_overrides()
+                .map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
+            let in_use = (row.engine.as_str(), row.model.as_deref());
+            FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
+        });
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            let note = picker
+                .is_none()
+                .then(|| OrchNote::Picker(NO_ROW.to_owned()));
+            chat.set_orch_note(note);
+            chat.set_orch_picker(picker);
+        }
+        Vec::new()
+    }
+
+    /// A key while the failure picker is open: it takes every plain key; Esc
+    /// returns to the alert, an Enter on a leaf is the override and relaunches
+    /// the worker with it.
+    fn on_failure_picker_key(&mut self, id: PaneId, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        self.dirty = true;
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let Some(picker) = chat.orch_picker_mut() else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => picker.step(true),
+            KeyCode::Char('k') | KeyCode::Up => picker.step(false),
+            KeyCode::Enter if !repeat => {
+                let task = picker.task();
+                if let Picked::Chosen(assignment) = picker.enter() {
+                    return self.choose_override(id, task, assignment);
+                }
+            }
+            KeyCode::Esc if !repeat => chat.set_orch_picker(None),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The user confirmed `assignment` for `task`: it becomes the run's
+    /// override and the failed worker is relaunched with the new roster.
+    fn choose_override(&mut self, id: PaneId, task: Task, assignment: Assignment) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let Some(run) = chat.orch_alert().map(|alert| alert.run) else {
+            return Vec::new();
+        };
+        chat.override_task(run, task, assignment);
+        chat.set_orch_picker(None);
+        chat.set_orch_note(None);
+        chat.set_orch_alert(None);
+        let choice = UserChoice::Relaunch(self.roster(id));
+        vec![Effect::OrchDecide {
+            pane: id,
+            run,
+            choice,
+        }]
+    }
+
     /// What pane `id` shows above its composer about its run, in the order
     /// the keys answer: the provider notice, then the failure alert. `None`
     /// when neither is up. Like the `engram serve` offer it is guidance, so
@@ -172,7 +294,10 @@ impl App {
     pub(super) fn orch_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let notice = self.orch_notice(id).then(|| NOTICE.to_owned());
-        let alert = chat.orch_alert().map(|alert| alert_text(chat, alert));
+        let alert = match chat.orch_picker() {
+            Some(picker) => Some(picker.view()),
+            None => chat.orch_alert().map(|alert| alert_text(chat, alert)),
+        };
         match (notice, alert) {
             (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
             (notice, alert) => notice.or(alert),
@@ -314,15 +439,7 @@ impl App {
         // The orchestrator session: the read tools and the four orchestration
         // tools, never `run_in_pane`.
         request.families = Toolset::Orchestrator.families();
-        let roster = Roster::new(
-            Task::ALL
-                .iter()
-                .map(|&task| {
-                    let engines = self.engines.as_ref();
-                    (task, availability_for(task, &self.ai, engines, self.jail))
-                })
-                .collect(),
-        );
+        let roster = self.roster(id);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
@@ -366,11 +483,25 @@ fn alert_text(chat: &ChatState, alert: &OrchAlert) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
+    let overrides: Vec<String> = Task::ALL
+        .iter()
+        .filter_map(|task| {
+            let label = chat.orch_overrides()?.label(*task)?;
+            Some(format!("{} {label}", task.id()))
+        })
+        .collect();
     let mut line = format!("run paused: worker {worker} {ended}: {text}");
+    if !overrides.is_empty() {
+        line.push_str(&format!(" \u{b7} override: {}", overrides.join(", ")));
+    }
     let retry = match chat.orch_note() {
         Some(OrchNote::RetryFailed(reason)) => {
             line.push_str(&format!(" \u{b7} retry failed: {reason}"));
             RETRY_AGAIN
+        }
+        Some(OrchNote::Picker(note)) => {
+            line.push_str(&format!(" \u{b7} {note}"));
+            RETRY_KEY
         }
         None => RETRY_KEY,
     };

@@ -20,11 +20,11 @@ use crate::core::ai::{
     },
 };
 
-const RUN: RunId = RunId(7);
+pub(super) const RUN: RunId = RunId(7);
 
 /// An orchestrating pane whose notice was accepted earlier, its first
 /// orchestrator turn in flight; returns the turn.
-fn running() -> (App, u64) {
+pub(super) fn running() -> (App, u64) {
     let mut ai = orch_ai();
     ai.orchestrator.acknowledged = true;
     let mut a = orch_app_with(ai);
@@ -36,11 +36,11 @@ fn running() -> (App, u64) {
     (a, turn)
 }
 
-fn event(event: OrchestraEvent) -> AppEvent {
+pub(super) fn event(event: OrchestraEvent) -> AppEvent {
     AppEvent::Orchestra(chat_id(), event)
 }
 
-fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
+pub(super) fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
     OrchestraEvent::Worker(WorkerRow {
         run,
         id: WorkerId(id),
@@ -51,10 +51,11 @@ fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         elapsed: None,
         usage: None,
         partial: false,
+        overridden: false,
     })
 }
 
-fn halted(run: RunId, text: &str) -> OrchestraEvent {
+pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
         worker: WorkerId(1),
@@ -64,7 +65,7 @@ fn halted(run: RunId, text: &str) -> OrchestraEvent {
 }
 
 /// A run whose worker 1 failed with `409 conflict: session busy`.
-fn alerted() -> (App, u64) {
+pub(super) fn alerted() -> (App, u64) {
     let (mut a, turn) = running();
     a.update(event(row(RUN, 1, WorkerStatus::Running)));
     a.update(event(row(RUN, 1, WorkerStatus::Failed)));
@@ -75,7 +76,7 @@ fn alerted() -> (App, u64) {
     (a, turn)
 }
 
-fn decide(choice: UserChoice) -> Effect {
+pub(super) fn decide(choice: UserChoice) -> Effect {
     Effect::OrchDecide {
         pane: chat_id(),
         run: RUN,
@@ -83,7 +84,7 @@ fn decide(choice: UserChoice) -> Effect {
     }
 }
 
-fn alert(a: &App) -> Option<&OrchAlert> {
+pub(super) fn alert(a: &App) -> Option<&OrchAlert> {
     chat_of(a).orch_alert()
 }
 
@@ -300,7 +301,7 @@ fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
 
 /// What the alert of `alerted` says.
 const ALERT: &str = "run paused: worker review codex>gpt-5 failed: \
-     409 conflict: session busy \u{b7} r retry \u{b7} c/Esc cancel";
+     409 conflict: session busy \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 
 // chat-pane / Alert content (S1 part; the class and the change options are
 // S2): the pane says the run is paused, names the worker, shows the error as
@@ -329,7 +330,7 @@ fn the_alert_names_how_the_worker_ended_on_one_paragraph() {
         a.chat_guidance(chat_id()).as_deref(),
         Some(
             "run paused: worker review codex>gpt-5 timed_out: no answer in 600 s \
-             \u{b7} r retry \u{b7} c/Esc cancel"
+             \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel"
         )
     );
 }
@@ -385,7 +386,7 @@ fn a_declined_retry_shows_why_and_the_alert_answers_again() {
     let text = a.chat_guidance(chat_id()).unwrap_or_default();
     assert!(
         text.ends_with(
-            "retry failed: could not seal the previous error \u{b7} r try again \u{b7} c/Esc cancel"
+            "retry failed: could not seal the previous error \u{b7} r try again \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel"
         ),
         "{text}"
     );
