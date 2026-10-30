@@ -27,7 +27,7 @@ fn key(c: char, mods: KeyModifiers) -> AppEvent {
 
 fn keys(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.update(key(c, KeyModifiers::NONE));
+        app.update_settled(key(c, KeyModifiers::NONE));
     }
 }
 

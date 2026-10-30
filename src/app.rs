@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -14,6 +14,7 @@ use crate::core::{
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
             folder::{Probed, Purpose as FolderPurpose, Refusal},
+            folder_picker::{Completion, Source as PickerSource},
             list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
@@ -63,6 +64,7 @@ mod install;
 mod notes;
 mod offer;
 mod orchestra;
+mod picker;
 mod review;
 mod run;
 mod scroll;
@@ -178,6 +180,23 @@ pub enum AppEvent {
         purpose: FolderPurpose,
         result: Result<Probed, Refusal>,
     },
+    /// The answer to `Effect::ProbeFolders`: every candidate, judged.
+    FoldersProbed {
+        pane: PaneId,
+        /// The picker that asked.
+        id: u64,
+        found: Vec<(PickerSource, Result<Probed, Refusal>)>,
+        /// An earlier request was still on the disk, so none was made.
+        busy: bool,
+    },
+    /// The answer to `Effect::CompleteFolder`: the directory names for the
+    /// field text that was sent.
+    FolderCompleted {
+        pane: PaneId,
+        id: u64,
+        text: String,
+        found: Completion,
+    },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
     /// The store thread answered a command of a pane.
@@ -219,6 +238,9 @@ pub enum AppEvent {
     /// What happened to the batch of chat `.0` outside a model turn (close,
     /// orphan review, apply, discard).
     Batch(PaneId, BatchEvent),
+    /// The runtime's poll of the batches it holds, by pane: the badges, and
+    /// the review a clean end of a turn leaves to open (local-model-writes D1).
+    Badges(std::collections::HashMap<PaneId, crate::core::ai::chat::review::Badge>),
     /// The Hub answered `Effect::HubAsk` (or the request failed, with its
     /// message). It names the request it answers.
     HubReply(Ask, Result<Answer, String>),
@@ -397,6 +419,26 @@ pub enum Effect {
         pane: PaneId,
         path: PathBuf,
         purpose: FolderPurpose,
+    },
+    /// Judge the folder picker candidates of chat `pane`; with `git`, the pane
+    /// folders move up to their git roots. Answered with one
+    /// `AppEvent::FoldersProbed`.
+    ProbeFolders {
+        pane: PaneId,
+        /// The picker that asks.
+        id: u64,
+        paths: Vec<(PickerSource, PathBuf)>,
+        git: bool,
+    },
+    /// List the directories that complete the picker's field `text`: those of
+    /// `dir` that start with `prefix`. Answered with one
+    /// `AppEvent::FolderCompleted`.
+    CompleteFolder {
+        pane: PaneId,
+        id: u64,
+        text: String,
+        dir: PathBuf,
+        prefix: String,
     },
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
@@ -793,6 +835,9 @@ pub struct App {
     cd_requests: HashMap<PaneId, folder::CdRequest>,
     /// The last token handed to a folder probe.
     folder_seq: u64,
+    /// The chats whose open steps (memory, prompt, list) wait for the folder
+    /// to be settled: the probe, or the picker.
+    opening: HashSet<PaneId>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -921,6 +966,7 @@ impl App {
             launch_cwd: None,
             home: None,
             resume_folders: HashMap::new(),
+            opening: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
             hostname: None,
@@ -1697,6 +1743,59 @@ impl App {
             .is_some_and(|state| state.pty().is_some())
     }
 
+    /// [`update`](Self::update) for tests that are not about the folder. What
+    /// the update itself opens is settled as it always was: a chat that asks
+    /// the runtime to probe its folder is answered "concrete", and a picker
+    /// the update opened (an unknown folder, a resume without one) is closed
+    /// with the held-back steps run. Pickers that were open before are left
+    /// alone.
+    #[cfg(test)]
+    pub(crate) fn update_settled(&mut self, event: AppEvent) -> Vec<Effect> {
+        let had: Vec<PaneId> = self
+            .panes
+            .keys()
+            .copied()
+            .filter(|id| self.picker_open(*id))
+            .collect();
+        let mut settled = Vec::new();
+        for effect in self.update(event) {
+            match effect {
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose: FolderPurpose::Open,
+                } => settled.extend(self.update(AppEvent::FolderProbed {
+                    pane,
+                    purpose: FolderPurpose::Open,
+                    result: Ok(Probed {
+                        path,
+                        verdict: crate::core::ai::chat::folder::Verdict::Concrete,
+                    }),
+                })),
+                effect => settled.push(effect),
+            }
+        }
+        for id in self.panes.keys().copied().collect::<Vec<_>>() {
+            if had.contains(&id) || !self.picker_open(id) {
+                continue;
+            }
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.close_folder_picker();
+            }
+            // What the picker gathered is not part of the old behaviour.
+            settled.retain(|effect| {
+                !matches!(
+                    effect,
+                    Effect::ProbeFolders { pane, .. }
+                        | Effect::Store(StoreCmd::RecentFolders { pane, .. })
+                        if *pane == id
+                )
+            });
+            settled.extend(self.finish_open(id));
+        }
+        settled
+    }
+
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
@@ -1715,6 +1814,18 @@ impl App {
                 result,
             } => self.on_folder_probed(pane, purpose, result),
             AppEvent::Orchestra(id, event) => self.on_orchestra(id, event),
+            AppEvent::FoldersProbed {
+                pane,
+                id,
+                found,
+                busy,
+            } => self.on_folders_probed(pane, id, found, busy),
+            AppEvent::FolderCompleted {
+                pane,
+                id,
+                text,
+                found,
+            } => self.on_folder_completed(pane, id, &text, &found),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -1840,6 +1951,7 @@ impl App {
                 Vec::new()
             }
             AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
+            AppEvent::Badges(badges) => self.sync_batches(&badges),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -2258,6 +2370,15 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            // They would open a view under the folder picker.
+            Step::Run(
+                PrefixAction::EditTags
+                | PrefixAction::SaveNote
+                | PrefixAction::Summarize
+                | PrefixAction::ToggleMemory
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleApproval,
+            ) if self.refuse_over_folder() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
                 PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
@@ -2577,6 +2698,9 @@ impl App {
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
         if finished && how == Ended::Done {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.note_clean_end();
+            }
             effects.extend(self.start_compaction(id));
         }
         if llamacpp_failed {
@@ -5080,9 +5204,15 @@ mod app_tests {
     }
 
     /// Press the prefix, then each of `keys`.
+    ///
+    /// A chat that opens asks the runtime to probe its folder first; these
+    /// tests answer "concrete" at once, so the chat opens as it always did.
+    /// The picker tests drive the open flow by hand.
     fn press(a: &mut App, keys: &str) -> Vec<Effect> {
         a.update(ctrl_space());
-        keys.chars().flat_map(|c| a.update(key(c))).collect()
+        keys.chars()
+            .flat_map(|c| a.update_settled(key(c)))
+            .collect()
     }
 
     fn split_right() -> App {
@@ -8148,6 +8278,8 @@ mod app_tests {
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
 
+    /// A clean end of a turn opens the review of the batch it left (local-model-writes D1).
+    mod batch_auto_review;
     /// The review view of a proposed write batch.
     mod batch_review;
     mod commit_review;
@@ -8166,6 +8298,8 @@ mod app_tests {
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;
+    /// `y` in `run` mode runs a model's command; elsewhere it types.
+    mod tool_run_y;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;
@@ -8217,6 +8351,9 @@ mod app_tests {
 
     /// The chat folder: busy refusals and the change (chat-folder).
     mod chat_folder;
+
+    /// The folder picker: open flow, keys, accept and drop (chat-folder B2).
+    mod chat_picker;
 
     /// The update notice: statusline mark and menu note.
     mod update;

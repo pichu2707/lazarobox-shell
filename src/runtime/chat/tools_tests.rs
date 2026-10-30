@@ -2,8 +2,11 @@
 //! are answered by (pane, turn, call). Real unix sockets and the real clock,
 //! every wait bounded; nothing sleeps.
 
-// What only the Linux-only tests use is dead code elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// What only the file-tool tests use is dead code on other systems.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 
@@ -161,8 +164,8 @@ fn note(lab: &Lab) -> Option<ApprovalAsk> {
 
 // A cloud read: the app hears the ask under its pane and turn, the answer
 // reaches the call, and only then the file is read.
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+// Needs the file tools: they open files below HOME with no symlink (Linux and macOS).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_call_waits_for_the_answer_of_its_pane_and_turn() {
     let lab = lab();
@@ -260,8 +263,8 @@ async fn a_denied_call_never_opens_the_file() {
 }
 
 // Two chats: closing one ends only its calls.
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+// Needs the file tools: they open files below HOME with no symlink (Linux and macOS).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn closing_one_chat_ends_only_its_own_calls() {
     let lab = lab();
@@ -654,7 +657,7 @@ async fn stage(dispatch: &Arc<dyn Dispatch>, path: &str, content: &str) {
     assert!(!out.is_error, "{out:?}");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
     let lab = lab();
@@ -681,7 +684,7 @@ async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
 // Spec (code-write, Orphan, close and quit): the user reviews, applies or
 // discards what a turn left behind, through the chats. While a turn runs the
 // batch is the model's, not an orphan.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     let lab = lab();
@@ -728,7 +731,7 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
 // The pane badge (chat-pane, "Staged batch indicator") is polled from the
 // store: a batch is staged while a turn of its pane runs and an orphan once
 // no turn does; closing the chat clears it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
     use crate::core::ai::chat::review::Badge;

@@ -126,6 +126,18 @@ pub enum ApplyResult {
     Partial {
         changed: Vec<PathBuf>,
     },
+    /// The system denied a step at `path` (a permission, such as macOS TCC);
+    /// whatever was done is undone. Not drift: the disk is as reviewed.
+    Denied {
+        path: PathBuf,
+        undone: bool,
+    },
+    /// A create at `path` found a system or volume without a safe no-replace
+    /// write (on macOS: exFAT, SMB, NFS); whatever was done is undone.
+    VolumeUnsupported {
+        path: PathBuf,
+        undone: bool,
+    },
     /// No safe write on this platform; nothing was written.
     Unsupported,
 }
@@ -179,6 +191,16 @@ impl ApplyResult {
                     "nothing was written"
                 }
             ),
+            ApplyResult::Denied { path, undone } => format!(
+                "failed at {}: permission denied, {}",
+                escape(&path.to_string_lossy()),
+                undo_note(*undone)
+            ),
+            ApplyResult::VolumeUnsupported { path, undone } => format!(
+                "failed at {}: this system or volume does not support a safe no-replace write, {}",
+                escape(&path.to_string_lossy()),
+                undo_note(*undone)
+            ),
             ApplyResult::Partial { changed } => format!(
                 "partial: {} path{} still changed on disk (by this batch, or by someone else and left as it is), check it by hand:{}",
                 changed.len(),
@@ -219,10 +241,26 @@ impl ApplyResult {
                     "nothing was written"
                 }
             ),
+            ApplyResult::Denied { undone, .. } => format!(
+                "The user's apply of your staged batch failed: permission denied; {}.",
+                undo_note(*undone)
+            ),
+            ApplyResult::VolumeUnsupported { undone, .. } => format!(
+                "The user's apply of your staged batch failed: the system or volume does not support a safe no-replace write; {}.",
+                undo_note(*undone)
+            ),
             ApplyResult::Invalid { .. } | ApplyResult::Unsupported => {
                 "The user's apply of your staged batch was refused; nothing was written.".to_owned()
             }
         }
+    }
+}
+
+fn undo_note(undone: bool) -> &'static str {
+    if undone {
+        "every earlier change was undone"
+    } else {
+        "nothing was written"
     }
 }
 
@@ -242,6 +280,14 @@ pub fn apply(ops: &dyn WriteOps, entries: &[Staged]) -> ApplyResult {
             return match error {
                 _ if !changed.is_empty() => ApplyResult::Partial { changed },
                 _ if raced(&error, &staged.entry) => ApplyResult::Drifted(vec![path]),
+                WriteError::Denied => ApplyResult::Denied {
+                    path,
+                    undone: !done.is_empty(),
+                },
+                WriteError::Unsupported => ApplyResult::VolumeUnsupported {
+                    path,
+                    undone: !done.is_empty(),
+                },
                 _ => ApplyResult::Failed {
                     path,
                     undone: !done.is_empty(),
@@ -260,7 +306,9 @@ fn raced(error: &WriteError, entry: &Entry) -> bool {
     match error {
         WriteError::Drifted | WriteError::Exists | WriteError::Refused => true,
         WriteError::Missing => matches!(entry, Entry::File { base: Some(_), .. }),
-        WriteError::Unsupported | WriteError::NotEmpty | WriteError::Io => false,
+        WriteError::Unsupported | WriteError::Denied | WriteError::NotEmpty | WriteError::Io => {
+            false
+        }
     }
 }
 
@@ -329,6 +377,12 @@ fn preflight(ops: &dyn WriteOps, entries: &[Staged]) -> Option<ApplyResult> {
             Ok(found) if still_as_staged(found.as_deref(), &staged.entry) => {}
             Ok(_) | Err(WriteError::Refused | WriteError::Drifted) => drifted.push(real.into()),
             Err(WriteError::Unsupported) => return Some(ApplyResult::Unsupported),
+            Err(WriteError::Denied) => {
+                return Some(ApplyResult::Denied {
+                    path: real.into(),
+                    undone: false,
+                });
+            }
             Err(_) => {
                 return Some(ApplyResult::Failed {
                     path: real.into(),
@@ -774,6 +828,72 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_denial_mid_batch_is_not_drift_and_still_rolls_back() {
+        let fake = Fake::default().failing(&[1]);
+        fake.error.set(Some(WriteError::Denied));
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        let got = apply(&fake, &batch);
+        assert_eq!(
+            got,
+            ApplyResult::Denied {
+                path: PathBuf::from("/h/p/b"),
+                undone: true
+            }
+        );
+        assert_eq!(fake.text("/h/p/a"), None);
+        let said = got.summary();
+        assert!(said.contains("permission denied"), "{said}");
+        assert!(!said.contains("changed since"), "{said}");
+        let told = got.told();
+        assert!(told.contains("permission"), "{told}");
+        assert!(!told.contains('/'), "{told}");
+        // A denial on the first step leaves nothing to undo.
+        let fake = Fake::default().failing(&[0]);
+        fake.error.set(Some(WriteError::Denied));
+        let got = apply(&fake, &batch);
+        assert!(
+            matches!(got, ApplyResult::Denied { undone: false, .. }),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_volume_without_a_no_replace_rename_mid_batch_says_so_and_rolls_back() {
+        let fake = Fake::default().failing(&[1]);
+        fake.error.set(Some(WriteError::Unsupported));
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        let got = apply(&fake, &batch);
+        assert_eq!(
+            got,
+            ApplyResult::VolumeUnsupported {
+                path: PathBuf::from("/h/p/b"),
+                undone: true
+            }
+        );
+        assert_eq!(fake.text("/h/p/a"), None);
+        let said = got.summary();
+        assert!(
+            said.contains("no-replace write") && !said.contains("exFAT"),
+            "{said}"
+        );
+        assert!(!got.told().contains('/'), "{}", got.told());
+    }
+
+    #[test]
+    fn a_denial_whose_undo_fails_is_still_partial() {
+        // Forward call 1 is denied; the undo of step 0 (call 2) fails too.
+        let fake = Fake::default().failing(&[1, 2]);
+        fake.error.set(Some(WriteError::Denied));
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        assert_eq!(
+            apply(&fake, &batch),
+            ApplyResult::Partial {
+                changed: paths(&["/h/p/a"])
+            }
+        );
+    }
+
+    #[test]
     fn a_file_that_drifts_between_the_preflight_and_its_write_reports_drift_after_the_undo() {
         let fake = Fake::default().with_file("/h/p/b", "old b").failing(&[1]);
         fake.error.set(Some(WriteError::Drifted));
@@ -1071,7 +1191,7 @@ mod tests {
 
     // We2.1: the real disk
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     mod on_disk {
         use super::*;
 
@@ -1257,6 +1377,14 @@ mod tests {
             ApplyResult::Drifted(vec![path.clone()]),
             ApplyResult::Partial {
                 changed: vec![path.clone()],
+            },
+            ApplyResult::Denied {
+                path: path.clone(),
+                undone: true,
+            },
+            ApplyResult::VolumeUnsupported {
+                path: path.clone(),
+                undone: true,
             },
             ApplyResult::Unsupported,
         ];

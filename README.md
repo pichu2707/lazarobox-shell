@@ -140,9 +140,9 @@ Desde la 1.0, lazarobox sigue [SemVer](https://semver.org): **un cambio que romp
 
 | Congelado desde la 1.0 | Qué se promete |
 | :--- | :--- |
-| `config.toml` | Los nombres de las tablas y de las claves, y los valores que cada una admite. Los nombres actuales son los definitivos: `[tabbar] position` y `[ai] notify` (donde `true` y `false` siguen siendo alias de `"auto"` y `"off"`). Una versión menor puede añadir claves o valores nuevos; ninguna clave existente cambia de nombre, de significado ni deja de admitir un valor. |
+| `config.toml` | Los nombres de las tablas y de las claves, y los valores que cada una admite. Los nombres actuales son los definitivos: `[tabbar] position`, `[ai] notify` y `[workspace] dir` (donde `true` y `false` siguen siendo alias de `"auto"` y `"off"`). Una versión menor puede añadir claves o valores nuevos; ninguna clave existente cambia de nombre, de significado ni deja de admitir un valor. |
 | `chat.db` | El formato del historial (hoy, esquema 3, en `$XDG_DATA_HOME/lazarobox/chat.db`). Una versión nueva abre un `chat.db` antiguo y lo migra hacia delante, nunca hacia atrás. Un `chat.db` **más nuevo** que el lazarobox que lo abre se rechaza sin tocarlo: el historial queda no disponible (`history unavailable: store schema N is newer than this build`) y el archivo no se modifica, de modo que al volver a actualizar sigue ahí. La migración del esquema 2 al 3 es automática: al abrir un `chat.db` anterior se reconstruyen las tablas en una sola transacción, se conservan las filas y se compacta el archivo (`VACUUM`). Se puede subir de versión sin perder el historial; para bajar, el historial queda inaccesible hasta volver a subir. |
-| Línea de órdenes | Las opciones y subórdenes públicas: `install-desktop` (con `--terminal` y `--uninstall`) y `--force` (ver «Lanzador de escritorio» y «Anidamiento»). Quitar o cambiar su significado exige una versión mayor. |
+| Línea de órdenes | Las opciones y subórdenes públicas: `install-desktop` (con `--terminal` y `--uninstall`), `--force`, `--version` / `-V`, `--help` / `-h` y `--dir <carpeta>` / `--dir=<carpeta>` (ver «Lanzador de escritorio» y «Anidamiento»). Quitar o cambiar su significado exige una versión mayor. |
 | Teclas | El prefijo `Ctrl+Espacio` y las teclas de la referencia de la sección «Teclas». El prefijo **no es configurable**. La tecla `?` tras el prefijo está **reservada** para el futuro visor de órdenes. |
 
 | No forma parte de la promesa | Por qué |
@@ -229,6 +229,25 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
 | `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
 | `t` | Edita las etiquetas de la fila |
+
+**Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` / `↓` | Mueve la fila marcada |
+| Texto, `Backspace`, `Delete`, `←` `→` `Home` `End`, `Ctrl+U` | Editan la ruta (`~` y `~/…` valen; una ruta relativa parte de la carpeta que el chat tendría) |
+| `Tab` | Completa nombres de carpeta. No hace nada mientras aún se buscan candidatos (`still looking for folders`) ni si se mantiene pulsada |
+| `Enter` | Abre la ruta escrita (gana a la fila) o, con el campo vacío, la fila marcada |
+| `Esc` | Se queda con la carpeta actual y deja la línea `chat folder is …; use /cd <folder> to change it` |
+
+**Confirmación de `/cd`** (aparece al enviar un mensaje `/cd <carpeta>`; `Tab` en esa línea completa la ruta).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Comprueba la carpeta una última vez y la cambia (aún puede rechazarla); una `y` mantenida nunca confirma |
+| Mientras se comprueba la carpeta (tras `y`) | Solo `Esc` cancela; las demás teclas no hacen nada |
+| `n` / `Esc` | Cancelan, también si se mantienen |
+| Cualquier otra | Cancela, salvo que sea una tecla mantenida (el `Enter` que envió `/cd` cuenta como mantenido 500 ms) |
 
 **Editores del chat**
 
@@ -527,10 +546,29 @@ Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) está
 
 **La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
 
-- Es la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Queda fija mientras dure el chat: un `cd` posterior en un shell no la mueve, y todavía no hay forma de cambiarla (un futuro `/cd` está en el [issue #394](https://github.com/pichu2707/lazarobox-shell/issues/394)).
+- Empieza en la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Un `cd` posterior en un shell no la mueve: se cambia con el selector al abrir el chat o con `/cd` (más abajo).
 - Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
 - Con un motor en la nube y la carpeta del chat en `$HOME` o en `/`, todo comando se rechaza (`the chat's folder is your home or /`).
-- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`. Haz `cd` al proyecto en un panel de shell y abre el chat desde ahí, o fija la carpeta en el lanzador con `Path=` o con `sh -c 'cd … && exec lazarobox-shell'`.
+- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`: al abrir el chat aparece el selector de carpeta y eliges el proyecto sin salir de lazarobox.
+
+#### El selector de carpeta y `/cd`
+
+Al abrir un chat, si su carpeta es **amplia o desconocida** (`$HOME`, un ancestro de `$HOME` como `/home`, `/`, una carpeta del sistema o fuera de `$HOME`, o un panel que no ha informado de su carpeta) aparece el selector antes de la lista de conversaciones. Con una carpeta de proyecto el chat se abre como siempre. Ninguna carpeta se elige sin que pulses una tecla, tampoco la última usada.
+
+Candidatos, cada uno una vez y nunca `$HOME`: la última carpeta usada (preseleccionada), la raíz git de los paneles de la pestaña, las carpetas recientes del historial y el último cwd de shell. Como mucho 12 filas. Si no hay ninguno, queda solo el campo de ruta.
+
+Las teclas del selector están en [«Referencia de teclas por vista»](#referencia-de-teclas-por-vista).
+
+Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide (salvo `Esc`, que cancela). Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
+
+Avisos del selector y de `Tab` en `/cd`: `still looking for folders` (aún se buscan candidatos), `no matching folder` (nada completa) y `folder check is busy, try again` (una comprobación anterior sigue en el disco). Si la carpeta que eliges está ocupada por otra acción, el selector se queda abierto con el motivo.
+
+**`/cd <carpeta>`** cambia la carpeta de un chat ya abierto. Es un comando tuyo: no llega al modelo, funciona aunque no haya motor y pide confirmación con `y` (cualquier otra tecla cancela y el texto se queda en el mensaje). `Tab` completa la ruta (ver la referencia de teclas). Para enviar de verdad un mensaje que empieza por `/cd`, escribe `//cd`.
+
+- Se rechaza mientras haya una aprobación pendiente, un comando corriendo, el modelo respondiendo, escrituras en lote por revisar, una nota guardándose, un editor de nota o resumen abierto o un mensaje esperando para enviarse.
+- Una `y` mantenida nunca confirma. Un `Enter` pulsado justo después del que envió `/cd` cuenta como la misma tecla mantenida (500 ms) y no cancela; `Esc` o `n` cancelan siempre.
+- Al cambiar de carpeta se rehacen el _system prompt_ y la sesión de herramientas, y la memoria (engram) pasa al proyecto nuevo. El modelo recibe una vez el aviso del cambio.
+- La carpeta se guarda con la conversación en `chat.db` (columna `folder`: se guarda la **ruta**; sin historial no se guarda nada). Al reanudar una conversación vuelve a su carpeta si sigue siendo válida; si no existe, no está guardada o es amplia, se muestra el selector sobre la conversación y `Esc` mantiene la carpeta del panel.
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
@@ -605,7 +643,7 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 
 | Key       | Action                                                                 |
 | :-------- | :--------------------------------------------------------------------- |
-| `y`       | Types the command into the target pane. **It never presses Enter.**   |
+| `y`       | Types the command into the target pane. **It never presses Enter.** (A model's command in `run` mode is run instead, see below.) |
 | `n` / `Esc` | Declines. Nothing is written.                                        |
 | `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
 | `Ctrl+C`  | Cancels the answer in progress and declines.                           |
@@ -628,7 +666,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below, where a command you approve with `y` also runs): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -649,13 +687,21 @@ Residual risks (design D18), so you can decide if auto is for you:
 
 #### Modo `run`
 
-En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe; tú pulsas Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando pide confirmación (`y run it · n cancel · p next pane`), y con `y` lazarobox lo escribe, pulsa Enter, espera a que termine y devuelve su salida al modelo, igual que un comando que corre solo: `y` es tu permiso. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
 ![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
 ![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
 
-![mkdir pide confirmación; con y solo se escribe en el panel y tú pulsas Enter](docs/assets/run-mkdir.gif)
+**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, como mucho 10 s de espera y la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter, como en `ask` (la confirmación lo dice con `y type it (no Enter)`), y la línea del chat dice por qué (`not run: …`), cuando:
+
+- el comando ocupa varias líneas (`a multi-line command is typed, not run`);
+- no se puede leer el directorio del panel, como en macOS (`the pane's directory cannot be read on this system`);
+- el panel ya ejecuta otro comando, o tiene una línea a medio escribir que el Enter ejecutaría con él;
+- el locale no es UTF-8 y el comando tiene caracteres no ASCII;
+- al escribir, el panel ya no está en el mismo directorio o ejecuta un programa.
+
+La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada del modelo) solo escribe, también en `run`. En `ask` y `auto`, `y` sigue sin pulsar Enter.
 
 **Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
 
@@ -887,21 +933,26 @@ El modelo puede preparar cambios a lo largo de varios turnos antes de proponer. 
 
 Es todo o nada: no se aprueba un fichero suelto. Una línea que solo está en un panel oculto, en otra pestaña o fuera de pantalla no cuenta como vista. Si ya hay otra aprobación pendiente, `propose_batch` devuelve `denied` (`another approval is pending`).
 
-**Huérfanos.** Si cancelas el turno (o el CLI agota su tiempo) con un lote preparado o propuesto, el lote **se conserva** en el chat. El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
+**Revisión al terminar el turno.** Si el turno termina con normalidad y el modelo dejó cambios preparados sin llamar a `propose_batch` (algo frecuente en modelos locales pequeños), la revisión del lote se abre sola, con las mismas reglas que un lote propuesto: cobertura, 800 ms, `y` lo aplica y `n` o `Esc` lo descarta. No se abre sola si ya hay otra aprobación pendiente en el chat.
+
+**Huérfanos.** Si cancelas el turno, falla o el CLI agota su tiempo con un lote preparado o propuesto, el lote **se conserva** en el chat. El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
 
 Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes, con un aviso (`discarded N staged entries`). Nada se guarda: tras reiniciar no queda ningún lote.
 
 #### Modelo de amenazas de la escritura
 
 - **Nada toca el disco antes de `y`.** Preparar, buscar y proponer no crean, cambian ni borran nada; solo el paso de aplicar de un lote aprobado escribe.
-- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, `path not available`, para no revelar si una ruta existe. Las lecturas de `.git/config` también se rechazan.
+- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, con la carpeta del chat para que el modelo sepa desde dónde cuentan sus rutas: `path not available (paths are relative to the chat's folder ~/proyecto)`. Así no revelan si una ruta existe. La única excepción llega después de que la política aceptó la ruta: si falta la carpeta padre, el texto la nombra (`path not available: the folder src/ does not exist (paths are relative to the chat's folder ~/proyecto)`), lo mismo que `list_dir` ya le mostraría. Las lecturas de `.git/config` también se rechazan.
 - **Reglas de contenido: se rechaza, nunca se limpia.** El texto nuevo no puede tener UTF-8 inválido, caracteres de control, de dirección (_bidi_) o de ancho cero, ni finales de línea CRLF. `edit_file` rechaza un fichero que no sea UTF-8 o tenga CRLF o NUL. Límites: 32 KiB por `write_file`, 16 KiB por campo de `edit_file`, 1 MiB por fichero editado, 50 entradas y 1 MiB por lote.
 - **En motores en la nube, `edit_file` pregunta como `read_file`, una vez por fichero y turno.** Las respuestas de `old`/`diff` (existe, no existe, aparece varias veces) revelan qué contiene un fichero, así que el aviso es el mismo que el de `read_file`; si lo deniegas no se prepara nada. Un `read_file` permitido antes del mismo fichero también cubre la edición; un turno nuevo vuelve a preguntar. Un motor local nunca pregunta.
-- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco.
-- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS`) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
-- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
+- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco. Cuando el lote se aplica, el resultado acaba con `Continue with any step the user asked for that is not finished yet.`, porque los modelos pequeños tienden a pararse tras la revisión. Si el modelo intenta `run_command`, `git_add` o `git_commit` con cambios preparados sin proponer, el rechazo le dice `propose them first with propose_batch, then call this tool again`.
+- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS` en Linux; un recorrido con `O_NOFOLLOW` en macOS) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
+- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G`; uno que el modelo dejó sin proponer al terminar su turno con normalidad abre su revisión sola, con la misma puerta (cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
 - **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
-- Solo Linux: en otras plataformas el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+- **Linux y macOS.** En macOS no hay `openat2`: cada carpeta se abre componente a componente con `O_NOFOLLOW` y se comprueba su ruta real con `F_GETPATH`, y un create usa `renameatx_np` con `RENAME_EXCL` (que no pisa un nombre ocupado). Un denegado del sistema (`EPERM` o `EACCES`, por ejemplo TCC) se trata como un rechazo.
+- **macOS: sistemas de ficheros sin renombrado atómico.** Solo APFS y HFS+ admiten `RENAME_EXCL`. En exFAT, SMB o NFS el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
+- **macOS: metadatos.** Reemplazar un fichero crea uno nuevo y lo renombra encima, así que se pierden sus atributos extendidos, las ACL, la marca de cuarentena y las etiquetas del Finder (en Linux se pierden los atributos extendidos). Además, el fichero nuevo toma el grupo de la carpeta que lo contiene (semántica BSD).
+- Otras plataformas: el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
 
 #### Ejecución: `run_command`
 
@@ -964,9 +1015,13 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
 
-- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
+- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` sigue el modo de aprobación como con cualquier motor (en `run`, un comando seguro dentro de la carpeta corre solo y otro corre tras tu `y`).
 - Un turno hace como máximo 8 peticiones (24 si hay activa alguna familia de `[ai.tools]`: búsqueda, escritura...). Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
+- Si el modelo escribe una llamada como texto (un JSON con el `name` de una herramienta ofrecida y sus `arguments`, suelto o en un bloque de código) en vez de hacerla, lazarobox le pide una vez en el mismo turno que llame a la herramienta, y el chat muestra la línea `the model wrote a tool call as text; it was asked to call the tool`. Esa petición cuenta para el límite del turno y solo ocurre una vez por turno; lo escrito en el texto nunca se ejecuta. Vale también para llama.cpp.
+- Si la última frase de la respuesta anuncia lo que el modelo va a hacer («I'll create the test next», «ahora voy a ejecutar pytest») y no hay ninguna llamada, lazarobox le pide una vez en el mismo turno que haga ese paso o que resuma lo hecho, y el chat muestra la línea `the model said what it would do next without a tool call; it was asked to do it`. Una pregunta, un ofrecimiento o una cortesía al usuario («¿hago el commit?», «si quieres, añado más tests», «I'll be happy to help») y un resumen de lo hecho no cuentan. Lo mismo ocurre si la respuesta llega vacía (línea `the model sent an empty answer; it was asked to go on`) o si su última frase empieza con un cierre del tipo «Ready for next steps.», «Ready to commit.» o «Listo para el commit.» (línea `the model stopped before finishing; it was asked to go on`); estos casos comparten ese único aviso por turno. Este aviso es aparte del de la llamada escrita como texto: cada uno ocurre como mucho una vez por turno y cuenta para el límite. Vale también para llama.cpp.
+- Con la familia de escritura, la de ejecución o la de git write activada, el prompt de sistema del turno ya no dice que el modelo no puede cambiar archivos: le dice lo que sus herramientas le permiten (escribir, probar o hacer commit, según las familias activadas), que haga en el mismo turno todos los pasos que se le piden y que no dé nada por hecho si un resultado de herramienta no lo muestra. Esto vale para todos los motores que reciben las herramientas de lazarobox, y la descripción de `run_in_pane` ya no dice que el modelo no puede cambiar archivos.
 - Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
+- Tras una ronda de herramientas, algunos modelos locales (`qwen3`) escriben el final de su razonamiento como texto de la respuesta, cerrado con un `</think>` suelto. En esas rondas lazarobox retiene el texto hasta ver ese `</think>` o el final de la ronda: lo anterior se muestra como razonamiento y lo posterior como respuesta. Por eso, en las rondas que siguen a una herramienta, la respuesta aparece entera al final en vez de ir saliendo. La primera ronda del turno sale como siempre.
 - Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
 - Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
 - **Estado:** las herramientas con Ollama están activas: el usuario las comprobó con un modelo real el 2026-10-17 y `ollama` figura en `MCP_VERIFIED`.

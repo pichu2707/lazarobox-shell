@@ -1039,8 +1039,19 @@ async fn run_loop(
                     return Ok(());
                 }
             }
-            Some((pane, purpose, result)) = folder_rx.recv() => {
-                if step(&mut app, AppEvent::FolderProbed { pane, purpose, result }, panes) {
+            Some(answer) = folder_rx.recv() => {
+                let event = match answer {
+                    folder::Answer::Probed(pane, purpose, result) => {
+                        AppEvent::FolderProbed { pane, purpose, result }
+                    }
+                    folder::Answer::Many(pane, id, found, busy) => {
+                        AppEvent::FoldersProbed { pane, id, found, busy }
+                    }
+                    folder::Answer::Completed(pane, id, text, found) => {
+                        AppEvent::FolderCompleted { pane, id, text, found }
+                    }
+                };
+                if step(&mut app, event, panes) {
                     return Ok(());
                 }
             }
@@ -1124,8 +1135,10 @@ async fn run_loop(
                 // The panes wear the batches the store holds: a poll, because
                 // a model's staging has no event of its own.
                 // A busy store answers `None`: the badges stay as they were.
-                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges()) {
-                    app.sync_batches(&badges);
+                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges())
+                    && step(&mut app, AppEvent::Badges(badges), panes)
+                {
+                    return Ok(());
                 }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
@@ -1741,6 +1754,35 @@ impl Panes {
                         pane,
                         purpose,
                         result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeFolders {
+                    pane,
+                    id,
+                    paths,
+                    git,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, id, paths, git),
+                    None => feedback.push(AppEvent::FoldersProbed {
+                        pane,
+                        id,
+                        busy: false,
+                        found: Vec::new(),
+                    }),
+                },
+                Effect::CompleteFolder {
+                    pane,
+                    id,
+                    text,
+                    dir,
+                    prefix,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_completion(pane, id, text, dir, prefix),
+                    None => feedback.push(AppEvent::FolderCompleted {
+                        pane,
+                        id,
+                        text,
+                        found: Default::default(),
                     }),
                 },
                 Effect::EndToolSession(pane) => {
@@ -4074,7 +4116,7 @@ mod tests {
         let chat = id(2);
 
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         // The list is answered by the real store: empty.
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
@@ -4134,7 +4176,7 @@ mod tests {
     fn the_app_from_config_keeps_a_chat_history() {
         let mut app = app_from_config(80, 25, None, None);
         let mut effects = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        effects.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        effects.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         assert!(
             effects
                 .iter()
@@ -4229,7 +4271,7 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(db.clone());
         let mut app = history_app(&dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
             id(2),
@@ -4314,7 +4356,7 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(store_db(dir));
         let mut app = history_app(dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
             id(2),

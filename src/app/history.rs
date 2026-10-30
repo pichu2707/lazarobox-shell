@@ -381,6 +381,9 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::RecentFolders { pane, folders } => {
+                self.on_recent_folders(*pane, folders.clone())
+            }
         }
     }
 

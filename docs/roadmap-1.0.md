@@ -1,6 +1,6 @@
 # Roadmap to 1.0.0
 
-Status: draft, 2026-10-29. Current release: 0.30.0.
+Status: done, 2026-10-30. Current release: 1.0.0.
 
 ## What 1.0 promises
 

@@ -52,7 +52,8 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
-const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
+/// Says how to go on, so a small model retries after proposing (#439).
+const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";

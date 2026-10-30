@@ -4,7 +4,7 @@
 
 Let a model create and change files in one project root without touching the disk until the user approves. The model stages changes, closes the batch, and the user reviews it all-or-nothing. Linux only in v1. Tags: [auto] = `cargo test` (temp dirs, fake clocks); [manual] = real terminal; [design-confirm] = value or name that design must pin. Names marked (provisional) are pinned by design.
 
-Terms: "root" = the chat origin directory. "Batch" = the staged changes of one chat. "Proposed" = the model closed the batch with the propose tool. "Orphan" = a batch left staged after its turn was cancelled. "Refusal text" = `path not available`.
+Terms: "root" = the chat origin directory. "Batch" = the staged changes of one chat. "Proposed" = the model closed the batch with the propose tool. "Orphan" = a batch left staged after its turn ended without the user reviewing it (cancelled, failed, or ended with the batch never proposed; see local-model-writes D1 for the last case). "Refusal text" = `path not available`.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ Terms: "root" = the chat origin directory. "Batch" = the staged changes of one c
 - THEN no write tool is present and a call to `write_file` returns an error result
 
 ### Requirement: Root policy
-Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory. A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text `path not available`, so the result does not reveal whether a path exists.
+Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory. A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text, `path not available (paths are relative to the chat's folder <folder>)`, where `<folder>` is the chat origin with `$HOME` shown as `~`, so the result does not reveal whether a path exists. One case MAY say more: when the path passed this policy and the deny rules and only its parent folder is missing, the text MUST be `path not available: the folder <parent>/ does not exist (paths are relative to the chat's folder <folder>)`, with `<parent>` as the model wrote it (local-model-writes D2).
 
 #### Scenario: Origin refused [auto]
 - GIVEN origins `$HOME`, `/home`, `/usr` and a missing directory
@@ -33,6 +33,12 @@ Writes MUST be allowed only under one root: the chat origin directory. They MUST
 - GIVEN an existing denied path and a missing path outside the root
 - WHEN `edit_file` is called on each
 - THEN both results carry the identical text
+
+#### Scenario: Missing parent named [auto]
+- GIVEN a chat opened in `~/Descargas` with no `Descargas` folder inside it
+- WHEN `write_file` is called with `Descargas/fibonacci.py`
+- THEN it returns `path not available: the folder Descargas/ does not exist (paths are relative to the chat's folder ~/Descargas)` and nothing is staged
+- AND `nope/.env` below a missing `nope` returns the one refusal text
 
 ### Requirement: Deny rules
 A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.
@@ -204,12 +210,17 @@ After approval the app MUST re-read every target and compare it with the snapsho
 - THEN two `Change` records carry path, kind, bytes and line counts
 
 ### Requirement: Orphan, close and quit
-A batch orphaned by a cancelled turn MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart.
+An orphan batch MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart. When a turn ends with the engine's `Done` and leaves a batch the model never proposed, the app MUST open that batch's review at once, through the same path, view, coverage gate and arming as an orphan review, unless the chat already waits on an approval; a cancelled or failed turn MUST leave the orphan to the user's own review key (local-model-writes D1).
 
 #### Scenario: Cancel leaves an orphan [auto]
 - GIVEN a staged batch and a turn that is cancelled
 - WHEN the pane is rendered
 - THEN the batch is still staged and the indicator is visible [TestBackend + insta]
+
+#### Scenario: A clean end opens the review of an unproposed batch [auto]
+- GIVEN a turn that staged a batch, never proposed it, and ended with `Done`
+- WHEN the runtime's poll first shows the batch as an orphan
+- THEN the batch review opens once, with no call to answer, and `y` applies it behind the coverage gate
 
 #### Scenario: Review an orphan [auto]
 - GIVEN an orphan batch

@@ -10,7 +10,96 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- Write works on Linux and macOS (APFS and HFS+); on any other system an
+  approved batch writes nothing and says so. On macOS, a filesystem without an
+  atomic no-replace rename (exFAT, SMB, NFS) answers "this system or volume does
+  not support a safe no-replace write" and whatever was done is undone, and
+  replacing a file drops its extended attributes, ACLs, quarantine flag and
+  Finder tags, and the new file takes its group from the parent folder (BSD
+  semantics).
+
+## [1.0.0] - 2026-10-30
+
+First stable release. From here on, `config.toml`, the `chat.db` format, the
+public CLI and the key bindings follow the stability promise described in the
+README. It builds on 1.0.0-rc.1 with what testing the chat on local models
+turned up: small Ollama and llama.cpp models now finish write tasks with fewer
+stops (the batch review opens by itself, refusals name the chat's folder, a
+tool call written as text or a step left unfinished gets one reminder), and
+`y` on a model's command in run mode runs it.
+
+### Changed
+
+- With Ollama and llama.cpp, reasoning that a model leaks into its answer
+  after a tool round, closed by a bare `</think>`, is now shown as reasoning
+  instead of as part of the answer. In those rounds the answer appears whole
+  at the end of the round.
+- With Ollama and llama.cpp, a model that writes a tool call as JSON text
+  instead of making it is asked once, in the same turn, to call the tool. The
+  chat shows `the model wrote a tool call as text; it was asked to call the
+  tool`. The text is never run, and the extra request counts toward the
+  turn's limit.
+- With Ollama and llama.cpp, a model whose answer ends by announcing its
+  next action ("I'll create the test next") without a tool call is asked
+  once, in the same turn, to do that step or to sum up. The chat shows `the
+  model said what it would do next without a tool call; it was asked to do
+  it`. A question, an offer, a courtesy or a summary does not count (#439).
+- With Ollama and llama.cpp, an empty answer with tools on, or one whose
+  last sentence starts with a sign-off such as "Ready for next steps." or
+  "Listo para el commit.", gets the same single reminder; the chat shows `the
+  model sent an empty answer; it was asked to go on` or `the model stopped
+  before finishing; it was asked to go on` (#439).
+- A turn that offers the write, exec or git write tools no longer tells the
+  model it cannot change files, in the system prompt or in the `run_in_pane`
+  description. The system prompt now names what its tools allow (write,
+  test, commit), says it must do every step asked in the same turn, and must
+  not claim a file, test run or commit that no tool result shows (#439).
+- The result of an applied batch now ends with `Continue with any step the
+  user asked for that is not finished yet.`, and the refusal of `run_command`
+  and the git tools while changes are staged now says `propose them first
+  with propose_batch, then call this tool again` (#439).
+- A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
+  now names the chat's folder, so a model learns where its paths start:
+  `path not available (paths are relative to the chat's folder ~/proj)`. The
+  text is still the same for every reason. Only a missing parent folder of a
+  path the policy allowed is named: `the folder src/ does not exist`.
+- When a chat turn ends normally and the model left staged changes without
+  calling `propose_batch` (common with small local models), the batch review
+  opens by itself, with the same coverage check, arming delay and `y`/`n` as a
+  proposed batch. A cancelled, timed-out or failed turn, or a chat that already
+  waits on an approval, still leaves the orphan behind `Ctrl+G`.
+- In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
+  command: lazarobox presses Enter, waits for it and returns its output to the
+  model, like a safe command that runs on its own. The prompt says
+  `y run it · n cancel · p next pane`. A command that cannot run (multi-line,
+  unknown pane directory, a busy or half-typed pane, a non-UTF-8 locale) is
+  typed without Enter as before, and the chat line says why. `ask`, `auto` and
+  the `Ctrl+Space`, `e` confirm keep typing without Enter.
+
+## [1.0.0-rc.1] - 2026-10-30
+
+First release candidate for 1.0.0. It is published to crates.io, but cargo
+does not install a pre-release unless asked for it (`cargo install
+lazarobox-shell --version 1.0.0-rc.1`). Use it, report what turns up, and
+1.0.0 follows from the last good candidate. From 1.0.0 on, `config.toml`, the
+`chat.db` format, the public CLI and the key bindings follow the stability
+promise described in the README.
+
 ### Added
+
+- Chat folder: the chat now asks for its folder instead of silently using the
+  folder it was launched from. When it opens (or resumes a conversation)
+  with no usable folder, for example from a desktop launcher that starts in
+  `$HOME`, a picker offers the last used project, the repository roots of the
+  panes, recent chat folders and a typed path with `Tab` completion; `Esc`
+  keeps the current folder. `/cd <folder>` changes the folder of an open
+  chat: it is your command (it never reaches the model), asks `y` showing the
+  old and the new folder, and waits while a write, an approval or a command
+  is pending. The chat remembers its last folder and a resumed conversation
+  opens in it. To send a message that really starts with `/cd`, type
+  `//cd`.
 
 - The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
 - A menu save says where it wrote in the statusline (`saved to
@@ -48,6 +137,7 @@ baseline.
 
 ### Docs
 
+- README: the chat folder picker and `/cd`, and the key reference for both.
 - README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
   `config.toml`, the `chat.db` format with forward migration, the public CLI
   and the key bindings; what is not: `__*` subcommands, log text, UI layout),
@@ -1429,7 +1519,9 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
+[1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
 [0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0

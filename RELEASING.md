@@ -37,7 +37,8 @@ and is generated from Conventional Commits with
 
 1. Publish `1.0.0-rc.1` to crates.io (same steps as above; cargo does not
    install a pre-release unless asked, so it does not reach `cargo install`
-   users by default).
+   users by default). The release workflow accepts the tag `v1.0.0-rc.1` too:
+   it publishes it and marks the GitHub Release as a pre-release.
 2. Use it daily on Linux for a few days and fix what turns up (each fix is a new
    `rc.N`).
 3. Publish `1.0.0` from the last good release candidate.

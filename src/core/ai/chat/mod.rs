@@ -17,11 +17,14 @@ pub mod composer;
 pub mod copy;
 pub mod engine;
 pub mod folder;
+pub mod folder_picker;
 pub mod gemini;
 pub mod guidance;
 pub mod history;
+pub mod leaked_thinking;
 pub mod list;
 pub mod memory;
+pub mod next_step;
 pub mod note;
 pub mod notify;
 pub mod prompts;
@@ -33,6 +36,7 @@ pub mod streams;
 pub mod summary;
 pub mod tag_editor;
 pub mod tags;
+pub mod text_call;
 pub mod tool;
 pub mod transcript;
 pub mod workspace;
@@ -334,6 +338,8 @@ pub struct ChatState {
     tag_editor: Option<tag_editor::TagEditor>,
     /// The conversation list, while it is shown instead of the conversation.
     list: Option<list::ListView>,
+    /// The folder picker, while it is shown over the pane (chat-folder).
+    folder_picker: Option<folder_picker::FolderPicker>,
     /// The profile of the conversation: the current one when it is new, the
     /// stored one when it was resumed.
     profile: Profile,
@@ -395,6 +401,10 @@ pub struct ChatState {
     /// The failure the run waits on, until the user answers it or the run
     /// ends.
     orch_alert: Option<OrchAlert>,
+    /// The last turn ended with `Done`, until the poll sees the batch it left
+    /// behind (local-model-writes D1). A new turn or a cancel clears it; a
+    /// compaction run after the `Done` does not.
+    clean_end: bool,
 }
 
 impl ChatState {
@@ -423,6 +433,7 @@ impl ChatState {
             tags_edited: false,
             tag_editor: None,
             list: None,
+            folder_picker: None,
             profile: Profile::default(),
             store: store::PaneStore::new(),
             outbox: Vec::new(),
@@ -448,6 +459,7 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             orch_alert: None,
+            clean_end: false,
         }
     }
 
@@ -639,6 +651,18 @@ impl ChatState {
         self.orphan = id;
     }
 
+    /// The turn ended with `Done`: a batch it leaves is the user's to review
+    /// at once.
+    pub fn note_clean_end(&mut self) {
+        self.clean_end = true;
+    }
+
+    /// Whether the batch the poll now sees as an orphan was left by the last
+    /// turn ending with `Done`. Asked once: the mark is gone afterwards.
+    pub fn take_clean_end(&mut self) -> bool {
+        std::mem::take(&mut self.clean_end)
+    }
+
     /// Queues a line for the model's next request (counts and paths only).
     pub fn tell(&mut self, line: String) {
         self.told.push(line);
@@ -740,6 +764,7 @@ impl ChatState {
     /// Whether the pane draws the conversation: no editor, list or review.
     pub fn conversation_shown(&self) -> bool {
         self.tag_editor().is_none()
+            && self.folder_picker().is_none()
             && self.list().is_none()
             && self.note_editor().is_none()
             && self.summary_draft().is_none()
@@ -1052,6 +1077,7 @@ impl ChatState {
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
+        self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
@@ -1351,6 +1377,7 @@ impl ChatState {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
+        self.clean_end = false;
         if self.summarizing.is_some() {
             return self.cancel_summary();
         }
@@ -1367,6 +1394,8 @@ mod anchor_tests;
 mod compact_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod folder_picker_tests;
 #[cfg(test)]
 mod folder_tests;
 #[cfg(test)]

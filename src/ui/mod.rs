@@ -270,7 +270,7 @@ mod tests {
     }
 
     fn press(app: &mut App, c: char, mods: KeyModifiers) {
-        app.update(AppEvent::Key(KeyEvent::new(KeyCode::Char(c), mods)));
+        app.update_settled(AppEvent::Key(KeyEvent::new(KeyCode::Char(c), mods)));
     }
 
     /// Two panes side by side (`w v`); the new right pane has the focus.
