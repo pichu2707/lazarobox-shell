@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-30
+
+First stable release. From here on, `config.toml`, the `chat.db` format, the
+public CLI and the key bindings follow the stability promise described in the
+README. It builds on 1.0.0-rc.1 with what testing the chat on local models
+turned up: small Ollama and llama.cpp models now finish write tasks with fewer
+stops (the batch review opens by itself, refusals name the chat's folder, a
+tool call written as text or a step left unfinished gets one reminder), and
+`y` on a model's command in run mode runs it.
+
 ### Changed
 
 - With Ollama and llama.cpp, reasoning that a model leaks into its answer
@@ -1482,7 +1492,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
 [0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
