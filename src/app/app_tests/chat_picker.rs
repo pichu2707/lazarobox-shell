@@ -6,7 +6,7 @@ use super::run_pane::chat;
 use super::*;
 use crate::core::ai::chat::{
     folder::{Probed, Purpose, Refusal, Verdict},
-    folder_picker::{Row, Source},
+    folder_picker::{Completion, Row, Source},
 };
 
 /// Opens a chat from the shell pane without answering the folder probe.
@@ -397,6 +397,173 @@ fn enter_spam_probes_once_until_the_answer() {
     super::let_go();
     let again = a.update(enter());
     assert!(probes(&again).is_empty(), "{again:?}");
+}
+
+// ---- Tab completion ---------------------------------------------------------
+
+fn completions(effects: &[Effect]) -> Vec<(u64, String, PathBuf, String)> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::CompleteFolder {
+                id,
+                text,
+                dir,
+                prefix,
+                ..
+            } => Some((*id, text.clone(), dir.clone(), prefix.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn completed(a: &mut App, id: u64, text: &str, names: &[&str]) -> Vec<Effect> {
+    a.update(AppEvent::FolderCompleted {
+        pane: id2(),
+        id,
+        text: text.into(),
+        found: Completion {
+            names: names.iter().map(|n| (*n).to_owned()).collect(),
+            truncated: false,
+            busy: false,
+        },
+    })
+}
+
+fn composer_of(a: &App) -> String {
+    chat(a, id2()).composer().text()
+}
+
+fn typing_in_a_chat(text: &str) -> App {
+    let mut a = super::run_pane::one_shell_and_a_chat("hello");
+    super::chat_history::type_text(&mut a, text);
+    a
+}
+
+#[test]
+fn tab_in_a_cd_line_asks_for_the_directories_that_complete_it() {
+    let mut a = typing_in_a_chat("/cd /w/p");
+    let effects = a.update(key_code(KeyCode::Tab));
+    assert_eq!(
+        completions(&effects),
+        vec![(
+            0,
+            "/cd /w/p".to_owned(),
+            PathBuf::from("/w"),
+            "p".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn tab_in_any_other_text_does_nothing() {
+    for text in ["hello", "/cdx /w/p", "/cd"] {
+        let mut a = typing_in_a_chat(text);
+        let effects = a.update(key_code(KeyCode::Tab));
+        assert!(completions(&effects).is_empty(), "{text}");
+        assert_eq!(composer_of(&a), text);
+    }
+}
+
+#[test]
+fn the_composer_takes_the_completion_when_the_text_is_unchanged() {
+    let mut a = typing_in_a_chat("/cd /w/p");
+    completed(&mut a, 0, "/cd /w/p", &["proj"]);
+    assert_eq!(composer_of(&a), "/cd /w/proj/");
+    let mut a = typing_in_a_chat("/cd /w/p");
+    completed(&mut a, 0, "/cd /w/p", &["proj-a", "proj-b"]);
+    assert_eq!(composer_of(&a), "/cd /w/proj-");
+}
+
+#[test]
+fn a_stale_completion_changes_nothing() {
+    let mut a = typing_in_a_chat("/cd /w/p");
+    a.update(key('x'));
+    completed(&mut a, 0, "/cd /w/p", &["proj"]);
+    assert_eq!(composer_of(&a), "/cd /w/px");
+}
+
+#[test]
+fn no_match_says_so() {
+    let mut a = typing_in_a_chat("/cd /w/zz");
+    completed(&mut a, 0, "/cd /w/zz", &[]);
+    assert_eq!(composer_of(&a), "/cd /w/zz");
+    assert!(systems(&a).contains(&"no matching folder".to_owned()));
+}
+
+#[test]
+fn tab_while_the_picker_still_gathers_says_so_and_asks_nothing() {
+    let mut a = app();
+    broad(&mut a);
+    super::chat_history::type_text(&mut a, "/w/p");
+    let effects = a.update(key_code(KeyCode::Tab));
+    assert!(completions(&effects).is_empty());
+    let picker = chat(&a, id2()).folder_picker().unwrap();
+    assert_eq!(picker.error(), Some("still looking for folders"));
+}
+
+#[test]
+fn a_picker_completion_without_match_says_so() {
+    let mut a = app();
+    broad(&mut a);
+    with_rows(&mut a);
+    super::chat_history::type_text(&mut a, "/w/zz");
+    let id = picker_id(&a);
+    let effects = a.update(key_code(KeyCode::Tab));
+    assert_eq!(completions(&effects).len(), 1);
+    completed(&mut a, id, "/w/zz", &[]);
+    let picker = chat(&a, id2()).folder_picker().unwrap();
+    assert_eq!(picker.error(), Some("no matching folder"));
+}
+
+// ---- a busy disk -------------------------------------------------------------
+
+const BUSY: &str = "folder check is busy, try again";
+
+#[test]
+fn a_busy_candidate_check_ends_the_wait_and_says_to_try_again() {
+    let mut a = app();
+    broad(&mut a);
+    a.update(AppEvent::FoldersProbed {
+        pane: id2(),
+        id: picker_id(&a),
+        busy: true,
+        found: Vec::new(),
+    });
+    let picker = chat(&a, id2()).folder_picker().unwrap();
+    assert!(!picker.gathering());
+    assert_eq!(picker.error(), Some(BUSY));
+}
+
+#[test]
+fn a_busy_completion_says_to_try_again_in_the_picker_and_the_composer() {
+    let busy = |names: &[&str]| Completion {
+        names: names.iter().map(|n| (*n).to_owned()).collect(),
+        truncated: false,
+        busy: true,
+    };
+    let mut a = app();
+    broad(&mut a);
+    with_rows(&mut a);
+    super::chat_history::type_text(&mut a, "/w/p");
+    let id = picker_id(&a);
+    a.update(key_code(KeyCode::Tab));
+    a.update(AppEvent::FolderCompleted {
+        pane: id2(),
+        id,
+        text: "/w/p".into(),
+        found: busy(&[]),
+    });
+    assert_eq!(chat(&a, id2()).folder_picker().unwrap().error(), Some(BUSY));
+
+    let mut a = typing_in_a_chat("/cd /w/p");
+    a.update(AppEvent::FolderCompleted {
+        pane: id2(),
+        id: 0,
+        text: "/cd /w/p".into(),
+        found: busy(&[]),
+    });
+    assert!(systems(&a).contains(&BUSY.to_owned()));
 }
 
 // ---- review fixes ------------------------------------------------------------

@@ -188,6 +188,7 @@ impl App {
             (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                 self.edit_composer(|c| c.newline())
             }
+            (KeyCode::Tab, KeyModifiers::NONE) => one_shot(App::cd_complete, self),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.edit_composer(|c| c.clear()),
             (KeyCode::Char(ch), _) if plain => self.edit_composer(|c| c.insert(ch)),
             (KeyCode::Backspace, _) if plain => self.edit_composer(|c| c.backspace()),

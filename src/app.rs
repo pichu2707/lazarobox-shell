@@ -1781,8 +1781,11 @@ impl App {
                 result,
             } => self.on_folder_probed(pane, purpose, result),
             AppEvent::FoldersProbed {
-                pane, id, found, ..
-            } => self.on_folders_probed(pane, id, found),
+                pane,
+                id,
+                found,
+                busy,
+            } => self.on_folders_probed(pane, id, found, busy),
             AppEvent::FolderCompleted {
                 pane,
                 id,

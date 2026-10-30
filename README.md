@@ -230,6 +230,25 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
 | `t` | Edita las etiquetas de la fila |
 
+**Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` / `↓` | Mueve la fila marcada |
+| Texto, `Backspace`, `Delete`, `←` `→` `Home` `End`, `Ctrl+U` | Editan la ruta (`~` y `~/…` valen; una ruta relativa parte de la carpeta que el chat tendría) |
+| `Tab` | Completa nombres de carpeta. No hace nada mientras aún se buscan candidatos (`still looking for folders`) ni si se mantiene pulsada |
+| `Enter` | Abre la ruta escrita (gana a la fila) o, con el campo vacío, la fila marcada |
+| `Esc` | Se queda con la carpeta actual y deja la línea `chat folder is …; use /cd <folder> to change it` |
+
+**Confirmación de `/cd`** (aparece al enviar un mensaje `/cd <carpeta>`; `Tab` en esa línea completa la ruta).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Comprueba la carpeta una última vez y la cambia (aún puede rechazarla); una `y` mantenida nunca confirma |
+| Mientras se comprueba la carpeta (tras `y`) | Solo `Esc` cancela; las demás teclas no hacen nada |
+| `n` / `Esc` | Cancelan, también si se mantienen |
+| Cualquier otra | Cancela, salvo que sea una tecla mantenida (el `Enter` que envió `/cd` cuenta como mantenido 500 ms) |
+
 **Editores del chat**
 
 | Editor | Teclas |
@@ -527,10 +546,29 @@ Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) está
 
 **La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
 
-- Es la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Queda fija mientras dure el chat: un `cd` posterior en un shell no la mueve, y todavía no hay forma de cambiarla (un futuro `/cd` está en el [issue #394](https://github.com/pichu2707/lazarobox-shell/issues/394)).
+- Empieza en la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Un `cd` posterior en un shell no la mueve: se cambia con el selector al abrir el chat o con `/cd` (más abajo).
 - Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
 - Con un motor en la nube y la carpeta del chat en `$HOME` o en `/`, todo comando se rechaza (`the chat's folder is your home or /`).
-- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`. Haz `cd` al proyecto en un panel de shell y abre el chat desde ahí, o fija la carpeta en el lanzador con `Path=` o con `sh -c 'cd … && exec lazarobox-shell'`.
+- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`: al abrir el chat aparece el selector de carpeta y eliges el proyecto sin salir de lazarobox.
+
+#### El selector de carpeta y `/cd`
+
+Al abrir un chat, si su carpeta es **amplia o desconocida** (`$HOME`, un ancestro de `$HOME` como `/home`, `/`, una carpeta del sistema o fuera de `$HOME`, o un panel que no ha informado de su carpeta) aparece el selector antes de la lista de conversaciones. Con una carpeta de proyecto el chat se abre como siempre. Ninguna carpeta se elige sin que pulses una tecla, tampoco la última usada.
+
+Candidatos, cada uno una vez y nunca `$HOME`: la última carpeta usada (preseleccionada), la raíz git de los paneles de la pestaña, las carpetas recientes del historial y el último cwd de shell. Como mucho 12 filas. Si no hay ninguno, queda solo el campo de ruta.
+
+Las teclas del selector están en [«Referencia de teclas por vista»](#referencia-de-teclas-por-vista).
+
+Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes. Una tecla mantenida pulsada edita pero nunca decide (salvo `Esc`, que cancela). Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
+
+Avisos del selector y de `Tab` en `/cd`: `still looking for folders` (aún se buscan candidatos), `no matching folder` (nada completa) y `folder check is busy, try again` (una comprobación anterior sigue en el disco). Si la carpeta que eliges está ocupada por otra acción, el selector se queda abierto con el motivo.
+
+**`/cd <carpeta>`** cambia la carpeta de un chat ya abierto. Es un comando tuyo: no llega al modelo, funciona aunque no haya motor y pide confirmación con `y` (cualquier otra tecla cancela y el texto se queda en el mensaje). `Tab` completa la ruta (ver la referencia de teclas). Para enviar de verdad un mensaje que empieza por `/cd`, escribe `//cd`.
+
+- Se rechaza mientras haya una aprobación pendiente, un comando corriendo, el modelo respondiendo, escrituras en lote por revisar, una nota guardándose, un editor de nota o resumen abierto o un mensaje esperando para enviarse.
+- Una `y` mantenida nunca confirma. Un `Enter` pulsado justo después del que envió `/cd` cuenta como la misma tecla mantenida (500 ms) y no cancela; `Esc` o `n` cancelan siempre.
+- Al cambiar de carpeta se rehacen el _system prompt_ y la sesión de herramientas, y la memoria (engram) pasa al proyecto nuevo. El modelo recibe una vez el aviso del cambio.
+- La carpeta se guarda con la conversación en `chat.db` (columna `folder`: se guarda la **ruta**; sin historial no se guarda nada). Al reanudar una conversación vuelve a su carpeta si sigue siendo válida; si no existe, no está guardada o es amplia, se muestra el selector sobre la conversación y `Esc` mantiene la carpeta del panel.
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 

@@ -124,6 +124,47 @@ Merged `feat/chat-folder-a2` first (clean except the `Purpose::Cd(token)` test a
 - Tests only: listing HOME with `.` leaves out `.ssh` and `.gnupg`; `.gnupg` and `.config/gh` list nothing inside.
 - Left for B2: a flight or debounce for the single-folder `start` and a session-unique picker id allocator.
 - 7194 lib tests green.
+
+## Batch 4: PR B2 (tasks 5.1-5.7), branch `feat/chat-folder-b2`, base `feat/chat-folder-b1`
+
+| Task | Status | Commit |
+|---|---|---|
+| 5.1-5.2 open flow: `ProbeFolder{Open}`, deferred steps, picker in `ChatState`, keys, paste, gathering | done | `feat(chat): settle the chat folder before the open steps and show the picker for a broad one` |
+| 5.3-5.4 accept/Esc, resume picker, held keys in the folder ask | done | `feat(chat): ask for a folder when a resumed conversation has none and keep held keys from answering the folder ask` |
+| 5.5-5.6 render (rows, empty, error, gathering, tiny panes, hostile names) | done | `feat(chat): draw the folder picker in the chat pane` (+ clippy fix commit) |
+| 5.6 `/cd` Tab completion, hints for no match and still gathering | done | `feat(chat): complete the folder of a /cd line with Tab and say when nothing matches` |
+| 5.7 README (Spanish) picker, keys, `/cd`, busy refusals, held keys, `chat.db` stores the path | done (picker and `/cd` part) | `docs: document the chat folder picker and /cd` |
+| B1 round 2 busy signal | done | `feat(chat): tell the picker and the /cd line when the folder check was busy` |
+
+`feat/chat-folder-b1` was merged twice (round 1 and round 2 review fixes, which also carried A2 fixes #414); no rebase.
+
+Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (7238 lib tests) green.
+
+Deviations and notes:
+- `Purpose` (after the A2 fixes) is `Cd(u64) | Confirm(u64) | Resume(u64) | Pick(u64) | Open`. The picker's Enter probe is `Pick(picker id)`; the open probe has no token (the `opening` set guards it).
+- Picker ids come from the same session counter as the folder tokens (`App.folder_seq`), never per pane. Composer completions use id `0` (`COMPOSER`), which no picker has.
+- Open flow: `App.opening` holds the chats whose steps wait for the folder. Keys of a chat that is `opening` without a picker (probe in flight, up to 3 s) are swallowed. A `None` origin opens the picker at once. A concrete result keeps the pane folder as it is (no canonical-path replacement: the tools canonicalize on their own); only the verdict matters.
+- On accept at open, `set_folder` finds no prompt yet and sets `reprepare_prompt`, so the first `PreparePrompt` answer is re-requested once. It is correct and cheap, and avoided a new setter.
+- Accepting the folder the chat already has changes nothing (no `folder changed` line). Accept re-checks busy; a busy chat shows `/cd refused: <reason>`.
+- Esc in the picker adds `chat folder is <f>; use /cd <folder> to change it` for both the open and the resume case.
+- Resume: `no stored folder`, a refused/broad stored folder open the picker (RecentFolders asked with `RECENT_ASK`), unless `folder_busy`. A concrete stored folder still restores silently.
+- Held keys in the folder ask: a held key is never an answer; a held Esc or `n` still cancels. The Enter that submitted `/cd` counts as held for 500 ms and does not cancel (documented in the README); `y` held never confirms.
+- Busy: `FoldersProbed{busy}` ends the gathering with an empty list and the hint `folder check is busy, try again`; a busy completion shows the same hint (picker) or a system line (composer). Zero matches: `no matching folder`. Tab while gathering: `still looking for folders` and no request.
+- `Composer::window` (the sideways scrolling line) moved from `TagEditor::window`, which delegates; the picker field uses it. `folder_picker::{completion_target, completed}` are pure and shared by the picker and the `/cd` line.
+- Tests: `App::update_settled` (cfg(test)) answers the open probe "concrete" and closes a picker, so the ~50 existing tests that open or resume a chat keep their meaning; `press` and a few `ui`/`runtime` helpers use it.
+- TDD note: the accept/Esc/closing-pane code was written in the first work unit together with the open flow; its tests were added right after (they passed at once). The held-key, resume-picker, render, Tab, hint and busy behaviour were seen failing first.
+- A3 and PR #410 were not on `origin/main` when B2 started; the README therefore has its own picker section (a note says its keys move to the "Referencia de teclas por vista" table once #410 lands). The `--dir`, `[workspace] dir` and `install-desktop --dir` docs of task 5.7 belong to A3.
+- Production size: about 580 added non-comment, non-blank lines (picker.rs 315, render 126, rest spread), over the 400 soft limit.
+
+### Batch 4b: B2 review fixes and the split into three stacked PRs
+
+- W1: `Prefix` note, summary, tags and the memory switch answer `Choose the chat folder first` while the picker is open or the pane still waits for its folder (`refuse_over_folder`).
+- W2: a pick on a busy chat keeps the picker open with the busy reason in the hint (it used to close the picker and keep the broad folder).
+- W4: `update_settled` answers only the Open probe the update emitted and closes only pickers the update opened, dropping only their own gathering effects.
+- S5: a chat opened from a chat in `$HOME` shows the picker and starts nothing (test). S7: pastes are swallowed while the pane waits for its folder; README documents it and the three hints.
+- S6: the picker row reads `<source> · <path>` so a cut path keeps its source (`pane root`, `last used`, `recent`, `last shell`); `completed()` ignores names with control or format characters.
+- The B2 branch is split without rewriting it: `feat/chat-folder-b2a` (open flow, resume picker, held keys, W1/W2/W4/S5/S7 paste), `feat/chat-folder-b2b` (picker render and `Composer::window`), `feat/chat-folder-b2c` (`/cd` Tab, hints and busy, README). The tree of b2c equals the tree of `feat/chat-folder-b2`.
+
 ## Remaining
 
-A3 (3.1-3.8), B2 (5.1-5.7), closing 6.1-6.2.
+Closing 6.1-6.2 (verify, archive). A3 and #410 are on main; the stack is #417 (b2a), #418 (b2b), #419 (b2c); b2a also holds `Prefix e` (run in pane) and `a` (approval switch) while the folder is asked.
