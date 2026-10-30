@@ -355,6 +355,9 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
+    /// The turn that last ended with `Done`, until the poll sees the batch
+    /// it left behind (local-model-writes D1).
+    clean_end: Option<u64>,
 }
 
 impl ChatState {
@@ -405,6 +408,7 @@ impl ChatState {
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
+            clean_end: None,
         }
     }
 
@@ -504,6 +508,18 @@ impl ChatState {
 
     pub fn set_orphan(&mut self, id: Option<BatchId>) {
         self.orphan = id;
+    }
+
+    /// Turn `turn` ended with `Done`: a batch it leaves is the user's to
+    /// review at once.
+    pub fn note_clean_end(&mut self, turn: u64) {
+        self.clean_end = Some(turn);
+    }
+
+    /// Whether the batch the poll now sees as an orphan was left by the last
+    /// turn ending with `Done`. Asked once: the mark is gone afterwards.
+    pub fn take_clean_end(&mut self) -> bool {
+        self.clean_end.take() == Some(self.turn())
     }
 
     /// Queues a line for the model's next request (counts and paths only).

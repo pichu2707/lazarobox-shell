@@ -233,6 +233,9 @@ pub enum AppEvent {
     /// What happened to the batch of chat `.0` outside a model turn (close,
     /// orphan review, apply, discard).
     Batch(PaneId, BatchEvent),
+    /// The runtime's poll of the batches it holds, by pane: the badges, and
+    /// the review a clean end of a turn leaves to open (local-model-writes D1).
+    Badges(std::collections::HashMap<PaneId, crate::core::ai::chat::review::Badge>),
     /// The Hub answered `Effect::HubAsk` (or the request failed, with its
     /// message). It names the request it answers.
     HubReply(Ask, Result<Answer, String>),
@@ -1912,6 +1915,7 @@ impl App {
                 Vec::new()
             }
             AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
+            AppEvent::Badges(badges) => self.sync_batches(&badges),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -2658,6 +2662,9 @@ impl App {
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
         if finished && how == Ended::Done {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.note_clean_end(turn);
+            }
             effects.extend(self.start_compaction(id));
         }
         if llamacpp_failed {
@@ -8235,6 +8242,8 @@ mod app_tests {
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
 
+    /// A clean end of a turn opens the review of the batch it left (local-model-writes D1).
+    mod batch_auto_review;
     /// The review view of a proposed write batch.
     mod batch_review;
     mod commit_review;
