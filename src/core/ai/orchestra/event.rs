@@ -59,6 +59,8 @@ pub enum OrchestraEvent {
     /// The user's answer for `run` was not applied: that run had ended or
     /// been replaced, or no failure waited any more.
     Dropped { run: RunId },
+    /// The user's answer was not applied: this app has no run manager.
+    Unavailable,
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

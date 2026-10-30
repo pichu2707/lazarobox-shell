@@ -39,7 +39,8 @@ const RETRY_AGAIN: &str = "r try again";
 const NO_ROW: &str = "cannot change: that worker is not shown any more";
 /// Said when the engine or model just picked could not run.
 const NOT_AVAILABLE: &str = "engine not available";
-const MOVED_ON: &str = "the run already moved on: your answer was not applied";
+const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
+const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -128,7 +129,14 @@ impl App {
                 }));
             }
             // The run it names is over: the pane's own alert is not touched.
-            OrchestraEvent::Dropped { .. } => chat.push_system_line(MOVED_ON.to_owned()),
+            // Said only when the pane has no other run, so the line is not
+            // read as part of a newer one.
+            OrchestraEvent::Dropped { run } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(MOVED_ON.to_owned());
+                }
+            }
+            OrchestraEvent::Unavailable => chat.push_system_line(NO_ORCHESTRA.to_owned()),
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {

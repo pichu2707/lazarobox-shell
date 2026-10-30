@@ -1032,18 +1032,44 @@ fn a_relaunch_reaches_the_queued_workers_of_its_task_only() {
     assert_eq!(run.spec(second).unwrap().model.as_deref(), Some("sonnet"));
 }
 
+// The group of workers an unavailable engine refuses is ONE failure: the run
+// halts once, on the failed worker, and the text counts the workers.
 #[test]
 fn a_relaunch_on_an_unavailable_engine_refuses_the_queued_workers_too() {
     let (t0, mut run) = (Instant::now(), run());
     let first = run.spawn(t0, Task::Review, "p1").unwrap();
     let second = run.spawn(t0, Task::Review, "p2").unwrap();
+    let third = run.spawn(t0, Task::Review, "p3").unwrap();
     run.on_event(t0, first, failed(ErrorClass::RateLimit, "429"));
     let gone = Availability::Undetected {
         engine: "codex".to_owned(),
         status: "not installed".to_owned(),
     };
-    run.decide(t0, UserChoice::Relaunch(roster(gone))).unwrap();
-    assert_eq!(run.status(first), Some(WorkerStatus::Refused));
+    run.decide(t0, UserChoice::Relaunch(roster(gone.clone())))
+        .unwrap();
+    for id in [first, second, third] {
+        assert_eq!(run.status(id), Some(WorkerStatus::Refused), "{id:?}");
+    }
+    // One halt, on the worker that failed, naming the group.
+    let RunState::Halted { worker, text, .. } = run.state().clone() else {
+        panic!("halted: {:?}", run.state());
+    };
+    assert_eq!(worker, first);
+    assert!(text.starts_with("3 workers refused: "), "{text}");
+    // A retry on the same roster halts again, on the same worker alone: the
+    // other two are not queued any more, so nothing else waits.
+    run.decide(t0, UserChoice::Retry).unwrap();
+    let RunState::Halted { worker, text, .. } = run.state().clone() else {
+        panic!("halted: {:?}", run.state());
+    };
+    assert_eq!(worker, first);
+    assert!(!text.contains("workers refused"), "{text}");
+    // A relaunch on an engine that runs starts the failed worker; the two
+    // refused ones keep their refusal (only queued workers follow).
+    run.decide(t0, UserChoice::Relaunch(roster(ready("claude", "sonnet"))))
+        .unwrap();
+    assert_eq!(run.status(first), Some(WorkerStatus::Running));
     assert_eq!(run.status(second), Some(WorkerStatus::Refused));
-    assert!(matches!(run.state(), RunState::Halted { .. }));
+    assert_eq!(run.status(third), Some(WorkerStatus::Refused));
+    assert_eq!(run.state(), &RunState::Open);
 }

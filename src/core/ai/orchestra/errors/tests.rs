@@ -264,3 +264,12 @@ fn a_rejected_window_survives_a_stream_that_ends_without_a_result() {
     let text = "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"five_hour\"}}\n";
     assert_eq!(class_of("claude", text), ErrorClass::Quota);
 }
+
+// A window mark does not pre-empt explicit evidence of another class.
+#[test]
+fn a_window_mark_beside_an_auth_status_is_auth() {
+    let text = "API Error: 401 Invalid API key (limit window: one_minute)";
+    assert_eq!(class_of_text(text), ErrorClass::Auth);
+    let bare = "rejected (limit window: one_minute)";
+    assert_eq!(class_of_text(bare), ErrorClass::RateLimit);
+}
