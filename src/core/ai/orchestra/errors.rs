@@ -70,12 +70,15 @@ fn class_of(text: &str) -> ErrorClass {
     let any = |words: &[&str]| words.iter().any(|word| lower.contains(word));
     if any(QUOTA_STRONG) || long_window(&lower) {
         ErrorClass::Quota
-    } else if has_code(&lower, "429") || any(RATE_LIMIT) || lower.contains(WINDOW_MARK) {
+    } else if has_code(&lower, "429") || any(RATE_LIMIT) {
         ErrorClass::RateLimit
     } else if has_code(&lower, "409") || any(CONFLICT) || lower.starts_with("conflict:") {
         ErrorClass::Conflict
     } else if has_code(&lower, "401") || has_code(&lower, "403") || any(AUTH) {
         ErrorClass::Auth
+    } else if lower.contains(WINDOW_MARK) {
+        // Only the decoder's bare mark: explicit status or wording above wins.
+        ErrorClass::RateLimit
     } else if any(QUOTA) {
         ErrorClass::Quota
     } else if any(TIMEOUT) {

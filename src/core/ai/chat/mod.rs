@@ -510,6 +510,13 @@ impl ChatState {
         self.orch_alert = alert;
     }
 
+    /// Takes the alert down with the notes raised on it: a note belongs to
+    /// one alert and never shows on the next.
+    pub fn drop_orch_alert(&mut self) {
+        self.orch_alert = None;
+        self.orch_note = None;
+    }
+
     pub fn orch_note(&self) -> Option<&OrchNote> {
         self.orch_note.as_ref()
     }

@@ -400,18 +400,79 @@ fn a_declined_retry_shows_why_and_the_alert_answers_again() {
     );
 }
 
-// An answer dropped by the run manager (the run ended or was replaced) is
-// said in the transcript; the alert of the run the pane has now stays.
+// An answer dropped by the run manager is said in the transcript when the
+// pane has no other run; the alert of a run the pane has now stays.
 #[test]
 fn a_dropped_answer_is_said_and_touches_no_other_run() {
     let (mut a, _) = alerted();
     let before = alert(&a).cloned();
-    a.update(event(OrchestraEvent::Dropped { run: RunId(3) }));
+    a.update(event(OrchestraEvent::Dropped { run: RUN }));
     assert_eq!(alert(&a).cloned(), before, "the live alert stays");
     assert_eq!(chat_of(&a).orch_run(), Some(RUN));
-    let said = chat_of(&a)
-        .entries()
-        .iter()
-        .any(|e| matches!(e, Entry::System(line) if line == "the run already moved on: your answer was not applied"));
-    assert!(said, "{:?}", chat_of(&a).entries());
+    assert!(said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
+}
+
+// Without a run manager the answer is told in the transcript.
+#[test]
+fn an_unavailable_orchestration_is_said() {
+    let (mut a, _) = alerted();
+    a.update(event(OrchestraEvent::Unavailable));
+    assert!(
+        said(
+            &a,
+            "orchestration is not available: your answer was not applied"
+        ),
+        "{:?}",
+        chat_of(&a).entries()
+    );
+}
+
+fn said(a: &App, line: &str) -> bool {
+    (chat_of(a).entries().iter()).any(|e| matches!(e, Entry::System(l) if l == line))
+}
+
+const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
+
+// The line is not misread inside a new run: a drop that names another run
+// than the pane's current one adds nothing.
+#[test]
+fn a_dropped_answer_of_an_older_run_is_not_said_in_a_newer_one() {
+    let (mut a, _) = alerted();
+    a.update(event(OrchestraEvent::Dropped { run: RunId(3) }));
+    assert!(!said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
+    // With no run at all (the ordering race after Ended) it is still said.
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    a.update(event(OrchestraEvent::Dropped { run: RUN }));
+    assert!(said(&a, MOVED_ON));
+}
+
+// Review fix 2: notes belong to the alert they were raised on. Ctrl+C and
+// the run's end clear them, so the next alert does not say `retry failed`.
+#[test]
+fn a_note_does_not_leak_into_the_next_alert() {
+    let declined = |a: &mut App| {
+        a.update(key('r'));
+        a.update(event(OrchestraEvent::Declined {
+            run: RUN,
+            worker: WorkerId(1),
+            class: ErrorClass::Conflict,
+            text: "409 conflict: session busy".into(),
+            reason: "no nonce".into(),
+        }));
+        let_go();
+    };
+    // Ctrl+C
+    let (mut a, _) = alerted();
+    declined(&mut a);
+    a.update(ctrl('c'));
+    a.update(event(halted(RUN, "409 conflict: session busy")));
+    assert_eq!(chat_of(&a).orch_note(), None, "ctrl+c cleared the note");
+    // The run ends.
+    let (mut a, _) = alerted();
+    declined(&mut a);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(chat_of(&a).orch_note(), None, "the end cleared the note");
+    a.update(event(halted(RunId(8), "409 conflict: session busy")));
+    let text = a.chat_guidance(chat_id()).unwrap_or_default();
+    assert!(!text.contains("retry failed"), "{text}");
 }
