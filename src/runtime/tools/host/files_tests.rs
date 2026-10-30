@@ -1250,6 +1250,40 @@ async fn every_write_refusal_names_the_chat_folder() {
     assert_eq!(w.staged(), 0);
 }
 
+// A chat folder that is HOME, above it or `/` has no concrete root: every
+// write says so and asks for `/cd`, instead of hinting at relative paths.
+// The refusals above, inside a concrete folder, keep the uniform text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_a_broad_folder_ask_for_a_project_folder() {
+    let w = world();
+    let home = w.proj.parent().unwrap().to_path_buf();
+    for (origin, shown) in [(home, "~"), (PathBuf::from("/"), "/")] {
+        let (tx, _rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, origin);
+        scope.approver = Script::new(Decision::Sent);
+        scope.families = on();
+        scope.stage_key = Some(key());
+        let d = w.host.dispatch(scope);
+        for call in [
+            write("fibonacci.py", "t"),
+            folder("project"),
+            edit("a", "a", "b"),
+        ] {
+            let out = d.call(call.clone()).await;
+            assert!(out.is_error, "{call:?}");
+            assert_eq!(
+                out.text,
+                format!(
+                    "path not available: the chat's folder is {shown}, where files cannot be written; ask the user to run /cd <project folder>"
+                ),
+                "{call:?}"
+            );
+        }
+    }
+    assert_eq!(w.staged(), 0);
+}
+
 // local-model-writes D2: once the policy allowed the path, a parent folder
 // that does not exist is named, as the model wrote it.
 #[cfg(target_os = "linux")]

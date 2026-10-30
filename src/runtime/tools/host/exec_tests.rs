@@ -227,10 +227,20 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
         );
     }
     let asks = Asks::new(Decision::Sent);
-    for origin in [w.home.clone(), w.home.join("missing"), PathBuf::from("rel")] {
+    for origin in [w.home.join("missing"), PathBuf::from("rel")] {
         let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
         let out = d.call(command("cargo", &["test"], None)).await;
         assert_eq!(out.text, "path not available", "{origin:?}");
+    }
+    // No concrete root: the reason is the folder, and it asks for `/cd`.
+    for origin in [w.home.clone(), PathBuf::from("/")] {
+        let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert_eq!(
+            out.text,
+            "path not available: the chat's folder is your home or /, where commands cannot run; ask the user to run /cd <project folder>",
+            "{origin:?}"
+        );
     }
     assert!(asks.asked().is_empty());
 }
