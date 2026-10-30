@@ -16,6 +16,12 @@ pub const EMPTY_NOTICE: &str = "the model sent an empty answer; it was asked to 
 /// The message that follows an empty answer in the reminder request.
 pub const EMPTY_REMINDER: &str = "Your answer was empty. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.";
 
+/// The system line a pane gets when a "ready for" sign-off was answered.
+pub const STOPPED_NOTICE: &str = "the model stopped before finishing; it was asked to go on";
+
+/// The message that follows a "ready for" sign-off in the reminder request.
+pub const STOPPED_REMINDER: &str = "You stopped before finishing. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.";
+
 /// The system line and the reminder for an answer that stopped short: an
 /// empty one, or one that announces a next step. `None` for anything else.
 pub fn go_on(text: &str) -> Option<(&'static str, &'static str)> {
@@ -23,6 +29,8 @@ pub fn go_on(text: &str) -> Option<(&'static str, &'static str)> {
         Some((EMPTY_NOTICE, EMPTY_REMINDER))
     } else if announced_step(text) {
         Some((NEXT_STEP_NOTICE, NEXT_STEP_REMINDER))
+    } else if signed_off(text) {
+        Some((STOPPED_NOTICE, STOPPED_REMINDER))
     } else {
         None
     }
@@ -96,6 +104,29 @@ pub fn announced_step(text: &str) -> bool {
             !next.is_empty() && !NOT_ACTIONS.contains(&next)
         })
     })
+}
+
+/// Words of a sign-off that hands the next step to the user, lowercased and
+/// matched as whole words: "Ready for next steps.", "Listo para el commit."
+const SIGN_OFFS: &[&str] = &[
+    "ready for",
+    "ready to",
+    "listo para",
+    "lista para",
+    "listos para",
+];
+
+/// Whether the last sentence of `text` is a "ready for" sign-off. A question
+/// does not count.
+fn signed_off(text: &str) -> bool {
+    let text = text.trim_end();
+    if text.ends_with('?') {
+        return false;
+    }
+    let words = words(last_sentence(text));
+    SIGN_OFFS
+        .iter()
+        .any(|sign_off| words.starts_with(&format!(" {sign_off} ")))
 }
 
 /// `text` lowercased, with punctuation as spaces and one space between words,
@@ -199,6 +230,33 @@ mod tests {
             Some((NEXT_STEP_NOTICE, NEXT_STEP_REMINDER))
         );
         assert_eq!(go_on("Done: the test passed."), None);
+    }
+
+    // #439: qwen3:4b ends a turn it has not finished with "Ready for next
+    // steps." or "Ready for commit."; a probe showed a reminder there makes it
+    // call the next tool (3 of 3).
+    #[test]
+    fn a_ready_sign_off_stopped_before_finishing() {
+        for text in [
+            "test_fibonacci.py created and staged. Ready for next steps.",
+            "✅ fibonacci.py has been successfully created in the worktree. Ready for next steps!",
+            "Changes applied: `fibonacci.py` (+9). Ready for commit.",
+            "Ready to commit.",
+            "Archivo creado. Listo para el commit.",
+        ] {
+            assert_eq!(
+                go_on(text),
+                Some((STOPPED_NOTICE, STOPPED_REMINDER)),
+                "{text}"
+            );
+        }
+        for text in [
+            "Ready for the commit?",
+            "The ready flag is set in config.py.",
+            "Done: committed as abc123.",
+        ] {
+            assert_eq!(go_on(text), None, "{text}");
+        }
     }
 
     // Only the end of the answer counts: an early "I'll" followed by the

@@ -60,7 +60,7 @@ When a reply of the Ollama or llama.cpp tool loop holds no structured tool call 
 - WHEN the loop reads the reply
 - THEN a second request carries the text and the reminder, with tools still offered, and the call the model makes after it runs
 
-An empty answer (only whitespace) MUST get the same treatment with the user message `Your answer was empty. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.` and the system line `the model sent an empty answer; it was asked to go on`; the empty answer and the announced step share the one reminder of the turn.
+An empty answer (only whitespace) MUST get the same treatment with the user message `Your answer was empty. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.` and the system line `the model sent an empty answer; it was asked to go on`; the empty answer and the announced step share the one reminder of the turn. So MUST an answer whose last sentence, not a question, starts with the whole words `ready for`, `ready to`, `listo para`, `lista para` or `listos para`, with the user message `You stopped before finishing. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.` and the system line `the model stopped before finishing; it was asked to go on`.
 
 #### Scenario: Empty answer [auto]
 - GIVEN tools on, a tool round, then an empty reply
