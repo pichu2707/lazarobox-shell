@@ -295,7 +295,8 @@ fn the_coding_families_replace_the_cannot_change_sentence() {
         let got = with_tools(chat, FamilySet::LEGACY.with(family));
         assert!(!got.contains(NO_CHANGES), "{family:?}");
         assert!(!got.contains("cannot change files"), "{family:?}");
-        assert_eq!(got.matches(CODING.trim_end()).count(), 1, "{family:?}");
+        assert!(!got.contains("{abilities}"), "{family:?}");
+        assert_eq!(got.matches("do all of them in this turn").count(), 1);
         assert!(got.contains("one simple command per call"), "{family:?}");
         assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{family:?}");
     }
@@ -306,8 +307,41 @@ fn the_coding_families_replace_the_cannot_change_sentence() {
     ] {
         let got = with_tools(chat, families);
         assert!(got.contains(TOOLS.trim_end()), "{families:?}");
-        assert!(!got.contains(CODING.trim_end()), "{families:?}");
+        assert!(!got.contains("do all of them in this turn"), "{families:?}");
     }
+}
+
+// #439: the block names only what the families of the turn allow.
+#[test]
+fn the_coding_block_names_only_the_abilities_of_the_turn() {
+    const WRITE: &str = "write and edit files (they stay staged until you propose the batch, which the user reviews once)";
+    let line = |families: FamilySet| with_tools("", families);
+    let exec = line(FamilySet::LEGACY.with(Family::Exec));
+    assert!(
+        exec.contains("given: run tests and builds; the user approves"),
+        "{exec}"
+    );
+    assert!(
+        !exec.contains(WRITE) && !exec.contains("commit with git"),
+        "{exec}"
+    );
+    let two = line(FamilySet::LEGACY.with(Family::Write).with(Family::GitWrite));
+    assert!(
+        two.contains(&format!("given: {WRITE} and add and commit with git;")),
+        "{two}"
+    );
+    let all = line(
+        FamilySet::LEGACY
+            .with(Family::Write)
+            .with(Family::Exec)
+            .with(Family::GitWrite),
+    );
+    assert!(
+        all.contains(&format!(
+            "given: {WRITE}, run tests and builds and add and commit with git;"
+        )),
+        "{all}"
+    );
 }
 
 // #439: the same holds for a user's prompt that gets the block as a bullet.
@@ -317,7 +351,7 @@ fn a_prompt_without_the_sentence_gets_the_coding_block_too() {
     let got = with_tools("My own prompt.\n", families);
     assert!(got.starts_with("My own prompt.\n\n- "), "{got}");
     assert!(
-        got.contains(CODING.trim_end()) && !got.contains(NO_CHANGES),
+        got.contains("do all of them in this turn") && !got.contains(NO_CHANGES),
         "{got}"
     );
 }
@@ -327,10 +361,7 @@ fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
     assert!(TOOLS.contains(NO_CHANGES));
     let text = CODING;
     for needle in [
-        "write and edit files",
-        "they stay staged until you propose the batch",
-        "run tests and builds",
-        "add and commit with git",
+        "with the tools you are given: {abilities};",
         "do all of them in this turn, one tool call after another",
         "Do not stop to say what you will do next: call the tool.",
         "Say a step is done only when a tool result of this turn shows it",
@@ -339,7 +370,7 @@ fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
         assert!(text.contains(needle), "{needle}");
     }
     assert!(
-        text.lines().count() == 1 && text.len() < 700,
+        text.lines().count() == 1 && text.len() < 600,
         "{}",
         text.len()
     );

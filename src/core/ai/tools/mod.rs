@@ -467,7 +467,7 @@ const BUILT_INS: [ToolDef; 16] = [
     },
     ToolDef {
         name: "run_in_pane",
-        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree, find, grep or rg with plain or quoted paths (no &&, ;, |, $, * or redirections) can run directly inside the chat's folder when the user allows it. Anything else, git and mkdir included, waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself; any change needs a command the user reviews and runs.",
+        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree, find, grep or rg with plain or quoted paths (no &&, ;, |, $, * or redirections) can run directly inside the chat's folder when the user allows it. Anything else, git and mkdir included, waits for the user to approve it and press Enter. Prefer one simple command per call.",
         access: Access::Write,
         family: Family::Pane,
         args: &[text("command")],
@@ -864,10 +864,12 @@ mod tests {
             "can run directly inside the chat's folder when the user allows it",
             "Anything else, git and mkdir included, waits for the user to approve it and press Enter",
             "one simple command per call",
-            "You cannot change files yourself; any change needs a command the user reviews and runs.",
         ] {
             assert!(run.description.contains(needle), "{needle}");
         }
+        // #439: what the model may change is the system prompt's to say: a
+        // turn with the write tools must not read "cannot change files" here.
+        assert!(!run.description.contains("cannot change files"));
         assert!(run.description.len() < 640, "{}", run.description.len());
         assert!(run.description.is_ascii());
     }

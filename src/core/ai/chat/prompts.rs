@@ -99,7 +99,18 @@ const NO_CHANGES: &str =
 
 /// What a turn that offers the write, exec or git write tools says instead of
 /// [`NO_CHANGES`]: it can do the work, and must finish every step (#439).
+/// `{abilities}` names what the families of the turn allow.
 const CODING: &str = include_str!("prompts/coding.md");
+
+/// What each coding family lets the model do, in [`CODING`]'s words.
+const ABILITIES: [(Family, &str); 3] = [
+    (
+        Family::Write,
+        "write and edit files (they stay staged until you propose the batch, which the user reviews once)",
+    ),
+    (Family::Exec, "run tests and builds"),
+    (Family::GitWrite, "add and commit with git"),
+];
 
 /// `system` for a turn that offers tools: the built-in "no access" sentence
 /// becomes the tools block. A prompt without that sentence (the user's own
@@ -107,13 +118,15 @@ const CODING: &str = include_str!("prompts/coding.md");
 /// this: any other keeps its prompt byte for byte. A turn that offers the
 /// write, exec or git write tools gets [`CODING`] instead of [`NO_CHANGES`].
 pub fn with_tools(system: &str, families: FamilySet) -> String {
-    let coding = [Family::Write, Family::Exec, Family::GitWrite]
-        .into_iter()
-        .any(|family| families.contains(family));
-    let block = if coding {
-        TOOLS.trim_end().replacen(NO_CHANGES, CODING.trim_end(), 1)
-    } else {
-        TOOLS.trim_end().to_owned()
+    let abilities: Vec<&str> = ABILITIES
+        .iter()
+        .filter(|(family, _)| families.contains(*family))
+        .map(|(_, ability)| *ability)
+        .collect();
+    let block = match abilities.split_last() {
+        Some((last, [])) => coding(last),
+        Some((last, rest)) => coding(&format!("{} and {last}", rest.join(", "))),
+        None => TOOLS.trim_end().to_owned(),
     };
     let block = block.as_str();
     if system.trim().is_empty() {
@@ -123,6 +136,12 @@ pub fn with_tools(system: &str, families: FamilySet) -> String {
         return system.replacen(NO_TOOLS, block, 1);
     }
     format!("{}\n\n- {block}", system.trim_end())
+}
+
+/// [`TOOLS`] with [`CODING`] in place of [`NO_CHANGES`].
+fn coding(abilities: &str) -> String {
+    let block = CODING.trim_end().replace("{abilities}", abilities);
+    TOOLS.trim_end().replacen(NO_CHANGES, &block, 1)
 }
 
 /// The system line for a skipped override file.
