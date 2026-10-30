@@ -12,6 +12,11 @@ baseline.
 
 ### Changed
 
+- A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
+  now names the chat's folder, so a model learns where its paths start:
+  `path not available (paths are relative to the chat's folder ~/proj)`. The
+  text is still the same for every reason. Only a missing parent folder of a
+  path the policy allowed is named: `the folder src/ does not exist`.
 - When a chat turn ends normally and the model left staged changes without
   calling `propose_batch` (common with small local models), the batch review
   opens by itself, with the same coverage check, arming delay and `y`/`n` as a

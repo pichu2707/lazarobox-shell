@@ -285,7 +285,7 @@ async fn read(
 }
 
 /// What the disk holds at `real`, for staging. A folder the batch makes holds
-/// nothing yet. Every refusal is the one refusal text.
+/// nothing yet.
 ///
 /// `probed` is the disk read, made before the lock was taken. A folder the
 /// batch makes wins over it. If the batch changed since the read, the apply
@@ -295,7 +295,7 @@ fn on_disk(
     key: StageKey,
     real: &Path,
     probed: Result<Option<Vec<u8>>, Unreadable>,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<Vec<u8>>, Unreadable> {
     let made = |batch: &crate::core::ai::tools::stage::Batch| {
         batch.entries().iter().any(|s| {
             s.entry == Entry::Dir && real != s.target.real && real.starts_with(&s.target.real)
@@ -304,7 +304,54 @@ fn on_disk(
     if stages.batch(key).is_some_and(made) {
         return Ok(None);
     }
-    probed.map_err(|_| REFUSED.to_owned())
+    probed
+}
+
+/// The chat's folder as a write refusal names it: `$HOME` shown as `~`.
+fn chat_folder(env: &ToolEnv) -> String {
+    let home = env
+        .home
+        .as_deref()
+        .map(Path::new)
+        .filter(|home| home.parent().is_some());
+    let shown = match home.and_then(|home| env.origin.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => env.origin.display().to_string(),
+    };
+    // A folder name is the user's, but a control character in it must not
+    // reach the model's text as one.
+    shown
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+/// The one text of every write refusal, with the chat's folder, so a model
+/// learns where its paths start (local-model-writes D2). It is the same for
+/// every reason: a model cannot tell an excluded path from a missing one.
+fn refused_in(env: &ToolEnv) -> String {
+    format!(
+        "{REFUSED} (paths are relative to the chat's folder {})",
+        chat_folder(env)
+    )
+}
+
+/// The refusal of a write whose parent folder does not exist, for a path the
+/// policy already allowed (so `list_dir` would show the same). `None` when
+/// the parent is there or anything else is wrong with it.
+fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
+    match real.parent()?.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return None,
+    }
+    let shown = Path::new(path).parent()?.to_str()?.trim_end_matches('/');
+    (!shown.is_empty()).then(|| {
+        format!(
+            "{REFUSED}: the folder {shown}/ does not exist (paths are relative to the chat's folder {})",
+            chat_folder(env)
+        )
+    })
 }
 
 fn failed<E: Display>(why: StageFailed<E>) -> String {
@@ -332,7 +379,7 @@ pub(super) fn stage_with_probe(
     call: &Call,
     probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<String, String> {
-    let refused = || REFUSED.to_owned();
+    let refused = || refused_in(env);
     let roots = load_roots(env).map_err(|_| refused())?;
     let path = match call {
         Call::CreateDir { path } | Call::WriteFile { path, .. } | Call::EditFile { path, .. } => {
@@ -344,7 +391,8 @@ pub(super) fn stage_with_probe(
     // The disk is read before the lock is taken: the lock covers memory only.
     let probed = probe(&roots, &target.real);
     let mut stages = lock(stages);
-    let disk = on_disk(&stages, key, &target.real, probed)?;
+    let disk = on_disk(&stages, key, &target.real, probed)
+        .map_err(|_| missing_parent(env, path, &target.real).unwrap_or_else(refused))?;
     let existing = match &disk {
         None => Existing::Absent,
         Some(bytes) => Existing::Present {
@@ -406,7 +454,7 @@ pub(super) async fn answered(
     let env = host.env(&scope.origin);
     let stages = host.stages.clone();
     let done = tokio::task::spawn_blocking(move || {
-        let roots = load_roots(&env).map_err(|_| REFUSED.to_owned())?;
+        let roots = load_roots(&env).map_err(|_| refused_in(&env))?;
         lock(&stages)
             .apply(id, &roots)
             .map_err(|why| why.to_string())
