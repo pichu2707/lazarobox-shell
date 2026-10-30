@@ -666,3 +666,20 @@ fn a_quiet_summary_save_leaves_a_saving_note_editor_untouched() {
         assert_eq!(editor.title(), "My note");
     }
 }
+
+// local-model-writes D1: a compaction run after the clean `Done` keeps the
+// pane live and bumps the turn; the batch the turn left still opens its
+// review once the run ends.
+#[test]
+fn a_compaction_run_after_a_clean_end_still_opens_the_review_of_its_batch() {
+    use crate::core::ai::chat::review::Badge;
+    let badges = |badge: Badge| AppEvent::Badges([(chat_id(), badge)].into_iter().collect());
+    let mut a = app(true, Some("tiny"));
+    a.update(badges(Badge::Staged(1)));
+    let (turn, _) = until_compaction(&mut a);
+    finish(&mut a, turn, "summary");
+    assert_eq!(
+        a.update(badges(Badge::Orphan(1))),
+        vec![Effect::BatchReview(chat_id())]
+    );
+}

@@ -204,7 +204,7 @@ After approval the app MUST re-read every target and compare it with the snapsho
 - THEN two `Change` records carry path, kind, bytes and line counts
 
 ### Requirement: Orphan, close and quit
-A batch orphaned by a cancelled turn MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart. When a turn ends with the engine's `Done` and leaves a batch the model never proposed, the app MUST open that batch's review at once, through the same path, view, coverage gate and arming as an orphan review, unless the chat already waits on an approval; a cancelled or failed turn MUST leave the orphan to the user's own review key (local-model-writes D1).
+An orphan batch MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart. When a turn ends with the engine's `Done` and leaves a batch the model never proposed, the app MUST open that batch's review at once, through the same path, view, coverage gate and arming as an orphan review, unless the chat already waits on an approval; a cancelled or failed turn MUST leave the orphan to the user's own review key (local-model-writes D1).
 
 #### Scenario: Cancel leaves an orphan [auto]
 - GIVEN a staged batch and a turn that is cancelled

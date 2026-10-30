@@ -2663,7 +2663,7 @@ impl App {
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
         if finished && how == Ended::Done {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-                chat.note_clean_end(turn);
+                chat.note_clean_end();
             }
             effects.extend(self.start_compaction(id));
         }

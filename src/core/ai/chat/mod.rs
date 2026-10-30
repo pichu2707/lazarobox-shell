@@ -355,9 +355,10 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
-    /// The turn that last ended with `Done`, until the poll sees the batch
-    /// it left behind (local-model-writes D1).
-    clean_end: Option<u64>,
+    /// The last turn ended with `Done`, until the poll sees the batch it left
+    /// behind (local-model-writes D1). A new turn or a cancel clears it; a
+    /// compaction run after the `Done` does not.
+    clean_end: bool,
 }
 
 impl ChatState {
@@ -408,7 +409,7 @@ impl ChatState {
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
-            clean_end: None,
+            clean_end: false,
         }
     }
 
@@ -510,16 +511,16 @@ impl ChatState {
         self.orphan = id;
     }
 
-    /// Turn `turn` ended with `Done`: a batch it leaves is the user's to
-    /// review at once.
-    pub fn note_clean_end(&mut self, turn: u64) {
-        self.clean_end = Some(turn);
+    /// The turn ended with `Done`: a batch it leaves is the user's to review
+    /// at once.
+    pub fn note_clean_end(&mut self) {
+        self.clean_end = true;
     }
 
     /// Whether the batch the poll now sees as an orphan was left by the last
     /// turn ending with `Done`. Asked once: the mark is gone afterwards.
     pub fn take_clean_end(&mut self) -> bool {
-        self.clean_end.take() == Some(self.turn())
+        std::mem::take(&mut self.clean_end)
     }
 
     /// Queues a line for the model's next request (counts and paths only).
@@ -931,6 +932,7 @@ impl ChatState {
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
+        self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
@@ -1220,6 +1222,7 @@ impl ChatState {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
+        self.clean_end = false;
         if self.summarizing.is_some() {
             return self.cancel_summary();
         }
