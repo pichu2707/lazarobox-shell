@@ -868,6 +868,29 @@ async fn a_jail_refusal_logs_its_class_only() {
     assert_eq!(events.last(), Some(&halted));
 }
 
+// A secret in a jail reason is redacted before it reaches the alert or the
+// run state.
+#[tokio::test]
+async fn a_secret_in_a_jail_reason_never_reaches_the_alert() {
+    let token = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+    let reason: &'static str = Box::leak(format!("bad {token}").into_boxed_str());
+    let mut lab = lab(Script::Jail(reason));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let collected = handle.call(collect(1)).await;
+    let events = lab.sent();
+    assert!(!format!("{events:?}").contains(token), "{events:?}");
+    assert!(!format!("{collected:?}").contains(token), "{collected:?}");
+    assert!(matches!(
+        events.last(),
+        Some(OrchestraEvent::Halted {
+            class: ErrorClass::JailRefusal,
+            ..
+        })
+    ));
+}
+
 // Spec (agent-orchestrator, Failure stops the run): an engine that stops
 // with no final event ends `failed` with the interrupted text, never `done`.
 #[tokio::test]

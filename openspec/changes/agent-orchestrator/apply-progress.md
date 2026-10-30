@@ -161,3 +161,13 @@ Gates: fmt, clippy -D warnings (0), cargo test 7693 passed, 0 failed.
 - Order: strong quota wording (insufficient_quota, exhausted your, credit balance, billing) > 429/rate limit > 409/conflict > 401/403/auth wording > quota/usage limit > timeout > other. A status code needs its own digits.
 - The codex decoder keeps only the inner provider message, so a codex 409 classifies only if the message says `conflict`.
 - `decide_run` still returns `bool`: a retry that fails with `NoNonce` leaves the alert open, and `r` can be pressed again.
+
+### S2a review fixes
+- W1: the claude decoder suffix is now `(limit window: X)` (no class keyword); a rejected `five_hour`/`*day*`/`*week*` window classifies as Quota.
+- W2: `has_code` requires HTTP context (text opens with the code, or `status`/`HTTP`/`error`/`code` before it, or a reason phrase after) and rejects glued neighbours (`/data/429/x`, `sk-ab429cd`, `1.429s`, `main.rs:403:5`).
+- W3: `failed()` builds the jail alert from the redacted `classified.message`.
+- W4: `check quota`, `exceeded your current quota`, `resource has been exhausted` are strong quota wording; the synthetic gemini 429 fixture now expects Quota.
+- S1: `conflict` needs 409 context, `conflict error`/`conflict_error` or a leading `conflict:`; `forbidden`/`permission denied` are Auth only through 403 context or another auth word; `billing` is weak quota.
+- S2: a rejected limit is carried into the failure of a stream that ends with no result; an unknown-shape `rate_limit_event` no longer clears it.
+- S3: the suffix is applied within `ERROR_CAP` (the message gives way); the `engine error` sentinel is replaced by an empty check on the raw type (kept at most 40 chars).
+- S4: 429/409 fixture tests renamed `synthetic_*` and asserted per adapter; `tests/fixtures/orchestra/README.md` marks them synthetic; claude tests use an explicit `error_line`.

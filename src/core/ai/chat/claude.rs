@@ -16,8 +16,9 @@
 //!   call). A wired turn reads content blocks with an allow-list, a text-only
 //!   one refuses tool-like types only (see `foreign_block`). The shape is the
 //!   one claude 2.1.x documents; the manual check records the real one.
-//! - a `rate_limit_event` that was `rejected` is kept as text and added to the
-//!   failure the turn ends with, so the orchestrator can classify it (S2).
+//! - a `rate_limit_event` that was `rejected` is kept as text (`(limit window:
+//!   X)`) and added to the failure the turn ends with, or to the one a stream
+//!   that ends with no result gets, so the orchestrator can classify it (S2).
 //! - `system` and any unknown type are ignored, and so is
 //!   any line that does not start with `{` (stray stdout text).
 
@@ -25,8 +26,8 @@ use serde_json::Value;
 
 use super::engine::{ChatError, Finish, StreamEvent, Usage};
 use super::stream::{
-    CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
-    too_long,
+    CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
+    malformed, too_long,
 };
 use crate::core::ai::tools::wiring::CLAUDE_TOOL_PREFIX;
 
@@ -108,13 +109,25 @@ fn started_foreign_tool(value: &Value, wired: bool) -> bool {
 fn rejected_limit(value: &Value) -> Option<String> {
     let info = &value["rate_limit_info"];
     (info["status"].as_str() == Some("rejected")).then(|| {
-        let kind = error_message(info["rateLimitType"].as_str().unwrap_or(""));
-        if kind == "engine error" {
+        let kind = info["rateLimitType"].as_str().unwrap_or("");
+        if kind.trim().is_empty() {
             "rejected".to_owned()
         } else {
-            kind
+            error_message(kind).chars().take(LIMIT_CAP).collect()
         }
     })
+}
+
+/// The longest limit type kept.
+const LIMIT_CAP: usize = 40;
+
+/// `message` with the rejected limit's window appended, the total within
+/// `ERROR_CAP`: the message gives way, never the window.
+fn with_window(message: &str, limit: &str) -> String {
+    let suffix = format!(" (limit window: {limit})");
+    let room = ERROR_CAP.saturating_sub(suffix.chars().count());
+    let head: String = message.chars().take(room).collect();
+    format!("{}{suffix}", head.trim_end())
 }
 
 /// What the `result` line reports as used. The prompt count adds the cache
@@ -187,7 +200,8 @@ impl ClaudeDecoder {
             Some("stream_event") => self.stream_event(&value),
             Some("result") => self.result(&value),
             Some("rate_limit_event") => {
-                self.limit = rejected_limit(&value);
+                // An event of another shape does not clear a rejected limit.
+                self.limit = rejected_limit(&value).or(self.limit.take());
                 vec![]
             }
             _ => vec![],
@@ -231,7 +245,7 @@ impl ClaudeDecoder {
         if failed {
             let mut message = error_message(text);
             if let Some(limit) = &self.limit {
-                message = format!("{message} (rate limit: {limit})");
+                message = with_window(&message, limit);
             }
             return vec![StreamEvent::Error(ChatError::Failed(message))];
         }
@@ -283,6 +297,12 @@ impl StreamDecoder for ClaudeDecoder {
         if !self.ended {
             let rest = self.lines.rest();
             out = self.lines_events(vec![rest]);
+        }
+        // A rejected limit explains a stream that ends with no result.
+        if let (false, Some(limit)) = (self.ended, &self.limit) {
+            self.ended = true;
+            let message = with_window("the engine's stream ended without a result", limit);
+            out.push(StreamEvent::Error(ChatError::Failed(message)));
         }
         finish_with(&mut self.ended, out)
     }

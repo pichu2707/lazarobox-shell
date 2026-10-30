@@ -994,7 +994,7 @@ async fn drive(
 fn failed(engine: &str, error: ChatError) -> WorkerEvent {
     let classified = classify(engine, &error);
     let text = match error {
-        ChatError::Jail(reason) => jail_error(&reason),
+        ChatError::Jail(_) => jail_error(&classified.message),
         ChatError::Interrupted | ChatError::Truncated => INTERRUPTED.to_owned(),
         ChatError::Failed(_) => classified.message,
     };
