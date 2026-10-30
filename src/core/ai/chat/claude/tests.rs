@@ -606,3 +606,42 @@ fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
         assert_eq!(whole(&text), [delta("x"), done()], "{counts}");
     }
 }
+
+fn failed_text(events: &[StreamEvent]) -> String {
+    match events {
+        [StreamEvent::Error(ChatError::Failed(text))] => text.clone(),
+        other => panic!("expected one failure, got {other:?}"),
+    }
+}
+
+fn limit_event(status: &str, kind: &str) -> String {
+    format!(
+        "{{\"type\":\"rate_limit_event\",\"rate_limit_info\":{{\"status\":\"{status}\",\"rateLimitType\":\"{kind}\"}}}}\n"
+    )
+}
+
+#[test]
+fn a_rejected_rate_limit_event_is_kept_as_text_on_the_failure() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str(&result_line("Claude AI usage limit reached", "").replace("false", "true"));
+    assert_eq!(
+        failed_text(&whole(&text)),
+        "Claude AI usage limit reached (rate limit: five_hour)"
+    );
+}
+
+#[test]
+fn an_allowed_rate_limit_event_adds_nothing_to_a_failure() {
+    let mut text = limit_event("allowed", "five_hour");
+    text.push_str(&result_line("boom", "").replace("false", "true"));
+    assert_eq!(failed_text(&whole(&text)), "boom");
+}
+
+#[test]
+fn a_rejected_rate_limit_type_is_cleaned_like_any_engine_text() {
+    let mut text = limit_event("rejected", "x\\u001b[31m y");
+    text.push_str(&result_line("boom", "").replace("false", "true"));
+    let got = failed_text(&whole(&text));
+    assert!(!got.contains('\u{1b}'), "{got:?}");
+    assert!(got.starts_with("boom (rate limit: "), "{got:?}");
+}

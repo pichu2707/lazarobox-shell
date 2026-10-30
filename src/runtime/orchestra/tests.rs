@@ -543,8 +543,30 @@ async fn a_failing_worker_contacts_no_other_engine_and_starts_nothing_more() {
     };
     assert_eq!(
         (*class, text.as_str()),
-        (ErrorClass::Other, "409 conflict: session busy")
+        (ErrorClass::Conflict, "409 conflict: session busy")
     );
+}
+
+// Spec (agent-orchestrator, 429 is its own class; chat-engines, Secret in
+// message): the alert carries the class of the provider's wording and the
+// message with any token redacted, and the run stays paused.
+#[tokio::test]
+async fn a_429_halts_as_rate_limit_with_the_token_redacted() {
+    let token = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut lab = lab(Script::Fail(
+        "",
+        "429 too many requests, key sk-abcdefghijklmnopqrstuvwxyz0123456789",
+    ));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    handle.call(wait(1)).await;
+    let events = lab.sent();
+    let Some(OrchestraEvent::Halted { class, text, .. }) = events.last() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(*class, ErrorClass::RateLimit);
+    assert!(text.starts_with("429 too many requests"), "{text}");
+    assert!(!text.contains(token), "{text}");
 }
 
 // Spec (chat-engines, Same jail as chat): a worker's command on codex equals

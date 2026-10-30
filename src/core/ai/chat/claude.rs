@@ -16,7 +16,9 @@
 //!   call). A wired turn reads content blocks with an allow-list, a text-only
 //!   one refuses tool-like types only (see `foreign_block`). The shape is the
 //!   one claude 2.1.x documents; the manual check records the real one.
-//! - `system`, `rate_limit_event` and any unknown type are ignored, and so is
+//! - a `rate_limit_event` that was `rejected` is kept as text and added to the
+//!   failure the turn ends with, so the orchestrator can classify it (S2).
+//! - `system` and any unknown type are ignored, and so is
 //!   any line that does not start with `{` (stray stdout text).
 
 use serde_json::Value;
@@ -102,6 +104,15 @@ fn started_foreign_tool(value: &Value, wired: bool) -> bool {
     blocks.into_iter().any(|block| foreign_block(block, wired))
 }
 
+/// The limit a `rate_limit_event` rejected, as one safe line.
+fn rejected_limit(value: &Value) -> Option<String> {
+    let info = &value["rate_limit_info"];
+    (info["status"].as_str() == Some("rejected")).then(|| {
+        let kind = error_message(info["rateLimitType"].as_str().unwrap_or(""));
+        if kind == "engine error" { "rejected".to_owned() } else { kind }
+    })
+}
+
 /// What the `result` line reports as used. The prompt count adds the cache
 /// reads and writes to the fresh tokens, so it means the same as codex's and
 /// gemini's. `None` unless both counts are there: a missing one is not zero.
@@ -131,6 +142,8 @@ pub struct ClaudeDecoder {
     streamed: bool,
     /// The turn has the lazarobox tools wired in (see [`started_foreign_tool`]).
     wired: bool,
+    /// The kind of limit a rejected `rate_limit_event` named, cleaned.
+    limit: Option<String>,
 }
 
 impl ClaudeDecoder {
@@ -141,6 +154,7 @@ impl ClaudeDecoder {
             ended: false,
             streamed: false,
             wired: false,
+            limit: None,
         }
     }
 
@@ -168,6 +182,10 @@ impl ClaudeDecoder {
         match value["type"].as_str() {
             Some("stream_event") => self.stream_event(&value),
             Some("result") => self.result(&value),
+            Some("rate_limit_event") => {
+                self.limit = rejected_limit(&value);
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -207,7 +225,11 @@ impl ClaudeDecoder {
                 .as_str()
                 .is_some_and(|s| s.starts_with("error"));
         if failed {
-            return vec![StreamEvent::Error(ChatError::Failed(error_message(text)))];
+            let mut message = error_message(text);
+            if let Some(limit) = &self.limit {
+                message = format!("{message} (rate limit: {limit})");
+            }
+            return vec![StreamEvent::Error(ChatError::Failed(message))];
         }
         let mut events = Vec::new();
         // Without partial messages the result is the only copy of the answer.

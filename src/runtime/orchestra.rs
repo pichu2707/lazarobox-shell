@@ -70,6 +70,7 @@ use crate::core::{
             },
             scope::{Dropped, ReadScope},
             tools::OrchCall,
+            errors::classify,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
         tools::{
@@ -897,12 +898,13 @@ impl Turn {
             session,
             deadline,
         } = self;
+        let engine = request.engine.clone();
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
         let (pending, dispatch) = session.map_or((None, None), |(p, d)| (Some(p), d));
         // The call sits inside the guarded future, as in a chat turn.
         let adapter = Box::pin(async move { runner(request, tx).await });
         let adapter = chat::in_session(adapter, pending, dispatch);
-        tokio::time::timeout(deadline, drive(adapter, rx))
+        tokio::time::timeout(deadline, drive(adapter, rx, &engine))
             .await
             .ok()
     }
@@ -913,6 +915,7 @@ impl Turn {
 async fn drive(
     adapter: BoxFuture<'static, ()>,
     mut rx: mpsc::Receiver<StreamEvent>,
+    engine: &str,
 ) -> Vec<WorkerEvent> {
     let run = AssertUnwindSafe(chat::scoped(adapter))
         .catch_unwind()
@@ -946,7 +949,7 @@ async fn drive(
                     return events;
                 }
                 StreamEvent::Error(error) => {
-                    events.push(failed(error));
+                    events.push(failed(engine, error));
                     return events;
                 }
                 _ => {}
@@ -955,17 +958,19 @@ async fn drive(
     }
 }
 
-/// The failure a worker turn ended with. The adapters' classifier arrives in
-/// S2; a jail refusal already is its own class (D10).
-fn failed(error: ChatError) -> WorkerEvent {
-    let (class, text) = match error {
-        ChatError::Jail(reason) => (ErrorClass::JailRefusal, jail_error(&reason)),
-        ChatError::Failed(text) => (ErrorClass::Other, text),
-        ChatError::Interrupted | ChatError::Truncated => {
-            (ErrorClass::Other, INTERRUPTED.to_owned())
-        }
+/// The failure a worker turn ended with: the adapters' classifier gives the
+/// class and the redacted provider text. A jail refusal keeps its own text.
+fn failed(engine: &str, error: ChatError) -> WorkerEvent {
+    let classified = classify(engine, &error);
+    let text = match error {
+        ChatError::Jail(reason) => jail_error(&reason),
+        ChatError::Interrupted | ChatError::Truncated => INTERRUPTED.to_owned(),
+        ChatError::Failed(_) => classified.message,
     };
-    WorkerEvent::Failed { class, text }
+    WorkerEvent::Failed {
+        class: classified.class,
+        text,
+    }
 }
 
 /// Eight bytes from the OS CSPRNG, read anew for every call; `None` when they
