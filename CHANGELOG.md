@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- Write works on Linux and macOS (APFS and HFS+); on any other system an
+  approved batch writes nothing and says so. On macOS, a filesystem without an
+  atomic no-replace rename (exFAT, SMB, NFS) answers "this system or volume does
+  not support a safe no-replace write" and whatever was done is undone, and
+  replacing a file drops its extended attributes, ACLs, quarantine flag and
+  Finder tags, and the new file takes its group from the parent folder (BSD
+  semantics).
+
 ## [1.0.0] - 2026-10-30
 
 First stable release. From here on, `config.toml`, the `chat.db` format, the

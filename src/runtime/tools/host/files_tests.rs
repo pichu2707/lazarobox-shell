@@ -2,8 +2,11 @@
 //! `propose_batch` seals the batch and asks the user, and only an answer of
 //! `Sent` applies it. What the model is told is counts and paths.
 
-// What only the Linux-only tests use is dead code elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// What only the file-tool tests use is dead code on other systems.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 use std::sync::Mutex;
 
@@ -138,6 +141,7 @@ fn folder(path: &str) -> Call {
 const HINTED: &str = "path not available (paths are relative to the chat's folder ~/proj)";
 
 /// The write refusal for a missing parent `folder` that the policy allowed.
+#[cfg(target_os = "linux")]
 fn missing(folder: &str) -> String {
     format!(
         "path not available: the folder {folder}/ does not exist (paths are relative to the chat's folder ~/proj)"
@@ -153,7 +157,7 @@ fn read(path: &str) -> Call {
 
 // Spec (code-write, create_dir and write_file staging; Nothing writes
 // without approval): staging adds to the batch, asks nothing, touches no disk.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn staging_asks_nothing_and_leaves_the_disk_alone() {
     let w = world();
@@ -184,7 +188,7 @@ async fn staging_asks_nothing_and_leaves_the_disk_alone() {
 
 // Spec (code-write, edit_file staging): applies to the staged version when
 // there is one, otherwise to the disk, and never touches the disk.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn edits_chain_on_the_staged_text_and_leave_the_disk_alone() {
     let w = world();
@@ -262,7 +266,7 @@ async fn the_read_tools_see_the_staged_batch() {
 
 // Spec (code-write, Root policy; Deny rules): every refusal is the same text
 // and stages nothing; a content refusal says why but never quotes the text.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_refused_call_stages_nothing_and_says_so_without_the_text() {
     let w = world();
@@ -295,7 +299,7 @@ async fn a_refused_call_stages_nothing_and_says_so_without_the_text() {
 
 // Spec (code-write, Propose batch and size cap): an empty batch is refused
 // and nothing opens.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn proposing_an_empty_batch_is_an_error_and_asks_nothing() {
     let w = world();
@@ -313,7 +317,7 @@ async fn proposing_an_empty_batch_is_an_error_and_asks_nothing() {
 
 // Spec (code-write, Batch review; Apply): the batch asks on any engine, and
 // only `Sent` writes. The result is the change list: paths and counts.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_approved_batch_is_applied_and_the_model_gets_counts_and_paths() {
     let w = world();
@@ -352,7 +356,7 @@ async fn an_approved_batch_is_applied_and_the_model_gets_counts_and_paths() {
 
 // Spec (code-write, Reject discards): a rejection, or nobody to ask, writes
 // nothing and drops the batch.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_rejected_batch_writes_nothing_and_is_discarded() {
     let w = world();
@@ -371,7 +375,7 @@ async fn a_rejected_batch_writes_nothing_and_is_discarded() {
 
 // Spec (code-write, Propose batch): a proposed batch accepts no staging until
 // the user answers.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
     let w = world();
@@ -395,7 +399,7 @@ async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
 // Spec (code-write, Orphan, close and quit): a call dropped while its batch
 // waits (the turn was cancelled, or a CLI timed out) leaves the batch proposed
 // for the user: an orphan that stays until the user answers or the pane closes.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
     let w = world();
@@ -433,7 +437,7 @@ async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
 
 // The turn ended while the ask was open (a CLI timeout, a cancel that reached
 // the approver first): the answer is `ENDED`, which is no user's no.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
     use crate::runtime::tools::approver::ENDED;
@@ -453,7 +457,7 @@ async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
 
 // A run report is no answer to a batch: the call is denied, and the batch is
 // closed, not left as an orphan (only a call dropped while it waits is one).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
     use crate::core::ai::tools::settle::End;
@@ -475,7 +479,7 @@ async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
 
 // The command was typed but the turn ended: that is no user's no, but it is
 // no orphan either: the batch of a call that ran something is closed.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_ran_ended_answer_discards_the_batch() {
     use crate::runtime::tools::approver::RAN_ENDED;
@@ -488,7 +492,7 @@ async fn a_ran_ended_answer_discards_the_batch() {
 
 // A batch the turn never proposed is a staging orphan: reviewing it seals it.
 // What the user is told holds counts only, never the staged text.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     let w = world();
@@ -537,7 +541,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
 
 // The same for a call whose channel is gone before it can announce: the batch
 // it sealed is not left behind.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
     let w = world();
@@ -553,7 +557,7 @@ async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
 
 // The disk is read before the lock is taken: staging never holds the mutex of
 // every chat's batches across a read.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn staging_reads_the_disk_before_it_takes_the_lock() {
     let w = world();
@@ -578,7 +582,7 @@ fn staging_reads_the_disk_before_it_takes_the_lock() {
 
 // An async worker never waits for the mutex: while an apply holds it, a call
 // that needs it parks on the blocking pool and the worker keeps serving tasks.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_busy_store_does_not_block_the_async_worker() {
     for call in [Call::ProposeBatch, read("a.txt")] {
@@ -624,7 +628,7 @@ impl World {
 // read of the file, once per file per turn; a denial stages nothing; a read
 // the user already allowed counts; a new turn asks again; a local engine never
 // asks. The ask carries the path, never the text.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_edit_asks_once_per_file_per_turn() {
     let w = world();
@@ -675,7 +679,7 @@ async fn a_cloud_edit_asks_once_per_file_per_turn() {
     assert_eq!(asked(&both), 1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_denied_cloud_edit_stages_nothing_and_a_denial_is_not_remembered() {
     let w = world();
@@ -692,7 +696,7 @@ async fn a_denied_cloud_edit_stages_nothing_and_a_denial_is_not_remembered() {
 
 // A path the ask could not show as it is opened is refused before any ask: the
 // user never approves a path that differs from the one that is used.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_edit_of_an_unshowable_path_is_refused_without_an_ask() {
     let w = world();
@@ -711,7 +715,7 @@ async fn a_cloud_edit_of_an_unshowable_path_is_refused_without_an_ask() {
 
 // Spelling does not matter: the key is the path as `display_target` resolves
 // it. A read records into `allowed` like an edit; a read never consults it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn different_spellings_of_one_path_share_a_single_cloud_ask() {
     let w = world();
@@ -748,7 +752,7 @@ async fn different_spellings_of_one_path_share_a_single_cloud_ask() {
 }
 
 // An edit with an empty `old` can only fail, so the user is not asked for it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_cloud_edit_with_an_empty_old_is_refused_before_the_ask() {
     let w = world();
@@ -766,7 +770,7 @@ async fn a_cloud_edit_with_an_empty_old_is_refused_before_the_ask() {
 
 // Only `Sent` is remembered: a busy answer (and any other non-`Sent` one)
 // leaves the next edit of the file asking again.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_busy_cloud_edit_stages_nothing_and_is_not_remembered() {
     let w = world();
@@ -784,7 +788,7 @@ async fn a_busy_cloud_edit_stages_nothing_and_is_not_remembered() {
 // Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
 // is truncated is sealed, the user can only reject it, and `Sent` never
 // applies it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_unreviewable_batch_cannot_be_applied_and_the_model_is_told_to_split() {
     let w = world();
@@ -808,7 +812,7 @@ async fn an_unreviewable_batch_cannot_be_applied_and_the_model_is_told_to_split(
 
 // Spec (code-write, Apply): the answer reaches the batch by id. A batch that
 // was discarded meanwhile (pane closed) is not applied by a late `y`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_answer_for_a_batch_that_is_gone_applies_nothing() {
     let w = world();
@@ -830,7 +834,7 @@ async fn an_answer_for_a_batch_that_is_gone_applies_nothing() {
 // Spec (code-write, Drift refuses the batch): a file changed after staging
 // refuses the whole batch, nothing is written, and the batch is closed so the
 // model can stage it again.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_drifted_batch_writes_nothing_and_leaves_the_model_free_to_restage() {
     let w = world();
@@ -861,7 +865,7 @@ async fn a_drifted_batch_writes_nothing_and_leaves_the_model_free_to_restage() {
 
 // Spec (agent-tools, Off equals 0.18.0): a write call with the family off is
 // refused like an unknown tool and stages nothing, even if it got this far.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_write_call_with_the_family_off_is_unknown_and_stages_nothing() {
     let w = world();
@@ -904,7 +908,7 @@ async fn with_the_family_off_the_read_tools_see_no_batch() {
 
 // Review-only invariant (Wd review): the base and the new text of an edit,
 // and so every diff row, reach nothing the model sees.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
     const KEY: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -950,7 +954,7 @@ async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
 // Review-only invariant, over every other output a secret could reach: the
 // text of a `write_file`, the staged view the read tools show, the edit
 // refusals, the apply summaries and the wait for review.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_secret_reaches_no_other_model_facing_output() {
     use crate::runtime::tools::apply::ApplyResult;
@@ -1057,6 +1061,14 @@ async fn a_secret_reaches_no_other_model_facing_output() {
         ApplyResult::Partial {
             changed: vec![named.clone()],
         },
+        ApplyResult::Denied {
+            path: named.clone(),
+            undone: true,
+        },
+        ApplyResult::VolumeUnsupported {
+            path: named.clone(),
+            undone: true,
+        },
         ApplyResult::Unsupported,
     ] {
         clean("summary", &result.summary());
@@ -1091,7 +1103,7 @@ async fn a_secret_reaches_no_other_model_facing_output() {
 }
 
 // Wd review, applied: the result of an approved edit names the path and counts.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_applied_edit_reports_its_path_and_counts() {
     let w = world();
@@ -1114,7 +1126,7 @@ async fn an_applied_edit_reports_its_path_and_counts() {
 // The host is the trust boundary: an orphan the user could not have reviewed
 // (a truncated diff) is refused here, whatever the caller sends. Nothing is
 // written and the batch stays for the user to discard.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_unreviewable_orphan_is_not_applied() {
     let w = world();
@@ -1140,7 +1152,7 @@ async fn an_unreviewable_orphan_is_not_applied() {
 
 // A turn of the pane is live: the batch is the model's, so an apply that
 // arrives anyway writes nothing.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
     let w = world();
@@ -1161,7 +1173,7 @@ async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
 
 // User decision: a drifted apply writes nothing, leaves the batch proposed
 // for the user, and does not tell the model.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
     let w = world();
@@ -1189,7 +1201,7 @@ async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
 
 // Model-facing text of an orphan answer carries counts only: the base of an
 // edit (disk text the model never saw) reaches neither line.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
     let w = world();
