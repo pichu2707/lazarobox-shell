@@ -215,7 +215,7 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | :--- | :--- |
 | `↑` `k` / `↓` `j` | Desplaza una fila |
 | `PageUp` / `PageDown` / `Home` / `End` | Desplaza por páginas / al principio / al final |
-| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo |
+| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo. Si pulsas `y` con líneas sin ver, no aprueba: el contador avisa 2 s de cuántas faltan (`y needs every line seen: N left, scroll ↓`) |
 | `n` / `Esc` | Rechaza, tras el mismo retardo (en el acto si el lote no se puede revisar) |
 | `Ctrl+C` | Rechaza y cancela la respuesta en curso |
 
