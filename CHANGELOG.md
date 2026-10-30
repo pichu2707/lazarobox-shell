@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
+  command: lazarobox presses Enter, waits for it and returns its output to the
+  model, like a safe command that runs on its own. The prompt says
+  `y run it · n cancel · p next pane`. A command that cannot run (multi-line,
+  unknown pane directory, a busy or half-typed pane, a non-UTF-8 locale) is
+  typed without Enter as before, and the chat line says why. `ask`, `auto` and
+  the `Ctrl+Space`, `e` confirm keep typing without Enter.
+
 ## [1.0.0-rc.1] - 2026-10-30
 
 First release candidate for 1.0.0. It is published to crates.io, but cargo

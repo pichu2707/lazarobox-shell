@@ -1,5 +1,6 @@
 //! Run in pane: the confirm that types a command of a chat into a shell pane.
-//! The confirm only types; Enter is sent only by a run (see `auto_run`).
+//! The confirm types; Enter is sent only by a run (see `auto_run`), which `y`
+//! starts for a model's command in `run` mode.
 
 use super::{
     tool::{CANCELLED, DECLINED},
@@ -9,13 +10,15 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_CHECKING_KEYS,
-            FOLDER_KEYS, Origin, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS,
-            exec_notice, run_sent_line,
+            FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin, Press, READ_KEYS,
+            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, exec_notice,
+            run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
         yank,
     },
+    config::ApprovalMode,
     sanitize,
     tools::command::{CONTINUATION, validate},
 };
@@ -39,7 +42,7 @@ const BLOCK_LINE: CallId = CallId(u64::MAX);
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
 pub(super) struct Refused {
-    notice: String,
+    pub(super) notice: String,
     pub(super) reason: &'static str,
 }
 
@@ -225,12 +228,10 @@ impl App {
             .collect()
     }
 
-    /// `y` on a run: types the command into the target pane. The target is
-    /// rechecked now, not when the confirm opened: it must still be a shell
-    /// pane of this tab and not run a full-screen app, and the paste framing
-    /// follows its present state. One accept is one write; nothing ever sends
-    /// Enter. A tool call is answered `Sent` only when the command was written;
-    /// a check that fails answers it `Denied` with the reason.
+    /// `y` on a run. A model's command in a chat in `run` mode (the mode now,
+    /// not when the prompt opened) is run, with one Enter, unless
+    /// [`y_run_blocker`](Self::y_run_blocker) says why not; then, and in every
+    /// other case, it is typed into the target pane.
     fn approve_run(&mut self, id: PaneId) -> Vec<Effect> {
         let Some(target) = self
             .panes
@@ -249,17 +250,67 @@ impl App {
         let ApprovalAsk::Run { command } = approval.ask() else {
             return Vec::new();
         };
+        let call = approval.call();
+        let runs_on_y = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.approval_mode() == ApprovalMode::Run);
+        let mut not_run = None;
+        if let Some(call) = call
+            && runs_on_y
+        {
+            match self.y_run_blocker(target, command) {
+                None => return self.run_approved(id, call, target, command),
+                Some(why) => not_run = Some(why),
+            }
+        }
+        self.type_run(id, call, target, command, not_run)
+    }
+
+    /// Why `y` in `run` mode cannot run `command` in `target` and types it
+    /// instead: what the write step or the settle could not handle, and the
+    /// user's own line, which the Enter would run with it. The turn's limit,
+    /// the focus and the shown tab are for runs nobody approved.
+    fn y_run_blocker(&self, target: PaneId, command: &str) -> Option<&'static str> {
+        let pty = self.panes.get(&target).and_then(PaneState::pty);
+        Some(if command.contains('\n') {
+            MULTI_LINE
+        } else if !self.cwd_readable || pty.is_none_or(|pty| pty.proc_cwd.is_none()) {
+            NO_CWD
+        } else if pty.is_some_and(|pty| pty.run.is_some()) {
+            RUNNING
+        } else if pty.is_some_and(|pty| pty.line_pending.is_some() || pty.user_dirty) {
+            HALF_TYPED
+        } else if !self.utf8_locale && !command.is_ascii() {
+            NON_UTF8
+        } else {
+            return None;
+        })
+    }
+
+    /// Types `command` into `target`. The target is rechecked now, not when
+    /// the confirm opened: it must still be a shell pane of this tab and not
+    /// run a full-screen app, and the paste framing follows its present state.
+    /// One write, with no Enter. A tool `call` is answered `Sent` only when the
+    /// command was written, a check that fails answers it `Denied` with the
+    /// reason; `not_run` says why `y` in `run` mode did not run it.
+    pub(super) fn type_run(
+        &mut self,
+        id: PaneId,
+        call: Option<(u64, CallId)>,
+        target: PaneId,
+        command: &str,
+        not_run: Option<&str>,
+    ) -> Vec<Effect> {
         let mut effects = Vec::new();
         let decision = match self.typed_bytes(target, command) {
             Ok(bytes) => {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-                    chat.push_system_line(run_sent_line(number));
+                    chat.push_system_line(run_sent_line(number, not_run));
                 }
-                // Enter is never sent: the line stays unsent, and an auto
-                // call must not land on it.
+                // The line stays unsent, and an auto call must not land on it.
                 if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
-                    pty.line_pending = Some(approval.call().map_or(BLOCK_LINE, |(_, call)| call));
+                    pty.line_pending = Some(call.map_or(BLOCK_LINE, |(_, call)| call));
                 }
                 effects.push(Effect::WritePty(target, bytes));
                 // A run being settled in this pane is no longer the only thing
@@ -272,7 +323,14 @@ impl App {
                 Decision::Denied(refused.reason)
             }
         };
-        effects.extend(Self::answer(id, &approval, decision));
+        if let Some((turn, call)) = call {
+            effects.push(Effect::ToolDecision {
+                pane: id,
+                turn,
+                call,
+                decision,
+            });
+        }
         effects
     }
 
@@ -449,11 +507,17 @@ impl App {
         let why = approval.why().map(str::to_owned);
         match approval.ask() {
             ApprovalAsk::Run { command } => {
+                // Only a model's command runs on `y`, only in `run` mode, and
+                // only when nothing would make `y` type it instead.
+                let runs = approval.call().is_some()
+                    && chat.approval_mode() == ApprovalMode::Run
+                    && (chat.run_target())
+                        .is_some_and(|pane| self.y_run_blocker(pane, command).is_none());
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
-                    keys: RUN_KEYS,
+                    keys: if runs { RUN_NOW_KEYS } else { RUN_KEYS },
                     armed,
                     why,
                     notice: None,
