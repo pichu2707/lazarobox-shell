@@ -434,17 +434,21 @@ fn said(a: &App, line: &str) -> bool {
 
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
-// The line is not misread inside a new run: a drop that names another run
-// than the pane's current one adds nothing.
+// No silent no-op: a drop naming another run than the pane's current one is
+// said too; the neutral wording keeps it from being read as part of the new one.
 #[test]
-fn a_dropped_answer_of_an_older_run_is_not_said_in_a_newer_one() {
+fn a_dropped_answer_of_an_older_run_is_said_neutrally_in_a_newer_one() {
     let (mut a, _) = alerted();
     a.update(event(OrchestraEvent::Dropped { run: RunId(3) }));
-    assert!(!said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
-    // With no run at all (the ordering race after Ended) it is still said.
+    assert!(said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
     a.update(event(OrchestraEvent::Ended { run: RUN }));
     a.update(event(OrchestraEvent::Dropped { run: RUN }));
-    assert!(said(&a, MOVED_ON));
+    assert_eq!(
+        (chat_of(&a).entries().iter())
+            .filter(|e| matches!(e, Entry::System(l) if l == MOVED_ON))
+            .count(),
+        2
+    );
 }
 
 // Review fix 2: notes belong to the alert they were raised on. Ctrl+C and

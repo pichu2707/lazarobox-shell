@@ -130,13 +130,11 @@ impl App {
                 }));
             }
             // The run it names is over: the pane's own alert is not touched.
-            // Said only when the pane has no other run, so the line is not
-            // read as part of a newer one.
-            OrchestraEvent::Dropped { run } => {
+            // Always said (never a silent no-op); the wording is neutral so it
+            // is not read as part of a newer run.
+            OrchestraEvent::Dropped { .. } => {
                 chat.undo_override();
-                if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.push_system_line(MOVED_ON.to_owned());
-                }
+                chat.push_system_line(MOVED_ON.to_owned());
             }
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
