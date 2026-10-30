@@ -78,6 +78,7 @@ fn alerted() -> (App, u64) {
 fn decide(choice: UserChoice) -> Effect {
     Effect::OrchDecide {
         pane: chat_id(),
+        run: RUN,
         choice,
     }
 }
@@ -348,4 +349,69 @@ fn the_notice_and_the_alert_are_shown_together() {
         a.chat_guidance(chat_id()),
         Some(format!("{NOTICE} | {ALERT}"))
     );
+}
+
+// Review S2b: an answer names the run of the alert it answers, so the run
+// manager never applies it to another run.
+#[test]
+fn the_answer_names_the_run_of_its_alert() {
+    let (mut a, _) = running();
+    a.update(event(row(RunId(9), 1, WorkerStatus::Failed)));
+    a.update(event(halted(RunId(9), "boom")));
+    assert_eq!(
+        a.update(key('r')),
+        vec![Effect::OrchDecide {
+            pane: chat_id(),
+            run: RunId(9),
+            choice: UserChoice::Retry,
+        }]
+    );
+}
+
+// never fail silently: a retry the run manager could not apply brings the
+// alert back, says why and leaves the keys working.
+#[test]
+fn a_declined_retry_shows_why_and_the_alert_answers_again() {
+    let (mut a, _) = alerted();
+    assert_eq!(a.update(key('r')), vec![decide(UserChoice::Retry)]);
+    assert_eq!(alert(&a), None);
+    a.update(event(OrchestraEvent::Declined {
+        run: RUN,
+        worker: WorkerId(1),
+        class: ErrorClass::Conflict,
+        text: "409 conflict: session busy".into(),
+        reason: "could not seal the previous error".into(),
+    }));
+    let text = a.chat_guidance(chat_id()).unwrap_or_default();
+    assert!(
+        text.ends_with(
+            "retry failed: could not seal the previous error \u{b7} r try again \u{b7} c/Esc cancel"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("409 conflict: session busy"), "{text}");
+    let_go();
+    assert_eq!(a.update(key('r')), vec![decide(UserChoice::Retry)]);
+    assert_eq!(alert(&a), None);
+    assert!(
+        !a.chat_guidance(chat_id())
+            .unwrap_or_default()
+            .contains("retry failed")
+    );
+}
+
+// An answer dropped by the run manager (the run ended or was replaced) is
+// said in the transcript; the alert of the run the pane has now stays.
+#[test]
+fn a_dropped_answer_is_said_and_touches_no_other_run() {
+    let (mut a, _) = alerted();
+    let before = alert(&a).cloned();
+    a.update(event(OrchestraEvent::Dropped { run: RunId(3) }));
+    assert_eq!(alert(&a).cloned(), before, "the live alert stays");
+    assert_eq!(chat_of(&a).orch_run(), Some(RUN));
+    let said = chat_of(&a)
+        .entries()
+        .iter()
+        .any(|e| matches!(e, Entry::System(line) if line == "the run already moved on: your answer was not applied"));
+    assert!(said, "{:?}", chat_of(&a).entries());
 }

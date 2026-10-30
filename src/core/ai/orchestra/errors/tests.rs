@@ -249,12 +249,14 @@ fn a_rejected_long_window_from_the_claude_decoder_is_a_quota() {
 }
 
 #[test]
-fn a_rejected_short_window_is_not_a_quota() {
-    let text = concat!(
-        "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"one_minute\"}}\n",
-        "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"boom\"}\n",
-    );
-    assert_eq!(class_of("claude", text), ErrorClass::Other);
+fn a_rejected_short_window_is_a_rate_limit_not_a_quota() {
+    for window in ["one_minute", "one_hour", "ten_second"] {
+        let text = format!(
+            "{{\"type\":\"rate_limit_event\",\"rate_limit_info\":{{\"status\":\"rejected\",\"rateLimitType\":\"{window}\"}}}}\n\
+             {{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"boom\"}}\n"
+        );
+        assert_eq!(class_of("claude", &text), ErrorClass::RateLimit, "{window}");
+    }
 }
 
 #[test]

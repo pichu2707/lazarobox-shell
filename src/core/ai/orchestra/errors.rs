@@ -70,7 +70,7 @@ fn class_of(text: &str) -> ErrorClass {
     let any = |words: &[&str]| words.iter().any(|word| lower.contains(word));
     if any(QUOTA_STRONG) || long_window(&lower) {
         ErrorClass::Quota
-    } else if has_code(&lower, "429") || any(RATE_LIMIT) {
+    } else if has_code(&lower, "429") || any(RATE_LIMIT) || lower.contains(WINDOW_MARK) {
         ErrorClass::RateLimit
     } else if has_code(&lower, "409") || any(CONFLICT) || lower.starts_with("conflict:") {
         ErrorClass::Conflict
@@ -86,7 +86,8 @@ fn class_of(text: &str) -> ErrorClass {
 }
 
 /// Whether the claude decoder's `(limit window: X)` names a window of hours
-/// or days: a spent allowance, not a burst.
+/// or days: a spent allowance, not a burst. Any other rejected window is a
+/// rate limit (checked after the quota wording).
 fn long_window(text: &str) -> bool {
     text.split_once(WINDOW_MARK).is_some_and(|(_, rest)| {
         let window = rest.split(')').next().unwrap_or("");

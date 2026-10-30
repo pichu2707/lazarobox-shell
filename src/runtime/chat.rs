@@ -1111,13 +1111,14 @@ impl Chats {
         self.waits.end_pane(pane);
     }
 
-    /// The user's answer to the failure that halted the run of `pane`
-    /// (`RunManager::decide`). `false` when no failure waits there (the run
-    /// ended meanwhile, or no run manager is attached): nothing changes.
-    pub fn decide_run(&self, pane: PaneId, choice: UserChoice) -> bool {
+    /// The user's answer to the failure that halted run `run` of `pane`
+    /// (`RunManager::decide`). `false` when it was not applied (the run
+    /// ended or was replaced, no failure waits, or no run manager is
+    /// attached): nothing changes.
+    pub fn decide_run(&self, pane: PaneId, run: RunId, choice: UserChoice) -> bool {
         self.orchestra
             .as_ref()
-            .is_some_and(|orchestra| orchestra.decide(pane, choice).is_ok())
+            .is_some_and(|orchestra| orchestra.decide(pane, run, choice).is_ok())
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been

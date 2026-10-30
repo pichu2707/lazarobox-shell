@@ -31,7 +31,7 @@ use crate::core::{
             port::{MemCmd, MemReply, Reason},
         },
         ollama_lib::{self, Pull},
-        orchestra::{event::OrchestraEvent, run::UserChoice},
+        orchestra::{RunId, event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -346,10 +346,11 @@ pub enum Effect {
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
     /// The user's answer to the failure alert of the run of chat `pane`
-    /// (agent-orchestrator, Failure stops the run). A run that is not halted
-    /// any more ignores it.
+    /// (agent-orchestrator, Failure stops the run), for run `run`. A run that
+    /// ended, was replaced or is not halted any more drops it, and says so.
     OrchDecide {
         pane: PaneId,
+        run: RunId,
         choice: UserChoice,
     },
     /// The user's answer to the tool call `call` of turn `turn` of chat `pane`

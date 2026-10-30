@@ -1634,9 +1634,9 @@ impl Panes {
                     }
                 }
                 // Returns at once: a run that is not halted any more ignores it.
-                Effect::OrchDecide { pane, choice } => {
+                Effect::OrchDecide { pane, run, choice } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide_run(pane, choice);
+                        chats.decide_run(pane, run, choice);
                     }
                 }
                 // Both return at once; the answer lands on a waiting call, or
