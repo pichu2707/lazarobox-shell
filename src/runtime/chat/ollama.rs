@@ -18,13 +18,16 @@ use crate::{
     core::ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{ToolExchange, ToolRound, ollama_round_body, openai_round_body},
+            adapters::{
+                ToolExchange, ToolRound, offered_names, ollama_round_body, openai_round_body,
+            },
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
             prompts,
             stream::{
                 CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
                 ToolRequest,
             },
+            text_call,
         },
         tools::{
             mcp::refusal_text,
@@ -194,6 +197,10 @@ async fn rounds(
     // every turn (the notice is deduped by the chat); a per-pane memory is a
     // follow-up.
     let mut offer = true;
+    // A tool call written as text gets one reminder a turn (local-model-writes
+    // D3); the text is never run.
+    let offered = offered_names(&tooled);
+    let mut reminded = false;
     let mut requests = 0;
     let limit = max_rounds(request.families);
     while requests < limit && !tx.is_closed() {
@@ -239,8 +246,27 @@ async fn rounds(
         requests += 1;
         // Without tools, whatever calls the reply holds are not run.
         if reply.calls.is_empty() || !offer {
-            let _ = tx.send(StreamEvent::Done(finish)).await;
-            return;
+            let written = (offer && !reminded && requests < limit)
+                .then(|| text_call::written_call(&reply.text, &offered))
+                .flatten();
+            let Some(name) = written else {
+                let _ = tx.send(StreamEvent::Done(finish)).await;
+                return;
+            };
+            reminded = true;
+            let _ = tx
+                .send(StreamEvent::Notice(text_call::TEXT_CALL_NOTICE.into()))
+                .await;
+            if !reply.text.is_empty() {
+                gap = !reply.text.ends_with('\n');
+            }
+            history.push(ToolRound {
+                thinking: reply.thinking,
+                text: reply.text,
+                exchanges: Vec::new(),
+                nudge: Some(text_call::reminder(&name)),
+            });
+            continue;
         }
         if requests == limit {
             break;
@@ -256,6 +282,7 @@ async fn rounds(
             thinking: reply.thinking,
             text: reply.text,
             exchanges,
+            nudge: None,
         });
     }
     if !tx.is_closed() {

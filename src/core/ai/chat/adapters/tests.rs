@@ -1191,6 +1191,7 @@ fn tools_on_adds_the_registry_as_function_tools() {
 #[test]
 fn a_follow_up_carries_the_assistant_tool_calls_and_the_tool_results() {
     let rounds = [ToolRound {
+        nudge: None,
         thinking: None,
         text: "Looking.".into(),
         exchanges: vec![
@@ -1235,6 +1236,7 @@ fn a_follow_up_carries_the_assistant_tool_calls_and_the_tool_results() {
 #[test]
 fn a_follow_up_without_tools_still_sends_the_tool_messages_but_no_tools_key() {
     let rounds = [ToolRound {
+        nudge: None,
         thinking: None,
         text: String::new(),
         exchanges: vec![ToolExchange {
@@ -1253,6 +1255,7 @@ fn a_follow_up_without_tools_still_sends_the_tool_messages_but_no_tools_key() {
 #[test]
 fn thinking_is_echoed_on_the_assistant_message_only_when_present() {
     let round = |thinking: Option<&str>| ToolRound {
+        nudge: None,
         thinking: thinking.map(Into::into),
         text: "t".into(),
         exchanges: vec![ToolExchange {
@@ -1272,6 +1275,7 @@ fn thinking_is_echoed_on_the_assistant_message_only_when_present() {
 #[test]
 fn ids_and_indexes_are_echoed_when_present_and_absent_otherwise() {
     let round = |id: Option<&str>, index: Option<u64>| ToolRound {
+        nudge: None,
         thinking: None,
         text: String::new(),
         exchanges: vec![ToolExchange {
@@ -1562,6 +1566,7 @@ fn pin_no_rounds_with_a_system_prompt_and_a_memory_block() {
 #[test]
 fn pin_one_round_without_ids_index_or_thinking() {
     let rounds = [ToolRound {
+        nudge: None,
         thinking: None,
         text: "Looking.".into(),
         exchanges: vec![pin_exchange(
@@ -1581,6 +1586,7 @@ fn pin_one_round_without_ids_index_or_thinking() {
 #[test]
 fn pin_one_round_with_ids_index_and_thinking() {
     let rounds = [ToolRound {
+        nudge: None,
         thinking: Some("hm".into()),
         text: String::new(),
         exchanges: vec![
@@ -1630,6 +1636,7 @@ fn exchange(name: &str, id: Option<&str>, arguments: Value, result: &str) -> Too
 fn the_openai_follow_up_sends_string_arguments_and_matching_call_ids() {
     let rounds = [
         ToolRound {
+            nudge: None,
             thinking: Some("hm".into()),
             text: String::new(),
             exchanges: vec![
@@ -1643,6 +1650,7 @@ fn the_openai_follow_up_sends_string_arguments_and_matching_call_ids() {
             ],
         },
         ToolRound {
+            nudge: None,
             thinking: None,
             text: "Looking.".into(),
             exchanges: vec![exchange("read_file", None, json!({"path": "/x"}), "text")],
@@ -1674,6 +1682,7 @@ fn the_openai_follow_up_sends_string_arguments_and_matching_call_ids() {
 #[test]
 fn the_openai_body_never_echoes_reasoning_or_sets_call_options() {
     let round = ToolRound {
+        nudge: None,
         thinking: Some("secret reasoning".into()),
         text: "t".into(),
         exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
@@ -1713,6 +1722,7 @@ fn the_openai_body_offers_the_same_tools_as_ollama_and_tools_off_is_tool_less() 
     assert_eq!(on["model"], "llama3:8b");
     assert_eq!(openai_round_body(&req, &[], false), ollama_body(&req));
     let rounds = [ToolRound {
+        nudge: None,
         thinking: None,
         text: String::new(),
         exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
@@ -1736,6 +1746,7 @@ fn the_openai_follow_up_equals_the_request_recorded_against_b11935() {
         "Find the directory named src in my home using a tool.",
     )];
     let rounds = [ToolRound {
+        nudge: None,
         thinking: None,
         text: String::new(),
         exchanges: vec![exchange(
@@ -1782,6 +1793,7 @@ fn call_ids(rounds: &[ToolRound]) -> (Vec<String>, Vec<String>) {
 
 fn round_of(ids: &[Option<&str>]) -> ToolRound {
     ToolRound {
+        nudge: None,
         thinking: None,
         text: String::new(),
         exchanges: ids
@@ -1828,4 +1840,33 @@ fn the_openai_assistant_content_is_the_text_or_an_empty_string() {
     let n = assistants.len();
     assert_eq!(assistants[n - 2]["content"], json!("Looking."));
     assert_eq!(assistants[n - 1]["content"], json!(""));
+}
+
+// local-model-writes D3: a reminder round has no calls; its answer goes back
+// as plain assistant text and the reminder follows as a user message, on
+// both wires.
+#[test]
+fn a_reminder_round_sends_the_answer_then_the_reminder() {
+    let request = request("");
+    let rounds = [ToolRound {
+        thinking: None,
+        text: "{\"name\": \"list_dir\"}".into(),
+        exchanges: Vec::new(),
+        nudge: Some("call the tool".into()),
+    }];
+    for body in [
+        ollama_round_body(&request, &rounds, true),
+        openai_round_body(&request, &rounds, true),
+    ] {
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let n = messages.len();
+        assert_eq!(messages[n - 2]["role"], "assistant");
+        assert_eq!(messages[n - 2]["content"], "{\"name\": \"list_dir\"}");
+        assert!(messages[n - 2].get("tool_calls").is_none(), "{body}");
+        assert_eq!(
+            messages[n - 1],
+            json!({"role": "user", "content": "call the tool"})
+        );
+    }
 }

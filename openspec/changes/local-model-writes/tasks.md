@@ -16,7 +16,7 @@
 
 ## 3. D3: one reminder for a tool call written as text (Ollama, llama.cpp)
 
-- [ ] 3.1 RED: an answer with a fenced or bare JSON call to an offered tool gets one more request in the same turn with the reminder, and a system line.
-- [ ] 3.2 RED: a second text call in the same turn ends the turn; an answer naming a tool without `arguments`, or a tool not offered, ends the turn; the reminder counts toward the cap; nothing is executed.
-- [ ] 3.3 Add a non-tool follow-up message to `ToolRound` for both request profiles.
-- [ ] 3.4 Docs: README "Tools with Ollama", chat-engines spec.
+- [x] 3.1 RED: an answer with a fenced or bare JSON call to an offered tool gets one more request in the same turn with the reminder, and a system line.
+- [x] 3.2 RED: a second text call in the same turn ends the turn; an answer naming a tool without `arguments`, or a tool not offered, ends the turn; the reminder counts toward the cap; nothing is executed.
+- [x] 3.3 Add a non-tool follow-up message to `ToolRound` for both request profiles.
+- [x] 3.4 Docs: README "Tools with Ollama", chat-engines spec.

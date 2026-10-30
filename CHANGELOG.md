@@ -12,6 +12,11 @@ baseline.
 
 ### Changed
 
+- With Ollama and llama.cpp, a model that writes a tool call as JSON text
+  instead of making it is asked once, in the same turn, to call the tool. The
+  chat shows `the model wrote a tool call as text; it was asked to call the
+  tool`. The text is never run, and the extra request counts toward the
+  turn's limit.
 - A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
   now names the chat's folder, so a model learns where its paths start:
   `path not available (paths are relative to the chat's folder ~/proj)`. The
