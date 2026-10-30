@@ -2,10 +2,10 @@
 
 ## 1. D1: open the review when a turn ends with staged changes
 
-- [ ] 1.1 RED: a turn that ends with `Done` and a staged, unproposed batch opens the batch review (same view, gate and arming as an orphan review).
-- [ ] 1.2 RED: a cancelled, timed-out or failed turn, a pending approval, or a worker batch keeps the orphan badge and opens nothing.
-- [ ] 1.3 Record how the turn ended on the chat; emit `Effect::BatchReview(pane)` from `App::sync_batches` when the badge turns from `staged` to `orphan` after a `Done`.
-- [ ] 1.4 Docs: README "Huérfanos", code-write spec "Orphan, close and quit" and the orphan definition.
+- [x] 1.1 RED: a turn that ends with `Done` and a staged, unproposed batch opens the batch review (same view, gate and arming as an orphan review).
+- [x] 1.2 RED: a cancelled, timed-out or failed turn, a pending approval, or a worker batch keeps the orphan badge and opens nothing.
+- [x] 1.3 Record how the turn ended on the chat; emit `Effect::BatchReview(pane)` from `App::sync_batches` when the badge turns from `staged` to `orphan` after a `Done`.
+- [x] 1.4 Docs: README "Huérfanos", code-write spec "Orphan, close and quit" and the orphan definition.
 
 ## 2. D2: write refusals that name the chat's folder
 
