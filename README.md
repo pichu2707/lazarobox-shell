@@ -643,7 +643,7 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 
 | Key       | Action                                                                 |
 | :-------- | :--------------------------------------------------------------------- |
-| `y`       | Types the command into the target pane. **It never presses Enter.**   |
+| `y`       | Types the command into the target pane. **It never presses Enter.** (A model's command in `run` mode is run instead, see below.) |
 | `n` / `Esc` | Declines. Nothing is written.                                        |
 | `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
 | `Ctrl+C`  | Cancels the answer in progress and declines.                           |
@@ -666,7 +666,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below, where a command you approve with `y` also runs): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -687,13 +687,21 @@ Residual risks (design D18), so you can decide if auto is for you:
 
 #### Modo `run`
 
-En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe; tú pulsas Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando pide confirmación (`y run it · n cancel · p next pane`), y con `y` lazarobox lo escribe, pulsa Enter, espera a que termine y devuelve su salida al modelo, igual que un comando que corre solo: `y` es tu permiso. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
 ![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
 ![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
 
-![mkdir pide confirmación; con y solo se escribe en el panel y tú pulsas Enter](docs/assets/run-mkdir.gif)
+**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, como mucho 10 s de espera y la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter, como en `ask`, y la línea del chat dice por qué (`not run: …`), cuando:
+
+- el comando ocupa varias líneas (`a multi-line command is typed, not run`);
+- no se puede leer el directorio del panel, como en macOS (`the pane's directory cannot be read on this system`);
+- el panel ya ejecuta otro comando, o tiene una línea a medio escribir que el Enter ejecutaría con él;
+- el locale no es UTF-8 y el comando tiene caracteres no ASCII;
+- al escribir, el panel ya no está en el mismo directorio o ejecuta un programa.
+
+La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada del modelo) solo escribe, también en `run`. En `ask` y `auto`, `y` sigue sin pulsar Enter.
 
 **Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
 
@@ -1002,7 +1010,7 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
 
-- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
+- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` sigue el modo de aprobación como con cualquier motor (en `run`, un comando seguro dentro de la carpeta corre solo y otro corre tras tu `y`).
 - Un turno hace como máximo 8 peticiones (24 si hay activa alguna familia de `[ai.tools]`: búsqueda, escritura...). Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
 - Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
 - Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.

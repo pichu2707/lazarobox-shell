@@ -59,16 +59,23 @@ pub const ANOTHER_PENDING: &str = "another approval is pending";
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
 
-/// The outcome line of a command typed into pane `number`.
-pub fn run_sent_line(number: usize) -> String {
-    format!("sent to pane {number}; press Enter there to run it")
+/// The outcome line of a command typed into pane `number`, with why it was
+/// not run when `y` in `run` mode could not run it.
+pub fn run_sent_line(number: usize, not_run: Option<&str>) -> String {
+    let line = format!("sent to pane {number}; press Enter there to run it");
+    match not_run {
+        Some(why) => format!("{line} (not run: {why})"),
+        None => line,
+    }
 }
 
 /// Whether `line` is the outcome line of a run action. Such a line is shown
 /// but never stored or sent, and it does not hide the block it came from.
 pub fn is_run_outcome(line: &str) -> bool {
     line == RUN_CANCELLED
-        || (line.starts_with("sent to pane ") && line.ends_with("; press Enter there to run it"))
+        || (line.starts_with("sent to pane ")
+            && (line.ends_with("; press Enter there to run it")
+                || line.contains("; press Enter there to run it (not run: ")))
 }
 
 /// What the user is asked to allow.
@@ -472,6 +479,9 @@ pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// or the turn is not free. None of them is the model's doing.
 pub const RUNNING: &str = "a command is still running in the pane";
 pub const HALF_TYPED: &str = "the pane has a half-typed line";
+/// Why `y` in `run` mode types a command instead of running it: one Enter
+/// cannot end a multi-line paste, and its output has no single echo row.
+pub const MULTI_LINE: &str = "a multi-line command is typed, not run";
 pub const FOCUSED: &str = "the pane has the focus";
 pub const HIDDEN: &str = "the chat's tab is not shown";
 pub const TOO_MANY: &str = "too many commands this turn";
@@ -738,6 +748,8 @@ pub struct ApprovalPrompt {
 
 /// The keys of a run prompt.
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
+/// The keys of a model's run prompt in `run` mode, where `y` runs it.
+pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
 /// The keys of a search prompt.
@@ -859,6 +871,21 @@ impl Approvals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A typed command's line, with or without why `y` did not run it, is an
+    // outcome: shown, never stored or sent.
+    #[test]
+    fn a_sent_line_with_the_reason_is_still_a_run_outcome() {
+        let plain = run_sent_line(1, None);
+        let why = run_sent_line(1, Some(NO_CWD));
+        assert_eq!(plain, "sent to pane 1; press Enter there to run it");
+        assert_eq!(
+            why,
+            "sent to pane 1; press Enter there to run it (not run: the pane's directory cannot be read on this system)"
+        );
+        assert!(is_run_outcome(&plain) && is_run_outcome(&why));
+        assert!(!is_run_outcome("sent to pane 1 (not run: x)"));
+    }
 
     const FREE: AutoCtx = AutoCtx {
         typed_this_turn: 0,

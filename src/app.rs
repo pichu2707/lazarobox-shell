@@ -8245,6 +8245,8 @@ mod app_tests {
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;
+    /// `y` in `run` mode runs a model's command; elsewhere it types.
+    mod tool_run_y;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;
