@@ -415,6 +415,9 @@ impl Run {
                 true
             }
         };
+        if reresolve {
+            self.reresolve_queued(now, worker);
+        }
         let slot = &self.slots[index(worker)];
         // A refused worker has no engine to reuse: it is resolved again.
         let refusal = if reresolve || slot.status == WorkerStatus::Refused {
@@ -429,6 +432,27 @@ impl Run {
         self.enqueue(now, worker, refusal, true);
         self.reopen(now);
         Ok(Vec::new())
+    }
+
+    /// The queued workers of `failed`'s task take the roster of a relaunch,
+    /// so a run override reaches workers spawned before it; an engine that
+    /// cannot run refuses them like the relaunched worker. Only `Queued`
+    /// workers: a worker of the task that is `Running`, already `Refused` or
+    /// in the `pending` list keeps the spec it was spawned with.
+    fn reresolve_queued(&mut self, now: Instant, failed: WorkerId) {
+        let task = self.slots[index(failed)].spec.task;
+        let queued: Vec<WorkerId> = self.queue.iter().copied().collect();
+        for id in queued {
+            let slot = &self.slots[index(id)];
+            if slot.spec.task != task {
+                continue;
+            }
+            let (spec, refusal) = self.resolve(task, &slot.spec.prompt.clone());
+            self.slots[index(id)].spec = spec;
+            if let Some(reason) = refusal {
+                self.enqueue(now, id, Some(reason), false);
+            }
+        }
     }
 
     /// After a decision: halts again on the oldest unresolved failure, else
