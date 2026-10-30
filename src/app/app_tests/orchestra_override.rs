@@ -19,6 +19,18 @@ use crate::core::ai::{
     },
 };
 
+/// What the run's overrides give `task`, on an empty menu.
+fn picked(a: &App, task: Task) -> crate::core::ai::config::Assignment {
+    let over = chat_of(a).orch_overrides().expect("an override");
+    over.apply(&AiConfig::default()).get(task).clone()
+}
+
+/// Whether the transcript says exactly `line`.
+fn said(a: &App, line: &str) -> bool {
+    let system = |e: &crate::core::ai::chat::Entry| matches!(e, crate::core::ai::chat::Entry::System(l) if l == line);
+    chat_of(a).entries().iter().any(system)
+}
+
 fn guidance(a: &App) -> String {
     a.chat_guidance(chat_id()).unwrap_or_default()
 }
@@ -165,11 +177,7 @@ fn a_choice_relaunches_the_worker_on_the_override_and_saves_nothing() {
     assert_eq!(alert(&a), None, "answered");
     assert_eq!(a.ai(), &before, "the menu configuration is untouched");
     assert!(!guidance(&a).contains("Model for"), "the picker is closed");
-    let over = chat_of(&a).orch_overrides().expect("an override");
-    assert_eq!(
-        over.get(Task::Review).and_then(|x| x.engine.as_deref()),
-        Some("claude")
-    );
+    assert_eq!(picked(&a, Task::Review).engine.as_deref(), Some("claude"));
 }
 
 // agent-orchestrator / Override ends with the run: a new orchestrator turn
@@ -181,7 +189,20 @@ fn a_new_turn_before_ended_starts_from_the_menu_values() {
     override_review_to_claude(&mut a);
     let roster = next_turn_roster(&mut a, turn);
     assert_eq!(roster.get(Task::Review), &Availability::Unassigned);
+    // The old run lives until the new one speaks (its start can fail).
+    assert!(chat_of(&a).orch_overrides().is_some());
+    a.update(event(OrchestraEvent::Worker(WorkerRow {
+        run: RunId(8),
+        ..worker_of(kind_row(1, Task::Review, "claude", None))
+    })));
     assert!(chat_of(&a).orch_overrides().is_none());
+}
+
+fn worker_of(event: OrchestraEvent) -> WorkerRow {
+    match event {
+        OrchestraEvent::Worker(row) => row,
+        other => panic!("a worker row: {other:?}"),
+    }
 }
 
 /// A worker row of `kind` on `engine`.
@@ -245,23 +266,18 @@ fn the_end_of_another_run_keeps_the_override() {
 }
 
 // agent-orchestrator / Override shown: the rows of the affected workers carry
-// the marker, an earlier row does not, and the alert names the override.
+// the marker, an earlier row does not.
 #[test]
-fn the_override_is_marked_on_later_rows_and_named_in_the_alert() {
+fn the_override_is_marked_on_later_rows() {
     let (mut a, _) = alerted();
     override_review_to_claude(&mut a);
-    let picked = (chat_of(&a).orch_overrides())
-        .and_then(|over| over.get(Task::Review).cloned())
-        .expect("review");
+    let pick = picked(&a, Task::Review);
     a.update(event(kind_row(
         2,
         Task::Review,
-        picked.engine.as_deref().expect("an engine"),
-        picked.model.as_deref(),
+        pick.engine.as_deref().expect("an engine"),
+        pick.model.as_deref(),
     )));
-    a.update(event(halted(RUN, "boom")));
-    let text = guidance(&a);
-    assert!(text.contains("override: review claude>"), "{text}");
     let marked: Vec<bool> = chat_of(&a)
         .entries()
         .iter()
@@ -320,14 +336,13 @@ fn a_row_still_on_the_old_engine_is_not_marked() {
     let (mut a, _) = alerted();
     a.update(event(kind_row(2, Task::Review, "codex", Some("gpt-5"))));
     override_review_to_claude(&mut a);
-    let over = chat_of(&a).orch_overrides().expect("an override").clone();
-    let picked = over.get(Task::Review).cloned().expect("review");
+    let pick = picked(&a, Task::Review);
     a.update(event(kind_row(2, Task::Review, "codex", Some("gpt-5"))));
     a.update(event(kind_row(
         1,
         Task::Review,
-        picked.engine.as_deref().expect("an engine"),
-        picked.model.as_deref(),
+        pick.engine.as_deref().expect("an engine"),
+        pick.model.as_deref(),
     )));
     let marks: Vec<(u32, bool)> = chat_of(&a)
         .entries()
@@ -340,10 +355,10 @@ fn a_row_still_on_the_old_engine_is_not_marked() {
     assert_eq!(marks, [(1, true), (2, false)]);
 }
 
-// Review W3: a note of the picker neither relabels the alert as `try again`
-// nor erases a retry-failed note.
+// Review W3: what the picker says is a line of the transcript, so it neither
+// relabels the alert as `try again` nor erases a retry-failed note.
 #[test]
-fn a_picker_note_does_not_relabel_the_alert_or_erase_a_failed_retry() {
+fn a_picker_line_does_not_relabel_the_alert_or_erase_a_failed_retry() {
     let (mut a, _) = super::orchestra_run::running();
     a.update(event(OrchestraEvent::Halted {
         run: RUN,
@@ -352,10 +367,9 @@ fn a_picker_note_does_not_relabel_the_alert_or_erase_a_failed_retry() {
         text: "boom".into(),
     }));
     a.update(key('m'));
+    assert!(said(&a, "cannot change: that worker is not shown any more"));
     let text = guidance(&a);
-    assert!(text.contains("cannot change"), "{text}");
     assert!(text.contains("r retry"), "not relabeled: {text}");
-    assert!(!text.contains("try again"), "{text}");
     a.update(key('r'));
     a.update(event(OrchestraEvent::Declined {
         run: RUN,
@@ -369,7 +383,6 @@ fn a_picker_note_does_not_relabel_the_alert_or_erase_a_failed_retry() {
     let text = guidance(&a);
     assert!(text.contains("retry failed: could not seal"), "{text}");
     assert!(text.contains("r try again"), "{text}");
-    assert!(text.contains("cannot change"), "{text}");
 }
 
 // Review W4: the picker says what Esc does.
@@ -392,9 +405,8 @@ fn an_unavailable_choice_is_refused_at_pick_time() {
     assert!(chat_of(&a).orch_overrides().is_none(), "no override");
     assert!(alert(&a).is_some(), "the user stays in the alert");
     assert_eq!(a.ai(), &before);
-    let text = guidance(&a);
-    assert!(text.starts_with("run paused:"), "{text}");
-    assert!(text.contains("engine not available"), "{text}");
+    assert!(guidance(&a).starts_with("run paused:"), "{}", guidance(&a));
+    assert!(said(&a, "engine not available"));
     let_go();
     assert_eq!(
         a.update(key('r')),
@@ -430,4 +442,139 @@ fn a_repeated_m_does_nothing() {
     );
     assert!(chat_of(&a).orch_picker().is_none());
     assert_eq!(composer(&a), "");
+}
+
+fn dropped() -> AppEvent {
+    event(OrchestraEvent::Dropped { run: RUN })
+}
+
+// Review fix 2 (C2 edge): a new turn whose run may never start leaves the old
+// run's overrides alone; the new run still starts from the menu values, and
+// the overrides go once the new run speaks.
+#[test]
+fn a_new_turn_keeps_the_old_overrides_until_its_own_run_speaks() {
+    let (mut a, turn) = alerted();
+    override_review_to_claude(&mut a);
+    a.update(event(kind_row(2, Task::Code, "codex", Some("gpt-5"))));
+    a.update(event(OrchestraEvent::Halted {
+        run: RUN,
+        worker: WorkerId(2),
+        class: ErrorClass::Conflict,
+        text: "boom".into(),
+    }));
+    let roster = next_turn_roster(&mut a, turn);
+    assert_eq!(roster.get(Task::Review), &Availability::Unassigned);
+    assert!(
+        chat_of(&a).orch_overrides().is_some(),
+        "the old run is live"
+    );
+    // The new turn failed to start: the old run's relaunch keeps the pick.
+    let_go();
+    a.update(key('p'));
+    to(&mut a, "claude");
+    a.update(plain(KeyCode::Enter));
+    let_go();
+    let roster = relaunch_roster(&a.update(plain(KeyCode::Enter)));
+    assert!(claude_ready(&roster, Task::Review), "the first pick stays");
+    // The new run speaks: the old overrides are gone.
+    a.update(event(OrchestraEvent::Worker(WorkerRow {
+        run: RunId(8),
+        ..worker_of(kind_row(1, Task::Review, "codex", None))
+    })));
+    assert!(chat_of(&a).orch_overrides().is_none());
+}
+
+// Review fix 2: a pick the run manager dropped leaves no phantom override;
+// one it acknowledged stays.
+#[test]
+fn a_dropped_pick_leaves_no_override_and_an_acknowledged_one_stays() {
+    let (mut a, _) = alerted();
+    override_review_to_claude(&mut a);
+    a.update(dropped());
+    assert!(chat_of(&a).orch_overrides().is_none(), "phantom removed");
+    // Acknowledged by the relaunched worker's row, then a second pick dropped.
+    let (mut a, _) = alerted();
+    override_review_to_claude(&mut a);
+    a.update(event(kind_row(1, Task::Review, "claude", None)));
+    a.update(event(halted(RUN, "boom")));
+    let_go();
+    a.update(key('p'));
+    to(&mut a, "claude");
+    a.update(plain(KeyCode::Enter));
+    let_go();
+    a.update(plain(KeyCode::Enter));
+    a.update(dropped());
+    assert!(chat_of(&a).orch_overrides().is_some(), "the first stays");
+    // An old dropped answer touches nothing.
+    a.update(dropped());
+    assert!(chat_of(&a).orch_overrides().is_some());
+}
+
+// Review W5 gap: an engine the detection does not offer (codex is not
+// installed here) cannot be picked: no effect, no override, and the user is
+// told why.
+#[test]
+fn an_engine_that_is_not_installed_cannot_be_picked() {
+    let (mut a, _) = alerted();
+    a.update(key('p'));
+    to(&mut a, "codex");
+    a.update(plain(KeyCode::Enter));
+    let_go();
+    assert_eq!(a.update(plain(KeyCode::Enter)), vec![], "no relaunch");
+    assert!(chat_of(&a).orch_overrides().is_none());
+    assert!(alert(&a).is_some(), "the user stays in the alert");
+    assert!(
+        said(&a, "engine not available"),
+        "{:?}",
+        chat_of(&a).entries()
+    );
+}
+
+// Review fix 2: an engine-only pick that is the menu's own engine is no
+// override, so its rows carry no marker.
+#[test]
+fn an_engine_only_pick_equal_to_the_menu_engine_is_not_marked() {
+    let (mut a, _) = alerted();
+    a.ai.set(
+        Task::Review,
+        crate::core::ai::config::Assignment {
+            engine: Some("codex".into()),
+            model: None,
+        },
+    );
+    let chat = a
+        .panes
+        .get_mut(&chat_id())
+        .and_then(PaneState::chat_mut)
+        .expect("a chat");
+    chat.override_task(
+        RUN,
+        Task::Review,
+        crate::core::ai::config::Assignment {
+            engine: Some("codex".into()),
+            model: None,
+        },
+    );
+    a.update(event(kind_row(2, Task::Review, "codex", Some("gpt-5"))));
+    let marks: Vec<bool> = chat_of(&a)
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            crate::core::ai::chat::Entry::Worker(row) => Some(row.overridden),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marks, [false, false]);
+}
+
+// Review fix 2: the alert footer wraps on a narrow pane, none of it is cut.
+#[test]
+fn the_alert_footer_wraps_on_a_narrow_pane() {
+    let (mut a, _) = alerted();
+    a.update(AppEvent::Resize { cols: 40, rows: 25 });
+    let shown = super::orchestra_toggle::screen_at(&a, 40, 25).replace('\u{2502}', " ");
+    let words: std::collections::HashSet<&str> = shown.split_whitespace().collect();
+    for word in guidance(&a).split_whitespace() {
+        assert!(words.contains(word), "`{word}` cut off:\n{shown}");
+    }
 }

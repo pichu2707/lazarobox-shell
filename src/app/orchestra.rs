@@ -29,17 +29,15 @@ const TOOLS_OFF: &str =
 const NOTICE: &str = "Providers recommend API keys for automation; \
      consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
 
-/// The keys of the failure alert: `r` retries, `c` or Esc cancels.
+/// The keys of the failure alert after `r retry`: `m` and `p` open the
+/// detached picker, `c` or Esc cancels.
 const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
-/// Said when the run manager dropped an answer: its run is over.
-/// Said when a picker is asked for a worker whose row is gone.
-const NO_ROW: &str = "cannot change: that worker is not shown any more";
-/// Said when the engine or model just picked could not run.
-const NOT_AVAILABLE: &str = "engine not available";
+/// Said when the run manager is not attached: the answer was not applied.
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
+/// Said when the run manager dropped an answer: its run is over.
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
@@ -90,9 +88,11 @@ impl App {
         match event {
             OrchestraEvent::Worker(mut row) => {
                 chat.set_orch_run(Some(row.run));
-                row.overridden = chat
-                    .orch_overrides()
-                    .is_some_and(|over| over.is_on(row.kind, &row.engine, row.model.as_deref()));
+                chat.keep_override();
+                let menu = self.ai.resolve(row.kind).0.engine;
+                row.overridden = chat.orch_overrides().is_some_and(|over| {
+                    over.is_on(row.kind, &row.engine, row.model.as_deref(), menu.as_deref())
+                });
                 chat.worker_row(row);
             }
             OrchestraEvent::Halted {
@@ -102,6 +102,7 @@ impl App {
                 text,
             } => {
                 chat.set_orch_run(Some(run));
+                chat.keep_override();
                 chat.drop_orch_alert();
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
@@ -120,7 +121,7 @@ impl App {
             } => {
                 chat.set_orch_run(Some(run));
                 chat.drop_orch_alert();
-                chat.set_orch_note(OrchNote::RetryFailed(reason));
+                chat.set_orch_note(Some(OrchNote::RetryFailed(reason)));
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
                     worker,
@@ -132,11 +133,15 @@ impl App {
             // Said only when the pane has no other run, so the line is not
             // read as part of a newer one.
             OrchestraEvent::Dropped { run } => {
+                chat.undo_override();
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(MOVED_ON.to_owned());
                 }
             }
-            OrchestraEvent::Unavailable => chat.push_system_line(NO_ORCHESTRA.to_owned()),
+            OrchestraEvent::Unavailable => {
+                chat.undo_override();
+                chat.push_system_line(NO_ORCHESTRA.to_owned());
+            }
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
@@ -167,7 +172,8 @@ impl App {
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
         let alert = chat.orch_alert()?;
         // The open picker keeps every key but Ctrl+C: none reaches the hidden
-        // composer.
+        // composer. A held Enter or Esc is ignored on purpose (the keys line
+        // stays visible), so the picker needs no notice for it.
         if chat.orch_picker().is_some() {
             let cancel = key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL;
             return (!cancel).then(|| self.on_failure_picker_key(id, key, repeat));
@@ -206,24 +212,17 @@ impl App {
         }])
     }
 
-    /// The roster of a request: the menu's assignments with the pane's run
-    /// overrides on top, never saved.
-    ///
-    /// The menu part is read now: a menu save made during a run changes the
-    /// rosters of later relaunches for the tasks the user did not override.
-    fn roster(&self, id: PaneId) -> Roster {
-        let overrides = self
-            .panes
-            .get(&id)
-            .and_then(PaneState::chat_state)
-            .and_then(|chat| chat.orch_overrides());
-        let config = overrides.map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
+    /// The roster of `config`, as the menu or an override has it, never
+    /// saved. The menu part is read now: a menu save made during a run
+    /// changes the rosters of later relaunches for the tasks the user did not
+    /// override.
+    fn roster(&self, config: &AiConfig) -> Roster {
         Roster::new(
             Task::ALL
                 .iter()
                 .map(|&task| {
                     let engines = self.engines.as_ref();
-                    (task, availability_for(task, &config, engines, self.jail))
+                    (task, availability_for(task, config, engines, self.jail))
                 })
                 .collect(),
         )
@@ -250,9 +249,8 @@ impl App {
             FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
         });
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.clear_picker_note();
             if picker.is_none() {
-                chat.set_orch_note(OrchNote::Picker(NO_ROW.to_owned()));
+                chat.push_system_line("cannot change: that worker is not shown any more".into());
             }
             chat.set_orch_picker(picker);
         }
@@ -305,12 +303,12 @@ impl App {
         };
         if !matches!(ready, Availability::Ready { .. }) {
             chat.set_orch_picker(None);
-            chat.set_orch_note(OrchNote::Picker(NOT_AVAILABLE.to_owned()));
+            chat.push_system_line("engine not available".into());
             return Vec::new();
         }
         chat.override_task(run, task, assignment);
         chat.drop_orch_alert();
-        let choice = UserChoice::Relaunch(self.roster(id));
+        let choice = UserChoice::Relaunch(self.roster(&config));
         vec![Effect::OrchDecide {
             pane: id,
             run,
@@ -472,11 +470,10 @@ impl App {
         // tools, never `run_in_pane`.
         request.families = Toolset::Orchestrator.families();
         // This turn replaces the run: it starts from the menu values, not from
-        // what the user picked in the old run's alert.
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.clear_orch_overrides();
-        }
-        let roster = self.roster(id);
+        // what the user picked in the old run's alert. Those overrides stay
+        // with the old run, which lives on if this one cannot start; the new
+        // run's first event ends them.
+        let roster = self.roster(&self.ai);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
@@ -520,26 +517,13 @@ fn alert_text(chat: &ChatState, alert: &OrchAlert) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let overrides: Vec<String> = Task::ALL
-        .iter()
-        .filter_map(|task| {
-            let label = chat.orch_overrides()?.label(*task)?;
-            Some(format!("{} {label}", task.id()))
-        })
-        .collect();
     let mut line = format!("run paused: worker {worker} {ended}: {text}");
-    if !overrides.is_empty() {
-        line.push_str(&format!(" \u{b7} override: {}", overrides.join(", ")));
-    }
-    let mut retry = RETRY_KEY;
-    for note in chat.orch_notes() {
-        match note {
-            OrchNote::RetryFailed(reason) => {
-                line.push_str(&format!(" \u{b7} retry failed: {reason}"));
-                retry = RETRY_AGAIN;
-            }
-            OrchNote::Picker(note) => line.push_str(&format!(" \u{b7} {note}")),
+    let retry = match chat.orch_note() {
+        Some(OrchNote::RetryFailed(reason)) => {
+            line.push_str(&format!(" \u{b7} retry failed: {reason}"));
+            RETRY_AGAIN
         }
-    }
+        None => RETRY_KEY,
+    };
     format!("{line} \u{b7} {retry} \u{b7} {ALERT_KEYS}")
 }

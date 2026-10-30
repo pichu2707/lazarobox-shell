@@ -121,7 +121,6 @@ fn an_override_replaces_its_task_on_a_copy_of_the_config() {
     menu.set(Task::Code, assigned("codex", "default"));
     let before = menu.clone();
     let mut over = RunOverrides::default();
-    assert_eq!(over.get(Task::Review), None);
     over.set(Task::Review, assigned("claude", "sonnet"));
     let applied = over.apply(&menu);
     assert_eq!(applied.get(Task::Review), &assigned("claude", "sonnet"));
@@ -134,16 +133,30 @@ fn a_second_choice_for_a_task_replaces_the_first() {
     let mut over = RunOverrides::default();
     over.set(Task::Review, assigned("claude", "sonnet"));
     over.set(Task::Review, assigned("gemini", "flash"));
-    assert_eq!(over.get(Task::Review), Some(&assigned("gemini", "flash")));
-    assert_eq!(over.get(Task::Code), None);
+    let applied = over.apply(&AiConfig::default());
+    assert_eq!(applied.get(Task::Review), &assigned("gemini", "flash"));
+    assert_eq!(applied.get(Task::Code), &Assignment::default());
 }
 
+// Spec (agent-orchestrator, Override shown): the marker follows the engine
+// (and model, when picked) of the row; an engine-only pick that is the menu's
+// own engine, and a "use general" pick, mark nothing.
 #[test]
-fn the_label_names_the_engine_and_model_in_use() {
+fn a_row_is_on_the_override_when_it_runs_the_pick() {
     let mut over = RunOverrides::default();
-    assert_eq!(over.label(Task::Review), None);
     over.set(Task::Review, assigned("claude", "sonnet"));
-    assert_eq!(over.label(Task::Review).as_deref(), Some("claude>sonnet"));
     over.set(Task::Code, Assignment::default());
-    assert_eq!(over.label(Task::Code).as_deref(), Some("default"));
+    let on = |task, engine, model, menu| over.is_on(task, engine, model, menu);
+    assert!(on(Task::Review, "claude", Some("sonnet"), Some("codex")));
+    assert!(!on(Task::Review, "claude", Some("opus"), Some("codex")));
+    assert!(!on(Task::Review, "codex", Some("sonnet"), None));
+    assert!(!on(Task::Code, "codex", None, None), "use general");
+    let mut over = RunOverrides::default();
+    let engine_only = Assignment {
+        engine: Some("claude".into()),
+        model: None,
+    };
+    over.set(Task::Review, engine_only);
+    assert!(over.is_on(Task::Review, "claude", Some("opus"), Some("codex")));
+    assert!(!over.is_on(Task::Review, "claude", Some("opus"), Some("claude")));
 }

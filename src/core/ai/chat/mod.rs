@@ -82,8 +82,6 @@ pub struct OrchAlert {
 pub enum OrchNote {
     /// A retry the run manager declined: the alert says `retry failed`.
     RetryFailed(String),
-    /// The picker could not be opened or its choice was refused.
-    Picker(String),
 }
 
 /// Columns the batch badge leaves free on the right of the pane: the widest
@@ -412,11 +410,13 @@ pub struct ChatState {
     /// ends.
     orch_alert: Option<OrchAlert>,
     /// Why the last answer to the alert did not go through.
-    orch_notes: Vec<OrchNote>,
+    orch_note: Option<OrchNote>,
     /// The detached picker opened from the alert (`m`, `p`).
     orch_picker: Option<FailurePicker>,
     /// What the user picked from an alert, for the run it was picked in.
     orch_overrides: Option<(RunId, RunOverrides)>,
+    /// The overrides before the last pick, until the run manager answers it.
+    orch_undo: Option<Option<(RunId, RunOverrides)>>,
     /// The last turn ended with `Done`, until the poll sees the batch it left
     /// behind (local-model-writes D1). A new turn or a cancel clears it; a
     /// compaction run after the `Done` does not.
@@ -475,9 +475,10 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             orch_alert: None,
-            orch_notes: Vec::new(),
+            orch_note: None,
             orch_picker: None,
             orch_overrides: None,
+            orch_undo: None,
             clean_end: false,
         }
     }
@@ -519,35 +520,19 @@ impl ChatState {
         self.orch_alert = alert;
     }
 
-    /// The notes shown with the alert: at most one of each kind.
-    pub fn orch_notes(&self) -> &[OrchNote] {
-        &self.orch_notes
-    }
-
-    /// Replaces the note of the same kind and leaves the other kind as it is.
-    pub fn set_orch_note(&mut self, note: OrchNote) {
-        let kind = std::mem::discriminant(&note);
-        self.orch_notes
-            .retain(|known| std::mem::discriminant(known) != kind);
-        self.orch_notes.push(note);
-    }
-
-    /// The alert is answered, replaced or gone: its picker and notes go too.
+    /// The alert is answered, replaced or gone: its picker and note go too.
     pub fn drop_orch_alert(&mut self) {
         self.orch_alert = None;
         self.orch_picker = None;
-        self.orch_notes.clear();
+        self.orch_note = None;
     }
 
-    /// The picker is opened again: what it said last time is stale.
-    pub fn clear_picker_note(&mut self) {
-        self.orch_notes
-            .retain(|note| !matches!(note, OrchNote::Picker(_)));
+    pub fn orch_note(&self) -> Option<&OrchNote> {
+        self.orch_note.as_ref()
     }
 
-    /// A new orchestrator turn replaces the run: it starts from the menu.
-    pub fn clear_orch_overrides(&mut self) {
-        self.orch_overrides = None;
+    pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
+        self.orch_note = note;
     }
 
     pub fn orch_picker(&self) -> Option<&FailurePicker> {
@@ -571,6 +556,7 @@ impl ChatState {
     /// Records the choice for `task` in `run`'s overrides (a new run starts
     /// from none).
     pub fn override_task(&mut self, run: RunId, task: Task, assignment: Assignment) {
+        self.orch_undo = Some(self.orch_overrides.clone());
         let kept = self
             .orch_overrides
             .take()
@@ -578,6 +564,19 @@ impl ChatState {
         let mut overrides = kept.map_or_else(RunOverrides::default, |(_, o)| o);
         overrides.set(task, assignment);
         self.orch_overrides = Some((run, overrides));
+    }
+
+    /// The run manager answered the last pick (a row or a halt of the run).
+    pub fn keep_override(&mut self) {
+        self.orch_undo = None;
+    }
+
+    /// The last pick was dropped by the run manager: it never reached the
+    /// run, so the overrides go back to what they were.
+    pub fn undo_override(&mut self) {
+        if let Some(before) = self.orch_undo.take() {
+            self.orch_overrides = before;
+        }
     }
 
     /// `run` is over: its overrides, picker and notes go with it when it is

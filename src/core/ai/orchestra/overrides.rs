@@ -43,21 +43,20 @@ impl RunOverrides {
         self.0.push((task, assignment));
     }
 
-    pub fn get(&self, task: Task) -> Option<&Assignment> {
-        self.0
-            .iter()
-            .find_map(|(known, assignment)| (*known == task).then_some(assignment))
-    }
-
     /// Whether a worker of `task` on `engine` and `model` runs on the
     /// override: its engine is the picked one and, when a model was picked,
-    /// its model too. A choice of "use general" names no engine to match.
-    pub fn is_on(&self, task: Task, engine: &str, model: Option<&str>) -> bool {
-        let Some(picked) = self.get(task) else {
-            return false;
-        };
-        picked.engine.as_deref() == Some(engine)
-            && picked.model.as_deref().is_none_or(|m| Some(m) == model)
+    /// its model too. A choice of "use general" names no engine to match, and
+    /// an engine-only pick that is the menu's own engine (`menu`) changes
+    /// nothing.
+    pub fn is_on(&self, task: Task, engine: &str, model: Option<&str>, menu: Option<&str>) -> bool {
+        let picked = (self.0.iter()).find_map(|(known, a)| (*known == task).then_some(a));
+        picked.is_some_and(|picked| {
+            picked.engine.as_deref() == Some(engine)
+                && picked
+                    .model
+                    .as_deref()
+                    .map_or(menu != Some(engine), |m| Some(m) == model)
+        })
     }
 
     /// `config` with the overrides on top: a copy, the menu is untouched.
@@ -67,17 +66,6 @@ impl RunOverrides {
             applied.set(*task, assignment.clone());
         }
         applied
-    }
-
-    /// `engine>model` of the override for `task`, for the run state and the
-    /// rows; `default` when the choice was to use the general assignment.
-    pub fn label(&self, task: Task) -> Option<String> {
-        let assignment = self.get(task)?;
-        Some(match (&assignment.engine, &assignment.model) {
-            (Some(engine), Some(model)) => format!("{engine}>{model}"),
-            (Some(engine), None) => engine.clone(),
-            (None, _) => "default".to_owned(),
-        })
     }
 }
 

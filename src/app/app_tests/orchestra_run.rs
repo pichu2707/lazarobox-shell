@@ -467,12 +467,12 @@ fn a_note_does_not_leak_into_the_next_alert() {
     declined(&mut a);
     a.update(ctrl('c'));
     a.update(event(halted(RUN, "409 conflict: session busy")));
-    assert_eq!(chat_of(&a).orch_notes(), &[], "ctrl+c cleared the note");
+    assert_eq!(chat_of(&a).orch_note(), None, "ctrl+c cleared the note");
     // The run ends.
     let (mut a, _) = alerted();
     declined(&mut a);
     a.update(event(OrchestraEvent::Ended { run: RUN }));
-    assert_eq!(chat_of(&a).orch_notes(), &[], "the end cleared the note");
+    assert_eq!(chat_of(&a).orch_note(), None, "the end cleared the note");
     a.update(event(halted(RunId(8), "409 conflict: session busy")));
     let text = a.chat_guidance(chat_id()).unwrap_or_default();
     assert!(!text.contains("retry failed"), "{text}");
