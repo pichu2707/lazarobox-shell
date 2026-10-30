@@ -1070,3 +1070,20 @@ async fn a_text_call_in_the_last_allowed_reply_gets_no_reminder() {
     assert_eq!(reminders(&events), 0);
     assert_eq!(events.last(), Some(&done()));
 }
+
+// D3: the retry without tools offers nothing to call, so a text call in its
+// answer gets no reminder.
+#[tokio::test]
+async fn a_text_call_in_the_retry_without_tools_gets_no_reminder() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text(&written("find_dir")),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
