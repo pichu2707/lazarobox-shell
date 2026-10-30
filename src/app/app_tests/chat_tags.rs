@@ -223,7 +223,7 @@ fn a_failed_save_in_a_conversation_is_a_system_line() {
 fn a_resume_closes_the_editor_of_the_list_it_replaces() {
     let mut a = tag_listing();
     a.update(key('t'));
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     assert!(!editor_open(&a));
     assert!(chat_of(&a).list().is_none());
 }
@@ -263,6 +263,34 @@ fn prefix_t_capital_opens_the_editor_on_the_proposed_tag() {
     assert_eq!(editor_text(&a), "proj");
     assert_eq!(chat_of(&a).tag_editor().unwrap().target(), TagTarget::Pane);
     assert_eq!(a.input(), InputMode::Terminal);
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_tag_editor() {
+    let mut a = fresh();
+    press(&mut a, "T");
+    a.update(ctrl('h'));
+    assert_eq!(editor_text(&a), "pro");
+}
+
+// A held Enter saves once; the rest of the hold does not send the composer.
+#[test]
+fn a_held_enter_saves_the_tags_once_and_sends_nothing() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = fresh().with_clock(mock_now);
+    type_text(&mut a, "draft");
+    press(&mut a, "T");
+    at(&mut a, 0, plain(KeyCode::Enter));
+    assert!(!editor_open(&a));
+    for ms in [100, 200] {
+        let effects = at(&mut a, ms, plain(KeyCode::Enter));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+            "Enter at {ms}: {effects:?}"
+        );
+    }
+    assert_eq!(chat_of(&a).composer().text(), "draft");
 }
 
 #[test]
@@ -402,7 +430,7 @@ fn a_conversation_being_created_names_only_its_pane() {
 #[test]
 fn the_reply_reaches_the_pane_that_has_the_conversation_open() {
     let mut a = tag_listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     // A second chat edits the same conversation from its list.
     a.update(ctrl_space());
     a.update(key('c'));
@@ -419,7 +447,7 @@ fn the_reply_reaches_the_pane_that_has_the_conversation_open() {
 #[test]
 fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
     let mut a = listing();
-    a.update(AppEvent::Store(StoreReply::Resumed {
+    a.update_settled(AppEvent::Store(StoreReply::Resumed {
         pane: chat_id(),
         conversation: 30,
         profile: "programmer".into(),
@@ -427,6 +455,8 @@ fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
         extras: vec!["sql".into()],
         messages: Vec::new(),
         session: None,
+        folder: None,
+        skipped: 0,
     }));
     press(&mut a, "T");
     assert_eq!(editor_text(&a), "proj, sql");
@@ -570,6 +600,7 @@ fn with_memory() -> App {
     a.update(AppEvent::Memory(
         crate::core::ai::memory::port::MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok("lazarobox-shell".into()),
         },
     ));

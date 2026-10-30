@@ -299,7 +299,7 @@ mod memory_tests {
             ratatui::crossterm::event::KeyCode::Char(' '),
             ratatui::crossterm::event::KeyModifiers::CONTROL,
         )));
-        app.update(key('c'));
+        app.update_settled(key('c'));
         app
     }
 

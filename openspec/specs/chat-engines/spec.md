@@ -7,7 +7,7 @@ How a chat turn reaches a model and how the answer comes back: the `ChatEngine` 
 ## Requirements
 
 ### Requirement: ChatEngine contract
-Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama` (server) and for `claude`, `codex` and `gemini` (CLIs). `lmstudio`, `llamacpp`, `vllm` and `opencode` have no adapter in this change: they resolve to the unsupported state and the guidance reads `not supported in chat yet`. The OpenAI-compatible adapters are specified in the follow-up change `ai-chat-openai-compat`. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
+Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama`; for `lmstudio`, `llamacpp` and `vllm` (OpenAI-compatible, see OpenAI-compatible servers below); and for `claude`, `codex` and `gemini` (CLIs). `opencode` has no adapter. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state, whose guidance reads `not supported in chat yet`.
 
 #### Scenario: Events in order [auto]
 - GIVEN a fake adapter that emits `a`, `b` and a final event
@@ -34,10 +34,10 @@ Every adapter MUST implement one contract: it receives a model name, the system 
 - WHEN cancel is requested
 - THEN no further event is delivered
 
-#### Scenario: Engines without an adapter [auto]
+#### Scenario: opencode has no adapter [auto]
 - GIVEN the adapter table
 - WHEN it is queried for each catalog engine
-- THEN `ollama`, `claude`, `codex` and `gemini` have one, and `lmstudio`, `llamacpp`, `vllm` and `opencode` have none and resolve to unsupported (`codex` and `gemini` are usable only where the CLI jail is available, see CLI jail)
+- THEN `opencode` has none and the other seven have one (`codex` and `gemini` are usable only where the CLI jail is available, see CLI jail)
 
 ### Requirement: Engine resolution for chat
 The engine of a chat turn MUST come from the effective assignment of the `chat` task (its own assignment, else `general`; see ai-task-models) combined with the detection result. The result MUST be exactly one of: ready (engine and model), unassigned, undetected (with the status), unsupported, no jail (`codex` or `gemini` on a system without a working jail, see CLI jail), gated off (a CLI whose manual gate failed), or model problem (no model for a server, or a model that is not detected). Resolution MUST be pure, MUST be evaluated on every send, and MUST NEVER change the assignment or pick another engine.
@@ -580,3 +580,97 @@ A summary request (see chat-memory) MUST use the same engine resolution, adapter
 - GIVEN a fake server that stalls after one delta
 - WHEN the summary runs, and in another run cancel is requested
 - THEN the first ends with the stalled error and the second closes the socket within 1 second
+
+### Requirement: OpenAI-compatible servers
+The `lmstudio`, `llamacpp` and `vllm` adapters MUST talk to their server's chat-completions endpoint (`/v1/chat/completions`) with the loopback-only streaming client of `ai-chat` (POST, HTTP/1.1, `127.0.0.1` on the catalog port, no credentials, no redirects, the same framing rules). The request body MUST contain only the model, the messages (system prompt first, then the capped history) and the streaming flag. Their replies are decoded by the SSE decoder below. The exact body fields are pinned by the design of this change from captured fixtures and the PR14 tests.
+
+#### Scenario: Traffic audit per catalog port [auto]
+- GIVEN a recording fake server on each of the lmstudio, llama.cpp and vLLM ports
+- WHEN one turn runs against each
+- THEN each recorded request is a `POST` to `/v1/chat/completions` on `127.0.0.1` with no `Authorization` or `Cookie` header, and nothing else connected
+
+#### Scenario: Body content for OpenAI-compatible servers [auto]
+- GIVEN a turn with a system prompt and two messages
+- WHEN the request is recorded
+- THEN the JSON body holds the model, the messages and the streaming flag, and nothing else
+
+#### Scenario: OpenAI-compatible reasoning only if available [auto]
+- GIVEN the captured lmstudio, llama.cpp and vLLM fixtures
+- WHEN parsed
+- THEN a thinking delta is produced only where a fixture shows a separate reasoning field in the SSE delta; otherwise the adapter emits none and the request is unchanged by reasoning (no format is assumed)
+
+### Requirement: SSE decoder
+OpenAI-compatible replies are Server-Sent Events. The SSE parser MUST be pure and incremental: feeding the same bytes in any chunking, including one byte at a time, MUST produce the same events as feeding them whole. `data:` events with a text fragment yield text deltas, a finish marker or `data: [DONE]` yields exactly one final event, and comment lines (starting with `:`) and empty events are ignored. CRLF and LF line endings MUST give the same events. A malformed JSON event MUST yield an error event, not a panic. A single event over 1 MiB MUST yield an error event. UTF-8 characters split across chunks MUST be reassembled before decoding. A server `error` object MUST be sanitized and capped like every other engine text.
+
+#### Scenario: OpenAI SSE [auto]
+- GIVEN events with fragments `Hel`, `lo`, a finish marker and `data: [DONE]`
+- WHEN parsed
+- THEN the events are delta `Hel`, delta `lo` and exactly one final
+
+#### Scenario: Every split point over SSE [auto]
+- GIVEN a valid SSE stream
+- WHEN it is cut at every byte position into two chunks
+- THEN the events always equal the unsplit result
+
+#### Scenario: SSE comments and CRLF [auto]
+- GIVEN a stream with `: keep-alive` lines and CRLF line endings
+- WHEN parsed
+- THEN the comments are ignored and the events are the same as with LF
+
+#### Scenario: Server error object over SSE [auto]
+- GIVEN an event `data: {"error":{"message":"model not found"}}`
+- WHEN parsed
+- THEN an error event is produced whose message is sanitized and capped
+
+#### Scenario: Oversized SSE event [auto]
+- GIVEN a single event of 1 MiB plus one byte
+- WHEN parsed
+- THEN an error event is produced
+
+### Requirement: Real OpenAI-compatible engines
+Each shipped OpenAI-compatible adapter MUST stream a reply from the real engine.
+
+#### Scenario: Ollama and OpenAI-compatible servers [manual]
+- GIVEN Ollama running with a model and, separately, a running lmstudio, llama.cpp or vLLM
+- WHEN `chat` is assigned to it and a message is sent
+- THEN the reply streams into the pane and cancel stops it
+
+#### Scenario: lmstudio, llama.cpp or vLLM ends on DONE [manual]
+- GIVEN a real lmstudio, llama.cpp or vLLM server with a loaded model
+- WHEN a message is sent and then cancelled in a second turn
+- THEN the `[DONE]` marker ends the first turn with one final event, and cancel stops the second
+
+### Requirement: Managed llama-server lifecycle
+When llamacpp is managed (see configuration), the first llamacpp chat turn MUST start `llama-server`, found in the login `PATH` lazarobox gives its tools (absolute entries only) and run by that absolute path with that `PATH`, with exactly the arguments `--host 127.0.0.1 --port <port> -m <model>` (no shell), stdin closed, in its own process group, with stdout and stderr in `llama-server.log` under the state folder (`$XDG_STATE_HOME/lazarobox`, else `~/.local/state/lazarobox`), emptied on each start, mode 0600 and never opened through a symlink. The turn MUST wait until `GET /v1/models` answers 200, for at most 90 s, and then stream as any llamacpp turn. Nothing else starts it: not config load, not detection, not a turn of another engine. At most one server runs; later turns reuse it and one that ended is started again. Before a start, if anything answers on the port, the turn MUST fail with `llama-server not started: another program answers on 127.0.0.1:<port>` and nothing is started. A start that fails MUST end the turn with one reason: `could not start llama-server: is it on the PATH?`, or `llama-server stopped` or `llama-server did not answer within 90 s` followed by `: ` and the last line of its log when it has one; a server that did not answer is killed. Quitting lazarobox MUST stop the server's whole process group; on Linux the server MUST also get SIGKILL from the kernel when lazarobox dies without quitting. A cancelled start kills the server it began.
+
+The chat gate MUST treat a managed llamacpp whose binary is installed (`available` or `not running`) as ready, without looking up the assigned model name, which `llama-server` ignores. With no model assigned, the model path is sent.
+
+#### Scenario: A managed llama-server starts on the first turn [auto]
+- GIVEN a managed llamacpp and a fake `llama-server` that answers once started
+- WHEN two llamacpp turns run, and a turn of another engine runs
+- THEN the fake is started once with the exact arguments, both llamacpp turns stream, and the other engine's turn starts nothing
+
+#### Scenario: Quitting stops the managed llama-server [auto]
+- GIVEN a running managed server with a child of its own
+- WHEN lazarobox quits
+- THEN the server and its child are gone
+
+#### Scenario: A port that already answers is not ours [auto]
+- GIVEN something that answers 200, 404 or 503 on the managed port
+- WHEN a llamacpp turn runs
+- THEN the turn fails with the port message and nothing is started
+
+#### Scenario: A failed start says why [auto]
+- GIVEN a missing program, a server that exits with `error: failed to open /m/q.gguf` on stderr, or one that never answers
+- WHEN a llamacpp turn runs
+- THEN the turn fails with the matching reason (the log's last line included) and no server is left
+
+#### Scenario: The managed llama-server never outlives lazarobox (Linux) [auto]
+- GIVEN a server started by a thread that then ends
+- WHEN the thread is gone
+- THEN the server is dead
+
+#### Scenario: Closing the terminal stops the chat servers [manual]
+- GIVEN lazarobox with a managed server running, in a terminal that is then closed
+- WHEN the terminal goes away
+- THEN lazarobox quits through its normal cleanup and no server is left

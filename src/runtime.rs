@@ -30,6 +30,7 @@ mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod feedback;
+pub mod folder;
 pub mod gguf;
 pub mod gh;
 pub mod hf;
@@ -40,6 +41,7 @@ pub mod login_path;
 pub mod loopback;
 pub mod mcp;
 pub mod notify;
+pub mod ollama_lib;
 pub mod opener;
 pub mod proc;
 pub mod prompts;
@@ -125,6 +127,8 @@ const MEMORY_CHANNEL: usize = 64;
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the path checks of runs to the event loop.
 const RUN_CHANNEL: usize = 16;
+/// Folder probes in flight at once (one per `/cd`, resume or picker).
+const FOLDER_CHANNEL: usize = 8;
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
 /// Longest the app waits for a prompt job before it uses the built-in prompt.
@@ -215,7 +219,7 @@ impl Drop for QuitGuard {
 }
 
 /// Runs the terminal pane until the child exits or the user quits.
-pub async fn run() -> io::Result<()> {
+pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // First, before any child or pane exists: from here on every process
     // group lazarobox starts is stopped once it ends, however it ends.
     watch::start();
@@ -228,7 +232,7 @@ pub async fn run() -> io::Result<()> {
         login_path::LOGIN_TIMEOUT,
     ));
     let (cols, rows) = terminal::size()?;
-    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    let launch_cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
@@ -241,7 +245,18 @@ pub async fn run() -> io::Result<()> {
         .unwrap_or(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         ));
-    let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
+    // The start folder: `--dir`, else `[workspace] dir`, else the launch cwd.
+    // It is the launch cwd of the app; the process never changes directory.
+    let started = startup(
+        &start_args,
+        config_path.as_deref(),
+        engram_port.as_deref(),
+        env::var_os("HOME").map(PathBuf::from).as_deref(),
+        &launch_cwd,
+    );
+    let cwd = started.dir.clone();
+    let mut app = started
+        .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
@@ -346,6 +361,7 @@ pub async fn run() -> io::Result<()> {
         .with_install_env(Some(update::install_env(&cli_env.path)))
         .with_cargo_check(|cargo| chat::trusted_cargo_path(cargo).is_some());
     let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
+    let (folder_tx, folder_rx) = mpsc::channel(FOLDER_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -407,6 +423,7 @@ pub async fn run() -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
+        .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
         .with_config_path(config_path)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
@@ -573,6 +590,18 @@ pub async fn run() -> io::Result<()> {
             hf::token_env,
             hub_tx.clone(),
         ))
+        // The picker's Ollama screens: curl from the same PATH for the
+        // library, the pull through the local Ollama server. They answer on
+        // the Hub's channel.
+        .with_ollama(ollama_lib::Ollama::new(
+            cli_env.path.clone(),
+            ollama_lib::models_folder(
+                env::var_os("OLLAMA_MODELS"),
+                env::var_os("HOME").map(PathBuf::from).as_deref(),
+                Path::exists,
+            ),
+            hub_tx.clone(),
+        ))
         // The install wizard's steps: curl, gh and tar from the same PATH,
         // into the owned folder under the data home. They answer on the
         // Hub's channel.
@@ -610,6 +639,7 @@ pub async fn run() -> io::Result<()> {
         prompt: prompt_rx,
         update: update_rx,
         run: run_rx,
+        folder: folder_rx,
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
@@ -755,25 +785,69 @@ fn local_hostname() -> Option<String> {
 }
 
 /// The app as the saved config configures it: layout, AI choice and notice.
+#[cfg(test)]
 fn app_from_config(
     cols: u16,
     rows: u16,
     config_path: Option<&Path>,
     port_env: Option<&str>,
 ) -> App {
-    let (config, ai, notice) = load_config(config_path, port_env);
-    App::new(cols, rows)
-        .with_config(&config)
-        .with_ai(ai)
-        .with_chat_history()
-        .with_notice(notice)
+    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    startup(
+        &crate::core::start::StartArgs::default(),
+        config_path,
+        port_env,
+        None,
+        &cwd,
+    )
+    .app(cols, rows)
+    .with_config_path(config_path.map(Path::to_owned))
 }
 
-/// Reads the config once at startup; a missing file is silent defaults.
-fn load_config(path: Option<&Path>, port_env: Option<&str>) -> (Config, AiConfig, Option<String>) {
-    match path {
-        Some(path) => Config::load_with_ai(fs::read_to_string(path), port_env),
-        None => (Config::default(), AiConfig::default(), None),
+/// What startup read: the config, the start folder and the one notice to
+/// show (a start problem wins over a config problem).
+struct Startup {
+    config: Config,
+    ai: AiConfig,
+    notice: Option<String>,
+    dir: PathBuf,
+}
+
+impl Startup {
+    fn app(&self, cols: u16, rows: u16) -> App {
+        App::new(cols, rows)
+            .with_config(&self.config)
+            .with_ai(self.ai.clone())
+            .with_chat_history()
+            .with_notice(self.notice.clone())
+    }
+}
+
+/// Reads the config once at startup (a missing file is silent defaults) and
+/// resolves the start folder. An invalid folder never stops the app.
+fn startup(
+    args: &crate::core::start::StartArgs,
+    config_path: Option<&Path>,
+    port_env: Option<&str>,
+    home: Option<&Path>,
+    launch_cwd: &Path,
+) -> Startup {
+    use crate::core::start::{Kind, resolve};
+    let (config, ai, notice, workspace) = match config_path {
+        Some(path) => Config::load_with_workspace(fs::read_to_string(path), port_env, home),
+        None => (Config::default(), AiConfig::default(), None, None),
+    };
+    let kind = |p: &Path| match fs::metadata(p) {
+        Ok(meta) if meta.is_dir() => Kind::Dir,
+        Ok(_) => Kind::File,
+        Err(_) => Kind::Missing,
+    };
+    let start = resolve(args, workspace.as_deref(), launch_cwd, home, &kind);
+    Startup {
+        config,
+        ai,
+        notice: start.notice.or(notice),
+        dir: start.path,
     }
 }
 
@@ -793,6 +867,8 @@ struct Inbox {
     update: mpsc::Receiver<Option<String>>,
     /// What the path checks of runs found.
     run: mpsc::Receiver<(PaneId, RunEvent)>,
+    /// What the folder probes found.
+    folder: mpsc::Receiver<folder::Answer>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
     /// What became of the Feedback issue sent with `gh`.
@@ -848,6 +924,7 @@ async fn run_loop(
         prompt: mut prompt_rx,
         update: mut update_rx,
         run: mut run_rx,
+        folder: mut folder_rx,
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
@@ -951,6 +1028,22 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(answer) = folder_rx.recv() => {
+                let event = match answer {
+                    folder::Answer::Probed(pane, purpose, result) => {
+                        AppEvent::FolderProbed { pane, purpose, result }
+                    }
+                    folder::Answer::Many(pane, id, found, busy) => {
+                        AppEvent::FoldersProbed { pane, id, found, busy }
+                    }
+                    folder::Answer::Completed(pane, id, text, found) => {
+                        AppEvent::FolderCompleted { pane, id, text, found }
+                    }
+                };
+                if step(&mut app, event, panes) {
+                    return Ok(());
+                }
+            }
             Some(report) = notified_rx.recv() => {
                 if step(&mut app, AppEvent::NotifyTested(report), panes) {
                     return Ok(());
@@ -1023,8 +1116,10 @@ async fn run_loop(
                 // The panes wear the batches the store holds: a poll, because
                 // a model's staging has no event of its own.
                 // A busy store answers `None`: the badges stay as they were.
-                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges()) {
-                    app.sync_batches(&badges);
+                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges())
+                    && step(&mut app, AppEvent::Badges(badges), panes)
+                {
+                    return Ok(());
                 }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
@@ -1183,6 +1278,7 @@ struct Panes {
     chats: Option<Chats>,
     /// Starts the path checks of runs. `None` refuses every run (unit tests).
     run_checks: Option<run_check::Checker>,
+    folder_probes: Option<folder::Prober>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -1196,6 +1292,9 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The Ollama library requests and pull. `None` ignores the Ollama
+    /// effects (unit tests).
+    ollama: Option<ollama_lib::Ollama>,
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
@@ -1226,11 +1325,13 @@ impl Panes {
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             run_checks: None,
+            folder_probes: None,
             memory: Memory::off(),
             store: None,
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            ollama: None,
             installer: None,
         }
     }
@@ -1298,6 +1399,11 @@ impl Panes {
     }
 
     /// Sets what checks the runs of `Effect::CheckRun`.
+    fn with_folder_probes(mut self, prober: folder::Prober) -> Self {
+        self.folder_probes = Some(prober);
+        self
+    }
+
     fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
         self.run_checks = Some(checker);
         self
@@ -1376,6 +1482,12 @@ impl Panes {
     /// Sets what runs the Hugging Face effects.
     fn with_hub(mut self, hub: hf::Hub) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Sets what runs the Ollama effects.
+    fn with_ollama(mut self, ollama: ollama_lib::Ollama) -> Self {
+        self.ollama = Some(ollama);
         self
     }
 
@@ -1596,6 +1708,48 @@ impl Panes {
                         )),
                     }
                 }
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start(pane, path, purpose),
+                    // No runtime to probe with: the folder cannot be judged.
+                    None => feedback.push(AppEvent::FolderProbed {
+                        pane,
+                        purpose,
+                        result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeFolders {
+                    pane,
+                    id,
+                    paths,
+                    git,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, id, paths, git),
+                    None => feedback.push(AppEvent::FoldersProbed {
+                        pane,
+                        id,
+                        busy: false,
+                        found: Vec::new(),
+                    }),
+                },
+                Effect::CompleteFolder {
+                    pane,
+                    id,
+                    text,
+                    dir,
+                    prefix,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_completion(pane, id, text, dir, prefix),
+                    None => feedback.push(AppEvent::FolderCompleted {
+                        pane,
+                        id,
+                        text,
+                        found: Default::default(),
+                    }),
+                },
                 Effect::EndToolSession(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.end_session(pane);
@@ -1684,9 +1838,24 @@ impl Panes {
                         hub.start(*job);
                     }
                 }
+                // Only one download runs; cancelling the idle one does
+                // nothing.
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.cancel();
+                    }
+                }
+                Effect::OllamaAsk(ask) => {
+                    if let Some(ollama) = &self.ollama {
+                        ollama.ask(ask);
+                    }
+                }
+                Effect::Pull { pull, port } => {
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.start(port, *pull);
                     }
                 }
                 // Returns at once: the step runs on its own task.
@@ -1975,6 +2144,77 @@ mod tests {
         );
         // Single flight: a second request while one is pending is empty.
         assert_eq!(app.request_detection(), Vec::new());
+    }
+
+    fn start_for(args: &[&str], config: Option<&str>, cwd: &Path) -> Startup {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        if let Some(text) = config {
+            fs::write(&path, text).unwrap();
+        }
+        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        startup(
+            &crate::core::start::parse_args(&argv),
+            Some(&path),
+            None,
+            None,
+            cwd,
+        )
+    }
+
+    // Spec (start-dir): an invalid `--dir` starts in the launch cwd with a
+    // notice shown inside the app; nothing exits.
+    #[test]
+    fn a_bad_dir_flag_starts_in_the_cwd_with_an_in_app_notice() {
+        let cwd = tempfile::tempdir().unwrap();
+        let config = "[workspace]\ndir = \"/\"\n";
+        let got = start_for(&["--dir", "/nope-lazarobox"], Some(config), cwd.path());
+        assert_eq!(got.dir, cwd.path());
+        assert_eq!(
+            got.notice.as_deref(),
+            Some("--dir: folder not found: /nope-lazarobox")
+        );
+    }
+
+    #[test]
+    fn a_valid_flag_beats_the_config_and_raises_no_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let flag = target.path().to_str().unwrap();
+        let got = start_for(
+            &["--dir", flag],
+            Some("[workspace]\ndir = \"/\"\n"),
+            cwd.path(),
+        );
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+    }
+
+    #[test]
+    fn the_config_dir_is_used_and_a_missing_one_falls_back_with_its_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let text = format!("[workspace]\ndir = \"{}\"\n", target.path().display());
+        let got = start_for(&[], Some(&text), cwd.path());
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+        let gone = start_for(
+            &[],
+            Some("[workspace]\ndir = \"/nope-lazarobox\"\n"),
+            cwd.path(),
+        );
+        assert_eq!(gone.dir, cwd.path());
+        assert_eq!(
+            gone.notice.as_deref(),
+            Some("config: workspace.dir: folder not found")
+        );
+    }
+
+    #[test]
+    fn the_start_dir_becomes_the_launch_cwd_of_the_app() {
+        let cwd = tempfile::tempdir().unwrap();
+        let got = start_for(&[], None, cwd.path());
+        let app = got
+            .app(80, 25)
+            .with_env(Some("/bin/zsh"), None, got.dir.clone());
+        let (_, spec) = app.initial_spawn();
+        assert_eq!(spec.cwd, cwd.path());
     }
 
     const SAVED_AI: &str = "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n";
@@ -3174,6 +3414,7 @@ mod tests {
     fn memory_effect() -> Effect {
         Effect::Memory(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         })
     }
@@ -3538,6 +3779,7 @@ mod tests {
             extras: vec![],
             first: stored(Role::User, text, MsgStatus::Complete),
             origin: None,
+            folder: None,
             open: Vec::new(),
         }
     }
@@ -3839,7 +4081,7 @@ mod tests {
         let chat = id(2);
 
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         // The list is answered by the real store: empty.
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
@@ -3899,7 +4141,7 @@ mod tests {
     fn the_app_from_config_keeps_a_chat_history() {
         let mut app = app_from_config(80, 25, None, None);
         let mut effects = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        effects.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        effects.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         assert!(
             effects
                 .iter()
@@ -3994,7 +4236,7 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(db.clone());
         let mut app = history_app(&dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
             id(2),
@@ -4079,7 +4321,7 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(store_db(dir));
         let mut app = history_app(dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
         app.update(AppEvent::PromptReady(
             id(2),
@@ -5114,11 +5356,13 @@ mod tests {
         );
         memory.send(MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(
             rx.try_recv().expect("answered at once"),
             MemReply::Unavailable {
+                epoch: Some(0),
                 pane: Some(PaneId::FIRST),
                 reason: Reason::RestartNeeded,
             }
@@ -5162,6 +5406,7 @@ mod tests {
             );
             memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
                 pane: PaneId::FIRST,
+                epoch: 0,
                 cwd: "/x".into(),
             });
             memory.shutdown(Duration::from_secs(1)).await;
@@ -5196,6 +5441,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -5204,6 +5450,7 @@ mod tests {
         let told = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(crate::core::ai::memory::port::MemReply::Unavailable {
+                    epoch: None,
                     pane: None,
                     ..
                 }) = rx.recv().await

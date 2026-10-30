@@ -5,6 +5,7 @@ use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, Tools, availability, tools_for},
+    folder::{Command, Purpose, parse_command},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -19,29 +20,21 @@ impl App {
     pub(super) fn open_chat_pane(&mut self) -> Vec<Effect> {
         let origin = self.focused_state().effective_cwd().map(Path::to_path_buf);
         let before = self.panes.len();
-        let chat = self.new_chat_state(origin);
+        let chat = self.new_chat_state(origin.clone());
         let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(chat)));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
-            effects.extend(self.begin_memory(self.tab().focus));
-            self.show_server_offer();
-            effects.push(Effect::PreparePrompt {
-                pane: self.tab().focus,
-                profile: self.ai.profile(),
-                origin: self
-                    .focused_state()
-                    .chat_state()
-                    .and_then(|c| c.origin_cwd().map(Path::to_path_buf)),
-                context: self.ai.context(),
-            });
-            if self.history {
-                let pane = self.tab().focus;
-                let origin = self
-                    .panes
-                    .get(&pane)
-                    .and_then(PaneState::chat_state)
-                    .and_then(|chat| chat.origin_cwd().map(Path::to_path_buf));
-                effects.push(Effect::Store(StoreCmd::List { pane, origin }));
+            // Detection needs no folder. The rest waits until the folder is
+            // settled: a broad or unknown one asks the user first.
+            let pane = self.tab().focus;
+            self.opening.insert(pane);
+            match origin {
+                Some(path) => effects.push(Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose: Purpose::Open,
+                }),
+                None => effects.extend(self.open_folder_picker(pane)),
             }
         }
         effects
@@ -118,41 +111,45 @@ impl App {
     }
 
     /// A key in TERMINAL with a chat pane focused. Nothing here reaches a
-    /// PTY, and a key the table does not list is swallowed. A held key keeps
-    /// editing and scrolling but never sends, cancels, yanks or toggles.
+    /// PTY, and a key the table does not list is swallowed. `repeat` marks a
+    /// held key, a Repeat or the same key again within the hold window (see
+    /// `Hold`): it keeps editing and scrolling but never sends, cancels,
+    /// yanks, toggles, saves or answers. Ctrl+H is Backspace in every field.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let key = backspace_alias(key);
         let id = self.tab().focus;
         // A pending approval takes every key first.
         if self.has_approval(id) {
             return self.on_approval_key(id, key, repeat);
         }
+        // The folder comes first: the picker takes every key, and a chat
+        // still probing its folder takes none.
+        if self.picker_open(id) {
+            return self.on_picker_key(id, &key, repeat);
+        }
+        if self.folder_pending(id) {
+            return Vec::new();
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
-        // its keys to a question it hides.
+        // its keys to a question it hides. A held key never answers it.
+        let offered = if repeat {
+            KeyEvent {
+                kind: KeyEventKind::Repeat,
+                ..key
+            }
+        } else {
+            key
+        };
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
-            && let Some(effects) = self.answer_server_offer(key)
+            && let Some(effects) = self.answer_server_offer(offered)
         {
             return effects;
         }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
-        let debounced = matches!(
-            (key.code, mods),
-            (KeyCode::Esc, KeyModifiers::NONE)
-                | (
-                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's' | 'g'),
-                    KeyModifiers::CONTROL
-                )
-        );
-        // A held key arrives as Repeat (Kitty) or as Presses close together.
-        let repeat = if debounced {
-            self.held_chat_key_dropped(&key, repeat)
-        } else {
-            self.held_chat_key = None;
-            repeat
-        };
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -191,6 +188,7 @@ impl App {
             (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                 self.edit_composer(|c| c.newline())
             }
+            (KeyCode::Tab, KeyModifiers::NONE) => one_shot(App::cd_complete, self),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.edit_composer(|c| c.clear()),
             (KeyCode::Char(ch), _) if plain => self.edit_composer(|c| c.insert(ch)),
             (KeyCode::Backspace, _) if plain => self.edit_composer(|c| c.backspace()),
@@ -203,30 +201,20 @@ impl App {
         }
     }
 
-    /// Whether `key`, a debounced one-shot chat key, is part of a hold: a
-    /// Repeat, or the same key again within `HELD_EXIT_WINDOW` of the last
-    /// such event (every event of the hold renews the window).
-    fn held_chat_key_dropped(&mut self, key: &KeyEvent, repeat: bool) -> bool {
-        let now = (self.clock)();
-        let held = self.held_chat_key.is_some_and(|h| {
-            h.code == key.code
-                && h.modifiers == key.modifiers
-                && now.saturating_duration_since(h.last) <= HELD_EXIT_WINDOW
-        });
-        self.held_chat_key = Some(HeldExit {
-            code: key.code,
-            modifiers: key.modifiers,
-            last: now,
-        });
-        repeat || held
-    }
-
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
         // A paste never answers an approval and never lands in the composer
         // while one waits.
         if self.has_approval(id) {
+            return;
+        }
+        if self.picker_open(id) {
+            self.picker_paste(id, text);
+            return;
+        }
+        // A chat that waits for its folder takes no text either.
+        if self.folder_pending(id) {
             return;
         }
         if self.tag_editor_open(id) {
@@ -298,7 +286,17 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let text = chat.composer().text();
+        let mut text = chat.composer().text();
+        // `/cd` is the user's own command: it never reaches the engine, and
+        // works whatever the engine state.
+        match parse_command(&text) {
+            Command::Cd(arg) => return self.cd_submit(id, &arg),
+            Command::Escaped(unescaped) => text = unescaped,
+            Command::Plain => {}
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
         if availability == Availability::Checking || chat.prompt().is_none() {
             if !text.trim().is_empty() {
                 self.drop_parked_send(id);

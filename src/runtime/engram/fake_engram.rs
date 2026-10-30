@@ -216,6 +216,7 @@ mod tests {
         let (fake, link, mut rx) = start(happy()).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp/a b&c".into(),
         });
         link.send(MemCmd::Save {
@@ -229,6 +230,7 @@ mod tests {
         });
         link.send(MemCmd::Context {
             pane: pane(),
+            epoch: 0,
             project: "widget".into(),
         });
         link.send(MemCmd::Delete {
@@ -296,6 +298,7 @@ mod tests {
         let (fake, link, mut rx) = start(happy()).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp/a".into(),
         });
         link.send(MemCmd::Save {
@@ -390,6 +393,7 @@ mod tests {
         let (fake, link, mut rx) = start(routes).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp".into(),
         });
         let got = replies(&mut rx, 2).await;

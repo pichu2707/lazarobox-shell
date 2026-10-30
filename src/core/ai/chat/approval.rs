@@ -6,6 +6,7 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -45,9 +46,12 @@ fn next_id() -> u64 {
 }
 
 /// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
-/// user was already typing cannot answer it. The review of a batch waits
-/// longer; see [`ApprovalAsk::arm_delay`].
-pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
+/// user was already typing cannot answer it. It is longer than the usual OS
+/// auto-repeat delay (X11 660 ms, KDE 600 ms): the first repeat of a key held
+/// from before the prompt, which comes past the hold window, still finds the
+/// prompt unarmed. The review of a batch waits as long; see
+/// [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
@@ -55,16 +59,23 @@ pub const ANOTHER_PENDING: &str = "another approval is pending";
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
 
-/// The outcome line of a command typed into pane `number`.
-pub fn run_sent_line(number: usize) -> String {
-    format!("sent to pane {number}; press Enter there to run it")
+/// The outcome line of a command typed into pane `number`, with why it was
+/// not run when `y` in `run` mode could not run it.
+pub fn run_sent_line(number: usize, not_run: Option<&str>) -> String {
+    let line = format!("sent to pane {number}; press Enter there to run it");
+    match not_run {
+        Some(why) => format!("{line} (not run: {why})"),
+        None => line,
+    }
 }
 
 /// Whether `line` is the outcome line of a run action. Such a line is shown
 /// but never stored or sent, and it does not hide the block it came from.
 pub fn is_run_outcome(line: &str) -> bool {
     line == RUN_CANCELLED
-        || (line.starts_with("sent to pane ") && line.ends_with("; press Enter there to run it"))
+        || (line.starts_with("sent to pane ")
+            && (line.ends_with("; press Enter there to run it")
+                || line.contains("; press Enter there to run it (not run: ")))
 }
 
 /// What the user is asked to allow.
@@ -136,6 +147,18 @@ pub enum ApprovalAsk {
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+    /// Change the chat folder (the user's `/cd`, never a tool call). `from`
+    /// is the current folder as one sanitized line, `to` the resolved folder
+    /// that becomes the chat's on `y`, and `note` a fact the user must see
+    /// (a broad folder). Only `y` answers; every other key cancels. After
+    /// `y` the ask stays up with `checking` set while the folder is resolved
+    /// once more: only Esc answers then.
+    Folder {
+        from: String,
+        to: PathBuf,
+        note: Option<String>,
+        checking: bool,
+    },
 }
 
 /// Where a read leads, as the host found it on the real path (every link
@@ -456,6 +479,9 @@ pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// or the turn is not free. None of them is the model's doing.
 pub const RUNNING: &str = "a command is still running in the pane";
 pub const HALF_TYPED: &str = "the pane has a half-typed line";
+/// Why `y` in `run` mode types a command instead of running it: one Enter
+/// cannot end a multi-line paste, and its output has no single echo row.
+pub const MULTI_LINE: &str = "a multi-line command is typed, not run";
 pub const FOCUSED: &str = "the pane has the focus";
 pub const HIDDEN: &str = "the chat's tab is not shown";
 pub const TOO_MANY: &str = "too many commands this turn";
@@ -722,10 +748,16 @@ pub struct ApprovalPrompt {
 
 /// The keys of a run prompt.
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
+/// The keys of a model's run prompt in `run` mode, where `y` runs it.
+pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
 /// The keys of a search prompt.
 pub const SEARCH_KEYS: &str = "y search · n deny";
+/// The keys of the folder prompt: nothing but `y` changes it.
+pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
+/// The keys of the folder prompt while the folder is checked after `y`.
+pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
@@ -839,6 +871,21 @@ impl Approvals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A typed command's line, with or without why `y` did not run it, is an
+    // outcome: shown, never stored or sent.
+    #[test]
+    fn a_sent_line_with_the_reason_is_still_a_run_outcome() {
+        let plain = run_sent_line(1, None);
+        let why = run_sent_line(1, Some(NO_CWD));
+        assert_eq!(plain, "sent to pane 1; press Enter there to run it");
+        assert_eq!(
+            why,
+            "sent to pane 1; press Enter there to run it (not run: the pane's directory cannot be read on this system)"
+        );
+        assert!(is_run_outcome(&plain) && is_run_outcome(&why));
+        assert!(!is_run_outcome("sent to pane 1 (not run: x)"));
+    }
 
     const FREE: AutoCtx = AutoCtx {
         typed_this_turn: 0,

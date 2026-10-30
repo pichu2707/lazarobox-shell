@@ -171,7 +171,7 @@ impl Adapter {
             // The same job once more with the tools prompt, to keep what
             // each engine does with its system prompt in one place.
             let mut with_tools = request.clone();
-            with_tools.system = prompts::with_tools(&request.system);
+            with_tools.system = prompts::with_tools(&request.system, request.families);
             if let Invocation::Process(other) = self.build_text(&with_tools, verified) {
                 job.tools = Some(Box::new(ToolsText {
                     args: other.args,
@@ -247,6 +247,10 @@ pub struct ToolRound {
     pub thinking: Option<String>,
     pub text: String,
     pub exchanges: Vec<ToolExchange>,
+    /// A user message sent after the round: the reminder to a model that
+    /// wrote a tool call as text (local-model-writes D3). Such a round has
+    /// no exchanges.
+    pub nudge: Option<String>,
 }
 
 /// The request `Adapter::build` returns: never with tools, whatever
@@ -312,8 +316,10 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 call
             })
             .collect();
-        let mut assistant =
-            json!({"role": "assistant", "content": round.text, "tool_calls": calls});
+        let mut assistant = json!({"role": "assistant", "content": round.text});
+        if !calls.is_empty() {
+            assistant["tool_calls"] = Value::Array(calls);
+        }
         if let Some(thinking) = &round.thinking {
             assistant["thinking"] = json!(thinking);
         }
@@ -325,8 +331,22 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             }
             message
         }));
+        messages.extend(nudge(round));
     }
     finish_body(request, messages, tools)
+}
+
+/// The user message that follows a reminder round, if any.
+fn nudge(round: &ToolRound) -> Option<Value> {
+    (round.nudge.as_ref()).map(|text| json!({"role": "user", "content": text}))
+}
+
+/// The names of the tools `request` offers, as the `tools` array lists them.
+pub fn offered_names(request: &ChatRequest) -> Vec<String> {
+    offered_tools(request)
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The id of call `n` of round `round` (both from 0) when the server sent
@@ -378,7 +398,11 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 json!({"id": id, "type": "function", "function": function})
             })
             .collect();
-        messages.push(json!({"role": "assistant", "content": round.text, "tool_calls": calls}));
+        let mut assistant = json!({"role": "assistant", "content": round.text});
+        if !calls.is_empty() {
+            assistant["tool_calls"] = Value::Array(calls);
+        }
+        messages.push(assistant);
         messages.extend(
             round
                 .exchanges
@@ -386,6 +410,7 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 .zip(&ids)
                 .map(|(x, id)| json!({"role": "tool", "tool_call_id": id, "content": x.result})),
         );
+        messages.extend(nudge(round));
     }
     finish_body(request, messages, tools)
 }

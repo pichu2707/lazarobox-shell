@@ -21,7 +21,6 @@ use crate::core::{
             review::{BatchEvent, TOO_LARGE},
         },
         tools::{
-            paths::REFUSED,
             registry::{Family, FamilySet},
             report::RunReport,
             stage::StageKey,
@@ -138,6 +137,16 @@ fn folder(path: &str) -> Call {
     Call::CreateDir { path: path.into() }
 }
 
+/// The write refusal of a chat opened in `~/proj` (local-model-writes D2).
+const HINTED: &str = "path not available (paths are relative to the chat's folder ~/proj)";
+
+/// The write refusal for a missing parent `folder` that the policy allowed.
+fn missing(folder: &str) -> String {
+    format!(
+        "path not available: the folder {folder}/ does not exist (paths are relative to the chat's folder ~/proj)"
+    )
+}
+
 fn read(path: &str) -> Call {
     Call::ReadFile {
         path: path.into(),
@@ -210,7 +219,7 @@ async fn the_read_tools_see_the_staged_batch() {
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     // A file below a folder that is neither on disk nor staged is refused.
     let early = d.call(write("src/new.txt", "needle text")).await;
-    assert!(early.is_error && early.text == REFUSED, "{early:?}");
+    assert!(early.is_error && early.text == missing("src"), "{early:?}");
     assert!(!d.call(folder("src")).await.is_error);
     assert!(!d.call(write("src/new.txt", "needle text")).await.is_error);
     let read_it = d.call(read("src/new.txt")).await;
@@ -271,7 +280,7 @@ async fn a_refused_call_stages_nothing_and_says_so_without_the_text() {
         let out = d.call(call.clone()).await;
         assert!(out.is_error, "{call:?}");
         assert!(
-            out.text == REFUSED || out.text.contains("does not exist"),
+            out.text == HINTED || out.text.contains("does not exist"),
             "{}",
             out.text
         );
@@ -320,6 +329,13 @@ async fn an_approved_batch_is_applied_and_the_model_gets_counts_and_paths() {
     assert!(!out.is_error, "{out:?}");
     assert!(out.text.starts_with("applied 2 paths:"), "{}", out.text);
     assert!(out.text.contains("sub/a.txt"), "{}", out.text);
+    // #439: a small model stops after the review; the result tells it to go on.
+    assert!(
+        out.text
+            .ends_with("\nContinue with any step the user asked for that is not finished yet."),
+        "{}",
+        out.text
+    );
     assert!(!out.text.contains("one"), "{}", out.text);
     assert_eq!(
         std::fs::read_to_string(w.proj.join("sub/a.txt")).unwrap(),
@@ -914,6 +930,11 @@ async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
             _ => unreachable!(),
         };
         assert!(proposed.starts_with(expect), "{proposed}");
+        assert_eq!(
+            proposed.contains("Continue with any step"),
+            matches!(answer, Decision::Sent),
+            "{proposed}"
+        );
         let rows: Vec<String> = events(&mut rx).iter().map(|e| format!("{e:?}")).collect();
         // One ToolCall and one ToolResult for each of the two calls.
         assert_eq!(rows.len(), 4, "{rows:?}");
@@ -1200,4 +1221,59 @@ async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
         assert!(!all.contains("BASESECRET") && !all.contains("foo"), "{all}");
         std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
     }
+}
+
+// local-model-writes D2: every write refusal is one text that names the
+// chat's folder, whatever the reason, so a model learns where paths start
+// but cannot tell an excluded path from a missing one.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn every_write_refusal_names_the_chat_folder() {
+    let w = world();
+    std::fs::write(w.proj.join("x.txt"), "x").unwrap();
+    std::fs::create_dir(w.proj.join("dir")).unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    for call in [
+        write("../escape.txt", "t"),
+        write(".env", "t"),
+        write("/etc/x", "t"),
+        folder("../up"),
+        folder("dir"),
+        write("x.txt/y", "t"),
+        edit(".git/config", "a", "b"),
+    ] {
+        let out = d.call(call.clone()).await;
+        assert!(out.is_error, "{call:?}");
+        assert_eq!(out.text, HINTED, "{call:?}");
+    }
+    assert_eq!(w.staged(), 0);
+}
+
+// local-model-writes D2: once the policy allowed the path, a parent folder
+// that does not exist is named, as the model wrote it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_missing_parent_folder_is_named_after_the_policy_passed() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    let out = d.call(write("Descargas/fibonacci.py", "print(1)")).await;
+    assert!(out.is_error);
+    assert_eq!(out.text, missing("Descargas"));
+    let deep = d.call(folder("a/b/c")).await;
+    assert_eq!(deep.text, missing("a/b"));
+    let edited = d.call(edit("gone/x.txt", "a", "b")).await;
+    assert_eq!(edited.text, missing("gone"));
+    // A path the policy refuses keeps the one text, even below a missing folder.
+    let secret = d.call(write("nope/.env", "t")).await;
+    assert_eq!(secret.text, HINTED);
+    let deps = d.call(write("node_modules/gone/x.js", "t")).await;
+    assert_eq!(deps.text, HINTED);
+    // A link on the way, in the root or out of it or dangling, is never named.
+    std::os::unix::fs::symlink(w.proj.join("gone"), w.proj.join("dangling")).unwrap();
+    std::os::unix::fs::symlink("/tmp", w.proj.join("out")).unwrap();
+    for path in ["dangling/x.txt", "out/missing/x.txt"] {
+        let linked = d.call(write(path, "t")).await;
+        assert_eq!(linked.text, HINTED, "{path}");
+    }
+    assert_eq!(w.staged(), 0);
 }

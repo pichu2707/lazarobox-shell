@@ -1,5 +1,7 @@
 # Exploration: write-tools (create_dir, write_file, edit_file over the lazarobox MCP server)
 
+> Superseded by `coding-tools` (archived 2026-10-29 as exploration only; no spec merge).
+
 **Context.** On 2026-10-17 the owner asked that the model create directories, create files with code, and edit files, so that it can help programmers and analysts (for example, changing KPI data). They chose structured MCP write tools over shell redirection.
 - Writes ALWAYS show the full content or diff and wait for `y`, in every mode.
 - The one exception: `create_dir` runs directly in `run` mode (the sibling change auto-execute).

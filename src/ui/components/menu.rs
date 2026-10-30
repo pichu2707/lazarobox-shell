@@ -698,10 +698,12 @@ mod tests {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter]);
         let top = draw(62, POPUP_H, &menu);
-        press(&mut menu, &[KeyCode::Char('k')]);
+        // Up wraps to the `download from Ollama…` row, then the last
+        // curated row, which is disabled.
+        press(&mut menu, &[KeyCode::Char('k'), KeyCode::Char('k')]);
         let buf = draw(62, POPUP_H, &menu);
         let shown = text(&buf);
-        assert!(shown.contains("18/18"), "{shown}");
+        assert!(shown.contains("18/19"), "{shown}");
         assert!(
             shown.contains("download required · not selectable"),
             "{shown}"
@@ -714,7 +716,11 @@ mod tests {
     #[test]
     fn the_cursor_on_a_disabled_row_is_muted_and_reversed() {
         let mut menu = picker_of("general", 0);
-        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
+        // Past the `download from Ollama…` row, onto the last curated one.
+        press(
+            &mut menu,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Char('k')],
+        );
         let buf = draw(62, POPUP_H, &menu);
         let theme = LazaroboxTheme::default();
         let y = (0..POPUP_H)
@@ -1171,6 +1177,7 @@ mod tests {
                     diagnostics: crate::core::ai::Diagnostics {
                         models: models.filter(|_| e.id == "codex").map(str::to_owned),
                         jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
+                        ..Default::default()
                     },
                 })
                 .collect(),
@@ -1206,10 +1213,29 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_engine_row_says_why_codex_has_no_jail() {
+    fn snapshot_engine_row_refuses_codex_and_says_why() {
         let menu = codex_engines_level(codex_degraded(None, Some("Landlock ABI 2, needs 3+")));
         let shown = text(&draw(62, POPUP_H, &menu));
-        assert!(shown.contains("no jail: Landlock"), "{shown}");
+        assert!(shown.contains("refused · Landlock"), "{shown}");
+        assert!(!shown.contains("available"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn snapshot_engine_row_names_the_install_layout_after_the_version() {
+        let mut detection = codex_degraded(None, None);
+        for s in &mut detection.engines {
+            if s.id == "codex" {
+                s.version = Some("0.153.4".to_owned());
+                s.diagnostics.install =
+                    Some(crate::core::ai::codex_install::CodexInstall::Standalone);
+            }
+        }
+        let shown = text(&draw(62, POPUP_H, &codex_engines_level(detection)));
+        assert!(
+            shown.contains("codex available · 0.153.4 · standalone"),
+            "{shown}"
+        );
         insta::assert_snapshot!(shown);
     }
 
@@ -1222,10 +1248,7 @@ mod tests {
             .into_iter()
             .find(|l| l.contains("codex"))
             .unwrap();
-        assert!(
-            row.starts_with("│ codex available · no jail: a-very-long"),
-            "{row}"
-        );
+        assert!(row.starts_with("│ codex refused · a-very-long"), "{row}");
         assert!(row.contains('…') && row.ends_with("●│"), "{row}");
         assert_eq!(cells(&row), 62);
     }
@@ -1254,15 +1277,13 @@ mod tests {
         ];
         let mut whys: Vec<String> = reasons.iter().map(|r| r.short(home)).collect();
         whys.push(JailOff::NoBackend.short_required());
-        // claude on macOS (see `jail_note_on`).
-        whys.push("uses macOS Keychain".to_owned());
         for why in whys {
             let menu = codex_engines_level(codex_degraded(None, Some(&why)));
             let row = lines(&draw(62, POPUP_H, &menu))
                 .into_iter()
                 .find(|l| l.contains("codex"))
                 .unwrap();
-            assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
+            assert!(row.contains(&format!("refused · {why} ●")), "{why}: {row}");
         }
     }
 

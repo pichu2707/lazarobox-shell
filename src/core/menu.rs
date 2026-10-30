@@ -11,13 +11,14 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
     ai::{
-        Detection,
+        Detection, REFUSED,
         config::{AiConfig, NotifyMode, Task, ToolToggle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         menu::AiMenu,
+        ollama_lib::{self, Pull},
         picker::{
-            HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark, NOT_IN_LIST, Outcome,
-            PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
+            BUSY, HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark, NOT_IN_LIST,
+            OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
         },
     },
     config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
@@ -497,8 +498,13 @@ pub enum MenuCommand {
     Install(InstallAsk),
     /// Start this Hugging Face download (`y` on the Confirm screen).
     Download(Box<Job>),
-    /// Stop the Hugging Face download that runs.
+    /// Stop the download that runs (Hugging Face or Ollama).
     CancelDownload,
+    /// Send this request to the Ollama library; the reply comes back
+    /// through [`MenuState::ollama_reply`].
+    OllamaAsk(ollama_lib::Ask),
+    /// Start this Ollama pull (`y` on the Ollama Confirm screen).
+    Pull(Box<Pull>),
     /// Connect, check or disconnect the Hugging Face account; the answer
     /// comes back through [`MenuState::account_reply`].
     HfAccount(AccountAsk),
@@ -516,6 +522,7 @@ const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc can
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
+const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
@@ -1039,13 +1046,13 @@ impl MenuState {
             .is_none_or(|(cols, rows)| fits_size(cols, rows, MENU_BODY))
     }
 
-    /// The Hugging Face download that runs when the menu opens.
+    /// The download that runs when the menu opens.
     pub fn with_download(mut self, download: Option<Running>) -> Self {
         self.set_download(download);
         self
     }
 
-    /// The Hugging Face download that runs, `None` once it ended.
+    /// The download that runs, `None` once it ended.
     pub fn set_download(&mut self, download: Option<Running>) {
         if let Some(ai) = &mut self.ai {
             ai.set_download(download);
@@ -1056,6 +1063,23 @@ impl MenuState {
     /// request; a failure it waited for becomes the footer error.
     pub fn hub_reply(&mut self, ask: Ask, answer: Result<Answer, String>) {
         let error = self.ai.as_mut().and_then(|ai| ai.hub_reply(&ask, answer));
+        if let Some(message) = error {
+            self.error = Some(message);
+        }
+    }
+
+    /// A reply of the Ollama library. The picker keeps it only while it
+    /// waits for that request; a failure it waited for becomes the footer
+    /// error.
+    pub fn ollama_reply(
+        &mut self,
+        ask: ollama_lib::Ask,
+        answer: Result<ollama_lib::Answer, String>,
+    ) {
+        let error = self
+            .ai
+            .as_mut()
+            .and_then(|ai| ai.ollama_reply(&ask, answer));
         if let Some(message) = error {
             self.error = Some(message);
         }
@@ -1298,6 +1322,7 @@ impl MenuState {
                 format!("Model for {row} ({engine})")
             }
             Level::Hub(hub) => hub.title(),
+            Level::Ollama(ollama) => ollama.title(),
             Level::Install(wizard) => wizard.title(),
         };
         if let Some(counter) = picker.counter(all.len()) {
@@ -1581,7 +1606,9 @@ impl MenuState {
 
     /// Interprets a key. Release is ignored; a repeat moves and cycles but
     /// never saves or cancels; a pending error is cleared by the next press.
+    /// Ctrl+H is Backspace in every text field.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
+        let key = &crate::core::keys::backspace_alias(*key);
         if key.kind == KeyEventKind::Release {
             return MenuCommand::None;
         }
@@ -1690,6 +1717,9 @@ impl MenuState {
         if ai.picker().is_some_and(|p| p.hub().is_some()) {
             return Self::on_hub_key(ai, key, repeat);
         }
+        if ai.picker().is_some_and(|p| p.ollama().is_some()) {
+            return Self::on_ollama_key(ai, key, repeat);
+        }
         if ai.picker().is_some_and(|p| p.install().is_some()) {
             return Self::on_install_key(ai, key, repeat);
         }
@@ -1723,6 +1753,10 @@ impl MenuState {
                 Outcome::Copy(text) => return MenuCommand::Copy(text),
                 // The Hugging Face entry row asks for the popular models.
                 Outcome::Ask(ask) => return MenuCommand::HubAsk(ask),
+                // So does the Ollama entry row, from the Ollama library.
+                Outcome::OllamaAsk(ask) => return MenuCommand::OllamaAsk(ask),
+                // The other source downloads: one runs at a time.
+                Outcome::Busy => self.error = Some(BUSY.to_owned()),
                 // An owned install asks for the newer build check.
                 Outcome::Install(ask) => return MenuCommand::Install(ask),
                 _ => {}
@@ -1826,6 +1860,46 @@ impl MenuState {
         match outcome {
             Outcome::Ask(ask) => MenuCommand::HubAsk(ask),
             Outcome::Download(job) => MenuCommand::Download(job),
+            _ => MenuCommand::None,
+        }
+    }
+
+    /// Keys on the Ollama screens. Esc stops waiting for a request, or goes
+    /// back one screen; every other key waits for its reply. Only `y` on
+    /// the Confirm screen pulls; no key here saves or edits the config.
+    fn on_ollama_key(ai: &mut AiMenu, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let Some(ollama) = ai.picker().and_then(Picker::ollama) else {
+            return MenuCommand::None;
+        };
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if key.code == KeyCode::Esc {
+            if !repeat {
+                ai.drive(Picker::back);
+            }
+            return MenuCommand::None;
+        }
+        if ollama.asking().is_some() || !plain {
+            return MenuCommand::None;
+        }
+        let confirm = matches!(ollama.screen(), Some(OllamaScreen::Confirm(_)));
+        let outcome = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                ai.edit_with(|p, d, e| p.step(true, d, e));
+                Outcome::Stay
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                ai.edit_with(|p, d, e| p.step(false, d, e));
+                Outcome::Stay
+            }
+            _ if repeat => Outcome::Stay,
+            KeyCode::Enter => ai.drive(Picker::enter),
+            KeyCode::Char('y') if confirm => ai.drive(Picker::ollama_pull),
+            KeyCode::Char('n') if confirm => ai.drive(Picker::back),
+            _ => Outcome::Stay,
+        };
+        match outcome {
+            Outcome::OllamaAsk(ask) => MenuCommand::OllamaAsk(ask),
+            Outcome::Pull(pull) => MenuCommand::Pull(pull),
             _ => MenuCommand::None,
         }
     }
@@ -2105,6 +2179,9 @@ impl MenuState {
                 None => Cow::Borrowed(wizard.hint()),
             });
         }
+        if let Some(ollama) = picker.and_then(Picker::ollama) {
+            return Footer::Hint(Cow::Borrowed(ollama.hint()));
+        }
         if let Some(hub) = picker.and_then(Picker::hub) {
             return match hub.screen() {
                 Screen::Confirm(confirm) if hub.asking().is_none() => {
@@ -2128,6 +2205,12 @@ impl MenuState {
             .is_some_and(|r| matches!(r.key, PickKey::Note { .. }))
         {
             return Footer::Hint(Cow::Borrowed(HINT_NOTE));
+        }
+        if let (Some(row), Some(picker)) = (&cursor, picker)
+            && matches!(picker.level, Level::Engines)
+            && matches!(row.mark, Mark::Status(ref t) if t.starts_with(REFUSED))
+        {
+            return Footer::Hint(Cow::Borrowed(HINT_ENGINE_REFUSED));
         }
         if let (Some(row), Some(picker)) = (&cursor, picker)
             && matches!(picker.level, Level::Engines)

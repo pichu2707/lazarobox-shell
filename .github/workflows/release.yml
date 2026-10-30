@@ -1,11 +1,12 @@
 name: Release
 
-# Pushing a tag `vX.Y.Z` publishes that version to crates.io and creates the
-# GitHub Release. Cargo.toml and CHANGELOG.md must already be updated on the
+# Pushing a tag `vX.Y.Z` (or a pre-release tag `vX.Y.Z-rc.N`) publishes that
+# version to crates.io and creates the GitHub Release; a pre-release is marked
+# as one on GitHub. Cargo.toml and CHANGELOG.md must already be updated on the
 # tagged commit.
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-*"]
 
 permissions:
   contents: read
@@ -160,9 +161,15 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           .github/scripts/changelog-section.sh "$VERSION" > release-notes.md
+          # A SemVer pre-release (1.0.0-rc.1) is marked as one, so GitHub
+          # never shows it as the latest release.
+          case "$VERSION" in
+            *-*) pre=(--prerelease) ;;
+            *)   pre=() ;;
+          esac
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "::notice::Release $TAG already exists; updating its notes."
-            gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md
+            gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md "${pre[@]}"
           else
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md "${pre[@]}"
           fi

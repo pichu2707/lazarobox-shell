@@ -20,6 +20,163 @@ baseline.
   Finder tags, and the new file takes its group from the parent folder (BSD
   semantics).
 
+## [1.0.0] - 2026-10-30
+
+First stable release. From here on, `config.toml`, the `chat.db` format, the
+public CLI and the key bindings follow the stability promise described in the
+README. It builds on 1.0.0-rc.1 with what testing the chat on local models
+turned up: small Ollama and llama.cpp models now finish write tasks with fewer
+stops (the batch review opens by itself, refusals name the chat's folder, a
+tool call written as text or a step left unfinished gets one reminder), and
+`y` on a model's command in run mode runs it.
+
+### Changed
+
+- With Ollama and llama.cpp, reasoning that a model leaks into its answer
+  after a tool round, closed by a bare `</think>`, is now shown as reasoning
+  instead of as part of the answer. In those rounds the answer appears whole
+  at the end of the round.
+- With Ollama and llama.cpp, a model that writes a tool call as JSON text
+  instead of making it is asked once, in the same turn, to call the tool. The
+  chat shows `the model wrote a tool call as text; it was asked to call the
+  tool`. The text is never run, and the extra request counts toward the
+  turn's limit.
+- With Ollama and llama.cpp, a model whose answer ends by announcing its
+  next action ("I'll create the test next") without a tool call is asked
+  once, in the same turn, to do that step or to sum up. The chat shows `the
+  model said what it would do next without a tool call; it was asked to do
+  it`. A question, an offer, a courtesy or a summary does not count (#439).
+- With Ollama and llama.cpp, an empty answer with tools on, or one whose
+  last sentence starts with a sign-off such as "Ready for next steps." or
+  "Listo para el commit.", gets the same single reminder; the chat shows `the
+  model sent an empty answer; it was asked to go on` or `the model stopped
+  before finishing; it was asked to go on` (#439).
+- A turn that offers the write, exec or git write tools no longer tells the
+  model it cannot change files, in the system prompt or in the `run_in_pane`
+  description. The system prompt now names what its tools allow (write,
+  test, commit), says it must do every step asked in the same turn, and must
+  not claim a file, test run or commit that no tool result shows (#439).
+- The result of an applied batch now ends with `Continue with any step the
+  user asked for that is not finished yet.`, and the refusal of `run_command`
+  and the git tools while changes are staged now says `propose them first
+  with propose_batch, then call this tool again` (#439).
+- A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
+  now names the chat's folder, so a model learns where its paths start:
+  `path not available (paths are relative to the chat's folder ~/proj)`. The
+  text is still the same for every reason. Only a missing parent folder of a
+  path the policy allowed is named: `the folder src/ does not exist`.
+- When a chat turn ends normally and the model left staged changes without
+  calling `propose_batch` (common with small local models), the batch review
+  opens by itself, with the same coverage check, arming delay and `y`/`n` as a
+  proposed batch. A cancelled, timed-out or failed turn, or a chat that already
+  waits on an approval, still leaves the orphan behind `Ctrl+G`.
+- In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
+  command: lazarobox presses Enter, waits for it and returns its output to the
+  model, like a safe command that runs on its own. The prompt says
+  `y run it · n cancel · p next pane`. A command that cannot run (multi-line,
+  unknown pane directory, a busy or half-typed pane, a non-UTF-8 locale) is
+  typed without Enter as before, and the chat line says why. `ask`, `auto` and
+  the `Ctrl+Space`, `e` confirm keep typing without Enter.
+
+## [1.0.0-rc.1] - 2026-10-30
+
+First release candidate for 1.0.0. It is published to crates.io, but cargo
+does not install a pre-release unless asked for it (`cargo install
+lazarobox-shell --version 1.0.0-rc.1`). Use it, report what turns up, and
+1.0.0 follows from the last good candidate. From 1.0.0 on, `config.toml`, the
+`chat.db` format, the public CLI and the key bindings follow the stability
+promise described in the README.
+
+### Added
+
+- Chat folder: the chat now asks for its folder instead of silently using the
+  folder it was launched from. When it opens (or resumes a conversation)
+  with no usable folder, for example from a desktop launcher that starts in
+  `$HOME`, a picker offers the last used project, the repository roots of the
+  panes, recent chat folders and a typed path with `Tab` completion; `Esc`
+  keeps the current folder. `/cd <folder>` changes the folder of an open
+  chat: it is your command (it never reaches the model), asks `y` showing the
+  old and the new folder, and waits while a write, an approval or a command
+  is pending. The chat remembers its last folder and a resumed conversation
+  opens in it. To send a message that really starts with `/cd`, type
+  `//cd`.
+
+- The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
+- `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
+  before the terminal or the nesting guard are touched.
+- Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
+  `config.toml` choose where the first shell starts (flag, then config, then
+  the launch folder). An invalid folder does not stop the app: it starts in
+  the launch folder and shows a notice inside lazarobox.
+- `install-desktop --dir <folder>` writes `Path=` and `--dir=` in the
+  launcher; running it again without `--dir` removes both.
+
+### Changed
+
+- When the jail refuses a codex layout, the full reason (`y` in the menu, and the chat) now names the layout and what to do, for example `codex (standalone) is installed in a layout the jail cannot isolate: … would be both run and written; reinstall it with the official installer, npm or Homebrew`. The short form on the menu row is unchanged.
+- `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
+- An unknown option or command now prints one line on stderr and exits 2
+  instead of silently starting the TUI.
+- `chat.db` schema 3: the closed-list checks on `profile`, `role` and `status`
+  are gone (the values are still validated when written), so a new profile,
+  role or status can be added without rebuilding tables. Opening an older
+  file rebuilds `conversations`, `messages` and `tags` once, in one
+  transaction, keeping every row and id. A build that only knows schema 2
+  refuses a schema 3 file and leaves it untouched. The migration drops
+  messages or tags whose conversation no longer exists (they could never be
+  shown) and vacuums the file afterwards. Resuming a conversation leaves out
+  messages of a role this version does not know and says how many.
+
+### Fixed
+
+- The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
+- The nesting guard no longer treats the value of `--dir` as a subcommand.
+
+### Docs
+
+- README: the chat folder picker and `/cd`, and the key reference for both.
+- README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
+  `config.toml`, the `chat.db` format with forward migration, the public CLI
+  and the key bindings; what is not: `__*` subcommands, log text, UI layout),
+  an upgrade note, a single key-bindings reference for every view (the
+  `openspec/` link is gone), a security and threat-model index, and macOS
+  stated as not officially supported in 1.0.
+- `SECURITY.md`: supported versions and private vulnerability reporting.
+- `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
+## [0.30.0] - 2026-10-29
+
+### Added
+
+- Ollama downloads: with the Ollama server running, its model level ends in
+  `download from Ollama…`. It lists up to 20 of the most popular models of
+  the Ollama library that fit this PC's memory (embedding and cloud-only
+  models left out), then the exact size of each tag from its registry
+  manifest, then a confirmation with the license title, a link to read it,
+  the models folder and the free space. Nothing is pulled before `y`. The
+  pull goes through the local Ollama server (`POST /api/pull` on
+  `127.0.0.1`), with progress on the row and in the status bar, a cancel
+  prompt that keeps what Ollama pulled, and one detection when it ends.
+  When the library page cannot be read, the built-in list is shown instead.
+- One download runs at a time across Hugging Face and Ollama: while one
+  runs, the other entry row says `a download is already running`.
+
+### Changed
+
+- The loopback client may POST to `/api/pull`, for the Ollama download only;
+  chat requests still refuse that path.
+
+### Fixed
+
+- A held key no longer repeats a decision: on prompts, confirmations and
+  menus, a key held down acts once, and only a new press acts again.
+  `Ctrl+H` works as Backspace in text fields.
+- Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
+  key repeat of a held key (about 600-760 ms) can never answer one.
+- The feedback form's footers say what `Esc` does on every screen.
+
 ## [0.29.0] - 2026-10-28
 
 ### Added
@@ -1345,7 +1502,10 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
+[1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
+[0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0

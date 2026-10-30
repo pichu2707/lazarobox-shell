@@ -744,6 +744,43 @@ async fn the_sanitizer_cleans_the_text_of_every_round() {
     assert_eq!(answer, "one \ntwo", "rounds are told apart");
 }
 
+// Reasoning leaked into the answer after a tool round (qwen3 on Ollama): the
+// text before a bare `</think>` goes out as reasoning, the rest as the
+// answer, and only the answer is echoed back.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reasoning_leaked_after_a_tool_round_is_shown_as_reasoning() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text("So the path is curso.\n</think>\n\nFound it"),
+        text("next turn"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::ThinkingDelta("So the path is curso.".into()),
+            StreamEvent::Delta("Found it".into()),
+            done(),
+        ],
+        "{events:?}"
+    );
+}
+
+// The first round of a turn still streams its text as it comes.
+#[tokio::test]
+async fn the_first_round_passes_a_close_tag_through_as_text() {
+    let fake = fake(vec![text("a</think>b")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("a</think>b".into()), done()]);
+}
+
 #[tokio::test]
 async fn the_answer_cap_covers_the_whole_turn_and_stops_the_loop() {
     let block = "a".repeat(64 * 1024);
@@ -975,4 +1012,247 @@ async fn a_panicking_call_gets_an_error_result_and_the_loop_goes_on() {
         .unwrap()
         .clone();
     assert_eq!(tool["content"], ollama::FAILED);
+}
+
+// A tool call written as text (local-model-writes D3) ------------------------
+
+fn written(name: &str) -> String {
+    format!("```json\n{{\"name\": \"{name}\", \"arguments\": {{\"query\": \"curso\"}}}}\n```")
+}
+
+fn reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::text_call::TEXT_CALL_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// D3: one more request in the same turn, with the answer and the reminder;
+// the text itself is never run.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_tool_call_written_as_text_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(&written("find_dir")),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "only the real call runs");
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], written("find_dir"));
+    assert!(messages[n - 2].get("tool_calls").is_none());
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::text_call::reminder("find_dir")
+    );
+    assert!(
+        bodies[1]["tools"].is_array(),
+        "the reminder still offers tools"
+    );
+}
+
+// D3: at most one reminder a turn: a second text call ends the turn.
+#[tokio::test]
+async fn a_second_tool_call_written_as_text_ends_the_turn() {
+    let fake = fake(vec![text(&written("find_dir"))]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 1);
+    assert_eq!(tool_calls(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// D3: an answer that only names a tool, a tool not offered, or a turn
+// without tools ends the turn as before.
+#[tokio::test]
+async fn an_answer_that_is_not_a_call_to_an_offered_tool_ends_the_turn() {
+    for (answer, tools) in [
+        ("Use find_dir to look for it.".to_owned(), true),
+        (r#"{"name": "find_dir"}"#.to_owned(), true),
+        (written("rm_rf"), true),
+        (written("find_dir"), false),
+    ] {
+        let fake = fake(vec![text(&answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), 1, "{answer}");
+        assert_eq!(reminders(&events), 0, "{answer}");
+    }
+}
+
+// D3: the reminder counts toward the turn's request cap: a text call in the
+// last allowed reply ends the turn.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_text_call_in_the_last_allowed_reply_gets_no_reminder() {
+    let mut steps = vec![calls("find_dir", json!({"query": "curso"})); ollama::MAX_ROUNDS - 1];
+    steps.push(text(&written("find_dir")));
+    let fake = fake(steps).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), ollama::MAX_ROUNDS);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// D3: the retry without tools offers nothing to call, so a text call in its
+// answer gets no reminder.
+#[tokio::test]
+async fn a_text_call_in_the_retry_without_tools_gets_no_reminder() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text(&written("find_dir")),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// A next step announced in prose (#439) --------------------------------------
+
+const ANNOUNCED: &str =
+    "The tests haven't been created yet. I'll need to create a `test_fibonacci.py` file next.";
+
+fn next_step_reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::NEXT_STEP_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// #439: one more request in the same turn, with the answer and the reminder.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_announced_next_step_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(ANNOUNCED),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(next_step_reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], ANNOUNCED);
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::next_step::NEXT_STEP_REMINDER
+    );
+    assert!(bodies[1]["tools"].is_array());
+}
+
+// #439: at most one reminder a turn; a question, an offer or a turn without
+// tools ends the turn as before.
+#[tokio::test]
+async fn a_second_announcement_a_question_or_no_tools_ends_the_turn() {
+    for (answer, tools, requests, reminded) in [
+        (ANNOUNCED, true, 2, 1),
+        ("Shall I commit it?", true, 1, 0),
+        ("If you want, I'll add more tests.", true, 1, 0),
+        (ANNOUNCED, false, 1, 0),
+    ] {
+        let fake = fake(vec![text(answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), requests, "{answer}");
+        assert_eq!(next_step_reminders(&events), reminded, "{answer}");
+        assert_eq!(events.last(), Some(&done()), "{answer}");
+    }
+}
+
+// #439: a turn that offers the write, exec or git write tools tells the model
+// it can change files and must finish every step; any other keeps the
+// "cannot change files" sentence.
+#[tokio::test]
+async fn the_system_prompt_follows_the_families_of_the_turn() {
+    use crate::core::ai::chat::prompts::with_tools;
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::LEGACY.with(Family::Write),
+        FamilySet::LEGACY.with(Family::Exec),
+        FamilySet::LEGACY.with(Family::GitWrite),
+    ] {
+        let fake = fake(vec![text("ok")]).await;
+        let mut lab = lab(fake.port);
+        let mut request = ask(&lab, true);
+        request.families = families;
+        lab.chats.send(pane(1), 1, request);
+        finish(&mut lab.rx).await;
+        let system = &fake.bodies()[0]["messages"][0];
+        assert_eq!(system["role"], "system");
+        assert_eq!(
+            system["content"],
+            with_tools("be brief", families),
+            "{families:?}"
+        );
+    }
+}
+
+// #439: an empty answer with tools on gets one reminder in the same turn; it
+// shares the turn's one "go on" reminder with an announced step.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_empty_answer_after_a_tool_round_gets_one_reminder() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text(""),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::EMPTY_NOTICE.into());
+    assert_eq!(
+        events.iter().filter(|e| **e == line).count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(tool_calls(&events), 2);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 4);
+    let messages = bodies[2]["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        crate::core::ai::chat::next_step::EMPTY_REMINDER
+    );
+}
+
+#[tokio::test]
+async fn an_announcement_after_an_empty_answer_ends_the_turn() {
+    let fake = fake(vec![text(""), text(ANNOUNCED)]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(next_step_reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
 }

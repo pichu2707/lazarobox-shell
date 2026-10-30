@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub mod catalog;
 pub mod chat;
+pub mod codex_install;
 pub mod config;
 pub mod gguf;
 pub mod hf;
@@ -14,6 +15,7 @@ pub mod install;
 pub mod jail;
 pub mod memory;
 pub mod menu;
+pub mod ollama_lib;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
@@ -243,6 +245,10 @@ pub struct Diagnostics {
     /// Why this CLI would run without its jail here (`None`: it is jailed,
     /// or it has no jail).
     pub jail: Option<String>,
+    /// The long form of `jail` (what to do about it), for `y` and the chat.
+    pub jail_full: Option<String>,
+    /// How codex is installed. For messages only: no rule reads it.
+    pub install: Option<codex_install::CodexInstall>,
 }
 
 /// One finished run. An empty `Detection` means the run failed.
@@ -291,6 +297,10 @@ pub enum Probe {
         /// A few words on why the CLI cannot be jailed here; `None` when it
         /// can, or when the CLI has no jail.
         jail: Option<String>,
+        /// The long form of `jail`, naming the layout and what to do.
+        jail_full: Option<String>,
+        /// How codex is installed (messages only).
+        install: Option<codex_install::CodexInstall>,
     },
 }
 
@@ -313,10 +323,22 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                         stdout,
                         listing,
                         jail,
+                        jail_full,
+                        install,
                         ..
                     }),
                     Kind::Cli,
-                ) => cli_state(engine.id, stdout.as_deref(), listing.as_ref(), jail.clone()),
+                ) => cli_state(
+                    engine.id,
+                    stdout.as_deref(),
+                    listing.as_ref(),
+                    Diagnostics {
+                        models: None,
+                        jail: jail.clone(),
+                        jail_full: jail_full.clone(),
+                        install: *install,
+                    },
+                ),
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
@@ -340,7 +362,7 @@ fn cli_state(
     id: &'static str,
     stdout: Option<&[u8]>,
     listing: Option<&Result<Vec<u8>, String>>,
-    jail: Option<String>,
+    notes: Diagnostics,
 ) -> EngineState {
     let (labels, note) = match (id, listing) {
         ("codex", Some(Ok(raw))) => {
@@ -360,7 +382,10 @@ fn cli_state(
         models,
         model_labels: labels,
         version: stdout.and_then(parse::parse_version),
-        diagnostics: Diagnostics { models: note, jail },
+        diagnostics: Diagnostics {
+            models: note,
+            ..notes
+        },
         ..bare(id, Status::Available)
     }
 }
@@ -406,6 +431,21 @@ fn server_state(
 /// The row text of a detected engine that has no chat adapter yet.
 const DETECTED_ONLY: &str = "detected · not in chat yet";
 
+/// Start of the row text of a CLI the jail will refuse to start.
+pub const REFUSED: &str = "refused · ";
+
+/// Whether `id` is a CLI that needs its jail and the jail will not hold it
+/// here (its layout, or the system): chat refuses to start it. Such an
+/// engine is never shown as available or offered as a working choice.
+pub fn is_refused(detection: Option<&Detection>, id: &str) -> bool {
+    chat::engine::JAIL_REQUIRED.contains(&id)
+        && detection.is_some_and(|d| {
+            d.engines.iter().any(|s| {
+                s.id == id && s.status == Status::Available && s.diagnostics.jail.is_some()
+            })
+        })
+}
+
 /// Display text of an engine: `detecting…` before the first result,
 /// `not detected` for an id outside the catalog, `unknown` when the run
 /// produced nothing for it.
@@ -442,8 +482,19 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
                 );
             }
             match &state.diagnostics.jail {
+                // A CLI that does not run without its jail is refused, not
+                // available: the chat would fail to start it.
+                Some(why) if is_refused(Some(detection), id) => format!("{REFUSED}{why}"),
                 Some(why) => format!("available · no jail: {why}"),
-                None => format!("available · {version}"),
+                // The layout is a note for the person; `Other` has no word.
+                None => match state
+                    .diagnostics
+                    .install
+                    .and_then(codex_install::CodexInstall::label)
+                {
+                    Some(how) => format!("available · {version} · {how}"),
+                    None => format!("available · {version}"),
+                },
             }
         }
     }
@@ -871,6 +922,8 @@ mod tests {
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
             listing: None,
             jail: None,
+            jail_full: None,
+            install: None,
         }
     }
 
@@ -897,6 +950,8 @@ mod tests {
             stdout: Some(b"codex-cli 0.162.1\n".to_vec()),
             listing: Some(Ok(raw.as_bytes().to_vec())),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         let codex = get(&d, "codex").unwrap();
         assert_eq!(codex.status, Status::Available);
@@ -918,6 +973,8 @@ mod tests {
             stdout: None,
             listing: listing.map(|l| l.map(<[u8]>::to_vec).map_err(str::to_owned)),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         get(&d, "codex").unwrap()
     }
@@ -956,6 +1013,8 @@ mod tests {
                 br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()
             )),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         assert_eq!(
             get(&d, "claude"),
@@ -1035,24 +1094,60 @@ mod tests {
     }
 
     #[test]
-    fn a_cli_without_a_jail_puts_the_reason_where_a_narrow_row_keeps_it() {
-        let mut codex = state_of("codex", Some("codex-cli 0.130.0"));
-        codex.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
+    fn a_claude_without_a_jail_runs_bare_and_keeps_the_reason_first() {
+        let mut claude = state_of("claude", Some("2.1.300"));
+        claude.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
         let d = Detection {
-            engines: vec![codex],
+            engines: vec![claude],
             ..Default::default()
         };
         assert_eq!(
-            text(&d, "codex"),
+            text(&d, "claude"),
             "available · no jail: Landlock ABI 2, needs 3+"
         );
-        let mut unknown = state_of("gemini", None);
-        unknown.diagnostics.jail = Some("~/.nvm too broad".to_owned());
-        let d = Detection {
-            engines: vec![unknown],
-            ..Default::default()
+        assert!(!is_refused(Some(&d), "claude"));
+    }
+
+    #[test]
+    fn a_cli_that_needs_its_jail_is_refused_not_available() {
+        for (id, why) in [
+            ("codex", "…/bin is run and written"),
+            ("gemini", "~/.nvm too broad"),
+            ("codex", "Landlock ABI 2, needs 3+"),
+        ] {
+            let mut cli = state_of(id, Some("1.0.0"));
+            cli.diagnostics.jail = Some(why.to_owned());
+            let d = Detection {
+                engines: vec![cli],
+                ..Default::default()
+            };
+            assert_eq!(text(&d, id), format!("refused · {why}"));
+            assert!(is_refused(Some(&d), id));
+        }
+        assert!(!is_refused(None, "codex"));
+    }
+
+    #[test]
+    fn the_install_layout_follows_the_version_and_other_says_nothing() {
+        use codex_install::CodexInstall::{Homebrew, Other, Standalone};
+        let with = |install| {
+            let mut codex = state_of("codex", Some("codex-cli 0.153.4"));
+            codex.version = Some("0.153.4".to_owned());
+            codex.diagnostics.install = Some(install);
+            Detection {
+                engines: vec![codex],
+                ..Default::default()
+            }
         };
-        assert_eq!(text(&d, "gemini"), "available · no jail: ~/.nvm too broad");
+        assert_eq!(
+            text(&with(Standalone), "codex"),
+            "available · 0.153.4 · standalone"
+        );
+        assert_eq!(
+            text(&with(Homebrew), "codex"),
+            "available · 0.153.4 · homebrew"
+        );
+        assert_eq!(text(&with(Other), "codex"), "available · 0.153.4");
     }
 
     fn state_of(id: &'static str, version: Option<&str>) -> EngineState {
@@ -1070,6 +1165,8 @@ mod tests {
             stdout: None,
             listing: None,
             jail: jail.map(str::to_owned),
+            jail_full: None,
+            install: None,
         };
         let d = reduce(&[probe("codex", Some("needs Linux")), probe("claude", None)]);
         assert_eq!(

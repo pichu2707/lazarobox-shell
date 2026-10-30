@@ -15,6 +15,15 @@ use crate::core::{ai::sanitize::clean, layout::PaneId};
 pub const RETENTION_LIMIT: usize = 200;
 /// System line for a new conversation that made the store evict the oldest.
 pub const EVICTED_LINE: &str = "oldest conversation removed (limit 200)";
+/// System line for a resumed conversation whose stored profile this build does
+/// not know.
+pub const UNKNOWN_PROFILE_LINE: &str =
+    "saved profile is unknown to this version; keeping the current one";
+/// System line for messages a resume left out because this build does not
+/// know their role.
+pub fn skipped_line(count: usize) -> String {
+    format!("{count} saved message(s) from a newer version are not shown")
+}
 /// System line for a write that failed in the middle of a session.
 pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 /// System line for a conversation another pane deleted while this one has it
@@ -55,6 +64,8 @@ pub enum StoreCmd {
         /// The cwd the chat was opened from: when `tag` is not known yet (the
         /// list has not answered), the store thread resolves it from here.
         origin: Option<PathBuf>,
+        /// The chat folder, kept with the conversation for a resume.
+        folder: Option<PathBuf>,
         open: Vec<i64>,
     },
     /// Adds a message. `conversation` is `None` while the pane does not know
@@ -74,6 +85,9 @@ pub enum StoreCmd {
         conversation: i64,
         session_id: String,
         project: String,
+        /// The conversation moved to another project (a folder change): the
+        /// stored pair is replaced instead of kept.
+        replace: bool,
     },
     /// Records that `conversation` wrote the note `(project, topic_key)`. The
     /// row is upserted, so the last writer owns it. Only ids and the title are
@@ -95,6 +109,18 @@ pub enum StoreCmd {
         conversation: Option<i64>,
         tags: Tags,
     },
+    /// Replaces the folder a conversation is kept under and bumps its last
+    /// activity. `conversation` is `None` while the pane does not know its id
+    /// yet (as for `Append`). Silent: a lost write only means a resume asks.
+    SetFolder {
+        pane: PaneId,
+        conversation: Option<i64>,
+        folder: PathBuf,
+    },
+    /// The folders conversations were kept under, newest activity first, at
+    /// most `limit`. Read-only. Answered with `RecentFolders`; a store that
+    /// cannot be read answers an empty list.
+    RecentFolders { pane: PaneId, limit: usize },
     /// The conversations of the store, newest last activity first, and the
     /// project tag of `origin` (resolved on the store thread: it walks the
     /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
@@ -216,6 +242,12 @@ pub enum StoreReply {
         extras: Vec<String>,
         messages: Vec<Msg>,
         session: Option<(String, String)>,
+        /// The folder the conversation was kept under; `None` for one stored
+        /// before the column existed.
+        folder: Option<PathBuf>,
+        /// Stored messages of a role this build does not know (written by a
+        /// newer one): left out, so they never show as someone else's words.
+        skipped: usize,
     },
     ResumeFailed {
         pane: PaneId,
@@ -241,6 +273,11 @@ pub enum StoreReply {
     },
     TagsFailed {
         pane: PaneId,
+    },
+    /// The answer to `RecentFolders`: each folder once, newest first.
+    RecentFolders {
+        pane: PaneId,
+        folders: Vec<PathBuf>,
     },
 }
 
@@ -309,6 +346,8 @@ pub struct NewConversation {
     pub tag: Option<String>,
     pub extras: Vec<String>,
     pub origin: Option<PathBuf>,
+    /// The chat folder at the time of the first save.
+    pub folder: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
 }
@@ -367,6 +406,7 @@ impl PaneStore {
                     extras: new.extras.clone(),
                     first: message,
                     origin: new.origin.clone(),
+                    folder: new.folder.clone(),
                     open: new.open.clone(),
                 })
             }
@@ -398,6 +438,22 @@ impl PaneStore {
             pane,
             conversation,
             tags,
+        })
+    }
+
+    /// The command that stores `folder` now. A conversation not created yet
+    /// keeps it for its `Create`; one being created is named by its pane; a
+    /// detached one stores nothing.
+    pub fn set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::SetFolder {
+            pane,
+            conversation,
+            folder,
         })
     }
 

@@ -41,7 +41,7 @@ pub trait ToolCalls {
 
 /// Splits bytes into lines at `\n`, dropping a trailing `\r`. A line over the
 /// cap is reported once and the buffer is dropped.
-pub(super) struct Lines {
+pub(crate) struct Lines {
     buf: Vec<u8>,
     /// Leading bytes of `buf` already known to hold no newline.
     scanned: usize,
@@ -49,10 +49,10 @@ pub(super) struct Lines {
 }
 
 /// A line was longer than the cap.
-pub(super) struct TooLong;
+pub(crate) struct TooLong;
 
 impl Lines {
-    pub(super) fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             buf: Vec::new(),
             scanned: 0,
@@ -60,7 +60,7 @@ impl Lines {
         }
     }
 
-    pub(super) fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         let mut start = 0;
@@ -90,7 +90,7 @@ impl Lines {
     }
 
     /// The last line, when the stream ended without a newline.
-    pub(super) fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
+    pub(crate) fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
         self.scanned = 0;
         let buf = std::mem::take(&mut self.buf);
         let line = trim_cr(&buf);

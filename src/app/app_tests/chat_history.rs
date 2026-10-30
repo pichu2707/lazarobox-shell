@@ -12,7 +12,7 @@ use crate::core::{
             prompts::Resolved,
             store::{
                 ConvRow, DELETED_LINE, NoteRow, SAVE_FAILED_LINE, StoreCmd, StoreReply,
-                UNAVAILABLE_PREFIX,
+                UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
             },
         },
         config::{Assignment, Profile, Task},
@@ -390,6 +390,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
             first,
             origin,
             open,
+            ..
         }),
         Effect::ChatSend { .. },
     ] = effects.as_slice()
@@ -695,6 +696,8 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
             stored(Role::Assistant, "par", MsgStatus::Interrupted),
         ],
         session: None,
+        folder: None,
+        skipped: 0,
     })
 }
 
@@ -717,11 +720,45 @@ fn enter_asks_the_store_for_the_conversation() {
     );
 }
 
+// A profile or a role written by a newer build is not guessed at: the pane
+// keeps its own profile and says what it left out.
+#[test]
+fn a_resume_of_an_unknown_profile_or_skipped_rows_says_so() {
+    let mut a = listing();
+    let AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        tag,
+        extras,
+        messages,
+        session,
+        folder,
+        ..
+    }) = resumed(chat_id(), 30, "reviewer")
+    else {
+        unreachable!()
+    };
+    a.update(AppEvent::Store(StoreReply::Resumed {
+        pane,
+        conversation,
+        profile: "reviewer".into(),
+        tag,
+        extras,
+        messages,
+        session,
+        folder,
+        skipped: 2,
+    }));
+    let lines = systems(chat_of(&a));
+    assert!(lines.iter().any(|l| l == UNKNOWN_PROFILE_LINE), "{lines:?}");
+    assert!(lines.iter().any(|l| l == &skipped_line(2)), "{lines:?}");
+}
+
 // Spec: Full history restored.
 #[test]
 fn a_resumed_conversation_shows_every_stored_message_in_order() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let chat = chat_of(&a);
     assert!(chat.list().is_none());
     let got: Vec<(Role, &str, MsgStatus)> = chat
@@ -751,7 +788,7 @@ fn a_resumed_conversation_shows_every_stored_message_in_order() {
 #[test]
 fn a_message_after_a_resume_appends_and_uses_the_current_engine() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let effects = ask(&mut a, "third");
     let saved = stores(&effects);
     assert!(matches!(
@@ -786,7 +823,7 @@ fn a_message_after_a_resume_appends_and_uses_the_current_engine() {
 #[test]
 fn a_stored_profile_other_than_the_current_prepares_the_prompt_again() {
     let mut a = listing();
-    let effects = a.update(resumed(chat_id(), 10, "analyst"));
+    let effects = a.update_settled(resumed(chat_id(), 10, "analyst"));
     let [Effect::PreparePrompt { pane, profile, .. }] = effects.as_slice() else {
         panic!("expected one PreparePrompt, got {effects:?}");
     };
@@ -803,7 +840,7 @@ fn a_stored_profile_other_than_the_current_prepares_the_prompt_again() {
 #[test]
 fn the_same_profile_keeps_the_prompt() {
     let mut a = listing();
-    let effects = a.update(resumed(chat_id(), 30, "programmer"));
+    let effects = a.update_settled(resumed(chat_id(), 30, "programmer"));
     assert_eq!(effects, Vec::new());
     assert_eq!(chat_of(&a).prompt(), Some("system prompt"));
 }
@@ -813,7 +850,7 @@ fn a_profile_change_while_the_first_prompt_is_in_flight_drops_that_answer() {
     let (mut a, _) = opened();
     listed(&mut a, chat_id(), rows());
     // The resume arrives before the prompt prepared at open.
-    let none = a.update(resumed(chat_id(), 10, "analyst"));
+    let none = a.update_settled(resumed(chat_id(), 10, "analyst"));
     assert_eq!(none, Vec::new());
     let again = a.update(prompt_for(chat_id()));
     let [Effect::PreparePrompt { profile, .. }] = again.as_slice() else {
@@ -853,7 +890,7 @@ fn a_resume_that_lost_the_race_is_refused_too() {
     a.update(plain(KeyCode::Enter));
     // Pane A's conversation turns out to be 30 before B's reply lands.
     a.update(created(chat_id(), 30));
-    a.update(resumed(b, 30, "programmer"));
+    a.update_settled(resumed(b, 30, "programmer"));
     assert!(chat_at(&a, b).list().is_some());
     assert_eq!(chat_at(&a, b).list().unwrap().line(), Some(OPEN_ELSEWHERE));
 }
@@ -984,6 +1021,7 @@ fn the_server_offer_does_not_take_the_keys_of_the_list() {
         "the question shows now"
     );
     // In the conversation view the offer takes its keys again.
+    let_go();
     a.update(key('n'));
     assert_eq!(a.chat_guidance(chat_id()), None, "declined");
 }
@@ -992,7 +1030,7 @@ fn the_server_offer_does_not_take_the_keys_of_the_list() {
 #[test]
 fn ctrl_r_does_nothing_in_a_resumed_conversation() {
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let before = chat_of(&a).generation();
     let effects = a.update(ctrl('r'));
     assert_eq!(effects, Vec::new());
@@ -1004,7 +1042,7 @@ fn ctrl_r_does_nothing_in_a_resumed_conversation() {
 fn a_partial_message_keeps_its_mark_after_a_resume() {
     use crate::core::ai::chat::transcript::LineKind;
     let mut a = listing();
-    a.update(resumed(chat_id(), 30, "programmer"));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
     let marks = chat_of(&a)
         .lines(80)
         .iter()

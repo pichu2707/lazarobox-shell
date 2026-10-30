@@ -8,7 +8,9 @@ use crate::core::ai::chat::{
         DELETE_FAILED, LIST_FAILED, ListOutcome, NotesStay, OPEN_ELSEWHERE, RESUME_FAILED,
         notes_result_line, notes_stay_line,
     },
-    store::{ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    store::{
+        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
+    },
     tags::Tags,
 };
 
@@ -102,7 +104,7 @@ impl App {
     }
 
     /// The effect that prepares chat `id`'s system prompt for its profile.
-    fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
+    pub(super) fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
         let chat = self.panes.get(&id)?.chat_state()?;
         Some(Effect::PreparePrompt {
             pane: id,
@@ -325,12 +327,21 @@ impl App {
                 extras,
                 messages,
                 session,
+                folder,
+                skipped,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
                     extras: extras.clone(),
                 };
-                self.on_resumed(*pane, *conversation, profile, tags, messages, session)
+                self.on_resumed(
+                    *pane,
+                    *conversation,
+                    profile,
+                    tags,
+                    messages,
+                    (session, folder, *skipped),
+                )
             }
             StoreReply::ResumeFailed { pane } => {
                 self.set_list_line(*pane, RESUME_FAILED);
@@ -370,6 +381,9 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::RecentFolders { pane, folders } => {
+                self.on_recent_folders(*pane, folders.clone())
+            }
         }
     }
 
@@ -421,7 +435,7 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
-        session: &Option<(String, String)>,
+        (session, folder, skipped): (&Option<(String, String)>, &Option<PathBuf>, usize),
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -435,9 +449,18 @@ impl App {
             return Vec::new();
         };
         chat.set_approval_mode(mode);
-        let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
+        // A profile this build does not know (a newer one stored it) keeps the
+        // current one, and the pane says so.
+        let known = Profile::from_id(profile);
+        let profile = known.unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
         chat.resume_into(conversation, profile, tags, messages.to_vec());
+        if known.is_none() {
+            chat.push_system(UNKNOWN_PROFILE_LINE);
+        }
+        if skipped > 0 {
+            chat.push_system(skipped_line(skipped));
+        }
         // The pair its notes were written under is reused before the first
         // write: engram rejects a session under another project, and the
         // store already holds the link.
@@ -445,11 +468,13 @@ impl App {
             chat.replace_session(session_id, project);
         }
         self.dirty = true;
-        if reprepare {
+        let mut effects: Vec<Effect> = if reprepare {
             self.prepare_prompt(id).into_iter().collect()
         } else {
             Vec::new()
-        }
+        };
+        effects.extend(self.probe_stored_folder(id, conversation, folder.as_deref()));
+        effects
     }
 
     /// The runtime prepared a system prompt for chat `id`. When the profile
