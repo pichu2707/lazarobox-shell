@@ -53,7 +53,7 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - THEN the result is `denied` and no process was started
 
 ### Requirement: Refusals before start
-`run_command` MUST be refused when any of these holds: no jail is active (Landlock ABI below 3, or a non-Linux system); the chat origin fails the root policy; `cwd` resolves outside the root; the chat holds unproposed staged changes (message `propose them first`); a run is already active in this chat; or two runs are already active across the whole app. A refusal MUST happen before any prompt. Tests always run against the disk, never against staged content.
+`run_command` MUST be refused when any of these holds: no jail is active (Landlock ABI below 3, or a non-Linux system); the chat origin fails the root policy (when the origin is `$HOME`, a parent of `$HOME` or `/`, the text is the fixed `path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb and never naming the folder or a path); `cwd` resolves outside the root; the chat holds unproposed staged changes (message `propose them first`); a run is already active in this chat; or two runs are already active across the whole app. A refusal MUST happen before any prompt. Tests always run against the disk, never against staged content.
 
 #### Scenario: No jail [auto]
 - GIVEN a system where the jail probe fails
