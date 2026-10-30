@@ -31,6 +31,10 @@ baseline.
   description. The system prompt now names what its tools allow (write,
   test, commit), says it must do every step asked in the same turn, and must
   not claim a file, test run or commit that no tool result shows (#439).
+- The result of an applied batch now ends with `Continue with any step the
+  user asked for that is not finished yet.`, and the refusal of `run_command`
+  and the git tools while changes are staged now says `propose them first
+  with propose_batch, then call this tool again` (#439).
 - A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
   now names the chat's folder, so a model learns where its paths start:
   `path not available (paths are relative to the chat's folder ~/proj)`. The

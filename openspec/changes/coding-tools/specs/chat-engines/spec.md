@@ -72,3 +72,11 @@ When a turn offers the write, exec or git write tools, the tools block of its sy
 - GIVEN a turn that offers the write tools
 - WHEN its first request is sent
 - THEN its system message holds the coding block and not "cannot change files"
+
+### Requirement: Tool texts tell a model how to go on
+The result of `propose_batch` for an applied batch MUST end with the line `Continue with any step the user asked for that is not finished yet.`; a rejected, drifted or failed batch MUST NOT get it, and the line shown in the pane MUST stay the first line of the result. The refusal of `run_command` and the git tools while unproposed changes are staged MUST read `staged changes are not proposed: propose them first with propose_batch, then call this tool again` (#439).
+
+#### Scenario: Applied batch [auto]
+- GIVEN a staged batch the user approves
+- WHEN `propose_batch` returns
+- THEN its text ends with the continue line, and a denied batch's text does not hold it

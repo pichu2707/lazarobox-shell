@@ -326,6 +326,13 @@ async fn an_approved_batch_is_applied_and_the_model_gets_counts_and_paths() {
     assert!(!out.is_error, "{out:?}");
     assert!(out.text.starts_with("applied 2 paths:"), "{}", out.text);
     assert!(out.text.contains("sub/a.txt"), "{}", out.text);
+    // #439: a small model stops after the review; the result tells it to go on.
+    assert!(
+        out.text
+            .ends_with("\nContinue with any step the user asked for that is not finished yet."),
+        "{}",
+        out.text
+    );
     assert!(!out.text.contains("one"), "{}", out.text);
     assert_eq!(
         std::fs::read_to_string(w.proj.join("sub/a.txt")).unwrap(),
@@ -920,6 +927,11 @@ async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
             _ => unreachable!(),
         };
         assert!(proposed.starts_with(expect), "{proposed}");
+        assert_eq!(
+            proposed.contains("Continue with any step"),
+            matches!(answer, Decision::Sent),
+            "{proposed}"
+        );
         let rows: Vec<String> = events(&mut rx).iter().map(|e| format!("{e:?}")).collect();
         // One ToolCall and one ToolResult for each of the two calls.
         assert_eq!(rows.len(), 4, "{rows:?}");
