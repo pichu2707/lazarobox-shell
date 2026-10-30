@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use super::changes::{Change, ChangeLedger};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
@@ -94,6 +95,9 @@ struct Slot {
     status: WorkerStatus,
     started: Option<Instant>,
     result: Option<WorkerResult>,
+    /// What the worker staged (S7). Kept across a retry: the staged files
+    /// stay in the pane's batch whatever the attempt.
+    ledger: ChangeLedger,
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +154,26 @@ impl Run {
         self.slot(id)?.result.as_ref()
     }
 
+    /// What worker `id` staged.
+    pub fn ledger(&self, id: WorkerId) -> Option<&ChangeLedger> {
+        self.slot(id).map(|slot| &slot.ledger)
+    }
+
+    /// The host staged `change` for worker `id`.
+    pub fn staged(&mut self, id: WorkerId, change: Change) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.ledger.staged(change);
+        }
+    }
+
+    /// The user's batch review applied a batch holding `paths` that worker
+    /// `id` proposed.
+    pub fn applied(&mut self, id: WorkerId, paths: &[String]) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.ledger.applied(paths);
+        }
+    }
+
     /// Creates a worker. An unavailable engine still creates it, as `Refused`
     /// with the reason, and halts the run like any failure: no other engine
     /// is tried. Only a paused or ended run refuses outright.
@@ -165,6 +189,7 @@ impl Run {
             status: WorkerStatus::Queued,
             started: None,
             result: None,
+            ledger: ChangeLedger::default(),
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal);
@@ -285,14 +310,21 @@ impl Run {
     /// capped and wrapped as untrusted data under a nonce derived from
     /// `nonce_bytes`. The bytes MUST come from the OS CSPRNG on every call and
     /// never be reused or shown to the worker, or its text could forge the
-    /// closing tag.
+    /// closing tag. A worker that staged files has its `files changed`
+    /// ledger first, inside the wrapper: its paths are the worker's names.
     pub fn collect_wrapped(
         &self,
         nonce_bytes: [u8; 8],
         id: WorkerId,
     ) -> Result<String, CollectError> {
         let nonce = label::nonce_from(nonce_bytes);
-        self.collect(id).map(|text| label::wrap(&nonce, text))
+        let text = self.collect(id)?;
+        // The ledger comes first, so the cap on a long answer never hides it.
+        let ledger = self.ledger(id).and_then(ChangeLedger::render);
+        Ok(match ledger {
+            Some(ledger) => label::wrap(&nonce, &format!("{ledger}\n\n{text}")),
+            None => label::wrap(&nonce, text),
+        })
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.

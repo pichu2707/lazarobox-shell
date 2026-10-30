@@ -37,8 +37,13 @@ fn seconds(left: Duration) -> String {
 
 /// The counter row, and whether it is a warning.
 fn header(view: &ReviewView, now: Instant) -> (String, bool) {
+    // A worker's batch names the worker first; a chat's batch is unchanged.
+    let by = view
+        .review()
+        .label()
+        .map_or_else(String::new, |label| format!("{label} · "));
     if !view.reviewable() {
-        return (WARN_TRUNCATED.to_owned(), true);
+        return (format!("{by}{WARN_TRUNCATED}"), true);
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
@@ -51,7 +56,7 @@ fn header(view: &ReviewView, now: Instant) -> (String, bool) {
     };
     let counts = view.review().counts();
     (
-        format!("{counts} · seen {}/{total} · {gate}", total - remaining),
+        format!("{by}{counts} · seen {}/{total} · {gate}", total - remaining),
         false,
     )
 }
@@ -114,4 +119,32 @@ pub fn render(
         KEYS_LOCKED
     };
     put(buf, area.height - 1, keys, base.fg(theme.text_muted));
+}
+
+#[cfg(test)]
+mod label_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::core::ai::chat::{review::BatchReview, review_view::testing::review_of};
+
+    fn header_of(review: Arc<BatchReview>) -> String {
+        let view = ReviewView::new(review, (80, 20));
+        // Long after the arm delay, so the gate reads the same each time.
+        header(&view, Instant::now() + Duration::from_secs(3600)).0
+    }
+
+    // Spec (agent-orchestrator, Writes wait for the batch review [S7]): a
+    // worker's batch is labelled with the worker in the review header, and
+    // a chat's own batch keeps its header as it was.
+    #[test]
+    fn a_worker_batch_names_the_worker_and_a_chat_batch_is_unchanged() {
+        let plain = review_of(&[("a.txt", "one\n", false)]);
+        let chat = header_of(plain.clone());
+        assert!(chat.starts_with(&plain.counts()), "{chat}");
+        let doc = plain.doc().clone();
+        let worker = Arc::new(BatchReview::labelled(doc, "code codex>default".into()));
+        let shown = header_of(worker);
+        assert_eq!(shown, format!("code codex>default · {chat}"));
+    }
 }

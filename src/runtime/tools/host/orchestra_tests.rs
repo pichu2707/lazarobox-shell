@@ -22,12 +22,19 @@ use crate::core::{
         config::Task,
         orchestra::{
             RunId, Toolset, WorkerId,
+            changes::{Change, ChangeLedger},
             run::{Roster, Run, UserChoice, WorkerEvent},
             scope::ReadScope,
             tools::{MAX_PROMPT_BYTES, OrchCall, WAIT_MAX_SECS},
             worker::ErrorClass,
         },
-        tools::{Lines, paths::SecretRoots, summary::SUMMARY_CAP},
+        tools::{
+            Lines,
+            paths::{REFUSED, SecretRoots},
+            registry::Family,
+            stage::StageKey,
+            summary::SUMMARY_CAP,
+        },
     },
     layout::PaneId,
 };
@@ -97,6 +104,7 @@ fn worker(
     scope.read_scope = Some(WorkerScope {
         handle,
         run: RunId(1),
+        worker: WorkerId(1),
         label: worker_label(Task::Review, "claude", "opus"),
     });
     (scope, rx)
@@ -282,6 +290,8 @@ fn project(home: &Path) {
 struct Scoped {
     scope: ReadScope,
     run: Mutex<Run>,
+    /// What the host reported a worker staged and applied.
+    ledger: Mutex<ChangeLedger>,
 }
 
 impl Scoped {
@@ -306,6 +316,7 @@ impl Scoped {
         Arc::new(Self {
             scope,
             run: Mutex::new(run),
+            ledger: Mutex::default(),
         })
     }
 
@@ -339,6 +350,19 @@ impl Orchestra for Scoped {
             return None;
         }
         self.scope.allows(&live, secrets, origin, input)
+    }
+
+    fn allows_write(&self, run: RunId, real: &Path) -> bool {
+        let live = self.run.lock().unwrap();
+        live.id() == run && self.scope.allows_write(&live, real)
+    }
+
+    fn staged(&self, _: RunId, _: WorkerId, change: Change) {
+        self.ledger.lock().unwrap().staged(change);
+    }
+
+    fn applied(&self, _: RunId, _: WorkerId, paths: &[String]) {
+        self.ledger.lock().unwrap().applied(paths);
     }
 }
 
@@ -937,4 +961,155 @@ async fn a_cancelled_workers_pending_read_ends_denied() {
         assert_eq!(pending.count(), 0, "{how}");
         assert!(!waits.decide(PANE, TURN, id, Decision::Sent), "{how}");
     }
+}
+
+/// A `code` worker turn of pane [`PANE`] in `~/dev/app`: the read and write
+/// families and the pane's batch, as the run manager opens it (S7).
+fn writer(
+    host: &Arc<ToolHost>,
+    locality: Locality,
+    home: &Path,
+    handle: Arc<dyn Orchestra>,
+    approver: Arc<dyn Approver>,
+) -> Arc<dyn Dispatch> {
+    let (mut scope, _rx) = worker_in_app(locality, home, handle);
+    scope.families = Toolset::ReadOnly.families().with(Family::Write);
+    scope.stage_key = Some(StageKey::Pane(PANE));
+    scope.approver = approver;
+    // The rows are not looked at here: a full channel would only wait.
+    let (tx, mut rx) = mpsc::channel(64);
+    scope.events = tx;
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    host.dispatch(scope)
+}
+
+fn write_call(path: &str, content: &str) -> Call {
+    Call::WriteFile {
+        path: path.into(),
+        content: content.into(),
+    }
+}
+
+fn paths_of(ledger: &ChangeLedger) -> Vec<(String, Option<u64>, bool)> {
+    let each = ledger.changes().iter();
+    each.map(|c| (c.path.clone(), c.size, c.applied)).collect()
+}
+
+// Spec (agent-orchestrator, Writes wait for the batch review [S7]): a `code`
+// worker's write inside its run's scope is staged with no ask (an edit's
+// read included, on a cloud engine), goes to its ledger, and nothing reaches
+// the disk. Its `propose_batch` asks a batch review labelled with the
+// worker; the approval mode's answer (`run` included) never approves it, and
+// only the user's `y` writes, which the ledger then marks applied.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_write_in_scope_is_staged_and_only_the_users_review_writes_it() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let unprompted = Scripted::new(Decision::Unprompted);
+    let d = writer(
+        &host,
+        Locality::Cloud,
+        &home,
+        handle.clone(),
+        unprompted.clone(),
+    );
+    let staged = d.call(write_call("new.rs", "fn x() {}")).await;
+    assert!(
+        !staged.is_error && staged.text.starts_with("staged new.rs"),
+        "{staged:?}"
+    );
+    let edit = Call::EditFile {
+        path: "a.rs".into(),
+        old: "inside".into(),
+        new: "changed".into(),
+    };
+    let edited = d.call(edit).await;
+    assert!(!edited.is_error, "{edited:?}");
+    assert!(
+        unprompted.asked.lock().unwrap().is_empty(),
+        "staging asks nothing"
+    );
+    let app = home.join("dev/app");
+    assert!(!app.join("new.rs").exists());
+    assert_eq!(
+        std::fs::read_to_string(app.join("a.rs")).unwrap(),
+        "inside the scope"
+    );
+    assert_eq!(
+        paths_of(&handle.ledger.lock().unwrap()),
+        [
+            ("new.rs".into(), Some(9), false),
+            ("a.rs".into(), Some(17), false)
+        ]
+    );
+    let denied = d.call(Call::ProposeBatch).await;
+    assert!(
+        denied.is_error && denied.text.starts_with("denied"),
+        "{denied:?}"
+    );
+    let asked = unprompted.asked.lock().unwrap().clone();
+    let [ApprovalAsk::Batch(review)] = asked.as_slice() else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(review.label(), Some("review claude>opus"));
+    assert!(
+        !app.join("new.rs").exists(),
+        "the approval mode wrote nothing"
+    );
+    let user = Scripted::new(Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user.clone());
+    assert!(!d.call(write_call("new.rs", "fn y() {}")).await.is_error);
+    let applied = d.call(Call::ProposeBatch).await;
+    assert!(!applied.is_error, "{applied:?}");
+    assert_eq!(
+        std::fs::read_to_string(app.join("new.rs")).unwrap(),
+        "fn y() {}"
+    );
+    assert_eq!(
+        paths_of(&handle.ledger.lock().unwrap()),
+        [
+            ("new.rs".into(), Some(9), true),
+            ("a.rs".into(), Some(17), false)
+        ]
+    );
+}
+
+// Spec (agent-orchestrator, Worker toolsets [S7]: no scope pre-approves a
+// write, and a write outside it is refused as a chat write is): a write
+// inside the chat's root but outside the run's scope, into a secret path or
+// out of the root is refused with the one refusal text, asks nothing and
+// stages nothing; one inside the scope is staged.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_write_outside_its_scope_or_into_a_secret_is_refused() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    std::fs::create_dir_all(home.join("dev/app/src")).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app/src"]);
+    let approver = Scripted::new(Decision::Sent);
+    let d = writer(
+        &host,
+        Locality::Local,
+        &home,
+        handle.clone(),
+        approver.clone(),
+    );
+    for path in ["README.md", ".env", "../other/x.rs", "~/.ssh/new"] {
+        let out = d.call(write_call(path, "x")).await;
+        assert_eq!((out.text.as_str(), out.is_error), (REFUSED, true), "{path}");
+    }
+    let out = d.call(write_call("src/ok.rs", "ok")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(approver.asked.lock().unwrap().is_empty());
+    assert_eq!(
+        paths_of(&handle.ledger.lock().unwrap()),
+        [("src/ok.rs".into(), Some(2), false)]
+    );
+    let stages = host.stages.lock().unwrap();
+    let batch = stages.batch(StageKey::Pane(PANE)).unwrap();
+    assert_eq!(batch.entries().len(), 1);
 }

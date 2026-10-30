@@ -474,6 +474,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                 }
             }
+            // A worker's staging call asks nothing (S7): staging keeps it in
+            // its run's read scope, where its reads run unasked, and refuses
+            // it outside; only the user's batch review writes it.
+            (
+                Call::CreateDir { .. } | Call::WriteFile { .. } | Call::EditFile { .. },
+                _,
+                Some(_),
+            ) => {}
             // An edit that can only fail is refused before it asks. A missing
             // or ambiguous `old` still asks: it too tells whether a text occurs.
             (Call::EditFile { old, .. }, Locality::Cloud, _) if old.is_empty() => {

@@ -747,6 +747,7 @@ impl RunManager {
             read_scope: Some(WorkerScope {
                 handle: self.handle(pane, key.run),
                 run: key.run,
+                worker: key.worker,
                 label: worker_label(spec.task, &spec.engine, model),
             }),
         };

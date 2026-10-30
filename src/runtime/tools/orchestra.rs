@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     core::ai::{
-        orchestra::{RunId, tools::OrchCall},
+        orchestra::{RunId, WorkerId, changes::Change, tools::OrchCall},
         tools::paths::SecretRoots,
     },
     runtime::mcp::Outcome,
@@ -39,17 +39,35 @@ pub trait Orchestra: Send + Sync {
         origin: &Path,
         input: &str,
     ) -> Option<PathBuf>;
+
+    /// Whether a worker of `run` may stage a write to `real`, the canonical
+    /// target the host resolved (`ReadScope::allows_write`). `false` (the
+    /// default: outside the scope, a denied or ended scope, an unknown run)
+    /// refuses the write as a path the policy refuses; it is never asked.
+    fn allows_write(&self, _run: RunId, _real: &Path) -> bool {
+        false
+    }
+
+    /// The host staged `change` for `worker` of `run`: its change ledger
+    /// records it (S7). Nothing is written by it.
+    fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
+
+    /// The user's batch review applied a batch holding `paths` that `worker`
+    /// of `run` proposed.
+    fn applied(&self, _run: RunId, _worker: WorkerId, _paths: &[String]) {}
 }
 
 /// The run manager of a turn.
 pub type OrchHandle = Arc<dyn Orchestra>;
 
-/// What makes a turn a worker's: the run whose scope its reads are judged
-/// against, and the label its asks show.
+/// What makes a turn a worker's: the run whose scope its reads (and writes)
+/// are judged against, the worker whose ledger its staged files go to, and
+/// the label its asks show.
 #[derive(Clone)]
 pub struct WorkerScope {
     pub handle: OrchHandle,
     pub run: RunId,
+    pub worker: WorkerId,
     /// `<kind> <engine>><model>`, already sanitized for display
     /// (`approval::worker_label`).
     pub label: String,
