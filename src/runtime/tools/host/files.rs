@@ -346,7 +346,10 @@ fn refused_in(env: &ToolEnv) -> String {
 /// so it leaks nothing about which paths are excluded, and it tells the model
 /// to stop retrying and ask for a project folder.
 fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
-    let root = env.origin.canonicalize().ok()?;
+    let root = env
+        .origin
+        .is_absolute()
+        .then(|| env.origin.canonicalize().ok())??;
     roots.home().starts_with(&root).then(|| {
         format!(
             "{REFUSED}: the chat's folder is {}, where files cannot be written; ask the user to run /cd <project folder>",

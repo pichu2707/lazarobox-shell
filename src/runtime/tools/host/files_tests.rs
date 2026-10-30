@@ -1258,7 +1258,13 @@ async fn every_write_refusal_names_the_chat_folder() {
 async fn writes_in_a_broad_folder_ask_for_a_project_folder() {
     let w = world();
     let home = w.proj.parent().unwrap().to_path_buf();
-    for (origin, shown) in [(home, "~"), (PathBuf::from("/"), "/")] {
+    let above = home.parent().unwrap().to_path_buf();
+    let above_shown = above.display().to_string();
+    for (origin, shown) in [
+        (home, "~".to_owned()),
+        (above, above_shown),
+        (PathBuf::from("/"), "/".to_owned()),
+    ] {
         let (tx, _rx) = mpsc::channel(32);
         let mut scope = TurnScope::new(tx, Locality::Local, origin);
         scope.approver = Script::new(Decision::Sent);
@@ -1282,6 +1288,36 @@ async fn writes_in_a_broad_folder_ask_for_a_project_folder() {
         }
     }
     assert_eq!(w.staged(), 0);
+}
+
+// The folder-level text is for broad folders only: a concrete folder inside
+// HOME and one outside it keep the uniform text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_a_concrete_folder_keep_the_uniform_text() {
+    let w = world();
+    let outside = tempfile::tempdir().unwrap();
+    for origin in [
+        w.proj.clone(),
+        outside.path().canonicalize().unwrap(),
+        PathBuf::from("rel"),
+    ] {
+        let (tx, _rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, origin.clone());
+        scope.approver = Script::new(Decision::Sent);
+        scope.families = on();
+        scope.stage_key = Some(key());
+        let d = w.host.dispatch(scope);
+        let out = d.call(write("../escape.txt", "t")).await;
+        assert!(out.is_error, "{origin:?}");
+        assert!(
+            out.text
+                .starts_with("path not available (paths are relative to the chat's folder "),
+            "{origin:?}: {}",
+            out.text
+        );
+        assert!(!out.text.contains("/cd"), "{origin:?}");
+    }
 }
 
 // local-model-writes D2: once the policy allowed the path, a parent folder

@@ -224,9 +224,9 @@ pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
 }
 
 /// The refusal of a command or git verb when the chat's folder is HOME, a
-/// folder above it or `/`. It names the folder, not a path, so it leaks nothing
-/// about excluded paths, and it stops a model from retrying.
-const BROAD: &str = "path not available: the chat's folder is your home or /, where commands cannot run; ask the user to run /cd <project folder>";
+/// folder above it or `/`. It is about the folder, not a path, and fixed, so
+/// it leaks nothing about excluded paths, and it stops a model from retrying.
+const BROAD: &str = "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>";
 
 /// The chat origin as a root a command or a git verb may use: absolute, a real
 /// folder, not HOME, and not a place the path guard refuses.

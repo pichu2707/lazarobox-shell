@@ -233,12 +233,13 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
         assert_eq!(out.text, "path not available", "{origin:?}");
     }
     // No concrete root: the reason is the folder, and it asks for `/cd`.
-    for origin in [w.home.clone(), PathBuf::from("/")] {
+    let above = w.home.parent().unwrap().to_path_buf();
+    for origin in [w.home.clone(), above, PathBuf::from("/")] {
         let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
         let out = d.call(command("cargo", &["test"], None)).await;
         assert_eq!(
             out.text,
-            "path not available: the chat's folder is your home or /, where commands cannot run; ask the user to run /cd <project folder>",
+            "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>",
             "{origin:?}"
         );
     }
