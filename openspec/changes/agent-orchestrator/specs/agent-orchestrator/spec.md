@@ -129,7 +129,9 @@ Before starting a worker, the engine resolved for its kind MUST pass the same av
 - THEN the status is `refused` and the reason names the model and `download required`
 
 ### Requirement: Worker toolsets [S1, S7]
-Until write tools exist, every worker MUST be offered only the read-only tools (`find_dir`, `list_dir`, `read_file`). It MUST NOT be offered `run_in_pane`, any write tool or any orchestration tool. [S7] `code` workers MAY be offered the coding-tools write tools. Their writes MUST be staged and reach the disk only through the user's batch review, labelled with the worker; no scope pre-approves a write.
+Every worker but a `code` one MUST be offered only the read-only tools (`find_dir`, `list_dir`, `read_file`). No worker MUST be offered `run_in_pane`, an orchestration tool or a user server tool. [S7] `code` workers MUST be offered the read-only tools and the coding-tools write tools (`create_dir`, `write_file`, `edit_file`, `propose_batch`), and nothing else. Their writes MUST be staged and reach the disk only through the user's batch review, labelled with the worker; no scope and no approval mode (`run` included) pre-approves a write. A write MUST be staged only inside the run's read scope: one outside it, into a path the secret rules guard or outside the chat's root MUST be refused with the refusal text of a plain chat write, and is never asked. Staging inside the scope MUST NOT ask (an `edit_file` included, on a cloud engine: reads inside the scope run unasked).
+
+[S7] The worker stages in its pane's batch and proposes it itself with `propose_batch`, waiting in its turn for the user's answer (user decision "El worker propone su lote", 2026-10-29). The ask goes to the orchestrator turn's approver, like a worker's read outside the scope. The review time counts against the worker's deadline: a worker that times out while its batch waits ends `timed_out`, nothing is written, and the batch stays as an orphan the user can still review (Ctrl+G) once the pane's turn has ended. A batch a worker staged and never proposed also stays in the pane's batch, as an orphan of the pane.
 
 #### Scenario: Read-only subset [auto]
 - GIVEN a `review` worker
@@ -140,6 +142,21 @@ Until write tools exist, every worker MUST be offered only the read-only tools (
 - GIVEN a `code` worker with a write tool and a run's read scope
 - WHEN it calls a write tool inside the scope
 - THEN the change is staged with the worker label and nothing is written before the user approves the batch
+
+#### Scenario: The approval mode never approves a worker's batch [S7, auto]
+- GIVEN a `code` worker whose batch waits for review, in approval mode `run`
+- WHEN the approval mode answers the ask instead of the user
+- THEN the batch is denied and nothing is written
+
+#### Scenario: A write outside the scope is refused [S7, auto]
+- GIVEN a run whose read scope is `~/dev/app/src` in a chat rooted at `~/dev/app`
+- WHEN its `code` worker writes `README.md`, `.env` or `../other/x.rs`
+- THEN each is refused with the refusal text of a plain chat write, nothing is asked and nothing is staged
+
+#### Scenario: Review time counts against the deadline [S7, auto]
+- GIVEN a `code` worker whose proposed batch waits for the user
+- WHEN its deadline passes before the user answers
+- THEN the worker ends `timed_out`, nothing is written and the batch stays as an orphan the user can review
 
 ### Requirement: Read scope of a run [S1]
 A run MUST start with no prompt and no key: its read scope is set at run start, without asking (user decision, 2026-10-29). Its roots default to the chat origin folder. Roots MUST come only from the chat origin (and, later, from the user), never from model or worker text. Every root MUST pass the path policy (`paths::resolve`: the secret roots, `CREDENTIAL_DIRS`, outside `$HOME`); a root that is excluded, outside `$HOME`, `$HOME` itself or a broad scratch folder gives no root, and the reason is kept for display, sanitized (`clean`/`clip`). Refusing roots that are ancestors of secret roots or credential parents (`jail::too_broad`) is to be considered. Reads inside the scope MUST run without asking, for this run only, and the scope expires with the run. The scope MUST apply the path policy deny-lists of agent-tools to every candidate path, checking both the requested path (`~` expanded, relative resolved, `.` and `..` folded) and the resolved real path; a path is inside the scope only if both are inside a root and neither is excluded.
@@ -410,7 +427,7 @@ The run MUST follow the ODD steps in order: `authorize`, `explore`, `resolve`, `
 - `track`: a `large` goal MUST get a feature document (header, `Specs` with numbered `S#` quoting the user's words verbatim, `Tasks` with the linked `S#`, and `Log` whose `L1` is the goal verbatim), saved as a handoff. A `small` goal MUST NOT get one.
 - `implement`: each task worker MUST receive the feature document by reference (document, task id, `S#`) and report which `S#` it covered.
 - `close`: the run MUST report the verified outcome, every failed, skipped or pending check, and a risk line.
-Until S7, `implement` MUST produce only drafts and review findings, and the orchestrator MUST NOT claim code was written or tests passed.
+Until S7, `implement` MUST produce only drafts and review findings, and the orchestrator MUST NOT claim code was written or tests passed. Since S7, a `code` worker MAY stage changes, and a change is written only when the user approves its batch: the orchestrator MUST NOT claim a file was written unless `collect` lists it `applied`, MUST call every other change a draft, and MUST NOT claim tests passed (that needs S8).
 
 #### Scenario: Read-only goal spawns no code worker [auto]
 - GIVEN the goal `explain how the read scope works`
@@ -454,7 +471,7 @@ Where a CLI reports token or cost data, its decoder MUST emit a usage event; per
 - THEN it shows the sum, and a worker without usage shows `n/a`
 
 ### Requirement: Write integration and change ledger [S7]
-Each `code` worker MUST keep a ledger of the files it staged (path, size, diff hash), shown in its result as `files changed`. Its writes MUST be staged and reach the disk only when the user approves the batch in the batch review.
+Each `code` worker MUST keep a ledger of the files it staged (path, size, diff hash), shown in its result as `files changed`, each `applied` or `not applied`. Its writes MUST be staged and reach the disk only when the user approves the batch in the batch review. A path is `applied` only once a batch holding it was approved and written; staging it again makes it `not applied` until a later batch applies it. The ledger goes first in the `collect` result, inside the untrusted-data wrapper (its paths are the worker's names), so the text cap never hides it. The path is relative to the chat's root, the size is the staged text in bytes (`folder` for a folder) and the diff hash is a 64-bit FNV-1a of the replaced text and the new text, which tells two versions apart and is no security boundary.
 
 #### Scenario: Files changed listed [S7, auto]
 - GIVEN a `code` worker that staged two files

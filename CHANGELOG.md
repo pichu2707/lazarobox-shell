@@ -93,6 +93,12 @@ baseline.
   gate, off by default): the ORCH badge of an orchestrating chat pane, worker
   rows coloured by status, the provider notice and the failure alert above the
   composer, and the final `orchestrate` prompts of both profiles.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
 
 ## [0.29.0] - 2026-10-28
 

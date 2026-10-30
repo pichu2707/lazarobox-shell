@@ -81,3 +81,32 @@ Gates: fmt ok, clippy 0 warnings, cargo test 5331 pass 0 fail 1 ignored, `cargo 
 - The S1b `orchestra::tools::specs()` listing was removed: the table is the only source of the schemas. The `kind` enum is no longer in the schema; the `spawn_agent` description names the five kinds (pinned by a test).
 - Minimal exhaustive-match arms for `Call::Orchestra`: `ask_for` = None, `fs::run_read` = NotReadTool. The real host behavior (execute filter, `UnknownTool` without a handle) is S1c-2.
 - `Hub` is `Hub<K: HubKey = PaneId>`; `WorkerKey{run, worker}` is in `core/ai/orchestra/mod.rs`. Call sites that infer nothing need `Hub::<PaneId>::new`.
+
+## S1d, S1e and S7: RunManager, app wiring, views and code workers (PRs 6 to 14) DONE
+
+Status: S1 is complete (S1d-1 to S1e-2) and S7 is complete (S7-1, S7-2). Mode: Strict TDD. Branches are chained `feat/agent-orchestrator-s1d-*`, `-s1e-*`, `-s7-*`; the tracker `feat/agent-orchestrator` merges to `main` behind the `[ai.orchestrator] enabled` gate (off by default).
+
+### What landed in which PR
+
+| PR | Slice | Landed |
+|----|-------|--------|
+| 6 to 8 | S1d-1..3 | Prompt per task and the "not recommended" mark; `RunManager` spawn path (`start`, `call`, worker turn, jail and scrub) and control path (`decide`, `cancel`, `shutdown`, retry); `Chats::with_orchestra` |
+| 9 (#401) | S1e-1a | Ctrl+O toggle, `orch` flag, send path on `Task::Orchestrate`, `app/orchestra.rs` |
+| 10 (#403) | S1e-1b | No run-start scope prompt (workers are announced, not asked); read scope from the chat origin; worker reads outside it follow the approval mode; non-blocking provider notice; `notice_accepted` renamed `acknowledged` |
+| 11 (#404) | S1e-1c | Run events reach the app (`AppEvent::Orchestra`); failure alert with `r` retry and `c`/Esc cancel; `Entry::Worker` rows; a run ends by itself; the notice accepts with Enter only; the orchestrator turn may use the user's MCP tools, each call asking `y` |
+| 12 (#405) | S1e-2 | ORCH badge, worker rows by status, notice and alert views, final `orchestrate.md` prompts, 7 new snapshots, CHANGELOG line (`size:exception`, one PR) |
+| 13 (#406) | S7-1 | `ChangeLedger`, write scope check against the run scope and chat root, worker-labelled batch review header; no worker offered a write tool yet |
+| 14 (#407) | S7-2 | `Toolset::Code` (read tools plus `create_dir`, `write_file`, `edit_file`, `propose_batch`), `collect` lists `files changed:`, review time counts against the deadline, timed-out batch stays as an orphan, prompts and spec |
+
+### Merge and CI maintenance (2026-10-29)
+
+- The tracker was brought up to date with `main` (chat folder, chat.db schema 3, CLI flags, shared `Hold` key tracker) and merged down the chain. `main`'s `Hold` replaced the orchestrator's own `held_chat_key` debounce; the orchestrator keys now use the shared `repeat` flag.
+- Tests that press Enter twice with the mock clock call `let_go()` between the presses, or the second Enter reads as a hold.
+- macOS CI failed three S7-2 tests (`a_code_workers_batch_waits_for_the_users_review`, `collect_lists_both_staged_files_and_neither_is_on_disk`, `a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan`) with `path not available`. Cause: staging probes the target with `write::open_target`, which is `Unsupported` off Linux by design (writes need `openat2` and `renameat2`). A symlinked HOME is not the cause (`a_write_is_staged_when_home_is_reached_through_a_link` passes on Linux). The tests are now Linux-only, like the host-level write tests.
+
+### Carried-forward advisories
+
+- S1e-1b: a message starting with `y` while the notice was shown used to accept it (closed by the Enter-only change in S1e-1c). Roots that are ancestors of secret folders are not refused (`jail::too_broad` is still "to be considered"); each read inside is still checked. A chat origin that is not valid UTF-8 gives no root and no recorded reason.
+- S1e-2: a running worker row shows no elapsed time; the label has no `n/m` count (S3) and the alert has no error class (S2); the "cancel the run first" footer hint is in state but not drawn; line breaks in an error are drawn as spaces; no manual smoke, TestBackend renders stand in.
+- S7-2 (verifier, none blocking): (1) a worker's batch can include the chat's leftover staged files, so the header mislabels them (the user still reviews every file, only the worker's own entries are marked `applied`); (2) an orphan approved later leaves the ledger at `not applied` and its header has no worker label; (3) a `Partial` apply marks every path `not applied`; (4) a timed-out worker's orphan may block staging for a later `code` worker in the same pane until the orchestrator turn ends (inferred, not probed); (5) several workers sharing one pane's batch is left to S3.
+- macOS: staging and applying worker writes is unsupported, so `code` workers cannot write there.

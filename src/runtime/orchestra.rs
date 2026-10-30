@@ -63,6 +63,7 @@ use crate::core::{
         jail,
         orchestra::{
             RunId, WorkerId, WorkerKey,
+            changes::Change,
             run::{
                 CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunState, UserChoice,
                 WorkerEvent,
@@ -75,6 +76,7 @@ use crate::core::{
             label,
             paths::SecretRoots,
             registry::Family,
+            stage::StageKey,
             wiring::{McpWire, Secret},
         },
     },
@@ -741,7 +743,12 @@ impl RunManager {
             approver: live.approver.clone(),
             external: Slot::default(),
             families,
-            stage_key: None,
+            // A `code` worker stages in its pane's batch (S7, user decision
+            // "El worker propone su lote", 2026-10-29): the batch review, its
+            // badge and its orphan are the pane's, as for a chat's batch.
+            stage_key: families
+                .contains(Family::Write)
+                .then_some(StageKey::Pane(pane)),
             allowed: Default::default(),
             orchestra: None,
             read_scope: Some(WorkerScope {
@@ -835,6 +842,32 @@ impl Orchestra for Bound {
             live.scope.allows(&live.run, secrets, origin, input)
         });
         allowed.flatten()
+    }
+
+    fn allows_write(&self, run: RunId, real: &Path) -> bool {
+        // As `allows`: only this handle's run has a scope here.
+        if run != self.run {
+            return false;
+        }
+        let Some(manager) = self.manager.upgrade() else {
+            return false;
+        };
+        let allowed = manager.on_run(self.pane, run, |live| {
+            live.scope.allows_write(&live.run, real)
+        });
+        allowed.unwrap_or(false)
+    }
+
+    fn staged(&self, run: RunId, worker: WorkerId, change: Change) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.on_run(self.pane, run, |live| live.run.staged(worker, change));
+        }
+    }
+
+    fn applied(&self, run: RunId, worker: WorkerId, paths: &[String]) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.on_run(self.pane, run, |live| live.run.applied(worker, paths));
+        }
     }
 }
 

@@ -65,6 +65,27 @@ fn the_orchestrate_prompts_hold_the_coordinator_rules() {
     }
 }
 
+// Spec (agent-orchestrator, Implement is a draft before S7; Write
+// integration and change ledger [S7]): the coordinator knows a `code`
+// worker's changes reach the disk only through the user's batch review, and
+// that only a file `collect` lists as applied was written.
+#[test]
+fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "propose_batch",
+            "nothing reaches the disk until the user approves",
+            "files changed",
+            "not applied",
+            "Only a file listed as applied was written",
+            "draft",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
 // Spec (prompt-profiles): Reply in the user's language.
 #[test]
 fn every_prompt_asks_for_the_users_language() {
