@@ -204,3 +204,22 @@ Status: task 2.3 done (S2 complete), plus the two S2a follow-ups. Chain (feature
 - Notes: `OrchNote::{RetryFailed, Picker}`, one of each kind; a picker note never relabels `r retry` nor erases a retry-failed note.
 - The picker swallows every key but Ctrl+C; a held `r c m p` is swallowed (not typed). `roster()` reads the menu at call time (a menu save mid-run changes later relaunches for tasks not overridden).
 - `races_keep_exactly_one_ended_as_the_last_event` ignores `Dropped` events: a dropped answer may follow `Ended` and belongs to no run.
+
+### S2b review fixes 2 (RED observed before each fix; supersedes the Decisions above where it differs)
+
+| Branch | Fix | Test | RED |
+|--------|-----|------|-----|
+| s2b-1 | notes die with their alert (Ctrl+C, `Ended`) via `ChatState::drop_orch_alert` | `a_note_does_not_leak_into_the_next_alert` | note still `RetryFailed` |
+| s2b-1 | `Dropped` said only with no other run in the pane, neutral text (`an earlier run already moved on: ...`) | `a_dropped_answer_of_an_older_run_is_not_said_in_a_newer_one` | line pushed |
+| s2b-1 | no run manager: `OrchestraEvent::Unavailable` -> `orchestration is not available: your answer was not applied` | runtime `an_answer_with_no_run_manager_is_told`, app `an_unavailable_orchestration_is_said` | compile error (variant) |
+| s2b-1 | window mark no longer pre-empts auth/conflict evidence | `a_window_mark_beside_an_auth_status_is_auth` | RateLimit instead of Auth |
+| s2b-2 | one halt, with the count, for the queued workers an unavailable engine refuses; doc: `decide` replaces the whole roster, no `Running` case | thickened `a_relaunch_on_an_unavailable_engine_refuses_the_queued_workers_too` (halt worker, `3 workers refused: ...`, retry, relaunch on a ready engine) | halted on worker 2 |
+| s2b-3 | overrides stay with the old run until the new run's first event (a failed start keeps them); roster of a new turn is menu-only | `a_new_turn_keeps_the_old_overrides_until_its_own_run_speaks`, updated `a_new_turn_before_ended_starts_from_the_menu_values` | overrides cleared at the send |
+| s2b-3 | a pick the run manager drops (`Dropped`/`Unavailable`) is undone; any row or halt of the run keeps it | `a_dropped_pick_leaves_no_override_and_an_acknowledged_one_stays` | phantom override |
+| s2b-3 | W5 gap: not-installed engine pick | `an_engine_that_is_not_installed_cannot_be_picked` | note was a picker note, not a transcript line |
+| s2b-3 | engine-only pick equal to the menu engine is not `(override)` | `an_engine_only_pick_equal_to_the_menu_engine_is_not_marked` + `is_on` unit test | marked |
+| s2b-3 | narrow footer wraps (guard, green from the start) | `the_alert_footer_wraps_on_a_narrow_pane` | n/a |
+
+- Size cuts in s2b-3: no `RunOverrides::label`/`get`, no `override: ...` segment in the alert (rows keep `(override)`), no `OrchNote::Picker`/`clear_picker_note`/`clear_orch_overrides`; the picker's refusals (`cannot change: ...`, `engine not available`) are plain system lines. `WorkerRow.overridden` stays: the transcript renders rows without access to the overrides.
+- Held Enter/Esc in the picker is ignored on purpose (the keys line stays visible); no notice.
+
