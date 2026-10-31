@@ -506,3 +506,18 @@ Strict TDD: five pure tests in `feature_tests.rs` and one runtime test written f
 | 3 | a correction that overflows drops the oldest non-L1 entries; `omitted` keeps `L#` numbers stable and the render says `(N older log entries omitted)`; if the specs and tasks alone exceed the cap it is refused (`the specs and tasks alone exceed the size of the feature document`), nothing changes; the ack uses the true entry number | `a_full_log_drops_its_oldest_entries_and_says_so` |
 | 4 | `MalformedTask(n)` vs `UnknownRef{task, spec}` (`task 2 names spec S9, which does not exist`) | `a_task_error_says_what_is_wrong` |
 | 5 | bidi overrides U+202A-202E and isolates U+2066-2069 dropped in the same sanitiser | `bidi_format_characters_are_dropped` |
+
+## S7b (RDD), PR S7b-1: task 7b.1 (branch feat/agent-orchestrator-s7b, on s5b)
+
+Strict TDD: `review_tests.rs` (13 tests) written against a stub (`assess` always `Passive`, `Raise::new` accepted anything, `as_str` constant): behavioural RED, 12 of 13 failed (only `a_plain_source_file_is_passive_on_the_rules` passed), then `review.rs` implemented; one more RED found on the way (`.cargo/config` not a rule) fixed with the `.cargo` folder rule. Gates: see the final report of this batch.
+
+| Unit | What | Test |
+|------|------|------|
+| `orchestra/review.rs` | `Tier{Passive,Medium,High}` (ordered), `Source{Rules, Raised(reason), Failed(why)}`, `Assessment{tier, source}`, `Raise::new(tier, reason)` (tier any case; reason sanitised: first line, control and bidi format chars dropped, capped at `REASON_BYTES`; blank reason or unknown tier refused with a `RaiseError` message), `assess(&[Change], Option<&Raise>)` | `review_tests.rs` |
+
+### Decisions and deviations
+- Rules give `Passive` or `High`; `Medium` is reachable only through the orchestrator raise in 7b.1. A raise that does not exceed the floor leaves `Source::Rules`.
+- Failed assessment (`High`, `Source::Failed`): empty change set, blank/NUL path, absolute path (`/x`, `C:\x`), or a path that climbs above the root with `..`.
+- Path matching is string-only (no filesystem, no symlinks): `\` is `/`, `.` and empty parts vanish, `..` pops, trailing dots and spaces of a name are dropped, ASCII case-insensitive, at any depth. Documented limit: a symlink or hard link that points elsewhere is judged by the staged path only.
+- Rules: CI/build/credential folders (`.github`, `.gitlab`, `.circleci`, `.git`, `.cargo`, `.ssh`, `.gnupg`...), named build/dependency/lock files, extensions of config formats, locks and key material (`toml`, `yaml`, `json`, `ini`, `lock`, `pem`, `key`...), plus the read tools' `is_excluded_name` (`.env*`, credential and history files). Broad on purpose (any `*.json` is `high`): the cost of a false positive is one consent prompt.
+- Not wired: the runtime, the `raise` tool and the consent are 7b.2/7b.3.
