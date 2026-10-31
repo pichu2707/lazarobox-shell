@@ -8,13 +8,17 @@ use std::collections::HashSet;
 
 use super::*;
 use crate::core::ai::{
-    chat::memory::{MEMORY_WAIT, Readiness},
+    chat::memory::MEMORY_WAIT,
     memory::port::{MemCmd, MemReply, SaveId},
     orchestra::{
         RunId,
-        persist::{Action, Item, MEMORY_ON, NOT_PERSISTED, RunSave},
+        persist::{Action, Item, MEMORY_ON, NEEDS_NOTE, NOT_PERSISTED, RunSave},
     },
 };
+
+/// The epoch of a run's own project request: no chat folder ever has it, so
+/// the chat drops the replies to it and the run drops the chat's.
+pub(super) const RUN_EPOCH: u32 = u32::MAX;
 
 /// The saves of one run.
 pub(super) struct RunStore {
@@ -31,6 +35,16 @@ pub(super) struct RunStore {
 impl App {
     /// An item of run `run` of pane `id` is ready to be stored.
     pub(super) fn store_item(&mut self, id: PaneId, run: RunId, item: Item) -> Vec<Effect> {
+        // An ended run stores nothing more; a pane that is gone has no chat.
+        if self.ended_runs.contains(&run)
+            || self
+                .panes
+                .get(&id)
+                .and_then(PaneState::chat_state)
+                .is_none()
+        {
+            return Vec::new();
+        }
         let mut effects = Vec::new();
         if !self.run_stores.contains_key(&run) {
             effects = self.open_store(id, run);
@@ -55,7 +69,12 @@ impl App {
             return Vec::new();
         };
         let mut effects = Vec::new();
-        if !active {
+        // Only a memory whose privacy note the user accepted can be turned
+        // on for a run (the acknowledgement survives turning memory off).
+        let allowed = self.ai.memory.acknowledged;
+        if !allowed {
+            chat.push_system_line(NEEDS_NOTE.to_owned());
+        } else if !active {
             effects.push(Effect::Memory(MemCmd::EnableForRun));
             chat.push_system_line(MEMORY_ON.to_owned());
         }
@@ -63,17 +82,17 @@ impl App {
             .session()
             .map(|s| s.project.clone())
             .or_else(|| chat.project().map(str::to_owned));
-        let waiting_on_chat = active && matches!(chat.readiness(), Readiness::Resolving { .. });
         let cwd = chat.origin_cwd().map(|p| p.to_string_lossy().into_owned());
-        let epoch = chat.memory_epoch();
         let mut save = RunSave::new(known.clone());
         let mut actions = Vec::new();
-        if known.is_none() && !waiting_on_chat {
+        if !allowed {
+            actions = save.resolved(None);
+        } else if known.is_none() {
             match cwd {
                 Some(cwd) => effects.push(Effect::Memory(MemCmd::Resolve {
                     pane: id,
                     cwd,
-                    epoch,
+                    epoch: RUN_EPOCH,
                 })),
                 None => actions = save.resolved(None),
             }
@@ -135,12 +154,30 @@ impl App {
         effects
     }
 
-    /// The run is over: its store goes once no save awaits an answer.
+    /// The run is over: its store goes once no save awaits an answer, and
+    /// nothing more is stored for it.
     pub(super) fn end_store(&mut self, run: RunId) {
+        self.ended_runs.insert(run);
         if let Some(store) = self.run_stores.get_mut(&run) {
             store.ended = true;
         }
         self.drop_if_over(run);
+    }
+
+    /// Pane `id` is gone: its runs' stores, and the saves it waited for, go
+    /// with it.
+    pub(super) fn drop_pane_stores(&mut self, id: PaneId) {
+        let runs: Vec<RunId> = self
+            .run_stores
+            .iter()
+            .filter(|(_, store)| store.pane == id)
+            .map(|(run, _)| *run)
+            .collect();
+        for run in runs {
+            self.run_stores.remove(&run);
+            self.ended_runs.insert(run);
+        }
+        self.lost_saves.retain(|(pane, _)| *pane != id);
     }
 
     /// Whether a run's store waits for the project of its pane: the runtime
@@ -178,30 +215,56 @@ impl App {
     /// chat still takes them.
     pub(super) fn on_run_reply(&mut self, id: PaneId, reply: &MemReply) -> (bool, Vec<Effect>) {
         match reply {
-            MemReply::Project { result, .. } => (
+            MemReply::Project {
+                epoch: RUN_EPOCH,
+                result,
+                ..
+            } => (
                 false,
                 self.resolve_stores(id, result.as_ref().ok().cloned()),
             ),
-            MemReply::Unavailable { .. } => (false, self.resolve_stores(id, None)),
+            MemReply::Unavailable {
+                epoch: Some(RUN_EPOCH),
+                ..
+            } => (false, self.resolve_stores(id, None)),
             MemReply::Saved {
                 id: token,
                 project,
                 session,
                 ..
             } => {
-                let Some(run) = self.answered(*token) else {
+                if self.lost_saves.remove(&(id, *token)) {
+                    return (true, Vec::new());
+                }
+                let Some(run) = self.answered(id, *token) else {
                     return (false, Vec::new());
                 };
+                // The chat's session and links only change with chat memory
+                // on, and never from an answer to a save sent before a
+                // folder change.
+                let adopt = self.ai.memory.active() && !self.save_is_stale(id, *token);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                     chat.save_answered(*token);
-                    chat.adopt_session(session, project);
+                    if adopt {
+                        chat.adopt_session(session, project);
+                    }
                 }
                 self.drop_if_over(run);
-                (true, self.link_effects(id))
+                (
+                    true,
+                    if adopt {
+                        self.link_effects(id)
+                    } else {
+                        Vec::new()
+                    },
+                )
             }
             MemReply::SaveFailed { id: token, .. }
             | MemReply::SaveUnavailable { id: token, .. } => {
-                let Some(run) = self.answered(*token) else {
+                if self.lost_saves.remove(&(id, *token)) {
+                    return (true, Vec::new());
+                }
+                let Some(run) = self.answered(id, *token) else {
                     return (false, Vec::new());
                 };
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
@@ -215,11 +278,10 @@ impl App {
 
     /// The run whose save `token` was, now answered. Its store goes when the
     /// run is over and nothing else awaits.
-    fn answered(&mut self, token: SaveId) -> Option<RunId> {
-        let run = self
-            .run_stores
-            .iter()
-            .find_map(|(run, store)| store.tokens.contains(&token).then_some(*run))?;
+    fn answered(&mut self, pane: PaneId, token: SaveId) -> Option<RunId> {
+        let run = self.run_stores.iter().find_map(|(run, store)| {
+            (store.pane == pane && store.tokens.contains(&token)).then_some(*run)
+        })?;
         self.run_stores.get_mut(&run)?.tokens.remove(&token);
         Some(run)
     }
@@ -269,9 +331,13 @@ impl App {
     }
 
     /// A save that ran out of time (the memory tick) when it was a run's.
-    pub(super) fn run_save_lost(&mut self, token: SaveId) -> Vec<Effect> {
-        match self.answered(token) {
-            Some(run) => self.fail_store(run),
+    /// Its late answer, if it comes, is dropped quietly.
+    pub(super) fn run_save_lost(&mut self, pane: PaneId, token: SaveId) -> Vec<Effect> {
+        match self.answered(pane, token) {
+            Some(run) => {
+                self.lost_saves.insert((pane, token));
+                self.fail_store(run)
+            }
             None => Vec::new(),
         }
     }

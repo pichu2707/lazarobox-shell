@@ -7,6 +7,7 @@ use super::chat_notes::{CWD, PROJECT, systems};
 use super::orchestra_run::{RUN, event, handed_off, row};
 use super::orchestra_send::{detected, orch_ai, prompt_ready};
 use super::*;
+use crate::app::handoff::RUN_EPOCH;
 use crate::core::ai::{
     config::MemoryConfig,
     memory::{
@@ -18,14 +19,20 @@ use crate::core::ai::{
 
 const MEMORY_ON: &str = "memory on for this run";
 const NOT_PERSISTED: &str = "handoffs not persisted";
+const NEEDS_NOTE: &str = "handoffs need the memory privacy note accepted";
 
-/// An orchestrating pane opened from `/srv/app`, memory on or off.
+/// An orchestrating pane opened from `/srv/app`, memory on or off. Off means
+/// turned off after the privacy note was accepted.
 fn app(memory: bool) -> App {
+    app_with(memory, true)
+}
+
+fn app_with(enabled: bool, acknowledged: bool) -> App {
     let mut ai = orch_ai();
     ai.orchestrator.acknowledged = true;
     ai.memory = MemoryConfig {
-        enabled: memory,
-        acknowledged: memory,
+        enabled,
+        acknowledged,
         ..MemoryConfig::default()
     };
     let mut a = launched(80, 25)
@@ -156,7 +163,7 @@ fn memory_off_is_turned_on_for_the_run_only() {
     assert!(second.is_empty(), "the project is asked for once");
     let go = a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
-        epoch: 0,
+        epoch: RUN_EPOCH,
         result: Ok(PROJECT.into()),
     }));
     let keys: Vec<_> = saves(&go).into_iter().map(|(_, key)| key).collect();
@@ -181,7 +188,7 @@ fn unreachable_engram_says_so_once_and_the_run_goes_on() {
     a.update(handoff_of(1));
     a.update(AppEvent::Memory(MemReply::Unavailable {
         pane: Some(chat_id()),
-        epoch: Some(0),
+        epoch: Some(RUN_EPOCH),
         reason: Reason::NoBinary,
     }));
     let later = [a.update(handoff_of(2)), a.update(handoff_of(3))];
@@ -254,4 +261,201 @@ fn a_saved_handoff_is_not_listed_as_a_chat_note() {
         "no chat line"
     );
     assert_eq!(chat.pending_save_ids(), Vec::<SaveId>::new());
+}
+
+/// Another pane than the chat of the run, which holds the same token.
+fn other() -> PaneId {
+    PaneId::FIRST
+}
+
+// Review fix: a token is the chat's own counter, so two panes hold the same
+// one. A reply or an expiry of another pane never reaches this run's store.
+#[test]
+fn a_run_save_is_matched_by_pane_and_token() {
+    let mut a = app(true);
+    with_project(&mut a);
+    let [(token, key)] = saves(&a.update(handoff_of(1))).try_into().expect("a save");
+    assert_eq!(token, SaveId(1));
+    for reply in [
+        MemReply::SaveFailed {
+            pane: other(),
+            id: token,
+            reason: "x".into(),
+        },
+        MemReply::SaveUnavailable {
+            pane: other(),
+            id: token,
+            reason: Reason::NoAnswer,
+        },
+    ] {
+        a.update(AppEvent::Memory(reply));
+    }
+    a.run_save_lost(other(), token);
+    assert_eq!(
+        count(&a, NOT_PERSISTED),
+        0,
+        "another pane's save is not ours"
+    );
+    // The chat note of the other pane with the same token is not consumed
+    // here either: its reply is left to the chat path.
+    let (consumed, _) = a.on_run_reply(
+        other(),
+        &MemReply::Saved {
+            pane: other(),
+            id: token,
+            project: PROJECT.into(),
+            session: "s".into(),
+            observation_id: 1,
+            topic_key: "chat/decision/x".into(),
+            title: "x".into(),
+        },
+    );
+    assert!(!consumed);
+    // Our own reply still lands.
+    saved(&mut a, token, key.as_deref().unwrap());
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    assert!(chat.pending_save_ids().is_empty());
+}
+
+// Review fix: an answer after the wait ran out is the run's, already degraded;
+// it is not a chat note and says nothing.
+#[test]
+fn a_late_reply_of_an_expired_run_save_is_dropped_quietly() {
+    let mut a = app(true);
+    with_project(&mut a);
+    let [(token, key)] = saves(&at(&mut a, 0, handoff_of(1)))
+        .try_into()
+        .expect("a save");
+    at(&mut a, 6_000, AppEvent::MemoryTick);
+    assert_eq!(count(&a, NOT_PERSISTED), 1);
+    let effects = saved(&mut a, token, key.as_deref().unwrap());
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(!systems(&a).iter().any(|s| s.starts_with("saved note")));
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    assert!(chat.session().is_none(), "no session adopted");
+    assert_eq!(count(&a, NOT_PERSISTED), 1);
+}
+
+// Review fix: a run save adopts no session when chat memory is off.
+#[test]
+fn a_run_save_adopts_no_session_while_chat_memory_is_off() {
+    let mut a = app(false);
+    a.update(handoff_of(1));
+    let go = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: RUN_EPOCH,
+        result: Ok(PROJECT.into()),
+    }));
+    let [(token, key)] = saves(&go).try_into().expect("a save");
+    let effects = saved(&mut a, token, key.as_deref().unwrap());
+    assert!(effects.is_empty(), "{effects:?}");
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    assert!(chat.session().is_none());
+}
+
+// Review fix: a reply from before a folder change adopts nothing.
+#[test]
+fn a_stale_run_save_reply_adopts_no_session() {
+    let mut a = app(true);
+    with_project(&mut a);
+    let [(token, key)] = saves(&a.update(handoff_of(1))).try_into().expect("a save");
+    a.apply_folder(chat_id(), std::path::PathBuf::from("/srv/other"));
+    saved(&mut a, token, key.as_deref().unwrap());
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    assert!(chat.session().is_none());
+}
+
+// Privacy decision: only a memory the user accepted the note for can be turned
+// on for a run.
+#[test]
+fn memory_never_acknowledged_is_not_turned_on_for_the_run() {
+    for (enabled, acknowledged) in [(false, false), (true, false)] {
+        let mut a = app_with(enabled, acknowledged);
+        let first = a.update(handoff_of(1));
+        let second = a.update(handoff_of(2));
+        let all: Vec<_> = first.iter().chain(&second).collect();
+        assert!(
+            all.iter()
+                .all(|e| !matches!(e, Effect::Memory(MemCmd::EnableForRun))),
+            "{enabled} {acknowledged}: {all:?}"
+        );
+        assert!(
+            all.iter()
+                .all(|e| !matches!(e, Effect::Memory(MemCmd::Resolve { .. })) || enabled),
+            "no lookup for a memory that was never accepted"
+        );
+        assert!(saves(&first).is_empty() && saves(&second).is_empty());
+        assert_eq!(count(&a, NOT_PERSISTED), 1);
+        assert_eq!(count(&a, NEEDS_NOTE), 1);
+        assert_eq!(count(&a, MEMORY_ON), 0);
+    }
+}
+
+// Review fix: the stores of a pane go with it, and an ended run stores nothing.
+#[test]
+fn closing_the_pane_drops_the_stores_of_its_runs() {
+    let mut a = app(false);
+    a.update(handoff_of(1));
+    assert_eq!(a.run_stores.len(), 1);
+    a.remove_pane(chat_id());
+    assert!(a.run_stores.is_empty());
+}
+
+#[test]
+fn an_ended_run_stores_nothing_more() {
+    let mut a = app(true);
+    with_project(&mut a);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let effects = a.update(handoff_of(1));
+    assert!(saves(&effects).is_empty());
+    assert!(a.run_stores.is_empty());
+}
+
+// Review fix: the run's own project request has its own epoch; the chat's
+// replies (its context, an old folder) neither resolve nor degrade the run.
+#[test]
+fn only_the_runs_own_project_reply_resolves_it() {
+    let mut a = app(true);
+    let effects = a.update(handoff_of(1));
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::Memory(MemCmd::Resolve { epoch, .. }) if *epoch == RUN_EPOCH
+    )));
+    let chat_reply = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 0,
+        result: Ok(PROJECT.into()),
+    }));
+    assert!(
+        saves(&chat_reply).is_empty(),
+        "the chat's reply is not ours"
+    );
+    a.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        epoch: Some(0),
+        reason: Reason::NoAnswer,
+    }));
+    assert_eq!(count(&a, NOT_PERSISTED), 0);
+    let own = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: RUN_EPOCH,
+        result: Ok(PROJECT.into()),
+    }));
+    assert_eq!(saves(&own).len(), 1);
 }

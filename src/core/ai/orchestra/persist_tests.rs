@@ -56,8 +56,9 @@ fn the_ledger_note_has_its_own_key_and_the_summary() {
     let item = Item::of_ledger(RunId(77), "Goal: x", "all fine");
     assert_eq!(item.key, "orchestra/77/ledger");
     assert!(valid_topic_key(&item.key));
-    assert!(item.note.content.starts_with("Goal: x"));
-    assert!(item.note.content.ends_with("Summary: all fine"));
+    // The summary comes first: the save cuts from the end.
+    assert!(item.note.content.starts_with("Summary: all fine"));
+    assert!(item.note.content.ends_with("Goal: x"));
 }
 
 #[test]

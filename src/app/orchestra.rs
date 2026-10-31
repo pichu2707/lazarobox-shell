@@ -156,6 +156,11 @@ impl App {
             OrchestraEvent::Continue(next) => return self.on_continue(id, next),
             event => event,
         };
+        // A run that ended stores nothing more, whether its pane is still a
+        // chat or not.
+        if let OrchestraEvent::Ended { run } = &event {
+            self.end_store(*run);
+        }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -163,7 +168,6 @@ impl App {
         let mut over = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
-        let mut ended = None;
         match event {
             OrchestraEvent::Worker(mut row) => {
                 let key = WorkerKey {
@@ -287,7 +291,6 @@ impl App {
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
-                ended = Some(run);
                 chat.end_orch_run(run);
                 if chat.orch_run() == Some(run) {
                     chat.set_orch_run(None);
@@ -298,11 +301,7 @@ impl App {
             self.withdraw_worker(id, key);
         }
         self.dirty = true;
-        let effects = store.map_or_else(Vec::new, |(run, item)| self.store_item(id, run, item));
-        if let Some(run) = ended {
-            self.end_store(run);
-        }
-        effects
+        store.map_or_else(Vec::new, |(run, item)| self.store_item(id, run, item))
     }
 
     /// The orchestrator turn of the run of pane `id` ended with work pending

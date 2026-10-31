@@ -9,6 +9,10 @@ use crate::core::ai::memory::{kind::MemKind, port::Note, slug::ORCHESTRA_PREFIX}
 /// The pane says this once when memory was off and the run turned it on.
 pub const MEMORY_ON: &str = "memory on for this run";
 
+/// Said once, with `NOT_PERSISTED`, when memory was never accepted by the
+/// user: a run does not turn on a memory whose privacy note is unanswered.
+pub const NEEDS_NOTE: &str = "handoffs need the memory privacy note accepted";
+
 /// The pane says this once when the handoffs stay in the run's memory only.
 pub const NOT_PERSISTED: &str = "handoffs not persisted";
 
@@ -59,15 +63,16 @@ impl Item {
         }
     }
 
-    /// The note of the finished run: its ledger as rendered plus the
-    /// orchestrator's summary.
+    /// The note of the finished run: the orchestrator's summary, then its
+    /// ledger as rendered.
     pub fn of_ledger(run: RunId, ledger: &str, summary: &str) -> Self {
         Self {
             key: ledger_key(run),
             note: Note {
                 kind: MemKind::Architecture,
                 title: format!("Run {} ledger", run.0),
-                content: format!("{ledger}\n\nSummary: {summary}"),
+                // The summary first: the save cuts a long text from the end.
+                content: format!("Summary: {summary}\n\n{ledger}"),
             },
         }
     }

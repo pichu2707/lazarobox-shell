@@ -198,14 +198,14 @@ impl App {
             }
             for save in &expired.saves {
                 super::notes::save_not_done(chat, Some(save), &text);
-                lost.push(save.id);
+                lost.push((id, save.id));
                 self.dirty = true;
             }
         }
         // A run's save that got no answer switches the run to memory only.
         let mut effects = self.expire_stores(now);
-        for token in lost {
-            effects.extend(self.run_save_lost(token));
+        for (id, token) in lost {
+            effects.extend(self.run_save_lost(id, token));
         }
         effects
     }
