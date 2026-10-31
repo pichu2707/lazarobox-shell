@@ -3064,3 +3064,17 @@ async fn attach_does_not_revive_a_worker_that_ended() {
     assert!(!matches!(next.try_recv(), Ok(StreamEvent::ToolCall { .. })));
     assert!(!matches!(old.try_recv(), Ok(StreamEvent::ToolCall { .. })));
 }
+
+// Re-review fix (4.1b): an ask of a surviving worker pauses the timers of the
+// NEW orchestrator turn and of the worker's own turn (which watches the
+// pending count it was started with) while the user answers it.
+#[tokio::test]
+async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
+    let (lab, waits, run, mut client, _old, worker_side) = surviving_worker().await;
+    let (scope, mut next, turn_side) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let id = raised(&mut client, &mut next, 1).await;
+    assert_eq!(turn_side.count(), 1, "the new orchestrator turn");
+    assert_eq!(worker_side.count(), 1, "the worker's own timers");
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}

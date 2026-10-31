@@ -101,12 +101,17 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
 /// one lock.
 struct Route {
     key: WorkerKey,
+    /// The count the worker's own turn watches for its timers: the one it was
+    /// started with, whatever turn it has outlived since.
+    own: Pending,
     state: Mutex<Current>,
 }
 
 struct Current {
     events: mpsc::Sender<StreamEvent>,
     approver: Arc<dyn Approver>,
+    /// The current orchestrator turn's count, which its approver feeds.
+    pending: Pending,
     /// Counts the retargets, so a failed send can tell whether the route moved.
     generation: u64,
 }
@@ -116,12 +121,15 @@ impl Route {
         key: WorkerKey,
         events: mpsc::Sender<StreamEvent>,
         approver: Arc<dyn Approver>,
+        pending: Pending,
     ) -> Arc<Self> {
         Arc::new(Self {
             key,
+            own: pending.clone(),
             state: Mutex::new(Current {
                 events,
                 approver,
+                pending,
                 generation: 0,
             }),
         })
@@ -131,11 +139,17 @@ impl Route {
     /// are denied first (the worker may ask again): their wait sits under a
     /// turn the new prompt would not name. Then the new turn's approver of
     /// this worker takes over, a new attempt of its session.
-    fn retarget(&self, events: mpsc::Sender<StreamEvent>, turn: &Arc<dyn Approver>) {
+    fn retarget(
+        &self,
+        events: mpsc::Sender<StreamEvent>,
+        turn: &Arc<dyn Approver>,
+        pending: &Pending,
+    ) {
         let mut state = lock(&self.state);
         state.approver.end_worker(self.key);
         state.approver = turn.for_worker(self.key).unwrap_or_else(|| turn.clone());
         state.events = events;
+        state.pending = pending.clone();
         state.generation += 1;
     }
 
@@ -192,8 +206,19 @@ struct Rerouted(Arc<Route>);
 
 impl Approver for Rerouted {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
-        let current = lock(&self.0.state).approver.clone();
-        current.ask(id, ask)
+        // The turn's approver counts the ask for the turn's timers; the
+        // worker's own timers, if they watch another count, hear it too.
+        let (current, also) = {
+            let state = lock(&self.0.state);
+            let also = (!state.pending.same(&self.0.own)).then(|| self.0.own.enter());
+            (state.approver.clone(), also)
+        };
+        let wait = current.ask(id, ask);
+        async move {
+            let _also = also;
+            wait.await
+        }
+        .boxed()
     }
 
     fn is_over(&self) -> bool {
@@ -499,7 +524,7 @@ impl RunManager {
                 )
             });
             for route in live.routes.values() {
-                route.retarget(scope.events.clone(), &scope.approver);
+                route.retarget(scope.events.clone(), &scope.approver, &scope.pending);
             }
             live.events = scope.events;
             live.approver = scope.approver;
@@ -1109,6 +1134,7 @@ impl RunManager {
             key,
             live.events.clone(),
             approver.unwrap_or_else(|| live.approver.clone()),
+            live.pending.clone(),
         );
         live.routes.insert(id, route.clone());
         let session = self
