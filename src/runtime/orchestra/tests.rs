@@ -3319,6 +3319,32 @@ async fn a_worker_that_asks_between_turns_is_denied_and_asks_again_in_the_next()
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
 
+// S9 (9.1c, engram `orchestra/s9-between-turn-gaps`): an ask denied in the
+// gap between two orchestrator turns is said in the pane, never silently.
+#[tokio::test]
+async fn an_ask_denied_between_turns_is_said_in_the_pane() {
+    let (mut lab, _waits, _run, mut client, rx, _) = surviving_worker().await;
+    drop(rx);
+    let denied = exchange(&mut client, read_notes(1)).await;
+    assert!(
+        denied["result"]["isError"].as_bool().unwrap_or(false),
+        "{denied}"
+    );
+    let notices: Vec<String> = lab
+        .sent()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Notice { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("worker 1") && notices[0].contains("between"),
+        "{notices:?}"
+    );
+}
+
 // Re-review fix (4.1b): an ask in flight when the next turn attaches is denied
 // at once (the worker may ask again), so its wait never sits under a turn the
 // prompt does not show.

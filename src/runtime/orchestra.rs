@@ -205,13 +205,17 @@ impl Route {
             let state = lock(&self.state);
             if state.generation == seen {
                 if asks {
+                    // Said first: the worker hears the denial after this.
+                    self.trace.denied_in_gap();
                     state.approver.end_worker(self.key);
                 }
                 return;
             }
             state.events.clone()
         };
-        if !asks {
+        if asks {
+            self.trace.denied_in_gap();
+        } else {
             let _ = retry.send(event).await;
         }
     }
@@ -371,6 +375,20 @@ impl Tracer {
         let _ = self
             .events
             .send((self.pane, OrchestraEvent::Trace { run, worker, item }));
+    }
+
+    /// A worker's ask could not be shown: no orchestrator turn was open to
+    /// hear it, so the ask was denied. The worker may ask again once the next
+    /// turn attaches; the user is told rather than left to wonder.
+    fn denied_in_gap(&self) {
+        let text = format!(
+            "worker {}: a tool approval was refused between two orchestrator turns; \
+             the worker can ask again",
+            self.key.worker.0
+        );
+        let _ = self
+            .events
+            .send((self.pane, OrchestraEvent::Notice { text }));
     }
 
     /// A step that is not streamed text: after the text said before it.
