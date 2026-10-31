@@ -15,7 +15,7 @@ use crate::core::ai::{
     orchestra::{
         Toolset, WorkerKey,
         overrides::{Change, FailurePicker, Picked},
-        run::Roster,
+        run::{Roster, RunLimits},
         worker::WorkerStatus,
     },
 };
@@ -151,6 +151,15 @@ impl App {
             }
             OrchestraEvent::AnswerLost => {
                 chat.push_system_line(ANSWER_LOST.to_owned());
+            }
+            // A newer run of the pane is not this run's business.
+            OrchestraEvent::Expired { run, after } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    let mins = after.as_secs() / 60;
+                    chat.push_system_line(format!(
+                        "run stopped: it reached run_timeout_mins ({mins}); running workers were cancelled"
+                    ));
+                }
             }
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
@@ -403,6 +412,16 @@ impl App {
         Vec::new()
     }
 
+    /// The run limits of the configuration.
+    fn run_limits(&self) -> RunLimits {
+        let orch = &self.ai.orchestrator;
+        RunLimits {
+            parallel: usize::from(orch.max_parallel),
+            workers: usize::from(orch.max_workers),
+            wall: Duration::from_secs(u64::from(orch.run_timeout_mins) * 60),
+        }
+    }
+
     /// The ORCH hint of the chat footer of pane `id`; `None` with the gate
     /// off or on a pane that is not a chat.
     pub fn orch_hint(&self, id: PaneId) -> Option<OrchHint> {
@@ -492,6 +511,7 @@ impl App {
         // run's first event ends them.
         let roster = self.roster(&self.ai);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
+        let limits = self.run_limits();
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
             .as_ref()
@@ -512,6 +532,7 @@ impl App {
                 roster,
                 profile,
                 deadline,
+                limits,
             }),
         }
     }

@@ -911,6 +911,7 @@ impl Chats {
                     // origin that is not UTF-8 gives no root.
                     roots: origin.to_str().map(str::to_owned).into_iter().collect(),
                     deadline: orch.deadline,
+                    limits: orch.limits,
                     profile: orch.profile,
                     events: events.clone(),
                     approver: approver.clone(),

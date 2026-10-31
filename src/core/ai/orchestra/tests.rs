@@ -4,7 +4,7 @@ use serde_json::json;
 
 use super::changes::{Change, ChangeLedger, diff_hash};
 use super::run::{
-    CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
+    CancelOutcome, CollectError, Refusal, Roster, Run, RunLimits, RunState, UserChoice, WorkerEvent,
 };
 use super::scope::{Dropped, REFUSED_ROOT, ReadScope, TOO_BROAD, UNSHOWN};
 use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse};
@@ -1072,4 +1072,94 @@ fn a_relaunch_on_an_unavailable_engine_refuses_the_queued_workers_too() {
     assert_eq!(run.status(second), Some(WorkerStatus::Refused));
     assert_eq!(run.status(third), Some(WorkerStatus::Refused));
     assert_eq!(run.state(), &RunState::Open);
+}
+
+fn parallel(parallel: usize, workers: usize) -> Run {
+    run().with_limits(RunLimits {
+        parallel,
+        workers,
+        ..RunLimits::default()
+    })
+}
+
+// Spec (agent-orchestrator, Parallel limit): `max_parallel` 2 and three
+// spawns: two run, one is queued and starts when one ends.
+#[test]
+fn the_parallel_limit_runs_two_and_queues_the_third() {
+    let (t0, mut run) = (Instant::now(), parallel(2, 8));
+    let ids: Vec<_> = (0..3)
+        .map(|n| run.spawn(t0, Task::Review, &format!("p{n}")).unwrap())
+        .collect();
+    let status = |run: &Run| {
+        ids.iter()
+            .map(|&id| run.status(id).unwrap())
+            .collect::<Vec<_>>()
+    };
+    use WorkerStatus::{Done, Queued, Running};
+    assert_eq!(status(&run), [Running, Running, Queued]);
+    run.on_event(t0, ids[1], done());
+    assert_eq!(status(&run), [Running, Done, Running]);
+}
+
+// Spec (agent-orchestrator, Worker cap): a spawn over the per-run limit is
+// refused with the limit; refused and cancelled workers count too.
+#[test]
+fn a_spawn_over_the_worker_cap_is_refused_with_the_limit() {
+    let (t0, mut run) = (Instant::now(), parallel(2, 2));
+    let first = run.spawn(t0, Task::Review, "1").unwrap();
+    run.spawn(t0, Task::Review, "2").unwrap();
+    run.cancel(t0, first);
+    assert_eq!(run.spawn(t0, Task::Review, "3"), Err(Refusal::WorkerCap(2)));
+}
+
+// Spec (agent-orchestrator, Siblings finish): worker 2 fails while worker 1
+// runs: worker 1 completes, nothing new starts, the run stays halted.
+#[test]
+fn siblings_finish_after_a_failure_and_nothing_new_starts() {
+    let (t0, mut run) = (Instant::now(), parallel(2, 8));
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    let three = run.spawn(t0, Task::Review, "3").unwrap();
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == two));
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
+    run.on_event(t0, one, done());
+    assert_eq!(run.status(one), Some(WorkerStatus::Done));
+    assert_eq!(run.status(three), Some(WorkerStatus::Queued));
+    assert_eq!(run.collect(one), Ok("ok"), "the sibling's result is kept");
+    // The retried worker starts before the one that was already queued.
+    run.decide(t0, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert_eq!(run.status(three), Some(WorkerStatus::Running));
+}
+
+// Spec (agent-orchestrator, Cancel after failure): worker 2 failed, worker 1
+// runs, cancel is chosen: worker 1 is killed and the run ends cancelled.
+#[test]
+fn cancel_after_a_failure_kills_the_running_sibling() {
+    let (t0, mut run) = (Instant::now(), parallel(2, 8));
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    assert_eq!(run.decide(t0, UserChoice::Cancel), Ok(vec![one]));
+    assert_eq!(run.state(), &RunState::Cancelled);
+    assert_eq!(run.status(one), Some(WorkerStatus::Cancelled));
+}
+
+// Spec (agent-orchestrator, Queue order): with room for two, a retried worker
+// takes the next free slot ahead of workers queued before it.
+#[test]
+fn a_retried_worker_starts_before_the_workers_already_queued() {
+    let (t0, mut run) = (Instant::now(), parallel(2, 8));
+    let ids: Vec<_> = (0..4)
+        .map(|n| run.spawn(t0, Task::Review, &format!("p{n}")).unwrap())
+        .collect();
+    run.on_event(t0, ids[0], failed(ErrorClass::Other, "x"));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    // Worker 2 runs; worker 1 took the slot the failure freed.
+    assert_eq!(run.status(ids[0]), Some(WorkerStatus::Running));
+    assert_eq!(run.status(ids[2]), Some(WorkerStatus::Queued));
+    run.on_event(t0, ids[1], done());
+    assert_eq!(run.status(ids[2]), Some(WorkerStatus::Running));
+    assert_eq!(run.status(ids[3]), Some(WorkerStatus::Queued));
 }

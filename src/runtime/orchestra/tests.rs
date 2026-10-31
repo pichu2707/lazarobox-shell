@@ -24,7 +24,10 @@ use crate::{
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
-        orchestra::{SessionKey, Toolset, WorkerKey, run::UserChoice},
+        orchestra::{
+            SessionKey, Toolset, WorkerKey,
+            run::{RunLimits, UserChoice},
+        },
         tools::{label, registry::FamilySet},
     },
     runtime::tools::{Limits, Unwired, Waits},
@@ -280,6 +283,7 @@ impl Lab {
             origin: self.via.clone(),
             roots: roots.iter().map(|r| (*r).to_owned()).collect(),
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
+            limits: RunLimits::default(),
             profile: Profile::Programmer,
             events: self.turn.0.clone(),
             approver: Arc::new(Unwired),
@@ -344,6 +348,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Dropped { .. }
         | OrchestraEvent::Unavailable
         | OrchestraEvent::AnswerLost
+        | OrchestraEvent::Expired { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1088,6 +1093,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             OrchestraEvent::Halted { .. }
             | OrchestraEvent::Declined { .. }
             | OrchestraEvent::Dropped { .. }
+            | OrchestraEvent::Expired { .. }
             | OrchestraEvent::AnswerLost
             | OrchestraEvent::Unavailable => None,
         })
@@ -2374,4 +2380,160 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     let (_, review) = host.review_batch(key, false).expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
+}
+
+// Spec (agent-orchestrator, Wall clock): with the run's limit and a worker
+// running, when the limit passes in paused time the worker is killed and the
+// run ends, with the limit named.
+#[tokio::test(start_paused = true)]
+async fn the_wall_clock_kills_the_running_worker_and_ends_the_run() {
+    let mut lab = lab(Script::Hang);
+    let wall = Duration::from_secs(90);
+    let scope = OrchScope {
+        limits: RunLimits {
+            wall,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let started = Instant::now();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(
+        status_of(&lab.events.recv().await.unwrap().1),
+        Some(WorkerStatus::Running)
+    );
+    let expired = lab.events.recv().await.unwrap().1;
+    assert_eq!(started.elapsed(), wall);
+    assert_eq!(expired, OrchestraEvent::Expired { run, after: wall });
+    assert_eq!(
+        status_of(&lab.events.recv().await.unwrap().1),
+        Some(WorkerStatus::Cancelled)
+    );
+    assert_eq!(
+        lab.events.recv().await.unwrap().1,
+        OrchestraEvent::Ended { run }
+    );
+    assert!(
+        lab.seen.dropped.load(Ordering::SeqCst),
+        "the process is killed"
+    );
+    assert_eq!(
+        handle.call(spawn(Task::Review, "late")).await,
+        Outcome {
+            text: "run ended".into(),
+            is_error: true,
+        }
+    );
+}
+
+// Spec (agent-orchestrator, Cancel denies pending asks; Isolated sessions;
+// S3b carried it forward): with two workers running, each with an ask
+// waiting, cancelling worker 1 denies its ask and leaves worker 2 running
+// with its ask and its session untouched.
+#[tokio::test]
+async fn cancelling_one_of_two_live_workers_leaves_the_other_and_its_ask() {
+    let mut lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        limits: RunLimits {
+            parallel: 2,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "one")).await;
+    handle.call(spawn(Task::Review, "two")).await;
+    // Both ran at once: two requests, two tool wires.
+    let mut clients = Vec::new();
+    for n in 0..2 {
+        let request = loop {
+            if let Some(request) = lab.seen.requests().into_iter().nth(n) {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let Tools::On {
+            mcp: Some(wire), ..
+        } = &request.tools
+        else {
+            panic!("{:?}", request.tools);
+        };
+        let mut client = ready(wire).await;
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+        let line = format!("{call}\n");
+        client.1.write_all(line.as_bytes()).await.unwrap();
+        clients.push(client);
+    }
+    // Which ask belongs to which worker is read off the ask itself.
+    let mut asks = HashMap::new();
+    for _ in 0..2 {
+        let asked = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+        let Some(StreamEvent::ToolCall {
+            id,
+            approval: Some(ask),
+            ..
+        }) = asked.unwrap()
+        else {
+            panic!("no ask");
+        };
+        asks.insert(ask.worker().unwrap().worker, id);
+    }
+    let (one, two) = (asks[&WorkerId(1)], asks[&WorkerId(2)]);
+    let cancelled = handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert_eq!(cancelled, fine("worker 1: cancelled"));
+    let result = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+    let Some(StreamEvent::ToolResult { id, status, .. }) = result.unwrap() else {
+        panic!("no result");
+    };
+    assert_eq!((id, status), (one, ToolStatus::Denied));
+    let report = OrchCall::Wait {
+        ids: vec![WorkerId(1), WorkerId(2)],
+        timeout: 0,
+    };
+    assert_eq!(handle.call(report).await, fine("1: cancelled\n2: running"));
+    let key = |n| WorkerKey {
+        run,
+        worker: WorkerId(n),
+    };
+    assert!(
+        !waits.decide(SessionKey::Worker(pane(), key(1)), 7, one, Decision::Sent),
+        "worker 1's wait is gone"
+    );
+    assert!(
+        waits.decide(SessionKey::Worker(pane(), key(2)), 7, two, Decision::Sent),
+        "worker 2's ask is still waiting under its own session"
+    );
+}
+
+// Spec (agent-orchestrator, Worker cap): `spawn_agent` over the per-run limit
+// is refused naming the limit, and no worker starts for it.
+#[tokio::test]
+async fn a_spawn_over_the_worker_cap_is_refused_naming_the_limit() {
+    let lab = lab(Script::Hang);
+    let scope = OrchScope {
+        limits: RunLimits {
+            workers: 1,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    };
+    let (_, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "one")).await;
+    let refused = handle.call(spawn(Task::Review, "two")).await;
+    assert_eq!(
+        refused,
+        Outcome {
+            text: "worker limit reached: max_workers is 1".into(),
+            is_error: true
+        }
+    );
+    lab.seen.first().await;
+    assert_eq!(lab.seen.requests().len(), 1);
 }
