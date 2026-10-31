@@ -409,6 +409,10 @@ pub struct ChatState {
     /// Workers seen over (a terminal row) and not running again: an ask of
     /// theirs that arrives late is refused. Dropped with the run.
     ended_workers: std::collections::HashSet<WorkerKey>,
+    /// The worker row the user selected (S3), of the pane's run.
+    selected: Option<WorkerId>,
+    /// A Ctrl+C cancelled a worker: until then a second one cancels the run.
+    cancel_armed: Option<Instant>,
     /// The failure the run waits on, until the user answers it or the run
     /// ends.
     orch_alert: Option<OrchAlert>,
@@ -478,6 +482,8 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             ended_workers: Default::default(),
+            selected: None,
+            cancel_armed: None,
             orch_alert: None,
             orch_note: None,
             orch_picker: None,
@@ -512,6 +518,9 @@ impl ChatState {
     }
 
     pub fn set_orch_run(&mut self, run: Option<RunId>) {
+        if self.orch_run != run {
+            self.selected = None;
+        }
         self.orch_run = run;
     }
 
@@ -587,6 +596,10 @@ impl ChatState {
     /// the pane's run, whether its alert is still up or not.
     pub fn end_orch_run(&mut self, run: RunId) {
         self.ended_workers.retain(|key| key.run != run);
+        if self.orch_run == Some(run) {
+            self.selected = None;
+            self.cancel_armed = None;
+        }
         let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
         if self.orch_run != Some(run) && !alerted {
             return;
@@ -595,6 +608,50 @@ impl ChatState {
             self.orch_overrides = None;
         }
         self.drop_orch_alert();
+    }
+
+    /// The selected worker row.
+    pub fn selected_worker(&self) -> Option<WorkerId> {
+        self.selected
+    }
+
+    pub fn select_worker(&mut self, worker: Option<WorkerId>) {
+        if self.selected != worker {
+            self.selected = worker;
+            self.generation += 1;
+        }
+    }
+
+    /// Whether `entry` is the selected worker row.
+    pub(crate) fn is_selected(&self, entry: &Entry) -> bool {
+        matches!(entry, Entry::Worker(row)
+            if self.selected == Some(row.id) && self.orch_run == Some(row.run))
+    }
+
+    /// The workers of the pane's run that are queued or running, in order.
+    pub fn live_workers(&self) -> Vec<WorkerId> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Worker(row)
+                    if self.orch_run == Some(row.run)
+                        && matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running) =>
+                {
+                    Some(row.id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Arms the second-Ctrl+C escalation until `until`.
+    pub fn arm_cancel(&mut self, until: Option<Instant>) {
+        self.cancel_armed = until;
+    }
+
+    /// Whether a Ctrl+C that cancelled a worker is still recent at `now`.
+    pub fn cancel_is_armed(&self, now: Instant) -> bool {
+        self.cancel_armed.is_some_and(|until| now < until)
     }
 
     /// Notes that `worker` is over (`true`) or runs again (`false`).

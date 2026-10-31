@@ -1644,6 +1644,15 @@ impl Panes {
                         }
                     }
                 }
+                Effect::OrchCancelWorker { pane, run, worker } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.cancel_worker(pane, run, worker);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
                 // Both return at once; the answer lands on a waiting call, or
                 // on nothing when the call is over.
                 Effect::ToolDecision {

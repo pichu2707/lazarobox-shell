@@ -353,6 +353,14 @@ pub enum Effect {
         run: RunId,
         choice: UserChoice,
     },
+    /// Ctrl+C with a worker row selected (S3): cancels that worker of run
+    /// `run` and nothing else. A worker that ended meanwhile is a no-op; its
+    /// row events (and `withdraw_worker`) do the rest.
+    OrchCancelWorker {
+        pane: PaneId,
+        run: RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+    },
     /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
     /// (the approval overlay, or a check that failed on `y`). A call that
     /// ended meanwhile ignores it.
@@ -8290,6 +8298,8 @@ mod app_tests {
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
+    /// Selecting a worker row and the escalating Ctrl+C (S3).
+    mod orchestra_cancel;
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.

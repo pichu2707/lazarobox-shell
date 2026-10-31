@@ -26,6 +26,12 @@ baseline.
   Ollama decoders report the tokens (and the cost, where claude gives one) of
   a turn. A worker row shows its own numbers, or `n/a` when its engine
   reported none, and a `run` row shows the sum. Nothing is estimated.
+- Agent orchestrator multiple workers (S3, same gate): read grants belong to
+  one worker, worker approvals queue one prompt at a time, each worker has its
+  own session, and `[ai.orchestrator]` `max_parallel`, `max_workers` and
+  `run_timeout_mins` bound the run. With a worker row selected (Alt+Down,
+  Alt+Up) the first Ctrl+C cancels only that worker and a second one within
+  two seconds cancels the run.
 
 ## [1.0.1] - 2026-10-31
 

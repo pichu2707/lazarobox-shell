@@ -372,7 +372,10 @@ fn the_alert_is_drawn_with_the_worker_the_raw_error_and_its_keys() {
     a.update(event(row(RUN, 2, WorkerStatus::Running)));
     assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(ALERT));
     a.update(key('r'));
-    assert_eq!(a.chat_guidance(chat_id()), None, "answered");
+    // Answered: the alert is gone and worker 2, still running, gets the hint
+    // of the cancel keys.
+    let hint = a.chat_guidance(chat_id()).unwrap();
+    assert!(hint.starts_with("Alt+Up/Down select a worker"), "{hint}");
 }
 
 // The alert shows the status the worker ended with, and a line break in the

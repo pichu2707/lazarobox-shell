@@ -96,7 +96,16 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
         .flatten();
     for (index, entry) in chat.entries().iter().enumerate() {
         let mut rows = Vec::new();
-        entry_rows(entry, width, hinted == Some(index), &mut rows);
+        let marked = chat.is_selected(entry);
+        entry_rows(
+            entry,
+            width,
+            Marks {
+                hint: hinted == Some(index),
+                selected: marked,
+            },
+            &mut rows,
+        );
         if rows.is_empty() {
             starts.push(out.len());
             continue;
@@ -163,7 +172,20 @@ fn blank() -> Line {
 }
 
 /// The rows of one entry.
-fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
+/// What the transcript marks on an entry beyond its text.
+#[derive(Clone, Copy)]
+struct Marks {
+    /// The run hint goes under it.
+    hint: bool,
+    /// It is the selected worker row.
+    selected: bool,
+}
+
+/// The prefix of the selected worker row.
+const SELECTED_PREFIX: &str = "> ";
+
+fn entry_rows(entry: &Entry, width: usize, marks: Marks, out: &mut Vec<Line>) {
+    let hint = marks.hint;
     match entry {
         Entry::System(text) => {
             push_wrapped(out, LineKind::System, SYSTEM_PREFIX, "  ", text, width);
@@ -219,7 +241,12 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 | WorkerStatus::Done
                 | WorkerStatus::Cancelled => LineKind::Tool,
             };
-            push_wrapped(out, kind, TOOL_PREFIX, "  ", &worker_line(row), width);
+            let prefix = if marks.selected {
+                SELECTED_PREFIX
+            } else {
+                TOOL_PREFIX
+            };
+            push_wrapped(out, kind, prefix, "  ", &worker_line(row), width);
         }
         Entry::RunUsage(row) => {
             let usage = row.usage.map_or_else(

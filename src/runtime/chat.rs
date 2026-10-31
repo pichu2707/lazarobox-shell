@@ -1133,6 +1133,20 @@ impl Chats {
             .is_some_and(|orchestra| orchestra.decide(pane, run, choice).is_ok())
     }
 
+    /// Cancels worker `worker` of run `run` of `pane` (the cancel tool's
+    /// path, `RunManager::cancel_worker`); a run or a worker that is gone is
+    /// a no-op, its rows having said so.
+    pub fn cancel_worker(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+    ) {
+        if let Some(orchestra) = &self.orchestra {
+            orchestra.cancel_worker(pane, run, worker);
+        }
+    }
+
     /// Stops every turn and waits, up to `bound`, until each adapter has been
     /// dropped (its sockets closed, its process groups killed).
     pub async fn shutdown(&mut self, bound: Duration) {

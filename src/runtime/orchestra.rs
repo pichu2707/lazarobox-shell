@@ -681,7 +681,7 @@ impl RunManager {
     /// Cancels one worker: its turn is aborted and its session closed, and
     /// its slot goes to the next queued worker. One that already ended stays
     /// as it was.
-    fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
+    pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
                 if let Some(task) = live.tasks.remove(&id) {

@@ -59,17 +59,27 @@ While a failure alert is shown: `r` MUST retry, `c` or Esc MUST cancel the run; 
 - THEN the model picker opens, the alert returns, then the engine picker opens
 
 ### Requirement: Cancel keys for workers [S1, S3]
-Ctrl+C MUST cancel the orchestrator turn and all workers of the run (existing chat cancel). [S3] A chat key MUST cancel the selected worker, and another the whole run; each is shown in the footer hint while a run is active.
+Ctrl+C with no worker selected MUST cancel the orchestrator turn and all workers of the run (existing chat cancel). [S3] With the gate on, Alt+Down and Alt+Up MUST select the next or previous worker of the run that is queued or running (wrapping; a notice says so when there is none), the selected row MUST be drawn with its own prefix, and the selection MUST end with its worker and with its run. With a worker selected, the first Ctrl+C MUST cancel only that worker and show the notice `Ctrl+C again cancels the run`; a second Ctrl+C within about two seconds MUST cancel the turn and the whole run as Ctrl+C with no selection does. A held key MUST NOT escalate. Esc keeps cancelling the turn and the whole run. The footer hint MUST name these keys while a run has a worker that has not ended and no alert or notice needs the line. With the gate off none of this applies and Ctrl+C is the chat cancel (user decision, 2026-10-31: escalating Ctrl+C replaces a dedicated key).
 
 #### Scenario: Ctrl+C [auto]
-- GIVEN a run with two workers
+- GIVEN a run with two workers and none selected
 - WHEN Ctrl+C is pressed
 - THEN the turn and both workers are cancelled
 
 #### Scenario: Cancel the selected worker [S3, auto]
 - GIVEN a run with two workers and worker 1 selected
-- WHEN the cancel-worker key is pressed
-- THEN worker 1 is cancelled and worker 2 keeps running
+- WHEN Ctrl+C is pressed
+- THEN worker 1 is cancelled, worker 2 keeps running and the notice `Ctrl+C again cancels the run` is shown
+
+#### Scenario: Second Ctrl+C cancels the run [S3, auto]
+- GIVEN worker 1 was just cancelled with Ctrl+C and worker 2 is selected
+- WHEN Ctrl+C is pressed again within two seconds
+- THEN the turn and the whole run are cancelled
+
+#### Scenario: A late Ctrl+C starts over [S3, auto]
+- GIVEN worker 1 was cancelled with Ctrl+C more than two seconds ago and worker 2 is selected
+- WHEN Ctrl+C is pressed
+- THEN only worker 2 is cancelled
 
 ## MODIFIED Requirements
 
@@ -89,6 +99,7 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
 | Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
+| Alt+Down, Alt+Up | with the orchestrator gate on, select the next or previous live worker of the run (see Cancel keys for workers); with the gate off, swallowed |
 | Ctrl+O | with the orchestrator gate on, toggle the pane's ORCH mode (see ORCH toggle key); with the gate off, swallowed like an unlisted key |
 | Ctrl+Space | enter PREFIX as in any pane |
 
