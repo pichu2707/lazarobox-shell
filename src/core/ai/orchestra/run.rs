@@ -164,6 +164,9 @@ struct Slot {
     /// The orchestrator's handoff for the worker, or the fallback lazarobox
     /// built (S4, D17).
     handoff: Option<Handoff>,
+    /// Waiting on its own review (see [`Run::park`]): not counted as running
+    /// for `max_parallel`.
+    parked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -313,6 +316,26 @@ impl Run {
         }
     }
 
+    /// A running worker waits on work of its own run (its change's review):
+    /// its slot goes to the next queued worker meanwhile, or that work would
+    /// queue behind it for ever. `false` for a worker that is not running.
+    pub fn park(&mut self, now: Instant, id: WorkerId) -> bool {
+        if self.status(id) != Some(WorkerStatus::Running) {
+            return false;
+        }
+        self.slots[index(id)].parked = true;
+        self.promote(now);
+        true
+    }
+
+    /// The worker is back: it holds its slot again, never queued, so the run
+    /// may briefly run one over `max_parallel` until another worker ends.
+    pub fn unpark(&mut self, id: WorkerId) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.parked = false;
+        }
+    }
+
     /// Creates a worker. An unavailable engine still creates it, as `Refused`
     /// with the reason, and halts the run like any failure: no other engine
     /// is tried. Only a paused or ended run refuses outright.
@@ -339,6 +362,7 @@ impl Run {
             reported: false,
             gap: false,
             handoff: None,
+            parked: false,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal, false);
@@ -368,6 +392,7 @@ impl Run {
         let slot = &mut self.slots[index(id)];
         slot.result = None;
         slot.reported = false;
+        slot.parked = false;
         slot.status = WorkerStatus::Queued;
         if front {
             self.queue.push_front(id);
@@ -380,7 +405,12 @@ impl Run {
     /// is free.
     fn promote(&mut self, now: Instant) {
         while self.state == RunState::Open
-            && self.count(WorkerStatus::Running) < self.limits.parallel
+            && self
+                .slots
+                .iter()
+                .filter(|s| s.status == WorkerStatus::Running && !s.parked)
+                .count()
+                < self.limits.parallel
         {
             let Some(next) = self.queue.pop_front() else {
                 return;
@@ -929,13 +959,6 @@ impl Run {
 
     fn slot(&self, id: WorkerId) -> Option<&Slot> {
         self.slots.get(index(id))
-    }
-
-    fn count(&self, status: WorkerStatus) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| slot.status == status)
-            .count()
     }
 
     fn ids(&self, status: WorkerStatus, keep: impl Fn(&Slot) -> bool) -> Vec<WorkerId> {

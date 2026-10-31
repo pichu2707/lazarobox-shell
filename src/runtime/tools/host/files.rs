@@ -212,9 +212,10 @@ pub(super) async fn run_within(
         };
     }
     // The view whenever the family is on, so the marker cannot be forged.
+    // A read-only review worker of a run sees the staged view too (S7b).
     let view = match scope
         .stage_key
-        .filter(|_| scope.families.contains(Family::Write))
+        .filter(|_| scope.families.contains(Family::Write) || scope.read_scope.is_some())
     {
         None => None,
         Some(key) => {
@@ -466,6 +467,67 @@ fn ledger_change(env: &ToolEnv, staged: &Staged) -> Change {
         hash,
         applied: false,
     }
+}
+
+/// What a review worker's read of a path came to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ReviewRead {
+    Allowed,
+    /// Refused, and not a file of the staged set: a probe (`.git`, a path
+    /// outside the scope, an absolute path).
+    Refused,
+    /// Refused although it is a file of the staged set: the review cannot
+    /// have read what it was asked to review.
+    RefusedStaged,
+}
+
+/// Whether a review worker may read `input` through the staged view: its
+/// write target (which exists on disk or only in the batch) resolves inside
+/// the chat's root and under one of the run's scope roots, and no secret rule
+/// refuses it. The read itself is kept in the chat root by the caller.
+pub(super) async fn review_reach(host: &ToolHost, scope: &TurnScope, input: &str) -> ReviewRead {
+    let Some(worker) = scope.read_scope.clone() else {
+        return ReviewRead::Refused;
+    };
+    let (env, input) = (host.env(&scope.origin), input.to_owned());
+    let (stages, key) = (host.stages.clone(), scope.stage_key);
+    let check = tokio::task::spawn_blocking(move || {
+        let roots = load_roots(&env).ok()?;
+        let target = resolve_write(&roots, &env.origin, &input)?;
+        if worker
+            .handle
+            .allows_write(worker.run, worker.worker, &target.real)
+        {
+            return Some(ReviewRead::Allowed);
+        }
+        let staged = key.is_some_and(|key| {
+            lock(&stages).batch(key).is_some_and(|batch| {
+                batch
+                    .entries()
+                    .iter()
+                    .any(|staged| staged.target.real == target.real)
+            })
+        });
+        Some(if staged {
+            ReviewRead::RefusedStaged
+        } else {
+            ReviewRead::Refused
+        })
+    });
+    check.await.ok().flatten().unwrap_or(ReviewRead::Refused)
+}
+
+/// The change set of the batch of `key`, as a worker's ledger names it.
+pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEnv) -> Vec<Change> {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return Vec::new();
+    };
+    batch
+        .entries()
+        .iter()
+        .map(|staged| ledger_change(env, staged))
+        .collect()
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change

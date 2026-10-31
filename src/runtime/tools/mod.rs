@@ -32,7 +32,7 @@ use crate::core::ai::tools::{Call, Lines, label, paths::SecretRoots};
 pub use approver::Waits;
 pub use fs::{Failure, Limits, ToolEnv};
 pub use host::{Approver, ToolHost, TurnScope, Unwired};
-pub use orchestra::{OrchHandle, Orchestra, WorkerScope};
+pub use orchestra::{Answered, Late, OrchHandle, Orchestra, WorkerScope};
 pub use pending::Pending;
 
 /// A random nonce for one result, `None` when the system gives no randomness

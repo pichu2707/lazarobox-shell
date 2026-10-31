@@ -1118,6 +1118,7 @@ async fn an_orchestrator_session_lists_and_dispatches_the_orchestration_tools() 
             "collect",
             "cancel",
             "handoff",
+            "raise",
             "finish"
         ]
     );

@@ -575,3 +575,67 @@ Strict TDD: the tests were written first against API stubs and failed behavioura
 | S5 | confirmed: the 4 KiB prompt test iterates all 4 lenses plus the refuter for both profiles (10) and asserts the count |
 
 7b.2b API notes: `parse_verdicts` returns `Verdicts`; `Outcome::Incomplete` is new (a receipt must show it); after the refuter ends, call `settle_unanswered()` before `begin_correction`/`conclude`; ReviewError has `AlreadyJudged`, `LensesPicked`, `Waived`; `report`, `pick` and `refute` fail with `CorrectionUsed` after the correction began.
+
+## S7b (RDD), PR S7b-3: task 7b.2, second half "7b.2b" (branch feat/agent-orchestrator-s7b3, on s7b2; 7b.2 now `[x]`)
+
+Merged `feat/agent-orchestrator-s7b2` (PR #465 core fixes: `Verdicts`, `Outcome::Incomplete`, `settle_unanswered`, claims before the listing, sanitised consent) and adapted: the manager calls `settle_unanswered()` after the refuter and keeps `Verdicts.malformed` out of the transcript for 7b.3.
+
+Strict TDD, RED observed first:
+- core: `a_parked_worker_yields_its_slot...`, `raise_validates_its_arguments`, the seven-tool registry (3 of 3 failed against stubs/UnknownTool); `the_correction_prompt...` written after the function (no RED, a pure string builder).
+- host (`orchestra_tests.rs`): 4 of 5 new tests failed before the hook (`a_high_change_asks_consent_first...`, `a_declined_consent_goes_on_unreviewed...`, `a_correction_worker_cannot_propose_the_batch`, `a_review_worker_reads_the_staged_view...`); the passive one passed from the start (guard). The view test needed a second change: a scoped read bypassed the staged view.
+- runtime (`runtime/orchestra/tests.rs`): 7 manager tests failed against a stub `reviews()`/no-op `review` (declined, granted/clean, corrected, survives, unanswered, worker cap, raise); the end-to-end `declining_the_consent_leaves_the_workers_call_to_the_batch_review` (real `Waits`) passed on its first run.
+- app: `a_review_line_reaches_the_transcript` (compile-RED then green).
+
+| Unit | What |
+|------|------|
+| `host/review.rs` | `before_batch`: stages -> `assess` -> for `High` announces a call of its own (`review`, fresh `CallId`) with `consent_ask` built from the assessment and the staged ledger, awaits it, maps `Sent` to `Granted` and everything else but `ENDED` to `Declined`, then `Orchestra::review(..).await`; the batch is sealed and asked after, whatever was found. |
+| `host.rs` | the hook before `files::seal`; `propose_batch` of a correction worker refused (`CORRECTION_PROPOSES`); `TurnScope::sees_stage` (read-only worker with a stage key): its scoped reads go through the staged view, kept in the root; `ToolHost::staged_changes`. |
+| `tools/orchestra.rs` | `Orchestra::{assess, review, corrects}` with inert defaults. |
+| `orchestra/review.rs` (runtime) | `RunManager::review` parks the waiting worker, starts lens workers (`risk`, `reliability`) and the refuter as `Task::Review` workers with the lens/refuter system prompt and the staged view, at most one `Task::Code` correction, then a refuter check of the targeted blockers over the re-read staged set; `Review::conclude` stored in `Live.review.reviews` (`RunManager::reviews`, the 7b.3 seam). |
+| `Run::{park, unpark}` | a waiting worker does not hold a `max_parallel` slot; resuming never queues. |
+| `raise` tool | `OrchCall::Raise`, the registry row (7 orchestration tools), the orchestrate prompts; `Raise::new` refuses passive and invisible reasons; the run keeps the highest raise. |
+| `OrchestraEvent::Review{run, text}` | one transcript line: not reviewed / stopped (why) / clean / corrected / incomplete / blockers open. |
+
+### Decisions and deviations
+- W1: the consent is a call of its own announced before `propose_batch`, with its own `CallId`; its answer can never reach the worker's call (tests: distinct ids, `n` leaves the batch review, a stale consent id answers nothing).
+- The orchestrator has no tool to pick lenses yet: the default pair is `risk` + `reliability` (`Review::pick` takes any; the orchestrator pick is a later seam).
+- Review workers are ordinary run workers (visible to `wait`/`collect`, counted by `max_workers`, a handoff is asked of them or filled `unknown`).
+- The correction is checked by a refuter run over the targeted blockers (uphold = still open; unanswered = open); the refuter prompt says an unsettled claim is refuted, so a validator that cannot tell reads as fixed: documented risk.
+- The `raise` applies to the whole run (highest wins), not to one worker.
+- A review that cannot start (worker cap, paused run, no nonce) says why in the transcript and the batch goes on unreviewed; a lens that fails halts the run like any failure and the review stops.
+- Medium never asks (only `High` needs consent); each `propose_batch` of a high change asks again.
+- The review time counts against the proposing worker's own deadline.
+- Not done (7b.3): the receipt handoff and its line in the batch review.
+
+### 7b.2b review fixes (branch feat/agent-orchestrator-s7b3)
+
+Strict TDD, RED first (host: 7 of 7 new tests failed against the stubbed hook; runtime: 13 of 14 new tests failed or hung against the old manager, only `ctrl_c_during_a_review_ends_it_and_its_workers` was a guard that passed at once; prompts: the shape test failed on the refuter and the validator; the unsettled parse and `an_instruction_inside_a_finding...` were written after the code, a compile-RED and a pure string check).
+
+| # | Fix | Test |
+|---|-----|------|
+| C1 | The correction check has its own `validator.md` (both profiles, `validator_builtin`) and only an explicit `refuted` clears a blocker; `unsettled` and silence leave it open. The refuter prompt says an unsettled claim is answered `CLAIM n unsettled: reason`, never refuted; `parse_verdicts` accepts it (not malformed, `Verdicts.unsettled`), it counts as unanswered so `settle_unanswered` gives `Incomplete`. A correction whose re-read staged set has no path with a new hash fixed nothing: the targets stay open. Per-target-path comparison is not possible (findings carry no path), so the test is on the whole set | `an_unsettled_claim_is_accepted...`, `the_lens_and_refuter_prompts_hold_the_review_rules`, `an_unsettled_correction_check_leaves_the_blocker_open`, `a_correction_that_staged_nothing_leaves_the_blocker_open` |
+| W1 | After the review the host re-reads the batch; paths not in the assessed set go to `Orchestra::late` (`reviewed` or High): a line `staged after consent, not reviewed: <paths>` and `Reviewed.unreviewed` | `a_path_staged_during_the_review_is_reported_as_not_reviewed`, `a_high_path_staged_after_a_passive_assessment_is_reported`, `a_late_path_is_recorded_and_said_as_not_reviewed` |
+| W2 | `Guard` in `RunManager::review`: on end or drop it cancels the workers it started and unparks the proposer. The drop path defers to a task (an abort can drop it while the manager lock is held) | `a_dropped_review_cancels_its_workers_and_unparks_the_proposer`, `ctrl_c_during_a_review...`, `cancelling_the_proposer_ends_its_review` |
+| W3 | `correcting` is never cleared (a retried or relaunched correction cannot propose and is no second one); `viewers`, `systems` and `unread` are cleaned when the review ends | `the_correction_stays_marked_and_the_readers_are_cleaned` |
+| W4 | A review needs room for 2 lenses and the refuter: otherwise nothing starts and the line says `could not start ... max_workers`; every worker started is cancelled by the guard | `a_review_that_cannot_fit_its_workers_starts_none`, `a_review_over_the_worker_cap_stops_visibly` |
+| W5 | `Orchestra::review` returns `Result`: `Err` (run gone, manager gone) shows a row `review could not start: ...` and the batch goes on; `assess` of a gone run is `High` (Failed), not the rules alone; an ask nobody answered is `Answered::Unanswered(reason)` and recorded `consent not answered (reason)`, not declined; a failed read of the staged set is `None` and shows a row, never an empty (passive) set | `a_review_that_cannot_start_is_shown...`, `a_review_of_a_gone_run_cannot_start_and_its_assessment_is_high`, `a_consent_nobody_answered...`, `an_unanswered_consent_is_not_a_decline`, `an_unreadable_staged_set_is_said_and_never_passive`, `a_failed_read_of_the_staged_set_is_none_not_empty` |
+| W6 | A review worker's read resolves its write target (works for a file only in the batch) and must be under the run's scope roots (`allows_write`); no prompt either way; outside it is refused and `Orchestra::unread` makes the review `Incomplete`. The read itself is kept in the chat root (`Within::Root`); the scope pin is the pre-check, a swap between check and read stays possible | `a_review_worker_reads_staged_only_files_in_scope_and_never_asks`, `an_unread_staged_file_makes_the_review_incomplete` |
+| S1 | `OrchestraEvent::Review` doc admits the clipped blocker text | doc |
+| S2 | the finding text is inside the wrapper; extra paths are W1 | `an_instruction_inside_a_finding_stays_inside_the_wrapper` |
+| S4 | `park` false: `could not start: worker N is not running`, no worker starts | `a_review_for_a_worker_that_is_not_running_says_so` |
+| S5 | a halted run, an ended proposer or a gone run end the wait: halted gives `Incomplete` with a line | `a_run_halted_during_a_review_ends_it_incomplete` |
+
+Known limits kept: the lens pair is still the default; `Review::pick` by the orchestrator, the receipt (7b.3).
+
+### 7b.2b re-review fixes
+
+Strict TDD, RED first: the runtime tests for W-A (2), W-C and W-D (2) failed against the old manager (5 of 5; the check-cannot-start test also needed the trait to compile first), the host tests for W-D and W-E failed (2 of 2: the unread log held all five probes; no `changed` line), and the validation prompt test failed against a stub that returned the refuter prompt. The guard drop test was written after the code (no RED).
+
+| # | Fix | Test |
+|---|-----|------|
+| W-A | Before the correction the room for it AND its check is counted (`worker_count` counts every slot ever spawned): with less, the correction is skipped with `the correction was skipped: ...` and the blockers stay open. A check that cannot start (a slot was taken meanwhile) is treated like a failed correction start: `the correction could not be checked: ...`, targets open, outcome `BlockersOpen`, review kept | `a_correction_without_room_for_its_check_is_skipped_visibly`, `a_check_that_cannot_start_keeps_the_blockers_open` |
+| W-B | `validation_prompt` (rdd.rs): header `Claims to check: N`, and a lead that refutes only on clear evidence in the staged text that the problem is gone, else unsettled and open; replaces the `VALIDATE` lead and the refuter header | `the_validation_prompt_asks_for_clear_evidence_before_refuting` |
+| W-C | The gate needs a path of the reviewed set whose hash changed; a new unrelated path counts for nothing: `the correction did not change the reviewed files` | `a_correction_that_only_stages_an_unrelated_file_leaves_the_blocker_open` |
+| W-D | `Orchestra::review` returns the set as last reviewed (post-correction hashes for checked files). The host compares (path, hash) at seal time: new paths `Late::Staged`, reviewed paths with another hash `Late::Changed` (`changed after review, not reviewed: <paths>`, also in `Reviewed.unreviewed`) | `the_review_returns_the_hashes_it_last_reviewed`, `a_file_changed_after_its_review_is_said_as_not_reviewed`, `a_reviewed_file_restaged_during_the_review_is_reported_as_changed` |
+| W-E | `unread` counts only a refused path that is a file of the staged set (`ReviewRead::RefusedStaged`); probes (`.git`, `node_modules`, `~`, absolute paths, outside the scope) are refused with a reason and count for nothing. An absolute path is refused as before (`resolve_write` takes relative paths only), uncounted | `a_review_worker_reads_staged_only_files_in_scope_and_never_asks` |
+| S | A `Guard` dropped with no runtime says `its workers could not be cancelled (no runtime)` on the review line instead of failing silently | `a_guard_dropped_without_a_runtime_says_it_could_not_cancel` |

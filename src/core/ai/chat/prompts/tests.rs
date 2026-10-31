@@ -53,6 +53,7 @@ fn the_orchestrate_prompts_hold_the_coordinator_rules() {
             "collect",
             "cancel",
             "handoff",
+            "raise",
             "finish",
             "on_course, off_course or blocked",
             "by kind",
@@ -482,6 +483,7 @@ fn the_lens_and_refuter_prompts_hold_the_review_rules() {
             .map(|lens| (lens.id().to_owned(), lens_builtin(profile, lens)))
             .collect();
         prompts.push(("refuter".to_owned(), refuter_builtin(profile)));
+        prompts.push(("validator".to_owned(), validator_builtin(profile)));
         for (name, prompt) in prompts {
             let label = format!("{profile:?} {name}");
             assert!(!prompt.trim().is_empty(), "{label}");
@@ -494,7 +496,7 @@ fn the_lens_and_refuter_prompts_hold_the_review_rules() {
             ] {
                 assert!(prompt.contains(rule), "{label}: {rule}");
             }
-            if name != "refuter" {
+            if name != "refuter" && name != "validator" {
                 assert!(
                     prompt.contains(&format!("through the {name} lens")),
                     "{label}"
@@ -508,13 +510,22 @@ fn the_lens_and_refuter_prompts_hold_the_review_rules() {
                 }
             } else {
                 assert!(
-                    prompt.contains("CLAIM <number> <upheld|refuted>:"),
+                    prompt.contains("CLAIM <number> <upheld|refuted|unsettled>:"),
                     "{label}"
                 );
+            }
+            // C1: a claim nobody can settle is never cleared by the prompt.
+            if name == "refuter" {
+                assert!(!prompt.contains("is refuted, and you say so"), "{label}");
+                assert!(prompt.contains("unsettled"), "{label}");
+            }
+            if name == "validator" {
+                assert!(prompt.contains("still open"), "{label}");
+                assert!(prompt.contains("only if"), "{label}");
             }
             assert!(!seen.contains(&prompt), "{label} repeats another prompt");
             seen.push(prompt);
         }
     }
-    assert_eq!(seen.len(), 10);
+    assert_eq!(seen.len(), 12);
 }

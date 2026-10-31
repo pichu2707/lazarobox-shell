@@ -98,6 +98,15 @@ pub fn refuter_builtin(profile: Profile) -> &'static str {
     }
 }
 
+/// The built-in prompt of the correction check (S7b): like the refuter, but a
+/// claim it cannot settle stays open instead of being cleared.
+pub fn validator_builtin(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Analyst => include_str!("prompts/analyst/validator.md"),
+        Profile::Programmer => include_str!("prompts/programmer/validator.md"),
+    }
+}
+
 /// The prompt for `task`: the task's override, then the `general` override,
 /// then the built-in. A skipped file adds a notice and resolution goes on.
 /// A text is cut at the end only; one with nothing but whitespace counts as
