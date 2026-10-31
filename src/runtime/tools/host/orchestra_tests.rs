@@ -393,7 +393,7 @@ fn worker_ask_as(home: &Path, path: &str, reach: Reach, cloud: bool) -> Approval
     ApprovalAsk::WorkerRead {
         worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: home.join(path).to_str().unwrap().to_owned(),
-        label: "review claude>opus".into(),
+        label: "1/1 review claude>opus".into(),
         reach,
         cloud,
     }
@@ -1059,7 +1059,7 @@ async fn a_worker_write_in_scope_is_staged_and_only_the_users_review_writes_it()
     let [ApprovalAsk::Batch(review)] = asked.as_slice() else {
         panic!("{asked:?}");
     };
-    assert_eq!(review.label(), Some("review claude>opus"));
+    assert_eq!(review.label(), Some("1/1 review claude>opus"));
     assert!(
         !app.join("new.rs").exists(),
         "the approval mode wrote nothing"

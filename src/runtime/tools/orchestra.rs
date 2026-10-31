@@ -51,6 +51,13 @@ pub trait Orchestra: Send + Sync {
         false
     }
 
+    /// How many workers `run` has so far, for the `n/m` of a worker's label.
+    /// `0` (the default) when it is not known: the label then counts only up
+    /// to the asking worker.
+    fn workers(&self, _run: RunId) -> usize {
+        0
+    }
+
     /// The host staged `change` for `worker` of `run`: its change ledger
     /// records it (S7). Nothing is written by it.
     fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
@@ -85,8 +92,10 @@ impl WorkerScope {
         }
     }
 
-    /// The label its asks show.
+    /// The label its asks show: `n/m <kind> <engine>><model>`, worker `n` of
+    /// the `m` the run has now.
     pub fn ask_label(&self) -> String {
-        self.label.clone()
+        let of = self.handle.workers(self.run).max(self.worker.0 as usize);
+        format!("{}/{of} {}", self.worker.0, self.label)
     }
 }

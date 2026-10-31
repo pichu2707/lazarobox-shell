@@ -1443,7 +1443,7 @@ async fn cancelling_a_finished_worker_says_it_already_ended() {
 
 // Spec (tasks.md 1d.3b; agent-tools, worker read outside the scope): a
 // worker's read outside its run's scope reaches the orchestrator turn's
-// approver as `WorkerRead` with the worker's label; cancelling the run
+// approver as `WorkerRead` with the worker's `n/m` label; cancelling the run
 // denies it, nothing is opened, and no wait is left for an answer.
 #[tokio::test]
 async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_it() {
@@ -1458,6 +1458,7 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     };
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     handle.call(spawn(Task::Review, "check")).await;
+    handle.call(spawn(Task::Review, "queued")).await;
     let request = lab.seen.first().await;
     let Tools::On {
         mcp: Some(wire), ..
@@ -1479,7 +1480,8 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     else {
         panic!("no ask");
     };
-    let label = worker_label(Task::Review, "codex", "default");
+    // Spec (chat-pane, Label shown): worker 1 of the 2 the run has so far.
+    let label = format!("1/2 {}", worker_label(Task::Review, "codex", "default"));
     let path = lab.home.path().join("notes.txt");
     let expected = ApprovalAsk::WorkerRead {
         path: path.to_str().unwrap().into(),
@@ -1508,7 +1510,14 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     assert!(killed(&lab.seen).await, "the worker's process is killed");
     use WorkerStatus::*;
     let story = story(&lab.sent());
-    assert_eq!(story, [(1, Some(Running)), (1, Some(Cancelled)), (0, None)]);
+    let rows = [
+        (1, Some(Running)),
+        (2, Some(Queued)),
+        (1, Some(Cancelled)),
+        (2, Some(Cancelled)),
+        (0, None),
+    ];
+    assert_eq!(story, rows);
 }
 
 // Spec (agent-tools, Cross-session call refused; agent-orchestrator, Cancel
@@ -2172,7 +2181,7 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
                     let ApprovalAsk::Batch(review) = *ask else {
                         panic!("{ask:?}");
                     };
-                    assert_eq!(review.label(), Some("code codex>default"));
+                    assert_eq!(review.label(), Some("1/1 code codex>default"));
                     break id;
                 }
                 _ => continue,

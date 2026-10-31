@@ -942,6 +942,14 @@ impl Orchestra for Bound {
         allowed.unwrap_or(false)
     }
 
+    fn workers(&self, run: RunId) -> usize {
+        let counted = self
+            .manager
+            .upgrade()
+            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.worker_count()));
+        counted.unwrap_or(0)
+    }
+
     fn staged(&self, run: RunId, worker: WorkerId, change: Change) {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.staged(worker, change));
