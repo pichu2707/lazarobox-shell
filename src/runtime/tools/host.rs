@@ -94,6 +94,12 @@ pub trait Approver: Send + Sync {
     /// The worker ended or was cancelled: its asks are denied, the other
     /// workers' are not touched.
     fn end_worker(&self, _key: WorkerKey) {}
+
+    /// Whether this approver's worker session is over (cancelled, or replaced
+    /// by a retry): its asks are denied unseen and must not be announced.
+    fn is_over(&self) -> bool {
+        false
+    }
 }
 
 /// The approver of a turn that has none: it denies every call. A turn that
@@ -579,6 +585,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let Ok(slot) = scope.events.clone().reserve_owned().await else {
         return gone();
     };
+    // The worker's session ended while the slot was awaited (a cancel): the
+    // wait is already denied, so nothing is announced that the user could be
+    // shown and never answer. The slot drops unused.
+    if pending.is_some() && scope.approver.is_over() {
+        return gone();
+    }
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),

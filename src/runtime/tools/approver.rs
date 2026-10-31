@@ -61,6 +61,18 @@ struct Ended {
     attempts: u64,
 }
 
+impl Ended {
+    /// Whether `attempt` of worker session `session` may no longer ask: the
+    /// worker ended, or a retry replaced that attempt.
+    fn over(&self, session: SessionKey, attempt: u64) -> bool {
+        self.sessions.contains(&session)
+            || self
+                .current
+                .get(&session)
+                .is_some_and(|now| *now != attempt)
+    }
+}
+
 impl Waits {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
@@ -208,6 +220,12 @@ impl Waits {
         self.ended().sessions.insert(session);
     }
 
+    /// How many waits are registered (a test waits for its call to ask).
+    #[cfg(test)]
+    pub(crate) fn registered(&self) -> usize {
+        self.len()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.map().len()
@@ -263,6 +281,10 @@ impl Approver for ForTurn {
         self.waits.end_worker(self.session.pane(), key);
     }
 
+    fn is_over(&self) -> bool {
+        self.waits.ended().over(self.session, self.attempt)
+    }
+
     fn ask(&self, id: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         let (answer, rx) = oneshot::channel();
         let key = (self.session, self.turn, id);
@@ -271,11 +293,7 @@ impl Approver for ForTurn {
             let mut waiting = self.waits.map();
             let mut ended = self.waits.ended();
             // A worker that ended asks no more: the call is denied unseen.
-            let stale = ended
-                .current
-                .get(&self.session)
-                .is_some_and(|current| *current != self.attempt);
-            if stale || ended.sessions.contains(&self.session) {
+            if ended.over(self.session, self.attempt) {
                 return async { Decision::Denied(ENDED).into() }.boxed();
             }
             ended.panes.remove(&pane);
@@ -494,7 +512,10 @@ mod tests {
         assert_eq!(stale.now_or_never(), Some(Decision::Denied(ENDED).into()));
         assert_eq!(waits.len(), 0, "nothing registered for the stale attempt");
         let mut current = second.ask(CallId(2), &read("/a"));
-        assert!((&mut current).now_or_never().is_none(), "the new attempt waits");
+        assert!(
+            (&mut current).now_or_never().is_none(),
+            "the new attempt waits"
+        );
     }
 
     // The pane closing or the turn ending takes its workers' asks too.
