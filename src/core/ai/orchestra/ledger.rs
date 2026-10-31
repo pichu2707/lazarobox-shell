@@ -3,6 +3,7 @@
 //! D17). Pure: the run fills the metadata, the orchestrator only writes the
 //! judgement.
 
+use super::steps::Step;
 use super::worker::WorkerStatus;
 use super::{RunId, WorkerId};
 use crate::core::ai::config::Task;
@@ -60,10 +61,12 @@ impl Verdict {
     }
 }
 
-/// What a handoff is about. Steps (S5) and receipts (S7b) join the worker.
+/// What a handoff is about. Receipts (S7b) join the worker and the step.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Unit {
     Worker(WorkerId),
+    /// An ODD step (S5, D15).
+    Step(Step),
 }
 
 /// The part of a handoff the orchestrator writes.
@@ -119,13 +122,12 @@ pub struct Handoff {
 }
 
 impl Handoff {
-    /// The handoff of a worker `facts` describes. `blocked` forces the
-    /// verdict.
+    /// The handoff `facts` describes. `blocked` forces the verdict.
     pub(super) fn of(facts: Facts, judgement: Judgement, blocked: bool) -> Self {
         let judgement = judgement.normalised();
         Self {
             run: facts.run,
-            unit: Unit::Worker(facts.worker),
+            unit: facts.unit,
             kind: facts.kind,
             engine: facts.engine,
             model: facts.model,
@@ -164,7 +166,7 @@ impl Handoff {
 /// What the run knows about a worker, for its handoff.
 pub(super) struct Facts {
     pub run: RunId,
-    pub worker: WorkerId,
+    pub unit: Unit,
     pub kind: Task,
     pub engine: String,
     pub model: Option<String>,
@@ -255,6 +257,10 @@ impl Row {
 pub struct Ledger {
     goal: String,
     rows: Vec<Row>,
+    /// The closed ODD steps, one line (S5); empty before the first.
+    steps: String,
+    /// The same line without the detail, for a ledger at its bound.
+    steps_short: String,
 }
 
 impl Ledger {
@@ -262,7 +268,16 @@ impl Ledger {
         Self {
             goal: goal.to_owned(),
             rows,
+            steps: String::new(),
+            steps_short: String::new(),
         }
+    }
+
+    /// The ledger with the line of the steps the run closed.
+    pub(super) fn with_steps(mut self, line: String, short: String) -> Self {
+        self.steps = line;
+        self.steps_short = short;
+        self
     }
 
     /// The workers that ended with no handoff yet.
@@ -283,6 +298,16 @@ impl Ledger {
     /// summaries are shortened first, then the oldest resolved rows collapse
     /// into a count.
     pub(super) fn render_within(&self, budget: usize) -> String {
+        // The steps line counts inside the bound: when the rows cannot make
+        // room, it shrinks to a count.
+        let full = self.fit(budget, &self.steps);
+        if full.len() <= budget || self.steps_short.is_empty() {
+            return full;
+        }
+        self.fit(budget, &self.steps_short)
+    }
+
+    fn fit(&self, budget: usize, steps: &str) -> String {
         let mut lens: Vec<usize> = self
             .rows
             .iter()
@@ -297,25 +322,30 @@ impl Ledger {
         let mut hidden = vec![false; self.rows.len()];
         // Shorten, oldest first.
         for at in 0..self.rows.len() {
-            if self.draw(&lens, &hidden).len() <= budget {
+            if self.draw(&lens, &hidden, steps).len() <= budget {
                 break;
             }
             lens[at] = SHORT_BYTES;
         }
         // Then drop the oldest resolved rows into a count, passing over the
         // failures.
-        while self.draw(&lens, &hidden).len() > budget {
+        while self.draw(&lens, &hidden, steps).len() > budget {
             let Some(at) = (0..self.rows.len()).find(|&at| !hidden[at] && !self.rows[at].failed())
             else {
                 break;
             };
             hidden[at] = true;
         }
-        self.draw(&lens, &hidden)
+        self.draw(&lens, &hidden, steps)
     }
 
-    fn draw(&self, lens: &[usize], hidden: &[bool]) -> String {
-        let mut out = format!("Goal: {}\nWorkers:", self.goal);
+    fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str) -> String {
+        let mut out = format!("Goal: {}\n", self.goal);
+        if !steps.is_empty() {
+            out.push_str(steps);
+            out.push('\n');
+        }
+        out.push_str("Workers:");
         let count = hidden.iter().filter(|hidden| **hidden).count();
         if count > 0 {
             out.push_str(&format!("\n{count} earlier workers, resolved"));

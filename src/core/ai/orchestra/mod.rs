@@ -10,6 +10,7 @@ pub mod overrides;
 pub mod persist;
 pub mod run;
 pub mod scope;
+pub mod steps;
 pub mod tools;
 pub mod worker;
 
@@ -107,5 +108,7 @@ impl Toolset {
 mod ledger_tests;
 #[cfg(test)]
 mod persist_tests;
+#[cfg(test)]
+mod steps_tests;
 #[cfg(test)]
 mod tests;

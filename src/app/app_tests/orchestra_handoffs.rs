@@ -126,6 +126,31 @@ fn a_handoff_is_saved_under_a_stable_key_per_worker() {
     assert!(note.content.contains("worker: 2"));
 }
 
+// Spec (Step handoffs follow the same stable-key rule; S5): a step's handoff
+// is saved under `orchestra/{run}/step/{step}`, and an off-course one reaches
+// the transcript naming the step.
+#[test]
+fn a_step_handoff_is_saved_under_its_step_key_and_off_course_is_said() {
+    let mut a = app(true);
+    with_project(&mut a);
+    let OrchestraEvent::Handoff { mut handoff, .. } = handed_off(Verdict::OffCourse) else {
+        unreachable!()
+    };
+    handoff.unit = crate::core::ai::orchestra::ledger::Unit::Step(
+        crate::core::ai::orchestra::steps::Step::Explore,
+    );
+    let effects = a.update(event(OrchestraEvent::Handoff { run: RUN, handoff }));
+    let keys: Vec<_> = saves(&effects).into_iter().map(|(_, key)| key).collect();
+    assert_eq!(keys, [Some("orchestra/7/step/explore".to_owned())]);
+    assert!(
+        systems(&a)
+            .iter()
+            .any(|line| line.starts_with("handoff step explore off_course")),
+        "{:?}",
+        systems(&a)
+    );
+}
+
 // The ledger and summary of a finished run, under their own key.
 #[test]
 fn the_closed_ledger_is_saved_under_the_run_ledger_key() {
