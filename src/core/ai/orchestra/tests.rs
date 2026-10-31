@@ -114,7 +114,7 @@ fn wait_collect_and_cancel_validate_their_ids() {
 }
 
 #[test]
-fn the_registry_is_exactly_the_six_tools_and_only_code_workers_write() {
+fn the_registry_is_exactly_the_seven_tools_and_only_code_workers_write() {
     let names: Vec<_> = registry_for(Toolset::Orchestrator)
         .into_iter()
         .map(|spec| spec.name)
@@ -128,6 +128,7 @@ fn the_registry_is_exactly_the_six_tools_and_only_code_workers_write() {
             "collect",
             "cancel",
             "handoff",
+            "raise",
             "finish"
         ]
     );
@@ -1172,4 +1173,55 @@ fn a_retried_worker_starts_before_the_workers_already_queued() {
     run.on_event(t0, ids[1], done());
     assert_eq!(run.status(ids[2]), Some(WorkerStatus::Running));
     assert_eq!(run.status(ids[3]), Some(WorkerStatus::Queued));
+}
+
+// S7b: a worker waiting on its own review yields its slot, or the review
+// workers it asked for would queue behind it for ever (max_parallel 1).
+#[test]
+fn a_parked_worker_yields_its_slot_and_takes_it_back_without_queueing() {
+    let (t0, mut run) = (Instant::now(), run());
+    let code = run.spawn(t0, Task::Code, "p").unwrap();
+    let lens = run.spawn(t0, Task::Review, "lens").unwrap();
+    assert_eq!(run.status(lens), Some(WorkerStatus::Queued));
+    assert!(run.park(t0, code));
+    assert_eq!(run.status(lens), Some(WorkerStatus::Running));
+    let later = run.spawn(t0, Task::Review, "again").unwrap();
+    assert_eq!(
+        run.status(later),
+        Some(WorkerStatus::Queued),
+        "one slot only"
+    );
+    run.unpark(code);
+    assert_eq!(run.status(code), Some(WorkerStatus::Running));
+    run.on_event(t0, lens, done());
+    assert_eq!(
+        run.status(later),
+        Some(WorkerStatus::Queued),
+        "the resumed worker still holds its slot"
+    );
+    assert!(!run.park(t0, lens), "only a running worker parks");
+}
+
+// S7b: the orchestrator's raise is a tool of its own.
+#[test]
+fn raise_validates_its_arguments() {
+    assert_eq!(
+        parse("raise", &json!({"tier": "high", "reason": "touches auth"})),
+        Ok(OrchCall::Raise {
+            tier: "high".to_owned(),
+            reason: "touches auth".to_owned()
+        })
+    );
+    assert_eq!(
+        parse("raise", &json!({"tier": "high"})),
+        Err(OrchError::MissingArgument)
+    );
+    assert_eq!(
+        parse("raise", &json!({"tier": 3, "reason": "r"})),
+        Err(OrchError::WrongType)
+    );
+    assert_eq!(
+        parse("raise", &json!({"tier": "high", "reason": "r", "x": 1})),
+        Err(OrchError::ExtraArgument)
+    );
 }

@@ -64,6 +64,12 @@ pub enum OrchCall {
         text: String,
         correction: String,
     },
+    /// The orchestrator raises the risk tier of the run's staged changes
+    /// (S7b, D16). Both fields are checked by `Raise::new`, not here.
+    Raise {
+        tier: String,
+        reason: String,
+    },
     /// The orchestrator is done (S4).
     Finish {
         summary: String,
@@ -82,6 +88,7 @@ impl OrchCall {
             | OrchCall::StepHandoff { .. }
             | OrchCall::Feature { .. }
             | OrchCall::Correct { .. } => "handoff",
+            OrchCall::Raise { .. } => "raise",
             OrchCall::Finish { .. } => "finish",
         }
     }
@@ -102,6 +109,7 @@ impl OrchCall {
             }
             OrchCall::StepHandoff { step, .. } => Cow::Borrowed(step.label()),
             OrchCall::Feature { .. } | OrchCall::Correct { .. } => Cow::Borrowed("track"),
+            OrchCall::Raise { tier, .. } => Cow::Borrowed(tier),
             OrchCall::Finish { summary } => Cow::Borrowed(summary),
         }
     }
@@ -144,7 +152,7 @@ fn spawnable() -> [Task; 5] {
 pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
     if !matches!(
         name,
-        "spawn_agent" | "wait" | "collect" | "cancel" | "handoff" | "finish"
+        "spawn_agent" | "wait" | "collect" | "cancel" | "handoff" | "raise" | "finish"
     ) {
         return Err(OrchError::UnknownTool);
     }
@@ -154,6 +162,14 @@ pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
         "wait" => wait(object),
         "collect" => only_id(object).map(|id| OrchCall::Collect { id }),
         "handoff" => handoff(object),
+        "raise" => {
+            let (tier, reason) = (text(object, "tier")?, text(object, "reason")?);
+            no_extra(object, 2)?;
+            Ok(OrchCall::Raise {
+                tier: tier.to_owned(),
+                reason: reason.to_owned(),
+            })
+        }
         "finish" => {
             let summary = text(object, "summary")?.to_owned();
             no_extra(object, 1)?;

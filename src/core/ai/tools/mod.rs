@@ -418,7 +418,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 22] = [
+const BUILT_INS: [ToolDef; 23] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -721,6 +721,26 @@ const BUILT_INS: [ToolDef; 22] = [
             note("done", HANDOFF_NOTE_BYTES),
             note("left", HANDOFF_NOTE_BYTES),
             note("decisions", HANDOFF_NOTE_BYTES),
+        ],
+    },
+    ToolDef {
+        name: "raise",
+        description: "Raise the review tier of the changes this run's code workers stage, with a one-line `reason` (`tier`: medium or high). It can only go up: lazarobox sets the floor from the paths, and a high change asks the user before it is reviewed. You cannot lower it, consent or approve anything.",
+        access: Access::Read,
+        family: Family::Orchestra,
+        args: &[
+            ArgDef {
+                name: "tier",
+                kind: ArgKind::Str { max: 16 },
+                required: true,
+                gate: None,
+            },
+            ArgDef {
+                name: "reason",
+                kind: ArgKind::Str { max: 1024 },
+                required: true,
+                gate: None,
+            },
         ],
     },
     ToolDef {
@@ -2142,6 +2162,7 @@ mod tests {
                 "collect",
                 "cancel",
                 "handoff",
+                "raise",
                 "finish"
             ]
         );

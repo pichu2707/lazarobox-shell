@@ -53,6 +53,7 @@ fn the_orchestrate_prompts_hold_the_coordinator_rules() {
             "collect",
             "cancel",
             "handoff",
+            "raise",
             "finish",
             "on_course, off_course or blocked",
             "by kind",

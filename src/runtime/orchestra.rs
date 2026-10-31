@@ -842,6 +842,7 @@ impl RunManager {
                 text,
                 correction,
             } => self.feature_correct(pane, run, &spec, &text, &correction),
+            OrchCall::Raise { .. } => error("raise is not wired"),
             OrchCall::Finish { summary } => self.finish_run(pane, run, &summary),
         };
         async move { now }.boxed()
