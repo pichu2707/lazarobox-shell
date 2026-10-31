@@ -19,6 +19,21 @@ Every worker that reaches a terminal state and every closed ODD step MUST produc
 - WHEN the handoff is built
 - THEN `decisions` reads `none`
 
+#### Scenario: The orchestrator writes it with the handoff tool [auto]
+- GIVEN worker 2 ended `done` and was collected
+- WHEN the orchestrator calls `handoff` with id 2, a verdict, a reason, `done`, `left` and `decisions`
+- THEN the handoff holds those fields, and run id, kind, `engine>model` and status come from the run, not from the call
+
+#### Scenario: Handoff for a running worker is refused [auto]
+- GIVEN worker 3 still running
+- WHEN the orchestrator calls `handoff` with id 3
+- THEN the call is refused `not finished` and no handoff exists for worker 3
+
+#### Scenario: A missing handoff gets a fallback [auto]
+- GIVEN workers 2 and 3 ended and only worker 2 has a handoff
+- WHEN the orchestrator calls `finish` twice
+- THEN the first `finish` is refused naming worker 3, and after the second worker 3 has a handoff built by lazarobox with `done`, `left` and `decisions` `none`, verdict `unknown` and no worker text
+
 ### Requirement: Handoffs live in engram [S4]
 When chat memory is on and engram is reachable, each handoff MUST be saved as an engram note through the existing note path (opt-in, redaction pass, project resolution), with a topic key that is stable per run and worker or step, so a repeated handoff for the same unit (worker, step, feature document or receipt) updates the note instead of duplicating it. Handoff notes MUST be distinguishable from user notes by their category and topic-key family.
 
