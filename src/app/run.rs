@@ -9,10 +9,10 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_CHECKING_KEYS,
-            FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, exec_notice,
-            run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
+            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS,
+            exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -630,6 +630,15 @@ impl App {
             }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
+            // The label and the change were made one clean line when asked.
+            ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
+                target: format!("worker {label}: review this high-risk change first?"),
+                command: change.clone(),
+                keys: CONSENT_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             ApprovalAsk::Folder {
                 from,
                 to,

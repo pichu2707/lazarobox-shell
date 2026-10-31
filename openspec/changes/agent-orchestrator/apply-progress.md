@@ -521,3 +521,26 @@ Strict TDD: `review_tests.rs` (13 tests) written against a stub (`assess` always
 - Path matching is string-only (no filesystem, no symlinks): `\` is `/`, `.` and empty parts vanish, `..` pops, trailing dots and spaces of a name are dropped, ASCII case-insensitive, at any depth. Documented limit: a symlink or hard link that points elsewhere is judged by the staged path only.
 - Rules: CI/build/credential folders (`.github`, `.gitlab`, `.circleci`, `.git`, `.cargo`, `.ssh`, `.gnupg`...), named build/dependency/lock files, extensions of config formats, locks and key material (`toml`, `yaml`, `json`, `ini`, `lock`, `pem`, `key`...), plus the read tools' `is_excluded_name` (`.env*`, credential and history files). Broad on purpose (any `*.json` is `high`): the cost of a false positive is one consent prompt.
 - Not wired: the runtime, the `raise` tool and the consent are 7b.2/7b.3.
+
+## S7b (RDD), PR S7b-2: task 7b.2, first half (branch feat/agent-orchestrator-s7b2, on s7b)
+
+7b.2 stays `[ ]` in tasks.md: the pure state, the prompts and the consent prompt are done; the runtime that starts the lens, refuter and correction workers and raises the ask from the worker's `propose_batch` is the second half (7b.2b).
+
+Strict TDD (every unit RED before GREEN):
+- `rdd_tests.rs` against a stub (`Lens::id` empty, `parse_report` empty, `Review` no-ops): behavioural RED, 17 of 17 failed; then `rdd.rs` implemented, 17 passed. Later units RED the same way: `parse_verdicts` (stub returned all `None`: 1 failed), `consent_ask` (stub returned empty strings: 2 failed).
+- Prompts: `the_lens_and_refuter_prompts_hold_the_review_rules` against stubs returning `""`: RED, then the 10 markdown files wired.
+- Consent prompt: `orchestra_consent.rs` (4 tests) with the variant added and the prompt arm `None`: RED 2 of 4 (prompt text); y/n, queue and approval-mode tests passed at once because the worker-ask machinery already carries them.
+
+| Unit | What | Test |
+|------|------|------|
+| `orchestra/rdd.rs` | `Lens`, `Consent`, `Finding`, `parse_report` (`FINDING <severe\|minor> <change\|existing> <observed\|inferred>: text`, malformed lines counted, 12 per lens), `parse_verdicts` (`CLAIM n upheld\|refuted: text`), `Review` (consent once, `pick` refused before consent or after a decline, report once per picked lens, inferred blockers need the refuter, `begin_correction` once, `finish_correction` checked against the targeted blockers only, `conclude` -> `NotReviewed`/`Clean`/`Corrected`/`BlockersOpen`), `lens_prompt`/`refuter_prompt` (candidate wrapped with the nonce), `consent_ask` | `rdd_tests.rs` (21) |
+| prompts | `lens_{risk,resilience,readability,reliability}.md` and `refuter.md` per profile, `lens_builtin`/`refuter_builtin` | `prompts/tests.rs` |
+| `ApprovalAsk::Consent{worker, label, change}` | a worker ask: FIFO queue, only the shown one touches the chat, never answered by an approval mode; prompt `worker <label>: review this high-risk change first?`, keys `y review it · n skip the review` | `app_tests/orchestra_consent.rs` |
+
+Spec scenarios covered at the pure/app level: Consent first (`pick`/`report`/`conclude` refuse before the answer), Declined goes on unreviewed (`conclude` -> `NotReviewed`, no lens), One correction at most (`CorrectionUsed`, open blocker named by `open()`), Lens prompts exist (10 prompts, rules asserted, each <= 4 KiB).
+
+### Decisions and deviations
+- A decline is `Decision::Denied("the user declined")` and consent is `Decision::Sent` on the worker's session; the host (7b.2b) reads them, the orchestrator never sees either.
+- An inferred blocker the refuter did not answer stays `None`: it does not count (not upheld); the receipt (7b.3) must name it as unanswered.
+- Lens prompts are built-in only: the override-file chain is per `Task` and the six tasks are unchanged; "resolved like other tasks" is met by profile.
+- Not done (7b.2b): `propose_batch` hook that assesses and asks, spawning lens/refuter/correction workers with `Toolset::ReadOnly`/`Code` under S3 limits, the staged view for lens readers, and the `raise` tool.

@@ -4,11 +4,12 @@
 //! state of one review and decides what may come next; the runtime starts the
 //! workers and the host asks the user.
 
+use super::WorkerKey;
 use super::{
     changes::{Change, ChangeLedger},
-    review::{Assessment, one_line},
+    review::{Assessment, Source, one_line},
 };
-use crate::core::ai::tools::label;
+use crate::core::ai::{chat::approval::ApprovalAsk, tools::label};
 
 /// The findings kept per lens; the rest are only counted.
 pub const MAX_FINDINGS: usize = 12;
@@ -458,4 +459,39 @@ pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -
         claims.len(),
         candidate(nonce, changes, &extra)
     )
+}
+
+/// The paths named in a consent ask before it says `+N more`.
+const SHOWN_PATHS: usize = 5;
+
+/// The consent ask of a worker's `high` change, for the user's chat pane:
+/// the worker's label, why the change is `high` and its first paths, all one
+/// clean line. The ask is aimed at the worker's session.
+pub fn consent_ask(
+    worker: WorkerKey,
+    label: &str,
+    assessment: &Assessment,
+    changes: &[Change],
+) -> ApprovalAsk {
+    let why = match &assessment.source {
+        Source::Rules => "build, CI, dependency or config files".to_owned(),
+        Source::Raised(reason) => format!("raised by the orchestrator ({reason})"),
+        Source::Failed(why) => format!("could not assess ({why})"),
+    };
+    // The ledger's paths are clean lines already; cleaned again, as this
+    // line goes on the user's screen.
+    let mut paths: Vec<String> = changes
+        .iter()
+        .take(SHOWN_PATHS)
+        .map(|change| one_line(&change.path))
+        .collect();
+    let more = changes.len().saturating_sub(SHOWN_PATHS);
+    if more > 0 {
+        paths.push(format!("+{more} more"));
+    }
+    ApprovalAsk::Consent {
+        worker,
+        label: one_line(label),
+        change: format!("{why}: {}", paths.join(", ")),
+    }
 }

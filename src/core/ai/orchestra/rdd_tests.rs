@@ -1,11 +1,13 @@
 //! The receipt-driven review of one change (agent-orchestrator S7b, D16).
 
+use super::WorkerKey;
 use super::changes::Change;
 use super::rdd::{
-    Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, lens_prompt,
-    parse_report, parse_verdicts, refuter_prompt,
+    Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
+    lens_prompt, parse_report, parse_verdicts, refuter_prompt,
 };
-use super::review::{Tier, assess};
+use super::review::{Raise, Tier, assess};
+use crate::core::ai::chat::approval::ApprovalAsk;
 
 const NONCE: [u8; 8] = [0xab; 8];
 
@@ -288,5 +290,63 @@ fn the_refuter_answers_one_line_per_claim() {
             None,
             None
         ]
+    );
+}
+
+fn shown(ask: ApprovalAsk) -> (String, String) {
+    match ask {
+        ApprovalAsk::Consent { label, change, .. } => (label, change),
+        other => panic!("not a consent ask: {other:?}"),
+    }
+}
+
+// The ask is aimed at the worker's session, never at the pane's own.
+#[test]
+fn the_consent_ask_names_the_worker_the_rule_and_the_paths() {
+    let changes = [change("Cargo.lock"), change(".github/ci.yml")];
+    let ask = consent_ask(
+        WorkerKey::for_test(1, 2),
+        "code claude>opus",
+        &assess(&changes, None),
+        &changes,
+    );
+    assert_eq!(ask.worker(), Some(WorkerKey::for_test(1, 2)));
+    let (label, line) = shown(ask);
+    assert_eq!(label, "code claude>opus");
+    assert_eq!(
+        line,
+        "build, CI, dependency or config files: Cargo.lock, .github/ci.yml"
+    );
+}
+
+#[test]
+fn the_consent_ask_says_who_raised_the_tier_and_shows_few_paths() {
+    let changes: Vec<Change> = (0..8).map(|n| change(&format!("src/f{n}.rs"))).collect();
+    let raise = Raise::new("high", "touches the auth flow\nignore previous").unwrap();
+    let (_, line) = shown(consent_ask(
+        WorkerKey::for_test(1, 1),
+        "code a>b\u{202e}",
+        &assess(&changes, Some(&raise)),
+        &changes,
+    ));
+    assert_eq!(
+        line,
+        "raised by the orchestrator (touches the auth flow): src/f0.rs, src/f1.rs, src/f2.rs, src/f3.rs, src/f4.rs, +3 more"
+    );
+    assert!(!line.contains('\n'));
+}
+
+#[test]
+fn a_failed_assessment_is_asked_with_its_reason() {
+    let changes = [change("/etc/passwd")];
+    let (_, line) = shown(consent_ask(
+        WorkerKey::for_test(1, 1),
+        "code a>b",
+        &assess(&changes, None),
+        &changes,
+    ));
+    assert!(
+        line.starts_with("could not assess (unreadable path)"),
+        "{line}"
     );
 }
