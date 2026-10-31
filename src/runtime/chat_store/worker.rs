@@ -281,13 +281,14 @@ impl Worker {
             }
             StoreCmd::SaveRun { pane, run } => {
                 let saved = self.conn().ok().is_some_and(|conn| {
-                    runs::save_run(conn, &run, std::process::id(), now()).is_ok()
+                    runs::save_run(conn, &run, runs::Owner::this_process(), now()).is_ok()
                 });
                 (!saved).then_some(StoreReply::RunsFailed { pane, saving: true })
             }
             StoreCmd::RecoverRuns { pane } => {
                 let found = self.conn().ok().and_then(|conn| {
-                    runs::recover_runs(conn, std::process::id(), runs::pid_alive, now()).ok()
+                    runs::recover_runs(conn, runs::Owner::this_process(), runs::pid_alive, now())
+                        .ok()
                 });
                 Some(match found {
                     Some(runs) => StoreReply::RunsRecovered { pane, runs },

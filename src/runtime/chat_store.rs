@@ -474,7 +474,7 @@ fn migrate_locked(
         ensure_folder(&tx)?;
     }
     if target >= 3 {
-        tx.execute_batch(runs::SCHEMA_RUNS)?;
+        runs::ensure(&tx)?;
     }
     let mut dropped = 0;
     let rebuilt = (1..3).contains(&version) && target >= 3;

@@ -178,18 +178,78 @@ fn a_run_is_saved_as_its_workers_change_and_closed_when_it_ends() {
             status: "running".into(),
         }]
     );
+    // Only the worker that changed is sent.
     let second = a.update(event(row(RUN, 2, WorkerStatus::Queued)));
     let third = a.update(event(row(RUN, 1, WorkerStatus::Done)));
-    assert_eq!(saves(&second)[0].workers.len(), 2);
-    let both = &saves(&third)[0].workers;
+    let [second] = saves(&second).try_into().unwrap();
+    let [third] = saves(&third).try_into().unwrap();
+    assert_eq!((second.workers.len(), second.workers[0].id), (1, 2));
     assert_eq!(
-        (both[0].status.as_str(), both[1].status.as_str()),
-        ("done", "queued")
+        (third.workers.len(), third.workers[0].status.as_str()),
+        (1, "done")
     );
     let end = a.update(event(OrchestraEvent::Ended { run: RUN }));
     let [closed] = saves(&end).try_into().unwrap();
-    assert_eq!((closed.phase, closed.workers.len()), (RunPhase::Ended, 2));
+    assert_eq!((closed.phase, closed.workers.len()), (RunPhase::Ended, 0));
     // An ended run stores nothing more.
     let late = a.update(event(row(RUN, 2, WorkerStatus::Running)));
     assert!(saves(&late).is_empty());
+}
+
+// Write amplification: a row that changes only its usage or elapsed time is
+// not a change of the run, so nothing is written.
+#[test]
+fn a_row_that_changes_nothing_stored_is_not_saved_again() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let OrchestraEvent::Worker(mut busier) = row(RUN, 1, WorkerStatus::Running) else {
+        unreachable!()
+    };
+    busier.elapsed = Some(std::time::Duration::from_secs(3));
+    busier.partial = true;
+    let again = a.update(event(OrchestraEvent::Worker(busier)));
+    assert!(saves(&again).is_empty(), "{again:?}");
+    let moved = a.update(event(row(RUN, 1, WorkerStatus::Done)));
+    assert_eq!(saves(&moved).len(), 1);
+}
+
+// A pane closed with its run live leaves no `live` row for the next start to
+// report as an interruption by a restart.
+#[test]
+fn closing_the_pane_of_a_live_run_closes_the_stored_run() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    press(&mut a, "wq");
+    let effects = a.update(key('y'));
+    let [closed] = saves(&effects).try_into().unwrap_or_else(|_| {
+        panic!("one close save expected: {effects:?}");
+    });
+    assert_eq!((closed.id, closed.phase), (RUN.0, RunPhase::Ended));
+    // The run manager's own `Ended` for the gone pane saves nothing more.
+    let late = a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(saves(&late).is_empty());
+}
+
+// The goal of a start that failed is not kept for a later run.
+#[test]
+fn a_failed_start_forgets_its_goal() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let (mut a, turn) = running();
+    assert_eq!(a.kept_goals(), 1);
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("could not start".into())),
+    ));
+    assert_eq!(a.kept_goals(), 0);
+}
+
+// Closing the pane forgets the goal too.
+#[test]
+fn closing_a_pane_forgets_its_goal() {
+    let (mut a, _) = running();
+    assert_eq!(a.kept_goals(), 1);
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert_eq!(a.kept_goals(), 0);
 }
