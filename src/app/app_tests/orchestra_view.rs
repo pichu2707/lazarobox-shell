@@ -445,3 +445,15 @@ fn the_footer_key_is_not_split_by_the_wrap() {
     let shown = screen(&a);
     assert!(shown.contains("Ctrl+Space W transcript"), "{shown}");
 }
+
+// A stray key does not replace a reason that is already on the line. (Every
+// key clears the notice before its handler runs, so the handler is called
+// directly with a notice set.)
+#[test]
+fn an_unused_key_keeps_the_notice_already_shown() {
+    let mut a = viewing();
+    a.notice = Some("a reason".to_owned());
+    let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(a.on_run_view_key(chat_id(), &key, false), vec![]);
+    assert_eq!(a.notice(), Some("a reason"));
+}

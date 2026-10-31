@@ -4610,3 +4610,67 @@ async fn text_said_before_a_tool_row_comes_before_it() {
     );
     assert!(matches!(items[1], TraceItem::Call { .. }), "{items:?}");
 }
+
+// An aborted worker's last words come before its terminal row, not after.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_workers_buffered_text_comes_before_its_cancelled_row() {
+    let mut lab = lab(Script::SaysThenHangs("last words"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.seen.first().await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    lab.manager.cancel_worker(pane(), run, WorkerId(1));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = lab.sent();
+    let text_at = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                OrchestraEvent::Trace {
+                    item: TraceItem::Text(_),
+                    ..
+                }
+            )
+        })
+        .expect("the tail was sent");
+    let cancelled_at = events
+        .iter()
+        .position(|e| status_of(e) == Some(WorkerStatus::Cancelled))
+        .expect("cancelled");
+    assert!(text_at < cancelled_at, "{events:?}");
+}
+
+// The same when the whole run ends.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_runs_buffered_text_comes_before_ended() {
+    let mut lab = lab(Script::SaysThenHangs("last words"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.seen.first().await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    lab.manager.cancel(pane());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = lab.sent();
+    let text_at = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                OrchestraEvent::Trace {
+                    item: TraceItem::Text(_),
+                    ..
+                }
+            )
+        })
+        .expect("the tail was sent");
+    let ended_at = events
+        .iter()
+        .position(|e| matches!(e, OrchestraEvent::Ended { .. }))
+        .expect("ended");
+    assert!(text_at < ended_at, "{events:?}");
+}

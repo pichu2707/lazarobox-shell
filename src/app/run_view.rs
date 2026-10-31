@@ -94,7 +94,8 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => Scroll::Top,
             KeyCode::End | KeyCode::Char('G') => Scroll::Follow,
             _ => {
-                if !repeat {
+                // A reason already on the line stays.
+                if !repeat && self.notice.is_none() {
                     self.notice = Some(UNUSED_KEY.to_owned());
                 }
                 return Vec::new();

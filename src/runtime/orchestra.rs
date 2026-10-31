@@ -951,6 +951,10 @@ impl RunManager {
         live.run.cancel_run(now());
         built.extend(live.run.fallbacks());
         let approver = live.approver.clone();
+        // The words an aborted worker had buffered come before `Ended`.
+        for route in live.routes.values() {
+            route.trace.flush();
+        }
         let tasks: Vec<_> = live
             .tasks
             .drain()
@@ -1288,7 +1292,10 @@ impl RunManager {
     pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
-                live.routes.remove(&id);
+                // Its last words come before its terminal row.
+                if let Some(route) = live.routes.remove(&id) {
+                    route.trace.flush();
+                }
                 if let Some(task) = live.tasks.remove(&id) {
                     task.abort();
                 }
