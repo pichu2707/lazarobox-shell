@@ -28,6 +28,13 @@ baseline.
   Finder tags, and the new file takes its group from the parent folder (BSD
   semantics).
 
+### Internal
+
+- Releases can be started with one click: Actions -> Release -> Run workflow
+  bumps the version, moves `[Unreleased]` under it, commits, tags and
+  publishes, and `dry_run` rehearses it. Pushing a `vX.Y.Z` tag by hand still
+  works. See `RELEASING.md`.
+
 ## [1.0.0] - 2026-10-30
 
 First stable release. From here on, `config.toml`, the `chat.db` format, the
