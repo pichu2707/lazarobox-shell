@@ -51,10 +51,10 @@ use crate::core::{
         chat::{
             INTERRUPTED,
             adapters::{Adapter, adapter_for},
-            approval::worker_label,
+            approval::{ApprovalAsk, worker_label},
             engine::{
-                ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role, StreamEvent, Tools,
-                locality, tools_for,
+                Answer, CallId, ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role,
+                StreamEvent, Tools, locality, tools_for,
             },
             guidance::guidance,
             jail_error,
@@ -94,6 +94,58 @@ const ENDED: &str = "run ended";
 const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still open. Below is the run ledger: \
      the goal and one row per worker. Collect finished workers, write a `handoff` for each, \
      and call `finish` when the goal is met.";
+
+/// Where a worker's tool rows and asks go. A worker outlives the orchestrator
+/// turn that spawned it (S4 continuations), so its channel and approver are
+/// looked up when it asks, not captured at spawn.
+struct Route {
+    events: Mutex<mpsc::Sender<StreamEvent>>,
+    approver: Mutex<Arc<dyn Approver>>,
+}
+
+impl Route {
+    fn new(events: mpsc::Sender<StreamEvent>, approver: Arc<dyn Approver>) -> Arc<Self> {
+        Arc::new(Self {
+            events: Mutex::new(events),
+            approver: Mutex::new(approver),
+        })
+    }
+
+    fn retarget(&self, events: mpsc::Sender<StreamEvent>, approver: Arc<dyn Approver>) {
+        *lock(&self.events) = events;
+        *lock(&self.approver) = approver;
+    }
+
+    /// A channel for the worker's scope whose events reach the current turn's.
+    /// It ends with the worker's session.
+    fn forward(route: &Arc<Self>) -> mpsc::Sender<StreamEvent> {
+        let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+        let route = route.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let to = lock(&route.events).clone();
+                if to.send(event).await.is_err() {
+                    break;
+                }
+            }
+        });
+        tx
+    }
+}
+
+/// The approver of a worker: whatever its route points at now.
+struct Rerouted(Arc<Route>);
+
+impl Approver for Rerouted {
+    fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        let current = lock(&self.0.approver).clone();
+        current.ask(id, ask)
+    }
+
+    fn is_over(&self) -> bool {
+        lock(&self.0.approver).is_over()
+    }
+}
 
 /// What follows an orchestrator turn that ended.
 enum Next {
@@ -193,6 +245,9 @@ struct Live {
     events: mpsc::Sender<StreamEvent>,
     approver: Arc<dyn Approver>,
     pending: Pending,
+    /// Where each running worker's tool rows and asks go: the run's current
+    /// orchestrator turn, retargeted by [`RunManager::attach`].
+    routes: HashMap<WorkerId, Arc<Route>>,
     /// The turn of each worker that runs. Aborting one drops its adapter,
     /// which kills its process group.
     tasks: HashMap<WorkerId, JoinHandle<()>>,
@@ -346,6 +401,7 @@ impl RunManager {
             events: scope.events,
             approver: scope.approver,
             pending: scope.pending,
+            routes: HashMap::new(),
             tasks: HashMap::new(),
             shown: HashMap::new(),
             alerted: None,
@@ -377,6 +433,20 @@ impl RunManager {
         scope: OrchScope,
     ) -> Result<(RunId, OrchHandle), String> {
         let attached = self.on_run(pane, run, |live| {
+            // The workers that survive into this turn ask and report through
+            // it: the earlier turn's channel and approver are dead.
+            live.routes.retain(|id, _| live.tasks.contains_key(id));
+            for (worker, route) in &live.routes {
+                let key = WorkerKey {
+                    run,
+                    worker: *worker,
+                };
+                let approver = scope.approver.for_worker(key);
+                route.retarget(
+                    scope.events.clone(),
+                    approver.unwrap_or(scope.approver.clone()),
+                );
+            }
             live.events = scope.events;
             live.approver = scope.approver;
             live.pending = scope.pending;
@@ -979,8 +1049,14 @@ impl RunManager {
             run: live.run.id(),
             worker: id,
         };
+        let approver = live.approver.for_worker(key);
+        let route = Route::new(
+            live.events.clone(),
+            approver.unwrap_or_else(|| live.approver.clone()),
+        );
+        live.routes.insert(id, route.clone());
         let session = self
-            .open_session(pane, key, live, &spec, &mut request)
+            .open_session(pane, key, live, &spec, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
         let turn = Turn {
             runner: self.runner.clone(),
@@ -1010,6 +1086,7 @@ impl RunManager {
         live: &Live,
         spec: &WorkerSpec,
         request: &mut ChatRequest,
+        route: Arc<Route>,
     ) -> Option<Option<Arc<dyn Dispatch>>> {
         let tooling = self.tooling.as_ref()?;
         let (Tools::On { origin, mcp, .. }, Some(locality)) =
@@ -1022,13 +1099,10 @@ impl RunManager {
         debug_assert!(!families.contains(Family::Pane));
         let model = spec.model.as_deref().unwrap_or("default");
         let scope = TurnScope {
-            events: live.events.clone(),
+            events: Route::forward(&route),
             locality,
             origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
-            approver: live
-                .approver
-                .for_worker(key)
-                .unwrap_or_else(|| live.approver.clone()),
+            approver: Arc::new(Rerouted(route)),
             external: Slot::default(),
             families,
             // A `code` worker stages in its pane's batch (S7, user decision

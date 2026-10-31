@@ -2854,3 +2854,58 @@ async fn a_continuation_with_no_nonce_ends_the_run_and_says_why() {
     );
     assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
 }
+
+// Review fix (4.1b): a worker spawned in turn 1 that asks after a
+// continuation attached announces the ask on the NEW turn's channel, under the
+// new turn, and the user's answer under that turn reaches it. Its tool rows
+// follow the same way.
+#[tokio::test]
+async fn a_surviving_workers_ask_goes_through_the_current_turn() {
+    let mut lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let first = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), first).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let mut client = worker_client(&lab.seen).await;
+    lab.manager.turn_ended(pane(), run);
+    let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+    let pending = Pending::new();
+    let second = OrchScope {
+        approver: waits.approver(pane(), 8, pending.clone()),
+        pending,
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    lab.manager.attach(pane(), run, second).unwrap();
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+    client
+        .1
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let Some(StreamEvent::ToolCall { id, .. }) =
+        timeout(Duration::from_secs(5), rx.recv()).await.unwrap()
+    else {
+        panic!("the ask did not reach the current turn");
+    };
+    assert!(lab.turn.1.try_recv().is_err(), "nothing on the dead turn");
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(!waits.decide(worker, 7, id, Decision::Denied("no")));
+    assert!(
+        waits.decide(worker, 8, id, Decision::Denied("no")),
+        "it waited"
+    );
+}
