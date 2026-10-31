@@ -312,3 +312,39 @@ Task 3.2 done; S3 complete (S3a + S3b + S3c). Two commits; strict TDD (compile-l
 - Retry-first queue order was already S1/S2 (`enqueue(front=true)`), now also tested with two slots.
 - The wall clock needs a tokio runtime in `start` only when a wall is set (default `RunLimits` has none), so sync tests are unaffected.
 - `chat_guidance` gains a line while a run has a live worker (`Alt+Up/Down select a worker · Ctrl+C cancels the run`); `the_alert_is_drawn...` expectation adapted, no snapshot changed.
+
+
+## S4 first PR: ledger, handoff and finish tools (branch feat/agent-orchestrator-s4, on s3c)
+
+Task 4.1a done (4.1 split: ~675 production lines before the continuation, so the continuation and `max_turns` are 4.1b). Strict TDD: compile-level RED for the new pure units (tests written first against the API, the build failed on the missing types), behavioural RED for the cancel-while-halted case.
+
+| Unit | Change | Test | RED observed |
+|------|--------|------|--------------|
+| types | `core/ai/orchestra/ledger.rs`: `Verdict`, `Unit`, `Judgement`, `Handoff`, `Row`, bounded `Ledger` (`LEDGER_BYTES` 8 KiB; oldest summaries shortened to 24 B, then oldest resolved rows collapse into a count; goal and unresolved failures kept) | `ledger_tests.rs` (13 tests) | compile-level (missing module) |
+| run | `Run::{handoff, stored_handoff, forced_by, fallbacks, finish, summary, run_ledger}`; `finish` refused `Live`/`Paused`/`Ended`, first `Missing` refusal then fallbacks; fields normalised (reason one line <= 200 B, others 2 KiB, blank -> `none`) | `ledger_tests.rs` | compile-level |
+| tools | `OrchCall::{Handoff, Finish}`, table rows `handoff`/`finish` (six orchestration tools), `OrchestraEvent::Handoff` | `the_handoff_call_is_checked_and_a_bad_verdict_becomes_unknown`, tool-list tests updated | compile-level |
+| runtime | `RunManager::{handoff, finish_run, announce_handoff}`; `end` builds fallbacks before `Ended` (cancel, expiry, quit, replaced run, natural end) | 6 new tests in `runtime/orchestra/tests.rs` | `choosing_cancel_on_a_failure_ends_the_run` failed `Unknown` vs `Blocked`: `decide(Cancel)` cancels inside `Run` before `end`; fixed with `Run::halted_at_cancel` |
+| app | `OrchestraEvent::Handoff` -> system line `handoff worker N kind verdict: reason` for `off_course`/`blocked` only | `an_off_course_or_blocked_handoff_is_shown_in_the_transcript` | compile-level |
+| prompts | both `orchestrate.md` tell the coordinator to call `handoff` after `collect` and `finish` at the end | `the_orchestrate_prompts_hold_the_coordinator_rules` | compile-free; red on the missing rule text |
+
+### Decisions and deviations
+- The table refuses a non-string `verdict` as `WrongType` (D17 said "not a string -> unknown"): the schema table types every argument. A missing or unknown string is `unknown` as the spec says; a wrong type is refused with a visible reason, never silent.
+- Handoff text args are accepted up to 16 KiB by the table and cut to 2 KiB by the run (D17 "capped").
+- Fallbacks are also built when the run ends for any reason (cancel, expiry, quit, replaced, natural end), not only at `finish`: the ledger is whole whatever ended it. `blocked` if a failure waited (`halted_at_cancel`).
+- Persistence seam: `RunManager::announce_handoff` (runtime) and the `OrchestraEvent::Handoff` arm in `App::on_orchestra` (app). 4.2 saves there. The ledger render plus `Run::summary()` are ready for the `orchestra/{run}/ledger` note.
+- `max_turns`: the spec and design give no default or range; proposal for 4.1b: total orchestrator turns including the first, default 6, range 1..24, hand-edited like the S3c keys.
+- The ledger is not wrapped yet (D8: worker-derived summaries wrapped): wrapping needs a nonce and belongs with the continuation message in 4.1b.
+- Continuation design note for 4.1b: `Chats::start_turn` with `orch` starts a NEW run (replacing the pane's); a continuation must attach to the existing run (new session over the same `Live`), so `RunManager` needs an `attach(pane, run)` and the run needs the goal (the user's message).
+
+### S4 4.1a review fixes
+
+Strict TDD: tests first; RED observed before each fix (compile-level for `HandoffError::Ended` and `OrchestraEvent::Filled`, behavioural for the rest; the overlong-verdict test was proved red by temporarily putting the old 32 B cap back).
+
+| Fix | Change | Test | RED observed |
+|-----|--------|------|--------------|
+| ledger bound | `Row::failed` summaries capped at 200 B (`FAILED_BYTES`) and shrink to 24 B under pressure like the others; collapsing skips pinned failures (a hidden mask, not a prefix); `LEDGER_BYTES` doc now says the goal counts (it is the user's message, never cut) | `many_failures_with_long_summaries_stay_within_the_bound_and_listed`, `an_old_failure_does_not_block_later_rows_from_collapsing` | 32 x 2 KiB failures rendered over 8 KiB; old failure stopped collapsing |
+| finish one-shot | `finish_warned` is the set of ids the refusal named; `finish` refuses again if a terminal worker without a handoff was not named before | `finish_refuses_again_for_a_worker_that_ended_after_the_warning` | second `finish` built the fallback instead of refusing |
+| silent fallbacks | new `OrchestraEvent::Filled{run, workers}` after the built handoffs (finish and run end); app line `no handoff from the orchestrator for workers 2, 3` | `finish_announces_the_handoffs_it_filled_in_and_closes_the_record`, `the_handoffs_lazarobox_filled_in_are_named_in_the_transcript` | compile-level (no variant) |
+| sanitise | reason: trim, first line, control characters removed; the ledger row summary (first line of `done`) loses control characters too | `the_reason_is_trimmed_before_its_first_line_and_loses_control_characters` | leading blank line gave `none`; ESC and `\r` kept |
+| spec alignment | the `verdict` argument cap equals the other notes (16 KiB): an overlong verdict is stored `unknown`, a non-string stays refused; `Run::handoff` after `Finished`/`Cancelled` is `HandoffError::Ended`, answered `run ended` | `an_overlong_verdict_is_accepted_for_the_run_to_store_as_unknown`, `a_handoff_after_the_run_ended_is_refused` (core), runtime test above | overlong verdict `TooLong`; handoff after finish stored |
+| doc order | `ids_text` moved above the `now()` doc comment in `runtime/orchestra.rs` | n/a | n/a |

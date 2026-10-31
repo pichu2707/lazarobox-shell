@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger};
+use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -133,6 +134,9 @@ struct Slot {
     reported: bool,
     /// Some attempt that ran ended without reporting: the sum is partial.
     gap: bool,
+    /// The orchestrator's handoff for the worker, or the fallback lazarobox
+    /// built (S4, D17).
+    handoff: Option<Handoff>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +153,14 @@ pub struct Run {
     /// Failures that ended while the run was already halted, in order. Each
     /// halts the run in turn once the one before is decided.
     pending: VecDeque<WorkerId>,
+    /// The workers a refused `finish` named as missing a handoff: the next
+    /// one builds theirs, unless another worker ended since (D17).
+    finish_warned: Vec<WorkerId>,
+    /// The run was cancelled while a failure waited: the handoffs built
+    /// after that are `blocked` too (D17).
+    halted_at_cancel: bool,
+    /// What the orchestrator said when it finished the run.
+    summary: Option<String>,
 }
 
 impl Run {
@@ -162,6 +174,9 @@ impl Run {
             slots: Vec::new(),
             queue: VecDeque::new(),
             pending: VecDeque::new(),
+            finish_warned: Vec::new(),
+            halted_at_cancel: false,
+            summary: None,
         }
     }
 
@@ -284,6 +299,7 @@ impl Run {
             usage: None,
             reported: false,
             gap: false,
+            handoff: None,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal, false);
@@ -434,6 +450,116 @@ impl Run {
         })
     }
 
+    /// The handoff stored for worker `id`, the orchestrator's or a fallback.
+    pub fn stored_handoff(&self, id: WorkerId) -> Option<&Handoff> {
+        self.slot(id)?.handoff.as_ref()
+    }
+
+    /// The worker whose unresolved failure forces every verdict to
+    /// `blocked`; `None` when the run is not halted.
+    pub fn forced_by(&self) -> Option<WorkerId> {
+        match &self.state {
+            RunState::Halted { worker, .. } => Some(*worker),
+            _ => None,
+        }
+    }
+
+    /// Stores the orchestrator's handoff for the ended worker `id`, replacing
+    /// an earlier one. The facts come from the run; the verdict is `blocked`
+    /// while a failure is unresolved (D17).
+    pub fn handoff(&mut self, id: WorkerId, note: Judgement) -> Result<Handoff, HandoffError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(HandoffError::Ended);
+        }
+        let slot = self.slot(id).ok_or(HandoffError::Unknown)?;
+        if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
+            return Err(HandoffError::NotFinished);
+        }
+        let handoff = Handoff::of(self.facts(id), note, self.forced_by().is_some());
+        self.slots[index(id)].handoff = Some(handoff.clone());
+        Ok(handoff)
+    }
+
+    fn facts(&self, id: WorkerId) -> Facts {
+        let slot = &self.slots[index(id)];
+        Facts {
+            run: self.id,
+            worker: id,
+            kind: slot.spec.task,
+            engine: slot.spec.engine.clone(),
+            model: slot.spec.model.clone(),
+            status: slot.status,
+        }
+    }
+
+    /// The workers that ended and have no handoff, oldest first.
+    fn without_handoff(&self) -> Vec<WorkerId> {
+        let numbered = self.slots.iter().enumerate();
+        numbered
+            .filter(|(_, slot)| {
+                slot.handoff.is_none()
+                    && !matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running)
+            })
+            .map(|(i, _)| WorkerId(i as u32 + 1))
+            .collect()
+    }
+
+    /// Builds and stores the handoff of every ended worker that has none
+    /// (`unknown`, or `blocked` while halted; never worker text) and returns
+    /// them. For `finish`, the turn cap, a cancel and an expiry.
+    pub fn fallbacks(&mut self) -> Vec<Handoff> {
+        let blocked = self.forced_by().is_some() || self.halted_at_cancel;
+        let built: Vec<_> = self
+            .without_handoff()
+            .into_iter()
+            .map(|id| (id, Handoff::fallback(self.facts(id), blocked)))
+            .collect();
+        for (id, handoff) in &built {
+            self.slots[index(*id)].handoff = Some(handoff.clone());
+        }
+        built.into_iter().map(|(_, handoff)| handoff).collect()
+    }
+
+    /// The orchestrator is done. Refused while a failure waits for the user
+    /// or a worker is queued or running; the first time handoffs are
+    /// missing it is refused naming them, and the next one builds them,
+    /// keeps `summary` and finishes the run. Returns the handoffs it built.
+    pub fn finish(&mut self, summary: &str) -> Result<Vec<Handoff>, FinishError> {
+        match self.state {
+            RunState::Finished | RunState::Cancelled => return Err(FinishError::Ended),
+            RunState::Halted { .. } => return Err(FinishError::Paused),
+            RunState::Open => {}
+        }
+        let live = self.ids(WorkerStatus::Queued, |_| true);
+        let live = [live, self.ids(WorkerStatus::Running, |_| true)].concat();
+        if !live.is_empty() {
+            return Err(FinishError::Live(live));
+        }
+        let missing = self.without_handoff();
+        if missing.iter().any(|id| !self.finish_warned.contains(id)) {
+            self.finish_warned.extend(missing.iter().copied());
+            return Err(FinishError::Missing(missing));
+        }
+        let built = self.fallbacks();
+        self.summary = Some(summary.to_owned());
+        self.state = RunState::Finished;
+        Ok(built)
+    }
+
+    /// What the orchestrator said when it finished the run.
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
+    }
+
+    /// The ledger of the run under `goal`: a row per worker.
+    pub fn run_ledger(&self, goal: &str) -> Ledger {
+        let rows = self.slots.iter().enumerate().map(|(i, slot)| {
+            let id = WorkerId(i as u32 + 1);
+            Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
+        });
+        Ledger::new(goal, rows.collect())
+    }
+
     /// Cancels one worker. Its slot goes to the next queued worker.
     pub fn cancel(&mut self, now: Instant, id: WorkerId) -> CancelOutcome {
         match self.status(id) {
@@ -539,6 +665,7 @@ impl Run {
     /// the running ones, whose processes the runtime must kill.
     pub fn cancel_run(&mut self, now: Instant) -> Vec<WorkerId> {
         let running = self.ids(WorkerStatus::Running, |_| true);
+        self.halted_at_cancel |= self.forced_by().is_some();
         self.state = RunState::Cancelled;
         self.pending.clear();
         for id in running

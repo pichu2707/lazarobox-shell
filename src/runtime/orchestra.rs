@@ -65,6 +65,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
+            ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             run::{
                 CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunLimits, RunState,
                 UserChoice, WorkerEvent,
@@ -548,7 +549,12 @@ impl RunManager {
     /// Returns the aborted turns, for `shutdown` to wait on.
     fn end(self: &Arc<Self>, pane: PaneId, mut live: Live) -> Vec<JoinHandle<()>> {
         let run = live.run.id();
+        // A handoff the orchestrator never wrote is built here, so the ledger
+        // is whole whatever ended the run (D17): the ones for workers that
+        // already ended first, `blocked` while a failure waited.
+        let mut built = live.run.fallbacks();
         live.run.cancel_run(now());
+        built.extend(live.run.fallbacks());
         let approver = live.approver.clone();
         let tasks: Vec<_> = live
             .tasks
@@ -560,6 +566,7 @@ impl RunManager {
             })
             .collect();
         self.sync(pane, &mut live);
+        self.announce_built(pane, run, built);
         self.send(pane, OrchestraEvent::Ended { run });
         tasks
     }
@@ -586,6 +593,8 @@ impl RunManager {
             }
             OrchCall::Collect { id } => self.collect(pane, run, id),
             OrchCall::Cancel { id } => self.cancel_worker(pane, run, id),
+            OrchCall::Handoff { id, note } => self.handoff(pane, run, id, note),
+            OrchCall::Finish { summary } => self.finish_run(pane, run, &summary),
         };
         async move { now }.boxed()
     }
@@ -676,6 +685,86 @@ impl RunManager {
             }
         });
         collected.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// Stores the orchestrator's handoff for worker `id` and tells the app.
+    /// The ack says what was stored. Handoffs stay in the run's memory here:
+    /// `announce_handoff` is the seam where engram persistence plugs in.
+    fn handoff(&self, pane: PaneId, run: RunId, id: WorkerId, note: Judgement) -> Outcome {
+        let stored = self.on_run(pane, run, |live| {
+            let forced = live.run.forced_by();
+            match live.run.handoff(id, note) {
+                Ok(handoff) => {
+                    let text = match forced {
+                        Some(failed) => format!(
+                            "handoff {}: {} (forced: worker {} failed)",
+                            id.0,
+                            handoff.verdict.label(),
+                            failed.0
+                        ),
+                        None => format!("handoff {}: {}", id.0, handoff.verdict.label()),
+                    };
+                    self.announce_handoff(pane, run, handoff);
+                    fine(text)
+                }
+                Err(HandoffError::Unknown) => error(format!("no worker {}", id.0)),
+                Err(HandoffError::NotFinished) => error(format!("worker {} is not finished", id.0)),
+                Err(HandoffError::Ended) => error(ENDED),
+            }
+        });
+        stored.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// Ends the run for the orchestrator: refused with a reason while a
+    /// worker is live, a failure waits or handoffs are missing (once); then
+    /// lazarobox builds the missing handoffs and the run is `Finished`. The
+    /// run leaves the manager when the turn ends, as ever.
+    fn finish_run(&self, pane: PaneId, run: RunId, summary: &str) -> Outcome {
+        let finished = self.on_run(pane, run, |live| match live.run.finish(summary) {
+            Ok(built) => {
+                self.announce_built(pane, run, built);
+                fine("run finished")
+            }
+            Err(FinishError::Ended) => error(ENDED),
+            Err(FinishError::Paused) => error("run paused"),
+            Err(FinishError::Live(ids)) => {
+                error(format!("workers not finished: {}", ids_text(&ids)))
+            }
+            Err(FinishError::Missing(ids)) => {
+                error(format!("handoffs missing: {}", ids_text(&ids)))
+            }
+        });
+        finished.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// The handoffs lazarobox built: the app hears each, then which workers
+    /// they were for (never a silent fallback).
+    fn announce_built(&self, pane: PaneId, run: RunId, built: Vec<Handoff>) {
+        let workers: Vec<_> = built
+            .iter()
+            .map(|handoff| {
+                let Unit::Worker(worker) = handoff.unit;
+                worker
+            })
+            .collect();
+        for handoff in built {
+            self.announce_handoff(pane, run, handoff);
+        }
+        if !workers.is_empty() {
+            self.send(pane, OrchestraEvent::Filled { run, workers });
+        }
+    }
+
+    /// A handoff exists: the app hears it. Persisting it (engram, degraded
+    /// mode) hooks in on the app side of this event.
+    fn announce_handoff(&self, pane: PaneId, run: RunId, handoff: Handoff) {
+        self.send(
+            pane,
+            OrchestraEvent::Handoff {
+                run,
+                handoff: Box::new(handoff),
+            },
+        );
     }
 
     /// Cancels one worker: its turn is aborted and its session closed, and
@@ -1107,6 +1196,11 @@ fn nonce_bytes() -> Option<[u8; 8]> {
         .and_then(|mut file| file.read_exact(&mut bytes))
         .ok()?;
     Some(bytes)
+}
+
+fn ids_text(ids: &[WorkerId]) -> String {
+    let ids: Vec<_> = ids.iter().map(|id| id.0.to_string()).collect();
+    ids.join(", ")
 }
 
 /// The run's clock: tokio's, so a paused test clock moves the deadlines.

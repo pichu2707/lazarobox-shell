@@ -418,7 +418,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 20] = [
+const BUILT_INS: [ToolDef; 22] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -685,7 +685,49 @@ const BUILT_INS: [ToolDef; 20] = [
         family: Family::Orchestra,
         args: &[id("id", true)],
     },
+    ToolDef {
+        name: "handoff",
+        description: "Record what a finished worker did, after collect. `verdict` is on_course, off_course or blocked against the user's goal; `reason` is one line; `done`, `left` and `decisions` say what was done, what remains and what was decided and why. Calling it again for the same worker replaces the record.",
+        access: Access::Read,
+        family: Family::Orchestra,
+        args: &[
+            id("id", true),
+            note("verdict", HANDOFF_NOTE_BYTES),
+            note("reason", HANDOFF_NOTE_BYTES),
+            note("done", HANDOFF_NOTE_BYTES),
+            note("left", HANDOFF_NOTE_BYTES),
+            note("decisions", HANDOFF_NOTE_BYTES),
+        ],
+    },
+    ToolDef {
+        name: "finish",
+        description: "End the run with a `summary` once every worker has ended and has a handoff. Refused while a worker is queued or running.",
+        access: Access::Read,
+        family: Family::Orchestra,
+        args: &[ArgDef {
+            name: "summary",
+            kind: ArgKind::Str {
+                max: HANDOFF_NOTE_BYTES,
+            },
+            required: true,
+            gate: None,
+        }],
+    },
 ];
+
+/// The longest handoff text accepted; the run cuts the fields it stores. A
+/// `verdict` that is not one of the three values is stored as `unknown`,
+/// however long.
+const HANDOFF_NOTE_BYTES: usize = 16 * 1024;
+
+const fn note(name: &'static str, max: usize) -> ArgDef {
+    ArgDef {
+        name,
+        kind: ArgKind::Str { max },
+        required: false,
+        gate: None,
+    }
+}
 
 /// The optional `path` of a git read verb.
 const OPTIONAL_PATH: ArgDef = ArgDef {
@@ -1126,6 +1168,15 @@ mod tests {
             parse_call("run_in_pane", &json!({"command": "ls", "enter": true})),
             Err(ToolError::ExtraArgument)
         );
+    }
+
+    // Spec (orchestrator-handoffs): a verdict that is not one of the three
+    // values is `unknown`, however long; only a non-string is refused.
+    #[test]
+    fn an_overlong_verdict_is_accepted_for_the_run_to_store_as_unknown() {
+        let args = json!({"id": 1, "verdict": "x".repeat(500)});
+        let set = Toolset::Orchestrator.families();
+        assert!(parse_built_in("handoff", &args, set).is_ok());
     }
 
     // Review W4: oversized arguments are refused, the limit itself is not.
@@ -2049,7 +2100,9 @@ mod tests {
                 "spawn_agent",
                 "wait",
                 "collect",
-                "cancel"
+                "cancel",
+                "handoff",
+                "finish"
             ]
         );
         assert!(tools.iter().all(|t| t.access == Access::Read));

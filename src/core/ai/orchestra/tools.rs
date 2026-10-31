@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use serde_json::{Map, Value};
 
 use super::WorkerId;
+use super::ledger::{Judgement, Verdict};
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::ToolError;
 
@@ -36,6 +37,15 @@ pub enum OrchCall {
     Cancel {
         id: WorkerId,
     },
+    /// The orchestrator's handoff for a finished worker (S4, D17).
+    Handoff {
+        id: WorkerId,
+        note: Judgement,
+    },
+    /// The orchestrator is done (S4).
+    Finish {
+        summary: String,
+    },
 }
 
 impl OrchCall {
@@ -46,6 +56,8 @@ impl OrchCall {
             OrchCall::Wait { .. } => "wait",
             OrchCall::Collect { .. } => "collect",
             OrchCall::Cancel { .. } => "cancel",
+            OrchCall::Handoff { .. } => "handoff",
+            OrchCall::Finish { .. } => "finish",
         }
     }
 
@@ -60,7 +72,10 @@ impl OrchCall {
                     .collect::<Vec<_>>()
                     .join(","),
             ),
-            OrchCall::Collect { id } | OrchCall::Cancel { id } => Cow::Owned(id.0.to_string()),
+            OrchCall::Collect { id } | OrchCall::Cancel { id } | OrchCall::Handoff { id, .. } => {
+                Cow::Owned(id.0.to_string())
+            }
+            OrchCall::Finish { summary } => Cow::Borrowed(summary),
         }
     }
 }
@@ -100,7 +115,10 @@ fn spawnable() -> [Task; 5] {
 
 /// Checks an orchestration call by name against its schema.
 pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
-    if !matches!(name, "spawn_agent" | "wait" | "collect" | "cancel") {
+    if !matches!(
+        name,
+        "spawn_agent" | "wait" | "collect" | "cancel" | "handoff" | "finish"
+    ) {
         return Err(OrchError::UnknownTool);
     }
     let object = args.as_object().ok_or(OrchError::NotAnObject)?;
@@ -108,6 +126,12 @@ pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
         "spawn_agent" => spawn(object),
         "wait" => wait(object),
         "collect" => only_id(object).map(|id| OrchCall::Collect { id }),
+        "handoff" => handoff(object),
+        "finish" => {
+            let summary = text(object, "summary")?.to_owned();
+            no_extra(object, 1)?;
+            Ok(OrchCall::Finish { summary })
+        }
         _ => only_id(object).map(|id| OrchCall::Cancel { id }),
     }
 }
@@ -154,6 +178,33 @@ fn wait(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
     }
     let ids = list.iter().map(worker_id).collect::<Result<_, _>>()?;
     Ok(OrchCall::Wait { ids, timeout })
+}
+
+/// `id` and the optional judgement. A wrong type is refused; a verdict that
+/// is missing or not one of the three values is `unknown`, not refused.
+fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
+    let id = worker_id(object.get("id").ok_or(OrchError::MissingArgument)?)?;
+    let optional = |key: &str| match object.get(key) {
+        None => Ok(String::new()),
+        Some(value) => value
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(OrchError::WrongType),
+    };
+    let verdict = Verdict::parse(&optional("verdict")?);
+    let note = Judgement {
+        verdict,
+        reason: optional("reason")?,
+        done: optional("done")?,
+        left: optional("left")?,
+        decisions: optional("decisions")?,
+    };
+    no_extra(object, object.keys().filter(|k| is_note_key(k)).count() + 1)?;
+    Ok(OrchCall::Handoff { id, note })
+}
+
+fn is_note_key(key: &str) -> bool {
+    matches!(key, "verdict" | "reason" | "done" | "left" | "decisions")
 }
 
 fn only_id(object: &Map<String, Value>) -> Result<WorkerId, OrchError> {

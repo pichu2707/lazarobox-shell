@@ -26,6 +26,7 @@ use crate::{
         jail::{Backend, JailOff, JailSupport},
         orchestra::{
             SessionKey, Toolset, WorkerKey,
+            ledger::{Handoff, Judgement, Verdict},
             run::{RunLimits, UserChoice},
         },
         tools::{label, registry::FamilySet},
@@ -349,6 +350,8 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Unavailable
         | OrchestraEvent::AnswerLost
         | OrchestraEvent::Expired { .. }
+        | OrchestraEvent::Handoff { .. }
+        | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1095,6 +1098,8 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Dropped { .. }
             | OrchestraEvent::Expired { .. }
             | OrchestraEvent::AnswerLost
+            | OrchestraEvent::Handoff { .. }
+            | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -1369,7 +1374,10 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     failing.sent();
     assert!(chats.decide_run(pane(), failed, UserChoice::Cancel));
-    assert_eq!(failing.sent(), [OrchestraEvent::Ended { run: failed }]);
+    assert_eq!(
+        without_handoffs(failing.sent()),
+        [OrchestraEvent::Ended { run: failed }]
+    );
     assert!(lab.manager.scope(pane()).is_some(), "{run:?} goes on");
 }
 
@@ -1383,7 +1391,10 @@ async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     lab.sent();
     lab.manager.turn_ended(pane(), run);
-    assert_eq!(lab.sent(), [OrchestraEvent::Ended { run }]);
+    assert_eq!(
+        without_handoffs(lab.sent()),
+        [OrchestraEvent::Ended { run }]
+    );
     lab.manager.turn_ended(pane(), run);
     assert_eq!(lab.sent(), [], "ended once");
     assert_eq!(handle.call(wait(1)).await, error(ENDED));
@@ -1497,7 +1508,10 @@ async fn choosing_cancel_on_a_failure_ends_the_run() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     lab.sent();
     lab.manager.decide(pane(), run, UserChoice::Cancel).unwrap();
-    assert_eq!(lab.sent(), [OrchestraEvent::Ended { run }]);
+    let events = lab.sent();
+    // The failure was unresolved: the handoff lazarobox builds is `blocked`.
+    assert_eq!(handoffs(&events)[0].verdict, Verdict::Blocked);
+    assert_eq!(without_handoffs(events), [OrchestraEvent::Ended { run }]);
     assert_eq!(handle.call(wait(1)).await, error(ENDED));
     assert_eq!(lab.seen.requests().len(), 1);
 }
@@ -2410,6 +2424,18 @@ async fn the_wall_clock_kills_the_running_worker_and_ends_the_run() {
         status_of(&lab.events.recv().await.unwrap().1),
         Some(WorkerStatus::Cancelled)
     );
+    // The cancelled worker's missing handoff is built before the run ends.
+    assert!(matches!(
+        lab.events.recv().await.unwrap().1,
+        OrchestraEvent::Handoff { .. }
+    ));
+    assert_eq!(
+        lab.events.recv().await.unwrap().1,
+        OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1)]
+        }
+    );
     assert_eq!(
         lab.events.recv().await.unwrap().1,
         OrchestraEvent::Ended { run }
@@ -2536,4 +2562,171 @@ async fn a_spawn_over_the_worker_cap_is_refused_naming_the_limit() {
     );
     lab.seen.first().await;
     assert_eq!(lab.seen.requests().len(), 1);
+}
+
+fn handoff(id: u32, verdict: Verdict) -> OrchCall {
+    OrchCall::Handoff {
+        id: WorkerId(id),
+        note: Judgement {
+            verdict,
+            reason: "fits".to_owned(),
+            done: "wrote it".to_owned(),
+            left: "nothing".to_owned(),
+            decisions: "none".to_owned(),
+        },
+    }
+}
+
+fn without_handoffs(events: Vec<OrchestraEvent>) -> Vec<OrchestraEvent> {
+    let kept = events.into_iter().filter(|event| {
+        !matches!(
+            event,
+            OrchestraEvent::Handoff { .. } | OrchestraEvent::Filled { .. }
+        )
+    });
+    kept.collect()
+}
+
+fn handoffs(events: &[OrchestraEvent]) -> Vec<Handoff> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Handoff { handoff, .. } => Some((**handoff).clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Spec (orchestrator-handoffs, The orchestrator writes it with the handoff
+// tool; D17): the ack says what was stored and the app hears the handoff.
+#[tokio::test]
+async fn a_handoff_is_stored_acked_and_sent_to_the_app() {
+    let mut lab = lab(Script::Answer("looks fine"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    handle.call(wait(1)).await;
+    let ack = handle.call(handoff(1, Verdict::OffCourse)).await;
+    assert_eq!(ack, fine("handoff 1: off_course"));
+    let sent = handoffs(&lab.sent());
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].run, run);
+    assert_eq!(sent[0].verdict, Verdict::OffCourse);
+    assert_eq!(sent[0].engine_model(), "codex>default");
+}
+
+// Spec (Handoff for a running worker is refused): a reason, no event.
+#[tokio::test]
+async fn a_handoff_for_a_running_or_unknown_worker_is_refused_with_a_reason() {
+    let mut lab = lab(Script::Hang);
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(
+        handle.call(handoff(1, Verdict::OnCourse)).await,
+        error("worker 1 is not finished")
+    );
+    assert_eq!(
+        handle.call(handoff(9, Verdict::OnCourse)).await,
+        error("no worker 9")
+    );
+    assert!(handoffs(&lab.sent()).is_empty());
+}
+
+// Spec (Failure forces blocked): the ack names the failure that forced it.
+#[tokio::test]
+async fn a_handoff_while_a_failure_waits_is_blocked_and_says_why() {
+    let mut lab = lab(Script::Fail("", "409 conflict: session busy"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    handle.call(wait(1)).await;
+    let ack = handle.call(handoff(1, Verdict::OnCourse)).await;
+    assert_eq!(ack, fine("handoff 1: blocked (forced: worker 1 failed)"));
+    assert_eq!(handoffs(&lab.sent())[0].verdict, Verdict::Blocked);
+}
+
+// Spec (A missing handoff gets a fallback; D17): finish waits for the
+// workers, names the missing handoffs once, then builds them and ends the run.
+#[tokio::test]
+async fn finish_is_refused_for_live_workers_and_missing_handoffs_then_ends_the_run() {
+    let mut lab = lab(Script::Answer("text the fallback must not copy"));
+    let (_, handle) = lab.start(codex_review());
+    let finish = OrchCall::Finish {
+        summary: "all done".to_owned(),
+    };
+    handle.call(spawn(Task::Review, "check")).await;
+    handle.call(wait(1)).await;
+    assert_eq!(
+        handle.call(finish.clone()).await,
+        error("handoffs missing: 1")
+    );
+    assert!(handoffs(&lab.sent()).is_empty());
+    assert_eq!(handle.call(finish.clone()).await, fine("run finished"));
+    let built = handoffs(&lab.sent());
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].verdict, Verdict::Unknown);
+    assert!(!format!("{:?}", built[0]).contains("must not copy"));
+    assert_eq!(
+        handle.call(spawn(Task::Review, "more")).await,
+        error("run ended")
+    );
+}
+
+// Spec (A missing handoff gets a fallback): what lazarobox filled in is
+// announced once, naming the workers; a handoff after the end is refused.
+#[tokio::test]
+async fn finish_announces_the_handoffs_it_filled_in_and_closes_the_record() {
+    let mut lab = lab(Script::Answer("t"));
+    let (run, handle) = lab.start(codex_review());
+    let finish = OrchCall::Finish {
+        summary: "all done".to_owned(),
+    };
+    handle.call(spawn(Task::Review, "a")).await;
+    handle.call(wait(1)).await;
+    handle.call(spawn(Task::Review, "b")).await;
+    handle.call(wait(2)).await;
+    handle.call(finish.clone()).await;
+    assert_eq!(handle.call(finish).await, fine("run finished"));
+    let filled: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter(|event| matches!(event, OrchestraEvent::Filled { .. }))
+        .collect();
+    assert_eq!(
+        filled,
+        [OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1), WorkerId(2)]
+        }]
+    );
+    assert_eq!(
+        handle.call(handoff(1, Verdict::OnCourse)).await,
+        error("run ended")
+    );
+}
+
+#[tokio::test]
+async fn finish_is_refused_while_a_worker_runs() {
+    let lab = lab(Script::Hang);
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    let finish = OrchCall::Finish {
+        summary: "s".to_owned(),
+    };
+    assert_eq!(handle.call(finish).await, error("workers not finished: 1"));
+}
+
+// D17: a run cancelled builds the missing handoffs, so the ledger is whole.
+#[tokio::test]
+async fn a_cancelled_run_builds_the_missing_handoffs_before_it_ends() {
+    let mut lab = lab(Script::Answer("t"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    handle.call(wait(1)).await;
+    lab.manager.cancel(pane());
+    let events = lab.sent();
+    assert_eq!(handoffs(&events).len(), 1);
+    let last = events.last();
+    assert!(
+        matches!(last, Some(OrchestraEvent::Ended { .. })),
+        "{events:?}"
+    );
 }

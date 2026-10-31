@@ -32,6 +32,11 @@ baseline.
   `run_timeout_mins` bound the run. With a worker row selected (Alt+Down,
   Alt+Up) the first Ctrl+C cancels only that worker and a second one within
   two seconds cancels the run.
+- Agent orchestrator handoffs (S4, same gate): the orchestrator records each
+  finished worker with a `handoff` (verdict, reason, done, left, decisions)
+  and ends the run with `finish`; an `off_course` or `blocked` verdict shows
+  in the transcript. Missing handoffs are filled in by lazarobox, never from
+  worker text.
 
 ## [1.0.1] - 2026-10-31
 
