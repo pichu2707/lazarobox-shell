@@ -306,11 +306,35 @@ impl App {
     /// Starts the continuation turn on the open run, after a line that says
     /// so. A turn that cannot go ends the run, said: never a silent stop.
     pub(super) fn start_continuation(&mut self, id: PaneId, next: Continuation) -> Vec<Effect> {
+        let failure = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .map(|chat| (chat.turn_failure().map(str::to_owned), chat.orch_run()));
+        let Some((failure, run)) = failure else {
+            return Vec::new();
+        };
+        // Nothing is sent when the run cannot go on: the pane stopped
+        // orchestrating, the run is not its live one, or its last turn failed.
+        let why = if !self.orchestrating(id) {
+            Some("the pane is no longer orchestrating".to_owned())
+        } else if run.is_some_and(|live| live != next.run) {
+            Some("the run was replaced".to_owned())
+        } else {
+            failure.map(|cause| format!("the orchestrator turn failed ({cause})"))
+        };
+        if let Some(why) = why {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.push_system_line(format!("run stopped: {why}"));
+            }
+            self.dirty = true;
+            return self.cancel_chat(id);
+        }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         chat.push_system_line(format!(
-            "orchestrator turn {} of {}: continuing the run from its ledger",
+            "orchestrator turn {} of {}: starting from the run ledger",
             next.turn, next.max
         ));
         self.dirty = true;
@@ -330,6 +354,19 @@ impl App {
         let mut effects = effects;
         effects.extend(self.cancel_chat(id));
         effects
+    }
+
+    /// The effects that end the runs of the chats in `ids` when they close:
+    /// a run does not outlive its pane.
+    pub(super) fn close_run_effects(&self, ids: &[PaneId]) -> Vec<Effect> {
+        let live = |id: &&PaneId| {
+            let chat = self.panes.get(*id).and_then(PaneState::chat_state);
+            chat.is_some_and(|c| c.orch_run().is_some() || c.orch_turn_in_flight())
+        };
+        ids.iter()
+            .filter(live)
+            .map(|id| Effect::ChatCancel(*id))
+            .collect()
     }
 
     /// A key on chat `id` for the failure alert shown there: `r` retries the

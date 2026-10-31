@@ -369,3 +369,18 @@ Task 4.1b done. Strict TDD: compile-level RED for the pure `Run::next_turn` and 
 - A continuation turn replaces the run's events channel, approver and pending count for workers spawned from then on. Workers spawned in an earlier turn keep the earlier turn's channel (their tool rows were already lost once that turn ended; unchanged limitation, noted for S9).
 - When the ledger cannot be wrapped (no nonce) the run stops with a visible line instead of continuing bare.
 - Halted runs are not continued (the user's alert comes first); after a retry they settle as before.
+
+### 4.1b review fixes
+
+Strict TDD: each test written first and observed RED before the fix.
+
+| Fix | Change | Test | RED observed |
+|-----|--------|------|--------------|
+| CRITICAL worker routing | A worker's tool events and asks no longer capture turn N's channel and approver. Each worker gets a `Route` (events sender + approver behind mutexes) in `Live.routes`; its scope holds a forwarding channel and a `Rerouted` approver that read the route when they act; `attach` retargets the routes of the running workers (new channel, `for_worker` approver of the new turn). | `a_surviving_workers_ask_goes_through_the_current_turn` (ask reaches the new channel, nothing on the dead one, `decide` under turn 7 refused, under turn 8 answered) | timed out waiting for the ask on the new channel |
+| WARNING not orchestrating | `start_continuation` checks `orchestrating(id)` and that the pane's live run is the continuation's before any send; otherwise a line `run stopped: ...` and `cancel_chat` (no ledger message, no `ChatSend`) | `a_continuation_on_a_pane_that_stopped_orchestrating_cancels_the_run` | failed (a send went out) |
+| WARNING pane closed | closing a pane or tab with a live run or orchestrator turn emits `ChatCancel` (a run used to outlive its pane until the wall clock) | `closing_the_pane_cancels_its_run` | failed (no `ChatCancel`) |
+| WARNING error loop | `ChatState.turn_failure` is set when a turn ends (`Failed`, `Jail`, `Truncated`; a clean end or `Interrupted`, the shape of a turn cap, is not a failure); a failed turn is not continued: `run stopped: the orchestrator turn failed (<first line, 120 chars>)` and the run is cancelled (fallbacks built as usual) | `a_failed_orchestrator_turn_stops_the_run_and_names_the_cause` (both orders), `an_interrupted_orchestrator_turn_is_continued` | failed (the continuation went out) |
+| WARNING line before send | the pre-checks above run before the line; the line is reworded `orchestrator turn N of M: starting from the run ledger`, so a runtime attach failure (run ended meanwhile) that follows reads coherently | covered by the not-orchestrating test (`continuing`/ledger absent) | n/a |
+| suggestion | comment on `orch_continue`: one slot, turns are serial | n/a | n/a |
+
+Residual: a worker's `Pending` for the orchestrator turn's timers stays the one captured at spawn (`Turn.session`), so a surviving worker's ask is not counted by the new turn's idle timer; the ask itself is shown and answerable.

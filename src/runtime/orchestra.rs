@@ -1056,7 +1056,7 @@ impl RunManager {
         );
         live.routes.insert(id, route.clone());
         let session = self
-            .open_session(pane, key, live, &spec, &mut request, route)
+            .open_session(pane, key, &spec, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
         let turn = Turn {
             runner: self.runner.clone(),
@@ -1083,7 +1083,6 @@ impl RunManager {
         self: &Arc<Self>,
         pane: PaneId,
         key: WorkerKey,
-        live: &Live,
         spec: &WorkerSpec,
         request: &mut ChatRequest,
         route: Arc<Route>,

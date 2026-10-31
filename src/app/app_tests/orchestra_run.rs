@@ -709,3 +709,99 @@ fn a_run_stopped_at_the_turn_cap_names_max_turns() {
     }));
     assert!(transcript(&a).contains("max_turns (6)"));
 }
+
+fn gated_off(a: &mut App) {
+    a.ai.orchestrator.enabled = false;
+}
+
+// Review fix (4.1b): a continuation never starts on a pane that stopped
+// orchestrating meanwhile: nothing is sent, the ledger is not pushed as a
+// message, the run is cancelled and the transcript says so.
+#[test]
+fn a_continuation_on_a_pane_that_stopped_orchestrating_cancels_the_run() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    gated_off(&mut a);
+    let effects = a.update(finish(turn));
+    assert!(attaches(&effects).is_none(), "{effects:?}");
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+        "{effects:?}"
+    );
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+    let said = transcript(&a);
+    assert!(said.contains("no longer orchestrating"), "{said}");
+    assert!(!said.contains("LEDGER-TEXT"), "{said}");
+    assert!(!said.contains("continuing"), "{said}");
+}
+
+// Review fix (4.1b): an orchestrator turn that failed is not continued, so a
+// persistent provider error does not loop: the run stops and names the cause.
+#[test]
+fn a_failed_orchestrator_turn_stops_the_run_and_names_the_cause() {
+    use crate::core::ai::chat::engine::ChatError;
+    let fail = |turn| {
+        AppEvent::Chat(
+            chat_id(),
+            turn,
+            StreamEvent::Error(ChatError::Failed("401 unauthorized".into())),
+        )
+    };
+    // The continuation arrives before the turn's end...
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    let effects = a.update(fail(turn));
+    assert!(attaches(&effects).is_none(), "{effects:?}");
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+    let said = transcript(&a);
+    assert!(
+        said.contains("run stopped: the orchestrator turn failed (401 unauthorized)"),
+        "{said}"
+    );
+    // ... or after it.
+    let (mut b, turn) = running();
+    b.update(event(row(RUN, 1, WorkerStatus::Running)));
+    b.update(fail(turn));
+    let effects = b.update(event(OrchestraEvent::Continue(next_turn(2))));
+    assert!(attaches(&effects).is_none(), "{effects:?}");
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+    assert!(transcript(&b).contains("the orchestrator turn failed (401 unauthorized)"));
+}
+
+// A turn cut off (the stream ended with no final event, as at the turn cap)
+// is the case the continuation exists for.
+#[test]
+fn an_interrupted_orchestrator_turn_is_continued() {
+    use crate::core::ai::chat::engine::ChatError;
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    let cut = AppEvent::Chat(chat_id(), turn, StreamEvent::Error(ChatError::Interrupted));
+    let effects = a.update(cut);
+    assert!(attaches(&effects).is_some(), "{effects:?}");
+}
+
+// Review fix (4.1b): closing a pane takes its run, and the continuation it
+// parked, with it.
+#[test]
+fn closing_the_pane_cancels_its_run() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    let effects = a.remove_pane(chat_id());
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+}
