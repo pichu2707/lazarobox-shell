@@ -421,7 +421,14 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
     let orchestra = Arc::new(
         RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
-            .with_tools(tool_host.clone(), socket_dirs.clone()),
+            .with_tools(tool_host.clone(), socket_dirs.clone())
+            .with_run_floor({
+                let path = store_path.clone();
+                move || match path.as_deref() {
+                    Some(path) => chat_store::highest_run(path).map_err(|why| why.to_string()),
+                    None => Ok(0),
+                }
+            }),
     );
     tokio::spawn({
         let live = live.clone();

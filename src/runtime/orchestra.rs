@@ -312,6 +312,11 @@ struct RunIds {
 }
 
 impl RunIds {
+    /// Raises the last id to the highest the store has seen.
+    fn raise(&mut self, floor: u64) {
+        self.last = self.last.max(floor);
+    }
+
     fn next(&mut self, now_micros: u64) -> RunId {
         self.last = now_micros.max(self.last.saturating_add(1));
         RunId(self.last)
@@ -322,6 +327,10 @@ fn clock_micros() -> u64 {
     let since = SystemTime::now().duration_since(UNIX_EPOCH);
     since.map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
+
+/// Reads the highest run id the store has seen.
+/// (a short read-only look at the store: the error is why it failed).
+type RunFloor = Box<dyn Fn() -> Result<u64, String> + Send + Sync>;
 
 /// The run of one pane, with what its workers' turns need.
 struct Live {
@@ -411,6 +420,12 @@ pub struct RunManager {
     /// Where a nonce's bytes come from: the OS CSPRNG (a test swaps it).
     nonce: fn() -> Option<[u8; 8]>,
     ids: Mutex<RunIds>,
+    /// The highest run id the store has seen, read before the first id of
+    /// the process (S9); `None` reads none.
+    floor: Option<RunFloor>,
+    /// Whether the floor was read: held while it is, so a second start waits
+    /// for it, and apart from `ids` so the read never blocks an id.
+    floor_read: Mutex<bool>,
     runs: Mutex<HashMap<PaneId, Live>>,
     /// Set by `shutdown`, under the `runs` lock: no run starts after it.
     closed: AtomicBool,
@@ -432,6 +447,8 @@ impl RunManager {
             scratch: jail::is_scratch,
             nonce: nonce_bytes,
             ids: Mutex::default(),
+            floor: None,
+            floor_read: Mutex::new(false),
             runs: Mutex::default(),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
@@ -450,6 +467,38 @@ impl RunManager {
             hub: Mutex::new(None),
         });
         self
+    }
+
+    /// Starts run ids above what `floor` reads, once, before the first id: the
+    /// highest one the store has seen, so a clock set back across a restart
+    /// never reuses one (S9). It may read a file; a failure reads zero.
+    pub fn with_run_floor(
+        mut self,
+        floor: impl Fn() -> Result<u64, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.floor = Some(Box::new(floor));
+        self
+    }
+
+    /// The next run id for a run of `pane`. The first one reads the floor,
+    /// outside the `ids` lock; a read that fails is said to the pane once and
+    /// the ids go on from the clock alone.
+    fn next_run(&self, pane: PaneId) -> RunId {
+        if let Some(floor) = &self.floor {
+            let mut read = lock(&self.floor_read);
+            if !std::mem::replace(&mut *read, true) {
+                match floor() {
+                    Ok(floor) => lock(&self.ids).raise(floor),
+                    Err(why) => {
+                        let text = format!(
+                            "run ids could not be checked against stored runs (ids follow the clock this session): {why}"
+                        );
+                        let _ = self.events.send((pane, OrchestraEvent::Notice { text }));
+                    }
+                }
+            }
+        }
+        lock(&self.ids).next(clock_micros())
     }
 
     /// Judges broad scratch folders with `scratch` instead of the jail's:
@@ -487,7 +536,7 @@ impl RunManager {
         if let Some(reason) = guidance(scope.roster.get(Task::Orchestrate)) {
             return Err(reason);
         }
-        let run = lock(&self.ids).next(clock_micros());
+        let run = self.next_run(pane);
         let (read_scope, dropped) = self.read_scope(run, &scope.origin, &scope.roots);
         let live = Live {
             scope: read_scope,

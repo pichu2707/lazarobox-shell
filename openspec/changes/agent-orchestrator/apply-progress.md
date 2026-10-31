@@ -668,3 +668,53 @@ Strict TDD, RED first: UI header test (the receipt after the gate; 2 of 2 failed
 | 4 | `late` records a path once | `a_path_seen_late_twice_counts_once` |
 | 5 | `receipt` and `receipt_line` say `(the run is gone)` on the review line | `a_receipt_of_a_run_that_is_gone_says_so` |
 | 6 | `fit` clips a first line over the cap instead of dropping it | `a_single_line_over_the_cap_is_clipped_not_dropped` |
+
+## S9 (run view and persistence), PR 9.1a: runs table and interrupted-run notice (branch feat/agent-orchestrator-s9, on s7b4; 9.1a `[x]`, 9.1b and 9.1c open)
+
+Split planned up front in tasks.md: 9.1a store + interrupted notice, 9.1b run view (key), 9.1c resume choice + the two S4b between-turn gaps. Only 9.1a is done; the split follows the suggested one because the store, the view and the resume choice each have their own review surface.
+
+Strict TDD evidence: core `record_tests` (5) were written beside `record.rs`, not RED first (one test of mine was wrong: `y` appears in "by"; fixed). The store, worker, app and manager tests were written with or just before their code; behavioural RED was seen when the existing tests that assert the exact table list (`a_fresh_store_gets_schema_v3`, `an_empty_database_at_version_zero_is_migrated`) and the two "toggle returns no effect" tests (`ctrl_o_turns_the_orch_mode_on_then_off`, `the_toggle_applies_to_the_next_message`) failed against the new behaviour and were updated deliberately; the first full run also failed my own `recovery_interrupts_only...` (wrong last assertion) and `more_than_three...` (a "more" line contains the counted words). Honest gap: not every unit was RED first.
+
+| Unit | What |
+|------|------|
+| `core/ai/orchestra/record.rs` | `RunRecord`, `WorkerRecord`, `RunPhase` (`live`/`ended`/`interrupted`), `stored_goal` (sanitized, cut to 2 KiB on a char boundary), `interrupted_line` (goal first line, sanitized, clipped to 60 chars) |
+| `runtime/chat_store/runs.rs` | tables `runs`, `run_workers`, `run_high` created `IF NOT EXISTS` by `migrate_locked` (target >= 3), no version bump: an older build ignores them and an old file gains them; `save_run` (upsert, replace workers, raise `run_high`, keep the newest 50 non-live runs), `recover_runs` (live + owner pid not this process + `kill(pid,0)` ESRCH becomes `interrupted`), `highest_run(path)` |
+| `StoreCmd::SaveRun` / `RecoverRuns`, `StoreReply::RunsRecovered` / `RunsFailed{saving}` | worker handles, panic guard keeps the connection, a handle without a thread answers failures |
+| `app/run_store.rs` | `RunKeep`: goal taken at the fresh turn, run saved on every `Worker` event, closed on `Ended`, `RecoverRuns` sent once per process at the first ORCH toggle-on, up to 3 interrupted runs named plus `N more runs...`, a save failure and a read failure said once each |
+| `RunManager::with_run_floor` | the floor is read lazily once before the first id of the process (sync read of `run_high` at the first run start), `RunIds::raise` |
+
+Decisions and limits:
+- Gate OFF: no run command is ever sent; the three tables exist, empty (harmless: created by the migration for every user).
+- Multi-instance safety: a second lazarobox must not interrupt the first's live run, hence `owner` pid plus a liveness check (pid reuse could keep a dead run `live`; it stays `live` in the DB, not shown, harmless).
+- The notice appears at the first ORCH toggle-on after a start, not at process start: the store is opened lazily by design and a session that never orchestrates must not touch the run tables. A process that quits first leaves the runs `live`, found next time.
+- A run only exists in the store from its first worker row (a run with no workers has nothing to resume).
+- The floor read does a short synchronous SQLite open at the first run start of the process (on the chat runtime thread). A failure reads zero (the clock alone, as before) and the next save failure is said by `could not save the run`.
+- Sequencing choice: run pane ids are not stored (they restart each process and mean nothing later).
+
+### 9.1a review fixes
+
+Strict TDD, tests first with an observed RED (commands run before any fix):
+- App side (behavioural RED, 6 of 6 failed against the 9.1a code): `a_row_that_changes_nothing_stored_is_not_saved_again` (a usage-only row produced a save), `a_run_is_saved_as_its_workers_change...` (the save carried 2 workers, not the changed one), `closing_the_pane_of_a_live_run_closes_the_stored_run` (no close save on pane close), `a_failed_start_forgets_its_goal` and `closing_a_pane_forgets_its_goal` (1 goal kept, expected 0), core `the_stored_goal_hides_a_token_the_user_pasted` (the `sk-` token was stored). `the_interruption_line_hides_a_token_in_an_older_stored_goal` was written after the same change and passed at once (no RED for it).
+- Store and manager side (compile RED: the tests use `Owner`, `Result` from `highest_run`, `next_run(pane)`, `OrchestraEvent::Notice`, so the build failed with 6 and 8 errors before the fixes). After the fixes the first full run failed only two older tests that encoded the old semantics (`saving_a_run_again_replaces...` now upserts; the worker round trip must change the token too), both updated on purpose.
+- Verification of a premise, not a fix: `the_close_of_a_run_survives_a_long_queue` passed at once. Store commands go over an unbounded std queue (only replies use a bounded channel) and `shutdown` drains it, so a close save cannot be lost to a full `try_send`; the test pins that (300 saves, then the close, then shutdown).
+
+| # | Fix | Tests |
+|---|-----|-------|
+| 1 | Owner is `Owner{pid, token}`: a per-process token (clock nanos mixed with the pid, drawn once). New nullable `runs.token` (in the `CREATE`, and `ALTER TABLE ADD COLUMN` for a table made without it; a row without a token counts as different). A row is recovered when its token differs from ours and its pid is dead or equals ours. Limit, documented on `Owner`: an unrelated live process holding a dead owner's pid is not told apart without the process start time, which is not read portably here, so that row stays `live` until the pid is free | `a_reused_pid_with_another_token_is_interrupted_and_the_same_token_is_not`, `a_row_without_a_token_is_found_when_its_pid_is_ours_or_gone`, `a_runs_table_without_the_token_column_gains_it_and_keeps_its_rows` |
+| 2 | `highest_run` is read-only, no migration, `NOFOLLOW`, busy timeout 100 ms, missing file or tables read 0, errors are `StoreError` texts. The floor is read outside the `ids` lock (own `floor_read` lock). A failure sends `OrchestraEvent::Notice` once: `run ids could not be checked against stored runs: <why>` and ids go on from the clock | `a_locked_database_fails_the_floor_quickly_and_says_why`, `the_floor_reads_a_file_without_the_tables_as_zero_and_never_migrates_it`, `a_floor_that_cannot_be_read_is_said_once_and_ids_still_flow` |
+| 3 | `Ended` is not guaranteed when a pane closes (the pane is removed first, then the manager ends the run). `keep_pane_closed` saves the run as ended, marks it ended and drops its `run_keep` entry and goal; a later `Ended` saves nothing | `closing_the_pane_of_a_live_run_closes_the_stored_run` |
+| 4 | A row is saved only when a stored field changed (status, engine, model, kind); a save carries only the changed worker and the store upserts it and keeps the others; the close carries none. The ended save is never dropped (see the verification above) | `a_row_that_changes_nothing_stored_is_not_saved_again`, `a_save_upserts_the_workers_it_carries_and_keeps_the_others` |
+| s1 | goal stored and shown through `redact_tokens(&clean(goal))` | `the_stored_goal_hides_a_token_the_user_pasted`, `the_interruption_line_hides_a_token_in_an_older_stored_goal` |
+| s2 | the upsert no longer flips `interrupted` back to `live` (`WHERE runs.phase = 'live' OR excluded.phase = 'ended'`; its workers are not touched either); only the run's end closes it | `a_saved_live_run_never_flips_a_run_another_instance_interrupted` |
+| s3 | the waiting goal is dropped when the turn fails with no run, and when the pane closes | `a_failed_start_forgets_its_goal`, `closing_a_pane_forgets_its_goal` |
+| s4 | Gate OFF: the three tables (and the `token` column) are created by the migration for every user and stay empty; nothing writes to them unless a run happens (`with_the_gate_off_nothing_about_runs_is_sent`) | |
+
+The added `OrchestraEvent::Notice` variant touches the two exhaustive matches in `runtime/orchestra/tests.rs` (one line each).
+
+### 9.1a re-review follow-ups
+
+Tests first, RED observed (6 failed against the previous code: close carried 0 workers on the manager and the pane-close paths, the next save after a `RunsFailed` carried 1 worker and an unchanged row was skipped, a cancelled turn kept its goal, the Notice wording).
+- W1: the close (`Ended` and pane close) carries every known worker; a `RunsFailed{saving}` marks every run of that pane `resend` (the failure does not name a run), and the next save of each sends the full worker set once, even for a row that changed nothing.
+- W2 (documented on `Owner` and `recover_runs`): two instances in different pid namespaces (containers) sharing one database with equal pids can falsely mark each other's live run as interrupted; like the reused unrelated pid, it needs the process start time to tell apart, which is not read portably.
+- The floor Notice now says the protection is off for this session: `run ids could not be checked against stored runs (ids follow the clock this session): <why>`.
+- `forget_goal` also runs from `cancel_chat` when the pane has no run (a turn cancelled before any run began).

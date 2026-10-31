@@ -32,6 +32,10 @@ baseline.
   to your batch review marked not reviewed. Nothing approves the batch. Each
   review leaves a receipt (tier, consent, lenses, findings, outcome, paths not
   reviewed), saved to engram, and a one-line note in the batch review header.
+  Runs are stored locally (S9, first part): a run is saved in the chat database as
+  its workers change, and after a restart a run that was live is marked
+  interrupted and named in the pane the first time ORCH is turned on; nothing
+  runs again on its own. Run ids start above the highest one stored.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

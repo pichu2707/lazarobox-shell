@@ -82,7 +82,9 @@ fn ctrl_o_turns_the_orch_mode_on_then_off() {
     let mut a = gate_on();
     assert!(!orch(&a, chat_id()), "a new pane starts with ORCH off");
     assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::Toggle));
-    assert_eq!(at(&mut a, 0, ctrl('o')), vec![]);
+    // The first ORCH of a start asks the store for interrupted runs (S9).
+    let recover = Effect::Store(StoreCmd::RecoverRuns { pane: chat_id() });
+    assert_eq!(at(&mut a, 0, ctrl('o')), vec![recover]);
     assert!(orch(&a, chat_id()));
     assert!(a.orchestrating(chat_id()));
     assert_eq!(at(&mut a, 1000, ctrl('o')), vec![]);

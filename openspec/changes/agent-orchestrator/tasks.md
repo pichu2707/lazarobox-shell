@@ -330,7 +330,10 @@ Decision (user, 2026-10-29): "El worker propone su lote". A `code` worker stages
 - [ ] 8.1 `Evidence{command, exit, digest}` from `run_command`, failing then passing, or an explicit exception with its reason. Spec: agent-orchestrator / Green without red refused, Exception recorded.
 
 ### S9: run view and persistence (3 PRs, ~900, risk High, decision: Yes) depends on S4
-- [ ] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run.
+- [ ] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run. Delivered as three chained PRs:
+  - [x] 9.1a Runs table and interrupted-run notice. `runs`, `run_workers`, `run_high` added with `IF NOT EXISTS` and no schema version (like the folder column: an older build ignores them), `StoreCmd::SaveRun` / `RecoverRuns`, the app saves a run as its workers change and closes it on `Ended`, live runs of a dead process (pid check) become `interrupted` and the pane names them (up to 3, then a count) the first time ORCH is turned on after a start, run ids start above the stored highest (`RunManager::with_run_floor`). Spec: agent-orchestrator / Restart shows an interrupted run (the "shows" part; "resume asks the scope" is 9.1c).
+  - [ ] 9.1b `app/run_view.rs`, `ui/components/run_view.rs`: a key opens a full-pane transcript of the selected worker (Alt+Up/Down selection, S3c); the key and the modal-input delta are decided there.
+  - [ ] 9.1c Resume choice for an interrupted run (unfinished workers relaunch from scratch only on the user's choice, the read scope is asked again) plus the two S4b between-turn gaps (engram `orchestra/s9-between-turn-gaps`): a notice for an ask denied between turns and, if it fits the budget, atomic ask registration plus announce in the host.
 - Note (S1d-2 review): run ids are wall-clock microseconds kept above the last one issued, which holds within one process only; once runs are stored, persist the highest id issued and start above it, so a clock set back across a restart cannot reuse an id.
 
 ### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 and S7b plus coding-tools M2 and M3
