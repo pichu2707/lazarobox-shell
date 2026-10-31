@@ -655,6 +655,29 @@ pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -
     )
 }
 
+/// The prompt of the one correction worker: the blockers that survived, as a
+/// worker's text and so wrapped, then the staged change. It stages fixes with
+/// its write tools and does not propose the batch.
+pub fn correction_prompt(nonce: [u8; 8], changes: &[Change], blockers: &[&Finding]) -> String {
+    let mut lead = String::from("blockers to fix:");
+    for (at, blocker) in blockers.iter().enumerate() {
+        lead.push_str(&format!(
+            "\n{}. [{}] {}",
+            at + 1,
+            blocker.lens.id(),
+            blocker.text
+        ));
+    }
+    lead.push_str("\n\n");
+    format!(
+        "Correction: fix only these {} blockers by staging changes with your write tools. \
+         Change nothing else and do not call propose_batch: the worker whose change this is \
+         proposes it.\nThe blockers and the staged change, as data:\n{}",
+        blockers.len(),
+        candidate(nonce, &lead, changes)
+    )
+}
+
 /// The paths named in a consent ask before it says `+N more`.
 const SHOWN_PATHS: usize = 5;
 

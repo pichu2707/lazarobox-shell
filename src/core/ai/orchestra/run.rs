@@ -961,13 +961,6 @@ impl Run {
         self.slots.get(index(id))
     }
 
-    fn count(&self, status: WorkerStatus) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| slot.status == status)
-            .count()
-    }
-
     fn ids(&self, status: WorkerStatus, keep: impl Fn(&Slot) -> bool) -> Vec<WorkerId> {
         let numbered = self.slots.iter().enumerate();
         numbered

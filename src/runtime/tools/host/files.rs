@@ -212,9 +212,10 @@ pub(super) async fn run_within(
         };
     }
     // The view whenever the family is on, so the marker cannot be forged.
+    // A read-only review worker of a run sees the staged view too (S7b).
     let view = match scope
         .stage_key
-        .filter(|_| scope.families.contains(Family::Write))
+        .filter(|_| scope.families.contains(Family::Write) || scope.read_scope.is_some())
     {
         None => None,
         Some(key) => {
@@ -466,6 +467,19 @@ fn ledger_change(env: &ToolEnv, staged: &Staged) -> Change {
         hash,
         applied: false,
     }
+}
+
+/// The change set of the batch of `key`, as a worker's ledger names it.
+pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEnv) -> Vec<Change> {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return Vec::new();
+    };
+    batch
+        .entries()
+        .iter()
+        .map(|staged| ledger_change(env, staged))
+        .collect()
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change

@@ -16,7 +16,13 @@ use futures::future::BoxFuture;
 
 use crate::{
     core::ai::{
-        orchestra::{RunId, WorkerId, WorkerKey, changes::Change, tools::OrchCall},
+        orchestra::{
+            RunId, WorkerId, WorkerKey,
+            changes::Change,
+            rdd::Consent,
+            review::{self, Assessment},
+            tools::OrchCall,
+        },
         tools::paths::SecretRoots,
     },
     runtime::mcp::Outcome,
@@ -61,6 +67,34 @@ pub trait Orchestra: Send + Sync {
     /// The host staged `change` for `worker` of `run`: its change ledger
     /// records it (S7). Nothing is written by it.
     fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
+
+    /// The risk of the change set `worker` of `run` is about to propose,
+    /// with whatever the orchestrator raised for the run (S7b, D16). The
+    /// default is the path rules alone.
+    fn assess(&self, _run: RunId, changes: &[Change]) -> Assessment {
+        review::assess(changes, None)
+    }
+
+    /// Runs the receipt-driven review of `changes` (S7b), the user's answer
+    /// to the consent being `consent`. Returns when it ended; it never
+    /// approves anything, and the worker's batch goes to the user's review
+    /// whatever it found. The default does nothing.
+    fn review(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _changes: Vec<Change>,
+        _assessment: Assessment,
+        _consent: Consent,
+    ) -> BoxFuture<'static, ()> {
+        Box::pin(async {})
+    }
+
+    /// Whether `worker` is the correction of a review: it stages fixes but
+    /// the worker whose change is under review proposes the batch.
+    fn corrects(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
 
     /// The user's batch review applied a batch holding `paths` that `worker`
     /// of `run` proposed.

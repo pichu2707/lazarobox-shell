@@ -23,6 +23,8 @@ use crate::core::{
         orchestra::{
             RunId, Toolset, WorkerId,
             changes::{Change, ChangeLedger},
+            rdd::Consent,
+            review::Assessment,
             run::{Roster, Run, UserChoice, WorkerEvent},
             scope::ReadScope,
             tools::{MAX_PROMPT_BYTES, OrchCall, WAIT_MAX_SECS},
@@ -292,6 +294,10 @@ struct Scoped {
     run: Mutex<Run>,
     /// What the host reported a worker staged and applied.
     ledger: Mutex<ChangeLedger>,
+    /// What happened, in order: the review hook and the approver write here.
+    log: Arc<Mutex<Vec<String>>>,
+    /// The worker is the correction of a review.
+    corrector: bool,
 }
 
 impl Scoped {
@@ -317,6 +323,8 @@ impl Scoped {
             scope,
             run: Mutex::new(run),
             ledger: Mutex::default(),
+            log: Arc::default(),
+            corrector: false,
         })
     }
 
@@ -360,6 +368,22 @@ impl Orchestra for Scoped {
 
     fn staged(&self, _: RunId, _: WorkerId, change: Change) {
         self.ledger.lock().unwrap().staged(change);
+    }
+
+    fn review(
+        &self,
+        _: RunId,
+        _: WorkerId,
+        _: Vec<Change>,
+        _: Assessment,
+        consent: Consent,
+    ) -> BoxFuture<'static, ()> {
+        self.log.lock().unwrap().push(format!("review {consent:?}"));
+        Box::pin(async {})
+    }
+
+    fn corrects(&self, _: RunId, _: WorkerId) -> bool {
+        self.corrector
     }
 
     fn applied(&self, _: RunId, _: WorkerId, paths: &[String]) {
@@ -1155,4 +1179,179 @@ async fn a_worker_write_outside_its_scope_or_into_a_secret_is_refused() {
     let stages = host.stages.lock().unwrap();
     let batch = stages.batch(StageKey::Pane(PANE)).unwrap();
     assert_eq!(batch.entries().len(), 1);
+}
+
+/// Answers a consent and a batch as told and logs which ask came, in order.
+struct ByAsk {
+    consent: Decision,
+    batch: Decision,
+    log: Arc<Mutex<Vec<String>>>,
+    ids: Mutex<Vec<(CallId, &'static str)>>,
+    asks: Mutex<Vec<ApprovalAsk>>,
+}
+
+impl ByAsk {
+    fn new(handle: &Scoped, consent: Decision, batch: Decision) -> Arc<Self> {
+        Arc::new(Self {
+            consent,
+            batch,
+            log: handle.log.clone(),
+            ids: Mutex::default(),
+            asks: Mutex::default(),
+        })
+    }
+}
+
+impl Approver for ByAsk {
+    fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        let (kind, answer) = match ask {
+            ApprovalAsk::Consent { .. } => ("consent", self.consent),
+            ApprovalAsk::Batch(_) => ("batch", self.batch),
+            other => panic!("{other:?}"),
+        };
+        self.log.lock().unwrap().push(kind.to_owned());
+        self.ids.lock().unwrap().push((id, kind));
+        self.asks.lock().unwrap().push(ask.clone());
+        async move { answer.into() }.boxed()
+    }
+}
+
+const DECLINED: Decision = Decision::Denied("the user declined");
+
+// Spec (agent-orchestrator, Consent first [S7b]): a `high` change asks the
+// user for consent, on its own wait, before the review runs and before the
+// batch review. The ask is built from the assessment and the staged ledger.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_high_change_asks_consent_first_then_reviews_then_the_batch_asks() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = ByAsk::new(&handle, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user.clone());
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(
+        *handle.log.lock().unwrap(),
+        ["consent", "review Granted", "batch"]
+    );
+    let asks = user.asks.lock().unwrap().clone();
+    let ApprovalAsk::Consent {
+        worker,
+        label,
+        change,
+    } = &asks[0]
+    else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(worker.worker, WorkerId(1));
+    assert_eq!(label, "1/1 review claude>opus");
+    assert!(change.contains("Cargo.lock"), "{change}");
+    let ids = user.ids.lock().unwrap().clone();
+    assert_ne!(ids[0].0, ids[1].0, "the consent has a wait of its own");
+}
+
+// Spec (agent-orchestrator, Declined goes on unreviewed [S7b]): `n` to the
+// consent runs no review and is no failure of the worker's call; the batch
+// review still opens and its answer decides, whatever the consent said.
+// W1: the decline never reaches the worker's own tool call.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_declined_consent_goes_on_unreviewed_and_the_batch_review_still_decides() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let app = home.join("dev/app");
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = ByAsk::new(&handle, DECLINED, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user.clone());
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        !out.is_error,
+        "the decline is not the worker's failure: {out:?}"
+    );
+    assert_eq!(
+        *handle.log.lock().unwrap(),
+        ["consent", "review Declined", "batch"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("Cargo.lock")).unwrap(),
+        "x"
+    );
+    // The same decline on the batch itself denies it.
+    let user = ByAsk::new(&handle, Decision::Sent, DECLINED);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user);
+    assert!(!d.call(write_call("Cargo.lock", "y")).await.is_error);
+    let denied = d.call(Call::ProposeBatch).await;
+    assert!(
+        denied.is_error && denied.text.starts_with("denied"),
+        "{denied:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("Cargo.lock")).unwrap(),
+        "x"
+    );
+}
+
+// A passive change asks nothing before its batch review.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_passive_change_goes_straight_to_the_batch_review() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = ByAsk::new(&handle, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user);
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(*handle.log.lock().unwrap(), ["batch"]);
+}
+
+// Spec (One correction at most): the correction worker stages its fixes in
+// the pane's batch; the worker under review proposes it. Asks nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_correction_worker_cannot_propose_the_batch() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let mut fake = Scoped::over(&home, &["~/dev/app"]);
+    Arc::get_mut(&mut fake).unwrap().corrector = true;
+    let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("correction"), "{out:?}");
+    assert!(fake.log.lock().unwrap().is_empty(), "nothing asked");
+}
+
+// Spec (Each lens runs as a read-only worker over the staged change): a
+// read-only review worker reads the staged text, marked pending.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_review_worker_reads_the_staged_view_and_cannot_stage() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = Scripted::new(Decision::Sent);
+    let w = writer(&host, Locality::Cloud, &home, handle.clone(), user.clone());
+    assert!(!w.call(write_call("a.rs", "staged text")).await.is_error);
+    let (mut scope, _rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    scope.families = Toolset::ReadOnly.families();
+    scope.stage_key = Some(StageKey::Pane(PANE));
+    let (tx, mut rx) = mpsc::channel(64);
+    scope.events = tx;
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let lens = host.dispatch(scope);
+    let seen = lens.call(read("a.rs")).await;
+    assert!(seen.text.contains("staged text"), "{seen:?}");
+    assert!(seen.text.contains("pending, not on disk"), "{seen:?}");
+    let write = lens.call(write_call("evil.rs", "x")).await;
+    assert!(write.is_error, "{write:?}");
 }

@@ -164,6 +164,16 @@ impl TurnScope {
         }
     }
 
+    /// Whether this is a read-only review worker with a batch to look at: it
+    /// reads the staged view, not the disk alone (S7b).
+    fn sees_stage(&self) -> bool {
+        self.read_scope.is_some()
+            && self.stage_key.is_some()
+            && !self
+                .families
+                .contains(crate::core::ai::tools::registry::Family::Write)
+    }
+
     /// Whether this turn may call `call` (D7, the filter's second place after
     /// the tool list): an orchestration call has a run manager to go to (D3);
     /// a worker's or the orchestrator's call has its family in the turn's
@@ -230,6 +240,18 @@ impl ToolHost {
             xdg_data_home: self.xdg_data_home.clone(),
             origin: origin.to_path_buf(),
         }
+    }
+
+    /// The change set staged in the batch of `key`, as a worker's ledger
+    /// names it (S7b: the run manager re-reads it after a correction).
+    pub(crate) async fn staged_changes(
+        &self,
+        key: StageKey,
+        origin: &Path,
+    ) -> Vec<crate::core::ai::orchestra::changes::Change> {
+        let (stages, env) = (self.stages.clone(), self.env(origin));
+        let taken = tokio::task::spawn_blocking(move || files::staged_changes(&stages, key, &env));
+        taken.await.unwrap_or_default()
     }
 
     /// The dispatch of one turn.
@@ -327,6 +349,9 @@ impl Unprompted {
         }
     }
 }
+
+/// What a correction worker is told when it proposes the batch.
+const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
 
 /// What the model is told when its command was typed.
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
@@ -542,14 +567,26 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 Err(why) => checked = Err(why.into()),
             },
-            // A batch is sealed before the ask: the user reviews what was sealed.
-            (Call::ProposeBatch, _, _) => match files::seal(&host, &scope).await {
-                Ok((batch, review)) => {
-                    ask = Some(ApprovalAsk::Batch(review));
-                    sealed = Some(batch);
+            // The correction of a review only stages: the worker whose change
+            // is under review proposes the batch.
+            (Call::ProposeBatch, _, Some(worker))
+                if worker.handle.corrects(worker.run, worker.worker) =>
+            {
+                checked = Err(CORRECTION_PROPOSES.into());
+            }
+            // A batch is sealed before the ask: the user reviews what was
+            // sealed. A high-risk change is reviewed first, with the user's
+            // consent (S7b); the batch review follows whatever it found.
+            (Call::ProposeBatch, _, _) => {
+                review::before_batch(&host, &scope).await;
+                match files::seal(&host, &scope).await {
+                    Ok((batch, review)) => {
+                        ask = Some(ApprovalAsk::Batch(review));
+                        sealed = Some(batch);
+                    }
+                    Err(why) => checked = Err(why.into()),
                 }
-                Err(why) => checked = Err(why.into()),
-            },
+            }
             // A search asks with how concrete the root it walks is: the
             // approval mode lets only the search of a concrete root go.
             (Call::Grep { .. }, Locality::Cloud, _) => {
@@ -733,6 +770,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     // Exactly what the scope allowed, paged like any read:
                     // resolving the request again would reopen the race it
                     // closed.
+                    //
+                    // A review worker (read-only, with the pane's batch to
+                    // look at, S7b) reads through the staged view instead,
+                    // kept in the root: the staged text is not on disk.
+                    (Some(_), Call::ReadFile { .. }) if scope.sees_stage() => {
+                        files::run_within(&host, &scope, call, Within::Root).await
+                    }
                     (Some((roots, real)), Call::ReadFile { lines, .. }) => {
                         let limits = host.limits.clone();
                         match super::read_in_scope(roots, real, *lines, limits).await {
@@ -760,6 +804,7 @@ mod files;
 mod gate;
 mod git;
 mod orphan;
+mod review;
 
 #[cfg(test)]
 mod exec_tests;

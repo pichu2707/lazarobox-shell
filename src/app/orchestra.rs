@@ -250,6 +250,12 @@ impl App {
                     chat.push_system_line(reason);
                 }
             }
+            // Where a worker's review stands (S7b): lazarobox's own words.
+            OrchestraEvent::Review { run, text } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(text);
+                }
+            }
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) => {}
             OrchestraEvent::Unavailable => {

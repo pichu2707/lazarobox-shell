@@ -575,3 +575,34 @@ Strict TDD: the tests were written first against API stubs and failed behavioura
 | S5 | confirmed: the 4 KiB prompt test iterates all 4 lenses plus the refuter for both profiles (10) and asserts the count |
 
 7b.2b API notes: `parse_verdicts` returns `Verdicts`; `Outcome::Incomplete` is new (a receipt must show it); after the refuter ends, call `settle_unanswered()` before `begin_correction`/`conclude`; ReviewError has `AlreadyJudged`, `LensesPicked`, `Waived`; `report`, `pick` and `refute` fail with `CorrectionUsed` after the correction began.
+
+## S7b (RDD), PR S7b-3: task 7b.2, second half "7b.2b" (branch feat/agent-orchestrator-s7b3, on s7b2; 7b.2 now `[x]`)
+
+Merged `feat/agent-orchestrator-s7b2` (PR #465 core fixes: `Verdicts`, `Outcome::Incomplete`, `settle_unanswered`, claims before the listing, sanitised consent) and adapted: the manager calls `settle_unanswered()` after the refuter and keeps `Verdicts.malformed` out of the transcript for 7b.3.
+
+Strict TDD, RED observed first:
+- core: `a_parked_worker_yields_its_slot...`, `raise_validates_its_arguments`, the seven-tool registry (3 of 3 failed against stubs/UnknownTool); `the_correction_prompt...` written after the function (no RED, a pure string builder).
+- host (`orchestra_tests.rs`): 4 of 5 new tests failed before the hook (`a_high_change_asks_consent_first...`, `a_declined_consent_goes_on_unreviewed...`, `a_correction_worker_cannot_propose_the_batch`, `a_review_worker_reads_the_staged_view...`); the passive one passed from the start (guard). The view test needed a second change: a scoped read bypassed the staged view.
+- runtime (`runtime/orchestra/tests.rs`): 7 manager tests failed against a stub `reviews()`/no-op `review` (declined, granted/clean, corrected, survives, unanswered, worker cap, raise); the end-to-end `declining_the_consent_leaves_the_workers_call_to_the_batch_review` (real `Waits`) passed on its first run.
+- app: `a_review_line_reaches_the_transcript` (compile-RED then green).
+
+| Unit | What |
+|------|------|
+| `host/review.rs` | `before_batch`: stages -> `assess` -> for `High` announces a call of its own (`review`, fresh `CallId`) with `consent_ask` built from the assessment and the staged ledger, awaits it, maps `Sent` to `Granted` and everything else but `ENDED` to `Declined`, then `Orchestra::review(..).await`; the batch is sealed and asked after, whatever was found. |
+| `host.rs` | the hook before `files::seal`; `propose_batch` of a correction worker refused (`CORRECTION_PROPOSES`); `TurnScope::sees_stage` (read-only worker with a stage key): its scoped reads go through the staged view, kept in the root; `ToolHost::staged_changes`. |
+| `tools/orchestra.rs` | `Orchestra::{assess, review, corrects}` with inert defaults. |
+| `orchestra/review.rs` (runtime) | `RunManager::review` parks the waiting worker, starts lens workers (`risk`, `reliability`) and the refuter as `Task::Review` workers with the lens/refuter system prompt and the staged view, at most one `Task::Code` correction, then a refuter check of the targeted blockers over the re-read staged set; `Review::conclude` stored in `Live.review.reviews` (`RunManager::reviews`, the 7b.3 seam). |
+| `Run::{park, unpark}` | a waiting worker does not hold a `max_parallel` slot; resuming never queues. |
+| `raise` tool | `OrchCall::Raise`, the registry row (7 orchestration tools), the orchestrate prompts; `Raise::new` refuses passive and invisible reasons; the run keeps the highest raise. |
+| `OrchestraEvent::Review{run, text}` | one transcript line: not reviewed / stopped (why) / clean / corrected / incomplete / blockers open. |
+
+### Decisions and deviations
+- W1: the consent is a call of its own announced before `propose_batch`, with its own `CallId`; its answer can never reach the worker's call (tests: distinct ids, `n` leaves the batch review, a stale consent id answers nothing).
+- The orchestrator has no tool to pick lenses yet: the default pair is `risk` + `reliability` (`Review::pick` takes any; the orchestrator pick is a later seam).
+- Review workers are ordinary run workers (visible to `wait`/`collect`, counted by `max_workers`, a handoff is asked of them or filled `unknown`).
+- The correction is checked by a refuter run over the targeted blockers (uphold = still open; unanswered = open); the refuter prompt says an unsettled claim is refuted, so a validator that cannot tell reads as fixed: documented risk.
+- The `raise` applies to the whole run (highest wins), not to one worker.
+- A review that cannot start (worker cap, paused run, no nonce) says why in the transcript and the batch goes on unreviewed; a lens that fails halts the run like any failure and the review stops.
+- Medium never asks (only `High` needs consent); each `propose_batch` of a high change asks again.
+- The review time counts against the proposing worker's own deadline.
+- Not done (7b.3): the receipt handoff and its line in the batch review.

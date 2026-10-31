@@ -710,6 +710,18 @@ fn a_run_stopped_at_the_turn_cap_names_max_turns() {
     assert!(transcript(&a).contains("max_turns (6)"));
 }
 
+// S7b: where a review stands is said in the transcript, never silent.
+#[test]
+fn a_review_line_reaches_the_transcript() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Review {
+        run: RUN,
+        text: "review of worker 1: the change was not reviewed".to_owned(),
+    }));
+    assert!(transcript(&a).contains("the change was not reviewed"));
+}
+
 fn gated_off(a: &mut App) {
     a.ai.orchestrator.enabled = false;
 }

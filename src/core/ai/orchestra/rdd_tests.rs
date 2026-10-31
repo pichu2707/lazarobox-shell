@@ -4,7 +4,7 @@ use super::WorkerKey;
 use super::changes::Change;
 use super::rdd::{
     Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
-    lens_prompt, parse_report, parse_verdicts, refuter_prompt,
+    correction_prompt, lens_prompt, parse_report, parse_verdicts, refuter_prompt,
 };
 use super::review::{Assessment, Raise, Source, Tier, assess};
 use crate::core::ai::chat::approval::ApprovalAsk;
@@ -550,4 +550,17 @@ fn the_consent_ask_cleans_every_string_and_marks_a_cut_path() {
         &changes,
     ));
     assert!(line.starts_with("could not assess (x)"), "{line}");
+}
+
+// S7b: the blockers a correction fixes are a worker's text: wrapped, before
+// the listing, and the prompt forbids proposing the batch.
+#[test]
+fn the_correction_prompt_wraps_the_blockers_and_forbids_proposing() {
+    let found = parse_report(Lens::Risk, "FINDING severe change observed: leaks a key").findings;
+    let prompt = correction_prompt(NONCE, &[change("Cargo.lock")], &[&found[0]]);
+    assert!(prompt.contains("do not call propose_batch"), "{prompt}");
+    assert!(prompt.contains("1. [risk] leaks a key"), "{prompt}");
+    assert!(prompt.find("leaks a key").unwrap() < prompt.find("Cargo.lock").unwrap());
+    let open = prompt.find("<untrusted").expect("wrapped");
+    assert!(open < prompt.find("leaks a key").unwrap(), "{prompt}");
 }

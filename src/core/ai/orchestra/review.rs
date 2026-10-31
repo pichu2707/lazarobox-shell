@@ -101,6 +101,10 @@ impl Raise {
         Ok(Self { tier, reason })
     }
 
+    pub fn tier(&self) -> Tier {
+        self.tier
+    }
+
     pub fn reason(&self) -> &str {
         &self.reason
     }

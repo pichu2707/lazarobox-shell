@@ -23,11 +23,13 @@ baseline.
   saved to engram under one key per run and kept in the run ledger; a
   correction appends to the log and rewrites one requirement. The
   `orchestrate` prompts gain a playbook per step. A risk tier for staged
-  changes (S7b, not wired yet): build, CI, dependency, lock, config and secret
-  paths are `high`, and the orchestrator can only raise it. The review of a
-  `high` change (S7b, not wired yet): an inline consent prompt, the state of a
-  review (lenses, findings, refuter, one correction) and the lens and refuter
-  prompts of both profiles.
+  changes (S7b): build, CI, dependency, lock, config and secret
+  paths are `high`, and the orchestrator can only raise it with the new `raise`
+  tool. The review of a `high` change (S7b): a `code` worker's `propose_batch`
+  asks an inline consent first; on `y` read-only lens workers and a refuter
+  look at the staged change and at most one correction worker fixes the
+  blockers that survived, all under the run limits; on `n` the change goes on
+  to your batch review marked not reviewed. Nothing approves the batch.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

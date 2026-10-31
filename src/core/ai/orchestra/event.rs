@@ -104,6 +104,10 @@ pub enum OrchestraEvent {
         ledger: String,
         summary: String,
     },
+    /// Where a worker's receipt-driven review stands (S7b): one line for the
+    /// transcript, made of lazarobox's words and counts only, never worker
+    /// text. The receipt handoff is 7b.3.
+    Review { run: RunId, text: String },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

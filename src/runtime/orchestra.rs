@@ -67,6 +67,8 @@ use crate::core::{
             errors::classify,
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
+            rdd::Consent,
+            review::{Assessment, assess},
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
                 RunState, StepDone, UserChoice, WorkerEvent,
@@ -88,6 +90,10 @@ use crate::core::{
 };
 
 pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, WorkerRow};
+
+mod review;
+
+pub use review::Reviewed;
 
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
@@ -342,6 +348,8 @@ struct Live {
     /// The orchestrator turn that started the run is over: the run ends once
     /// it has nothing left to do (see [`RunManager::turn_ended`]).
     turn_over: bool,
+    /// What the run keeps for its receipt-driven reviews (S7b).
+    review: review::State,
     /// Ends the run when its wall clock passes (`run_timeout_mins`).
     clock: Option<JoinHandle<()>>,
 }
@@ -487,6 +495,7 @@ impl RunManager {
             shown: HashMap::new(),
             alerted: None,
             retry: HashMap::new(),
+            review: review::State::default(),
             turn_over: false,
             clock: self.start_clock(pane, run, scope.limits.wall),
         };
@@ -596,6 +605,10 @@ impl RunManager {
     /// The read scope of the run of `pane`, for display: the roots its reads
     /// run unasked under, and the roots it dropped with why. `None` without a
     /// run.
+    pub fn reviews(&self, pane: PaneId, run: RunId) -> Vec<Reviewed> {
+        review::reviews(self, pane, run)
+    }
+
     pub fn scope(&self, pane: PaneId) -> Option<(Vec<PathBuf>, Vec<Dropped>)> {
         let runs = lock(&self.runs);
         let live = runs.get(&pane)?;
@@ -842,7 +855,7 @@ impl RunManager {
                 text,
                 correction,
             } => self.feature_correct(pane, run, &spec, &text, &correction),
-            OrchCall::Raise { .. } => error("raise is not wired"),
+            OrchCall::Raise { tier, reason } => self.raise(pane, run, &tier, &reason),
             OrchCall::Finish { summary } => self.finish_run(pane, run, &summary),
         };
         async move { now }.boxed()
@@ -1238,7 +1251,11 @@ impl RunManager {
         let mut request = ChatRequest {
             engine: spec.engine.clone(),
             model: spec.model.clone(),
-            system: load_prompt(self.prompts.as_deref(), live.profile, spec.task).text,
+            // A review worker has the prompt of its lens, not of its kind.
+            system: match live.review.system(id) {
+                Some(system) => system.to_owned(),
+                None => load_prompt(self.prompts.as_deref(), live.profile, spec.task).text,
+            },
             memory: None,
             messages: vec![ChatMessage {
                 role: Role::User,
@@ -1259,8 +1276,9 @@ impl RunManager {
             live.pending.clone(),
         );
         live.routes.insert(id, route.clone());
+        let views = live.review.views(id);
         let session = self
-            .open_session(pane, key, &spec, &mut request, route)
+            .open_session(pane, key, &spec, views, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
         let turn = Turn {
             runner: self.runner.clone(),
@@ -1288,6 +1306,7 @@ impl RunManager {
         pane: PaneId,
         key: WorkerKey,
         spec: &WorkerSpec,
+        views: bool,
         request: &mut ChatRequest,
         route: Arc<Route>,
     ) -> Option<Option<Arc<dyn Dispatch>>> {
@@ -1311,9 +1330,8 @@ impl RunManager {
             // A `code` worker stages in its pane's batch (S7, user decision
             // "El worker propone su lote", 2026-10-29): the batch review, its
             // badge and its orphan are the pane's, as for a chat's batch.
-            stage_key: families
-                .contains(Family::Write)
-                .then_some(StageKey::Pane(pane)),
+            // A review worker reads that batch too, and stages nothing (S7b).
+            stage_key: (families.contains(Family::Write) || views).then_some(StageKey::Pane(pane)),
             allowed: Default::default(),
             orchestra: None,
             read_scope: Some(WorkerScope {
@@ -1434,6 +1452,35 @@ impl Orchestra for Bound {
                 && live.scope.allows_write(&live.run, real)
         });
         allowed.unwrap_or(false)
+    }
+
+    fn assess(&self, run: RunId, changes: &[Change]) -> Assessment {
+        match self.manager.upgrade() {
+            Some(manager) if run == self.run => manager.assessment(self.pane, run, changes),
+            _ => assess(changes, None),
+        }
+    }
+
+    fn review(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        changes: Vec<Change>,
+        assessment: Assessment,
+        consent: Consent,
+    ) -> BoxFuture<'static, ()> {
+        match self.manager.upgrade() {
+            Some(manager) if run == self.run => manager
+                .review(self.pane, run, worker, changes, assessment, consent)
+                .boxed(),
+            _ => async {}.boxed(),
+        }
+    }
+
+    fn corrects(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        run == self.run
+            && manager.is_some_and(|manager| manager.is_correction(self.pane, run, worker))
     }
 
     fn workers(&self, run: RunId) -> usize {
