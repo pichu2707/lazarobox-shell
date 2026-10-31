@@ -341,6 +341,23 @@ fn refused_in(env: &ToolEnv) -> String {
     )
 }
 
+/// The refusal of every write when the chat's folder is itself too broad
+/// (HOME, a folder above it, `/`). The reason is about the folder, not a path,
+/// so it leaks nothing about which paths are excluded, and it tells the model
+/// to stop retrying and ask for a project folder.
+fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
+    let root = env
+        .origin
+        .is_absolute()
+        .then(|| env.origin.canonicalize().ok())??;
+    roots.home().starts_with(&root).then(|| {
+        format!(
+            "{REFUSED}: the chat's folder is {}, where files cannot be written; ask the user to run /cd <project folder>",
+            chat_folder(env)
+        )
+    })
+}
+
 /// The refusal of a write whose parent folder does not exist, for a path the
 /// policy already allowed (so `list_dir` would show the same). `None` when
 /// the parent is there or anything else is wrong with it.
@@ -385,6 +402,9 @@ pub(super) fn stage_with_probe(
 ) -> Result<String, String> {
     let refused = || refused_in(env);
     let roots = load_roots(env).map_err(|_| refused())?;
+    if let Some(broad) = broad_folder(env, &roots) {
+        return Err(broad);
+    }
     let path = match call {
         Call::CreateDir { path } | Call::WriteFile { path, .. } | Call::EditFile { path, .. } => {
             path
