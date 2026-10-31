@@ -35,6 +35,7 @@ use crate::core::ai::{
             Consent, Finding, Lens, Outcome as Ended, Refutation, Review, ReviewError,
             correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, validation_prompt,
         },
+        receipt::{self, Evidence},
         review::{Assessment, Raise, Tier, assess},
     },
 };
@@ -60,6 +61,8 @@ pub struct Reviewed {
     pub unanswered: Option<String>,
     /// Staged paths a review worker could not read (outside the run's scope).
     pub unread: Vec<String>,
+    /// The staged paths the review was about, for the receipt.
+    pub paths: Vec<String>,
 }
 
 impl Reviewed {
@@ -71,6 +74,22 @@ impl Reviewed {
             unreviewed: Vec::new(),
             unanswered: None,
             unread: Vec::new(),
+            paths: Vec::new(),
+        }
+    }
+
+    /// What the receipt is built from; `n` is the review's number among the
+    /// worker's.
+    fn evidence(&self, n: u32) -> Evidence<'_> {
+        Evidence {
+            worker: self.worker,
+            n,
+            paths: &self.paths,
+            review: &self.review,
+            outcome: self.outcome,
+            unreviewed: &self.unreviewed,
+            unanswered: self.unanswered.as_deref(),
+            unread: &self.unread,
         }
     }
 }
@@ -273,12 +292,14 @@ impl RunManager {
                 Some(kept) => kept.unreviewed.extend(paths),
                 None => {
                     let mut kept = Reviewed::new(worker, Review::new(assessment), None);
+                    kept.paths = paths.clone();
                     kept.unreviewed = paths;
                     live.review.reviews.push(kept);
                 }
             }
         });
         self.say(pane, run, line);
+        self.receipt(pane, run, worker);
     }
 
     fn say(&self, pane: PaneId, run: RunId, text: String) {
@@ -327,11 +348,8 @@ impl RunManager {
                         "{of}: the change was not reviewed (declined); your batch review follows"
                     ),
                 );
-                self.keep(
-                    pane,
-                    run,
-                    Reviewed::new(worker, review, Some(Ended::NotReviewed)),
-                );
+                let kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
+                self.keep(pane, run, kept, &changes);
                 return Ok(changes);
             }
             Answered::Unanswered(why) => Some(why.clone()),
@@ -347,7 +365,7 @@ impl RunManager {
             );
             let mut kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
             kept.unanswered = Some(why);
-            self.keep(pane, run, kept);
+            self.keep(pane, run, kept, &changes);
             return Ok(changes);
         }
         let _ = review.consent(Consent::Granted);
@@ -405,7 +423,7 @@ impl RunManager {
         self.say(pane, run, line);
         let mut kept = Reviewed::new(worker, review, outcome);
         kept.unread = unread;
-        self.keep(pane, run, kept);
+        self.keep(pane, run, kept, &changes);
         Ok(reviewed)
     }
 
@@ -460,8 +478,52 @@ impl RunManager {
         taken.unwrap_or_default()
     }
 
-    fn keep(&self, pane: PaneId, run: RunId, kept: Reviewed) {
+    fn keep(&self, pane: PaneId, run: RunId, mut kept: Reviewed, changes: &[Change]) {
+        kept.paths = changes.iter().map(|change| change.path.clone()).collect();
+        let worker = kept.worker;
         self.on_run(pane, run, |live| live.review.reviews.push(kept));
+        self.receipt(pane, run, worker);
+    }
+
+    /// Builds the receipt of the worker's last review, stores it in the run's
+    /// ledger and tells the app, which saves it under its stable key (the
+    /// same key again updates the note). A receipt that cannot be stored is
+    /// said, never dropped.
+    fn receipt(&self, pane: PaneId, run: RunId, worker: WorkerId) {
+        let built = self.on_run(pane, run, |live| {
+            let reviews = &live.review.reviews;
+            let at = reviews.iter().rposition(|kept| kept.worker == worker)?;
+            let n = reviews[..=at].iter().filter(|r| r.worker == worker).count();
+            Some(live.run.receipt(&reviews[at].evidence(n as u32)))
+        });
+        match built.flatten() {
+            Some(Ok(handoff)) => self.announce_handoff(pane, run, handoff),
+            Some(Err(why)) => self.say(
+                pane,
+                run,
+                format!(
+                    "review of worker {}: its receipt could not be stored ({why:?})",
+                    worker.0
+                ),
+            ),
+            None => {}
+        }
+    }
+
+    /// The line the batch review shows about the last review of `worker`.
+    pub(super) fn receipt_line(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        worker: WorkerId,
+    ) -> Option<String> {
+        let line = self.on_run(pane, run, |live| {
+            let reviews = &live.review.reviews;
+            let at = reviews.iter().rposition(|kept| kept.worker == worker)?;
+            let n = reviews[..=at].iter().filter(|r| r.worker == worker).count();
+            Some(receipt::line(&reviews[at].evidence(n as u32)))
+        });
+        line.flatten()
     }
 
     /// The lenses, the refuter and the one correction, in that order. A
