@@ -900,6 +900,7 @@ impl Orchestra for Bound {
     fn allows(
         &self,
         run: RunId,
+        worker: WorkerId,
         secrets: &SecretRoots,
         origin: &Path,
         input: &str,
@@ -911,12 +912,15 @@ impl Orchestra for Bound {
         }
         let manager = self.manager.upgrade()?;
         let allowed = manager.on_run(self.pane, run, |live| {
-            live.scope.allows(&live.run, secrets, origin, input)
+            // The grant is the worker's own: it lasts while that worker runs.
+            (live.run.status(worker) == Some(WorkerStatus::Running))
+                .then(|| live.scope.allows(&live.run, secrets, origin, input))
+                .flatten()
         });
         allowed.flatten()
     }
 
-    fn allows_write(&self, run: RunId, real: &Path) -> bool {
+    fn allows_write(&self, run: RunId, worker: WorkerId, real: &Path) -> bool {
         // As `allows`: only this handle's run has a scope here.
         if run != self.run {
             return false;
@@ -925,7 +929,8 @@ impl Orchestra for Bound {
             return false;
         };
         let allowed = manager.on_run(self.pane, run, |live| {
-            live.scope.allows_write(&live.run, real)
+            live.run.status(worker) == Some(WorkerStatus::Running)
+                && live.scope.allows_write(&live.run, real)
         });
         allowed.unwrap_or(false)
     }

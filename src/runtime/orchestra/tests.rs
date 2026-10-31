@@ -799,7 +799,7 @@ fn run_ids_grow_with_the_clock_and_never_repeat() {
 // the old one grants nothing.
 #[tokio::test]
 async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
-    let lab = lab_with(Script::Answer("x"), |m, home| RunManager {
+    let lab = lab_with(Script::Hang, |m, home| RunManager {
         scratch: |_| false,
         ..tooled(m, home)
     });
@@ -809,7 +809,8 @@ async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
     let secrets = SecretRoots::load(home, &[]).unwrap();
     let scope = lab.scope(codex_review(), &["~/dev/app"]);
     let (first, old) = lab.manager.start(pane(), scope).unwrap();
-    let allowed = old.allows(first, &secrets, home, "~/dev/app/a.rs");
+    old.call(spawn(Task::Review, "check")).await;
+    let allowed = old.allows(first, WorkerId(1), &secrets, home, "~/dev/app/a.rs");
     assert_eq!(
         allowed,
         Some(home.canonicalize().unwrap().join("dev/app/a.rs"))
@@ -820,7 +821,8 @@ async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
         .unwrap();
     assert!(second.0 > first.0);
     for (handle, run) in [(&old, first), (&new, first), (&new, second)] {
-        assert_eq!(handle.allows(run, &secrets, home, "~/dev/app/a.rs"), None);
+        let got = handle.allows(run, WorkerId(1), &secrets, home, "~/dev/app/a.rs");
+        assert_eq!(got, None);
     }
     // A process that starts later knows no run of this one.
     let (runner, _) = fake(Script::Answer("x"));
@@ -832,7 +834,39 @@ async fn a_scope_belongs_to_its_run_and_a_new_run_asks_again() {
         .start(pane(), lab.scope(codex_review(), &[]))
         .unwrap();
     assert!(third.0 > second.0);
-    assert_eq!(fresh.allows(first, &secrets, home, "~/dev/app/a.rs"), None);
+    let got = fresh.allows(first, WorkerId(1), &secrets, home, "~/dev/app/a.rs");
+    assert_eq!(got, None);
+}
+
+// Spec (agent-orchestrator, Parallel limit: scopes per worker; user decision
+// 2026-10-30): the scope grant is the worker's own. A queued worker, one the
+// run does not know and one that has ended are granted nothing, though the
+// run and its roots are the same.
+#[tokio::test]
+async fn a_scope_grant_belongs_to_the_running_worker_only() {
+    let lab = lab_with(Script::Hang, |m, home| RunManager {
+        scratch: |_| false,
+        ..tooled(m, home)
+    });
+    let home = lab.home.path();
+    std::fs::create_dir_all(home.join("dev/app")).unwrap();
+    std::fs::write(home.join("dev/app/a.rs"), "fn main() {}").unwrap();
+    let secrets = SecretRoots::load(home, &[]).unwrap();
+    let scope = lab.scope(codex_review(), &["~/dev/app"]);
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "first")).await;
+    handle.call(spawn(Task::Review, "second")).await;
+    let read = |worker: u32| handle.allows(run, WorkerId(worker), &secrets, home, "~/dev/app/a.rs");
+    // `allows_write` takes the real path, as the host passes it: on macOS the
+    // temp HOME is under `/var`, a link to `/private/var`.
+    let real = home.canonicalize().unwrap().join("dev/app/new.rs");
+    let write = |worker: u32| handle.allows_write(run, WorkerId(worker), &real);
+    assert!(read(1).is_some(), "the running worker reads");
+    assert!(write(1), "the running worker writes");
+    assert!(read(2).is_none() && !write(2), "queued: not running yet");
+    assert!(read(3).is_none() && !write(3), "a worker the run never had");
+    handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert!(read(1).is_none() && !write(1), "a cancelled worker");
 }
 
 /// A log that keeps its lines.

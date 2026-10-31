@@ -490,7 +490,9 @@ fn stage_as(
     let target = resolve_write(&roots, &env.origin, path).ok_or_else(refused)?;
     // No scope pre-approves a write, but none outside the scope is staged.
     if let Some(worker) = worker
-        && !worker.handle.allows_write(worker.run, &target.real)
+        && !worker
+            .handle
+            .allows_write(worker.run, worker.worker, &target.real)
     {
         return Err(refused());
     }

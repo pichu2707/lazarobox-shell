@@ -6,6 +6,7 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,6 +56,13 @@ pub const ASK_ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
+
+/// How many worker asks may wait behind the one shown; one more is refused
+/// with [`ANOTHER_PENDING`], so a flood never grows without limit.
+pub const MAX_QUEUED: usize = 16;
+
+/// The reason given to a worker ask that finds the queue full.
+pub const QUEUE_FULL: &str = "approval queue full";
 
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
@@ -205,6 +213,16 @@ impl ApprovalAsk {
             path: path.into(),
             reach: Reach::Other,
             cloud: true,
+        }
+    }
+
+    /// Whether a worker raised the ask (a read outside its scope, a batch it
+    /// proposed): only those queue behind a pending approval.
+    pub fn is_worker(&self) -> bool {
+        match self {
+            Self::WorkerRead { .. } => true,
+            Self::Batch(review) => review.label().is_some(),
+            _ => false,
         }
     }
 
@@ -784,10 +802,15 @@ pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
-/// The pending approval of a chat, if any.
+/// The pending approval of a chat, if any, and the worker asks queued behind
+/// it (first in, first shown).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// Worker asks that arrived while another was shown, oldest first.
+    queue: VecDeque<Approval>,
+    /// A queued ask just became the pending one and the app has not armed it.
+    promoted: bool,
     /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
     /// approval, however that ends.
     review: Option<ReviewView>,
@@ -799,8 +822,26 @@ impl Approvals {
         self.pending.as_ref()
     }
 
+    /// The worker asks waiting behind the pending one, oldest first.
+    pub fn queued(&self) -> impl Iterator<Item = &Approval> {
+        self.queue.iter()
+    }
+
+    /// How many worker asks wait behind the pending one.
+    pub fn waiting(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Whether the pending approval was a queued one, promoted by an answer
+    /// or a withdrawal since the last call. The app then arms it afresh.
+    pub fn take_promoted(&mut self) -> bool {
+        std::mem::take(&mut self.promoted)
+    }
+
     /// Ask the user and return the id of the new approval. Refused with
-    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending.
+    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending. A
+    /// worker's ask (see [`ApprovalAsk::is_worker`]) queues instead, up to
+    /// [`MAX_QUEUED`].
     pub fn request(&mut self, ask: ApprovalAsk, origin: Origin) -> Result<u64, Refusal> {
         self.open(ask, origin, None, None)
     }
@@ -826,19 +867,39 @@ impl Approvals {
         call: Option<(u64, CallId)>,
         why: Option<String>,
     ) -> Result<u64, Refusal> {
+        // Only a tool call (it has a call) queues: a review the user opened
+        // is never a worker's ask, whatever its label.
+        let worker = call.is_some() && ask.is_worker();
         if self.pending.is_some() {
-            return Err(Refusal::new(ANOTHER_PENDING));
+            if !worker {
+                return Err(Refusal::new(ANOTHER_PENDING));
+            }
+            if self.queue.len() >= MAX_QUEUED {
+                return Err(Refusal::new(QUEUE_FULL));
+            }
         }
         let id = next_id();
-        self.review = None;
-        self.pending = Some(Approval {
+        let approval = Approval {
             id,
             ask,
             origin,
             call,
             why,
-        });
+        };
+        if self.pending.is_some() {
+            self.queue.push_back(approval);
+        } else {
+            self.review = None;
+            self.pending = Some(approval);
+        }
         Ok(id)
+    }
+
+    /// The pending approval ended: the oldest queued ask takes its place.
+    fn promote(&mut self) {
+        self.review = None;
+        self.pending = self.queue.pop_front();
+        self.promoted = self.pending.is_some();
     }
 
     /// Answer approval `id`. Only a [`Press::Press`] answers; a repeat or a
@@ -851,8 +912,9 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
-        self.review = None;
-        self.pending.take().map(|approval| (approval, reply))
+        let approval = self.pending.take();
+        self.promote();
+        approval.map(|approval| (approval, reply))
     }
 
     /// End approval `id` without an answer (cancel, close, a target that is
@@ -860,10 +922,12 @@ impl Approvals {
     /// records the result as denied.
     pub fn withdraw(&mut self, id: u64) -> Option<Approval> {
         if self.pending.as_ref()?.id != id {
-            return None;
+            let at = self.queue.iter().position(|queued| queued.id == id)?;
+            return self.queue.remove(at);
         }
-        self.review = None;
-        self.pending.take()
+        let approval = self.pending.take();
+        self.promote();
+        approval
     }
 
     /// The review view of the pending batch, if it is one.
@@ -1615,6 +1679,99 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.reason(), "another approval is pending");
         assert_eq!(a.pending().unwrap().ask(), &run("one"));
+    }
+
+    fn worker_read(path: &str, label: &str) -> ApprovalAsk {
+        ApprovalAsk::WorkerRead {
+            path: path.into(),
+            label: label.into(),
+            reach: Reach::Other,
+            cloud: false,
+        }
+    }
+
+    // Spec (agent-tools, Approval queue for workers; FIFO order): asks A then
+    // B from different workers are shown A first, then B, one at a time.
+    #[test]
+    fn worker_asks_queue_in_arrival_order_and_show_one_at_a_time() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "review claude>opus"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "general codex>x"), 1, CallId(2), None)
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 1);
+        let (done, _) = a.answer(first, Reply::Approve, Press::Press).unwrap();
+        assert_eq!(done.call(), Some((1, CallId(1))));
+        assert_eq!(a.pending().unwrap().id(), second);
+        assert_eq!(a.waiting(), 0);
+        assert!(a.take_promoted());
+        assert!(!a.take_promoted(), "reported once");
+        a.answer(second, Reply::Decline, Press::Press).unwrap();
+        assert!(a.pending().is_none() && !a.take_promoted());
+    }
+
+    // Spec (chat-pane, Approval label and queue): each answer applies to its
+    // own prompt only; an id that is not the shown one changes nothing.
+    #[test]
+    fn an_answer_applies_to_its_own_prompt_only() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        assert!(a.answer(second, Reply::Approve, Press::Press).is_none());
+        assert_eq!(a.waiting(), 1);
+    }
+
+    // Spec (agent-tools): cancelling a session denies its pending and queued
+    // approvals. A queued ask can be withdrawn without touching the shown one.
+    #[test]
+    fn a_queued_ask_can_be_withdrawn_and_the_shown_one_stays() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        let withdrawn = a.withdraw(second).unwrap();
+        assert_eq!(withdrawn.call(), Some((1, CallId(2))));
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 0);
+        assert!(!a.take_promoted());
+    }
+
+    // A chat's own asks keep the one-pending rule; only a worker's queue.
+    #[test]
+    fn a_chat_ask_is_still_refused_beside_a_pending_worker_ask() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let err = a
+            .request_call(ApprovalAsk::read("/x"), 1, CallId(2), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        assert_eq!(a.waiting(), 0);
+    }
+
+    // The queue is bounded: a flood is refused, never grown without limit.
+    #[test]
+    fn the_worker_queue_is_bounded() {
+        let mut a = Approvals::default();
+        for n in 0..=MAX_QUEUED as u64 {
+            a.request_call(worker_read("a", "w"), 1, CallId(n), None)
+                .unwrap();
+        }
+        let err = a
+            .request_call(worker_read("z", "w"), 1, CallId(999), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), QUEUE_FULL);
+        assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
     #[test]

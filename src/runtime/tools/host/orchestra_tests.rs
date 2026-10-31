@@ -72,7 +72,7 @@ impl Orchestra for Fake {
         .boxed()
     }
 
-    fn allows(&self, _: RunId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
+    fn allows(&self, _: RunId, _: WorkerId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
         None
     }
 }
@@ -341,6 +341,7 @@ impl Orchestra for Scoped {
     fn allows(
         &self,
         run: RunId,
+        _: WorkerId,
         secrets: &SecretRoots,
         origin: &Path,
         input: &str,
@@ -352,7 +353,7 @@ impl Orchestra for Scoped {
         self.scope.allows(&live, secrets, origin, input)
     }
 
-    fn allows_write(&self, run: RunId, real: &Path) -> bool {
+    fn allows_write(&self, run: RunId, _: WorkerId, real: &Path) -> bool {
         let live = self.run.lock().unwrap();
         live.id() == run && self.scope.allows_write(&live, real)
     }
@@ -374,7 +375,7 @@ impl Orchestra for Hands {
         std::future::pending().boxed()
     }
 
-    fn allows(&self, _: RunId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
+    fn allows(&self, _: RunId, _: WorkerId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
         Some(self.0.clone())
     }
 }
@@ -787,7 +788,7 @@ impl Orchestra for Held {
         std::future::pending().boxed()
     }
 
-    fn allows(&self, _: RunId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
+    fn allows(&self, _: RunId, _: WorkerId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
         None
     }
 }

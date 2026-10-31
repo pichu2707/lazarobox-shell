@@ -12,8 +12,8 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, Route, answers_itself, counts_toward_pause,
-        reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, Route, answers_itself,
+        counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -28,6 +28,7 @@ pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
+const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
@@ -200,6 +201,12 @@ impl App {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
         match chat.approvals_mut().request_call(ask, turn, call, why) {
+            // A queued ask touches nothing of the chat: its target, delay and
+            // review belong to the shown one until it is promoted.
+            Ok(ask_id) if chat.approvals().pending().map(Approval::id) != Some(ask_id) => {
+                self.dirty = true;
+                Vec::new()
+            }
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
@@ -209,7 +216,12 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            Err(refusal) => Self::deny(id, turn, call, refusal.reason()),
+            Err(refusal) => {
+                if refusal.reason() == QUEUE_FULL {
+                    self.notice = Some(QUEUE_FULL_NOTICE.to_owned());
+                }
+                Self::deny(id, turn, call, refusal.reason())
+            }
         }
     }
 
@@ -378,6 +390,16 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
+        // The asks queued behind the shown one go first: its removal would
+        // promote one of them.
+        let queued: Vec<u64> = (chat.approvals().queued())
+            .filter(|approval| approval.call().is_some_and(&stale))
+            .map(Approval::id)
+            .collect();
+        for approval_id in queued {
+            chat.approvals_mut().withdraw(approval_id);
+            self.dirty = true;
+        }
         let Some(approval) = chat.approvals().pending() else {
             return;
         };
@@ -386,7 +408,34 @@ impl App {
             chat.approvals_mut().withdraw(approval_id);
             chat.set_run_target(None);
             self.dirty = true;
+            self.arm_promoted(id);
         }
+    }
+
+    /// A queued worker ask just became the shown one: its keys start to
+    /// answer after its own delay, as for any ask the model opens, and the
+    /// review of a batch opens for it.
+    pub(super) fn arm_promoted(&mut self, id: PaneId) {
+        let clock = (self.clock)();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        if !chat.approvals_mut().take_promoted() {
+            return;
+        }
+        let Some(approval) = chat.approvals().pending() else {
+            return;
+        };
+        let batch = match approval.ask() {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            _ => None,
+        };
+        chat.set_armed_at(Some(clock + approval.ask().arm_delay()));
+        chat.set_run_target(None);
+        if let Some(review) = batch {
+            self.open_review(id, review);
+        }
+        self.dirty = true;
     }
 
     /// The request of a turn just sent from chat `id` gets the tools its

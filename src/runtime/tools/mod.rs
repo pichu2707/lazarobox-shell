@@ -134,10 +134,15 @@ pub async fn in_scope(
     input: &str,
     limits: &Limits,
 ) -> Option<(SecretRoots, PathBuf)> {
-    let (handle, run, input) = (worker.handle.clone(), worker.run, input.to_owned());
+    let (handle, run, id, input) = (
+        worker.handle.clone(),
+        worker.run,
+        worker.worker,
+        input.to_owned(),
+    );
     let check = tokio::task::spawn_blocking(move || {
         let roots = fs::load_roots(&env).ok()?;
-        let real = handle.allows(run, &roots, &env.origin, &input)?;
+        let real = handle.allows(run, id, &roots, &env.origin, &input)?;
         Some((roots, real))
     });
     tokio::time::timeout(limits.time, check).await.ok()?.ok()?

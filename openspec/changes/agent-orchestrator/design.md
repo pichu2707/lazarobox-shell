@@ -137,7 +137,7 @@ No data migration. Older builds ignore `[ai.orchestrator]` and `[ai.tasks.orches
 - [ ] The channel by which the orchestrator reports an on-course verdict (S4) is not defined beyond `Finish{summary}`; define it in S4 design.
 - [ ] D10 text classification depends on CLI wording; fixtures pin it, and it is re-verified each CLI bump. Gemini → Antigravity re-checked 2026-10-30: free individual and AI Pro/Ultra access moved to Antigravity CLI (`agy`) on 2026-06-18; Gemini CLI stays for Code Assist Standard/Enterprise and API-key/Vertex. S2 keeps the Gemini adapter only; an `agy` adapter is a follow-up (error text undocumented, consumer-plan ToS for wrapping unclear).
 - [ ] D6 TOCTOU: the scope decides only the ask. The read itself re-resolves under the deny-list, so a swapped link can at most read an allowed file without an ask.
-- [ ] D4 shares the orchestrator's (pane, turn) for worker asks. In S1 a second simultaneous ask is denied `another approval is pending` (acceptable with one worker); S3 removes this.
+- [ ] D4 shares the orchestrator's (pane, turn) for worker asks. In S1 a second simultaneous ask is denied `another approval is pending` (acceptable with one worker); S3 removes this (S3a: worker asks queue FIFO in `Approvals`; a chat's own ask is still refused).
 - [ ] S1 runs end with the orchestrator turn (15 min); a long worker is cut there until S4.
 - [ ] coding-tools M3 (`run_command`) is not started; it gates S8 and the product goal.
 - [x] D16 follows the user's choices P1-P4 (proposal, Decisions (O12)), all (a), confirmed 2026-10-27.

@@ -28,23 +28,26 @@ pub trait Orchestra: Send + Sync {
     /// is the model's text; the host adds the row and bounds a `wait`.
     fn call(&self, call: OrchCall) -> BoxFuture<'static, Outcome>;
 
-    /// The real path a worker of `run` may read without asking: the run's
+    /// The real path `worker` of `run` may read without asking: the run's
     /// read scope (`ReadScope::allows`) judged with `secrets`, a snapshot the
-    /// host builds for this one call. `None` (outside the scope, a denied or
-    /// expired scope, an unknown run) makes the host ask.
+    /// host builds for this one call. The grant is the worker's own and ends
+    /// with it: `None` (outside the scope, a denied or expired scope, a
+    /// worker that is not running, an unknown run) makes the host ask.
     fn allows(
         &self,
         run: RunId,
+        worker: WorkerId,
         secrets: &SecretRoots,
         origin: &Path,
         input: &str,
     ) -> Option<PathBuf>;
 
-    /// Whether a worker of `run` may stage a write to `real`, the canonical
+    /// Whether `worker` of `run` may stage a write to `real`, the canonical
     /// target the host resolved (`ReadScope::allows_write`). `false` (the
-    /// default: outside the scope, a denied or ended scope, an unknown run)
-    /// refuses the write as a path the policy refuses; it is never asked.
-    fn allows_write(&self, _run: RunId, _real: &Path) -> bool {
+    /// default: outside the scope, a denied or ended scope, a worker that is
+    /// not running, an unknown run) refuses the write as a path the policy
+    /// refuses; it is never asked.
+    fn allows_write(&self, _run: RunId, _worker: WorkerId, _real: &Path) -> bool {
         false
     }
 

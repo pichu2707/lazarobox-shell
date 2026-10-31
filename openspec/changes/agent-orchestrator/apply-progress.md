@@ -223,3 +223,31 @@ Status: task 2.3 done (S2 complete), plus the two S2a follow-ups. Chain (feature
 - Size cuts in s2b-3: no `RunOverrides::label`/`get`, no `override: ...` segment in the alert (rows keep `(override)`), no `OrchNote::Picker`/`clear_picker_note`/`clear_orch_overrides`; the picker's refusals (`cannot change: ...`, `engine not available`) are plain system lines. `WorkerRow.overridden` stays: the transcript renders rows without access to the overrides.
 - Held Enter/Esc in the picker is ignored on purpose (the keys line stays visible); no notice.
 
+
+## S3a: per-worker read scope and labelled approval queue (branch feat/agent-orchestrator-s3a, on the tracker + main v1.0.1)
+
+Tasks: the S1b-2 security item (done), 3.1 first half (approval queue). Not done: `SessionKey` in `Waits`/`Tagged`, `n/m` label, all of 3.2.
+
+| Unit | Change | Test | RED observed |
+|------|--------|------|--------------|
+| scope per worker | `Orchestra::allows`/`allows_write` gain the asking `WorkerId`; `Bound` grants only while `run.status(worker) == Running` | `a_scope_grant_belongs_to_the_running_worker_only`; the run-scope test now spawns a worker | with the status check off: `queued: not running yet` assertion failed |
+| approval queue (core) | `Approvals` keeps `queue: VecDeque<Approval>` (`MAX_QUEUED` 16), `ApprovalAsk::is_worker`, `waiting`, `queued`, `take_promoted`; answer and withdraw promote the oldest; `withdraw` also removes a queued id | 5 tests in `core/ai/chat/approval.rs` (FIFO, own answer only, withdraw queued, chat ask still refused, bound) | compile errors (`waiting`, `MAX_QUEUED`) |
+| approval queue (app) | `arm_promoted` re-arms the promoted ask (delay, run target, batch review); `withdraw_tool_approval` also drops queued asks of a finished call; `sync_tools` drains the queue; prompt target gets `(n waiting)` | `worker_asks_queue_fifo_and_each_answer_is_its_own`, `a_queued_ask_whose_call_is_over_leaves_the_queue`, `turning_tools_off_denies_the_queued_worker_asks_too` | prompt had no `waiting`; queued ask kept; with `if` instead of `while` only call 1 was denied |
+
+### Decisions
+- Scope per worker means the grant is bound to the asking worker and its lifetime; the roots stay the run's (they come from the chat origin, never from a worker). No per-worker root set exists yet.
+- Only worker asks (`WorkerRead`, a labelled `Batch`) queue; a chat's own ask beside a pending one is still refused `another approval is pending`, as the chat-pane spec keeps for chats.
+- A promoted ask is armed afresh so a key in flight cannot answer it.
+- The cancel-worker key stays open for S3c (escalating Ctrl+C, user decision 2026-10-31); nothing here assumes a key.
+
+### Recommended split for the rest of S3
+- S3b: `SessionKey` (pane or run+worker) through `Waits`, `Tagged` and the stream/tool events so a cancelled worker withdraws its own pending and queued asks (spec: cancel denies pending asks), the `worker n/m` label, and the hub/token cross-session test.
+- S3c: task 3.2 (`max_parallel`, `max_workers`, `run_timeout_mins`, siblings, retry before queued, escalating Ctrl+C cancel one/all).
+
+### S3a review fixes (RED observed before each fix)
+
+| Finding | Fix | Test | RED |
+|---------|-----|------|-----|
+| CRITICAL: a queued ask ran the shown-ask branch of `open_prompt` (re-aimed the chat, re-armed, replaced the review) | `open_prompt` touches the chat only when the new ask became the pending one; a queued ask only marks dirty | `a_queued_read_leaves_the_shown_batch_delay_and_target_alone`, `a_queued_batch_does_not_replace_the_shown_review`, `a_promoted_batch_opens_its_review_with_the_batch_delay` | all three failed with the guard disabled |
+| WARNING: queue full denied silently as `another approval is pending` | own reason `QUEUE_FULL` ("approval queue full") and a pane notice | `a_full_queue_denies_with_its_own_reason_and_a_notice`, core `the_worker_queue_is_bounded` | reason constant did not exist (compile error) |
+| SUGGESTION: user-opened review never queues | `open` queues only a tool call (`call.is_some()`) that `is_worker` | `a_labelled_orphan_review_is_refused_beside_a_pending_ask` | failed with the `call.is_some()` check removed |
