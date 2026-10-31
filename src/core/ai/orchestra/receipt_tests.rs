@@ -5,7 +5,7 @@ use super::WorkerId;
 use super::changes::Change;
 use super::ledger::{FIELD_BYTES, Verdict};
 use super::rdd::{Consent, Lens, Outcome, Refutation, Review};
-use super::receipt::{Evidence, judgement, line, summary};
+use super::receipt::{Evidence, fit, judgement, line, summary};
 use super::review::{Raise, Tier, assess};
 
 fn change(path: &str) -> Change {
@@ -268,6 +268,42 @@ fn a_declined_line_says_so() {
     assert_eq!(summary(&declined().evidence()).open, 0);
     assert!(!summary(&declined().evidence()).reviewed);
     let _ = Tier::High;
+}
+
+// Paths the review did not cover: a clean outcome says it covers the reviewed
+// paths only.
+#[test]
+fn a_clean_outcome_with_unreviewed_paths_does_not_read_clean_alone() {
+    let mut held = found("NONE");
+    held.outcome = held.review.conclude().ok();
+    assert_eq!(held.outcome, Some(Outcome::Clean));
+    assert!(line(&held.evidence()).ends_with("clean"));
+    held.unreviewed = vec!["a".to_owned(), "b".to_owned()];
+    let text = line(&held.evidence());
+    assert!(text.contains("clean (reviewed paths only)"), "{text}");
+    assert!(text.contains("not reviewed: 2 paths"), "{text}");
+    let done = judgement(&held.evidence()).done;
+    assert!(
+        done.contains("outcome: clean (reviewed paths only)"),
+        "{done}"
+    );
+    // An unread path counts the same.
+    held.unreviewed.clear();
+    held.unread = vec!["c".to_owned()];
+    assert!(line(&held.evidence()).contains("clean (reviewed paths only)"));
+}
+
+#[test]
+fn a_single_line_over_the_cap_is_clipped_not_dropped() {
+    let text = fit(vec!["x".repeat(5000)]);
+    assert!(text.len() <= FIELD_BYTES, "{}", text.len());
+    assert!(
+        text.starts_with("xxx") && text.ends_with('\u{2026}'),
+        "{text}"
+    );
+    let two = fit(vec!["y".repeat(5000), "second".to_owned()]);
+    assert!(two.len() <= FIELD_BYTES, "{}", two.len());
+    assert!(two.contains("(+1 more lines)"), "{two}");
 }
 
 mod stored {

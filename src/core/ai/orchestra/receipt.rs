@@ -52,14 +52,22 @@ pub fn summary(ev: &Evidence) -> Summary {
 }
 
 /// The word for how the review ended. A review that stopped early, or never
-/// began, is `not reviewed`.
-fn outcome_word(ev: &Evidence) -> &'static str {
-    match ev.outcome {
+/// began, is `not reviewed`. A clean or corrected review that left paths
+/// unseen says it covers the reviewed paths only.
+fn outcome_word(ev: &Evidence) -> String {
+    let word = match ev.outcome {
         Some(Outcome::Clean) => "clean",
         Some(Outcome::Corrected) => "corrected",
         Some(Outcome::BlockersOpen) => "blockers open",
         Some(Outcome::Incomplete) => "incomplete",
         Some(Outcome::NotReviewed) | None => "not reviewed",
+    };
+    let partial = matches!(ev.outcome, Some(Outcome::Clean | Outcome::Corrected))
+        && !(ev.unreviewed.is_empty() && ev.unread.is_empty());
+    if partial {
+        format!("{word} (reviewed paths only)")
+    } else {
+        word.to_owned()
     }
 }
 
@@ -104,11 +112,20 @@ fn list(items: &[String]) -> String {
 
 /// `lines` joined within [`FIELD_BYTES`]: the lines that do not fit are
 /// counted, never dropped without a word.
-fn fit(lines: Vec<String>) -> String {
+pub(super) fn fit(lines: Vec<String>) -> String {
     let room = FIELD_BYTES - 32;
     let mut out = String::new();
     for (shown, line) in lines.iter().enumerate() {
         if out.len() + line.len() + 1 > room {
+            if out.is_empty() {
+                // One line over the cap on its own: clipped, not dropped.
+                let kept = cut(line, room - '\u{2026}'.len_utf8()).trim_end();
+                out = format!("{kept}\u{2026}");
+                if shown + 1 == lines.len() {
+                    return out;
+                }
+                continue;
+            }
             out.push_str(&format!("\n(+{} more lines)", lines.len() - shown));
             return out;
         }
