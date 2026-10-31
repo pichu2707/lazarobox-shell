@@ -5,6 +5,7 @@
 pub mod changes;
 pub mod errors;
 pub mod event;
+pub mod overrides;
 pub mod run;
 pub mod scope;
 pub mod tools;

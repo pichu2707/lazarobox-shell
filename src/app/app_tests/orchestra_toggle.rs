@@ -36,9 +36,14 @@ fn no_pty_write(effects: &[Effect]) -> bool {
 
 /// The whole screen as the app draws it, one trimmed row per line.
 pub(super) fn screen(a: &App) -> String {
+    screen_at(a, 80, 25)
+}
+
+/// [`screen`] on a terminal of `cols` x `rows`.
+pub(super) fn screen_at(a: &App, cols: u16, rows: u16) -> String {
     use ratatui::{Terminal, backend::TestBackend};
     let theme = crate::ui::theme::LazaroboxTheme::default();
-    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     terminal
         .draw(|frame| crate::ui::render(frame, a, &theme))
         .unwrap();

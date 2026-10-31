@@ -11,7 +11,12 @@ use crate::core::ai::{
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
         transcript::worker_label,
     },
-    orchestra::{Toolset, run::Roster},
+    config::Assignment,
+    orchestra::{
+        Toolset,
+        overrides::{Change, FailurePicker, Picked},
+        run::Roster,
+    },
 };
 
 /// Why an orchestrator turn is refused when the user's tools are off: it
@@ -24,13 +29,15 @@ const TOOLS_OFF: &str =
 const NOTICE: &str = "Providers recommend API keys for automation; \
      consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
 
-/// The keys of the failure alert: `r` retries, `c` or Esc cancels.
-const ALERT_KEYS: &str = "c/Esc cancel";
+/// The keys of the failure alert after `r retry`: `m` and `p` open the
+/// detached picker, `c` or Esc cancels.
+const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
-/// Said when the run manager dropped an answer: its run is over.
+/// Said when the run manager is not attached: the answer was not applied.
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
+/// Said when the run manager dropped an answer: its run is over.
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
@@ -79,8 +86,13 @@ impl App {
             return Vec::new();
         };
         match event {
-            OrchestraEvent::Worker(row) => {
+            OrchestraEvent::Worker(mut row) => {
                 chat.set_orch_run(Some(row.run));
+                chat.keep_override();
+                let menu = self.ai.resolve(row.kind).0.engine;
+                row.overridden = chat.orch_overrides().is_some_and(|over| {
+                    over.is_on(row.kind, &row.engine, row.model.as_deref(), menu.as_deref())
+                });
                 chat.worker_row(row);
             }
             OrchestraEvent::Halted {
@@ -90,6 +102,8 @@ impl App {
                 text,
             } => {
                 chat.set_orch_run(Some(run));
+                chat.keep_override();
+                chat.drop_orch_alert();
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
                     worker,
@@ -106,6 +120,7 @@ impl App {
                 reason,
             } => {
                 chat.set_orch_run(Some(run));
+                chat.drop_orch_alert();
                 chat.set_orch_note(Some(OrchNote::RetryFailed(reason)));
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
@@ -117,16 +132,20 @@ impl App {
             // The run it names is over: the pane's own alert is not touched.
             // Always said (never a silent no-op); the wording is neutral so it
             // is not read as part of a newer run.
-            OrchestraEvent::Dropped { .. } => chat.push_system_line(MOVED_ON.to_owned()),
-            OrchestraEvent::Unavailable => chat.push_system_line(NO_ORCHESTRA.to_owned()),
+            OrchestraEvent::Dropped { .. } => {
+                chat.undo_override();
+                chat.push_system_line(MOVED_ON.to_owned());
+            }
+            OrchestraEvent::Unavailable => {
+                chat.undo_override();
+                chat.push_system_line(NO_ORCHESTRA.to_owned());
+            }
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
+                chat.end_orch_run(run);
                 if chat.orch_run() == Some(run) {
                     chat.set_orch_run(None);
-                }
-                if chat.orch_alert().is_some_and(|alert| alert.run == run) {
-                    chat.drop_orch_alert();
                 }
             }
         }
@@ -145,17 +164,40 @@ impl App {
         key: &KeyEvent,
         repeat: bool,
     ) -> Option<Vec<Effect>> {
-        let fresh = !repeat && key.kind == KeyEventKind::Press;
-        if !fresh || key.modifiers != KeyModifiers::NONE {
+        if key.kind == KeyEventKind::Release {
             return None;
         }
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
         let alert = chat.orch_alert()?;
+        // The open picker keeps every key but Ctrl+C: none reaches the hidden
+        // composer. A held Enter or Esc is ignored on purpose (the keys line
+        // stays visible), so the picker needs no notice for it.
+        if chat.orch_picker().is_some() {
+            let cancel = key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL;
+            return (!cancel).then(|| self.on_failure_picker_key(id, key, repeat));
+        }
+        if key.modifiers != KeyModifiers::NONE {
+            return None;
+        }
         let empty = chat.composer().text().is_empty();
+        let letter = matches!(key.code, KeyCode::Char('r' | 'c' | 'm' | 'p'));
+        // A held key answers once: its repeats are not typed either.
+        if repeat && empty && letter {
+            return Some(Vec::new());
+        }
+        if repeat || key.kind != KeyEventKind::Press {
+            return None;
+        }
         let choice = match key.code {
             KeyCode::Char('r') if empty => UserChoice::Retry,
             KeyCode::Char('c') if empty => UserChoice::Cancel,
             KeyCode::Esc => UserChoice::Cancel,
+            KeyCode::Char('m') if empty => {
+                return Some(self.open_failure_picker(id, Change::Model));
+            }
+            KeyCode::Char('p') if empty => {
+                return Some(self.open_failure_picker(id, Change::Provider));
+            }
             _ => return None,
         };
         let run = alert.run;
@@ -168,6 +210,110 @@ impl App {
         }])
     }
 
+    /// The roster of `config`, as the menu or an override has it, never
+    /// saved. The menu part is read now: a menu save made during a run
+    /// changes the rosters of later relaunches for the tasks the user did not
+    /// override.
+    fn roster(&self, config: &AiConfig) -> Roster {
+        Roster::new(
+            Task::ALL
+                .iter()
+                .map(|&task| {
+                    let engines = self.engines.as_ref();
+                    (task, availability_for(task, config, engines, self.jail))
+                })
+                .collect(),
+        )
+    }
+
+    /// `m` or `p` on the alert: the menu picker of the failed worker's task,
+    /// detached from the menu. A worker whose row is gone says so.
+    fn open_failure_picker(&mut self, id: PaneId, change: Change) -> Vec<Effect> {
+        self.dirty = true;
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Vec::new();
+        };
+        let failed = chat.orch_alert().and_then(|alert| {
+            chat.entries().iter().find_map(|entry| match entry {
+                Entry::Worker(row) if (row.run, row.id) == (alert.run, alert.worker) => Some(row),
+                _ => None,
+            })
+        });
+        let picker = failed.map(|row| {
+            let config = chat
+                .orch_overrides()
+                .map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
+            let in_use = (row.engine.as_str(), row.model.as_deref());
+            FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
+        });
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            if picker.is_none() {
+                chat.push_system_line("cannot change: that worker is not shown any more".into());
+            }
+            chat.set_orch_picker(picker);
+        }
+        Vec::new()
+    }
+
+    /// A key while the failure picker is open: it takes every plain key; Esc
+    /// returns to the alert, an Enter on a leaf is the override and relaunches
+    /// the worker with it.
+    fn on_failure_picker_key(&mut self, id: PaneId, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        self.dirty = true;
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let Some(picker) = chat.orch_picker_mut() else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => picker.step(true),
+            KeyCode::Char('k') | KeyCode::Up => picker.step(false),
+            KeyCode::Enter if !repeat => {
+                let task = picker.task();
+                if let Picked::Chosen(assignment) = picker.enter() {
+                    return self.choose_override(id, task, assignment);
+                }
+            }
+            KeyCode::Esc if !repeat => chat.set_orch_picker(None),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The user confirmed `assignment` for `task`: it becomes the run's
+    /// override and the failed worker is relaunched with the new roster.
+    fn choose_override(&mut self, id: PaneId, task: Task, assignment: Assignment) -> Vec<Effect> {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Vec::new();
+        };
+        let Some(run) = chat.orch_alert().map(|alert| alert.run) else {
+            return Vec::new();
+        };
+        // A choice that could not run is refused here, not after a relaunch.
+        let mut config =
+            (chat.orch_overrides()).map_or_else(|| self.ai.clone(), |o| o.apply(&self.ai));
+        config.set(task, assignment.clone());
+        let engines = self.engines.as_ref();
+        let ready = availability_for(task, &config, engines, self.jail);
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if !matches!(ready, Availability::Ready { .. }) {
+            chat.set_orch_picker(None);
+            chat.push_system_line("engine not available".into());
+            return Vec::new();
+        }
+        chat.override_task(run, task, assignment);
+        chat.drop_orch_alert();
+        let choice = UserChoice::Relaunch(self.roster(&config));
+        vec![Effect::OrchDecide {
+            pane: id,
+            run,
+            choice,
+        }]
+    }
+
     /// What pane `id` shows above its composer about its run, in the order
     /// the keys answer: the provider notice, then the failure alert. `None`
     /// when neither is up. Like the `engram serve` offer it is guidance, so
@@ -175,7 +321,11 @@ impl App {
     pub(super) fn orch_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let notice = self.orch_notice(id).then(|| NOTICE.to_owned());
-        let alert = chat.orch_alert().map(|alert| alert_text(chat, alert));
+        // The picker belongs to the alert: without one it is not shown.
+        let alert = chat.orch_alert().map(|alert| match chat.orch_picker() {
+            Some(picker) => picker.view(),
+            None => alert_text(chat, alert),
+        });
         match (notice, alert) {
             (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
             (notice, alert) => notice.or(alert),
@@ -317,15 +467,11 @@ impl App {
         // The orchestrator session: the read tools and the four orchestration
         // tools, never `run_in_pane`.
         request.families = Toolset::Orchestrator.families();
-        let roster = Roster::new(
-            Task::ALL
-                .iter()
-                .map(|&task| {
-                    let engines = self.engines.as_ref();
-                    (task, availability_for(task, &self.ai, engines, self.jail))
-                })
-                .collect(),
-        );
+        // This turn replaces the run: it starts from the menu values, not from
+        // what the user picked in the old run's alert. Those overrides stay
+        // with the old run, which lives on if this one cannot start; the new
+        // run's first event ends them.
+        let roster = self.roster(&self.ai);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat

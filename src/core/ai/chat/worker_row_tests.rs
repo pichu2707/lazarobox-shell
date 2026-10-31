@@ -30,6 +30,7 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         elapsed: elapsed.map(Duration::from_secs),
         usage: None,
         partial: false,
+        overridden: false,
     }
 }
 

@@ -133,7 +133,8 @@ pub fn worker_label(row: &WorkerRow) -> String {
 /// A worker row as text: `review codex>gpt-5 running`, then how long it ran
 /// once it ended (`done 12.3s`).
 fn worker_line(row: &WorkerRow) -> String {
-    let mut line = format!("{} {}", worker_label(row), row.status.label());
+    let marker = if row.overridden { " (override)" } else { "" };
+    let mut line = format!("{}{marker} {}", worker_label(row), row.status.label());
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
     }

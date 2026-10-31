@@ -28,6 +28,9 @@ pub struct WorkerRow {
     /// Some attempt of the worker ended without reporting: `usage` (cost
     /// omitted) covers only the attempts that did.
     pub partial: bool,
+    /// The worker runs on a run override (the app sets it; the run manager
+    /// never does).
+    pub overridden: bool,
 }
 
 /// What the run manager tells the app.

@@ -50,10 +50,11 @@ use std::{
 
 use crate::core::{
     ai::{
-        config::{ApprovalMode, Profile},
+        config::{ApprovalMode, Assignment, Profile, Task},
         orchestra::{
             RunId, WorkerId,
             event::WorkerRow,
+            overrides::{FailurePicker, RunOverrides},
             worker::{ErrorClass, WorkerStatus},
         },
         tools::stage::BatchId,
@@ -410,6 +411,12 @@ pub struct ChatState {
     orch_alert: Option<OrchAlert>,
     /// Why the last answer to the alert did not go through.
     orch_note: Option<OrchNote>,
+    /// The detached picker opened from the alert (`m`, `p`).
+    orch_picker: Option<FailurePicker>,
+    /// What the user picked from an alert, for the run it was picked in.
+    orch_overrides: Option<(RunId, RunOverrides)>,
+    /// The overrides before the last pick, until the run manager answers it.
+    orch_undo: Option<Option<(RunId, RunOverrides)>>,
     /// The last turn ended with `Done`, until the poll sees the batch it left
     /// behind (local-model-writes D1). A new turn or a cancel clears it; a
     /// compaction run after the `Done` does not.
@@ -469,6 +476,9 @@ impl ChatState {
             orch_run: None,
             orch_alert: None,
             orch_note: None,
+            orch_picker: None,
+            orch_overrides: None,
+            orch_undo: None,
             clean_end: false,
         }
     }
@@ -510,10 +520,10 @@ impl ChatState {
         self.orch_alert = alert;
     }
 
-    /// Takes the alert down with the notes raised on it: a note belongs to
-    /// one alert and never shows on the next.
+    /// The alert is answered, replaced or gone: its picker and note go too.
     pub fn drop_orch_alert(&mut self) {
         self.orch_alert = None;
+        self.orch_picker = None;
         self.orch_note = None;
     }
 
@@ -523,6 +533,63 @@ impl ChatState {
 
     pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
         self.orch_note = note;
+    }
+
+    pub fn orch_picker(&self) -> Option<&FailurePicker> {
+        self.orch_picker.as_ref()
+    }
+
+    pub fn orch_picker_mut(&mut self) -> Option<&mut FailurePicker> {
+        self.orch_picker.as_mut()
+    }
+
+    pub fn set_orch_picker(&mut self, picker: Option<FailurePicker>) {
+        self.orch_picker = picker;
+    }
+
+    /// The overrides of the pane's current run; none once it has ended.
+    pub fn orch_overrides(&self) -> Option<&RunOverrides> {
+        let (run, overrides) = self.orch_overrides.as_ref()?;
+        (self.orch_run == Some(*run)).then_some(overrides)
+    }
+
+    /// Records the choice for `task` in `run`'s overrides (a new run starts
+    /// from none).
+    pub fn override_task(&mut self, run: RunId, task: Task, assignment: Assignment) {
+        self.orch_undo = Some(self.orch_overrides.clone());
+        let kept = self
+            .orch_overrides
+            .take()
+            .filter(|(known, _)| *known == run);
+        let mut overrides = kept.map_or_else(RunOverrides::default, |(_, o)| o);
+        overrides.set(task, assignment);
+        self.orch_overrides = Some((run, overrides));
+    }
+
+    /// The run manager answered the last pick (a row or a halt of the run).
+    pub fn keep_override(&mut self) {
+        self.orch_undo = None;
+    }
+
+    /// The last pick was dropped by the run manager: it never reached the
+    /// run, so the overrides go back to what they were.
+    pub fn undo_override(&mut self) {
+        if let Some(before) = self.orch_undo.take() {
+            self.orch_overrides = before;
+        }
+    }
+
+    /// `run` is over: its overrides, picker and notes go with it when it is
+    /// the pane's run, whether its alert is still up or not.
+    pub fn end_orch_run(&mut self, run: RunId) {
+        let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
+        if self.orch_run != Some(run) && !alerted {
+            return;
+        }
+        if self.orch_overrides.as_ref().is_some_and(|(r, _)| *r == run) {
+            self.orch_overrides = None;
+        }
+        self.drop_orch_alert();
     }
 
     /// A worker's status changed: its row, keyed by run and worker, shows the
