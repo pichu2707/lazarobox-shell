@@ -337,6 +337,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Declined { .. }
         | OrchestraEvent::Dropped { .. }
         | OrchestraEvent::Unavailable
+        | OrchestraEvent::AnswerLost
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1081,6 +1082,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             OrchestraEvent::Halted { .. }
             | OrchestraEvent::Declined { .. }
             | OrchestraEvent::Dropped { .. }
+            | OrchestraEvent::AnswerLost
             | OrchestraEvent::Unavailable => None,
         })
         .collect()

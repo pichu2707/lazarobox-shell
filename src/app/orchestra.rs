@@ -39,6 +39,7 @@ const RETRY_AGAIN: &str = "r try again";
 /// Said when the run manager is not attached: the answer was not applied.
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
 /// Said when the run manager dropped an answer: its run is over.
+const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
@@ -147,6 +148,9 @@ impl App {
             OrchestraEvent::Dropped { .. } => {
                 chat.undo_override();
                 chat.push_system_line(MOVED_ON.to_owned());
+            }
+            OrchestraEvent::AnswerLost => {
+                chat.push_system_line(ANSWER_LOST.to_owned());
             }
             OrchestraEvent::Unavailable => {
                 chat.undo_override();

@@ -55,6 +55,22 @@ pub(super) fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
     })
 }
 
+// Never silent: a `y` that reached no wait (the worker ended first) is said.
+#[test]
+fn a_lost_answer_is_said_in_the_transcript() {
+    let (mut a, _) = running();
+    a.update(event(OrchestraEvent::AnswerLost));
+    let said = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap()
+        .entries()
+        .iter()
+        .any(|entry| format!("{entry:?}").contains("your answer was not applied"));
+    assert!(said);
+}
+
 pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
