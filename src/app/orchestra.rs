@@ -296,6 +296,9 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        if chat.run_cancelled(next.run) {
+            return Vec::new();
+        }
         if chat.phase() != Phase::Idle {
             chat.park_continue(next);
             return Vec::new();

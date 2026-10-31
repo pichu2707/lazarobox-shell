@@ -410,6 +410,9 @@ pub struct ChatState {
     /// (S4): it starts when that turn ends. One slot is enough: turns are
     /// serial, so a run has at most one turn to follow at a time.
     orch_continue: Option<Continuation>,
+    /// The run the user cancelled with Esc or Ctrl+C: a continuation the
+    /// manager sent before it heard of the cancel must not start.
+    orch_cancelled: Option<RunId>,
     /// Why the last turn ended in failure (a short line); `None` when it
     /// ended cleanly or was cut off. A failed orchestrator turn is not
     /// continued.
@@ -490,6 +493,7 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             orch_continue: None,
+            orch_cancelled: None,
             turn_failure: None,
             ended_workers: Default::default(),
             selected: None,
@@ -615,6 +619,17 @@ impl ChatState {
 
     pub fn turn_failure(&self) -> Option<&str> {
         self.turn_failure.as_deref()
+    }
+
+    /// The user cancelled `run`: its parked continuation goes, and a later one
+    /// is refused.
+    pub fn cancel_run(&mut self, run: RunId) {
+        self.orch_continue = None;
+        self.orch_cancelled = Some(run);
+    }
+
+    pub fn run_cancelled(&self, run: RunId) -> bool {
+        self.orch_cancelled == Some(run)
     }
 
     pub fn take_continue(&mut self) -> Option<Continuation> {

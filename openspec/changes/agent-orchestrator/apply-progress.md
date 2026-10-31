@@ -384,3 +384,18 @@ Strict TDD: each test written first and observed RED before the fix.
 | suggestion | comment on `orch_continue`: one slot, turns are serial | n/a | n/a |
 
 Residual: a worker's `Pending` for the orchestrator turn's timers stays the one captured at spawn (`Turn.session`), so a surviving worker's ask is not counted by the new turn's idle timer; the ask itself is shown and answerable.
+
+### 4.1b re-review fixes
+
+Strict TDD: deterministic tests (channels and request/reply on the worker's socket; no sleeps) written first, RED observed, then the fix.
+
+| Fix | Change | Test | RED observed |
+|-----|--------|------|--------------|
+| CRITICAL forwarder | `Route::forward` never stops on a failed send; `Route` keeps channel, approver and a generation under one lock. A failed send retries once on the new channel when the route moved (plain rows only); an ask announcement that cannot be shown (no turn between turns) ends the worker's session, which denies the wait (reply to the worker is an error), until the next `attach` revives it | `a_worker_that_asks_between_turns_is_denied_and_asks_again_in_the_next` | the worker never got a reply (read timed out) |
+| WARNING ask vs announce | `retarget` first ends the worker's session under the old approver (denying its asks in flight, the worker may ask again), then takes the new turn's `for_worker` approver and channel together | `attach_denies_the_asks_in_flight_under_the_old_turn` | the old ask stayed unanswered (read timed out) |
+| WARNING revive | `attach` retargets only workers whose status is queued or running; an ended worker's route is dropped, its session stays closed | `attach_does_not_revive_a_worker_that_ended` | the revived worker announced an ask (read timed out) |
+| prune | the route is removed when the worker finishes or is cancelled | `a_workers_route_goes_when_the_worker_ends` | 1 route left after the worker finished |
+| WARNING timers | the worker's own turn watches the count it started with; `Rerouted::ask` also enters that count when it is not the current turn's (`Pending::same`) | `a_surviving_workers_ask_counts_for_both_turns_timers` | worker-side count 0 |
+| check: user cancel | a race was real: a `Continue` sent before the manager heard of Esc/Ctrl+C started a turn on the cancelled run. `ChatState::cancel_run` drops the parked one and refuses later ones for that run; the `Interrupted` of a cancelled turn is dropped (turn moved on) | `a_user_cancel_stops_every_continuation_of_the_run` (Ctrl+C and Esc, both orders) | the late `Continue` produced an `OrchestrateSend` |
+
+Residual: an ask registered under the old approver whose announcement was already queued in the forwarder when the route moved can still be shown on the new turn after its wait was denied; the answer then finds no wait (`AnswerLost`, said) and the worker already got its denial, so nothing hangs. The denial text a worker sees in these cases is the generic "the chat ended before the user answered".

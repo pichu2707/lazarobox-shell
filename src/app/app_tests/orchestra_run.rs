@@ -805,3 +805,34 @@ fn closing_the_pane_cancels_its_run() {
         "{effects:?}"
     );
 }
+
+// Re-review check (4.1b): Esc or Ctrl+C during the orchestrator turn cancels
+// the run first. A continuation that was parked, or that the manager sent just
+// before the cancel reached it, never starts; the `Interrupted` a cancelled
+// turn ends with is not a reason to continue.
+#[test]
+fn a_user_cancel_stops_every_continuation_of_the_run() {
+    use crate::core::ai::chat::engine::ChatError;
+    for key in [ctrl('c'), plain(KeyCode::Esc)] {
+        // Parked before the cancel.
+        let (mut a, turn) = running();
+        a.update(event(row(RUN, 1, WorkerStatus::Running)));
+        a.update(event(OrchestraEvent::Continue(next_turn(2))));
+        let effects = a.update(key.clone());
+        assert!(
+            effects.contains(&Effect::ChatCancel(chat_id())),
+            "{effects:?}"
+        );
+        let cut = AppEvent::Chat(chat_id(), turn, StreamEvent::Error(ChatError::Interrupted));
+        assert!(attaches(&a.update(cut)).is_none());
+        // Sent by the manager before it heard of the cancel.
+        let (mut b, turn) = running();
+        b.update(event(row(RUN, 1, WorkerStatus::Running)));
+        b.update(key);
+        let cut = AppEvent::Chat(chat_id(), turn, StreamEvent::Error(ChatError::Interrupted));
+        b.update(cut);
+        let late = b.update(event(OrchestraEvent::Continue(next_turn(2))));
+        assert!(attaches(&late).is_none(), "{late:?}");
+        b.update(event(OrchestraEvent::Ended { run: RUN }));
+    }
+}
