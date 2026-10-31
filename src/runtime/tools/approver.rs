@@ -55,6 +55,10 @@ struct Ended {
     parked: HashSet<Key>,
     /// Worker sessions that ended: a late ask of theirs is denied.
     sessions: HashSet<SessionKey>,
+    /// The attempt of each worker session that may ask (set by `for_worker`):
+    /// the approver of an earlier attempt is denied. Attempts count from 1.
+    current: HashMap<SessionKey, u64>,
+    attempts: u64,
 }
 
 impl Waits {
@@ -77,6 +81,7 @@ impl Waits {
         Arc::new(ForTurn {
             waits: self.clone(),
             session: session.into(),
+            attempt: 0,
             turn,
             pending,
         })
@@ -212,6 +217,9 @@ impl Waits {
 struct ForTurn {
     waits: Arc<Waits>,
     session: SessionKey,
+    /// The attempt of a worker session this approver was made for; `0` for
+    /// one made without (a pane, or a test).
+    attempt: u64,
     turn: u64,
     pending: Pending,
 }
@@ -232,12 +240,23 @@ impl Drop for Entry {
 impl Approver for ForTurn {
     fn for_worker(&self, key: WorkerKey) -> Option<Arc<dyn Approver>> {
         let session = SessionKey::Worker(self.session.pane(), key);
-        // A new attempt of a worker that ended (a retry) asks again.
-        self.waits.ended().sessions.remove(&session);
-        Some(
-            self.waits
-                .approver(session, self.turn, self.pending.clone()),
-        )
+        // A new attempt of a worker that ended (a retry) asks again; the
+        // approvers of earlier attempts never do.
+        let attempt = {
+            let mut ended = self.waits.ended();
+            ended.sessions.remove(&session);
+            ended.attempts += 1;
+            let attempt = ended.attempts;
+            ended.current.insert(session, attempt);
+            attempt
+        };
+        Some(Arc::new(ForTurn {
+            waits: self.waits.clone(),
+            session,
+            attempt,
+            turn: self.turn,
+            pending: self.pending.clone(),
+        }))
     }
 
     fn end_worker(&self, key: WorkerKey) {
@@ -252,7 +271,11 @@ impl Approver for ForTurn {
             let mut waiting = self.waits.map();
             let mut ended = self.waits.ended();
             // A worker that ended asks no more: the call is denied unseen.
-            if ended.sessions.contains(&self.session) {
+            let stale = ended
+                .current
+                .get(&self.session)
+                .is_some_and(|current| *current != self.attempt);
+            if stale || ended.sessions.contains(&self.session) {
                 return async { Decision::Denied(ENDED).into() }.boxed();
             }
             ended.panes.remove(&pane);
@@ -456,6 +479,22 @@ mod tests {
         );
         let session = SessionKey::Worker(pane(1), worker(2));
         assert!(waits.decide(session, 7, CallId(2), Decision::Sent));
+    }
+
+    // Only the current attempt of a worker may ask: the approver of an earlier
+    // attempt, still held by a stale call, is denied unseen after a retry.
+    #[tokio::test]
+    async fn the_approver_of_an_earlier_attempt_cannot_ask_after_a_retry() {
+        let waits = Waits::new();
+        let turn = waits.approver(pane(1), 7, Pending::new());
+        let first = turn.for_worker(worker(2)).expect("a session approver");
+        waits.end_worker(pane(1), worker(2));
+        let second = turn.for_worker(worker(2)).expect("a session approver");
+        let stale = first.ask(CallId(1), &read("/a"));
+        assert_eq!(stale.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        assert_eq!(waits.len(), 0, "nothing registered for the stale attempt");
+        let mut current = second.ask(CallId(2), &read("/a"));
+        assert!((&mut current).now_or_never().is_none(), "the new attempt waits");
     }
 
     // The pane closing or the turn ending takes its workers' asks too.
