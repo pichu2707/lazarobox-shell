@@ -40,11 +40,16 @@ fn seconds(left: Duration) -> String {
 
 /// The counter row, and whether it is a warning.
 fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
-    // A worker's batch names the worker first; a chat's batch is unchanged.
-    let by = view
-        .review()
-        .label()
-        .map_or_else(String::new, |label| format!("{label} · "));
+    // A worker's batch names the worker first, then the line of its review's
+    // receipt when it had one (S7b: a note, never a gate); a chat's batch is
+    // unchanged.
+    let review = view.review();
+    let by = review.label().map_or_else(String::new, |label| {
+        let receipt = review
+            .receipt()
+            .map_or_else(String::new, |r| format!("{r} · "));
+        format!("{label} · {receipt}")
+    });
     if !view.reviewable() {
         let text = if view.refused_hint(now) {
             "y can't approve this batch · press n"
@@ -172,5 +177,40 @@ mod label_tests {
         ));
         let shown = header_of(worker);
         assert_eq!(shown, format!("code codex>default · {chat}"));
+    }
+
+    // Spec (agent-orchestrator, A receipt never approves [S7b]): the receipt's
+    // line sits in a worker's header and nothing more; the gate, the keys and
+    // the answer at any moment are those of a batch with no receipt.
+    #[test]
+    fn a_receipt_line_heads_a_worker_batch_and_never_changes_what_y_does() {
+        let plain = review_of(&[("a.txt", "one\n", false)]);
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        let line = "review: high \u{b7} consent granted \u{b7} clean";
+        let doc = plain.doc().clone();
+        let bare = Arc::new(BatchReview::labelled(doc.clone(), "code x".into(), key));
+        let with = Arc::new(
+            BatchReview::labelled(doc, "code x".into(), key).with_receipt(Some(line.into())),
+        );
+        let counts = header_of(plain.clone());
+        assert_eq!(
+            header_of(with.clone()),
+            format!("code x \u{b7} {line} \u{b7} {counts}")
+        );
+        // A chat's batch ignores a receipt: its header is as it was.
+        let chat = Arc::new(BatchReview::new(plain.doc().clone()).with_receipt(Some(line.into())));
+        assert_eq!(header_of(chat), counts);
+        // The gate is the same: `y` is locked until the lines are seen and
+        // the delay is over, whatever the receipt says.
+        let (mut a, mut b) = (
+            ReviewView::new(bare, (80, 20)),
+            ReviewView::new(with, (80, 20)),
+        );
+        let now = Instant::now();
+        assert!(!b.can_approve(now) && !b.answerable(now));
+        assert_eq!(a.y_pressed(now), b.y_pressed(now));
+        assert_eq!(a.can_approve(now), b.can_approve(now));
+        assert_eq!(a.remaining(), b.remaining());
+        assert_eq!(a.arm_left(now), b.arm_left(now));
     }
 }

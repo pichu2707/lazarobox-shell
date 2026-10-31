@@ -29,7 +29,9 @@ baseline.
   asks an inline consent first; on `y` read-only lens workers and a refuter
   look at the staged change and at most one correction worker fixes the
   blockers that survived, all under the run limits; on `n` the change goes on
-  to your batch review marked not reviewed. Nothing approves the batch.
+  to your batch review marked not reviewed. Nothing approves the batch. Each
+  review leaves a receipt (tier, consent, lenses, findings, outcome, paths not
+  reviewed), saved to engram, and a one-line note in the batch review header.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

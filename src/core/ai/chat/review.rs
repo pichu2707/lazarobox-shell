@@ -215,6 +215,10 @@ pub struct BatchReview {
     label: Option<String>,
     /// The session of that worker, which the answer is addressed to.
     worker: Option<WorkerKey>,
+    /// What lazarobox says of the receipt-driven review of the worker's
+    /// change (S7b): one line of its own words and counts, shown in the
+    /// header. It informs and decides nothing: `y` and `n` stay the user's.
+    receipt: Option<String>,
 }
 
 impl BatchReview {
@@ -223,6 +227,7 @@ impl BatchReview {
             doc,
             label: None,
             worker: None,
+            receipt: None,
         }
     }
 
@@ -232,7 +237,22 @@ impl BatchReview {
             doc,
             label: Some(label),
             worker: Some(worker),
+            receipt: None,
         }
+    }
+
+    /// The review with the line of a receipt (S7b) in its header. Only a
+    /// worker's batch shows one; a chat's own batch is left as it was.
+    pub fn with_receipt(mut self, line: Option<String>) -> Self {
+        if self.label.is_some() {
+            self.receipt = line;
+        }
+        self
+    }
+
+    /// The receipt line of the worker's review, when it had one.
+    pub fn receipt(&self) -> Option<&str> {
+        self.receipt.as_deref()
     }
 
     /// The session of the worker that proposed the batch.
