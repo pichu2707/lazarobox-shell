@@ -109,5 +109,5 @@ Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `
 - [x] 4.9 Real-codex test precision: AUTH = `401 unauthorized` / `incorrect api key` only, BROKEN = exact failure markers, 403 / 429 / `unsupported_country` is an annotated skip (rules in tests/support/codex_outcome.rs, unit tested on Linux in tests/codex_outcome.rs).
 - [x] 4.10 CI: the real-codex step moved to its own non-blocking job `real-cli-macos` (continue-on-error, both macOS runners).
 - [x] 4.11 Review-fix round: the test judge (`judge` in tests/support/codex_outcome.rs) never accepts Auth/External from the non-error dump; EXTERNAL drops bare `cloudflare` / `just a moment`; non-blocking CI job prints an `::error` annotation on failure; SecurityServer docs state the securityd/keychain-items accepted risk; tester checklist asks about keychain prompts.
-- [ ] 4.6 MANUAL: send checklist to the #180 tester and record the result.
+- [x] 4.6 MANUAL: send checklist to the #180 tester and record the result. [deferred 2026-10-31: 1.0 is Linux-only; macOS checks wait until macOS is supported]
 Done: gates green, checklist and README merged; tester feedback is post-merge.

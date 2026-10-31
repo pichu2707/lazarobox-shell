@@ -732,3 +732,44 @@ Mouse wheel events MUST be handled only in TERMINAL and COPY (see mouse-input); 
 - GIVEN PREFIX
 - WHEN a wheel event arrives
 - THEN nothing happens and the mode is still PREFIX
+
+### Requirement: The quit prompt names what still runs
+Opening "Quit? (y/n)" (from `q`, or `w q` / `t c` when they quit) MUST ask the runtime what still runs in the panes. A job is a process group of a pane's session (closed panes included) other than its shell's own group. While the prompt is open and jobs run, the statusline MUST read `Quit? still running: <names> (y/n)`: at most three names, each cut to 24 columns, then `+N more`; when that does not fit, fewer names, then `Quit? N still running (y/n)`, then the plain prompt. An answer that arrives after the prompt closed MUST be ignored. Lazarobox MUST NOT signal those jobs. After lazarobox quits and restores the terminal, the jobs still running MUST be written to stderr, one per line with their process group, after a short settle so jobs ending on their hangup are not named.
+
+#### Scenario: The prompt names the jobs
+- GIVEN a pane that started `sleep 77 &` and `npm run dev &`
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? still running: sleep 77, npm run dev (y/n)" and `y` emits Quit
+
+#### Scenario: Nothing runs
+- GIVEN no job besides the pane shells
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? (y/n)"
+
+#### Scenario: Narrow statusline
+- GIVEN two jobs and a 40-column terminal
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? 2 still running (y/n)"
+
+#### Scenario: exit in the last pane
+- GIVEN the only pane started `sleep 77 &`
+- WHEN its shell exits and lazarobox quits
+- THEN stderr reads "lazarobox-shell: still running from your panes:" and "  sleep 77 (process group <pgid>)", and `sleep 77` keeps running
+
+### Requirement: The quit prompt names a shared llama-server that is answering
+When "Quit? (y/n)" opens, lazarobox MUST also ask, in the background, whether the managed llama-server it started is answering a request that is none of its own turns (another lazarobox that uses it: `GET /slots` shows more slots processing than its turns in progress). When it is, the prompt MUST name it after the jobs, once, as `llama-server (shared)`, in the same list and with the same limits as the jobs (see The quit prompt names what still runs), whatever arrives first. A server it only uses (started by another lazarobox or by hand), one that is not running, or one whose `/slots` does not answer, is never named. An answer that arrives after the prompt closed MUST be dropped. Tabs and panes of one lazarobox share its server, so they never count.
+
+#### Scenario: Another lazarobox is being answered [auto]
+- GIVEN a pane that started `sleep 77 &`, and the managed server answering another lazarobox
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? still running: sleep 77, llama-server (shared) (y/n)" and `y` emits Quit
+
+#### Scenario: Only our own turn [auto]
+- GIVEN the managed server answering one request, which is a turn of this lazarobox
+- WHEN the runtime is asked
+- THEN the server is not named
+
+#### Scenario: Two lazarobox [manual]
+- GIVEN two lazarobox, the second using the first one's llama-server, with a reply streaming in the second
+- WHEN `q` is pressed in the first
+- THEN its prompt names `llama-server (shared)`; with no reply streaming, it does not
