@@ -10,7 +10,7 @@ use super::ledger::{
     Facts, FinishError, Handoff, HandoffError, Judgement, LEDGER_BYTES, Ledger, NO_HANDOFF, NONE,
     Row, Unit, Verdict,
 };
-use super::run::{Refusal, Roster, Run, RunState, WorkerEvent};
+use super::run::{NextTurn, Refusal, Roster, Run, RunLimits, RunState, WorkerEvent};
 use super::tools::{OrchCall, OrchError, parse};
 use super::worker::{ErrorClass, WorkerStatus};
 use crate::core::ai::chat::engine::Availability;
@@ -362,6 +362,67 @@ fn a_tiny_budget_collapses_the_oldest_rows_and_keeps_the_goal() {
     assert!(text.contains("earlier workers"), "{text}");
     assert!(text.contains("30 review done"), "{text}");
     assert!(!text.contains("\n1 review done"), "{text}");
+}
+
+fn capped(turns: usize) -> Run {
+    run().with_limits(RunLimits {
+        parallel: 4,
+        turns,
+        ..Default::default()
+    })
+}
+
+// Spec (orchestrator-handoffs, Continuation from the ledger): the turn ends
+// while a worker runs or a finished one has no handoff: the run goes on in a
+// new turn, counted; with nothing pending the run settles.
+#[test]
+fn a_turn_that_ends_with_work_pending_continues_the_run() {
+    let mut run = capped(6);
+    assert_eq!(run.next_turn(), NextTurn::Settle, "nothing was spawned");
+    let id = run.spawn(Instant::now(), Task::Review, "p").expect("spawn");
+    assert_eq!(run.next_turn(), NextTurn::Continue(2), "a worker runs");
+    run.on_event(Instant::now(), id, WorkerEvent::Done { text: "t".into() });
+    assert_eq!(run.next_turn(), NextTurn::Continue(3), "no handoff yet");
+    run.handoff(id, note(Verdict::OnCourse)).expect("stored");
+    assert_eq!(run.next_turn(), NextTurn::Settle, "the ledger is whole");
+}
+
+// Spec (max_turns): the cap counts the first turn; at it nothing continues.
+#[test]
+fn the_turn_cap_counts_the_first_turn_and_stops_the_continuations() {
+    let mut run = capped(2);
+    run.spawn(Instant::now(), Task::Review, "p").expect("spawn");
+    assert_eq!(run.next_turn(), NextTurn::Continue(2));
+    assert_eq!(run.next_turn(), NextTurn::Capped(2));
+    let mut once = capped(1);
+    once.spawn(Instant::now(), Task::Review, "p")
+        .expect("spawn");
+    assert_eq!(once.next_turn(), NextTurn::Capped(1));
+}
+
+// A halted or finished run is not continued: the user's answer, or the end,
+// comes first.
+#[test]
+fn a_halted_or_finished_run_is_not_continued() {
+    let mut halted = capped(6);
+    let id = halted
+        .spawn(Instant::now(), Task::Review, "p")
+        .expect("spawn");
+    halted.on_event(
+        Instant::now(),
+        id,
+        WorkerEvent::Failed {
+            class: ErrorClass::Conflict,
+            text: "409".into(),
+        },
+    );
+    assert!(matches!(halted.state(), RunState::Halted { .. }));
+    assert_eq!(halted.next_turn(), NextTurn::Settle);
+    let mut done = capped(6);
+    finished(&mut done, Task::Review, "t");
+    done.fallbacks();
+    done.finish("ok").expect("finish");
+    assert_eq!(done.next_turn(), NextTurn::Settle);
 }
 
 /// A failed worker whose handoff says `done`.

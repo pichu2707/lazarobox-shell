@@ -559,6 +559,22 @@ const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
+/// A short line for why a turn failed, or `None` for a clean end or a cut-off
+/// stream (the shape of a turn cap, which a continuation exists for).
+fn turn_failure(event: &StreamEvent) -> Option<String> {
+    use crate::core::ai::chat::engine::ChatError;
+    let StreamEvent::Error(error) = event else {
+        return None;
+    };
+    let text = match error {
+        ChatError::Interrupted => return None,
+        ChatError::Truncated => "the answer was too long",
+        ChatError::Failed(text) | ChatError::Jail(text) => text,
+    };
+    let line = text.lines().next().unwrap_or_default();
+    Some(line.chars().filter(|c| !c.is_control()).take(120).collect())
+}
+
 fn pane_size(cols: u16, rows: u16) -> PaneSize {
     PaneSize {
         rows: rows.saturating_sub(1).max(1),
@@ -2542,6 +2558,7 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         let leaves = self.tabs.remove(index).tree.leaves();
         let mut effects = self.end_effects(&leaves);
+        effects.extend(self.close_run_effects(&leaves));
         effects.extend(self.deny_closing_runs(&leaves));
         for id in leaves {
             self.panes.remove(&id);
@@ -2698,8 +2715,12 @@ impl App {
                 event,
                 StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
             );
+        let failure = turn_failure(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
+        if finished {
+            chat.set_turn_failure(failure);
+        }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
         let mut effects = self.store_effects(id);
@@ -2716,6 +2737,16 @@ impl App {
         }
         if llamacpp_failed {
             effects.extend(self.request_detection());
+        }
+        // A continuation that came before this turn's end starts now (S4).
+        if finished
+            && let Some(next) = self
+                .panes
+                .get_mut(&id)
+                .and_then(PaneState::chat_mut)
+                .and_then(ChatState::take_continue)
+        {
+            effects.extend(self.start_continuation(id, next));
         }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
@@ -2759,6 +2790,7 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 let mut ends = self.end_effects(&[id]);
+                ends.extend(self.close_run_effects(&[id]));
                 ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
                 self.drop_parked_send(id);

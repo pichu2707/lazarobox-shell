@@ -319,6 +319,9 @@ pub const DEFAULT_MAX_WORKERS: u8 = 8;
 const MAX_WORKERS_RANGE: std::ops::RangeInclusive<i64> = 1..=32;
 pub const DEFAULT_RUN_TIMEOUT_MINS: u16 = 60;
 const RUN_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=480;
+/// S4: the orchestrator turns one run may take, the first included.
+pub const DEFAULT_MAX_TURNS: u8 = 6;
+const MAX_TURNS_RANGE: std::ops::RangeInclusive<i64> = 1..=24;
 
 /// The `[ai.orchestrator]` table. `enabled` is the global gate (the menu row
 /// `Orchestrator`); each chat pane still opts in on its own. Both flags are
@@ -336,6 +339,8 @@ pub struct OrchestratorConfig {
     pub max_workers: u8,
     /// The wall clock of a run, in minutes.
     pub run_timeout_mins: u16,
+    /// Orchestrator turns one run may take, the first included.
+    pub max_turns: u8,
 }
 
 impl Default for OrchestratorConfig {
@@ -347,6 +352,7 @@ impl Default for OrchestratorConfig {
             max_parallel: DEFAULT_MAX_PARALLEL,
             max_workers: DEFAULT_MAX_WORKERS,
             run_timeout_mins: DEFAULT_RUN_TIMEOUT_MINS,
+            max_turns: DEFAULT_MAX_TURNS,
         }
     }
 }
@@ -908,6 +914,9 @@ fn read_orchestrator(table: &Table, problems: &mut Vec<String>) -> OrchestratorC
     }
     if let Some(n) = limit("run_timeout_mins", &RUN_TIMEOUT_RANGE) {
         orch.run_timeout_mins = n as u16;
+    }
+    if let Some(n) = limit("max_turns", &MAX_TURNS_RANGE) {
+        orch.max_turns = n as u8;
     }
     orch
 }
@@ -3014,6 +3023,9 @@ mod tests {
             ("max_workers", "33", "1 to 32"),
             ("run_timeout_mins", "481", "1 to 480"),
             ("run_timeout_mins", "\"60\"", "1 to 480"),
+            ("max_turns", "0", "1 to 24"),
+            ("max_turns", "25", "1 to 24"),
+            ("max_turns", "\"6\"", "1 to 24"),
         ];
         for (key, value, range) in bad {
             let text = format!("[ai.orchestrator]\nenabled = true\n{key} = {value}\n");
@@ -3034,6 +3046,15 @@ mod tests {
                 "{key} = {value}"
             );
         }
+    }
+
+    // Spec (configuration): S4 `max_turns`, default 6, range 1 to 24.
+    #[test]
+    fn max_turns_is_read_with_its_range() {
+        assert_eq!(OrchestratorConfig::default().max_turns, 6);
+        let (config, problems) = read_text("[ai.orchestrator]\nmax_turns = 24\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.orchestrator.max_turns, 24);
     }
 
     // S5 (config freeze, 2026-10-29): the key is `acknowledged`, as in

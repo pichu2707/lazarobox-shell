@@ -348,3 +348,54 @@ Strict TDD: tests first; RED observed before each fix (compile-level for `Handof
 | sanitise | reason: trim, first line, control characters removed; the ledger row summary (first line of `done`) loses control characters too | `the_reason_is_trimmed_before_its_first_line_and_loses_control_characters` | leading blank line gave `none`; ESC and `\r` kept |
 | spec alignment | the `verdict` argument cap equals the other notes (16 KiB): an overlong verdict is stored `unknown`, a non-string stays refused; `Run::handoff` after `Finished`/`Cancelled` is `HandoffError::Ended`, answered `run ended` | `an_overlong_verdict_is_accepted_for_the_run_to_store_as_unknown`, `a_handoff_after_the_run_ended_is_refused` (core), runtime test above | overlong verdict `TooLong`; handoff after finish stored |
 | doc order | `ids_text` moved above the `now()` doc comment in `runtime/orchestra.rs` | n/a | n/a |
+
+## S4 task 4.1b: continuation turn and max_turns (branch feat/agent-orchestrator-s4b, on 4.1a)
+
+Task 4.1b done. Strict TDD: compile-level RED for the pure `Run::next_turn` and the config key; behavioural RED for the app flush (the parked continuation test failed with the flush disabled, then passed). Gates: `cargo test` 7855 passed in the lib target, clippy `-D warnings` clean, `fmt --check` clean.
+
+| Unit | Change | Test | RED observed |
+|------|--------|------|--------------|
+| config | `[ai.orchestrator] max_turns` (default 6, range 1..24), additive, hand-edited, bad value falls back alone naming `1 to 24` | `max_turns_is_read_with_its_range`, `the_run_limits_are_read_with_their_ranges` (3 bad rows) | compile-level (no field) |
+| core | `RunLimits.turns` (default `usize::MAX`), `NextTurn::{Settle, Continue(n), Capped(n)}`, `Run::next_turn` (Open and a live worker or a terminal worker without handoff) | 3 tests in `ledger_tests.rs` | compile-level |
+| runtime | `RunManager::attach(pane, run, scope)` (swaps the turn's channel, approver and pending; keeps roster, workers, limits), `turn_ended` -> `Continue(Continuation)` with the ledger wrapped under a fresh nonce (`label::wrap`, goal kept in `Live`), `Stopped{run, reason}` at the cap or with no nonce, then the usual `end` (fallbacks, workers cancelled) | 5 new tests in `runtime/orchestra/tests.rs`; 2 old S9 tests adapted (a terminal worker with no handoff now continues; the "worker still runs" test is superseded by the continuation tests) | compile-level |
+| chats | `OrchSend{goal, attach}`; `open_session` attaches instead of starting; a continuation does not call `Waits::end_pane` (the run's workers keep their asks) | covered through the manager and app tests | n/a |
+| app | `OrchestraEvent::Continue` starts `send_with(.., Some(run))` (composer draft untouched) after a transcript line `orchestrator turn N of M: continuing the run from its ledger`; parked in `ChatState` when the pane is not idle yet and flushed in `on_chat` when the turn ends; dropped on `Ended`; `Stopped` shown; a continuation that cannot start cancels the run and says so | 6 tests in `app_tests/orchestra_run.rs` | behavioural (flush disabled) |
+
+### Decisions and deviations
+- `max_turns` = total orchestrator turns of a run, the first included; default 6, range 1..24 (reversible default, user was away). Mirrored in the configuration spec (requirement, Defaults, new scenario "Bad max_turns falls back") and one line in design D8. config-persistence untouched: the key is hand-edited like the S3c limits.
+- At the cap with work pending the run ends (fallbacks built, running workers cancelled). Consequence: `max_turns = 1` ends a run whose first turn ended with a worker running; before S4 such a run waited for its worker. A run whose turn ends with nothing pending still settles as before.
+- The continuation message is a user message in the pane (visible, stored in the conversation history): the whole ledger render (goal included) wrapped in the untrusted-data block with a per-call nonce plus a fixed instruction head. The transcript therefore shows the ledger (bounded at 8 KiB); no hidden-message entry kind was added.
+- Race: the manager's `Continue` can overtake the turn's own `Done` on the other channel; the app parks it until the pane is idle.
+- A continuation turn replaces the run's events channel, approver and pending count for workers spawned from then on. Workers spawned in an earlier turn keep the earlier turn's channel (their tool rows were already lost once that turn ended; unchanged limitation, noted for S9).
+- When the ledger cannot be wrapped (no nonce) the run stops with a visible line instead of continuing bare.
+- Halted runs are not continued (the user's alert comes first); after a retry they settle as before.
+
+### 4.1b review fixes
+
+Strict TDD: each test written first and observed RED before the fix.
+
+| Fix | Change | Test | RED observed |
+|-----|--------|------|--------------|
+| CRITICAL worker routing | A worker's tool events and asks no longer capture turn N's channel and approver. Each worker gets a `Route` (events sender + approver behind mutexes) in `Live.routes`; its scope holds a forwarding channel and a `Rerouted` approver that read the route when they act; `attach` retargets the routes of the running workers (new channel, `for_worker` approver of the new turn). | `a_surviving_workers_ask_goes_through_the_current_turn` (ask reaches the new channel, nothing on the dead one, `decide` under turn 7 refused, under turn 8 answered) | timed out waiting for the ask on the new channel |
+| WARNING not orchestrating | `start_continuation` checks `orchestrating(id)` and that the pane's live run is the continuation's before any send; otherwise a line `run stopped: ...` and `cancel_chat` (no ledger message, no `ChatSend`) | `a_continuation_on_a_pane_that_stopped_orchestrating_cancels_the_run` | failed (a send went out) |
+| WARNING pane closed | closing a pane or tab with a live run or orchestrator turn emits `ChatCancel` (a run used to outlive its pane until the wall clock) | `closing_the_pane_cancels_its_run` | failed (no `ChatCancel`) |
+| WARNING error loop | `ChatState.turn_failure` is set when a turn ends (`Failed`, `Jail`, `Truncated`; a clean end or `Interrupted`, the shape of a turn cap, is not a failure); a failed turn is not continued: `run stopped: the orchestrator turn failed (<first line, 120 chars>)` and the run is cancelled (fallbacks built as usual) | `a_failed_orchestrator_turn_stops_the_run_and_names_the_cause` (both orders), `an_interrupted_orchestrator_turn_is_continued` | failed (the continuation went out) |
+| WARNING line before send | the pre-checks above run before the line; the line is reworded `orchestrator turn N of M: starting from the run ledger`, so a runtime attach failure (run ended meanwhile) that follows reads coherently | covered by the not-orchestrating test (`continuing`/ledger absent) | n/a |
+| suggestion | comment on `orch_continue`: one slot, turns are serial | n/a | n/a |
+
+Residual: a worker's `Pending` for the orchestrator turn's timers stays the one captured at spawn (`Turn.session`), so a surviving worker's ask is not counted by the new turn's idle timer; the ask itself is shown and answerable.
+
+### 4.1b re-review fixes
+
+Strict TDD: deterministic tests (channels and request/reply on the worker's socket; no sleeps) written first, RED observed, then the fix.
+
+| Fix | Change | Test | RED observed |
+|-----|--------|------|--------------|
+| CRITICAL forwarder | `Route::forward` never stops on a failed send; `Route` keeps channel, approver and a generation under one lock. A failed send retries once on the new channel when the route moved (plain rows only); an ask announcement that cannot be shown (no turn between turns) ends the worker's session, which denies the wait (reply to the worker is an error), until the next `attach` revives it | `a_worker_that_asks_between_turns_is_denied_and_asks_again_in_the_next` | the worker never got a reply (read timed out) |
+| WARNING ask vs announce | `retarget` first ends the worker's session under the old approver (denying its asks in flight, the worker may ask again), then takes the new turn's `for_worker` approver and channel together | `attach_denies_the_asks_in_flight_under_the_old_turn` | the old ask stayed unanswered (read timed out) |
+| WARNING revive | `attach` retargets only workers whose status is queued or running; an ended worker's route is dropped, its session stays closed | `attach_does_not_revive_a_worker_that_ended` | the revived worker announced an ask (read timed out) |
+| prune | the route is removed when the worker finishes or is cancelled | `a_workers_route_goes_when_the_worker_ends` | 1 route left after the worker finished |
+| WARNING timers | the worker's own turn watches the count it started with; `Rerouted::ask` also enters that count when it is not the current turn's (`Pending::same`) | `a_surviving_workers_ask_counts_for_both_turns_timers` | worker-side count 0 |
+| check: user cancel | a race was real: a `Continue` sent before the manager heard of Esc/Ctrl+C started a turn on the cancelled run. `ChatState::cancel_run` drops the parked one and refuses later ones for that run; the `Interrupted` of a cancelled turn is dropped (turn moved on) | `a_user_cancel_stops_every_continuation_of_the_run` (Ctrl+C and Esc, both orders) | the late `Continue` produced an `OrchestrateSend` |
+
+Residual: an ask registered under the old approver whose announcement was already queued in the forwarder when the route moved can still be shown on the new turn after its wait was denied; the answer then finds no wait (`AnswerLost`, said) and the worker already got its denial, so nothing hangs. The denial text a worker sees in these cases is the generic "the chat ended before the user answered".

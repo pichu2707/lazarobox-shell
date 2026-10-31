@@ -51,10 +51,10 @@ use crate::core::{
         chat::{
             INTERRUPTED,
             adapters::{Adapter, adapter_for},
-            approval::worker_label,
+            approval::{ApprovalAsk, worker_label},
             engine::{
-                ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role, StreamEvent, Tools,
-                locality, tools_for,
+                Answer, CallId, ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role,
+                StreamEvent, Tools, locality, tools_for,
             },
             guidance::guidance,
             jail_error,
@@ -67,8 +67,8 @@ use crate::core::{
             errors::classify,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             run::{
-                CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunLimits, RunState,
-                UserChoice, WorkerEvent,
+                CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
+                RunState, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
             tools::OrchCall,
@@ -85,10 +85,153 @@ use crate::core::{
     layout::PaneId,
 };
 
-pub use crate::core::ai::orchestra::event::{OrchestraEvent, WorkerRow};
+pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, WorkerRow};
 
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
+
+/// What opens a continuation turn's message; the ledger follows, wrapped.
+const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still open. Below is the run ledger: \
+     the goal and one row per worker. Collect finished workers, write a `handoff` for each, \
+     and call `finish` when the goal is met.";
+
+/// Where a worker's tool rows and asks go. A worker outlives the orchestrator
+/// turn that spawned it (S4 continuations), so its channel and approver are
+/// looked up when it acts, not captured at spawn. They change together, under
+/// one lock.
+struct Route {
+    key: WorkerKey,
+    /// The count the worker's own turn watches for its timers: the one it was
+    /// started with, whatever turn it has outlived since.
+    own: Pending,
+    state: Mutex<Current>,
+}
+
+struct Current {
+    events: mpsc::Sender<StreamEvent>,
+    approver: Arc<dyn Approver>,
+    /// The current orchestrator turn's count, which its approver feeds.
+    pending: Pending,
+    /// Counts the retargets, so a failed send can tell whether the route moved.
+    generation: u64,
+}
+
+impl Route {
+    fn new(
+        key: WorkerKey,
+        events: mpsc::Sender<StreamEvent>,
+        approver: Arc<dyn Approver>,
+        pending: Pending,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            key,
+            own: pending.clone(),
+            state: Mutex::new(Current {
+                events,
+                approver,
+                pending,
+                generation: 0,
+            }),
+        })
+    }
+
+    /// Points the worker at a new turn. Its asks in flight under the old turn
+    /// are denied first (the worker may ask again): their wait sits under a
+    /// turn the new prompt would not name. Then the new turn's approver of
+    /// this worker takes over, a new attempt of its session.
+    fn retarget(
+        &self,
+        events: mpsc::Sender<StreamEvent>,
+        turn: &Arc<dyn Approver>,
+        pending: &Pending,
+    ) {
+        let mut state = lock(&self.state);
+        state.approver.end_worker(self.key);
+        state.approver = turn.for_worker(self.key).unwrap_or_else(|| turn.clone());
+        state.events = events;
+        state.pending = pending.clone();
+        state.generation += 1;
+    }
+
+    /// A channel for the worker's scope whose events reach the current turn's.
+    /// It lives as long as the worker's session: a failed send never stops it.
+    fn forward(route: &Arc<Self>) -> mpsc::Sender<StreamEvent> {
+        let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+        let route = route.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                route.deliver(event).await;
+            }
+        });
+        tx
+    }
+
+    /// Sends `event` to the current turn. A send that fails is retried once
+    /// on the new turn when the route moved meanwhile (a plain row only: an
+    /// ask in flight was denied by the move). Between turns nobody can see an
+    /// ask, so its announcement ends the worker's session (denying the wait)
+    /// until the next turn attaches; a plain row is dropped.
+    async fn deliver(&self, event: StreamEvent) {
+        let (to, seen) = {
+            let state = lock(&self.state);
+            (state.events.clone(), state.generation)
+        };
+        let asks = matches!(
+            &event,
+            StreamEvent::ToolCall {
+                approval: Some(_),
+                ..
+            }
+        );
+        let retry = if to.send(event.clone()).await.is_ok() {
+            return;
+        } else {
+            let state = lock(&self.state);
+            if state.generation == seen {
+                if asks {
+                    state.approver.end_worker(self.key);
+                }
+                return;
+            }
+            state.events.clone()
+        };
+        if !asks {
+            let _ = retry.send(event).await;
+        }
+    }
+}
+
+/// The approver of a worker: whatever its route points at now.
+struct Rerouted(Arc<Route>);
+
+impl Approver for Rerouted {
+    fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        // The turn's approver counts the ask for the turn's timers; the
+        // worker's own timers, if they watch another count, hear it too.
+        let (current, also) = {
+            let state = lock(&self.0.state);
+            let also = (!state.pending.same(&self.0.own)).then(|| self.0.own.enter());
+            (state.approver.clone(), also)
+        };
+        let wait = current.ask(id, ask);
+        async move {
+            let _also = also;
+            wait.await
+        }
+        .boxed()
+    }
+
+    fn is_over(&self) -> bool {
+        lock(&self.0.state).approver.is_over()
+    }
+}
+
+/// What follows an orchestrator turn that ended.
+enum Next {
+    Settle,
+    Go(OrchestraEvent),
+    Stop(String),
+}
 
 /// What `collect` answers when no nonce can be drawn: unwrapped text never
 /// goes out.
@@ -104,6 +247,9 @@ pub struct OrchScope {
     /// The read-scope roots, as typed: the chat origin by default, never
     /// model or worker text. Each one passes the path policy or is dropped.
     pub roots: Vec<String>,
+    /// What the user asked, verbatim: the ledger of a continuation turn
+    /// carries it (S4). Unused when the scope attaches to a run.
+    pub goal: String,
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
     pub limits: RunLimits,
@@ -168,6 +314,8 @@ fn clock_micros() -> u64 {
 /// The run of one pane, with what its workers' turns need.
 struct Live {
     run: Run,
+    /// The user's goal, verbatim: the ledger of every continuation holds it.
+    goal: String,
     scope: ReadScope,
     /// The roots the scope refused, sanitized, with why.
     dropped: Vec<Dropped>,
@@ -176,6 +324,9 @@ struct Live {
     events: mpsc::Sender<StreamEvent>,
     approver: Arc<dyn Approver>,
     pending: Pending,
+    /// Where each running worker's tool rows and asks go: the run's current
+    /// orchestrator turn, retargeted by [`RunManager::attach`].
+    routes: HashMap<WorkerId, Arc<Route>>,
     /// The turn of each worker that runs. Aborting one drops its adapter,
     /// which kills its process group.
     tasks: HashMap<WorkerId, JoinHandle<()>>,
@@ -322,12 +473,14 @@ impl RunManager {
         let live = Live {
             scope: read_scope,
             dropped,
+            goal: scope.goal,
             run: Run::new(run, scope.roster, scope.deadline).with_limits(scope.limits),
             origin: scope.origin,
             profile: scope.profile,
             events: scope.events,
             approver: scope.approver,
             pending: scope.pending,
+            routes: HashMap::new(),
             tasks: HashMap::new(),
             shown: HashMap::new(),
             alerted: None,
@@ -345,6 +498,40 @@ impl RunManager {
         if let Some(old) = old {
             self.end(pane, old);
         }
+        Ok((run, self.handle(pane, run)))
+    }
+
+    /// Starts the continuation turn of run `run` of `pane` (S4, D8): the new
+    /// turn's channel, approver and pending count replace the old turn's for
+    /// the workers spawned from now on, and the run, its workers, roster and
+    /// limits stay as they are. `Err` when the run ended or was replaced.
+    pub fn attach(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        scope: OrchScope,
+    ) -> Result<(RunId, OrchHandle), String> {
+        let attached = self.on_run(pane, run, |live| {
+            // The workers that survive into this turn ask and report through
+            // it: the earlier turn's channel and approver are dead.
+            // A worker that is over keeps its session closed: only the ones
+            // still queued or running are pointed at the new turn.
+            let run = &live.run;
+            live.routes.retain(|id, _| {
+                matches!(
+                    run.status(*id),
+                    Some(WorkerStatus::Queued | WorkerStatus::Running)
+                )
+            });
+            for route in live.routes.values() {
+                route.retarget(scope.events.clone(), &scope.approver, &scope.pending);
+            }
+            live.events = scope.events;
+            live.approver = scope.approver;
+            live.pending = scope.pending;
+            live.turn_over = false;
+        });
+        attached.ok_or_else(|| ENDED.to_owned())?;
         Ok((run, self.handle(pane, run)))
     }
 
@@ -421,14 +608,62 @@ impl RunManager {
         }
     }
 
-    /// The orchestrator turn of run `run` of `pane` ended. The run ends by
+    /// The orchestrator turn of run `run` of `pane` ended. With work pending
+    /// (a worker live, or a finished one with no handoff) the run continues
+    /// in a new turn, or stops at `max_turns` (S4, D8). Otherwise it ends by
     /// itself, with its `Ended`, once none of its workers is queued or
     /// running and no failure waits for the user: at once, or when its last
     /// worker finishes (user decision, 2026-10-29). A run that ended or was
     /// replaced ignores it.
     pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
-        self.on_run(pane, run, |live| live.turn_over = true);
-        self.settle(pane, run);
+        let next = self.on_run(pane, run, |live| {
+            let next = self.next_turn(live);
+            // A run that continues waits for the turn the app starts: it must
+            // not end under it when its last worker finishes meanwhile.
+            live.turn_over = !matches!(next, Next::Go(_));
+            next
+        });
+        match next {
+            Some(Next::Settle) => self.settle(pane, run),
+            Some(Next::Go(event)) => self.send(pane, event),
+            Some(Next::Stop(reason)) => {
+                let live = lock(&self.runs).remove(&pane);
+                if let Some(live) = live {
+                    self.send(pane, OrchestraEvent::Stopped { run, reason });
+                    self.end(pane, live);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// What follows the orchestrator turn of `live` (D8): the continuation
+    /// built from the run ledger, wrapped as data under a nonce drawn for it
+    /// (never a worker transcript), the stop at `max_turns`, or nothing.
+    fn next_turn(&self, live: &mut Live) -> Next {
+        let max = live.run.limits().turns;
+        match live.run.next_turn() {
+            NextTurn::Settle => Next::Settle,
+            NextTurn::Capped(taken) => Next::Stop(format!(
+                "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled"
+            )),
+            NextTurn::Continue(turn) => match (self.nonce)() {
+                Some(bytes) => {
+                    let ledger = live.run.run_ledger(&live.goal).render();
+                    let text = label::wrap(&label::nonce_from(bytes), &ledger);
+                    let run = live.run.id();
+                    Next::Go(OrchestraEvent::Continue(Continuation {
+                        run,
+                        turn,
+                        max,
+                        text: format!("{CONTINUE_HEAD}\n\n{text}"),
+                    }))
+                }
+                None => Next::Stop(format!(
+                    "run stopped: the ledger cannot go to the orchestrator ({NO_NONCE})"
+                )),
+            },
+        }
     }
 
     /// Ends run `run` of `pane` if its turn is over and it has nothing left
@@ -773,6 +1008,7 @@ impl RunManager {
     pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
+                live.routes.remove(&id);
                 if let Some(task) = live.tasks.remove(&id) {
                     task.abort();
                 }
@@ -893,8 +1129,16 @@ impl RunManager {
             run: live.run.id(),
             worker: id,
         };
+        let approver = live.approver.for_worker(key);
+        let route = Route::new(
+            key,
+            live.events.clone(),
+            approver.unwrap_or_else(|| live.approver.clone()),
+            live.pending.clone(),
+        );
+        live.routes.insert(id, route.clone());
         let session = self
-            .open_session(pane, key, live, &spec, &mut request)
+            .open_session(pane, key, &spec, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
         let turn = Turn {
             runner: self.runner.clone(),
@@ -921,9 +1165,9 @@ impl RunManager {
         self: &Arc<Self>,
         pane: PaneId,
         key: WorkerKey,
-        live: &Live,
         spec: &WorkerSpec,
         request: &mut ChatRequest,
+        route: Arc<Route>,
     ) -> Option<Option<Arc<dyn Dispatch>>> {
         let tooling = self.tooling.as_ref()?;
         let (Tools::On { origin, mcp, .. }, Some(locality)) =
@@ -936,13 +1180,10 @@ impl RunManager {
         debug_assert!(!families.contains(Family::Pane));
         let model = spec.model.as_deref().unwrap_or("default");
         let scope = TurnScope {
-            events: live.events.clone(),
+            events: Route::forward(&route),
             locality,
             origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
-            approver: live
-                .approver
-                .for_worker(key)
-                .unwrap_or_else(|| live.approver.clone()),
+            approver: Arc::new(Rerouted(route)),
             external: Slot::default(),
             families,
             // A `code` worker stages in its pane's batch (S7, user decision
@@ -1002,6 +1243,7 @@ impl RunManager {
         self.on_run(pane, key.run, |live| {
             self.close_session(&live.approver, key);
             live.tasks.remove(&key.worker);
+            live.routes.remove(&key.worker);
             match events {
                 Some(events) => {
                     for event in events {

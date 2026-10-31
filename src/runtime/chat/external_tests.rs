@@ -305,6 +305,8 @@ async fn user_tool_listed_and_asked(orchestrated: bool) {
             profile: Profile::default(),
             deadline: Duration::from_secs(60),
             limits: RunLimits::default(),
+            goal: String::new(),
+            attach: None,
         };
         chats.send_orchestrated(pane(1), 4, request, orch);
     } else {

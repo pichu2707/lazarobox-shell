@@ -283,6 +283,7 @@ impl Lab {
             roster,
             origin: self.via.clone(),
             roots: roots.iter().map(|r| (*r).to_owned()).collect(),
+            goal: "build the parser".to_owned(),
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
             limits: RunLimits::default(),
             profile: Profile::Programmer,
@@ -351,6 +352,8 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::AnswerLost
         | OrchestraEvent::Expired { .. }
         | OrchestraEvent::Handoff { .. }
+        | OrchestraEvent::Continue(_)
+        | OrchestraEvent::Stopped { .. }
         | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
@@ -1099,6 +1102,8 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Expired { .. }
             | OrchestraEvent::AnswerLost
             | OrchestraEvent::Handoff { .. }
+            | OrchestraEvent::Continue(_)
+            | OrchestraEvent::Stopped { .. }
             | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Unavailable => None,
         })
@@ -1389,6 +1394,7 @@ async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    handle.call(handoff_of(1)).await;
     lab.sent();
     lab.manager.turn_ended(pane(), run);
     assert_eq!(
@@ -1398,32 +1404,6 @@ async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
     lab.manager.turn_ended(pane(), run);
     assert_eq!(lab.sent(), [], "ended once");
     assert_eq!(handle.call(wait(1)).await, error(ENDED));
-}
-
-// S9: with a worker still running when the turn ends, the run stays until
-// that worker finishes, then ends.
-#[tokio::test]
-async fn a_run_whose_worker_still_runs_ends_when_it_finishes() {
-    let mut lab = lab(Script::Answer("found"));
-    let (run, handle) = lab.start(codex_review());
-    handle.call(spawn(Task::Review, "check")).await;
-    lab.manager.turn_ended(pane(), run);
-    assert!(
-        !lab.sent().contains(&OrchestraEvent::Ended { run }),
-        "the worker still runs"
-    );
-    let mut statuses = Vec::new();
-    loop {
-        match lab.next().await {
-            OrchestraEvent::Ended { run: of } => {
-                assert_eq!(of, run);
-                break;
-            }
-            event => statuses.extend(status_of(&event)),
-        }
-    }
-    assert_eq!(statuses, [WorkerStatus::Done]);
-    assert_eq!(lab.sent(), [], "nothing after Ended");
 }
 
 // S9: a halted run waits for the user's answer even after its turn ended;
@@ -2577,6 +2557,19 @@ fn handoff(id: u32, verdict: Verdict) -> OrchCall {
     }
 }
 
+fn handoff_of(id: u32) -> OrchCall {
+    OrchCall::Handoff {
+        id: WorkerId(id),
+        note: Judgement {
+            verdict: Verdict::OnCourse,
+            reason: "fits".to_owned(),
+            done: "did it".to_owned(),
+            left: "none".to_owned(),
+            decisions: "none".to_owned(),
+        },
+    }
+}
+
 fn without_handoffs(events: Vec<OrchestraEvent>) -> Vec<OrchestraEvent> {
     let kept = events.into_iter().filter(|event| {
         !matches!(
@@ -2729,4 +2722,359 @@ async fn a_cancelled_run_builds_the_missing_handoffs_before_it_ends() {
         matches!(last, Some(OrchestraEvent::Ended { .. })),
         "{events:?}"
     );
+}
+
+/// The scope of a turn that may take `turns` orchestrator turns.
+fn turns_scope(lab: &Lab, turns: usize) -> OrchScope {
+    OrchScope {
+        limits: RunLimits {
+            turns,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    }
+}
+
+fn continues(events: &[OrchestraEvent]) -> Vec<(usize, usize, String)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Continue(c) => Some((c.turn, c.max, c.text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+// Spec (orchestrator-handoffs, Continuation from the ledger): a turn that
+// ends with a worker running continues from the ledger: the goal and the
+// worker's row, wrapped as data, and never the worker's transcript.
+#[tokio::test]
+async fn a_turn_that_ends_with_work_pending_continues_from_the_ledger() {
+    let mut lab = lab(Script::Answer("TRANSCRIPT-OF-THE-WORKER"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    let sent = continues(&events);
+    let [(turn, max, text)] = sent.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!((*turn, *max), (2, 6));
+    assert!(text.contains("build the parser"), "{text}");
+    assert!(text.contains("<untrusted-tool-output id=\""), "{text}");
+    assert!(text.contains("1 review done: handoff pending"), "{text}");
+    assert!(!text.contains("TRANSCRIPT-OF-THE-WORKER"), "{text}");
+    assert!(!events.contains(&OrchestraEvent::Ended { run }));
+    assert!(lab.manager.scope(pane()).is_some(), "the run goes on");
+}
+
+// A continuation turn attaches to the open run: same run, same workers, and
+// the run does not end under it when its last worker finishes.
+#[tokio::test]
+async fn an_attached_turn_keeps_the_run_and_its_workers() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.manager.turn_ended(pane(), run);
+    let (again, next) = (lab.manager.attach(pane(), run, turns_scope(&lab, 6))).unwrap();
+    assert_eq!(again, run);
+    assert_eq!(next.call(wait(1)).await, fine("1: done"));
+    next.call(handoff_of(1)).await;
+    assert!(
+        !lab.sent().contains(&OrchestraEvent::Ended { run }),
+        "the attached turn is not over"
+    );
+    lab.manager.turn_ended(pane(), run);
+    assert!(lab.sent().contains(&OrchestraEvent::Ended { run }));
+}
+
+#[tokio::test]
+async fn attaching_to_a_run_that_is_gone_is_refused() {
+    let lab = lab(Script::Answer("found"));
+    let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    lab.manager.cancel(pane());
+    let gone = lab.manager.attach(pane(), run, turns_scope(&lab, 6));
+    assert_eq!(gone.err().as_deref(), Some(ENDED));
+}
+
+// Spec (configuration, max_turns): at the cap the run ends with a visible
+// line naming the key, the missing handoffs are built and the workers still
+// running are cancelled.
+#[tokio::test]
+async fn at_max_turns_the_run_ends_with_its_fallbacks_and_names_the_key() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 1)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert_eq!(continues(&events), []);
+    let reasons: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Stopped { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons.iter().any(|r| r.contains("max_turns (1)")),
+        "{events:?}"
+    );
+    assert_eq!(handoffs(&events).len(), 1, "the fallback is built");
+    assert!(
+        events.contains(&OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1)]
+        }),
+        "the fallback is announced: {events:?}"
+    );
+    assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
+    assert!(lab.manager.scope(pane()).is_none());
+}
+
+// Never fail silently: with no nonce the ledger cannot go out wrapped, so
+// the run says why and ends instead of continuing bare.
+#[tokio::test]
+async fn a_continuation_with_no_nonce_ends_the_run_and_says_why() {
+    let mut lab = lab_with(Script::Answer("found"), |m, _| m.with_nonce(|| None));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert_eq!(continues(&events), []);
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OrchestraEvent::Stopped { reason, .. } if reason.contains(NO_NONCE))
+        ),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
+}
+
+// Review fix (4.1b): a worker spawned in turn 1 that asks after a
+// continuation attached announces the ask on the NEW turn's channel, under the
+// new turn, and the user's answer under that turn reaches it. Its tool rows
+// follow the same way.
+#[tokio::test]
+async fn a_surviving_workers_ask_goes_through_the_current_turn() {
+    let mut lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let first = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), first).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let mut client = worker_client(&lab.seen).await;
+    lab.manager.turn_ended(pane(), run);
+    let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+    let pending = Pending::new();
+    let second = OrchScope {
+        approver: waits.approver(pane(), 8, pending.clone()),
+        pending,
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    lab.manager.attach(pane(), run, second).unwrap();
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+    client
+        .1
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let Some(StreamEvent::ToolCall { id, .. }) =
+        timeout(Duration::from_secs(5), rx.recv()).await.unwrap()
+    else {
+        panic!("the ask did not reach the current turn");
+    };
+    assert!(lab.turn.1.try_recv().is_err(), "nothing on the dead turn");
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(!waits.decide(worker, 7, id, Decision::Denied("no")));
+    assert!(
+        waits.decide(worker, 8, id, Decision::Denied("no")),
+        "it waited"
+    );
+}
+
+/// A tool call of a worker client that reads a file the run was not given.
+fn read_notes(id: u64) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}})
+}
+
+fn worker_session(run: RunId) -> SessionKey {
+    SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    )
+}
+
+/// The ask the next call of `client` raises, as the app would see it on `rx`.
+async fn raised(client: &mut Client, rx: &mut mpsc::Receiver<StreamEvent>, id: u64) -> CallId {
+    client
+        .1
+        .write_all(format!("{}\n", read_notes(id)).as_bytes())
+        .await
+        .unwrap();
+    loop {
+        match timeout(Duration::from_secs(5), rx.recv()).await.unwrap() {
+            Some(StreamEvent::ToolCall { id, .. }) => return id,
+            // The result of a call denied by the move shows up on the new turn.
+            Some(StreamEvent::ToolResult { .. }) => {}
+            other => panic!("no ask on the current turn: {other:?}"),
+        }
+    }
+}
+
+/// A lab with a hanging worker 1 spawned in turn 7, over a channel the test
+/// owns; `waits` holds its asks.
+async fn surviving_worker() -> (
+    Lab,
+    Arc<Waits>,
+    RunId,
+    Client,
+    mpsc::Receiver<StreamEvent>,
+    Pending,
+) {
+    let lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let (tx, rx) = mpsc::channel(TURN_CHANNEL);
+    let first = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending: pending.clone(),
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), first).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let client = worker_client(&lab.seen).await;
+    (lab, waits, run, client, rx, pending)
+}
+
+fn turn_scope(
+    lab: &Lab,
+    waits: &Arc<Waits>,
+    turn: u64,
+) -> (OrchScope, mpsc::Receiver<StreamEvent>, Pending) {
+    let (tx, rx) = mpsc::channel(TURN_CHANNEL);
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), turn, pending.clone()),
+        pending: pending.clone(),
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    (scope, rx, pending)
+}
+
+// Re-review fix (4.1b): an event the surviving worker emits after its turn's
+// receiver is gone and before the next turn attaches must not kill the route.
+// An ask nobody can be shown is denied, not left waiting; after `attach` the
+// worker's next ask reaches the app.
+#[tokio::test]
+async fn a_worker_that_asks_between_turns_is_denied_and_asks_again_in_the_next() {
+    let (lab, waits, run, mut client, rx, _) = surviving_worker().await;
+    drop(rx);
+    let denied = exchange(&mut client, read_notes(1)).await;
+    assert!(
+        denied["result"]["isError"].as_bool().unwrap_or(false),
+        "{denied}"
+    );
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let id = raised(&mut client, &mut next, 2).await;
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
+
+// Re-review fix (4.1b): an ask in flight when the next turn attaches is denied
+// at once (the worker may ask again), so its wait never sits under a turn the
+// prompt does not show.
+#[tokio::test]
+async fn attach_denies_the_asks_in_flight_under_the_old_turn() {
+    let (lab, waits, run, mut client, mut old, _) = surviving_worker().await;
+    let stale = raised(&mut client, &mut old, 1).await;
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let mut reply = String::new();
+    let read = timeout(Duration::from_secs(5), client.0.read_line(&mut reply)).await;
+    assert!(read.is_ok() && reply.contains("isError"), "{reply}");
+    assert!(!waits.decide(worker_session(run), 7, stale, Decision::Sent));
+    let id = raised(&mut client, &mut next, 2).await;
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
+
+fn routes_of(lab: &Lab, run: RunId) -> usize {
+    lab.manager
+        .on_run(pane(), run, |live| live.routes.len())
+        .unwrap()
+}
+
+// Re-review fix (4.1b): the route of a worker that ended is dropped with it,
+// not at the next attach.
+#[tokio::test]
+async fn a_workers_route_goes_when_the_worker_ends() {
+    let lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    assert_eq!(routes_of(&lab, run), 0, "finished");
+    handle.call(spawn(Task::Review, "again")).await;
+    handle.call(OrchCall::Cancel { id: WorkerId(2) }).await;
+    assert_eq!(routes_of(&lab, run), 0, "cancelled");
+}
+
+// Re-review fix (4.1b, S3a/S3b): attach never revives the session of a worker
+// that is already over, even if its route is still there.
+#[tokio::test]
+async fn attach_does_not_revive_a_worker_that_ended() {
+    let (lab, waits, run, mut client, mut old, _) = surviving_worker().await;
+    lab.manager.on_run(pane(), run, |live| {
+        live.run.cancel(now(), WorkerId(1));
+        live.approver.end_worker(WorkerKey {
+            run,
+            worker: WorkerId(1),
+        });
+    });
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let denied = exchange(&mut client, read_notes(1)).await;
+    assert!(
+        denied["result"]["isError"].as_bool().unwrap_or(false),
+        "{denied}"
+    );
+    assert!(!matches!(next.try_recv(), Ok(StreamEvent::ToolCall { .. })));
+    assert!(!matches!(old.try_recv(), Ok(StreamEvent::ToolCall { .. })));
+}
+
+// Re-review fix (4.1b): an ask of a surviving worker pauses the timers of the
+// NEW orchestrator turn and of the worker's own turn (which watches the
+// pending count it was started with) while the user answers it.
+#[tokio::test]
+async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
+    let (lab, waits, run, mut client, _old, worker_side) = surviving_worker().await;
+    let (scope, mut next, turn_side) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let id = raised(&mut client, &mut next, 1).await;
+    assert_eq!(turn_side.count(), 1, "the new orchestrator turn");
+    assert_eq!(worker_side.count(), 1, "the worker's own timers");
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }

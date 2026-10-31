@@ -53,7 +53,7 @@ use crate::core::{
         config::{ApprovalMode, Assignment, Profile, Task},
         orchestra::{
             RunId, WorkerId, WorkerKey,
-            event::WorkerRow,
+            event::{Continuation, WorkerRow},
             overrides::{FailurePicker, RunOverrides},
             worker::{ErrorClass, WorkerStatus},
         },
@@ -406,6 +406,17 @@ pub struct ChatState {
     orch_turn: Option<u64>,
     /// The pane's run, from its first event until its `Ended`.
     orch_run: Option<RunId>,
+    /// A continuation turn that came before the turn it follows was over
+    /// (S4): it starts when that turn ends. One slot is enough: turns are
+    /// serial, so a run has at most one turn to follow at a time.
+    orch_continue: Option<Continuation>,
+    /// The run the user cancelled with Esc or Ctrl+C: a continuation the
+    /// manager sent before it heard of the cancel must not start.
+    orch_cancelled: Option<RunId>,
+    /// Why the last turn ended in failure (a short line); `None` when it
+    /// ended cleanly or was cut off. A failed orchestrator turn is not
+    /// continued.
+    turn_failure: Option<String>,
     /// Workers seen over (a terminal row) and not running again: an ask of
     /// theirs that arrives late is refused. Dropped with the run.
     ended_workers: std::collections::HashSet<WorkerKey>,
@@ -481,6 +492,9 @@ impl ChatState {
             orch: false,
             orch_turn: None,
             orch_run: None,
+            orch_continue: None,
+            orch_cancelled: None,
+            turn_failure: None,
             ended_workers: Default::default(),
             selected: None,
             cancel_armed: None,
@@ -594,9 +608,40 @@ impl ChatState {
         }
     }
 
+    /// Holds a continuation until the turn it follows is over.
+    pub fn park_continue(&mut self, next: Continuation) {
+        self.orch_continue = Some(next);
+    }
+
+    pub fn set_turn_failure(&mut self, why: Option<String>) {
+        self.turn_failure = why;
+    }
+
+    pub fn turn_failure(&self) -> Option<&str> {
+        self.turn_failure.as_deref()
+    }
+
+    /// The user cancelled `run`: its parked continuation goes, and a later one
+    /// is refused.
+    pub fn cancel_run(&mut self, run: RunId) {
+        self.orch_continue = None;
+        self.orch_cancelled = Some(run);
+    }
+
+    pub fn run_cancelled(&self, run: RunId) -> bool {
+        self.orch_cancelled == Some(run)
+    }
+
+    pub fn take_continue(&mut self) -> Option<Continuation> {
+        self.orch_continue.take()
+    }
+
     /// `run` is over: its overrides, picker and notes go with it when it is
     /// the pane's run, whether its alert is still up or not.
     pub fn end_orch_run(&mut self, run: RunId) {
+        if self.orch_continue.as_ref().is_some_and(|c| c.run == run) {
+            self.orch_continue = None;
+        }
         self.ended_workers.retain(|key| key.run != run);
         if self.orch_run == Some(run) {
             self.selected = None;
