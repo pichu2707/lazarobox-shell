@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::{
     RunId, WorkerId,
+    ledger::Handoff,
     worker::{ErrorClass, WorkerStatus},
 };
 use crate::core::ai::{chat::engine::Usage, config::Task};
@@ -67,6 +68,9 @@ pub enum OrchestraEvent {
     /// The run reached its wall clock (`run_timeout_mins`) and was stopped:
     /// its running workers were killed. `Ended` follows.
     Expired { run: RunId, after: Duration },
+    /// The orchestrator (or lazarobox, for a missing one) wrote a handoff.
+    /// The ledger keeps it in memory; persisting it is the app's seam (4.2).
+    Handoff { run: RunId, handoff: Box<Handoff> },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

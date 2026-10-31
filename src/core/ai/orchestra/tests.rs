@@ -114,13 +114,23 @@ fn wait_collect_and_cancel_validate_their_ids() {
 }
 
 #[test]
-fn the_registry_is_exactly_the_four_tools_and_only_code_workers_write() {
+fn the_registry_is_exactly_the_six_tools_and_only_code_workers_write() {
     let names: Vec<_> = registry_for(Toolset::Orchestrator)
         .into_iter()
         .map(|spec| spec.name)
         .filter(|name| !matches!(name.as_str(), "find_dir" | "list_dir" | "read_file"))
         .collect();
-    assert_eq!(names, ["spawn_agent", "wait", "collect", "cancel"]);
+    assert_eq!(
+        names,
+        [
+            "spawn_agent",
+            "wait",
+            "collect",
+            "cancel",
+            "handoff",
+            "finish"
+        ]
+    );
     for task in Task::SET_ALL {
         let want = match task {
             Task::Code => Toolset::Code,

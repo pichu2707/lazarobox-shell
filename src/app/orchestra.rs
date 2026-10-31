@@ -14,6 +14,7 @@ use crate::core::ai::{
     config::Assignment,
     orchestra::{
         Toolset, WorkerKey,
+        ledger::{Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
         run::{Roster, RunLimits},
         worker::WorkerStatus,
@@ -232,6 +233,21 @@ impl App {
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
                 chat.push_system_line(NO_ORCHESTRA.to_owned());
+            }
+            // The ledger lives in the run manager; the transcript hears the
+            // verdicts that need the user's eye (S4). Persisting the handoff
+            // (engram, degraded mode) is the next slice's seam, right here.
+            OrchestraEvent::Handoff { handoff, .. } => {
+                if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
+                    let Unit::Worker(worker) = handoff.unit;
+                    chat.push_system_line(format!(
+                        "handoff worker {} {} {}: {}",
+                        worker.0,
+                        handoff.kind.id(),
+                        handoff.verdict.label(),
+                        handoff.reason
+                    ));
+                }
             }
             // Only the run it names ends: a replaced run ends after the new
             // one started.

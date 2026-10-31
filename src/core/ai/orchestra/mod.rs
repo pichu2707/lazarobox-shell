@@ -5,6 +5,7 @@
 pub mod changes;
 pub mod errors;
 pub mod event;
+pub mod ledger;
 pub mod overrides;
 pub mod run;
 pub mod scope;
@@ -101,5 +102,7 @@ impl Toolset {
     }
 }
 
+#[cfg(test)]
+mod ledger_tests;
 #[cfg(test)]
 mod tests;

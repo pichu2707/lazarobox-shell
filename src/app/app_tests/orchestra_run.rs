@@ -12,9 +12,11 @@ use super::*;
 use crate::app::orchestra::OrchHint;
 use crate::core::ai::{
     chat::{Entry, OrchAlert},
+    config::Task,
     orchestra::{
         RunId, WorkerId,
         event::{OrchestraEvent, WorkerRow},
+        ledger::{Handoff, Unit, Verdict},
         run::UserChoice,
         worker::{ErrorClass, WorkerStatus},
     },
@@ -109,6 +111,51 @@ fn a_run_that_reached_its_wall_clock_says_which_limit() {
     assert!(!said(&a));
     a.update(event(OrchestraEvent::Expired { run: RUN, after }));
     assert!(said(&a));
+}
+
+fn handed_off(verdict: Verdict) -> OrchestraEvent {
+    OrchestraEvent::Handoff {
+        run: RUN,
+        handoff: Box::new(Handoff {
+            run: RUN,
+            unit: Unit::Worker(WorkerId(2)),
+            kind: Task::Review,
+            engine: "codex".into(),
+            model: None,
+            status: WorkerStatus::Done,
+            verdict,
+            reason: "drifted to the UI".into(),
+            done: "none".into(),
+            left: "none".into(),
+            decisions: "none".into(),
+        }),
+    }
+}
+
+// Spec (orchestrator-handoffs, Verdict stored): an off_course or blocked
+// verdict shows in the transcript with its reason; the others stay quiet.
+#[test]
+fn an_off_course_or_blocked_handoff_is_shown_in_the_transcript() {
+    let said = |a: &App| {
+        let chat = a.panes.get(&chat_id()).and_then(PaneState::chat_state);
+        format!("{:?}", chat.unwrap().entries())
+    };
+    let (mut a, _) = running();
+    for quiet in [Verdict::OnCourse, Verdict::Unknown] {
+        a.update(event(handed_off(quiet)));
+        assert!(!said(&a).contains("drifted"), "{quiet:?}");
+    }
+    for loud in [Verdict::OffCourse, Verdict::Blocked] {
+        a.update(event(handed_off(loud)));
+        let text = said(&a);
+        assert!(
+            text.contains(&format!(
+                "worker 2 review {}: drifted to the UI",
+                loud.label()
+            )),
+            "{text}"
+        );
+    }
 }
 
 pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {

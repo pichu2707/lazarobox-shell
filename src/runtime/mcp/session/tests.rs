@@ -1116,7 +1116,9 @@ async fn an_orchestrator_session_lists_and_dispatches_the_orchestration_tools() 
             "spawn_agent",
             "wait",
             "collect",
-            "cancel"
+            "cancel",
+            "handoff",
+            "finish"
         ]
     );
     send(
