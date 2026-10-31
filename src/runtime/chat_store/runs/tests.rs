@@ -147,12 +147,31 @@ fn recovery_interrupts_only_live_runs_whose_owner_is_gone() {
         .collect();
     let want = [(1, "interrupted"), (2, "live"), (3, "live"), (4, "ended")];
     assert_eq!(phases, want.map(|(i, p)| (i, p.to_owned())));
-    // Asked again while that owner still runs, nothing is new.
-    assert!(
-        recover_runs(&mut conn, owner(55, 5), |pid| pid == 77, 30)
-            .unwrap()
-            .is_empty()
-    );
+    // Asked again while that owner still runs, only the run nobody answered
+    // yet is named (see the next test); the live ones are left alone.
+    let again = recover_runs(&mut conn, owner(55, 5), |pid| pid == 77, 30).unwrap();
+    assert_eq!(again.iter().map(|r| r.id).collect::<Vec<_>>(), [1]);
+}
+
+// Spec: Restart shows an interrupted run (9.1c). A run nobody resumed or
+// discarded is named again at the next restart; ending it (the resume or the
+// discard) stops that.
+#[test]
+fn an_interrupted_run_nobody_answered_is_named_again_until_it_ends() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let live = vec![worker(1, "running")];
+    save_run(&mut conn, &run(1, RunPhase::Live, live), owner(DEAD, 9), 10).unwrap();
+    let first = recover_runs(&mut conn, owner(55, 5), |_| false, 20).unwrap();
+    assert_eq!(first.len(), 1);
+    let second = recover_runs(&mut conn, owner(56, 6), |_| false, 30).unwrap();
+    assert_eq!(second.len(), 1, "named again");
+    assert_eq!(second[0].workers, vec![worker(1, "running")]);
+    assert_eq!(second[0].phase, RunPhase::Interrupted);
+    let ended = run(1, RunPhase::Ended, vec![]);
+    save_run(&mut conn, &ended, owner(56, 6), 40).unwrap();
+    let third = recover_runs(&mut conn, owner(57, 7), |_| false, 50).unwrap();
+    assert!(third.is_empty(), "{third:?}");
 }
 
 #[test]

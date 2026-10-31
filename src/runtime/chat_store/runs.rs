@@ -145,7 +145,8 @@ pub(crate) fn save_run(
 }
 
 /// Marks every live run of another process as interrupted and returns them,
-/// newest first. A row is another process's when its token is not `me`'s (a
+/// with the ones still interrupted from an earlier start (nobody resumed or
+/// discarded them), newest first. A row is another process's when its token is not `me`'s (a
 /// row without one counts as different) and its pid is gone (`alive`) or is
 /// `me`'s own: a reused pid. A run of another instance that still runs is left
 /// alone. Limits: see [`Owner`] (an unrelated live process on a dead owner's
@@ -160,7 +161,8 @@ pub(crate) fn recover_runs(
     let mut found = Vec::new();
     {
         let mut live = tx.prepare(
-            "SELECT id, owner, token, goal FROM runs WHERE phase = 'live' ORDER BY id DESC",
+            "SELECT id, owner, token, goal, phase FROM runs
+             WHERE phase IN ('live', 'interrupted') ORDER BY id DESC",
         )?;
         let rows = live.query_map([], |r| {
             Ok((
@@ -168,11 +170,15 @@ pub(crate) fn recover_runs(
                 r.get::<_, u32>(1)?,
                 r.get::<_, Option<i64>>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
             ))
         })?;
         for row in rows {
-            let (id, pid, token, goal) = row?;
-            if token != Some(me.token) && (pid == me.pid || !alive(pid)) {
+            let (id, pid, token, goal, phase) = row?;
+            // A run already interrupted and not yet resumed or discarded is
+            // named again; a live one only when its owner is gone.
+            let gone = token != Some(me.token) && (pid == me.pid || !alive(pid));
+            if phase == "interrupted" || gone {
                 found.push((id, goal));
             }
         }
@@ -180,7 +186,8 @@ pub(crate) fn recover_runs(
     let mut runs = Vec::new();
     for (id, goal) in found {
         tx.execute(
-            "UPDATE runs SET phase = 'interrupted', updated_at = ?2 WHERE id = ?1",
+            "UPDATE runs SET phase = 'interrupted', updated_at = ?2
+             WHERE id = ?1 AND phase = 'live'",
             (id, now),
         )?;
         let mut stmt = tx.prepare(

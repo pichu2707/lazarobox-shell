@@ -746,3 +746,29 @@ Strict TDD, RED first and observed, in three commits.
 Decisions: the geometry is shared through the render rather than recomputed in the app (the approval height lives in the UI layer); before the first frame the app falls back to pane rows minus 2. With an approval pending, the keys never reach the view (the approval takes them), so the mismatch showed through the wheel. The unused-key notice is not rate-limited: a notice is one replaceable line and held keys do not set it.
 
 Follow-ups after the re-review: the tracer is flushed before `task.abort()` in `end` and `cancel_worker` (RED: `a_cancelled_workers_buffered_text_comes_before_its_cancelled_row` and `a_cancelled_runs_buffered_text_comes_before_ended` failed, the tail trailed the terminal row); `UNUSED_KEY` is set only when no notice is on the line (RED: `an_unused_key_keeps_the_notice_already_shown`, calling the handler directly, because every key clears the notice before its handler runs, so through the keyboard the guard only protects against a notice set earlier in the same event).
+
+## S9, PR 9.1c: resume choice for an interrupted run and the S4b between-turn gaps (branch feat/agent-orchestrator-s9c, on feat/agent-orchestrator-s9b; 9.1c and 9.1 `[x]`, S9 complete)
+
+Strict TDD, tests first with an observed RED each time:
+- Gap notice: `an_ask_denied_between_turns_is_said_in_the_pane` failed (0 notices, expected 1) before `Tracer::denied_in_gap`; `Route::deliver` says the denial before `end_worker`, both when the route did not move and when it moved (the ask was denied by the retarget and is not retried).
+- Re-listing: `an_interrupted_run_nobody_answered_is_named_again_until_it_ends` and the updated `recovery_interrupts_only_live_runs...` failed (the second ask returned nothing) before `recover_runs` selected `phase IN ('live','interrupted')` (only a live one needs the owner check and the UPDATE).
+- Prefix: `r_is_an_unhinted_root_group_that_resumes_or_discards_a_run` failed to compile (no `ResumeRun`/`DiscardRun`); `every_action_is_reachable_exactly_once` count 35 -> 37 on purpose.
+- Message: the three `resume_message` tests failed to compile (no method). `a_goal_that_contains_the_first_nonce_gets_another` passed at once (no RED; it pins the nonce search).
+- App: `orchestra_resume.rs` (10 tests) was written with the prefix test, so its RED was the compile failure; afterwards a mutation (drop `keep_goal`) made `the_resumed_run_keeps_the_original_goal` fail, then reverted.
+
+| Piece | What |
+|-------|------|
+| `RunRecord::resume_message` (core/record.rs) | seed text for the new run: run id, goal wrapped with `label::wrap` (sanitized, token-redacted, capped by the 2 KiB stored cap and `OUTPUT_CAP`), the unfinished workers by id/kind/engine/model (8 named, rest counted), "ask me for the read scope again", "do not relaunch any worker until I say so". The nonce has no random source in the app, so `nonce_for(run, goal)` walks a counter until the goal does not contain it (a goal cannot forge the closing tag) |
+| `app/run_resume.rs` | `Ctrl+Space r r` resume, `Ctrl+Space r d` discard (unhinted root group `r` "run", labelled RUN; the root hint is full). Refusals each say why: gate off, not a chat, nothing interrupted, ORCH off in the pane (says Ctrl+O), a run active, pane busy or a draft in the composer (a send would clear it), engine not ready, tools refusal (the pane's own text) |
+| resume | a NEW run through the normal send path (`send_with`, `attach: None`): fresh run id, normal scope ask (nothing of the old grant is stored or reused), `keep_goal` re-set to the original goal so the stored run does not nest seed text. The old row is closed `ended` by a `SaveRun` (no new phase or store command; `resumed` was not added) so it is not offered again |
+| discard | same close, plus a pane line `run N discarded; it will not be offered again` |
+| `RunKeep.interrupted` | the runs of `RunsRecovered`, newest first; each action takes the front one. The recovered notice now ends with a line naming both keys |
+| store | `recover_runs` also returns runs still `interrupted` from an earlier start, so ignoring a run keeps it offered until it is resumed or discarded (it was named once only before) |
+| gap 1 | `Tracer::denied_in_gap`: `worker N: a tool approval was refused between two orchestrator turns; the worker can ask again` (an `OrchestraEvent::Notice`) |
+
+### Decisions and deviations
+- Resume UI: a prefix group `r` (not a new unprefixed chat key, not a menu row). Chosen because the interrupted runs are named in the pane at the first ORCH toggle-on and a prefix leaf needs no modal state in the composer; the cost is two keys and the hint text in the pane line.
+- Unfinished workers are only named in the seed; the orchestrator is told to propose and wait. Nothing relaunches by itself.
+- The old row is `ended`, not a new `resumed` phase (the spec allows either; no schema or enum change).
+- Gap 2 of `orchestra/s9-between-turn-gaps` (atomic ask registration plus announce in the host) is NOT done: the wait is registered in `ForTurn::ask` when the tool runs and the announce is a separate `StreamEvent` sent by the host, so making them atomic means changing the Approver contract across every tool path and the route, well beyond this PR's budget. The wait still ends at the next attach (`retarget` calls `end_worker`), at the total limit or at the run's end, as documented. Left as a follow-up.
+- Dropped plain tool rows in the gap are no longer invisible: S9 9.1b traces every row to the worker transcript before delivery.

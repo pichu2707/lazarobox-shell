@@ -34,6 +34,9 @@ pub(super) struct RunKeep {
     /// The goal of the run a pane is about to start, until its first worker.
     goals: HashMap<PaneId, String>,
     runs: HashMap<RunId, Kept>,
+    /// The runs a restart found interrupted and nobody answered yet, newest
+    /// first. A run leaves when it is resumed or discarded.
+    pub(super) interrupted: Vec<RunRecord>,
     /// The store was asked for interrupted runs in this process.
     asked: bool,
     save_failure_said: bool,
@@ -149,6 +152,7 @@ impl App {
     pub(super) fn on_runs_reply(&mut self, reply: &StoreReply) {
         let (pane, lines) = match reply {
             StoreReply::RunsRecovered { pane, runs } => {
+                self.run_keep.interrupted.clone_from(runs);
                 let mut lines: Vec<_> = (runs.iter().take(SHOWN_MAX))
                     .map(RunRecord::interrupted_line)
                     .collect();
@@ -157,6 +161,9 @@ impl App {
                         "{} more runs were interrupted by a restart",
                         runs.len() - SHOWN_MAX
                     ));
+                }
+                if !runs.is_empty() {
+                    lines.push(super::run_resume::HOW_TO.to_owned());
                 }
                 (*pane, lines)
             }

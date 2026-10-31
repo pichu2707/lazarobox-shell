@@ -68,6 +68,7 @@ mod orchestra;
 mod picker;
 mod review;
 mod run;
+mod run_resume;
 mod run_store;
 mod run_view;
 mod scroll;
@@ -2384,6 +2385,8 @@ impl App {
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
                 | PrefixAction::ViewWorker
+                | PrefixAction::ResumeRun
+                | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
@@ -2468,6 +2471,8 @@ impl App {
                 Vec::new()
             }
             Step::Run(PrefixAction::ViewWorker) => self.view_worker(),
+            Step::Run(PrefixAction::ResumeRun) => self.resume_run(),
+            Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -8374,6 +8379,8 @@ mod app_tests {
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.
     mod orchestra_override;
+    /// Resuming or discarding an interrupted run (S9 9.1c).
+    mod orchestra_resume;
     /// The failure alert of a run, its keys and the run's events.
     mod orchestra_run;
     mod orchestra_send;

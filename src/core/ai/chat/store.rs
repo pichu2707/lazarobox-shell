@@ -142,7 +142,7 @@ pub enum StoreCmd {
     /// with `RunsFailed`.
     SaveRun { pane: PaneId, run: Box<RunRecord> },
     /// Marks the live runs whose process is gone as interrupted and answers
-    /// with them: `RunsRecovered`, or `RunsFailed`. Nothing is started.
+    /// with them and the ones still interrupted from before (S9): `RunsRecovered`, or `RunsFailed`. Nothing is started.
     RecoverRuns { pane: PaneId },
     /// Finish what is queued and stop.
     Quit,
