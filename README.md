@@ -215,7 +215,7 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | :--- | :--- |
 | `↑` `k` / `↓` `j` | Desplaza una fila |
 | `PageUp` / `PageDown` / `Home` / `End` | Desplaza por páginas / al principio / al final |
-| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo |
+| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo. Si pulsas `y` con líneas sin ver, no aprueba: el contador avisa 2 s de cuántas faltan (`y needs every line seen: N left, scroll ↓`) |
 | `n` / `Esc` | Rechaza, tras el mismo retardo (en el acto si el lote no se puede revisar) |
 | `Ctrl+C` | Rechaza y cancela la respuesta en curso |
 
@@ -926,7 +926,7 @@ El modelo puede preparar cambios a lo largo de varios turnos antes de proponer. 
 
 | Tecla                 | Acción                                                                                              |
 | :-------------------- | :-------------------------------------------------------------------------------------------------- |
-| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `y locked` o `y in 0.4s`. |
+| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `↓ to unlock y` o `y in 0.4s`; si pulsas `y` con líneas sin ver, durante 2 s indica cuántas faltan y que debes desplazarte. |
 | `n` / `Esc`           | Rechaza **todo** el lote: no se escribe nada y el modelo recibe `denied`. También esperan los 800 ms de armado, salvo que el lote no se pueda revisar (demasiado grande), donde `n` actúa de inmediato. |
 | `Ctrl+C`              | Deniega la llamada (`cancelled`) y cancela el turno. El lote se queda como huérfano (ver abajo).    |
 | `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `Home` `End`, rueda | Desplazan la revisión. Saltar con `Home`/`End` no cuenta las líneas que se saltan; solo cuenta lo que se dibuja. |
