@@ -19,10 +19,10 @@ use crate::core::ai::orchestra::record::{RunPhase, RunRecord, WorkerRecord};
 /// The most runs the store keeps; a live run is never removed.
 pub const RUNS_KEPT: usize = 50;
 
-/// How long the run-id floor waits for a writer before it gives up.
 /// How long an interrupted run stays offered before recovery closes it, in
 /// seconds (30 days).
 const STALE_AFTER: i64 = 30 * 24 * 60 * 60;
+/// How long the run-id floor waits for a writer before it gives up.
 const FLOOR_BUSY: Duration = Duration::from_millis(100);
 
 /// Who owns a live run: the process id plus a token of this process only.
