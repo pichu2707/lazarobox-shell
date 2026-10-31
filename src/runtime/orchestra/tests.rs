@@ -3345,6 +3345,84 @@ async fn an_ask_denied_between_turns_is_said_in_the_pane() {
     );
 }
 
+fn ask_call(id: u64, key: WorkerKey) -> StreamEvent {
+    StreamEvent::ToolCall {
+        id: CallId(id),
+        name: "read_file".into(),
+        summary: "a.rs".into(),
+        approval: Some(Box::new(ApprovalAsk::WorkerRead {
+            path: "/a.rs".into(),
+            label: "1/1 review".into(),
+            worker: key,
+            reach: Reach::Broad,
+            cloud: false,
+        })),
+    }
+}
+
+fn notices(app: &mut mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>) -> Vec<String> {
+    std::iter::from_fn(|| app.try_recv().ok())
+        .filter_map(|(_, event)| match event {
+            OrchestraEvent::Notice { text } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+// 9.1c review W4: several asks in one gap are said once per worker, not once
+// per ask; the next gap says it again.
+#[tokio::test]
+async fn asks_denied_in_one_gap_are_said_once_per_worker() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer::new(events, pane(), key);
+    let (turn, seen) = mpsc::channel(TURN_CHANNEL);
+    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    drop(seen);
+    for id in 1..=3 {
+        route.deliver(ask_call(id, key)).await;
+    }
+    assert_eq!(notices(&mut app).len(), 1);
+    // The next turn attaches and goes away again: a new gap.
+    let (turn, seen) = mpsc::channel(TURN_CHANNEL);
+    route.retarget(
+        turn,
+        &(Arc::new(Unwired) as Arc<dyn Approver>),
+        &Pending::new(),
+    );
+    drop(seen);
+    route.deliver(ask_call(4, key)).await;
+    assert_eq!(notices(&mut app).len(), 1);
+}
+
+// The same, when the route moved while the send failed: the words say the
+// orchestrator moved on, not that nobody was listening.
+#[tokio::test]
+async fn an_ask_lost_to_a_moved_route_says_the_orchestrator_moved_on() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer::new(events, pane(), key);
+    let (turn, seen) = mpsc::channel(TURN_CHANNEL);
+    let old = turn.clone();
+    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    drop(seen);
+    let (new_turn, _keep) = mpsc::channel(TURN_CHANNEL);
+    let next: Arc<dyn Approver> = Arc::new(Unwired);
+    route.retarget(new_turn, &next, &Pending::new());
+    // Both asks were sent on the old channel, from before the route moved.
+    route.send_from(ask_call(1, key), old.clone(), 0).await;
+    route.send_from(ask_call(2, key), old, 0).await;
+    let said = notices(&mut app);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("moved on"), "{said:?}");
+}
+
 // Re-review fix (4.1b): an ask in flight when the next turn attaches is denied
 // at once (the worker may ask again), so its wait never sits under a turn the
 // prompt does not show.
