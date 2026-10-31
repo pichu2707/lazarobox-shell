@@ -199,6 +199,15 @@ impl App {
             (key.code, key.modifiers),
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
+        // A `y` the gate will refuse says why; the gate itself is untouched.
+        if !repeat && key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
+            let now = (self.clock)();
+            if let Some(view) = self.review_mut(id)
+                && view.y_pressed(now)
+            {
+                self.dirty = true;
+            }
+        }
         if repeat || (answers && !self.review_answerable(id)) {
             return Vec::new();
         }
