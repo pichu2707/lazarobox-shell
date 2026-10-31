@@ -2252,6 +2252,8 @@ fn stored_run(id: u64, phase: RunPhase) -> Box<RunRecord> {
             model: None,
             status: "running".into(),
         }],
+        folder: None,
+        supersedes: None,
     })
 }
 

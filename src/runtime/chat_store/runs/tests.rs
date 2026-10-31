@@ -30,6 +30,8 @@ fn run(id: u64, phase: RunPhase, workers: Vec<WorkerRecord>) -> RunRecord {
         goal: format!("goal {id}"),
         phase,
         workers,
+        folder: None,
+        supersedes: None,
     }
 }
 
@@ -384,4 +386,119 @@ fn a_locked_database_fails_the_floor_quickly_and_says_why() {
     let read = highest_run(&path);
     assert!(started.elapsed() < std::time::Duration::from_millis(1500));
     assert_eq!(read, Err(StoreError::Sqlite("database is locked")));
+}
+
+fn phase_of_run(conn: &Connection, id: i64) -> String {
+    conn.query_row("SELECT phase FROM runs WHERE id = ?1", [id], |r| r.get(0))
+        .unwrap()
+}
+
+fn in_folder(mut r: RunRecord, folder: &str) -> RunRecord {
+    r.folder = Some(folder.into());
+    r
+}
+
+// 9.1c review W1: a run keeps the folder it started in, and recovery gives it
+// back; a run stored before the column has none.
+#[test]
+fn a_runs_folder_is_stored_and_recovered_and_a_run_without_one_has_none() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let a = in_folder(run(1, RunPhase::Live, vec![]), "/work/a");
+    save_run(&mut conn, &a, owner(DEAD, 9), 10).unwrap();
+    save_run(
+        &mut conn,
+        &run(2, RunPhase::Live, vec![]),
+        owner(DEAD, 9),
+        10,
+    )
+    .unwrap();
+    let found = recover_runs(&mut conn, owner(55, 5), |_| false, 20).unwrap();
+    let folders: Vec<_> = found.iter().map(|r| (r.id, r.folder.clone())).collect();
+    assert_eq!(folders, [(2, None), (1, Some("/work/a".into()))]);
+    // A later save does not change where the run started.
+    let moved = in_folder(run(1, RunPhase::Ended, vec![]), "/work/b");
+    save_run(&mut conn, &moved, owner(DEAD, 9), 30).unwrap();
+    let kept: String = conn
+        .query_row("SELECT folder FROM runs WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "/work/a");
+}
+
+#[test]
+fn a_runs_table_without_the_folder_column_gains_it_and_keeps_its_rows() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    {
+        let conn = open_as(&path, me()).unwrap();
+        conn.execute_batch(
+            "DROP TABLE run_workers; DROP TABLE runs;
+             CREATE TABLE runs (id INTEGER PRIMARY KEY, owner INTEGER NOT NULL,
+                 token INTEGER, goal TEXT NOT NULL, phase TEXT NOT NULL,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE run_workers (
+                 run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                 worker INTEGER NOT NULL, kind TEXT NOT NULL, engine TEXT NOT NULL,
+                 model TEXT, status TEXT NOT NULL, PRIMARY KEY (run_id, worker)
+             ) WITHOUT ROWID;
+             INSERT INTO runs VALUES (4, 1, NULL, 'old', 'interrupted', 1, 1);",
+        )
+        .unwrap();
+    }
+    let mut conn = open_as(&path, me()).unwrap();
+    let found = recover_runs(&mut conn, owner(55, 5), |_| false, 2).unwrap();
+    assert_eq!((found.len(), found[0].folder.clone()), (1, None));
+    let a = in_folder(run(5, RunPhase::Live, vec![]), "/w");
+    save_run(&mut conn, &a, owner(1, 1), 3).unwrap();
+}
+
+// 9.1c review W2: a resumed run's first save closes the run it supersedes, and
+// only if that row is still interrupted (compare and set).
+#[test]
+fn a_run_that_supersedes_closes_the_old_row_only_while_it_is_interrupted() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    for id in [1, 2] {
+        let r = run(id, RunPhase::Live, vec![worker(1, "running")]);
+        save_run(&mut conn, &r, owner(DEAD, 9), 10).unwrap();
+    }
+    recover_runs(&mut conn, owner(55, 5), |_| false, 20).unwrap();
+    let mut new = run(10, RunPhase::Live, vec![worker(1, "running")]);
+    new.supersedes = Some(1);
+    save_run(&mut conn, &new, owner(55, 5), 30).unwrap();
+    assert_eq!(phase_of_run(&conn, 1), "ended");
+    assert_eq!(phase_of_run(&conn, 2), "interrupted");
+    // Another instance resuming the same row finds it closed already: no-op.
+    let mut again = run(11, RunPhase::Live, vec![]);
+    again.supersedes = Some(1);
+    save_run(&mut conn, &again, owner(56, 6), 40).unwrap();
+    assert_eq!(phase_of_run(&conn, 1), "ended");
+    // A row that is not interrupted is never closed this way.
+    let mut live = run(12, RunPhase::Live, vec![]);
+    live.supersedes = Some(10);
+    save_run(&mut conn, &live, owner(55, 5), 50).unwrap();
+    assert_eq!(phase_of_run(&conn, 10), "live");
+}
+
+// 9.1c review S4: an interrupted run older than 30 days is closed at recovery
+// and not named.
+#[test]
+fn an_interrupted_run_older_than_thirty_days_is_ended_not_named() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    save_run(
+        &mut conn,
+        &run(1, RunPhase::Live, vec![]),
+        owner(DEAD, 9),
+        1_000,
+    )
+    .unwrap();
+    let first = recover_runs(&mut conn, owner(55, 5), |_| false, 1_000).unwrap();
+    assert_eq!(first.len(), 1);
+    let day = 24 * 60 * 60;
+    let soon = recover_runs(&mut conn, owner(55, 5), |_| false, 1_000 + 29 * day).unwrap();
+    assert_eq!(soon.len(), 1, "29 days");
+    let late = recover_runs(&mut conn, owner(55, 5), |_| false, 1_000 + 31 * day).unwrap();
+    assert!(late.is_empty(), "31 days");
+    assert_eq!(phase_of_run(&conn, 1), "ended");
 }

@@ -39,11 +39,13 @@ baseline.
   worker selected (Alt+Up/Down), `Ctrl+Space W` opens a full-pane, read-only
   transcript of it (its output and tool rows, the last 128 KiB, cleaned of
   control characters); Esc or `q` close it and it follows new output.
-  An interrupted run is named again at each start until you answer it:
-  `Ctrl+Space r r` starts a new run from its goal (the read scope is asked
-  again and no unfinished worker relaunches without your word) and `Ctrl+Space
-  r d` discards it. An approval refused between two orchestrator turns now
-  says so in the pane.
+  An interrupted run is named again at each start until you answer it, in the
+  folder it started in only (runs of other folders are counted, never shown):
+  `Ctrl+Space r r` starts a new run from its goal, with its read scope set again
+  from the chat folder and the orchestrator told to relaunch no worker until you
+  say so, and `Ctrl+Space r d` discards it. The old run closes when the new one
+  has a worker; one older than 30 days is closed unseen. An approval refused
+  between two orchestrator turns now says so in the pane.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

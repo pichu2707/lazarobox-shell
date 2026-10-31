@@ -1,10 +1,17 @@
 //! The choice about an interrupted run (agent-orchestrator S9 9.1c): `Ctrl+Space
 //! r r` starts a NEW run in the focused ORCH pane from the newest one a restart
-//! interrupted, `Ctrl+Space r d` discards it. Nothing runs without that choice.
-//! The new run is seeded with the stored goal (wrapped as data) and the names of
-//! the unfinished workers, none of which relaunches until the user says so, and
-//! it asks its read scope like any run. Either way the old row is closed in the
-//! store, so it is not offered again. Every refusal says why.
+//! interrupted in this chat's folder, `Ctrl+Space r d` discards it. Nothing runs
+//! without that choice. The new run is seeded with the stored goal (wrapped as
+//! data) and the names of the unfinished workers; it sets its read scope like
+//! any run. A run of another folder, or one stored with no folder, is never
+//! offered here: its goal would leave for this pane's engine. A discard closes
+//! the old row at once; a resume closes it with the new run's first worker (the
+//! store does it, only while the row is still interrupted), and until then the
+//! row is not offered twice here and comes back if the turn never gets a worker.
+//! Two instances can each resume the same row: the second close changes nothing.
+//! Every refusal says why.
+
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::core::ai::{
@@ -13,10 +20,14 @@ use crate::core::ai::{
 };
 
 /// Said after the interrupted runs are named.
-pub(super) const HOW_TO: &str = "resume the newest with Ctrl+Space r r (it asks the read scope again \
-     and relaunches nothing without your word), or discard it with Ctrl+Space r d";
+pub(super) const HOW_TO: &str = "resume the newest with Ctrl+Space r r (the new run sets its read scope \
+     again from the chat folder, and the orchestrator is told to relaunch no worker until you \
+     say so), or discard it with Ctrl+Space r d";
 /// Said when nothing is waiting for an answer.
 const NONE_LEFT: &str = "No interrupted run to resume or discard";
+/// Said when the interrupted runs belong to other folders.
+const OTHER_FOLDER: &str =
+    "The interrupted runs belong to other folders; open a chat there to resume or discard them";
 /// Said when the orchestrator gate is off.
 const GATE_OFF: &str = "The orchestrator is off; enable it in the menu (Ctrl+Space m)";
 /// Said on a pane that is not a chat.
@@ -33,7 +44,19 @@ const NOT_READY: &str = "The engine is not ready yet; try again in a moment";
 /// Said when the turn did not go and no other reason is known.
 const NOT_SENT: &str = "The run was not resumed; try again";
 
+/// Whether `run` started in `here`: both known and equal. A run stored with no
+/// folder (before folders were kept) is never the same as any folder.
+pub(super) fn same_folder(run: &RunRecord, here: Option<&Path>) -> bool {
+    matches!((run.folder.as_deref(), here), (Some(a), Some(b)) if a == b)
+}
+
 impl App {
+    /// The folder of chat `id`, as the chat store keeps it.
+    pub(super) fn chat_folder(&self, id: PaneId) -> Option<PathBuf> {
+        let chat = self.panes.get(&id)?.chat_state()?;
+        chat.origin_cwd().map(Path::to_path_buf)
+    }
+
     /// The record that closes run `run` in the store: ended, with no workers
     /// (the store keeps the ones it has).
     fn closing(&self, run: &RunRecord) -> Effect {
@@ -44,32 +67,52 @@ impl App {
                 goal: run.goal.clone(),
                 phase: RunPhase::Ended,
                 workers: Vec::new(),
+                folder: None,
+                supersedes: None,
             }),
         })
     }
 
-    /// What stops the choice about an interrupted run in the focused pane.
-    fn choice_refusal(&self) -> Option<&'static str> {
+    /// Which interrupted run the focused chat may act on: the newest of its
+    /// folder, or why there is none.
+    fn offered_here(&self) -> Result<usize, &'static str> {
         if !self.orch_gate() {
-            return Some(GATE_OFF);
+            return Err(GATE_OFF);
         }
         if !self.focused_is_chat() {
-            return Some(CHAT_ONLY);
+            return Err(CHAT_ONLY);
         }
-        self.run_keep.interrupted.is_empty().then_some(NONE_LEFT)
+        let here = self.chat_folder(self.tab().focus);
+        let runs = &self.run_keep.interrupted;
+        (runs.iter())
+            .position(|run| same_folder(run, here.as_deref()))
+            .ok_or(if runs.is_empty() {
+                NONE_LEFT
+            } else {
+                OTHER_FOLDER
+            })
     }
 
-    /// `Prefix r r`: a new run from the newest interrupted one.
+    /// `Prefix r r`: a new run from the newest interrupted one of this folder.
     pub(super) fn resume_run(&mut self) -> Vec<Effect> {
         let id = self.tab().focus;
-        let said = self.choice_refusal().or_else(|| self.resume_blocked(id));
-        if let Some(text) = said {
+        let at = match self.offered_here() {
+            Ok(at) => at,
+            Err(text) => {
+                self.notice = Some(text.to_owned());
+                return Vec::new();
+            }
+        };
+        if let Some(text) = self.resume_blocked(id) {
             self.notice = Some(text.to_owned());
             return Vec::new();
         }
         let availability = self.turn_availability(id);
-        let run = self.run_keep.interrupted[0].clone();
-        let mut effects = self.send_with(id, &run.resume_message(), &availability, None);
+        let run = self.run_keep.interrupted[at].clone();
+        // The new run records and shows the goal the user gave, not the seed.
+        self.run_keep.resume_goal = Some(run.goal.clone());
+        let effects = self.send_with(id, &run.resume_message(), &availability, None);
+        self.run_keep.resume_goal = None;
         if effects.is_empty() {
             // `orch_refusal` shows its own reason in the pane.
             if self.orch_refusal(id).is_none() {
@@ -77,11 +120,27 @@ impl App {
             }
             return effects;
         }
-        self.run_keep.interrupted.remove(0);
-        // The new run keeps the goal the user gave, not the seed around it.
-        self.keep_goal(id, &run.goal);
-        effects.push(self.closing(&run));
+        // Off the list while it starts; the first worker closes it in the store.
+        self.run_keep.interrupted.remove(at);
+        self.run_keep.resuming.insert(id, run);
         effects
+    }
+
+    /// The resume of pane `id` got no worker (its turn failed, was cancelled
+    /// or ended): the run is offered again and the pane says so.
+    pub(super) fn resume_not_started(&mut self, id: PaneId) {
+        let Some(run) = self.run_keep.resuming.remove(&id) else {
+            return;
+        };
+        let line = format!(
+            "run {} is still interrupted; resume it again with Ctrl+Space r r",
+            run.id
+        );
+        self.run_keep.offer_again(run);
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system_line(line);
+            self.dirty = true;
+        }
     }
 
     /// Why pane `id` cannot start the resumed run right now.
@@ -100,13 +159,17 @@ impl App {
         (!ready || chat.prompt().is_none()).then_some(NOT_READY)
     }
 
-    /// `Prefix r d`: the newest interrupted run is closed and not offered again.
+    /// `Prefix r d`: the newest interrupted run of this folder is closed and
+    /// not offered again.
     pub(super) fn discard_run(&mut self) -> Vec<Effect> {
-        if let Some(text) = self.choice_refusal() {
-            self.notice = Some(text.to_owned());
-            return Vec::new();
-        }
-        let run = self.run_keep.interrupted.remove(0);
+        let at = match self.offered_here() {
+            Ok(at) => at,
+            Err(text) => {
+                self.notice = Some(text.to_owned());
+                return Vec::new();
+            }
+        };
+        let run = self.run_keep.interrupted.remove(at);
         let id = self.tab().focus;
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(format!(

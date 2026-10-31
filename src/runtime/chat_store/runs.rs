@@ -6,7 +6,7 @@
 
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,6 +20,9 @@ use crate::core::ai::orchestra::record::{RunPhase, RunRecord, WorkerRecord};
 pub const RUNS_KEPT: usize = 50;
 
 /// How long the run-id floor waits for a writer before it gives up.
+/// How long an interrupted run stays offered before recovery closes it, in
+/// seconds (30 days).
+const STALE_AFTER: i64 = 30 * 24 * 60 * 60;
 const FLOOR_BUSY: Duration = Duration::from_millis(100);
 
 /// Who owns a live run: the process id plus a token of this process only.
@@ -57,13 +60,17 @@ impl Owner {
 /// before it existed (a nullable column, so nothing else changes).
 pub(super) fn ensure(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
     tx.execute_batch(SCHEMA_RUNS)?;
-    let present: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = 'token')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !present {
-        tx.execute_batch("ALTER TABLE runs ADD COLUMN token INTEGER")?;
+    // Columns added after the table first shipped: nullable, so nothing else
+    // changes and an older build ignores them.
+    for (column, kind) in [("token", "INTEGER"), ("folder", "TEXT")] {
+        let present: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = ?1)",
+            [column],
+            |r| r.get(0),
+        )?;
+        if !present {
+            tx.execute_batch(&format!("ALTER TABLE runs ADD COLUMN {column} {kind}"))?;
+        }
     }
     Ok(())
 }
@@ -73,6 +80,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id         INTEGER PRIMARY KEY,
     owner      INTEGER NOT NULL,
     token      INTEGER,
+    folder     TEXT,
     goal       TEXT NOT NULL,
     phase      TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -111,12 +119,29 @@ pub(crate) fn save_run(
     let id = id_of(run.id)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let written = tx.execute(
-        "INSERT INTO runs(id, owner, token, goal, phase, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        "INSERT INTO runs(id, owner, token, goal, phase, created_at, updated_at, folder)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET goal = ?4, phase = ?5, updated_at = ?6
          WHERE runs.phase = 'live' OR excluded.phase = 'ended'",
-        (id, owner.pid, owner.token, &run.goal, run.phase.id(), now),
+        (
+            id,
+            owner.pid,
+            owner.token,
+            &run.goal,
+            run.phase.id(),
+            now,
+            run.folder.as_deref().and_then(Path::to_str),
+        ),
     )?;
+    // The first save of a resumed run closes the run it resumes, if nobody
+    // did already (another instance may have resumed the same row).
+    if let Some(old) = run.supersedes {
+        tx.execute(
+            "UPDATE runs SET phase = 'ended', updated_at = ?2
+             WHERE id = ?1 AND phase = 'interrupted'",
+            (id_of(old)?, now),
+        )?;
+    }
     tx.execute(
         "INSERT INTO run_high(id, high) VALUES (1, ?1)
          ON CONFLICT(id) DO UPDATE SET high = max(high, ?1)",
@@ -158,10 +183,15 @@ pub(crate) fn recover_runs(
     now: i64,
 ) -> Result<Vec<RunRecord>, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A run nobody answered for [`STALE_AFTER`] is closed, not named again.
+    tx.execute(
+        "UPDATE runs SET phase = 'ended' WHERE phase = 'interrupted' AND updated_at < ?1",
+        [now.saturating_sub(STALE_AFTER)],
+    )?;
     let mut found = Vec::new();
     {
         let mut live = tx.prepare(
-            "SELECT id, owner, token, goal, phase FROM runs
+            "SELECT id, owner, token, goal, phase, folder FROM runs
              WHERE phase IN ('live', 'interrupted') ORDER BY id DESC",
         )?;
         let rows = live.query_map([], |r| {
@@ -171,20 +201,21 @@ pub(crate) fn recover_runs(
                 r.get::<_, Option<i64>>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })?;
         for row in rows {
-            let (id, pid, token, goal, phase) = row?;
+            let (id, pid, token, goal, phase, folder) = row?;
             // A run already interrupted and not yet resumed or discarded is
             // named again; a live one only when its owner is gone.
             let gone = token != Some(me.token) && (pid == me.pid || !alive(pid));
             if phase == "interrupted" || gone {
-                found.push((id, goal));
+                found.push((id, goal, folder));
             }
         }
     }
     let mut runs = Vec::new();
-    for (id, goal) in found {
+    for (id, goal, folder) in found {
         tx.execute(
             "UPDATE runs SET phase = 'interrupted', updated_at = ?2
              WHERE id = ?1 AND phase = 'live'",
@@ -210,6 +241,8 @@ pub(crate) fn recover_runs(
             goal,
             phase: RunPhase::Interrupted,
             workers,
+            folder: folder.map(PathBuf::from),
+            supersedes: None,
         });
     }
     tx.commit()?;
