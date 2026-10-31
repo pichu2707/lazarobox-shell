@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
-use super::steps::{Mark, Step, StepError, Steps};
+use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -54,6 +54,14 @@ impl Roster {
         let found = self.0.iter().find(|(known, _)| *known == task);
         found.map_or(NONE, |(_, availability)| availability)
     }
+}
+
+/// A step that closed: its handoff and the `code` workers the grant ended.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StepDone {
+    pub handoff: Handoff,
+    /// Queued `code` workers refused because the goal became read-only.
+    pub refused: Vec<WorkerId>,
 }
 
 /// What follows an orchestrator turn that ended (S4, D8).
@@ -339,6 +347,11 @@ impl Run {
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
+        // A read-only goal starts no code worker, however it got here (a
+        // retry, a relaunch).
+        let code = self.slots[index(id)].spec.task == Task::Code;
+        let refusal =
+            refusal.or_else(|| (code && self.steps.read_only()).then(|| READ_ONLY.to_owned()));
         if let Some(reason) = refusal {
             return self.end(
                 now,
@@ -537,11 +550,25 @@ impl Run {
         step: Step,
         mark: Mark,
         note: Judgement,
-    ) -> Result<Handoff, StepError> {
+    ) -> Result<StepDone, StepError> {
         if matches!(self.state, RunState::Finished | RunState::Cancelled) {
             return Err(StepError::Ended);
         }
         self.steps.check(step)?;
+        self.steps.check_mark(step, mark)?;
+        if step == Step::Classify && note.reason.trim().is_empty() {
+            return Err(StepError::NoReason);
+        }
+        let narrows = mark == Mark::Grant(Grant::ReadOnly) && !self.steps.read_only();
+        if narrows {
+            // A code worker that runs would keep writing: cancel it first.
+            if let Some(id) = self
+                .ids(WorkerStatus::Running, |s| s.spec.task == Task::Code)
+                .first()
+            {
+                return Err(StepError::CodeRunning(*id));
+            }
+        }
         let (engine, model) = match self.roster.get(Task::Orchestrate) {
             Availability::Ready { engine, model } => (engine.clone(), model.clone()),
             _ => (String::new(), None),
@@ -554,10 +581,42 @@ impl Run {
             model,
             status: WorkerStatus::Done,
         };
+        // A step closes even while the run is halted, its verdict forced to
+        // `blocked`: the same rule as a worker's handoff (D17).
         let handoff = Handoff::of(facts, note, self.forced_by().is_some());
         self.steps.record(step, handoff.clone());
         self.steps.close(step, mark)?;
-        Ok(handoff)
+        let refused = if narrows {
+            self.refuse_queued_code()
+        } else {
+            Vec::new()
+        };
+        Ok(StepDone { handoff, refused })
+    }
+
+    /// Ends the queued `code` workers as refused (the goal became read-only).
+    /// No halt: nothing failed, and the user has nothing to decide.
+    fn refuse_queued_code(&mut self) -> Vec<WorkerId> {
+        let queued: Vec<_> = self.queue.iter().copied().collect();
+        let code: Vec<_> = queued
+            .into_iter()
+            .filter(|id| self.slots[index(*id)].spec.task == Task::Code)
+            .collect();
+        for id in &code {
+            let slot = &mut self.slots[index(*id)];
+            slot.status = WorkerStatus::Refused;
+            slot.result = Some(WorkerResult {
+                status: WorkerStatus::Refused,
+                text: String::new(),
+                elapsed: Duration::ZERO,
+                error: Some((ErrorClass::Other, READ_ONLY.to_owned())),
+                engine: slot.spec.engine.clone(),
+                model: slot.spec.model.clone(),
+                usage: slot.usage.map(|usage| shown(usage, slot.gap)),
+            });
+        }
+        self.queue.retain(|queued| !code.contains(queued));
+        code
     }
 
     /// The workers that ended and have no handoff, oldest first.
@@ -643,7 +702,7 @@ impl Run {
             let id = WorkerId(i as u32 + 1);
             Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
         });
-        Ledger::new(goal, rows.collect()).with_steps(self.steps.line())
+        Ledger::new(goal, rows.collect()).with_steps(self.steps.line(), self.steps.short_line())
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.

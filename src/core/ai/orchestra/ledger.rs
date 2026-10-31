@@ -259,6 +259,8 @@ pub struct Ledger {
     rows: Vec<Row>,
     /// The closed ODD steps, one line (S5); empty before the first.
     steps: String,
+    /// The same line without the detail, for a ledger at its bound.
+    steps_short: String,
 }
 
 impl Ledger {
@@ -267,12 +269,14 @@ impl Ledger {
             goal: goal.to_owned(),
             rows,
             steps: String::new(),
+            steps_short: String::new(),
         }
     }
 
     /// The ledger with the line of the steps the run closed.
-    pub(super) fn with_steps(mut self, line: String) -> Self {
+    pub(super) fn with_steps(mut self, line: String, short: String) -> Self {
         self.steps = line;
+        self.steps_short = short;
         self
     }
 
@@ -294,6 +298,16 @@ impl Ledger {
     /// summaries are shortened first, then the oldest resolved rows collapse
     /// into a count.
     pub(super) fn render_within(&self, budget: usize) -> String {
+        // The steps line counts inside the bound: when the rows cannot make
+        // room, it shrinks to a count.
+        let full = self.fit(budget, &self.steps);
+        if full.len() <= budget || self.steps_short.is_empty() {
+            return full;
+        }
+        self.fit(budget, &self.steps_short)
+    }
+
+    fn fit(&self, budget: usize, steps: &str) -> String {
         let mut lens: Vec<usize> = self
             .rows
             .iter()
@@ -308,27 +322,27 @@ impl Ledger {
         let mut hidden = vec![false; self.rows.len()];
         // Shorten, oldest first.
         for at in 0..self.rows.len() {
-            if self.draw(&lens, &hidden).len() <= budget {
+            if self.draw(&lens, &hidden, steps).len() <= budget {
                 break;
             }
             lens[at] = SHORT_BYTES;
         }
         // Then drop the oldest resolved rows into a count, passing over the
         // failures.
-        while self.draw(&lens, &hidden).len() > budget {
+        while self.draw(&lens, &hidden, steps).len() > budget {
             let Some(at) = (0..self.rows.len()).find(|&at| !hidden[at] && !self.rows[at].failed())
             else {
                 break;
             };
             hidden[at] = true;
         }
-        self.draw(&lens, &hidden)
+        self.draw(&lens, &hidden, steps)
     }
 
-    fn draw(&self, lens: &[usize], hidden: &[bool]) -> String {
+    fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str) -> String {
         let mut out = format!("Goal: {}\n", self.goal);
-        if !self.steps.is_empty() {
-            out.push_str(&self.steps);
+        if !steps.is_empty() {
+            out.push_str(steps);
             out.push('\n');
         }
         out.push_str("Workers:");

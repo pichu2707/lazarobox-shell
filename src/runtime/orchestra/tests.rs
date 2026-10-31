@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use super::*;
-use crate::core::ai::orchestra::steps::Grant;
+use crate::core::ai::orchestra::steps::{Grant, Size};
 use crate::{
     core::ai::{
         Detection, EngineState, Status,
@@ -2647,6 +2647,45 @@ async fn a_step_handoff_is_acked_sent_to_the_app_and_kept_in_order() {
         (run, Unit::Step(Step::Authorize))
     );
     assert_eq!(sent[0].engine_model(), "claude>opus");
+}
+
+// Review 1(a), 3: the refusals reach the orchestrator with their reason.
+#[tokio::test]
+async fn read_only_names_the_running_code_worker_and_classify_needs_a_reason() {
+    let lab = lab(Script::Hang);
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Code, "claude", "sonnet"),
+    ];
+    let roster = roster(&assigned, vec![found("claude", &[])], JAIL);
+    let (_, handle) = lab.start(roster);
+    handle.call(spawn(Task::Code, "edit it")).await;
+    assert_eq!(
+        handle
+            .call(step_call(Step::Authorize, Mark::Grant(Grant::ReadOnly)))
+            .await,
+        error("cancel code worker 1 first: the goal is read-only")
+    );
+    handle
+        .call(step_call(Step::Authorize, Mark::Grant(Grant::Implement)))
+        .await;
+    handle.call(step_call(Step::Explore, Mark::None)).await;
+    handle.call(step_call(Step::Resolve, Mark::None)).await;
+    let OrchCall::StepHandoff {
+        step,
+        mark,
+        mut note,
+    } = step_call(Step::Classify, Mark::Size(Size::Small))
+    else {
+        unreachable!()
+    };
+    note.reason = String::new();
+    assert_eq!(
+        handle
+            .call(OrchCall::StepHandoff { step, mark, note })
+            .await,
+        error("classify needs a reason")
+    );
 }
 
 // Spec (agent-orchestrator, Read-only goal spawns no code worker): refused

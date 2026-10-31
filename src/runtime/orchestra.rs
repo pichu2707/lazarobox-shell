@@ -68,10 +68,10 @@ use crate::core::{
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
-                RunState, UserChoice, WorkerEvent,
+                RunState, StepDone, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
-            steps::{Mark, Step, StepError},
+            steps::{Mark, READ_ONLY, Step, StepError},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
@@ -847,7 +847,7 @@ impl RunManager {
                 Err(Refusal::Paused) => return error("run paused"),
                 Err(Refusal::Ended) => return error(ENDED),
                 Err(Refusal::ReadOnly) => {
-                    return error("code workers are not spawned for a read-only goal");
+                    return error(READ_ONLY);
                 }
                 Err(Refusal::WorkerCap(cap)) => {
                     return error(format!("worker limit reached: max_workers is {cap}"));
@@ -960,7 +960,7 @@ impl RunManager {
     /// Stores the orchestrator's handoff for an ODD step and closes the step;
     /// refused out of order. The app stores it like a worker's.
     fn handoff_step(
-        &self,
+        self: &Arc<Self>,
         pane: PaneId,
         run: RunId,
         step: Step,
@@ -969,8 +969,16 @@ impl RunManager {
     ) -> Outcome {
         let stored = self.on_run(pane, run, |live| {
             match live.run.handoff_step(step, mark, note) {
-                Ok(handoff) => {
-                    let text = format!("step {}: {}", step.label(), handoff.verdict.label());
+                Ok(StepDone { handoff, refused }) => {
+                    let mut text = format!("step {}: {}", step.label(), handoff.verdict.label());
+                    if !refused.is_empty() {
+                        text.push_str(&format!(
+                            "; read-only: code workers refused: {}",
+                            ids_text(&refused)
+                        ));
+                        // The rows and the transcript line for the refused.
+                        self.sync(pane, live);
+                    }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
                 }
@@ -981,6 +989,17 @@ impl RunManager {
                     open.label()
                 )),
                 Err(StepError::NotLarge) => error("track is for a large goal only"),
+                Err(StepError::CodeRunning(worker)) => error(format!(
+                    "cancel code worker {} first: the goal is read-only",
+                    worker.0
+                )),
+                Err(StepError::NoReason) => error("classify needs a reason"),
+                Err(StepError::Widen) => error("the goal is read-only: it cannot be widened"),
+                Err(StepError::Locked { step, later }) => error(format!(
+                    "step {} cannot change: {} is closed",
+                    step.label(),
+                    later.label()
+                )),
                 Err(StepError::NoHandoff(step)) => {
                     error(format!("step {} has no handoff", step.label()))
                 }

@@ -687,7 +687,7 @@ const BUILT_INS: [ToolDef; 22] = [
     },
     ToolDef {
         name: "handoff",
-        description: "Record what a finished worker did, after collect (`id`), or close an ODD step (`step`: authorize, explore, resolve, classify, track, implement, close; give `id` or `step`, never both). `authorize` needs `scope` (read_only or implement), `classify` needs `size` (small or large) with its one-line `reason`. `verdict` is on_course, off_course or blocked against the user's goal; `reason` is one line; `done`, `left` and `decisions` say what was done, what remains and what was decided and why. Calling it again for the same worker or step replaces the record.",
+        description: "Record what a finished worker did, after collect (`id`), or close an ODD step (`step`: authorize, explore, resolve, classify, track, implement, close; give `id` or `step`, never both). `authorize` needs `scope` (read_only or implement), `classify` needs `size` (small or large) with its one-line `reason`. `verdict` is on_course, off_course or blocked against the user's goal; `reason` is one line; `done`, `left` and `decisions` say what was done, what remains and what was decided and why. Calling it again for the same worker or step replaces the record, except that `authorize` may only narrow to read_only and `classify` cannot change once a later step is closed.",
         access: Access::Read,
         family: Family::Orchestra,
         args: &[
