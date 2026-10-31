@@ -883,7 +883,7 @@ async fn a_floor_that_cannot_be_read_is_said_once_and_ids_still_flow() {
     assert_eq!(
         event,
         OrchestraEvent::Notice {
-            text: "run ids could not be checked against stored runs: database is locked".to_owned()
+            text: "run ids could not be checked against stored runs (ids follow the clock this session): database is locked".to_owned()
         }
     );
     assert!(lab.events.try_recv().is_err(), "said once");

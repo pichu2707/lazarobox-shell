@@ -710,3 +710,11 @@ Strict TDD, tests first with an observed RED (commands run before any fix):
 | s4 | Gate OFF: the three tables (and the `token` column) are created by the migration for every user and stay empty; nothing writes to them unless a run happens (`with_the_gate_off_nothing_about_runs_is_sent`) | |
 
 The added `OrchestraEvent::Notice` variant touches the two exhaustive matches in `runtime/orchestra/tests.rs` (one line each).
+
+### 9.1a re-review follow-ups
+
+Tests first, RED observed (6 failed against the previous code: close carried 0 workers on the manager and the pane-close paths, the next save after a `RunsFailed` carried 1 worker and an unchanged row was skipped, a cancelled turn kept its goal, the Notice wording).
+- W1: the close (`Ended` and pane close) carries every known worker; a `RunsFailed{saving}` marks every run of that pane `resend` (the failure does not name a run), and the next save of each sends the full worker set once, even for a row that changed nothing.
+- W2 (documented on `Owner` and `recover_runs`): two instances in different pid namespaces (containers) sharing one database with equal pids can falsely mark each other's live run as interrupted; like the reused unrelated pid, it needs the process start time to tell apart, which is not read portably.
+- The floor Notice now says the protection is off for this session: `run ids could not be checked against stored runs (ids follow the clock this session): <why>`.
+- `forget_goal` also runs from `cancel_chat` when the pane has no run (a turn cancelled before any run began).

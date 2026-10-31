@@ -24,6 +24,8 @@ struct Kept {
     pane: PaneId,
     goal: String,
     workers: BTreeMap<u32, WorkerRecord>,
+    /// A save of this run failed: the next one carries every worker.
+    resend: bool,
 }
 
 /// What the app keeps to save runs.
@@ -82,6 +84,7 @@ impl App {
             pane: id,
             goal: keep.goals.remove(&id).unwrap_or_default(),
             workers: BTreeMap::new(),
+            resend: false,
         });
         let worker = WorkerRecord {
             id: row.id.0,
@@ -92,14 +95,18 @@ impl App {
         };
         // Usage, elapsed time and the like are not stored: a row that changes
         // none of what is stored writes nothing.
-        if kept.workers.get(&worker.id) == Some(&worker) {
+        let unchanged = kept.workers.get(&worker.id) == Some(&worker);
+        if unchanged && !kept.resend {
             return Vec::new();
         }
         kept.workers.insert(worker.id, worker.clone());
-        let (pane, run) = (
-            kept.pane,
-            kept.record(row.run, RunPhase::Live, vec![worker]),
-        );
+        // After a failed save the store may lack earlier workers: send all.
+        let changed = if std::mem::take(&mut kept.resend) {
+            kept.workers.values().cloned().collect()
+        } else {
+            vec![worker]
+        };
+        let (pane, run) = (kept.pane, kept.record(row.run, RunPhase::Live, changed));
         vec![Effect::Store(StoreCmd::SaveRun { pane, run })]
     }
 
@@ -108,7 +115,9 @@ impl App {
         let Some(kept) = self.run_keep.runs.remove(&run) else {
             return Vec::new();
         };
-        let (pane, record) = (kept.pane, kept.record(run, RunPhase::Ended, Vec::new()));
+        // The close carries every known worker: it repairs a lost save.
+        let all = kept.workers.values().cloned().collect();
+        let (pane, record) = (kept.pane, kept.record(run, RunPhase::Ended, all));
         vec![Effect::Store(StoreCmd::SaveRun { pane, run: record })]
     }
 
@@ -157,6 +166,13 @@ impl App {
                 } else {
                     &mut self.run_keep.read_failure_said
                 };
+                // Which run failed is not known: every run of the pane is
+                // resent in full by its next save.
+                if *saving {
+                    for kept in self.run_keep.runs.values_mut().filter(|k| k.pane == *pane) {
+                        kept.resend = true;
+                    }
+                }
                 if std::mem::replace(said, true) {
                     return;
                 }

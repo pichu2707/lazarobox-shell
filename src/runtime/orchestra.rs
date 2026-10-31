@@ -490,8 +490,9 @@ impl RunManager {
                 match floor() {
                     Ok(floor) => lock(&self.ids).raise(floor),
                     Err(why) => {
-                        let text =
-                            format!("run ids could not be checked against stored runs: {why}");
+                        let text = format!(
+                            "run ids could not be checked against stored runs (ids follow the clock this session): {why}"
+                        );
                         let _ = self.events.send((pane, OrchestraEvent::Notice { text }));
                     }
                 }

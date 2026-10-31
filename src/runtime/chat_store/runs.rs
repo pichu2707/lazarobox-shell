@@ -28,7 +28,10 @@ const FLOOR_BUSY: Duration = Duration::from_millis(100);
 /// row of this process from a row of an earlier one that had the same pid.
 /// Limit: an unrelated live process holding a dead owner's pid (not ours) is
 /// not told apart without the process start time, which is not read portably
-/// here, so that row stays `live` until that pid is free.
+/// here, so that row stays `live` until that pid is free. The same goes for
+/// two instances in different pid namespaces (containers) that share one
+/// database: equal pids make each look dead or reused to the other, so one can
+/// falsely mark the other's live run as interrupted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Owner {
     pub pid: u32,
@@ -145,7 +148,8 @@ pub(crate) fn save_run(
 /// newest first. A row is another process's when its token is not `me`'s (a
 /// row without one counts as different) and its pid is gone (`alive`) or is
 /// `me`'s own: a reused pid. A run of another instance that still runs is left
-/// alone.
+/// alone. Limits: see [`Owner`] (an unrelated live process on a dead owner's
+/// pid, and instances in different pid namespaces sharing one database).
 pub(crate) fn recover_runs(
     conn: &mut Connection,
     me: Owner,

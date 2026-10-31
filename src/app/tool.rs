@@ -506,6 +506,15 @@ impl App {
     /// turn offered tools.
     pub(super) fn cancel_chat(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_run_slots(|slot| slot.chat == id);
+        // A turn cancelled before any run began leaves no goal behind.
+        if self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.orch_run().is_none())
+        {
+            self.forget_goal(id);
+        }
         let session = self
             .panes
             .get_mut(&id)
