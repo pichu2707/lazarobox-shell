@@ -30,6 +30,7 @@ pub mod notify;
 pub mod prompts;
 pub mod review;
 pub mod review_view;
+pub mod run_trace;
 pub mod store;
 pub mod stream;
 pub mod streams;
@@ -406,6 +407,12 @@ pub struct ChatState {
     orch_turn: Option<u64>,
     /// The pane's run, from its first event until its `Ended`.
     orch_run: Option<RunId>,
+    /// What the workers of the run streamed, and the view open on one (S9).
+    traces: run_trace::Traces,
+    run_view: Option<run_trace::RunView>,
+    /// The transcript rows the last frame drew for the view: the keys and
+    /// the wheel page by what is on screen.
+    run_view_drawn: std::cell::Cell<Option<usize>>,
     /// A continuation turn that came before the turn it follows was over
     /// (S4): it starts when that turn ends. One slot is enough: turns are
     /// serial, so a run has at most one turn to follow at a time.
@@ -492,6 +499,9 @@ impl ChatState {
             orch: false,
             orch_turn: None,
             orch_run: None,
+            traces: Default::default(),
+            run_view: None,
+            run_view_drawn: Default::default(),
             orch_continue: None,
             orch_cancelled: None,
             turn_failure: None,
@@ -538,6 +548,7 @@ impl ChatState {
             self.cancel_armed = None;
         }
         self.orch_run = run;
+        self.prune_traces();
     }
 
     /// The failure alert shown in the pane, until it is answered.
@@ -647,6 +658,7 @@ impl ChatState {
             self.selected = None;
             self.cancel_armed = None;
         }
+        self.prune_traces();
         let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
         if self.orch_run != Some(run) && !alerted {
             return;
@@ -1623,6 +1635,8 @@ mod memory_tests;
 mod note_tests;
 #[cfg(test)]
 mod reasoning_tests;
+#[cfg(test)]
+mod run_trace_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]

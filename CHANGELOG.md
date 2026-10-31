@@ -35,7 +35,10 @@ baseline.
   Runs are stored locally (S9, first part): a run is saved in the chat database as
   its workers change, and after a restart a run that was live is marked
   interrupted and named in the pane the first time ORCH is turned on; nothing
-  runs again on its own. Run ids start above the highest one stored.
+  runs again on its own. Run ids start above the highest one stored. With a
+  worker selected (Alt+Up/Down), `Ctrl+Space W` opens a full-pane, read-only
+  transcript of it (its output and tool rows, the last 128 KiB, cleaned of
+  control characters); Esc or `q` close it and it follows new output.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

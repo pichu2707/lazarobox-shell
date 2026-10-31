@@ -81,6 +81,24 @@ Ctrl+C with no worker selected MUST cancel the orchestrator turn and all workers
 - WHEN Ctrl+C is pressed
 - THEN only worker 2 is cancelled
 
+### Requirement: Worker transcript key [S9]
+In a chat pane, `Ctrl+Space W` (capital, as `T`: `w` is the window group; user decision pending review, S9 9.1b) MUST open a full-pane, read-only, scrollable transcript of the selected worker (see Cancel keys for workers) when the global orchestrator gate is on. It is a root leaf of the prefix table, left out of the hint (the root hint is full) and bound nowhere else. It MUST say why it does nothing, never fail silently: `Select a worker with Alt+Up/Down` with no worker selected, `The orchestrator is off; enable it in the menu (Ctrl+Space m)` with the gate off, `The worker transcript is for chat panes; open one with Ctrl+Space c` on another pane and `Close this view first` while another view of the chat is open. While the transcript is open Esc or `q` close it (Esc then does not cancel the run), Up/Down/`k`/`j`, PageUp/PageDown, Home/`g` and End/`G` scroll it (End follows the new output again), Ctrl+C keeps its cancel meaning and every other key is swallowed: nothing reaches the composer or a PTY. An approval prompt keeps its place at the bottom and its own keys, answered before the transcript's; a failure alert closes the transcript; `Prefix T`, `n`, `s` and `e` refuse with `Close the worker transcript first (Esc)`. The footer hint of a selected worker names the key.
+
+#### Scenario: The key opens the transcript [S9, auto]
+- GIVEN the gate on, a run with two workers and worker 1 selected
+- WHEN Ctrl+Space then `W` are pressed
+- THEN the transcript of worker 1 fills the pane, with its status in the title, and Esc closes it back to the chat
+
+#### Scenario: No worker selected [S9, auto]
+- GIVEN the gate on and no worker selected
+- WHEN Ctrl+Space then `W` are pressed
+- THEN no view opens and the notice `Select a worker with Alt+Up/Down` is shown
+
+#### Scenario: An approval stays answerable [S9, auto]
+- GIVEN the transcript open
+- WHEN an approval prompt arrives
+- THEN the prompt is shown under the transcript and `y` answers it, while `q` does not close the view
+
 ## MODIFIED Requirements
 
 Dependency: the allowed-chords sentence in "Chat pane input" is written against the explicit list of direct chat chords that the `key-freeze` change adds to this rule on main (Ctrl+G); once it is merged, this block only adds Ctrl+O to that list and keeps the rest of its text. Base text otherwise verbatim; changes: the Ctrl+O row and that sentence, the Ctrl+O clause of "Memory keys" and the gate in its "Unbound Ctrl keys ignored" scenario.

@@ -10,7 +10,10 @@ use super::{
     ledger::Handoff,
     worker::{ErrorClass, WorkerStatus},
 };
-use crate::core::ai::{chat::engine::Usage, config::Task};
+use crate::core::ai::{
+    chat::engine::{CallId, ToolStatus, Usage},
+    config::Task,
+};
 
 /// A worker as its row shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -45,9 +48,38 @@ pub struct Continuation {
     pub text: String,
 }
 
+/// One step of a worker's turn as its transcript keeps it (S9). Raw: the
+/// transcript sanitizes whatever it keeps.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum TraceItem {
+    /// An attempt of the worker starts: what an earlier attempt left goes.
+    Begin,
+    /// A piece of the worker's answer.
+    Text(String),
+    /// A tool call of the worker.
+    Call {
+        id: CallId,
+        name: String,
+        summary: String,
+    },
+    /// The end of the call `id`.
+    Result {
+        id: CallId,
+        status: ToolStatus,
+        summary: String,
+    },
+}
+
 /// What the run manager tells the app.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OrchestraEvent {
+    /// What a worker's turn produced, for its transcript view (S9). Content,
+    /// so never logged.
+    Trace {
+        run: RunId,
+        worker: WorkerId,
+        item: TraceItem,
+    },
     /// A worker's status changed.
     Worker(WorkerRow),
     /// A worker failed: the run waits for the user. `text` is for the alert

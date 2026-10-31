@@ -89,7 +89,7 @@ use crate::core::{
     layout::PaneId,
 };
 
-pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, WorkerRow};
+pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, TraceItem, WorkerRow};
 
 mod review;
 
@@ -113,6 +113,7 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
 /// one lock.
 struct Route {
     key: WorkerKey,
+    trace: Tracer,
     /// The count the worker's own turn watches for its timers: the one it was
     /// started with, whatever turn it has outlived since.
     own: Pending,
@@ -131,12 +132,14 @@ struct Current {
 impl Route {
     fn new(
         key: WorkerKey,
+        trace: Tracer,
         events: mpsc::Sender<StreamEvent>,
         approver: Arc<dyn Approver>,
         pending: Pending,
     ) -> Arc<Self> {
         Arc::new(Self {
             key,
+            trace,
             own: pending.clone(),
             state: Mutex::new(Current {
                 events,
@@ -184,6 +187,7 @@ impl Route {
     /// ask, so its announcement ends the worker's session (denying the wait)
     /// until the next turn attaches; a plain row is dropped.
     async fn deliver(&self, event: StreamEvent) {
+        self.trace.row(&event);
         let (to, seen) = {
             let state = lock(&self.state);
             (state.events.clone(), state.generation)
@@ -331,6 +335,105 @@ fn clock_micros() -> u64 {
 /// Reads the highest run id the store has seen.
 /// (a short read-only look at the store: the error is why it failed).
 type RunFloor = Box<dyn Fn() -> Result<u64, String> + Send + Sync>;
+
+/// How much streamed text waits before it is sent to the app.
+const FLUSH_BYTES: usize = 4096;
+/// How long streamed text waits at most.
+const FLUSH_AFTER: Duration = Duration::from_millis(50);
+
+/// Tells the app what one worker's turn does, for its transcript view (S9).
+/// Streamed text is coalesced (a delta is a few bytes and each event wakes
+/// the app); any other step, the timer and the end of the turn flush it first,
+/// so the order is kept and no tail is lost. The text is already sanitized by
+/// the pipe and the tool rows are clipped by the host that made them; the app
+/// sanitizes and caps whatever it keeps anyway.
+#[derive(Clone)]
+struct Tracer {
+    events: Events,
+    pane: PaneId,
+    key: WorkerKey,
+    waiting: Arc<Mutex<String>>,
+}
+
+impl Tracer {
+    fn new(events: Events, pane: PaneId, key: WorkerKey) -> Self {
+        Self {
+            events,
+            pane,
+            key,
+            waiting: Arc::default(),
+        }
+    }
+
+    fn emit(&self, item: TraceItem) {
+        let (run, worker) = (self.key.run, self.key.worker);
+        // Nobody listens once the app is gone.
+        let _ = self
+            .events
+            .send((self.pane, OrchestraEvent::Trace { run, worker, item }));
+    }
+
+    /// A step that is not streamed text: after the text said before it.
+    fn send(&self, item: TraceItem) {
+        self.flush();
+        self.emit(item);
+    }
+
+    /// A piece of the answer: sent with the next ones, within [`FLUSH_AFTER`].
+    fn text(&self, piece: String) {
+        if piece.is_empty() {
+            return;
+        }
+        let (full, first) = {
+            let mut waiting = lock(&self.waiting);
+            let first = waiting.is_empty();
+            waiting.push_str(&piece);
+            (waiting.len() >= FLUSH_BYTES, first)
+        };
+        if full {
+            self.flush();
+        } else if first {
+            let late = self.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(FLUSH_AFTER).await;
+                late.flush();
+            });
+        }
+    }
+
+    /// Sends the waiting text. The send is made under the lock, so two
+    /// flushes cannot swap their pieces.
+    fn flush(&self) {
+        let mut waiting = lock(&self.waiting);
+        if !waiting.is_empty() {
+            self.emit(TraceItem::Text(std::mem::take(&mut waiting)));
+        }
+    }
+
+    /// What a tool row of the worker adds to its transcript. The rows come
+    /// from the host (clipped and flat): the app caps them again.
+    fn row(&self, event: &StreamEvent) {
+        match event {
+            StreamEvent::ToolCall {
+                id, name, summary, ..
+            } => self.send(TraceItem::Call {
+                id: *id,
+                name: name.clone(),
+                summary: summary.clone(),
+            }),
+            StreamEvent::ToolResult {
+                id,
+                status,
+                summary,
+            } => self.send(TraceItem::Result {
+                id: *id,
+                status: *status,
+                summary: summary.clone(),
+            }),
+            _ => {}
+        }
+    }
+}
 
 /// The run of one pane, with what its workers' turns need.
 struct Live {
@@ -864,6 +967,10 @@ impl RunManager {
         live.run.cancel_run(now());
         built.extend(live.run.fallbacks());
         let approver = live.approver.clone();
+        // The words an aborted worker had buffered come before `Ended`.
+        for route in live.routes.values() {
+            route.trace.flush();
+        }
         let tasks: Vec<_> = live
             .tasks
             .drain()
@@ -1201,7 +1308,10 @@ impl RunManager {
     pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
-                live.routes.remove(&id);
+                // Its last words come before its terminal row.
+                if let Some(route) = live.routes.remove(&id) {
+                    route.trace.flush();
+                }
                 if let Some(task) = live.tasks.remove(&id) {
                     task.abort();
                 }
@@ -1327,14 +1437,17 @@ impl RunManager {
             worker: id,
         };
         let approver = live.approver.for_worker(key);
+        let trace = Tracer::new(self.events.clone(), pane, key);
         let route = Route::new(
             key,
+            trace.clone(),
             live.events.clone(),
             approver.unwrap_or_else(|| live.approver.clone()),
             live.pending.clone(),
         );
         live.routes.insert(id, route.clone());
         let views = live.review.views(id);
+        trace.send(TraceItem::Begin);
         let session = self
             .open_session(pane, key, &spec, views, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
@@ -1343,6 +1456,7 @@ impl RunManager {
             request,
             session,
             deadline: spec.deadline,
+            trace,
         };
         let manager = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -1601,6 +1715,7 @@ struct Turn {
     request: ChatRequest,
     session: Option<(Pending, Option<Arc<dyn Dispatch>>)>,
     deadline: Duration,
+    trace: Tracer,
 }
 
 impl Turn {
@@ -1613,6 +1728,7 @@ impl Turn {
             request,
             session,
             deadline,
+            trace,
         } = self;
         let engine = request.engine.clone();
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
@@ -1620,9 +1736,12 @@ impl Turn {
         // The call sits inside the guarded future, as in a chat turn.
         let adapter = Box::pin(async move { runner(request, tx).await });
         let adapter = chat::in_session(adapter, pending, dispatch);
-        tokio::time::timeout(deadline, drive(adapter, rx, &engine))
+        let ended = tokio::time::timeout(deadline, drive(adapter, rx, &engine, &trace))
             .await
-            .ok()
+            .ok();
+        // Whatever the turn ended by, its last words reach the transcript.
+        trace.flush();
+        ended
     }
 }
 
@@ -1632,6 +1751,7 @@ async fn drive(
     adapter: BoxFuture<'static, ()>,
     mut rx: mpsc::Receiver<StreamEvent>,
     engine: &str,
+    trace: &Tracer,
 ) -> Vec<WorkerEvent> {
     let run = AssertUnwindSafe(chat::scoped(adapter))
         .catch_unwind()
@@ -1656,7 +1776,10 @@ async fn drive(
         };
         for event in out {
             match event {
-                StreamEvent::Delta(delta) => text.push_str(&delta),
+                StreamEvent::Delta(delta) => {
+                    trace.text(delta.clone());
+                    text.push_str(&delta);
+                }
                 StreamEvent::Usage(usage) => events.push(WorkerEvent::Usage(usage)),
                 // A capped answer still ends the worker: `collect` caps it
                 // again.

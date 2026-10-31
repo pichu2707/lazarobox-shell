@@ -1,6 +1,7 @@
 //! The live chat pane: opening it, its key table, yank, scrolling and the
 //! engine check before a send.
 
+use super::run_view::CLOSE_FIRST;
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
@@ -130,6 +131,11 @@ impl App {
         if self.folder_pending(id) {
             return Vec::new();
         }
+        // A worker's transcript is the whole conversation view: it takes the
+        // keys the offer, the notice and the alert would (they are hidden).
+        if self.run_view_open(id) {
+            return self.on_run_view_key(id, &key, repeat);
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides. A held key never answers it.
@@ -237,6 +243,11 @@ impl App {
         }
         if self.picker_open(id) {
             self.picker_paste(id, text);
+            return;
+        }
+        // The composer is hidden under a worker's transcript.
+        if self.run_view_open(id) {
+            self.notice = Some(CLOSE_FIRST.to_owned());
             return;
         }
         // A chat that waits for its folder takes no text either.

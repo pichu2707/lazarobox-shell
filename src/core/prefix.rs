@@ -67,6 +67,9 @@ pub enum PrefixAction {
     EditTags,
     /// Asks the focused chat's engine for the end-of-conversation summary.
     Summarize,
+    /// Opens the full-pane transcript of the selected worker of the focused
+    /// chat's orchestrator run.
+    ViewWorker,
     /// Opens the confirm to type the last shell block of the focused chat's
     /// last answer into a shell pane. Never runs it.
     RunInPane,
@@ -219,6 +222,8 @@ pub const PREFIX_TREE: &[Binding] = &[
     )),
     // `t` is the tab group, so the tag editor takes the capital.
     unhinted(act('T', "tags", PrefixAction::EditTags)),
+    // `w` is the window group, so the worker transcript takes the capital.
+    unhinted(act('W', "worker transcript", PrefixAction::ViewWorker)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -492,6 +497,27 @@ mod tests {
         }
     }
 
+    // Spec: modal-input "Worker transcript key" (S9). `W` (capital, like `T`:
+    // `w` is the window group) is an unhinted root leaf, bound nowhere else.
+    #[test]
+    fn capital_w_is_an_unhinted_root_leaf_that_views_a_worker() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('W')))
+            .expect("W is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::ViewWorker));
+        assert_eq!(binding.description, "worker transcript");
+        assert!(!binding.hinted);
+        assert!(matches!(lookup(PREFIX_TREE, &plain('w')), Step::Enter(_)));
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('W')),
+                Step::Run(PrefixAction::ViewWorker)
+            );
+        }
+        assert!(hint(PREFIX_TREE, 80).ends_with("q quit"));
+    }
+
     // Spec: modal-input root `o` folds and unfolds the memory line of a chat.
     // It stays out of the hint (the root hint is already 79 columns); no group
     // binds it.
@@ -621,8 +647,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + summary + run + approval + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 34);
+        // literal + quit + copy + menu + chat + note + memory + summary + run + approval + tags + worker + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 35);
     }
 
     #[test]

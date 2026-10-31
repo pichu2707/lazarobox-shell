@@ -64,7 +64,7 @@ pub enum OrchHint {
 impl App {
     /// The global orchestrator gate (`[ai.orchestrator] enabled`), read from
     /// the live configuration every time.
-    fn orch_gate(&self) -> bool {
+    pub(super) fn orch_gate(&self) -> bool {
         self.ai.orchestrator.enabled
     }
 
@@ -156,6 +156,17 @@ impl App {
             OrchestraEvent::Continue(next) => return self.on_continue(id, next),
             event => event,
         };
+        // A worker's step is a redraw only when its transcript is on view.
+        if let OrchestraEvent::Trace { run, worker, item } = event {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                let shown = chat
+                    .run_view()
+                    .is_some_and(|v| (v.run, v.worker) == (run, worker));
+                chat.trace(run, worker, item);
+                self.dirty |= shown;
+            }
+            return Vec::new();
+        }
         // A run that ended stores nothing more, whether its pane is still a
         // chat or not.
         let mut kept = Vec::new();
@@ -202,6 +213,8 @@ impl App {
                 chat.set_orch_run(Some(run));
                 chat.keep_override();
                 chat.drop_orch_alert();
+                // The alert is the user's to answer: the transcript gives way.
+                chat.close_run_view();
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
                     worker,
@@ -219,6 +232,7 @@ impl App {
             } => {
                 chat.set_orch_run(Some(run));
                 chat.drop_orch_alert();
+                chat.close_run_view();
                 chat.set_orch_note(Some(OrchNote::RetryFailed(reason)));
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
@@ -259,6 +273,8 @@ impl App {
                     chat.push_system_line(text);
                 }
             }
+            // Handled before the pane is borrowed.
+            OrchestraEvent::Trace { .. } => {}
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) => {}
             OrchestraEvent::Notice { text } => chat.push_system_line(text),
@@ -599,7 +615,7 @@ impl App {
         }
         Some(match chat.selected_worker() {
             Some(worker) => format!(
-                "worker {} selected \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
+                "worker {} \u{b7} Ctrl+Space W transcript \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
                 worker.0
             ),
             None => "Alt+Up/Down select a worker \u{b7} Ctrl+C cancels the run".to_owned(),

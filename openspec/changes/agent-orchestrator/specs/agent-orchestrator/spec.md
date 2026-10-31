@@ -524,6 +524,11 @@ A receipt MUST NOT approve the batch, and the orchestrator MUST NOT consent or a
 ### Requirement: Run view and persistence [S9]
 A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally and, after a restart, shown as interrupted with a resume choice; a resumed run relaunches unfinished workers from scratch only on the user's choice, and re-asks the read scope.
 
+#### Scenario: The transcript of a worker [S9, auto]
+- GIVEN a run with a running worker that streamed text and called a tool
+- WHEN the worker is selected and the transcript key is pressed
+- THEN a full-pane read-only view shows its output and tool rows, cleaned of control characters, bounded to the last 128 KiB, following new output until scrolled
+
 #### Scenario: Restart shows an interrupted run [S9, auto]
 - GIVEN a stored run with one running worker when lazarobox quit
 - WHEN lazarobox starts again
