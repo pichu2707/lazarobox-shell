@@ -544,3 +544,15 @@ Spec scenarios covered at the pure/app level: Consent first (`pick`/`report`/`co
 - An inferred blocker the refuter did not answer stays `None`: it does not count (not upheld); the receipt (7b.3) must name it as unanswered.
 - Lens prompts are built-in only: the override-file chain is per `Task` and the six tasks are unchanged; "resolved like other tasks" is met by profile.
 - Not done (7b.2b): `propose_batch` hook that assesses and asks, spawning lens/refuter/correction workers with `Toolset::ReadOnly`/`Code` under S3 limits, the staged view for lens readers, and the `raise` tool.
+
+### 7b.1 review fixes
+
+Strict TDD: ten tests added to `review_tests.rs` first (a `Lowering` variant stub only so it compiled). Observed RED: 9 of 46 failed (`more_build_files_are_high`, `repo_and_tool_config_is_high`, `more_build_extensions_are_high`, `commit_hooks_and_shell_scripts_are_high`, `a_non_ascii_look_alike_of_a_rule_is_high`, `the_reason_drops_invisible_and_line_separator_characters`, `a_tab_in_the_reason_becomes_a_space`, `a_reason_with_nothing_visible_is_refused`, `a_passive_raise_is_refused_because_the_tier_only_goes_up`); `a_non_ascii_name_with_no_rule_stays_passive` passed from the start (guard). Gates: fmt, clippy `-D warnings` clean, `cargo test` 7969 lib tests passed plus integration suites.
+
+| # | Fix |
+|---|-----|
+| 1 | Rules broadened: Rakefile, Procfile, Containerfile, Vagrantfile, Brewfile, Podfile, `rust-toolchain`; `.gitmodules`, `.gitattributes`, `.tool-versions`, `.yarnrc`, `.pypirc`, `known_hosts`; extensions gradle, sbt, csproj, sln, props, targets, xml, mk, tf, sh; `.husky/` and `.githooks/` folders. "Broad on purpose" kept in the code comment. One test per family. |
+| 2 | Every name is folded (uppercase then lowercase per char) before matching, so KELVIN SIGN in `Makefile` and LONG S in `.ssh` match. Simple folding only; fullwidth letters and other homoglyphs are not folded (documented). |
+| 3 | One shared `ledger::one_line` (first line, tabs to spaces, control, U+2028/2029, zero-width, U+2060, U+FEFF, U+3164, U+2800 and bidi dropped) now serves the handoff reason and `Raise::new`; `cut` shared too. `Raise::new` refuses a reason with no visible character left. Ledger tests unchanged and green. |
+| 4 | `Raise::new("passive", ..)` is refused with `RaiseError::Lowering` ("the orchestrator can only raise the tier above passive"). Earlier tests that used a passive raise now use `medium` against a high floor. |
+| 5 | Module docs: renames and deletions are judged by the staged path only (`Change` has no source path; S7 must add it when it stages moves); symlinks judged by their own name. |

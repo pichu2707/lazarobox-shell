@@ -7,12 +7,19 @@
 use super::WorkerKey;
 use super::{
     changes::{Change, ChangeLedger},
-    review::{Assessment, Source, one_line},
+    ledger::{REASON_BYTES, cut, one_line as plain_line},
+    review::{Assessment, Source},
 };
 use crate::core::ai::{chat::approval::ApprovalAsk, tools::label};
 
 /// The findings kept per lens; the rest are only counted.
 pub const MAX_FINDINGS: usize = 12;
+
+/// The first line of untrusted `text`, cleaned by the shared sanitiser and
+/// cut like a handoff reason.
+fn one_line(text: &str) -> String {
+    cut(&plain_line(text), REASON_BYTES).trim_end().to_owned()
+}
 
 /// A way of looking at a change. Each lens is one read-only `review` worker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
