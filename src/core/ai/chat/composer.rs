@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use super::wrap::{clusters, tab_pad, wrap_ranges};
+use super::wrap::{clusters, tab_pad, text_width, wrap_ranges};
 use crate::core::ai::sanitize::is_format;
 
 /// The most characters the composer holds.
@@ -243,6 +243,33 @@ impl Composer {
         let text = self.text();
         self.clear();
         text
+    }
+
+    /// The part of the text to draw on one line of `width` columns, and the
+    /// column of the cursor in it. The line scrolls sideways to keep the
+    /// cursor in view, with a column left for it at the end.
+    pub fn window(&self, width: usize) -> (String, usize) {
+        if width == 0 {
+            return (String::new(), 0);
+        }
+        let text = self.text();
+        let chars: Vec<char> = text.chars().collect();
+        let cursor = self.cursor().min(chars.len());
+        let before = |start: usize| text_width(&chars[start..cursor].iter().collect::<String>());
+        let start = (0..=cursor)
+            .find(|&start| before(start) < width)
+            .unwrap_or(cursor);
+        let mut shown = String::new();
+        let mut used = 0;
+        for c in &chars[start..] {
+            let w = text_width(c.encode_utf8(&mut [0; 4]));
+            if used + w > width {
+                break;
+            }
+            shown.push(*c);
+            used += w;
+        }
+        (shown, before(start))
     }
 
     /// The wrapped rows of the text at `width` and the cursor among them,

@@ -1,0 +1,15 @@
+---
+source: src/ui/components/chat/folder_tests.rs
+assertion_line: 110
+expression: "text(&draw(&chat, 60, 10))"
+---
+Choose the chat folder
+▸ last used · /w/client-a
+  pane root · /w/lazarobox
+  recent · /w/notes
+
+
+
+folder not found
+› /nope
+↵ open · Tab complete · Esc keep this folder

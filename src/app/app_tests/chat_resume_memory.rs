@@ -65,7 +65,7 @@ fn listing() -> App {
 /// directory is known.
 fn resumed_chat(session: Option<(&str, &str)>) -> App {
     let mut a = listing();
-    a.update(resumed_with(session));
+    a.update_settled(resumed_with(session));
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
         epoch: 0,
@@ -267,7 +267,7 @@ fn reasoning_after_a_resume_never_reaches_engram() {
 fn a_late_resume_does_not_hydrate_a_pane_that_left_the_list() {
     let mut a = listing();
     a.update(key('n'));
-    a.update(resumed_with(Some((STORED_SESSION, STORED_PROJECT))));
+    a.update_settled(resumed_with(Some((STORED_SESSION, STORED_PROJECT))));
     assert!(chat_of(&a).session().is_none());
 }
 

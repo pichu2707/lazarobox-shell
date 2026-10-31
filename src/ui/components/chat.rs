@@ -125,6 +125,9 @@ impl<'a> ChatView<'a> {
 
     /// Where the real cursor goes, or `None` when the composer cannot show it.
     pub fn cursor(&self, area: Rect) -> Option<Position> {
+        if let Some(picker) = self.chat.folder_picker() {
+            return self.folder_cursor(picker, area);
+        }
         if let Some(editor) = self.chat.tag_editor() {
             return self.tag_cursor(editor, area);
         }
@@ -328,6 +331,7 @@ impl ChatView<'_> {
     /// the note editor and the summary draft come before it.
     pub fn review_shown(&self) -> bool {
         self.chat.tag_editor().is_none()
+            && self.chat.folder_picker().is_none()
             && self.chat.list().is_none()
             && self.chat.note_editor().is_none()
             && self.chat.summary_draft().is_none()
@@ -337,6 +341,10 @@ impl ChatView<'_> {
     /// The pane without the badge: the view that is open, or the
     /// conversation.
     fn render_view(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(picker) = self.chat.folder_picker() {
+            self.render_folder(picker, area, buf);
+            return;
+        }
         if let Some(editor) = self.chat.tag_editor() {
             self.render_tags(editor, area, buf);
             return;
@@ -427,6 +435,9 @@ mod approval;
 mod approval_tests;
 #[cfg(test)]
 mod badge_tests;
+mod folder;
+#[cfg(test)]
+mod folder_tests;
 #[cfg(test)]
 mod guidance_tests;
 mod list;

@@ -227,10 +227,21 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
         );
     }
     let asks = Asks::new(Decision::Sent);
-    for origin in [w.home.clone(), w.home.join("missing"), PathBuf::from("rel")] {
+    for origin in [w.home.join("missing"), PathBuf::from("rel")] {
         let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
         let out = d.call(command("cargo", &["test"], None)).await;
         assert_eq!(out.text, "path not available", "{origin:?}");
+    }
+    // No concrete root: the reason is the folder, and it asks for `/cd`.
+    let above = w.home.parent().unwrap().to_path_buf();
+    for origin in [w.home.clone(), above, PathBuf::from("/")] {
+        let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert_eq!(
+            out.text,
+            "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>",
+            "{origin:?}"
+        );
     }
     assert!(asks.asked().is_empty());
 }
@@ -366,6 +377,11 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
     assert!(
         out.is_error && out.text.contains("propose them first"),
         "{out:?}"
+    );
+    // #439: the refusal says how to go on, so a small model retries.
+    assert_eq!(
+        out.text,
+        "staged changes are not proposed: propose them first with propose_batch, then call this tool again"
     );
     assert!(asks.asked().is_empty());
     // Another chat is not affected.

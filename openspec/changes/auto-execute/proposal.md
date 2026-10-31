@@ -31,7 +31,7 @@ The goal: a chat in `run` mode can run a small, strictly checked set of navigati
   - Every argument is resolved against the shell's real cwd and checked with `tools::paths`.
   - `cd` and `mkdir` never enter secret or credential dirs.
   - `cd` is not limited to `$HOME`.
-- **R7 Off-list commands.** In `run`, a command outside the safe list gets the normal approval prompt. There, `y` types it without Enter, exactly as D17 does today.
+- **R7 Off-list commands.** In `run`, a command outside the safe list gets the normal approval prompt. There, `y` types it without Enter, exactly as D17 does today. Amended by D24 (2026-10-30, user decision): `y` on a model's command in `run` runs it, with one Enter, and returns its output; it types only when the command cannot run.
 - **R8 Output.**
   - The output goes back to the model for every engine, cloud engines included.
   - It is bounded to about 8 KiB / 200 lines (head plus tail, with a truncation marker).
@@ -163,7 +163,7 @@ All deltas apply on top of the unarchived `agent-tools` change specs where the c
 - [ ] `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check` pass on every slice.
 - [ ] In `run`, "llévame a curso-rust" ends with the pane in that directory, with no `y` and no Enter. The model's result names the new cwd.
 - [ ] `ls -la` in `run` returns bounded, wrapped output. `ls -R`, `tree -o f`, `cd ~/.ssh`, `mkdir ~/.aws/x`, `ls *` and `cd x; rm y` never run.
-- [ ] An off-list command prompts, and `y` types it without Enter.
+- [ ] An off-list command prompts, and `y` runs it (D24); it types without Enter only when it cannot run.
 - [ ] A dirty, focused, hidden, busy or update pane, or the 6th call in a turn, prompts.
 - [ ] `ask` and `auto` behave exactly as before. With tools off, requests are byte-identical.
 

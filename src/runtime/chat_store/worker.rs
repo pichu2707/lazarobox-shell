@@ -230,6 +230,15 @@ impl Worker {
                 }
                 None
             }
+            StoreCmd::RecentFolders { pane, limit } => Some(StoreReply::RecentFolders {
+                pane,
+                // A store that cannot be read has no recent folders.
+                folders: self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| recent_folders(conn, limit).ok())
+                    .unwrap_or_default(),
+            }),
             StoreCmd::List { pane, origin } => {
                 // The walk to the repository root is filesystem IO: it is
                 // done here, not on the UI thread.
@@ -319,6 +328,7 @@ impl Worker {
             StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
+            StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -336,6 +346,7 @@ impl Worker {
                         | Panicked::Delete
                         | Panicked::SetTags
                         | Panicked::SetFolder
+                        | Panicked::Recent
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -350,6 +361,10 @@ impl Worker {
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
                     Panicked::SetFolder => return None,
+                    Panicked::Recent => StoreReply::RecentFolders {
+                        pane,
+                        folders: Vec::new(),
+                    },
                 })
             }
         }
@@ -372,6 +387,7 @@ enum Panicked {
     Delete,
     SetTags,
     SetFolder,
+    Recent,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -534,6 +550,19 @@ fn replace_folder(
         return Err(rusqlite::Error::QueryReturnedNoRows);
     }
     Ok(())
+}
+
+/// The folders conversations were kept under, each once, the most recently
+/// used first. Read-only.
+fn recent_folders(conn: &mut Connection, limit: usize) -> Result<Vec<PathBuf>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT folder FROM conversations WHERE folder IS NOT NULL
+         GROUP BY folder ORDER BY MAX(updated_at) DESC, folder LIMIT ?1",
+    )?;
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    stmt.query_map([limit], |r| r.get::<_, String>(0))?
+        .map(|folder| folder.map(PathBuf::from))
+        .collect()
 }
 
 /// Appends a message and bumps the conversation's last activity.
@@ -841,6 +870,10 @@ impl StoreHandle {
             StoreCmd::Resume { pane, .. } => StoreReply::ResumeFailed { pane },
             StoreCmd::Delete { pane, .. } => StoreReply::DeleteFailed { pane },
             StoreCmd::SetTags { pane, .. } => StoreReply::TagsFailed { pane },
+            StoreCmd::RecentFolders { pane, .. } => StoreReply::RecentFolders {
+                pane,
+                folders: Vec::new(),
+            },
             _ => return,
         };
         let _ = self.replies.try_send(reply);

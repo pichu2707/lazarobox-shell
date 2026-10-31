@@ -263,7 +263,7 @@ fn notices_hold_no_control_characters() {
 fn the_tools_block_replaces_the_no_access_sentence_in_every_profile() {
     for profile in Profile::ALL {
         let chat = builtin(profile, Task::Chat);
-        let got = with_tools(chat);
+        let got = with_tools(chat, FamilySet::LEGACY);
         assert!(!got.contains(CHAT_LIMITS), "{profile:?}");
         assert!(!got.contains("You are a text assistant."), "{profile:?}");
         assert!(got.contains(TOOLS.trim_end()), "{profile:?}");
@@ -316,7 +316,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
 // A user's override file need not have the sentence: the block is appended.
 #[test]
 fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
-    let got = with_tools("My own prompt.\n\nWorkspace: x\n");
+    let got = with_tools("My own prompt.\n\nWorkspace: x\n", FamilySet::LEGACY);
     assert_eq!(
         got,
         format!("My own prompt.\n\nWorkspace: x\n\n- {}", TOOLS.trim_end())
@@ -327,11 +327,103 @@ fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
 fn the_workspace_block_after_the_sentence_is_kept() {
     let chat = builtin(Profile::Programmer, Task::Chat).trim_end();
     let system = format!("{chat}\n\nWorkspace facts: cwd /home/u");
-    let got = with_tools(&system);
+    let got = with_tools(&system, FamilySet::LEGACY);
     assert!(got.ends_with("Workspace facts: cwd /home/u"), "{got}");
 }
 
 #[test]
 fn an_empty_prompt_becomes_the_block_alone() {
-    assert_eq!(with_tools(""), TOOLS.trim_end());
+    assert_eq!(with_tools("", FamilySet::LEGACY), TOOLS.trim_end());
+}
+
+// #439: a turn that offers the write, exec or git write tools says the model
+// can do the work and must finish every step, instead of "cannot change
+// files"; read, search, git read and pane tools keep the sentence.
+#[test]
+fn the_coding_families_replace_the_cannot_change_sentence() {
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    for family in [Family::Write, Family::Exec, Family::GitWrite] {
+        let got = with_tools(chat, FamilySet::LEGACY.with(family));
+        assert!(!got.contains(NO_CHANGES), "{family:?}");
+        assert!(!got.contains("cannot change files"), "{family:?}");
+        assert!(!got.contains("{abilities}"), "{family:?}");
+        assert_eq!(got.matches("do all of them in this turn").count(), 1);
+        assert!(got.contains("one simple command per call"), "{family:?}");
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{family:?}");
+    }
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::LEGACY.with(Family::Search),
+        FamilySet::LEGACY.with(Family::Git),
+    ] {
+        let got = with_tools(chat, families);
+        assert!(got.contains(TOOLS.trim_end()), "{families:?}");
+        assert!(!got.contains("do all of them in this turn"), "{families:?}");
+    }
+}
+
+// #439: the block names only what the families of the turn allow.
+#[test]
+fn the_coding_block_names_only_the_abilities_of_the_turn() {
+    const WRITE: &str = "write and edit files (they stay staged until you propose the batch, which the user reviews once)";
+    let line = |families: FamilySet| with_tools("", families);
+    let exec = line(FamilySet::LEGACY.with(Family::Exec));
+    assert!(
+        exec.contains("given: run tests and builds; the user approves"),
+        "{exec}"
+    );
+    assert!(
+        !exec.contains(WRITE) && !exec.contains("commit with git"),
+        "{exec}"
+    );
+    let two = line(FamilySet::LEGACY.with(Family::Write).with(Family::GitWrite));
+    assert!(
+        two.contains(&format!("given: {WRITE} and add and commit with git;")),
+        "{two}"
+    );
+    let all = line(
+        FamilySet::LEGACY
+            .with(Family::Write)
+            .with(Family::Exec)
+            .with(Family::GitWrite),
+    );
+    assert!(
+        all.contains(&format!(
+            "given: {WRITE}, run tests and builds and add and commit with git;"
+        )),
+        "{all}"
+    );
+}
+
+// #439: the same holds for a user's prompt that gets the block as a bullet.
+#[test]
+fn a_prompt_without_the_sentence_gets_the_coding_block_too() {
+    let families = FamilySet::LEGACY.with(Family::Write);
+    let got = with_tools("My own prompt.\n", families);
+    assert!(got.starts_with("My own prompt.\n\n- "), "{got}");
+    assert!(
+        got.contains("do all of them in this turn") && !got.contains(NO_CHANGES),
+        "{got}"
+    );
+}
+
+#[test]
+fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
+    assert!(TOOLS.contains(NO_CHANGES));
+    let text = CODING;
+    for needle in [
+        "with the tools you are given: {abilities};",
+        "do all of them in this turn, one tool call after another",
+        "Do not stop to say what you will do next: call the tool.",
+        "Say a step is done only when a tool result of this turn shows it",
+        "never claim a file, a test run or a commit that no result shows",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
+    assert!(
+        text.lines().count() == 1 && text.len() < 600,
+        "{}",
+        text.len()
+    );
+    assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
 }

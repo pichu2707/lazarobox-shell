@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ChatState, Phase, store::StoreCmd};
+use super::{ChatState, Phase, folder_picker::FolderPicker, store::StoreCmd};
 use crate::core::ai::{
     sanitize::clean,
     tools::paths::{SecretRoots, normalize},
@@ -31,6 +31,11 @@ pub enum Purpose {
     /// A conversation was resumed with a stored folder; the token names the
     /// request, so the answer of an earlier resume is told apart.
     Resume(u64),
+    /// The folder picker chose a folder; the token is the picker id, so the
+    /// answer for a closed picker is told apart.
+    Pick(u64),
+    /// A chat pane was just opened in the folder of its source pane.
+    Open,
 }
 
 /// The argument of `/cd`.
@@ -176,6 +181,25 @@ impl ChatState {
              messages may not exist; tool paths are now relative to {to}."
         ));
         FolderChange { old, prompt_now }
+    }
+
+    /// The folder picker, while it is shown instead of the conversation.
+    pub fn folder_picker(&self) -> Option<&FolderPicker> {
+        self.folder_picker.as_ref()
+    }
+
+    pub fn folder_picker_mut(&mut self) -> Option<&mut FolderPicker> {
+        self.folder_picker.as_mut()
+    }
+
+    /// Shows an empty picker named `id`; typed relative paths read against the folder
+    /// the chat has now.
+    pub fn open_folder_picker(&mut self, id: u64, home: PathBuf) {
+        self.folder_picker = Some(FolderPicker::new(id, home, self.origin_cwd.clone()));
+    }
+
+    pub fn close_folder_picker(&mut self) {
+        self.folder_picker = None;
     }
 
     /// Puts back the folder a resumed conversation was stored with. Unlike

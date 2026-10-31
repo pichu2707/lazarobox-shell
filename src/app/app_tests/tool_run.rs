@@ -1,6 +1,6 @@
 //! The `run` mode (pane-execution, design D21): a model's safe command is
-//! routed to a check, and every other case is the prompt, where `y` types
-//! and never presses Enter.
+//! routed to a check, and every other case is the prompt, where `y` runs it
+//! (see `tool_run_y`).
 
 use super::tool_approval::{announce, announce_now, decision, live, pending, result, run};
 use super::*;
@@ -125,27 +125,18 @@ fn a_second_call_to_the_same_pane_in_a_batch_prompts() {
     assert_eq!(slot(&a).map(|s| s.2), Some(CallId(1)), "the first stays");
 }
 
-// `y` types, and an off-list command never presses Enter.
+// An off-list command is no run of its own: it asks, and `y` runs it.
 #[test]
-fn an_off_list_command_prompts_and_y_types_without_enter() {
+fn an_off_list_command_prompts_and_y_runs_it() {
     let (mut a, turn) = run_live();
     assert_eq!(announce(&mut a, turn, 1, run("cargo build")), vec![]);
     assert_eq!(why(&a).as_deref(), Some("not a safe command: `cargo`"));
     assert_eq!(slot(&a), None);
     assert_eq!(chat_of(&a).auto_typed(), 0);
-    let effects = a.update(key('y'));
     assert_eq!(
-        effects,
-        vec![
-            Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
-            super::tool_approval::decision(turn, 1, Decision::Sent)
-        ]
+        a.update(key('y')),
+        vec![auto_run(turn, 1, b"cargo build\r")]
     );
-    for effect in &effects {
-        if let Effect::WritePty(_, bytes) = effect {
-            assert!(!bytes.contains(&b'\r') && !bytes.ends_with(b"\n"));
-        }
-    }
 }
 
 // S1: search and navigation go to the check like `cd` and `ls`, with no
@@ -169,9 +160,9 @@ fn a_search_command_goes_to_the_check_without_a_prompt() {
 }
 
 // S3, L20: `mkdir` and every command that is not search or navigation ask;
-// `y` types it and leaves the Enter to the user.
+// `y` runs it (run-mode-y-runs S1).
 #[test]
-fn mkdir_and_a_build_ask_and_y_leaves_the_enter_to_the_user() {
+fn mkdir_and_a_build_ask_and_y_runs_them() {
     for (command, reason) in [
         ("mkdir x", "not a safe command: `mkdir`"),
         ("mkdir -p a/b", "not a safe command: `mkdir`"),
@@ -185,10 +176,7 @@ fn mkdir_and_a_build_ask_and_y_leaves_the_enter_to_the_user() {
         assert_eq!(slot(&a), None);
         assert_eq!(
             a.update(key('y')),
-            vec![
-                Effect::WritePty(PaneId::FIRST, command.as_bytes().to_vec()),
-                super::tool_approval::decision(turn, 1, Decision::Sent)
-            ],
+            vec![auto_run(turn, 1, format!("{command}\r").as_bytes())],
             "{command}"
         );
     }
@@ -500,9 +488,10 @@ fn a_full_screen_pane_at_the_write_denies_the_call_and_writes_nothing() {
     assert_eq!(slot(&a), None);
 }
 
-// S3.5: Enter exists only in the run effect.
+// S3.5: Enter exists only in the run effect, which `ask` and `auto` never
+// produce (`y` in `run` mode does: see `tool_run_y`).
 #[test]
-fn y_and_auto_never_press_enter() {
+fn ask_and_auto_never_press_enter() {
     let carries_enter = |effects: &[Effect]| {
         effects.iter().any(|effect| match effect {
             Effect::WritePty(_, bytes) | Effect::AutoType { bytes, .. } => bytes.contains(&b'\r'),
@@ -522,11 +511,6 @@ fn y_and_auto_never_press_enter() {
     let (mut a, turn) = live();
     announce(&mut a, turn, 1, run("cd x"));
     assert!(!carries_enter(&a.update(key('y'))));
-
-    // `run`: an off-list command and `y`.
-    let (mut a, turn) = run_live();
-    announce(&mut a, turn, 1, run("cargo build"));
-    assert!(!carries_enter(&a.update(key('y'))));
 }
 
 // A run that could not be written asks the user instead.
@@ -541,8 +525,7 @@ fn a_run_that_was_not_written_opens_the_prompt_with_the_reason_and_is_no_fallbac
     assert_eq!(slot(&a), None);
     assert!(!chat_of(&a).run_paused());
     NOW_MS.with(|n| n.set(n.get() + 1_000)); // the prompt's delay passes
-    let effects = a.update(key('y'));
-    assert_eq!(effects[0], Effect::WritePty(PaneId::FIRST, b"ls".to_vec()));
+    assert_eq!(a.update(key('y')), vec![auto_run(turn, 1, b"ls\r")]);
 }
 
 #[test]

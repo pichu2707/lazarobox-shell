@@ -111,6 +111,87 @@ fn a_fresh_review_counts_what_remains_and_y_reads_as_locked() {
 }
 
 #[test]
+fn a_y_on_a_locked_gate_says_what_is_missing_for_two_seconds() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    draw(&mut chat, at(0), 60, 14);
+    let view = chat.approvals_mut().review_mut().unwrap();
+    let left = view.remaining();
+    view.y_pressed(at(900));
+    let hint = format!("scroll ↓ · {left} lines unseen · y needs all");
+    let shown = draw(&mut chat, at(2_899), 60, 14);
+    assert_eq!(rows(&shown)[0].trim_end(), hint);
+    let later = draw(&mut chat, at(2_900), 60, 14);
+    assert!(
+        rows(&later)[0].ends_with("↓ to unlock y"),
+        "{:?}",
+        rows(&later)
+    );
+}
+
+#[test]
+fn a_narrow_pane_keeps_the_action_of_the_hint_visible() {
+    let mut chat = reviewing(numbered(30), 24, 10);
+    draw(&mut chat, at(0), 24, 10);
+    let view = chat.approvals_mut().review_mut().unwrap();
+    let left = view.remaining();
+    view.y_pressed(at(100));
+    let shown = draw(&mut chat, at(200), 24, 10);
+    assert_eq!(
+        rows(&shown)[0].trim_end(),
+        format!("scroll ↓ · {left} unseen")
+    );
+    insta::assert_snapshot!("review_locked_hint_24x10", flat(&shown));
+    // Even a few columns less keep the action first.
+    let mut tiny = reviewing(numbered(30), 12, 10);
+    draw(&mut tiny, at(0), 12, 10);
+    tiny.approvals_mut()
+        .review_mut()
+        .unwrap()
+        .y_pressed(at(100));
+    let shown = draw(&mut tiny, at(200), 12, 10);
+    assert!(
+        rows(&shown)[0].starts_with("scroll ↓ · "),
+        "{:?}",
+        rows(&shown)
+    );
+}
+
+#[test]
+fn a_y_on_a_batch_that_cannot_be_approved_says_so() {
+    for (review, wanted) in [
+        (numbered(2100), "y can't approve this batch · press n"),
+        (review_of(&[]), "y can't approve this batch · press n"),
+    ] {
+        let mut chat = reviewing(review, 70, 8);
+        draw(&mut chat, at(0), 70, 8);
+        chat.approvals_mut()
+            .review_mut()
+            .unwrap()
+            .y_pressed(at(100));
+        let shown = draw(&mut chat, at(200), 70, 8);
+        assert_eq!(rows(&shown)[0].trim_end(), wanted);
+        let later = draw(&mut chat, at(2_100), 70, 8);
+        assert!(
+            !rows(&later)[0].contains("can't approve"),
+            "{:?}",
+            rows(&later)
+        );
+    }
+}
+
+#[test]
+fn a_y_with_every_line_seen_shows_no_hint() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    page_to_the_end(&mut chat, (60, 14));
+    chat.approvals_mut()
+        .review_mut()
+        .unwrap()
+        .y_pressed(at(100));
+    let shown = draw(&mut chat, at(200), 60, 14);
+    assert!(rows(&shown)[0].contains("y in 0.6s"), "{:?}", rows(&shown));
+}
+
+#[test]
 fn everything_seen_but_the_delay_not_over_counts_down() {
     let mut chat = reviewing(numbered(30), 60, 14);
     page_to_the_end(&mut chat, (60, 14));
@@ -195,7 +276,7 @@ fn a_batch_too_large_offers_only_to_discard_and_says_why() {
 fn an_empty_batch_is_the_same_view() {
     let mut chat = reviewing(review_of(&[]), 70, 8);
     let r = rows(&draw(&mut chat, at(60_000), 70, 8));
-    assert!(r[0].contains("too large to review"), "{r:?}");
+    assert_eq!(r[0].trim_end(), "empty batch: nothing to approve · press n");
     assert!(r[7].starts_with("n discard"), "{r:?}");
 }
 
@@ -297,6 +378,7 @@ fn the_keys_row_keeps_n_first_then_y_then_the_scroll_hints() {
         (10, false, "n reject ·"),
         (19, false, "n reject · y locked"),
         (24, false, "n reject · y locked · ↑↓"),
+        (28, false, "n reject · y after scrolling"),
     ] {
         let mut chat = reviewing(numbered(3), usize::from(w), 6);
         if ready {

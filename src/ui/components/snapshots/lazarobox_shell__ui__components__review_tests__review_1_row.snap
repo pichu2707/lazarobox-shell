@@ -2,4 +2,4 @@
 source: src/ui/components/review_tests.rs
 expression: "flat(&draw(&mut chat, at(0), 30, 1))"
 ---
-n reject · y locked · ↑↓ PgUp
+n reject · y after scrolling ·

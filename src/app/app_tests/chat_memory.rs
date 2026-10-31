@@ -426,7 +426,7 @@ fn waiting_for_the_project() -> App {
     let mut a = timed(launched(80, 25).with_ai(ai(true)));
     at(&mut a, 0, cwd_event(CWD));
     at(&mut a, 0, ctrl_space());
-    let effects = at(&mut a, 0, key('c'));
+    let effects = a.update_settled(key('c'));
     assert_eq!(memory_cmds(&effects), [resolve()]);
     a
 }

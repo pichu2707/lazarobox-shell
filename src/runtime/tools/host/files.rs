@@ -228,6 +228,10 @@ pub(super) async fn run_within(
 
 const COULD_NOT: &str = "could not run";
 
+/// The last line of an applied batch's result: a small model tends to stop
+/// after the review, with the user's other steps undone (#439).
+const CONTINUE: &str = "Continue with any step the user asked for that is not finished yet.";
+
 /// Where a read of `input` leads, for its ask: the path guard's verdict, and
 /// whether the real path (every link followed) is inside the real root of the
 /// chat, and that root is concrete (see [`concrete_root`]). Read on the
@@ -310,7 +314,7 @@ async fn read(
 }
 
 /// What the disk holds at `real`, for staging. A folder the batch makes holds
-/// nothing yet. Every refusal is the one refusal text.
+/// nothing yet.
 ///
 /// `probed` is the disk read, made before the lock was taken. A folder the
 /// batch makes wins over it. If the batch changed since the read, the apply
@@ -320,7 +324,7 @@ fn on_disk(
     key: StageKey,
     real: &Path,
     probed: Result<Option<Vec<u8>>, Unreadable>,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<Vec<u8>>, Unreadable> {
     let made = |batch: &crate::core::ai::tools::stage::Batch| {
         batch.entries().iter().any(|s| {
             s.entry == Entry::Dir && real != s.target.real && real.starts_with(&s.target.real)
@@ -329,7 +333,71 @@ fn on_disk(
     if stages.batch(key).is_some_and(made) {
         return Ok(None);
     }
-    probed.map_err(|_| REFUSED.to_owned())
+    probed
+}
+
+/// The chat's folder as a write refusal names it: `$HOME` shown as `~`.
+fn chat_folder(env: &ToolEnv) -> String {
+    let home = env
+        .home
+        .as_deref()
+        .map(Path::new)
+        .filter(|home| home.parent().is_some());
+    let shown = match home.and_then(|home| env.origin.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => env.origin.display().to_string(),
+    };
+    // A folder name is the user's, but a control character in it must not
+    // reach the model's text as one.
+    shown
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+/// The one text of every write refusal, with the chat's folder, so a model
+/// learns where its paths start (local-model-writes D2). It is the same for
+/// every reason: a model cannot tell an excluded path from a missing one.
+fn refused_in(env: &ToolEnv) -> String {
+    format!(
+        "{REFUSED} (paths are relative to the chat's folder {})",
+        chat_folder(env)
+    )
+}
+
+/// The refusal of every write when the chat's folder is itself too broad
+/// (HOME, a folder above it, `/`). The reason is about the folder, not a path,
+/// so it leaks nothing about which paths are excluded, and it tells the model
+/// to stop retrying and ask for a project folder.
+fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
+    let root = env
+        .origin
+        .is_absolute()
+        .then(|| env.origin.canonicalize().ok())??;
+    roots.home().starts_with(&root).then(|| {
+        format!(
+            "{REFUSED}: the chat's folder is {}, where files cannot be written; ask the user to run /cd <project folder>",
+            chat_folder(env)
+        )
+    })
+}
+
+/// The refusal of a write whose parent folder does not exist, for a path the
+/// policy already allowed (so `list_dir` would show the same). `None` when
+/// the parent is there or anything else is wrong with it.
+fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
+    match real.parent()?.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return None,
+    }
+    let shown = Path::new(path).parent()?.to_str()?.trim_end_matches('/');
+    (!shown.is_empty()).then(|| {
+        format!(
+            "{REFUSED}: the folder {shown}/ does not exist (paths are relative to the chat's folder {})",
+            chat_folder(env)
+        )
+    })
 }
 
 fn failed<E: Display>(why: StageFailed<E>) -> String {
@@ -357,8 +425,8 @@ fn stage(
 }
 
 /// [`stage`] of a chat, with the disk read given, so a test can watch when it
-/// happens. Only the Linux test uses it.
-#[cfg(all(test, target_os = "linux"))]
+/// happens. Only the Linux and macOS test uses it.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn stage_with_probe(
     stages: &Mutex<Stages>,
     key: StageKey,
@@ -408,8 +476,11 @@ fn stage_as(
     worker: Option<&WorkerScope>,
     probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<(String, Change), String> {
-    let refused = || REFUSED.to_owned();
+    let refused = || refused_in(env);
     let roots = load_roots(env).map_err(|_| refused())?;
+    if let Some(broad) = broad_folder(env, &roots) {
+        return Err(broad);
+    }
     let path = match call {
         Call::CreateDir { path } | Call::WriteFile { path, .. } | Call::EditFile { path, .. } => {
             path
@@ -426,7 +497,8 @@ fn stage_as(
     // The disk is read before the lock is taken: the lock covers memory only.
     let probed = probe(&roots, &target.real);
     let mut stages = lock(stages);
-    let disk = on_disk(&stages, key, &target.real, probed)?;
+    let disk = on_disk(&stages, key, &target.real, probed)
+        .map_err(|_| missing_parent(env, path, &target.real).unwrap_or_else(refused))?;
     let existing = match &disk {
         None => Existing::Absent,
         Some(bytes) => Existing::Present {
@@ -496,7 +568,7 @@ pub(super) async fn answered(
     let env = host.env(&scope.origin);
     let stages = host.stages.clone();
     let done = tokio::task::spawn_blocking(move || {
-        let roots = load_roots(&env).map_err(|_| REFUSED.to_owned())?;
+        let roots = load_roots(&env).map_err(|_| refused_in(&env))?;
         lock(&stages)
             .apply(id, &roots)
             .map_err(|why| why.to_string())
@@ -507,12 +579,13 @@ pub(super) async fn answered(
         Ok(Err(why)) => return ended(ToolStatus::Error, why.clone(), &why),
         Err(_) => return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT),
     };
-    let text = result.summary();
+    let mut text = result.summary();
     // Only what the user approved and the apply wrote counts as applied.
     if let (true, Some(worker)) = (result.applied(), &scope.read_scope) {
         worker.handle.applied(worker.run, worker.worker, &paths);
     }
     let status = if result.applied() {
+        text = format!("{text}\n{CONTINUE}");
         ToolStatus::Ok
     } else {
         // Nothing was written, or the user must look: `sealed` closes the batch.

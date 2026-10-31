@@ -45,19 +45,34 @@ impl App {
 
     /// The batches the runtime holds, by pane (it polls on its tick): each
     /// chat wears the badge of its own, or none. Redraws only on a change.
-    pub fn sync_batches(&mut self, badges: &HashMap<PaneId, Badge>) {
+    /// A batch that turns into an orphan when the last turn ended with
+    /// `Done` (the model staged it and never proposed it) has its review
+    /// asked for at once, unless the chat already waits on an approval
+    /// (local-model-writes D1). A cancelled or failed turn leaves the orphan
+    /// to Ctrl+G.
+    pub fn sync_batches(&mut self, badges: &HashMap<PaneId, Badge>) -> Vec<Effect> {
         let mut changed = false;
+        let mut effects = Vec::new();
         for (id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
                 continue;
             };
             let badge = badges.get(id).copied();
             if chat.batch_badge() != badge {
+                let was_orphan = matches!(chat.batch_badge(), Some(Badge::Orphan(_)));
                 chat.set_batch_badge(badge);
                 changed = true;
+                if matches!(badge, Some(Badge::Orphan(_)))
+                    && !was_orphan
+                    && chat.take_clean_end()
+                    && chat.approvals().pending().is_none()
+                {
+                    effects.push(Effect::BatchReview(*id));
+                }
             }
         }
         self.dirty |= changed;
+        effects
     }
 
     /// Ctrl+G: asks the runtime for the review of the orphan chat `id` wears.
@@ -184,6 +199,15 @@ impl App {
             (key.code, key.modifiers),
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
+        // A `y` the gate will refuse says why; the gate itself is untouched.
+        if !repeat && key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
+            let now = (self.clock)();
+            if let Some(view) = self.review_mut(id)
+                && view.y_pressed(now)
+            {
+                self.dirty = true;
+            }
+        }
         if repeat || (answers && !self.review_answerable(id)) {
             return Vec::new();
         }

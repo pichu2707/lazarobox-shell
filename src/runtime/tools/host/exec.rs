@@ -52,7 +52,8 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
-const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
+/// Says how to go on, so a small model retries after proposing (#439).
+const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
@@ -222,6 +223,11 @@ pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
     Some(clip(&line, EARLIER_COLUMNS))
 }
 
+/// The refusal of a command or git verb when the chat's folder is HOME, a
+/// folder above it or `/`. It is about the folder, not a path, and fixed, so
+/// it leaks nothing about excluded paths, and it stops a model from retrying.
+const BROAD: &str = "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>";
+
 /// The chat origin as a root a command or a git verb may use: absolute, a real
 /// folder, not HOME, and not a place the path guard refuses.
 pub(super) fn root_of(
@@ -233,8 +239,14 @@ pub(super) fn root_of(
         .is_absolute()
         .then(|| fs::canonicalize(origin).ok())
         .flatten()
-        .filter(|root| root.is_dir() && root != roots.home() && roots.judge_real(root))
+        .filter(|root| root.is_dir())
         .ok_or(REFUSED)?;
+    if roots.home().starts_with(&root) {
+        return Err(BROAD);
+    }
+    if !roots.judge_real(&root) {
+        return Err(REFUSED);
+    }
     Ok((roots, root))
 }
 

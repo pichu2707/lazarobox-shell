@@ -76,24 +76,24 @@ Order: A1 -> A2 -> B1 -> B2 sequential; A3 any time before B2. Each PR keeps `ca
 
 ## PR B1: picker core (~330, base `main` after A2)
 
-- [ ] 4.1 RED: `merge` order last-used, pane git roots, recent, last shell; dedupe by real path; keeps `Concrete` only (drops HOME, `/`, `/home`, `/usr`, deleted, secret); cap 12; row 0 pre-selected. (~0)
-- [ ] 4.2 GREEN: `core/ai/chat/folder_picker.rs`: `merge`, row type. (~70)
-- [ ] 4.3 RED: picker transitions: Up/Down, field edit, Ctrl+U, paste to field, Enter field wins over row, empty field + empty rows does nothing, Esc cancel, refused path keeps text and reason, stale completion dropped. (~0)
-- [ ] 4.4 GREEN: `FolderPicker` state machine and `on_key -> PickerOutcome`. (~110)
-- [ ] 4.5 RED: `StoreCmd::RecentFolders{limit}` returns folders newest first, groups duplicates, limit 12, store failure counts as empty. (~0)
-- [ ] 4.6 GREEN: `RecentFolders` SQL in `chat_store/worker.rs`. (~40)
-- [ ] 4.7 RED: runtime `.git` walk (dir and worktree file, stops at HOME and `/`), `ProbeFolders{paths, walk_git}` judges each path, completion lists directories only (hidden only with `.` prefix, cap 50). (~0)
-- [ ] 4.8 GREEN: `runtime/folder.rs` `probe_many`, `walk_git`, `complete`; matching `Effect`/`AppEvent` variants. (~110)
+- [x] 4.1 RED: `merge` order last-used, pane git roots, recent, last shell; dedupe by real path; keeps `Concrete` only (drops HOME, `/`, `/home`, `/usr`, deleted, secret); cap 12; row 0 pre-selected. (~0)
+- [x] 4.2 GREEN: `core/ai/chat/folder_picker.rs`: `merge`, row type. (~70)
+- [x] 4.3 RED: picker transitions: Up/Down, field edit, Ctrl+U, paste to field, Enter field wins over row, empty field + empty rows does nothing, Esc cancel, refused path keeps text and reason, stale completion dropped. (~0)
+- [x] 4.4 GREEN: `FolderPicker` state machine and `on_key -> PickerOutcome`. (~110)
+- [x] 4.5 RED: `StoreCmd::RecentFolders{limit}` returns folders newest first, groups duplicates, limit 12, store failure counts as empty. (~0)
+- [x] 4.6 GREEN: `RecentFolders` SQL in `chat_store/worker.rs`. (~40)
+- [x] 4.7 RED: runtime `.git` walk (dir and worktree file, stops at HOME and `/`), `ProbeFolders{paths, walk_git}` judges each path, completion lists directories only (hidden only with `.` prefix, cap 50). (~0)
+- [x] 4.8 GREEN: `runtime/folder.rs` `probe_many`, `walk_git`, `complete`; matching `Effect`/`AppEvent` variants. (~110)
 
 ## PR B2: picker integration, keys, render, docs (~285, base `main` after B1 and A3)
 
-- [ ] 5.1 RED: open flow: broad (HOME, `/`, `/home`, `/usr`, unknown) opens the picker with detection still running; `begin_memory`, offer, `PreparePrompt`, `Store List` are deferred; concrete opens as before; inherited broad folder shows the picker; no silent choice on tick, draw or detection. (~0)
-- [ ] 5.2 GREEN: `open_chat_pane` defers steps, `ProbeFolder{Open}`, picker held in `ChatState`, keys routed in `on_chat_key` after the approval check, candidate gathering (tab shell cwds, `last_shell`, `RecentFolders`, `ProbeFolders`). (~120)
-- [ ] 5.3 RED: accept: Enter probes again, `set_folder`, list follows the tag of the chosen folder; Esc keeps the folder and adds `chat folder is <f>; use /cd <folder> to change it`; `~` typed gives HOME; typed `/usr` and `/` refused; resume opens the picker over the conversation, Esc keeps the pane folder. (~0)
-- [ ] 5.4 GREEN: accept/cancel paths in `app/folder.rs`, resume picker hook in `app/history.rs`. (~60)
-- [ ] 5.5 RED: render snapshots 60x10 (rows, empty with hint, error, gathering) and `/cd` Tab completion. (~0)
-- [ ] 5.6 GREEN: `ui/components/chat/folder.rs` render and `/cd` Tab completion via `complete`. (~85)
-- [ ] 5.7 Docs: Spanish `README.md`: replace the "cd first" workaround (~l.331-336) with the picker and `/cd` (confirmation, busy refusals, `//cd` escape); document `--dir`, `[workspace] dir`, precedence, `install-desktop --dir` (`Path=` and `Exec`), the in-app notice for a bad folder, and the SQLite note that folder paths are stored. (~20 lines, docs)
+- [x] 5.1 RED: open flow: broad (HOME, `/`, `/home`, `/usr`, unknown) opens the picker with detection still running; `begin_memory`, offer, `PreparePrompt`, `Store List` are deferred; concrete opens as before; inherited broad folder shows the picker; no silent choice on tick, draw or detection. (~0)
+- [x] 5.2 GREEN: `open_chat_pane` defers steps, `ProbeFolder{Open}`, picker held in `ChatState`, keys routed in `on_chat_key` after the approval check, candidate gathering (tab shell cwds, `last_shell`, `RecentFolders`, `ProbeFolders`). (~120)
+- [x] 5.3 RED: accept: Enter probes again, `set_folder`, list follows the tag of the chosen folder; Esc keeps the folder and adds `chat folder is <f>; use /cd <folder> to change it`; `~` typed gives HOME; typed `/usr` and `/` refused; resume opens the picker over the conversation, Esc keeps the pane folder. (~0)
+- [x] 5.4 GREEN: accept/cancel paths in `app/folder.rs`, resume picker hook in `app/history.rs`. (~60)
+- [x] 5.5 RED: render snapshots 60x10 (rows, empty with hint, error, gathering) and `/cd` Tab completion. (~0)
+- [x] 5.6 GREEN: `ui/components/chat/folder.rs` render and `/cd` Tab completion via `complete`. (~85)
+- [x] 5.7 Docs (picker and `/cd` part; `--dir`, `[workspace] dir` and `install-desktop --dir` stay with A3): Spanish `README.md`: replace the "cd first" workaround (~l.331-336) with the picker and `/cd` (confirmation, busy refusals, `//cd` escape); document `--dir`, `[workspace] dir`, precedence, `install-desktop --dir` (`Path=` and `Exec`), the in-app notice for a bad folder, and the SQLite note that folder paths are stored. (~20 lines, docs)
 
 ## Closing tasks
 
