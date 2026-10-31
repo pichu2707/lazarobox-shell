@@ -319,3 +319,21 @@ fn the_footer_names_the_key_with_a_worker_selected() {
     let shown = screen(&a);
     assert!(shown.contains("Ctrl+Space W"), "{shown}");
 }
+
+// A trace is a redraw only for the worker on view: a fast stream must not wake
+// the screen for nothing.
+#[test]
+fn a_trace_redraws_only_when_its_worker_is_on_view() {
+    let mut a = selected_one();
+    a.take_dirty();
+    a.update(say(1, "no view open"));
+    assert!(!a.take_dirty(), "no view");
+    open(&mut a);
+    a.take_dirty();
+    a.update(say(2, "another worker"));
+    assert!(!a.take_dirty(), "another worker");
+    a.update(say(1, "\nfresh"));
+    assert!(a.take_dirty(), "the worker on view");
+    let shown = screen(&a);
+    assert!(shown.contains("fresh"), "{shown}");
+}

@@ -3,7 +3,7 @@
 //! and sanitized, apart from the chat entries (a worker transcript is never
 //! stored in the history nor sent back as history).
 
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 use super::{
     ChatState, Entry,
@@ -42,6 +42,8 @@ struct WorkerTrace {
     parts: VecDeque<Part>,
     bytes: usize,
     cut: bool,
+    /// The rows at the last width asked, until the next step.
+    rows: RefCell<Option<(usize, Arc<Vec<Line>>)>>,
 }
 
 /// The transcripts of the pane's run and the view that is open on one.
@@ -52,6 +54,7 @@ pub struct Traces {
 
 impl WorkerTrace {
     fn push(&mut self, item: TraceItem) {
+        *self.rows.get_mut() = None;
         match item {
             TraceItem::Begin => *self = Self::default(),
             TraceItem::Text(piece) => {
@@ -129,6 +132,22 @@ impl WorkerTrace {
             excess = excess.saturating_sub(size);
             self.parts.pop_front();
         }
+    }
+
+    /// The rows at `width`, wrapped once per width and step.
+    fn shared(&self, width: usize) -> Arc<Vec<Line>> {
+        if let Some((at, rows)) = &*self.rows.borrow()
+            && *at == width
+        {
+            return rows.clone();
+        }
+        let mut rows = self.rows(width);
+        if rows.is_empty() {
+            push_wrapped(&mut rows, LineKind::System, "", "", NO_OUTPUT, width);
+        }
+        let rows = Arc::new(rows);
+        *self.rows.borrow_mut() = Some((width, rows.clone()));
+        rows
     }
 
     fn rows(&self, width: usize) -> Vec<Line> {
@@ -289,17 +308,15 @@ impl ChatState {
     }
 
     /// The transcript rows of the open view at `width` columns.
-    pub fn run_view_rows(&self, width: usize) -> Vec<Line> {
+    pub fn run_view_rows(&self, width: usize) -> Arc<Vec<Line>> {
         let Some(view) = self.run_view else {
-            return Vec::new();
+            return Arc::default();
         };
-        let mut rows = (self.traces.kept.iter())
-            .find(|(k, _)| *k == (view.run, view.worker))
-            .map_or_else(Vec::new, |(_, trace)| trace.rows(width));
-        if rows.is_empty() {
-            push_wrapped(&mut rows, LineKind::System, "", "", NO_OUTPUT, width);
-        }
-        rows
+        let found = (self.traces.kept.iter()).find(|(k, _)| *k == (view.run, view.worker));
+        found.map_or_else(
+            || WorkerTrace::default().shared(width),
+            |(_, trace)| trace.shared(width),
+        )
     }
 
     /// The first row shown of `total` in `rows` rows.

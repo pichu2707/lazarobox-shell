@@ -76,6 +76,10 @@ enum Script {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     // only the Linux-only write tests use it
     Held(&'static str),
+    /// Streams a thousand small pieces, then ends.
+    Many,
+    /// Streams the text, then hangs like a process that never ends.
+    SaysThenHangs(&'static str),
 }
 
 /// What the fake engine saw.
@@ -182,6 +186,17 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                 Script::Held(text) => {
                     mine.release.notified().await;
                     (text, StreamEvent::Done(Finish::Stop))
+                }
+                Script::Many => {
+                    for _ in 0..1000 {
+                        let _ = tx.send(StreamEvent::Delta("0123456789".into())).await;
+                    }
+                    ("", StreamEvent::Done(Finish::Stop))
+                }
+                Script::SaysThenHangs(text) => {
+                    let _ = tx.send(StreamEvent::Delta(text.into())).await;
+                    let _dropped = OnDrop(mine);
+                    return std::future::pending().await;
                 }
             };
             let _ = tx.send(StreamEvent::Delta(text.into())).await;
@@ -4470,11 +4485,7 @@ async fn a_routes_tool_rows_reach_the_app_as_trace() {
         run: RunId(7),
         worker: WorkerId(2),
     };
-    let trace = Tracer {
-        events,
-        pane: pane(),
-        key,
-    };
+    let trace = Tracer::new(events, pane(), key);
     let (turn, mut seen) = mpsc::channel(TURN_CHANNEL);
     let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
     let tx = Route::forward(&route);
@@ -4527,4 +4538,75 @@ async fn a_routes_tool_rows_reach_the_app_as_trace() {
             },
         ]
     );
+}
+
+/// The text of worker 1's trace events, in order.
+fn said(events: &[OrchestraEvent]) -> Vec<String> {
+    traced(events, 1)
+        .into_iter()
+        .filter_map(|item| match item {
+            TraceItem::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+// A fast stream reaches the app in a few pieces, all of its text in order.
+#[tokio::test]
+async fn small_deltas_are_sent_to_the_app_in_larger_pieces() {
+    let mut lab = lab(Script::Many);
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let pieces = said(&lab.sent());
+    assert_eq!(pieces.concat(), "0123456789".repeat(1000));
+    assert!(pieces.len() < 50, "{} pieces", pieces.len());
+}
+
+// A worker killed by its deadline still shows what it said.
+#[tokio::test(start_paused = true)]
+async fn the_tail_of_a_worker_killed_by_its_deadline_is_not_lost() {
+    let mut lab = lab(Script::SaysThenHangs("partial answer"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    let mut seen = Vec::new();
+    loop {
+        let (_, event) = lab.events.recv().await.unwrap();
+        let over = status_of(&event) == Some(WorkerStatus::TimedOut);
+        seen.push(event);
+        if over {
+            break;
+        }
+    }
+    assert_eq!(said(&seen).concat(), "partial answer");
+}
+
+// The coalescing keeps the order against tool rows: the text said before a
+// call comes before it.
+#[tokio::test]
+async fn text_said_before_a_tool_row_comes_before_it() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer::new(events, pane(), key);
+    trace.text("before".into());
+    trace.row(&StreamEvent::ToolCall {
+        id: CallId(1),
+        name: "run".into(),
+        summary: String::new(),
+        approval: None,
+    });
+    let items: Vec<_> = std::iter::from_fn(|| app.try_recv().ok())
+        .filter_map(|(_, event)| match event {
+            OrchestraEvent::Trace { item, .. } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(items[0], TraceItem::Text(ref t) if t == "before"),
+        "{items:?}"
+    );
+    assert!(matches!(items[1], TraceItem::Call { .. }), "{items:?}");
 }

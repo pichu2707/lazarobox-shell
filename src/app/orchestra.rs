@@ -156,6 +156,17 @@ impl App {
             OrchestraEvent::Continue(next) => return self.on_continue(id, next),
             event => event,
         };
+        // A worker's step is a redraw only when its transcript is on view.
+        if let OrchestraEvent::Trace { run, worker, item } = event {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                let shown = chat
+                    .run_view()
+                    .is_some_and(|v| (v.run, v.worker) == (run, worker));
+                chat.trace(run, worker, item);
+                self.dirty |= shown;
+            }
+            return Vec::new();
+        }
         // A run that ended stores nothing more, whether its pane is still a
         // chat or not.
         let mut kept = Vec::new();
@@ -262,8 +273,8 @@ impl App {
                     chat.push_system_line(text);
                 }
             }
-            // What a worker's turn produced, for its transcript view (S9).
-            OrchestraEvent::Trace { run, worker, item } => chat.trace(run, worker, item),
+            // Handled before the pane is borrowed.
+            OrchestraEvent::Trace { .. } => {}
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) => {}
             OrchestraEvent::Unavailable => {

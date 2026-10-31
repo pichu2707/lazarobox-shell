@@ -337,16 +337,36 @@ fn clock_micros() -> u64 {
 /// Reads the highest run id the store has seen.
 type RunFloor = Box<dyn Fn() -> u64 + Send + Sync>;
 
+/// How much streamed text waits before it is sent to the app.
+const FLUSH_BYTES: usize = 4096;
+/// How long streamed text waits at most.
+const FLUSH_AFTER: Duration = Duration::from_millis(50);
+
 /// Tells the app what one worker's turn does, for its transcript view (S9).
+/// Streamed text is coalesced (a delta is a few bytes and each event wakes
+/// the app); any other step, the timer and the end of the turn flush it first,
+/// so the order is kept and no tail is lost. The text is already sanitized by
+/// the pipe and the tool rows are clipped by the host that made them; the app
+/// sanitizes and caps whatever it keeps anyway.
 #[derive(Clone)]
 struct Tracer {
     events: Events,
     pane: PaneId,
     key: WorkerKey,
+    waiting: Arc<Mutex<String>>,
 }
 
 impl Tracer {
-    fn send(&self, item: TraceItem) {
+    fn new(events: Events, pane: PaneId, key: WorkerKey) -> Self {
+        Self {
+            events,
+            pane,
+            key,
+            waiting: Arc::default(),
+        }
+    }
+
+    fn emit(&self, item: TraceItem) {
         let (run, worker) = (self.key.run, self.key.worker);
         // Nobody listens once the app is gone.
         let _ = self
@@ -354,7 +374,45 @@ impl Tracer {
             .send((self.pane, OrchestraEvent::Trace { run, worker, item }));
     }
 
-    /// What a tool row of the worker adds to its transcript.
+    /// A step that is not streamed text: after the text said before it.
+    fn send(&self, item: TraceItem) {
+        self.flush();
+        self.emit(item);
+    }
+
+    /// A piece of the answer: sent with the next ones, within [`FLUSH_AFTER`].
+    fn text(&self, piece: String) {
+        if piece.is_empty() {
+            return;
+        }
+        let (full, first) = {
+            let mut waiting = lock(&self.waiting);
+            let first = waiting.is_empty();
+            waiting.push_str(&piece);
+            (waiting.len() >= FLUSH_BYTES, first)
+        };
+        if full {
+            self.flush();
+        } else if first {
+            let late = self.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(FLUSH_AFTER).await;
+                late.flush();
+            });
+        }
+    }
+
+    /// Sends the waiting text. The send is made under the lock, so two
+    /// flushes cannot swap their pieces.
+    fn flush(&self) {
+        let mut waiting = lock(&self.waiting);
+        if !waiting.is_empty() {
+            self.emit(TraceItem::Text(std::mem::take(&mut waiting)));
+        }
+    }
+
+    /// What a tool row of the worker adds to its transcript. The rows come
+    /// from the host (clipped and flat): the app caps them again.
     fn row(&self, event: &StreamEvent) {
         match event {
             StreamEvent::ToolCall {
@@ -1356,11 +1414,7 @@ impl RunManager {
             worker: id,
         };
         let approver = live.approver.for_worker(key);
-        let trace = Tracer {
-            events: self.events.clone(),
-            pane,
-            key,
-        };
+        let trace = Tracer::new(self.events.clone(), pane, key);
         let route = Route::new(
             key,
             trace.clone(),
@@ -1659,9 +1713,12 @@ impl Turn {
         // The call sits inside the guarded future, as in a chat turn.
         let adapter = Box::pin(async move { runner(request, tx).await });
         let adapter = chat::in_session(adapter, pending, dispatch);
-        tokio::time::timeout(deadline, drive(adapter, rx, &engine, &trace))
+        let ended = tokio::time::timeout(deadline, drive(adapter, rx, &engine, &trace))
             .await
-            .ok()
+            .ok();
+        // Whatever the turn ended by, its last words reach the transcript.
+        trace.flush();
+        ended
     }
 }
 
@@ -1697,7 +1754,7 @@ async fn drive(
         for event in out {
             match event {
                 StreamEvent::Delta(delta) => {
-                    trace.send(TraceItem::Text(delta.clone()));
+                    trace.text(delta.clone());
                     text.push_str(&delta);
                 }
                 StreamEvent::Usage(usage) => events.push(WorkerEvent::Usage(usage)),

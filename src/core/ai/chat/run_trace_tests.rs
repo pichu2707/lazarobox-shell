@@ -47,10 +47,8 @@ fn text(piece: &str) -> TraceItem {
 }
 
 fn rows(state: &ChatState) -> Vec<String> {
-    state
-        .run_view_rows(80)
-        .into_iter()
-        .map(|line| line.text)
+    (state.run_view_rows(80).iter())
+        .map(|line| line.text.clone())
         .collect()
 }
 
@@ -331,4 +329,17 @@ fn tool_rows_are_capped() {
         },
     );
     assert!(kept(&state) < 1200, "{}", kept(&state));
+}
+
+#[test]
+fn the_wrapped_rows_are_kept_until_the_transcript_or_the_width_changes() {
+    let mut state = viewing(1);
+    state.trace(RUN, WorkerId(1), text(&"word ".repeat(2000)));
+    let first = state.run_view_rows(80);
+    assert!(std::sync::Arc::ptr_eq(&first, &state.run_view_rows(80)));
+    assert!(!std::sync::Arc::ptr_eq(&first, &state.run_view_rows(40)));
+    let again = state.run_view_rows(80);
+    state.trace(RUN, WorkerId(1), text("more"));
+    assert!(!std::sync::Arc::ptr_eq(&again, &state.run_view_rows(80)));
+    assert!(state.run_view_rows(80).iter().any(|l| l.text == "more"));
 }
