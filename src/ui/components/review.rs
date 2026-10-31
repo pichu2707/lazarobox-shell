@@ -165,7 +165,11 @@ mod label_tests {
         let chat = header_of(plain.clone());
         assert!(chat.starts_with(&plain.counts()), "{chat}");
         let doc = plain.doc().clone();
-        let worker = Arc::new(BatchReview::labelled(doc, "code codex>default".into()));
+        let worker = Arc::new(BatchReview::labelled(
+            doc,
+            "code codex>default".into(),
+            crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        ));
         let shown = header_of(worker);
         assert_eq!(shown, format!("code codex>default · {chat}"));
     }

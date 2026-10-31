@@ -96,6 +96,7 @@ use crate::{
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
+            orchestra::SessionKey,
         },
         config::{Config, config_path},
         layout::PaneId,
@@ -1647,12 +1648,15 @@ impl Panes {
                 // on nothing when the call is over.
                 Effect::ToolDecision {
                     pane,
+                    worker,
                     turn,
                     call,
                     decision,
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(pane, turn, call, decision);
+                        let session = worker
+                            .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
+                        chats.decide(session, turn, call, decision);
                     }
                 }
                 // The write and the answer are one step: the answer is claimed
@@ -4628,6 +4632,7 @@ mod tests {
         assert!(session(&panes), "a turn with tools has a session");
         panes.apply(vec![Effect::ToolDecision {
             pane: id(1),
+            worker: None,
             turn: 1,
             call: CallId(99),
             decision: Decision::Sent,

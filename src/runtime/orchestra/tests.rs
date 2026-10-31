@@ -24,7 +24,7 @@ use crate::{
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
-        orchestra::{Toolset, run::UserChoice},
+        orchestra::{SessionKey, Toolset, WorkerKey, run::UserChoice},
         tools::{label, registry::FamilySet},
     },
     runtime::tools::{Limits, Unwired, Waits},
@@ -1456,7 +1456,7 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
         pending,
         ..lab.scope(codex_review(), &[])
     };
-    let (_, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     handle.call(spawn(Task::Review, "check")).await;
     let request = lab.seen.first().await;
     let Tools::On {
@@ -1484,6 +1484,10 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     let expected = ApprovalAsk::WorkerRead {
         path: path.to_str().unwrap().into(),
         label,
+        worker: WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
         reach: Reach::Broad,
         cloud: true,
     };
@@ -1505,6 +1509,66 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     use WorkerStatus::*;
     let story = story(&lab.sent());
     assert_eq!(story, [(1, Some(Running)), (1, Some(Cancelled)), (0, None)]);
+}
+
+// Spec (agent-tools, Cross-session call refused; agent-orchestrator, Cancel
+// denies pending asks): a worker's ask waits under the worker's own session,
+// so the orchestrator's session cannot answer it, and cancelling the worker
+// leaves no wait for it.
+#[tokio::test]
+async fn a_worker_ask_waits_under_its_own_session_and_cancelling_it_denies_the_ask() {
+    let mut lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let request = lab.seen.first().await;
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &request.tools
+    else {
+        panic!("{:?}", request.tools);
+    };
+    let mut client = ready(wire).await;
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+    client
+        .1
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let asked = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+    let Some(StreamEvent::ToolCall { id, .. }) = asked.unwrap() else {
+        panic!("no ask");
+    };
+    assert!(
+        !waits.decide(pane(), 7, id, Decision::Sent),
+        "the orchestrator's session cannot answer a worker's ask"
+    );
+    let cancelled = handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert_eq!(cancelled, fine("worker 1: cancelled"));
+    let result = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+    let Some(StreamEvent::ToolResult { id: of, status, .. }) = result.unwrap() else {
+        panic!("no result");
+    };
+    assert_eq!((of, status), (id, ToolStatus::Denied));
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(
+        !waits.decide(worker, 7, id, Decision::Sent),
+        "no wait is left"
+    );
 }
 
 // Spec (agent-orchestrator, Ctrl+C cancels all): with an orchestrator turn
@@ -1940,6 +2004,10 @@ impl Lab {
     }
 
     fn start_writing(&self, waits: &Arc<Waits>, deadline: Duration) -> OrchHandle {
+        self.start_writing_run(waits, deadline).1
+    }
+
+    fn start_writing_run(&self, waits: &Arc<Waits>, deadline: Duration) -> (RunId, OrchHandle) {
         let pending = Pending::new();
         let scope = OrchScope {
             origin: self.app(),
@@ -1948,7 +2016,7 @@ impl Lab {
             deadline,
             ..self.scope(codex_code(), &["~/dev/app"])
         };
-        self.manager.start(pane(), scope).unwrap().1
+        self.manager.start(pane(), scope).unwrap()
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
@@ -2081,7 +2149,7 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
     for answer in [Decision::Unprompted, Decision::Sent] {
         let mut lab = writing_lab(Script::Held("done"));
         let waits = Waits::new();
-        let handle = lab.start_writing(&waits, TEN_MINUTES);
+        let (run, handle) = lab.start_writing_run(&waits, TEN_MINUTES);
         handle.call(spawn(Task::Code, "write a")).await;
         let mut client = worker_client(&lab.seen).await;
         let call = tool_call(
@@ -2114,7 +2182,14 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
             !lab.app().join("a.txt").exists(),
             "nothing before the answer"
         );
-        assert!(waits.decide(pane(), 7, id, answer));
+        let worker = SessionKey::Worker(
+            pane(),
+            WorkerKey {
+                run,
+                worker: WorkerId(1),
+            },
+        );
+        assert!(waits.decide(worker, 7, id, answer));
         let mut reply = String::new();
         let read = timeout(Duration::from_secs(5), client.0.read_line(&mut reply));
         read.await.unwrap().unwrap();

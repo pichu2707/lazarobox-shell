@@ -693,6 +693,7 @@ fn a_worker_read_is_answered_by_the_mode_as_the_same_chat_read() {
                     cloud,
                 };
                 let worker = ApprovalAsk::WorkerRead {
+                    worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
                     path: path.into(),
                     label: "review claude>opus".into(),
                     reach,
@@ -706,7 +707,19 @@ fn a_worker_read_is_answered_by_the_mode_as_the_same_chat_read() {
                 set_mode(&mut b, mode);
                 let by_worker = announce(&mut b, turn, 1, worker.clone());
                 let case = format!("{mode:?} {reach:?} cloud={cloud}");
-                assert_eq!(by_worker, by_chat, "{case}");
+                // The worker's answer is addressed to its session, the chat's
+                // is not; nothing else differs.
+                let unaddressed: Vec<_> = by_worker
+                    .iter()
+                    .cloned()
+                    .map(|mut effect| {
+                        if let Effect::ToolDecision { worker, .. } = &mut effect {
+                            assert!(worker.take().is_some(), "{case}");
+                        }
+                        effect
+                    })
+                    .collect();
+                assert_eq!(unaddressed, by_chat, "{case}");
                 let shown = pending(&b).map(|(ask, _)| ask);
                 assert_eq!(shown, chat_prompts.then_some(worker), "{case}");
             }
@@ -761,6 +774,7 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
         let want: Vec<Effect> = decided
             .map(|decision| Effect::ToolDecision {
                 pane: id2(),
+                worker: None,
                 turn,
                 call: CallId(1),
                 decision,

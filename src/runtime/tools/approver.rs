@@ -230,6 +230,18 @@ impl Drop for Entry {
 }
 
 impl Approver for ForTurn {
+    fn for_worker(&self, key: WorkerKey) -> Option<Arc<dyn Approver>> {
+        let session = SessionKey::Worker(self.session.pane(), key);
+        Some(
+            self.waits
+                .approver(session, self.turn, self.pending.clone()),
+        )
+    }
+
+    fn end_worker(&self, key: WorkerKey) {
+        self.waits.end_worker(self.session.pane(), key);
+    }
+
     fn ask(&self, id: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         let (answer, rx) = oneshot::channel();
         let key = (self.session, self.turn, id);

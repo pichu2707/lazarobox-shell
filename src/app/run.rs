@@ -329,6 +329,7 @@ impl App {
         if let Some((turn, call)) = call {
             effects.push(Effect::ToolDecision {
                 pane: id,
+                worker: None,
                 turn,
                 call,
                 decision,

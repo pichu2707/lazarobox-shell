@@ -57,7 +57,7 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
-        orchestra::{RunId, run::UserChoice},
+        orchestra::{RunId, SessionKey, run::UserChoice},
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
@@ -981,8 +981,14 @@ impl Chats {
     /// The user's answer to a call that waits: the app's `ToolDecision`.
     /// `false` when no call waits under that (pane, turn, call), say because
     /// it ended meanwhile; the answer is then dropped.
-    pub fn decide(&self, pane: PaneId, turn: u64, call: CallId, decision: Decision) -> bool {
-        self.waits.decide(pane, turn, call, decision)
+    pub fn decide(
+        &self,
+        session: impl Into<SessionKey>,
+        turn: u64,
+        call: CallId,
+        decision: Decision,
+    ) -> bool {
+        self.waits.decide(session, turn, call, decision)
     }
 
     /// Claims the answer of a call that waits (see [`Waits::take`]).

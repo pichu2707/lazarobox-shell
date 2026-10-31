@@ -76,6 +76,18 @@ pub(super) fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> V
 pub(super) fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
     Effect::ToolDecision {
         pane: id2(),
+        worker: None,
+        turn,
+        call: CallId(call),
+        decision,
+    }
+}
+
+/// The answer to a worker's call: addressed to the worker's session.
+pub(super) fn worker_decision(turn: u64, call: u64, decision: Decision) -> Effect {
+    Effect::ToolDecision {
+        pane: id2(),
+        worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
         turn,
         call: CallId(call),
         decision,
@@ -147,6 +159,7 @@ fn a_read_ask_shows_read_and_the_path() {
 fn a_worker_read_ask_shows_the_label_and_the_path() {
     let (mut a, turn) = live();
     let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: "/home/u/dev/other/a.rs".to_owned(),
         label: "review claude>opus".to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -168,6 +181,7 @@ fn the_screen_shows_a_worker_read_prompt_with_its_label() {
     use ratatui::{Terminal, backend::TestBackend};
     let (mut a, turn) = live();
     let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: "~/dev/other/a.rs".to_owned(),
         label: "review claude>opus".to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -323,6 +337,7 @@ fn a_second_ask_is_denied_at_once_and_the_first_stays() {
 
 fn worker_read(path: &str, label: &str) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: path.to_owned(),
         label: label.to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -342,7 +357,10 @@ fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
     let first = a.approval_prompt(id2()).unwrap();
     assert!(first.target.contains("review claude>opus"), "{first:?}");
     assert!(first.target.contains("1 waiting"), "{first:?}");
-    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![worker_decision(turn, 1, Decision::Sent)]
+    );
     let second = a.approval_prompt(id2()).unwrap();
     assert!(second.target.contains("general codex>x"), "{second:?}");
     assert!(!second.target.contains("waiting"), "{second:?}");
@@ -354,7 +372,11 @@ fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
     NOW_MS.with(|n| n.set(n.get() + 1_000));
     assert_eq!(
         a.update(key('n')),
-        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+        vec![worker_decision(
+            turn,
+            2,
+            Decision::Denied("the user declined")
+        )]
     );
     assert_eq!(pending(&a), None);
 }
@@ -496,7 +518,7 @@ fn turning_tools_off_denies_the_queued_worker_asks_too() {
     a.ai.set_tools_enabled(false);
     let effects = a.sync_tools();
     for call in [1, 2] {
-        let denied = decision(turn, call, Decision::Denied("tools are off"));
+        let denied = worker_decision(turn, call, Decision::Denied("tools are off"));
         assert!(effects.contains(&denied), "{call}: {effects:?}");
     }
     assert_eq!(pending(&a), None);
@@ -656,6 +678,7 @@ fn a_chat_whose_tab_has_no_shell_denies_a_run() {
         effects,
         vec![Effect::ToolDecision {
             pane: chat_pane,
+            worker: None,
             turn,
             call: CallId(1),
             decision: Decision::Denied("there is no shell pane in this tab"),
@@ -812,6 +835,7 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
         for effect in effects {
             if let Effect::ToolDecision {
                 pane,
+                worker: None,
                 turn,
                 call,
                 decision,
@@ -1489,6 +1513,7 @@ mod root_reads {
             for effect in effects {
                 if let Effect::ToolDecision {
                     pane,
+                    worker: None,
                     turn,
                     call,
                     decision,

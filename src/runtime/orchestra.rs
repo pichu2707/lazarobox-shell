@@ -511,12 +511,13 @@ impl RunManager {
     fn end(self: &Arc<Self>, pane: PaneId, mut live: Live) -> Vec<JoinHandle<()>> {
         let run = live.run.id();
         live.run.cancel_run(now());
+        let approver = live.approver.clone();
         let tasks: Vec<_> = live
             .tasks
             .drain()
             .map(|(worker, task)| {
                 task.abort();
-                self.close_session(WorkerKey { run, worker });
+                self.close_session(&approver, WorkerKey { run, worker });
                 task
             })
             .collect();
@@ -645,7 +646,7 @@ impl RunManager {
                 if let Some(task) = live.tasks.remove(&id) {
                     task.abort();
                 }
-                self.close_session(WorkerKey { run, worker: id });
+                self.close_session(&live.approver, WorkerKey { run, worker: id });
                 self.sync(pane, live);
                 fine(format!("worker {}: cancelled", id.0))
             }
@@ -808,7 +809,10 @@ impl RunManager {
             events: live.events.clone(),
             locality,
             origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
-            approver: live.approver.clone(),
+            approver: live
+                .approver
+                .for_worker(key)
+                .unwrap_or_else(|| live.approver.clone()),
             external: Slot::default(),
             families,
             // A `code` worker stages in its pane's batch (S7, user decision
@@ -851,7 +855,10 @@ impl RunManager {
         Some(None)
     }
 
-    fn close_session(&self, key: WorkerKey) {
+    /// Closes the tool session of a worker that is over and denies the asks
+    /// it still has waiting, its own and no other worker's.
+    fn close_session(&self, approver: &Arc<dyn Approver>, key: WorkerKey) {
+        approver.end_worker(key);
         if let Some(tooling) = &self.tooling
             && let Some(hub) = lock(&tooling.hub).as_mut()
         {
@@ -862,8 +869,8 @@ impl RunManager {
     /// Applies how a worker turn ended; `None` means its deadline passed. A
     /// run that ended or was replaced meanwhile ignores it.
     fn finish(self: &Arc<Self>, pane: PaneId, key: WorkerKey, events: Option<Vec<WorkerEvent>>) {
-        self.close_session(key);
         self.on_run(pane, key.run, |live| {
+            self.close_session(&live.approver, key);
             live.tasks.remove(&key.worker);
             match events {
                 Some(events) => {

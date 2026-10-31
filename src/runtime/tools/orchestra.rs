@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     core::ai::{
-        orchestra::{RunId, WorkerId, changes::Change, tools::OrchCall},
+        orchestra::{RunId, WorkerId, WorkerKey, changes::Change, tools::OrchCall},
         tools::paths::SecretRoots,
     },
     runtime::mcp::Outcome,
@@ -74,4 +74,19 @@ pub struct WorkerScope {
     /// `<kind> <engine>><model>`, already sanitized for display
     /// (`approval::worker_label`).
     pub label: String,
+}
+
+impl WorkerScope {
+    /// The session the worker's asks belong to.
+    pub fn key(&self) -> WorkerKey {
+        WorkerKey {
+            run: self.run,
+            worker: self.worker,
+        }
+    }
+
+    /// The label its asks show.
+    pub fn ask_label(&self) -> String {
+        self.label.clone()
+    }
 }

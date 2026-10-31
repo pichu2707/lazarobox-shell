@@ -391,6 +391,7 @@ fn worker_ask(home: &Path, path: &str) -> ApprovalAsk {
 /// engine or not.
 fn worker_ask_as(home: &Path, path: &str, reach: Reach, cloud: bool) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: home.join(path).to_str().unwrap().to_owned(),
         label: "review claude>opus".into(),
         reach,
@@ -738,7 +739,10 @@ async fn a_denied_or_expired_scope_asks() {
         scope.approver = approver.clone();
         let out = host.dispatch(scope).call(read("~/dev/app/a.rs")).await;
         let (_, ask, status, _) = pair(&events(&mut rx));
-        let want = worker_ask(&home, "dev/app/a.rs");
+        let mut want = worker_ask(&home, "dev/app/a.rs");
+        if let (ApprovalAsk::WorkerRead { worker, .. }, "another run") = (&mut want, case) {
+            worker.run = RunId(2);
+        }
         assert_eq!(ask.as_ref(), Some(&want), "{case}");
         assert_eq!(*approver.asked.lock().unwrap(), [want], "{case}");
         assert!(out.text.contains("inside the scope"), "{case}: {out:?}");
