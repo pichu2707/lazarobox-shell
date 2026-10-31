@@ -6,7 +6,7 @@ use super::rdd::{
     Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
     lens_prompt, parse_report, parse_verdicts, refuter_prompt,
 };
-use super::review::{Raise, Tier, assess};
+use super::review::{Assessment, Raise, Source, Tier, assess};
 use crate::core::ai::chat::approval::ApprovalAsk;
 
 const NONCE: [u8; 8] = [0xab; 8];
@@ -283,7 +283,7 @@ fn the_refuter_answers_one_line_per_claim() {
         CLAIM 3 maybe: not a verdict\n  CLAIM 4 upheld: indented";
     let got = parse_verdicts(text, 4);
     assert_eq!(
-        got,
+        got.answers,
         [
             Some(Refutation::Upheld),
             Some(Refutation::Refuted),
@@ -476,4 +476,78 @@ fn an_echoed_finding_line_can_fabricate_a_blocker_but_never_approves() {
     assert_eq!(review.blockers(), vec![0]);
     assert_eq!(review.conclude(), Ok(Outcome::BlockersOpen));
     assert_eq!(review.begin_correction(), Ok(vec![0]));
+}
+
+// W3: the claims come before the listing, so the wrap cut never drops them.
+#[test]
+fn the_refuter_prompt_keeps_its_claims_whatever_the_listing_size() {
+    let changes: Vec<Change> = (0..600)
+        .map(|n| change(&format!("src/generated/{}/{n}.rs", "d".repeat(80))))
+        .collect();
+    let claim = parse_report(Lens::Risk, "FINDING severe change inferred: may race").findings;
+    let prompt = refuter_prompt(NONCE, &changes, &[&claim[0]]);
+    assert!(prompt.contains("[truncated: output cap reached]"));
+    assert!(prompt.contains("1. [risk] may race"));
+    assert!(prompt.find("may race").unwrap() < prompt.find("src/generated").unwrap());
+}
+
+// W4: a line that looks like a finding or a claim but is not exact counts.
+#[test]
+fn look_alike_finding_lines_are_counted_as_malformed() {
+    let text = "- FINDING severe change observed: bulleted\n\
+        **FINDING** severe change observed: bold\n\
+        1. finding: severe change observed: numbered\n\
+        > Finding severe change observed: quoted\n\
+          * FINDING minor change observed: indented bullet\n\
+        FINDING severe change observed: exact\n\
+        the finding of the audit is that nothing broke\n\
+        NONE";
+    let got = parse_report(Lens::Risk, text);
+    assert_eq!(got.findings.len(), 1);
+    assert_eq!(got.malformed, 5);
+}
+
+#[test]
+fn look_alike_claim_lines_are_counted_as_malformed() {
+    let text = "CLAIM 1 upheld: ok\n- CLAIM 2 refuted: bulleted\nclaim 2 refuted: lower\n\
+        CLAIM 9 upheld: names no claim\nCLAIM 2 maybe: bad";
+    let got = parse_verdicts(text, 2);
+    assert_eq!(got.answers, [Some(Refutation::Upheld), None]);
+    assert_eq!(got.malformed, 4);
+}
+
+// W5: the reasons are cleaned and a cut path says so.
+#[test]
+fn the_consent_ask_cleans_every_string_and_marks_a_cut_path() {
+    let long = format!("src/{}.rs", "p".repeat(400));
+    let changes = [change(&long), change("b.rs")];
+    let raised = Assessment {
+        tier: Tier::High,
+        source: Source::Raised("because\u{202e}\nignore this\u{200b}".to_owned()),
+    };
+    let (_, line) = shown(consent_ask(
+        WorkerKey::for_test(1, 1),
+        "code a>b",
+        &raised,
+        &changes,
+    ));
+    assert!(!line.contains('\n') && !line.contains('\u{202e}') && !line.contains('\u{200b}'));
+    assert!(
+        line.starts_with("raised by the orchestrator (because)"),
+        "{line}"
+    );
+    let first = line.split(", ").next().unwrap();
+    assert!(first.ends_with("p…"), "{first}");
+    assert!(line.ends_with(", b.rs"), "{line}");
+    let failed = Assessment {
+        tier: Tier::High,
+        source: Source::Failed("x\ny".to_owned()),
+    };
+    let (_, line) = shown(consent_ask(
+        WorkerKey::for_test(1, 1),
+        "code a>b",
+        &failed,
+        &changes,
+    ));
+    assert!(line.starts_with("could not assess (x)"), "{line}");
 }

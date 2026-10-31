@@ -556,3 +556,22 @@ Strict TDD: ten tests added to `review_tests.rs` first (a `Lowering` variant stu
 | 3 | One shared `ledger::one_line` (first line, tabs to spaces, control, U+2028/2029, zero-width, U+2060, U+FEFF, U+3164, U+2800 and bidi dropped) now serves the handoff reason and `Raise::new`; `cut` shared too. `Raise::new` refuses a reason with no visible character left. Ledger tests unchanged and green. |
 | 4 | `Raise::new("passive", ..)` is refused with `RaiseError::Lowering` ("the orchestrator can only raise the tier above passive"). Earlier tests that used a passive raise now use `medium` against a high floor. |
 | 5 | Module docs: renames and deletions are judged by the staged path only (`Change` has no source path; S7 must add it when it stages moves); symlinks judged by their own name. |
+
+### 7b.2a review fixes (branch feat/agent-orchestrator-s7b2)
+
+Strict TDD: the tests were written first against API stubs and failed behaviourally before each fix. Evidence: batch 1 (C1, C2, W2, S1, S3, S4): 6 of 7 new tests failed (`the_correction_waits_for_every_lens_and_closes_the_reports`, `the_cap_keeps_the_blockers_and_the_review_is_not_clean`, `malformed_lines_are_counted_per_lens_and_not_clean`, `unanswered_claims_settle_to_not_upheld_and_are_counted`, `a_verdict_is_final_and_closes_with_the_correction`, `a_review_that_needs_no_lens_is_clean_only_when_said_so`); the S4 test documents behaviour that already held and passed. Batch 2 (W3, W4, W5): 4 of 4 failed (`the_refuter_prompt_keeps_its_claims_whatever_the_listing_size`, `look_alike_finding_lines_are_counted_as_malformed`, `look_alike_claim_lines_are_counted_as_malformed`, `the_consent_ask_cleans_every_string_and_marks_a_cut_path`).
+
+| Fix | Change |
+|-----|--------|
+| C1 | `begin_correction` is `Pending` until every picked lens reported; `pick`, `report`, `refute`, `settle_unanswered`, `no_lenses_needed` are refused with `CorrectionUsed` once it began; `open()` also lists blockers outside the correction's targets, so `conclude` is `BlockersOpen`, never `Corrected` (that last guard is unreachable through the API since the others hold) |
+| C2 | the cap keeps blockers (severe + change) before the rest, in order found; `omitted` and `malformed` are kept per lens (`Review::counts()`, `omitted()`, `malformed()`); new `Outcome::Incomplete` when nothing blocks but anything was omitted, malformed or left unanswered |
+| W2 | `Review::settle_unanswered() -> usize` (not upheld, counted by `unanswered()`); `refute` is final (`AlreadyJudged`) |
+| W3 | `refuter_prompt` puts the claims before the staged listing |
+| W4 | `parse_report` counts look-alike lines (bullet, quote, emphasis, list number, any case of `finding`) as malformed; `parse_verdicts` now returns `Verdicts{answers, malformed}` and counts look-alike claims, bad shapes and numbers naming no claim |
+| W5 | `consent_ask` cleans the Raised and Failed strings; the local `one_line` marks a cut with `…` |
+| S1 | `begin_correction`, `refute`, `settle_unanswered` check consent |
+| S3 | `Review::no_lenses_needed()` (refused with picked lenses, then `pick` is `Waived`) lets a consented review conclude `Clean` |
+| S4 | test documents that an echoed `FINDING` line can fabricate a blocker and start the one correction, never approve (accepted risk) |
+| S5 | confirmed: the 4 KiB prompt test iterates all 4 lenses plus the refuter for both profiles (10) and asserts the count |
+
+7b.2b API notes: `parse_verdicts` returns `Verdicts`; `Outcome::Incomplete` is new (a receipt must show it); after the refuter ends, call `settle_unanswered()` before `begin_correction`/`conclude`; ReviewError has `AlreadyJudged`, `LensesPicked`, `Waived`; `report`, `pick` and `refute` fail with `CorrectionUsed` after the correction began.

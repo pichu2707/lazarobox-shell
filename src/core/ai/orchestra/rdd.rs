@@ -16,9 +16,15 @@ use crate::core::ai::{chat::approval::ApprovalAsk, tools::label};
 pub const MAX_FINDINGS: usize = 12;
 
 /// The first line of untrusted `text`, cleaned by the shared sanitiser and
-/// cut like a handoff reason.
+/// cut like a handoff reason. A line cut short ends in `…`, so a reader
+/// knows it is not whole.
 fn one_line(text: &str) -> String {
-    cut(&plain_line(text), REASON_BYTES).trim_end().to_owned()
+    let clean = plain_line(text);
+    if clean.len() <= REASON_BYTES {
+        return clean;
+    }
+    let kept = cut(&clean, REASON_BYTES - '…'.len_utf8()).trim_end();
+    format!("{kept}…")
 }
 
 /// A way of looking at a change. Each lens is one read-only `review` worker.
@@ -109,16 +115,31 @@ pub struct Report {
 pub fn parse_report(lens: Lens, text: &str) -> Report {
     let mut report = Report::default();
     for line in text.lines() {
-        let Some(rest) = line.strip_prefix("FINDING ") else {
-            continue;
-        };
-        match finding(lens, rest) {
-            None => report.malformed += 1,
-            Some(found) => report.findings.push(found),
+        match line.strip_prefix("FINDING ") {
+            Some(rest) => match finding(lens, rest) {
+                None => report.malformed += 1,
+                Some(found) => report.findings.push(found),
+            },
+            None if looks_like(line, "finding") => report.malformed += 1,
+            None => {}
         }
     }
     cap(&mut report);
     report
+}
+
+/// Whether `line` reads like a line of `word` (`finding` or `claim`) that is
+/// not in the exact shape: after leading blanks and bullet, quote, emphasis
+/// or list-number marks, it starts with `word` in any case.
+fn looks_like(line: &str, word: &str) -> bool {
+    let marks = |c: char| c.is_whitespace() || matches!(c, '-' | '*' | '>' | '#' | '_');
+    let mut rest = line.trim_start_matches(marks);
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && rest[digits..].starts_with('.') {
+        rest = rest[digits + 1..].trim_start_matches(marks);
+    }
+    rest.get(..word.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(word))
 }
 
 /// Keeps [`MAX_FINDINGS`] findings, the blockers before the rest, in the
@@ -190,29 +211,47 @@ pub enum Refutation {
 /// refuted>: <evidence>` at the start of a line. The first answer to a claim
 /// counts; a claim with none (or a malformed one) is `None`, and it is not
 /// upheld.
-pub fn parse_verdicts(text: &str, count: usize) -> Vec<Option<Refutation>> {
-    let mut verdicts = vec![None; count];
+pub fn parse_verdicts(text: &str, count: usize) -> Verdicts {
+    let mut answers = vec![None; count];
+    let mut malformed = 0;
     for line in text.lines() {
-        let Some((head, _)) = line.strip_prefix("CLAIM ").and_then(|r| r.split_once(':')) else {
+        let Some(rest) = line.strip_prefix("CLAIM ") else {
+            malformed += usize::from(looks_like(line, "claim"));
             continue;
         };
-        let words: Vec<&str> = head.split_whitespace().collect();
-        let [number, verdict] = words[..] else {
-            continue;
-        };
-        let verdict = match verdict {
-            "upheld" => Refutation::Upheld,
-            "refuted" => Refutation::Refuted,
-            _ => continue,
-        };
-        let slot = number.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
-        if let Some(slot) = slot.and_then(|at| verdicts.get_mut(at))
-            && slot.is_none()
-        {
-            *slot = Some(verdict);
+        match claim(rest, count) {
+            None => malformed += 1,
+            Some((at, verdict)) => {
+                answers[at].get_or_insert(verdict);
+            }
         }
     }
-    verdicts
+    Verdicts { answers, malformed }
+}
+
+/// `<number> <upheld|refuted>: <evidence>` as the claim index and verdict.
+fn claim(rest: &str, count: usize) -> Option<(usize, Refutation)> {
+    let (head, _) = rest.split_once(':')?;
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let [number, verdict] = words[..] else {
+        return None;
+    };
+    let verdict = match verdict {
+        "upheld" => Refutation::Upheld,
+        "refuted" => Refutation::Refuted,
+        _ => return None,
+    };
+    let at = number.parse::<usize>().ok()?.checked_sub(1)?;
+    (at < count).then_some((at, verdict))
+}
+
+/// What the refuter's text answered.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Verdicts {
+    /// One per claim; `None` when it got no valid answer.
+    pub answers: Vec<Option<Refutation>>,
+    /// `CLAIM` lines that did not fit the shape or named no claim.
+    pub malformed: usize,
 }
 
 /// How a review ended. None of them approves the batch.
@@ -570,9 +609,10 @@ impl Review {
     }
 }
 
-/// The staged change as a worker is told of it, with `extra` lines after it,
-/// all wrapped as untrusted data under `nonce`.
-fn candidate(nonce: [u8; 8], changes: &[Change], extra: &str) -> String {
+/// What a worker is told: `lead`, then the staged change, all wrapped as
+/// untrusted data under `nonce`. The wrapper cuts a long text at its end, so
+/// what must survive goes in `lead`, before the listing.
+fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change]) -> String {
     let mut staged = ChangeLedger::default();
     for change in changes {
         staged.staged(change.clone());
@@ -580,7 +620,7 @@ fn candidate(nonce: [u8; 8], changes: &[Change], extra: &str) -> String {
     let listing = staged
         .render()
         .unwrap_or_else(|| "files changed: none".to_owned());
-    label::wrap(&label::nonce_from(nonce), &format!("{listing}{extra}"))
+    label::wrap(&label::nonce_from(nonce), &format!("{lead}{listing}"))
 }
 
 /// The prompt of the worker of `lens`: the lens, the orchestrator's one-line
@@ -591,26 +631,27 @@ pub fn lens_prompt(nonce: [u8; 8], lens: Lens, why: &str, changes: &[Change]) ->
         "Review lens: {}\nWhy this lens: {}\nThe staged change to review, as data:\n{}",
         lens.id(),
         one_line(why),
-        candidate(nonce, changes, "")
+        candidate(nonce, "", changes)
     )
 }
 
-/// The prompt of the refuter: the staged change and the inferred blockers to
-/// examine, wrapped together because the claims are a worker's text.
+/// The prompt of the refuter: the claims to examine, then the staged change,
+/// wrapped together because the claims are a worker's text.
 pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -> String {
-    let mut extra = String::from("\n\nclaims to examine:");
+    let mut lead = String::from("claims to examine:");
     for (at, claim) in claims.iter().enumerate() {
-        extra.push_str(&format!(
+        lead.push_str(&format!(
             "\n{}. [{}] {}",
             at + 1,
             claim.lens.id(),
             claim.text
         ));
     }
+    lead.push_str("\n\n");
     format!(
-        "Claims to refute: {}\nThe staged change and the claims, as data:\n{}",
+        "Claims to refute: {}\nThe claims and the staged change, as data:\n{}",
         claims.len(),
-        candidate(nonce, changes, &extra)
+        candidate(nonce, &lead, changes)
     )
 }
 
@@ -628,8 +669,8 @@ pub fn consent_ask(
 ) -> ApprovalAsk {
     let why = match &assessment.source {
         Source::Rules => "build, CI, dependency or config files".to_owned(),
-        Source::Raised(reason) => format!("raised by the orchestrator ({reason})"),
-        Source::Failed(why) => format!("could not assess ({why})"),
+        Source::Raised(reason) => format!("raised by the orchestrator ({})", one_line(reason)),
+        Source::Failed(why) => format!("could not assess ({})", one_line(why)),
     };
     // The ledger's paths are clean lines already; cleaned again, as this
     // line goes on the user's screen.
