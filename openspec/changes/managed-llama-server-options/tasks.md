@@ -13,7 +13,7 @@
 - [x] 4.2 RED/GREEN: managed, the picker lists the local models and choosing one manages it while another llama-server answers.
 - [x] 4.3 Docs (README, CHANGELOG).
 - [x] 4.4 [manual] Live: two lazarobox, same model shared, then another model on the next port.
-- [ ] 4.5 [manual] macOS: `lsof` finds the user's own listener.
+- [x] 4.5 [manual] macOS: `lsof` finds the user's own listener. [deferred 2026-10-31: 1.0 is Linux-only; macOS checks wait until macOS is supported]
 - [x] 5.1 RED/GREEN: our server answering beyond our turns answers another lazarobox; nothing, no answer, or a server we only use never counts; the idle stop waits while another lazarobox is answered and counts from then; `/slots` processing slots are counted.
 - [x] 5.2 RED/GREEN: the quit prompt names `llama-server (shared)` after the jobs, once, in any order; a late answer is dropped; asking to quit asks the runtime.
 - [x] 5.3 Docs (README, CHANGELOG).
