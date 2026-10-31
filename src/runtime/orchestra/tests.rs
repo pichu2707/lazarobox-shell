@@ -3021,3 +3021,46 @@ async fn attach_denies_the_asks_in_flight_under_the_old_turn() {
     let id = raised(&mut client, &mut next, 2).await;
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
+
+fn routes_of(lab: &Lab, run: RunId) -> usize {
+    lab.manager
+        .on_run(pane(), run, |live| live.routes.len())
+        .unwrap()
+}
+
+// Re-review fix (4.1b): the route of a worker that ended is dropped with it,
+// not at the next attach.
+#[tokio::test]
+async fn a_workers_route_goes_when_the_worker_ends() {
+    let lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    assert_eq!(routes_of(&lab, run), 0, "finished");
+    handle.call(spawn(Task::Review, "again")).await;
+    handle.call(OrchCall::Cancel { id: WorkerId(2) }).await;
+    assert_eq!(routes_of(&lab, run), 0, "cancelled");
+}
+
+// Re-review fix (4.1b, S3a/S3b): attach never revives the session of a worker
+// that is already over, even if its route is still there.
+#[tokio::test]
+async fn attach_does_not_revive_a_worker_that_ended() {
+    let (lab, waits, run, mut client, mut old, _) = surviving_worker().await;
+    lab.manager.on_run(pane(), run, |live| {
+        live.run.cancel(now(), WorkerId(1));
+        live.approver.end_worker(WorkerKey {
+            run,
+            worker: WorkerId(1),
+        });
+    });
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let denied = exchange(&mut client, read_notes(1)).await;
+    assert!(
+        denied["result"]["isError"].as_bool().unwrap_or(false),
+        "{denied}"
+    );
+    assert!(!matches!(next.try_recv(), Ok(StreamEvent::ToolCall { .. })));
+    assert!(!matches!(old.try_recv(), Ok(StreamEvent::ToolCall { .. })));
+}

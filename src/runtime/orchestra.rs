@@ -489,7 +489,15 @@ impl RunManager {
         let attached = self.on_run(pane, run, |live| {
             // The workers that survive into this turn ask and report through
             // it: the earlier turn's channel and approver are dead.
-            live.routes.retain(|id, _| live.tasks.contains_key(id));
+            // A worker that is over keeps its session closed: only the ones
+            // still queued or running are pointed at the new turn.
+            let run = &live.run;
+            live.routes.retain(|id, _| {
+                matches!(
+                    run.status(*id),
+                    Some(WorkerStatus::Queued | WorkerStatus::Running)
+                )
+            });
             for route in live.routes.values() {
                 route.retarget(scope.events.clone(), &scope.approver);
             }
@@ -975,6 +983,7 @@ impl RunManager {
     pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
+                live.routes.remove(&id);
                 if let Some(task) = live.tasks.remove(&id) {
                     task.abort();
                 }
@@ -1208,6 +1217,7 @@ impl RunManager {
         self.on_run(pane, key.run, |live| {
             self.close_session(&live.approver, key);
             live.tasks.remove(&key.worker);
+            live.routes.remove(&key.worker);
             match events {
                 Some(events) => {
                     for event in events {
