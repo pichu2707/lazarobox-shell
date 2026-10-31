@@ -26,7 +26,10 @@ use crate::{
 // The way out first: a narrow pane cuts the row from the right, so `n` is the
 // last key to go, then `y`, then the scroll hints.
 const KEYS_READY: &str = "n reject · y approve · ↑↓ PgUp PgDn scroll";
-const KEYS_LOCKED: &str = "n reject · y locked · ↑↓ PgUp PgDn scroll";
+const KEYS_LOCKED: &str = "n reject · y after scrolling · ↑↓ PgUp PgDn scroll";
+// Where `y after scrolling` no longer fits, `y locked` still says what it is.
+const KEYS_LOCKED_NARROW: &str = "n reject · y locked · ↑↓ PgUp PgDn scroll";
+const KEYS_LOCKED_HEAD: &str = "n reject · y after scrolling";
 const KEYS_DISCARD: &str = "n discard · ↑↓ PgUp PgDn scroll";
 
 /// `0.4s`, rounded up to a tenth.
@@ -36,19 +39,36 @@ fn seconds(left: Duration) -> String {
 }
 
 /// The counter row, and whether it is a warning.
-fn header(view: &ReviewView, now: Instant) -> (String, bool) {
+fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
     // A worker's batch names the worker first; a chat's batch is unchanged.
     let by = view
         .review()
         .label()
         .map_or_else(String::new, |label| format!("{label} · "));
     if !view.reviewable() {
-        return (format!("{by}{WARN_TRUNCATED}"), true);
+        let text = if view.refused_hint(now) {
+            "y can't approve this batch · press n"
+        } else if view.review().doc().files() == 0 {
+            "empty batch: nothing to approve · press n"
+        } else {
+            WARN_TRUNCATED
+        };
+        return (format!("{by}{text}"), true);
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
+    if let Some(left) = view.locked_hint(now) {
+        // The action first: a narrow pane cuts the row from the right.
+        let full = format!("scroll ↓ · {left} lines unseen · y needs all");
+        let text = if full.chars().count() <= width {
+            full
+        } else {
+            format!("scroll ↓ · {left} unseen")
+        };
+        return (text, false);
+    }
     let gate = if remaining > 0 {
-        format!("{remaining} remaining · y locked")
+        format!("{remaining} remaining · ↓ to unlock y")
     } else if left > Duration::ZERO {
         format!("y in {}", seconds(left))
     } else {
@@ -92,7 +112,7 @@ pub fn render(
         buf.set_stringn(area.x, area.y + row, text, width, style);
     };
     if area.height >= 2 {
-        let (text, warn) = header(view, now);
+        let (text, warn) = header(view, now, width);
         let colour = if warn {
             theme.warning_orange
         } else {
@@ -115,8 +135,10 @@ pub fn render(
         KEYS_DISCARD
     } else if view.can_approve(now) {
         KEYS_READY
-    } else {
+    } else if width >= KEYS_LOCKED_HEAD.chars().count() {
         KEYS_LOCKED
+    } else {
+        KEYS_LOCKED_NARROW
     };
     put(buf, area.height - 1, keys, base.fg(theme.text_muted));
 }
@@ -131,7 +153,7 @@ mod label_tests {
     fn header_of(review: Arc<BatchReview>) -> String {
         let view = ReviewView::new(review, (80, 20));
         // Long after the arm delay, so the gate reads the same each time.
-        header(&view, Instant::now() + Duration::from_secs(3600)).0
+        header(&view, Instant::now() + Duration::from_secs(3600), 80).0
     }
 
     // Spec (agent-orchestrator, Writes wait for the batch review [S7]): a
