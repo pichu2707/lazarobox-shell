@@ -208,12 +208,13 @@ pub enum Refutation {
 }
 
 /// Reads the refuter's text for `count` claims: `CLAIM <number> <upheld|
-/// refuted>: <evidence>` at the start of a line. The first answer to a claim
-/// counts; a claim with none (or a malformed one) is `None`, and it is not
-/// upheld.
+/// refuted|unsettled>: <evidence>` at the start of a line. The first line for
+/// a claim counts; `unsettled`, a claim with none and a malformed one are all
+/// `None`: unanswered, never upheld and never cleared.
 pub fn parse_verdicts(text: &str, count: usize) -> Verdicts {
     let mut answers = vec![None; count];
-    let mut malformed = 0;
+    let mut seen = vec![false; count];
+    let (mut malformed, mut unsettled) = (0, 0);
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("CLAIM ") else {
             malformed += usize::from(looks_like(line, "claim"));
@@ -221,24 +222,33 @@ pub fn parse_verdicts(text: &str, count: usize) -> Verdicts {
         };
         match claim(rest, count) {
             None => malformed += 1,
+            Some((at, _)) if seen[at] => {}
             Some((at, verdict)) => {
-                answers[at].get_or_insert(verdict);
+                seen[at] = true;
+                unsettled += usize::from(verdict.is_none());
+                answers[at] = verdict;
             }
         }
     }
-    Verdicts { answers, malformed }
+    Verdicts {
+        answers,
+        malformed,
+        unsettled,
+    }
 }
 
-/// `<number> <upheld|refuted>: <evidence>` as the claim index and verdict.
-fn claim(rest: &str, count: usize) -> Option<(usize, Refutation)> {
+/// `<number> <upheld|refuted|unsettled>: <evidence>` as the claim index and
+/// verdict (`None` for `unsettled`).
+fn claim(rest: &str, count: usize) -> Option<(usize, Option<Refutation>)> {
     let (head, _) = rest.split_once(':')?;
     let words: Vec<&str> = head.split_whitespace().collect();
     let [number, verdict] = words[..] else {
         return None;
     };
     let verdict = match verdict {
-        "upheld" => Refutation::Upheld,
-        "refuted" => Refutation::Refuted,
+        "upheld" => Some(Refutation::Upheld),
+        "refuted" => Some(Refutation::Refuted),
+        "unsettled" => None,
         _ => return None,
     };
     let at = number.parse::<usize>().ok()?.checked_sub(1)?;
@@ -252,6 +262,8 @@ pub struct Verdicts {
     pub answers: Vec<Option<Refutation>>,
     /// `CLAIM` lines that did not fit the shape or named no claim.
     pub malformed: usize,
+    /// Claims the refuter said it could not settle.
+    pub unsettled: usize,
 }
 
 /// How a review ended. None of them approves the batch.

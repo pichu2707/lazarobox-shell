@@ -564,3 +564,17 @@ fn the_correction_prompt_wraps_the_blockers_and_forbids_proposing() {
     let open = prompt.find("<untrusted").expect("wrapped");
     assert!(open < prompt.find("leaks a key").unwrap(), "{prompt}");
 }
+
+// C1: `CLAIM n unsettled: why` is an accepted answer that settles nothing: the
+// claim stays unanswered (so the review is incomplete, never clean), it is not
+// a malformed line, and the first line for a claim wins.
+#[test]
+fn an_unsettled_claim_is_accepted_and_counts_as_unanswered() {
+    let text = "CLAIM 1 unsettled: the text does not show it\n\
+                CLAIM 1 refuted: changed my mind\n\
+                CLAIM 2 upheld: it races";
+    let got = parse_verdicts(text, 2);
+    assert_eq!(got.answers, vec![None, Some(Refutation::Upheld)]);
+    assert_eq!(got.unsettled, 1);
+    assert_eq!(got.malformed, 0);
+}
