@@ -1531,10 +1531,10 @@ impl Orchestra for Bound {
         }
     }
 
-    fn receipt_line(&self, run: RunId, worker: WorkerId) -> Option<String> {
+    fn receipt_line(&self, run: RunId, worker: WorkerId, current: &[Change]) -> Option<String> {
         let manager = self.manager.upgrade()?;
         (run == self.run)
-            .then(|| manager.receipt_line(self.pane, run, worker))
+            .then(|| manager.receipt_line(self.pane, run, worker, current))
             .flatten()
     }
 

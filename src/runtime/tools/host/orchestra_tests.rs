@@ -380,7 +380,7 @@ impl Orchestra for Scoped {
         self.ledger.lock().unwrap().staged(change);
     }
 
-    fn receipt_line(&self, _: RunId, _: WorkerId) -> Option<String> {
+    fn receipt_line(&self, _: RunId, _: WorkerId, _: &[Change]) -> Option<String> {
         Some(RECEIPT.to_owned())
     }
 

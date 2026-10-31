@@ -136,11 +136,17 @@ pub(super) async fn seal(
         .ok_or(refusal_text(ToolError::UnknownTool))?;
     let stages = host.stages.clone();
     // A worker's batch is headed by its label in the review (S7).
-    let label = (scope.read_scope.as_ref()).map(|worker| {
-        // The line of the receipt of its review, when it had one (S7b).
-        let receipt = worker.handle.receipt_line(worker.run, worker.worker);
-        (worker.ask_label(), worker.key(), receipt)
-    });
+    let label = match scope.read_scope.as_ref() {
+        None => None,
+        Some(worker) => {
+            // The receipt line of the review that covers the set being
+            // sealed (S7b); a set that cannot be read has no line.
+            let current = host.staged_changes(key, &scope.origin).await;
+            let receipt =
+                current.and_then(|set| worker.handle.receipt_line(worker.run, worker.worker, &set));
+            Some((worker.ask_label(), worker.key(), receipt))
+        }
+    };
     let env = host.env(&scope.origin);
     tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await

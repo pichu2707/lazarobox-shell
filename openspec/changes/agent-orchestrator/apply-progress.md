@@ -655,3 +655,16 @@ Strict TDD, RED first: core `receipt_tests` 12 of 12 failed against a stub (`uni
 
 Decisions: a review that never began because only a late path was found (passive assessment) also gets a receipt (consent `not asked`, outcome `not reviewed`); several reviews of one worker are numbered 1.., the header shows the last. The header line is cut from the right in a narrow pane like the rest, so the gate text can go before it on very narrow panes.
 Known limits: `findings carry no path`, so the receipt cannot say which path a blocker is in; the lens pick is still the default pair.
+
+### 7b.3 review fixes
+
+Strict TDD, RED first: UI header test (the receipt after the gate; 2 of 2 failed, the narrow 80/50 column test and the reordered expectation), core `a_clean_outcome_with_unreviewed_paths_does_not_read_clean_alone` and `a_single_line_over_the_cap_is_clipped_not_dropped` (2 of 2 failed), runtime `a_receipt_line_only_heads_the_batch_it_described`, `a_path_seen_late_twice_counts_once` and `a_receipt_of_a_run_that_is_gone_says_so` (3 of 3 failed against the old code).
+
+| # | Fix | Test |
+|---|-----|------|
+| 1 | `Orchestra::receipt_line(run, worker, current)` takes the set being sealed (the host re-reads it in `seal`; unreadable = no line). `Reviewed.set` keeps (path, hash) as last reviewed; the line is shown only when every sealed path was reviewed as it is or is listed not reviewed (a late-only entry describes a set holding a listed path). A later batch wears no earlier receipt | `a_receipt_line_only_heads_the_batch_it_described` |
+| 2 | The receipt note goes last in the header, after the gate and the refusal texts, so a narrow pane cuts it first | `a_narrow_pane_cuts_the_receipt_before_the_gate_or_the_refusal` (80 and 50 columns, batch and empty batch) |
+| 3 | `clean`/`corrected` with unseen paths reads `clean (reviewed paths only)` in the line and in `outcome:` | `a_clean_outcome_with_unreviewed_paths_does_not_read_clean_alone` |
+| 4 | `late` records a path once | `a_path_seen_late_twice_counts_once` |
+| 5 | `receipt` and `receipt_line` say `(the run is gone)` on the review line | `a_receipt_of_a_run_that_is_gone_says_so` |
+| 6 | `fit` clips a first line over the cap instead of dropping it | `a_single_line_over_the_cap_is_clipped_not_dropped` |

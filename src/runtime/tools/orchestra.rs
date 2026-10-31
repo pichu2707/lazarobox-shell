@@ -137,10 +137,12 @@ pub trait Orchestra: Send + Sync {
         false
     }
 
-    /// The line the user's batch review shows about the last receipt of
-    /// `worker`'s review (S7b): lazarobox's own words and counts. `None` when
-    /// the worker had no review. It informs; it never approves.
-    fn receipt_line(&self, _run: RunId, _worker: WorkerId) -> Option<String> {
+    /// The line the user's batch review shows about the receipt of the review
+    /// that covers `current`, the change set being sealed (S7b): lazarobox's
+    /// own words and counts. `None` when no review of `worker` describes
+    /// that set (none ran, or the set is another batch). It informs; it
+    /// never approves.
+    fn receipt_line(&self, _run: RunId, _worker: WorkerId, _current: &[Change]) -> Option<String> {
         None
     }
 

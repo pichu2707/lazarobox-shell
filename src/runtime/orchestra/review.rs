@@ -63,6 +63,8 @@ pub struct Reviewed {
     pub unread: Vec<String>,
     /// The staged paths the review was about, for the receipt.
     pub paths: Vec<String>,
+    /// The set as last reviewed, as (path, hash): what the receipt describes.
+    pub set: Vec<(String, String)>,
 }
 
 impl Reviewed {
@@ -75,7 +77,26 @@ impl Reviewed {
             unanswered: None,
             unread: Vec::new(),
             paths: Vec::new(),
+            set: Vec::new(),
         }
+    }
+
+    /// Whether the receipt of this review describes `current`, the change set
+    /// being sealed: each of its paths was reviewed as it is now, or is listed
+    /// as not reviewed. A review that never ran (only a late path was found)
+    /// describes a set that holds one of those paths.
+    fn describes(&self, current: &[Change]) -> bool {
+        if current.is_empty() {
+            return false;
+        }
+        let listed = |change: &Change| self.unreviewed.contains(&change.path);
+        if self.review.consent_answer().is_none() {
+            return current.iter().any(listed);
+        }
+        let seen = |change: &Change| {
+            (self.set.iter()).any(|(path, hash)| *path == change.path && *hash == change.hash)
+        };
+        current.iter().all(|change| listed(change) || seen(change))
     }
 
     /// What the receipt is built from; `n` is the review's number among the
@@ -289,11 +310,23 @@ impl RunManager {
         self.on_run(pane, run, |live| {
             let kept = live.review.reviews.iter_mut().rev();
             match kept.into_iter().find(|kept| kept.worker == worker) {
-                Some(kept) => kept.unreviewed.extend(paths),
+                Some(kept) => {
+                    for path in paths {
+                        if !kept.unreviewed.contains(&path) {
+                            kept.unreviewed.push(path);
+                        }
+                    }
+                }
                 None => {
                     let mut kept = Reviewed::new(worker, Review::new(assessment), None);
-                    kept.paths = paths.clone();
-                    kept.unreviewed = paths;
+                    let mut once: Vec<String> = Vec::new();
+                    for path in paths {
+                        if !once.contains(&path) {
+                            once.push(path);
+                        }
+                    }
+                    kept.paths = once.clone();
+                    kept.unreviewed = once;
                     live.review.reviews.push(kept);
                 }
             }
@@ -349,7 +382,7 @@ impl RunManager {
                     ),
                 );
                 let kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
-                self.keep(pane, run, kept, &changes);
+                self.keep(pane, run, kept, &changes, &changes);
                 return Ok(changes);
             }
             Answered::Unanswered(why) => Some(why.clone()),
@@ -365,7 +398,7 @@ impl RunManager {
             );
             let mut kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
             kept.unanswered = Some(why);
-            self.keep(pane, run, kept, &changes);
+            self.keep(pane, run, kept, &changes, &changes);
             return Ok(changes);
         }
         let _ = review.consent(Consent::Granted);
@@ -423,7 +456,7 @@ impl RunManager {
         self.say(pane, run, line);
         let mut kept = Reviewed::new(worker, review, outcome);
         kept.unread = unread;
-        self.keep(pane, run, kept, &changes);
+        self.keep(pane, run, kept, &changes, &reviewed);
         Ok(reviewed)
     }
 
@@ -478,8 +511,19 @@ impl RunManager {
         taken.unwrap_or_default()
     }
 
-    fn keep(&self, pane: PaneId, run: RunId, mut kept: Reviewed, changes: &[Change]) {
+    fn keep(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        mut kept: Reviewed,
+        changes: &[Change],
+        set: &[Change],
+    ) {
         kept.paths = changes.iter().map(|change| change.path.clone()).collect();
+        kept.set = set
+            .iter()
+            .map(|c| (c.path.clone(), c.hash.clone()))
+            .collect();
         let worker = kept.worker;
         self.on_run(pane, run, |live| live.review.reviews.push(kept));
         self.receipt(pane, run, worker);
@@ -489,14 +533,23 @@ impl RunManager {
     /// ledger and tells the app, which saves it under its stable key (the
     /// same key again updates the note). A receipt that cannot be stored is
     /// said, never dropped.
-    fn receipt(&self, pane: PaneId, run: RunId, worker: WorkerId) {
+    pub(super) fn receipt(&self, pane: PaneId, run: RunId, worker: WorkerId) {
         let built = self.on_run(pane, run, |live| {
             let reviews = &live.review.reviews;
             let at = reviews.iter().rposition(|kept| kept.worker == worker)?;
             let n = reviews[..=at].iter().filter(|r| r.worker == worker).count();
             Some(live.run.receipt(&reviews[at].evidence(n as u32)))
         });
-        match built.flatten() {
+        let Some(built) = built else {
+            let of = format!("review of worker {}", worker.0);
+            self.say(
+                pane,
+                run,
+                format!("{of}: its receipt was not stored (the run is gone)"),
+            );
+            return;
+        };
+        match built {
             Some(Ok(handoff)) => self.announce_handoff(pane, run, handoff),
             Some(Err(why)) => self.say(
                 pane,
@@ -510,19 +563,32 @@ impl RunManager {
         }
     }
 
-    /// The line the batch review shows about the last review of `worker`.
+    /// The line the batch review shows about the review of `worker` that
+    /// covers `current`, the set being sealed. `None` when no review does: a
+    /// later batch must not wear the receipt of an earlier one.
     pub(super) fn receipt_line(
         &self,
         pane: PaneId,
         run: RunId,
         worker: WorkerId,
+        current: &[Change],
     ) -> Option<String> {
         let line = self.on_run(pane, run, |live| {
             let reviews = &live.review.reviews;
-            let at = reviews.iter().rposition(|kept| kept.worker == worker)?;
+            let at = reviews
+                .iter()
+                .rposition(|kept| kept.worker == worker && kept.describes(current))?;
             let n = reviews[..=at].iter().filter(|r| r.worker == worker).count();
             Some(receipt::line(&reviews[at].evidence(n as u32)))
         });
+        if line.is_none() {
+            let of = format!("review of worker {}", worker.0);
+            self.say(
+                pane,
+                run,
+                format!("{of}: no receipt line for the batch (the run is gone)"),
+            );
+        }
         line.flatten()
     }
 
