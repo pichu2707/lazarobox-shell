@@ -857,9 +857,12 @@ async fn a_scope_grant_belongs_to_the_running_worker_only() {
     handle.call(spawn(Task::Review, "first")).await;
     handle.call(spawn(Task::Review, "second")).await;
     let read = |worker: u32| handle.allows(run, WorkerId(worker), &secrets, home, "~/dev/app/a.rs");
-    let write =
-        |worker: u32| handle.allows_write(run, WorkerId(worker), &home.join("dev/app/new.rs"));
-    assert!(read(1).is_some() && write(1), "the running worker");
+    // `allows_write` takes the real path, as the host passes it: on macOS the
+    // temp HOME is under `/var`, a link to `/private/var`.
+    let real = home.canonicalize().unwrap().join("dev/app/new.rs");
+    let write = |worker: u32| handle.allows_write(run, WorkerId(worker), &real);
+    assert!(read(1).is_some(), "the running worker reads");
+    assert!(write(1), "the running worker writes");
     assert!(read(2).is_none() && !write(2), "queued: not running yet");
     assert!(read(3).is_none() && !write(3), "a worker the run never had");
     handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
