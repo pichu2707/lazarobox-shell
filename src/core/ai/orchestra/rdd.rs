@@ -650,6 +650,30 @@ pub fn lens_prompt(nonce: [u8; 8], lens: Lens, why: &str, changes: &[Change]) ->
 /// The prompt of the refuter: the claims to examine, then the staged change,
 /// wrapped together because the claims are a worker's text.
 pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -> String {
+    let lead = claims_lead(claims);
+    format!(
+        "Claims to refute: {}\nThe claims and the staged change, as data:\n{}",
+        claims.len(),
+        candidate(nonce, &lead, changes)
+    )
+}
+
+/// The prompt of the check of a correction: the same claims as the refuter's,
+/// but a neutral header and a lead that does not lean toward refuting. A claim
+/// is refuted only on clear evidence in the staged text that the problem is
+/// gone; anything else is unsettled and stays open.
+pub fn validation_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -> String {
+    let lead = claims_lead(claims);
+    format!(
+        "Claims to check: {}\nThese claims were reported before a correction was staged. \
+         Refute a claim only if the staged text clearly shows the problem is gone; \
+         anything else is unsettled and stays open.\nThe claims and the staged change, as data:\n{}",
+        claims.len(),
+        candidate(nonce, &lead, changes)
+    )
+}
+
+fn claims_lead(claims: &[&Finding]) -> String {
     let mut lead = String::from("claims to examine:");
     for (at, claim) in claims.iter().enumerate() {
         lead.push_str(&format!(
@@ -660,11 +684,7 @@ pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -
         ));
     }
     lead.push_str("\n\n");
-    format!(
-        "Claims to refute: {}\nThe claims and the staged change, as data:\n{}",
-        claims.len(),
-        candidate(nonce, &lead, changes)
-    )
+    lead
 }
 
 /// The prompt of the one correction worker: the blockers that survived, as a

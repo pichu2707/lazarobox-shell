@@ -5,6 +5,7 @@ use super::changes::Change;
 use super::rdd::{
     Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
     correction_prompt, lens_prompt, parse_report, parse_verdicts, refuter_prompt,
+    validation_prompt,
 };
 use super::review::{Assessment, Raise, Source, Tier, assess};
 use crate::core::ai::chat::approval::ApprovalAsk;
@@ -596,4 +597,17 @@ fn an_instruction_inside_a_finding_stays_inside_the_wrapper() {
     assert!(prompt.find("<untrusted").unwrap() < injected, "{prompt}");
     let close = prompt.rfind("</untrusted").expect("closed");
     assert!(injected < close, "{prompt}");
+}
+
+// W-B: the check does not lean toward refuting: its header is neutral and its
+// lead says a claim is refuted only on clear evidence in the staged text.
+#[test]
+fn the_validation_prompt_asks_for_clear_evidence_before_refuting() {
+    let found = parse_report(Lens::Risk, "FINDING severe change observed: leaks a key").findings;
+    let prompt = validation_prompt(NONCE, &[change("Cargo.lock")], &[&found[0]]);
+    assert!(prompt.contains("Claims to check: 1"), "{prompt}");
+    assert!(!prompt.contains("Claims to refute"), "{prompt}");
+    assert!(prompt.contains("only if the staged text clearly shows the problem is gone"));
+    assert!(prompt.contains("unsettled and stays open"));
+    assert!(prompt.find("leaks a key").unwrap() < prompt.find("Cargo.lock").unwrap());
 }
