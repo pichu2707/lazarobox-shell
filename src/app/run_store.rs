@@ -49,6 +49,11 @@ pub(super) struct RunKeep {
     /// first worker (then the store closes it) or fails to start (then it is
     /// offered again).
     pub(super) resuming: HashMap<PaneId, RunRecord>,
+    /// The run a pane's abandoned resume named, kept after it went back on the
+    /// offer list: the worker rows travel apart from the stream's `Done`, so a
+    /// first worker may still arrive afterwards and then closes that run. It
+    /// goes at the pane's next turn.
+    pub(super) resume_of: HashMap<PaneId, u64>,
     /// The goal the next fresh turn of a pane records and shows instead of
     /// the message it sends (a resume's seed).
     pub(super) resume_goal: Option<String>,
@@ -91,6 +96,7 @@ impl App {
     /// A fresh run of pane `id` starts from `goal`: the user's words, which
     /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
+        self.run_keep.resume_of.remove(&id);
         self.run_keep.goals.insert(id, RunRecord::stored_goal(goal));
     }
 
@@ -117,7 +123,11 @@ impl App {
             workers: BTreeMap::new(),
             resend: false,
             folder,
-            supersedes: keep.resuming.remove(&id).map(|run| run.id),
+            supersedes: keep.resuming.remove(&id).map(|run| run.id).or_else(|| {
+                let late = keep.resume_of.remove(&id)?;
+                keep.interrupted.retain(|run| run.id != late);
+                Some(late)
+            }),
         });
         let worker = WorkerRecord {
             id: row.id.0,

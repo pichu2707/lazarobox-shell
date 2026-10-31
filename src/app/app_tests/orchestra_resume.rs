@@ -394,3 +394,57 @@ fn a_resume_turn_that_ends_with_no_worker_leaves_the_run_offered() {
     ));
     still_offered(&mut a);
 }
+
+// Re-review W2: the stream's `Done` and the run manager's worker rows travel
+// on separate channels, so the first worker can arrive after the turn ended.
+// The run is then put back, and that worker still closes it and withdraws it.
+#[test]
+fn a_worker_arriving_after_the_turns_done_still_closes_the_old_run() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let saved = saved_runs(&a.update(event(row(RunId(900), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    // Closed in the store and no longer offered here.
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// The link does not outlive the next turn: a later, unrelated run of the pane
+// never closes an interrupted run.
+#[test]
+fn a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    super::chat_live::ask(&mut a, "something else");
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, None);
+    // Still on the list: the refusal is the active run, not an empty list.
+    keys(&mut a, "rr");
+    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+}

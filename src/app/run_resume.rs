@@ -136,6 +136,7 @@ impl App {
             "run {} is still interrupted; resume it again with Ctrl+Space r r",
             run.id
         );
+        self.run_keep.resume_of.insert(id, run.id);
         self.run_keep.offer_again(run);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(line);
