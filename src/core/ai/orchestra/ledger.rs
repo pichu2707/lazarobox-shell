@@ -259,6 +259,8 @@ pub struct Ledger {
     rows: Vec<Row>,
     /// The closed ODD steps, one line (S5); empty before the first.
     steps: String,
+    /// The feature document of a large goal (S5), empty before `track`.
+    feature: String,
 }
 
 impl Ledger {
@@ -267,7 +269,14 @@ impl Ledger {
             goal: goal.to_owned(),
             rows,
             steps: String::new(),
+            feature: String::new(),
         }
+    }
+
+    /// The ledger with the feature document the continuation turn needs.
+    pub(super) fn with_feature(mut self, doc: String) -> Self {
+        self.feature = doc;
+        self
     }
 
     /// The ledger with the line of the steps the run closed.
@@ -329,6 +338,10 @@ impl Ledger {
         let mut out = format!("Goal: {}\n", self.goal);
         if !self.steps.is_empty() {
             out.push_str(&self.steps);
+            out.push('\n');
+        }
+        if !self.feature.is_empty() {
+            out.push_str(&self.feature);
             out.push('\n');
         }
         out.push_str("Workers:");

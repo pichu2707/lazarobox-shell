@@ -3,6 +3,7 @@
 //! topic keys, and the degraded mode. Pure: the app owns the effects.
 
 use super::RunId;
+use super::feature::FeatureDoc;
 use super::ledger::{Handoff, Unit};
 use super::steps::Step;
 use crate::core::ai::memory::{kind::MemKind, port::Note, slug::ORCHESTRA_PREFIX};
@@ -33,6 +34,11 @@ fn worker_key(run: RunId, worker: u32) -> String {
 /// The key of an ODD step's handoff (S5, D15).
 fn step_key(run: RunId, step: Step) -> String {
     format!("{ORCHESTRA_PREFIX}{}/step/{}", run.0, step.label())
+}
+
+/// The key of the run's feature document (S5, D15).
+fn feature_key(run: RunId) -> String {
+    format!("{ORCHESTRA_PREFIX}{}/feature", run.0)
 }
 
 /// The key of the run's final ledger and summary.
@@ -75,6 +81,19 @@ impl Item {
                 kind: MemKind::Architecture,
                 title,
                 content,
+            },
+        }
+    }
+
+    /// The note of the run's feature document (S5, D15): one per run, the
+    /// same key whenever a correction rewrites it.
+    pub fn of_feature(doc: &FeatureDoc) -> Self {
+        Self {
+            key: feature_key(doc.run()),
+            note: Note {
+                kind: MemKind::Architecture,
+                title: format!("Run {} feature document", doc.run().0),
+                content: doc.render(),
             },
         }
     }

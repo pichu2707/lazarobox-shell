@@ -18,7 +18,11 @@ baseline.
   composer, and the final `orchestrate` prompts of both profiles.
   The `handoff` tool also closes an ODD step (`step` instead of `id`): steps
   close in order, each with its handoff, and a goal authorized `read_only`
-  refuses `code` workers.
+  refuses `code` workers. A large goal gets a feature document (the user's
+  requirements in their own words, tasks and a log that starts with the goal),
+  saved to engram under one key per run and kept in the run ledger; a
+  correction appends to the log and rewrites one requirement. The
+  `orchestrate` prompts gain a playbook per step.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

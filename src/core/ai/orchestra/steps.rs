@@ -2,6 +2,7 @@
 //! Pure: a step is closed only with its handoff, kept in the ledger whether
 //! or not engram stores it.
 
+use super::feature::FeatureError;
 use super::ledger::Handoff;
 
 /// The ODD steps, in the order a run takes them.
@@ -114,6 +115,8 @@ pub enum StepError {
     Order { step: Step, open: Step },
     /// `track` is for large goals only.
     NotLarge,
+    /// The feature document refused (S5): `track` closes with it.
+    Doc(FeatureError),
 }
 
 /// The steps of one run.

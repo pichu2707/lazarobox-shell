@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::{
     RunId, WorkerId,
+    feature::FeatureDoc,
     ledger::Handoff,
     worker::{ErrorClass, WorkerStatus},
 };
@@ -81,6 +82,9 @@ pub enum OrchestraEvent {
     /// The orchestrator (or lazarobox, for a missing one) wrote a handoff.
     /// The ledger keeps it in memory; persisting it is the app's seam (4.2).
     Handoff { run: RunId, handoff: Box<Handoff> },
+    /// The feature document of a large goal was built or corrected (S5): the
+    /// app stores it under its one key, or the ledger alone keeps it.
+    Feature { run: RunId, doc: Box<FeatureDoc> },
     /// The orchestrator turn ended with work pending and the run goes on: turn
     /// `turn` of at most `max` starts from `text`, the run ledger wrapped as
     /// data (S4, D8). The app shows a line and starts the turn on the run.

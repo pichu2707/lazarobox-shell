@@ -50,10 +50,15 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
         (Profile::Programmer, Task::Summarize) => {
             include_str!("prompts/programmer/summarize.md")
         }
-        (Profile::Analyst, Task::Orchestrate) => include_str!("prompts/analyst/orchestrate.md"),
-        (Profile::Programmer, Task::Orchestrate) => {
-            include_str!("prompts/programmer/orchestrate.md")
-        }
+        // The coordinator rules, then the ODD playbook of the steps (S5).
+        (Profile::Analyst, Task::Orchestrate) => concat!(
+            include_str!("prompts/analyst/orchestrate.md"),
+            include_str!("prompts/analyst/orchestrate_odd.md")
+        ),
+        (Profile::Programmer, Task::Orchestrate) => concat!(
+            include_str!("prompts/programmer/orchestrate.md"),
+            include_str!("prompts/programmer/orchestrate_odd.md")
+        ),
     }
 }
 

@@ -275,6 +275,9 @@ impl App {
                     ));
                 }
             }
+            // The feature document of a large goal: one note, one key, stored
+            // again when a correction rewrites it (S5, D15).
+            OrchestraEvent::Feature { run, doc } => store = Some((run, Item::of_feature(&doc))),
             // The finished run's ledger and summary, stored like a handoff.
             OrchestraEvent::Closed {
                 run,

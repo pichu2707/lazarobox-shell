@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger};
+use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::steps::{Mark, Step, StepError, Steps};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -183,6 +184,8 @@ pub struct Run {
     turns: usize,
     /// The ODD steps and their handoffs (S5).
     steps: Steps,
+    /// The feature document of a large goal, once `track` built it (S5).
+    feature: Option<FeatureDoc>,
 }
 
 impl Run {
@@ -201,6 +204,7 @@ impl Run {
             summary: None,
             turns: 1,
             steps: Steps::default(),
+            feature: None,
         }
     }
 
@@ -542,6 +546,14 @@ impl Run {
             return Err(StepError::Ended);
         }
         self.steps.check(step)?;
+        if step == Step::Track && self.feature.is_none() {
+            return Err(StepError::Doc(FeatureError::NoDocument));
+        }
+        Ok(self.close_step(step, mark, note))
+    }
+
+    /// Records and closes a step already checked.
+    fn close_step(&mut self, step: Step, mark: Mark, note: Judgement) -> Handoff {
         let (engine, model) = match self.roster.get(Task::Orchestrate) {
             Availability::Ready { engine, model } => (engine.clone(), model.clone()),
             _ => (String::new(), None),
@@ -556,8 +568,52 @@ impl Run {
         };
         let handoff = Handoff::of(facts, note, self.forced_by().is_some());
         self.steps.record(step, handoff.clone());
-        self.steps.close(step, mark)?;
-        Ok(handoff)
+        // Checked and recorded just above: closing cannot be refused.
+        let _ = self.steps.close(step, mark);
+        handoff
+    }
+
+    /// Builds the feature document of `goal` and closes `track` with it: the
+    /// handoff of the step and the document, which the app stores under its
+    /// own key. One per run; later changes are corrections.
+    pub fn feature_build(
+        &mut self,
+        goal: &str,
+        specs: &[String],
+        tasks: &[String],
+        note: Judgement,
+    ) -> Result<(Handoff, FeatureDoc), StepError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(StepError::Ended);
+        }
+        if self.feature.is_some() {
+            return Err(StepError::Doc(FeatureError::Exists));
+        }
+        self.steps.check(Step::Track)?;
+        let doc = FeatureDoc::build(self.id, goal, specs, tasks).map_err(StepError::Doc)?;
+        let handoff = self.close_step(Step::Track, Mark::None, note);
+        self.feature = Some(doc.clone());
+        Ok((handoff, doc))
+    }
+
+    /// A user correction of the feature document (S5): the log gains it and
+    /// one requirement is rewritten.
+    pub fn feature_correct(
+        &mut self,
+        spec: &str,
+        text: &str,
+        correction: &str,
+    ) -> Result<FeatureDoc, StepError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(StepError::Ended);
+        }
+        let doc = self
+            .feature
+            .as_mut()
+            .ok_or(StepError::Doc(FeatureError::NoDocument))?;
+        doc.correct(spec, text, correction)
+            .map_err(StepError::Doc)?;
+        Ok(doc.clone())
     }
 
     /// The workers that ended and have no handoff, oldest first.
@@ -643,7 +699,10 @@ impl Run {
             let id = WorkerId(i as u32 + 1);
             Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
         });
-        Ledger::new(goal, rows.collect()).with_steps(self.steps.line())
+        let feature = self.feature.as_ref().map(FeatureDoc::render_for_ledger);
+        Ledger::new(goal, rows.collect())
+            .with_steps(self.steps.line())
+            .with_feature(feature.unwrap_or_default())
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.

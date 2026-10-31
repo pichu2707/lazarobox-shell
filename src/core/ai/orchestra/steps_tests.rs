@@ -109,7 +109,10 @@ fn track_is_for_large_goals_only() {
             open: Step::Track
         })
     );
-    close_all(&mut large, &[Step::Track, Step::Implement, Step::Close]);
+    large
+        .feature_build("goal", &["a".to_owned()], &[], note("x"))
+        .expect("tracked");
+    close_all(&mut large, &[Step::Implement, Step::Close]);
 
     let mut small = run();
     close_all(

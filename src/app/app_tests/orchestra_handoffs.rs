@@ -151,6 +151,39 @@ fn a_step_handoff_is_saved_under_its_step_key_and_off_course_is_said() {
     );
 }
 
+// Spec (orchestrator-handoffs, one feature-document handoff with a stable key
+// per run; A correction keeps the log): the document is saved under
+// `orchestra/{run}/feature` and a correction saves it again, same key.
+#[test]
+fn the_feature_document_is_saved_under_one_key_and_a_correction_reuses_it() {
+    use crate::core::ai::orchestra::{RunId, feature::FeatureDoc};
+    let mut a = app(true);
+    with_project(&mut a);
+    let mut doc =
+        FeatureDoc::build(RunId(7), "the goal", &["spec one".to_owned()], &[]).expect("a document");
+    let first = a.update(event(OrchestraEvent::Feature {
+        run: RUN,
+        doc: Box::new(doc.clone()),
+    }));
+    doc.correct("S1", "spec 1b", "fix it").expect("corrected");
+    let second = a.update(event(OrchestraEvent::Feature {
+        run: RUN,
+        doc: Box::new(doc),
+    }));
+    let key = Some("orchestra/7/feature".to_owned());
+    let keys =
+        |effects: &[Effect]| -> Vec<_> { saves(effects).into_iter().map(|(_, key)| key).collect() };
+    assert_eq!(
+        (keys(&first), keys(&second)),
+        (vec![key.clone()], vec![key])
+    );
+    let Some(Effect::Memory(MemCmd::Save { note, .. })) = second.first() else {
+        panic!("a save");
+    };
+    assert!(note.content.contains("S1: spec 1b"));
+    assert!(note.content.contains("L2: fix it"));
+}
+
 // The ledger and summary of a finished run, under their own key.
 #[test]
 fn the_closed_ledger_is_saved_under_the_run_ledger_key() {
