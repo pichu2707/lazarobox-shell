@@ -43,6 +43,21 @@ pub enum OrchestraEvent {
         class: ErrorClass,
         text: String,
     },
+    /// A decision could not be applied (a retry that could not wrap the
+    /// error): the run is halted as before and the alert comes back with
+    /// `reason`.
+    Declined {
+        run: RunId,
+        worker: WorkerId,
+        class: ErrorClass,
+        text: String,
+        reason: String,
+    },
+    /// The user's answer for `run` was not applied: that run had ended or
+    /// been replaced, or no failure waited any more.
+    Dropped { run: RunId },
+    /// The user's answer was not applied: this app has no run manager.
+    Unavailable,
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

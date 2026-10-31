@@ -207,11 +207,16 @@ struct Tooling {
     hub: Mutex<Option<Hub<WorkerKey>>>,
 }
 
+/// What the alert says when a retry cannot be sealed.
+const NO_SEAL: &str = "could not seal the previous error";
+
 /// Why a decision about a failure was not applied.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DecideError {
     /// No failure waits for the user.
     NotHalted,
+    /// The run the answer was for has ended or been replaced.
+    Moved,
     /// A retry needs a nonce to wrap the failure and none could be drawn.
     NoNonce,
 }
@@ -415,17 +420,45 @@ impl RunManager {
     /// `NotHalted` when no failure waits for the user, and `NoNonce` when a
     /// retry cannot wrap the failure for the model (as `collect`, never the
     /// plain prompt); nothing changes in either case.
-    pub fn decide(self: &Arc<Self>, pane: PaneId, choice: UserChoice) -> Result<(), DecideError> {
+    pub fn decide(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        choice: UserChoice,
+    ) -> Result<(), DecideError> {
         let mut runs = lock(&self.runs);
-        let live = runs.get_mut(&pane).ok_or(NotHalted)?;
-        let RunState::Halted { worker, text, .. } = live.run.state() else {
+        // An answer is for the run it was given for; one that finds it ended
+        // or replaced is dropped, and said.
+        let Some(live) = runs.get_mut(&pane).filter(|live| live.run.id() == run) else {
+            self.send(pane, OrchestraEvent::Dropped { run });
+            return Err(DecideError::Moved);
+        };
+        let RunState::Halted {
+            worker,
+            class,
+            text,
+        } = live.run.state()
+        else {
+            self.send(pane, OrchestraEvent::Dropped { run });
             return Err(NotHalted.into());
         };
-        let (worker, text) = (*worker, text.clone());
+        let (worker, class, text) = (*worker, *class, text.clone());
         let retry = choice == UserChoice::Retry;
         // Drawn before the run changes, so a failed draw leaves it halted.
         let wrapped = if retry {
-            let bytes = (self.nonce)().ok_or(DecideError::NoNonce)?;
+            let Some(bytes) = (self.nonce)() else {
+                // The app dropped its alert on the key: bring it back, with why.
+                let reason = NO_SEAL.to_owned();
+                let declined = OrchestraEvent::Declined {
+                    run,
+                    worker,
+                    class,
+                    text,
+                    reason,
+                };
+                self.send(pane, declined);
+                return Err(DecideError::NoNonce);
+            };
             Some(label::wrap(&label::nonce_from(bytes), &text))
         } else {
             None

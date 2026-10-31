@@ -249,16 +249,27 @@ fn a_rejected_long_window_from_the_claude_decoder_is_a_quota() {
 }
 
 #[test]
-fn a_rejected_short_window_is_not_a_quota() {
-    let text = concat!(
-        "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"one_minute\"}}\n",
-        "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"boom\"}\n",
-    );
-    assert_eq!(class_of("claude", text), ErrorClass::Other);
+fn a_rejected_short_window_is_a_rate_limit_not_a_quota() {
+    for window in ["one_minute", "one_hour", "ten_second"] {
+        let text = format!(
+            "{{\"type\":\"rate_limit_event\",\"rate_limit_info\":{{\"status\":\"rejected\",\"rateLimitType\":\"{window}\"}}}}\n\
+             {{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"boom\"}}\n"
+        );
+        assert_eq!(class_of("claude", &text), ErrorClass::RateLimit, "{window}");
+    }
 }
 
 #[test]
 fn a_rejected_window_survives_a_stream_that_ends_without_a_result() {
     let text = "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"five_hour\"}}\n";
     assert_eq!(class_of("claude", text), ErrorClass::Quota);
+}
+
+// A window mark does not pre-empt explicit evidence of another class.
+#[test]
+fn a_window_mark_beside_an_auth_status_is_auth() {
+    let text = "API Error: 401 Invalid API key (limit window: one_minute)";
+    assert_eq!(class_of_text(text), ErrorClass::Auth);
+    let bare = "rejected (limit window: one_minute)";
+    assert_eq!(class_of_text(bare), ErrorClass::RateLimit);
 }

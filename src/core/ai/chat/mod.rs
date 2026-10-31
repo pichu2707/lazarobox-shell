@@ -76,6 +76,13 @@ pub struct OrchAlert {
     pub text: String,
 }
 
+/// Why the last answer to the alert did not go through.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OrchNote {
+    /// A retry the run manager declined: the alert says `retry failed`.
+    RetryFailed(String),
+}
+
 /// Columns the batch badge leaves free on the right of the pane: the widest
 /// mode badge (` AUTO `) and a gap.
 pub const BATCH_BADGE_ROOM: usize = 8;
@@ -401,6 +408,8 @@ pub struct ChatState {
     /// The failure the run waits on, until the user answers it or the run
     /// ends.
     orch_alert: Option<OrchAlert>,
+    /// Why the last answer to the alert did not go through.
+    orch_note: Option<OrchNote>,
     /// The last turn ended with `Done`, until the poll sees the batch it left
     /// behind (local-model-writes D1). A new turn or a cancel clears it; a
     /// compaction run after the `Done` does not.
@@ -459,6 +468,7 @@ impl ChatState {
             orch_turn: None,
             orch_run: None,
             orch_alert: None,
+            orch_note: None,
             clean_end: false,
         }
     }
@@ -498,6 +508,21 @@ impl ChatState {
 
     pub fn set_orch_alert(&mut self, alert: Option<OrchAlert>) {
         self.orch_alert = alert;
+    }
+
+    /// Takes the alert down with the notes raised on it: a note belongs to
+    /// one alert and never shows on the next.
+    pub fn drop_orch_alert(&mut self) {
+        self.orch_alert = None;
+        self.orch_note = None;
+    }
+
+    pub fn orch_note(&self) -> Option<&OrchNote> {
+        self.orch_note.as_ref()
+    }
+
+    pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
+        self.orch_note = note;
     }
 
     /// A worker's status changed: its row, keyed by run and worker, shows the

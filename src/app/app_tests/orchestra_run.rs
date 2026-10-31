@@ -78,6 +78,7 @@ fn alerted() -> (App, u64) {
 fn decide(choice: UserChoice) -> Effect {
     Effect::OrchDecide {
         pane: chat_id(),
+        run: RUN,
         choice,
     }
 }
@@ -348,4 +349,134 @@ fn the_notice_and_the_alert_are_shown_together() {
         a.chat_guidance(chat_id()),
         Some(format!("{NOTICE} | {ALERT}"))
     );
+}
+
+// Review S2b: an answer names the run of the alert it answers, so the run
+// manager never applies it to another run.
+#[test]
+fn the_answer_names_the_run_of_its_alert() {
+    let (mut a, _) = running();
+    a.update(event(row(RunId(9), 1, WorkerStatus::Failed)));
+    a.update(event(halted(RunId(9), "boom")));
+    assert_eq!(
+        a.update(key('r')),
+        vec![Effect::OrchDecide {
+            pane: chat_id(),
+            run: RunId(9),
+            choice: UserChoice::Retry,
+        }]
+    );
+}
+
+// never fail silently: a retry the run manager could not apply brings the
+// alert back, says why and leaves the keys working.
+#[test]
+fn a_declined_retry_shows_why_and_the_alert_answers_again() {
+    let (mut a, _) = alerted();
+    assert_eq!(a.update(key('r')), vec![decide(UserChoice::Retry)]);
+    assert_eq!(alert(&a), None);
+    a.update(event(OrchestraEvent::Declined {
+        run: RUN,
+        worker: WorkerId(1),
+        class: ErrorClass::Conflict,
+        text: "409 conflict: session busy".into(),
+        reason: "could not seal the previous error".into(),
+    }));
+    let text = a.chat_guidance(chat_id()).unwrap_or_default();
+    assert!(
+        text.ends_with(
+            "retry failed: could not seal the previous error \u{b7} r try again \u{b7} c/Esc cancel"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("409 conflict: session busy"), "{text}");
+    let_go();
+    assert_eq!(a.update(key('r')), vec![decide(UserChoice::Retry)]);
+    assert_eq!(alert(&a), None);
+    assert!(
+        !a.chat_guidance(chat_id())
+            .unwrap_or_default()
+            .contains("retry failed")
+    );
+}
+
+// An answer dropped by the run manager is said in the transcript when the
+// pane has no other run; the alert of a run the pane has now stays.
+#[test]
+fn a_dropped_answer_is_said_and_touches_no_other_run() {
+    let (mut a, _) = alerted();
+    let before = alert(&a).cloned();
+    a.update(event(OrchestraEvent::Dropped { run: RUN }));
+    assert_eq!(alert(&a).cloned(), before, "the live alert stays");
+    assert_eq!(chat_of(&a).orch_run(), Some(RUN));
+    assert!(said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
+}
+
+// Without a run manager the answer is told in the transcript.
+#[test]
+fn an_unavailable_orchestration_is_said() {
+    let (mut a, _) = alerted();
+    a.update(event(OrchestraEvent::Unavailable));
+    assert!(
+        said(
+            &a,
+            "orchestration is not available: your answer was not applied"
+        ),
+        "{:?}",
+        chat_of(&a).entries()
+    );
+}
+
+fn said(a: &App, line: &str) -> bool {
+    (chat_of(a).entries().iter()).any(|e| matches!(e, Entry::System(l) if l == line))
+}
+
+const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
+
+// No silent no-op: a drop naming another run than the pane's current one is
+// said too; the neutral wording keeps it from being read as part of the new one.
+#[test]
+fn a_dropped_answer_of_an_older_run_is_said_neutrally_in_a_newer_one() {
+    let (mut a, _) = alerted();
+    a.update(event(OrchestraEvent::Dropped { run: RunId(3) }));
+    assert!(said(&a, MOVED_ON), "{:?}", chat_of(&a).entries());
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    a.update(event(OrchestraEvent::Dropped { run: RUN }));
+    assert_eq!(
+        (chat_of(&a).entries().iter())
+            .filter(|e| matches!(e, Entry::System(l) if l == MOVED_ON))
+            .count(),
+        2
+    );
+}
+
+// Review fix 2: notes belong to the alert they were raised on. Ctrl+C and
+// the run's end clear them, so the next alert does not say `retry failed`.
+#[test]
+fn a_note_does_not_leak_into_the_next_alert() {
+    let declined = |a: &mut App| {
+        a.update(key('r'));
+        a.update(event(OrchestraEvent::Declined {
+            run: RUN,
+            worker: WorkerId(1),
+            class: ErrorClass::Conflict,
+            text: "409 conflict: session busy".into(),
+            reason: "no nonce".into(),
+        }));
+        let_go();
+    };
+    // Ctrl+C
+    let (mut a, _) = alerted();
+    declined(&mut a);
+    a.update(ctrl('c'));
+    a.update(event(halted(RUN, "409 conflict: session busy")));
+    assert_eq!(chat_of(&a).orch_note(), None, "ctrl+c cleared the note");
+    // The run ends.
+    let (mut a, _) = alerted();
+    declined(&mut a);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(chat_of(&a).orch_note(), None, "the end cleared the note");
+    a.update(event(halted(RunId(8), "409 conflict: session busy")));
+    let text = a.chat_guidance(chat_id()).unwrap_or_default();
+    assert!(!text.contains("retry failed"), "{text}");
 }
