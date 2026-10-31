@@ -2717,6 +2717,16 @@ impl App {
         if llamacpp_failed {
             effects.extend(self.request_detection());
         }
+        // A continuation that came before this turn's end starts now (S4).
+        if finished
+            && let Some(next) = self
+                .panes
+                .get_mut(&id)
+                .and_then(PaneState::chat_mut)
+                .and_then(ChatState::take_continue)
+        {
+            effects.extend(self.start_continuation(id, next));
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;

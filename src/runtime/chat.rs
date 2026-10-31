@@ -805,7 +805,10 @@ impl Chats {
         }
         // At once, not when the aborted task is dropped: an answer for the
         // old turn must find nothing from here on.
-        self.waits.end_pane(pane);
+        // A continuation keeps its workers' waits: the run goes on.
+        if orch.as_ref().is_none_or(|orch| orch.attach.is_none()) {
+            self.waits.end_pane(pane);
+        }
         // A chat whose turn has no tools no longer uses its servers.
         if request.tools == Tools::Off {
             self.stop_servers(pane);
@@ -910,6 +913,7 @@ impl Chats {
                     // must pass the path policy; nothing is asked (D6). An
                     // origin that is not UTF-8 gives no root.
                     roots: origin.to_str().map(str::to_owned).into_iter().collect(),
+                    goal: orch.goal,
                     deadline: orch.deadline,
                     limits: orch.limits,
                     profile: orch.profile,
@@ -917,7 +921,11 @@ impl Chats {
                     approver: approver.clone(),
                     pending: pending.clone(),
                 };
-                match manager.start(pane, scope) {
+                let opened = match orch.attach {
+                    Some(run) => manager.attach(pane, run, scope),
+                    None => manager.start(pane, scope),
+                };
+                match opened {
                     Ok((run, handle)) => Some((run, handle)),
                     Err(reason) => {
                         // The pane's earlier session must not stay open.

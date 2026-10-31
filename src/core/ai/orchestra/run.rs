@@ -15,13 +15,15 @@ use crate::core::ai::tools::label;
 
 /// What bounds a run: the workers that run at once, the workers it may spawn
 /// in all and its wall clock (`max_parallel`, `max_workers`,
-/// `run_timeout_mins`). A run without limits set runs one worker at a time,
-/// with no cap and no wall clock.
+/// `run_timeout_mins`) and the orchestrator turns it may take, the first
+/// included (`max_turns`, S4). A run without limits set runs one worker at a
+/// time, with no cap, no wall clock and no turn cap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RunLimits {
     pub parallel: usize,
     pub workers: usize,
     pub wall: Duration,
+    pub turns: usize,
 }
 
 impl Default for RunLimits {
@@ -30,6 +32,7 @@ impl Default for RunLimits {
             parallel: 1,
             workers: usize::MAX,
             wall: Duration::MAX,
+            turns: usize::MAX,
         }
     }
 }
@@ -50,6 +53,18 @@ impl Roster {
         let found = self.0.iter().find(|(known, _)| *known == task);
         found.map_or(NONE, |(_, availability)| availability)
     }
+}
+
+/// What follows an orchestrator turn that ended (S4, D8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NextTurn {
+    /// Nothing is pending (or the run waits for the user, or is over): the
+    /// run settles as before.
+    Settle,
+    /// Turn `n` (counting the first) continues the run from its ledger.
+    Continue(usize),
+    /// Work is pending but `max_turns` turns were taken: the run ends.
+    Capped(usize),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -161,6 +176,8 @@ pub struct Run {
     halted_at_cancel: bool,
     /// What the orchestrator said when it finished the run.
     summary: Option<String>,
+    /// The orchestrator turns taken so far, the first included.
+    turns: usize,
 }
 
 impl Run {
@@ -177,6 +194,7 @@ impl Run {
             finish_warned: false,
             halted_at_cancel: false,
             summary: None,
+            turns: 1,
         }
     }
 
@@ -541,6 +559,24 @@ impl Run {
         self.summary = Some(summary.to_owned());
         self.state = RunState::Finished;
         Ok(built)
+    }
+
+    /// The orchestrator turn ended. A run still `Open` with a worker queued or
+    /// running, or a finished worker with no handoff, continues in a new turn
+    /// until `max_turns` turns were taken (D8); the turn is counted here.
+    pub fn next_turn(&mut self) -> NextTurn {
+        let live = [WorkerStatus::Queued, WorkerStatus::Running]
+            .iter()
+            .any(|status| !self.ids(*status, |_| true).is_empty());
+        let pending = live || !self.without_handoff().is_empty();
+        if self.state != RunState::Open || !pending {
+            return NextTurn::Settle;
+        }
+        if self.turns >= self.limits.turns {
+            return NextTurn::Capped(self.turns);
+        }
+        self.turns += 1;
+        NextTurn::Continue(self.turns)
     }
 
     /// What the orchestrator said when it finished the run.

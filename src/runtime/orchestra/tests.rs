@@ -283,6 +283,7 @@ impl Lab {
             roster,
             origin: self.via.clone(),
             roots: roots.iter().map(|r| (*r).to_owned()).collect(),
+            goal: "build the parser".to_owned(),
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
             limits: RunLimits::default(),
             profile: Profile::Programmer,
@@ -351,6 +352,8 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::AnswerLost
         | OrchestraEvent::Expired { .. }
         | OrchestraEvent::Handoff { .. }
+        | OrchestraEvent::Continue(_)
+        | OrchestraEvent::Stopped { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1098,6 +1101,8 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Expired { .. }
             | OrchestraEvent::AnswerLost
             | OrchestraEvent::Handoff { .. }
+            | OrchestraEvent::Continue(_)
+            | OrchestraEvent::Stopped { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -1387,6 +1392,7 @@ async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    handle.call(handoff_of(1)).await;
     lab.sent();
     lab.manager.turn_ended(pane(), run);
     assert_eq!(
@@ -1396,32 +1402,6 @@ async fn a_run_ends_by_itself_once_its_turn_and_workers_are_done() {
     lab.manager.turn_ended(pane(), run);
     assert_eq!(lab.sent(), [], "ended once");
     assert_eq!(handle.call(wait(1)).await, error(ENDED));
-}
-
-// S9: with a worker still running when the turn ends, the run stays until
-// that worker finishes, then ends.
-#[tokio::test]
-async fn a_run_whose_worker_still_runs_ends_when_it_finishes() {
-    let mut lab = lab(Script::Answer("found"));
-    let (run, handle) = lab.start(codex_review());
-    handle.call(spawn(Task::Review, "check")).await;
-    lab.manager.turn_ended(pane(), run);
-    assert!(
-        !lab.sent().contains(&OrchestraEvent::Ended { run }),
-        "the worker still runs"
-    );
-    let mut statuses = Vec::new();
-    loop {
-        match lab.next().await {
-            OrchestraEvent::Ended { run: of } => {
-                assert_eq!(of, run);
-                break;
-            }
-            event => statuses.extend(status_of(&event)),
-        }
-    }
-    assert_eq!(statuses, [WorkerStatus::Done]);
-    assert_eq!(lab.sent(), [], "nothing after Ended");
 }
 
 // S9: a halted run waits for the user's answer even after its turn ended;
@@ -2568,6 +2548,19 @@ fn handoff(id: u32, verdict: Verdict) -> OrchCall {
     }
 }
 
+fn handoff_of(id: u32) -> OrchCall {
+    OrchCall::Handoff {
+        id: WorkerId(id),
+        note: Judgement {
+            verdict: Verdict::OnCourse,
+            reason: "fits".to_owned(),
+            done: "did it".to_owned(),
+            left: "none".to_owned(),
+            decisions: "none".to_owned(),
+        },
+    }
+}
+
 fn without_handoffs(events: Vec<OrchestraEvent>) -> Vec<OrchestraEvent> {
     let kept = events
         .into_iter()
@@ -2684,4 +2677,128 @@ async fn a_cancelled_run_builds_the_missing_handoffs_before_it_ends() {
         matches!(last, Some(OrchestraEvent::Ended { .. })),
         "{events:?}"
     );
+}
+
+/// The scope of a turn that may take `turns` orchestrator turns.
+fn turns_scope(lab: &Lab, turns: usize) -> OrchScope {
+    OrchScope {
+        limits: RunLimits {
+            turns,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    }
+}
+
+fn continues(events: &[OrchestraEvent]) -> Vec<(usize, usize, String)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Continue(c) => Some((c.turn, c.max, c.text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+// Spec (orchestrator-handoffs, Continuation from the ledger): a turn that
+// ends with a worker running continues from the ledger: the goal and the
+// worker's row, wrapped as data, and never the worker's transcript.
+#[tokio::test]
+async fn a_turn_that_ends_with_work_pending_continues_from_the_ledger() {
+    let mut lab = lab(Script::Answer("TRANSCRIPT-OF-THE-WORKER"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    let sent = continues(&events);
+    let [(turn, max, text)] = sent.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!((*turn, *max), (2, 6));
+    assert!(text.contains("build the parser"), "{text}");
+    assert!(text.contains("<untrusted-tool-output id=\""), "{text}");
+    assert!(text.contains("1 review done: handoff pending"), "{text}");
+    assert!(!text.contains("TRANSCRIPT-OF-THE-WORKER"), "{text}");
+    assert!(!events.contains(&OrchestraEvent::Ended { run }));
+    assert!(lab.manager.scope(pane()).is_some(), "the run goes on");
+}
+
+// A continuation turn attaches to the open run: same run, same workers, and
+// the run does not end under it when its last worker finishes.
+#[tokio::test]
+async fn an_attached_turn_keeps_the_run_and_its_workers() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.manager.turn_ended(pane(), run);
+    let (again, next) = (lab.manager.attach(pane(), run, turns_scope(&lab, 6))).unwrap();
+    assert_eq!(again, run);
+    assert_eq!(next.call(wait(1)).await, fine("1: done"));
+    next.call(handoff_of(1)).await;
+    assert!(
+        !lab.sent().contains(&OrchestraEvent::Ended { run }),
+        "the attached turn is not over"
+    );
+    lab.manager.turn_ended(pane(), run);
+    assert!(lab.sent().contains(&OrchestraEvent::Ended { run }));
+}
+
+#[tokio::test]
+async fn attaching_to_a_run_that_is_gone_is_refused() {
+    let lab = lab(Script::Answer("found"));
+    let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    lab.manager.cancel(pane());
+    let gone = lab.manager.attach(pane(), run, turns_scope(&lab, 6));
+    assert_eq!(gone.err().as_deref(), Some(ENDED));
+}
+
+// Spec (configuration, max_turns): at the cap the run ends with a visible
+// line naming the key, the missing handoffs are built and the workers still
+// running are cancelled.
+#[tokio::test]
+async fn at_max_turns_the_run_ends_with_its_fallbacks_and_names_the_key() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 1)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert_eq!(continues(&events), []);
+    let reasons: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Stopped { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons.iter().any(|r| r.contains("max_turns (1)")),
+        "{events:?}"
+    );
+    assert_eq!(handoffs(&events).len(), 1, "the fallback is built");
+    assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
+    assert!(lab.manager.scope(pane()).is_none());
+}
+
+// Never fail silently: with no nonce the ledger cannot go out wrapped, so
+// the run says why and ends instead of continuing bare.
+#[tokio::test]
+async fn a_continuation_with_no_nonce_ends_the_run_and_says_why() {
+    let mut lab = lab_with(Script::Answer("found"), |m, _| m.with_nonce(|| None));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert_eq!(continues(&events), []);
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OrchestraEvent::Stopped { reason, .. } if reason.contains(NO_NONCE))
+        ),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
 }

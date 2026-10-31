@@ -34,6 +34,16 @@ pub struct WorkerRow {
     pub overridden: bool,
 }
 
+/// A continuation turn (S4, D8): turn `turn` of at most `max` of run `run`
+/// starts from `text`, the run ledger wrapped as data.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Continuation {
+    pub run: RunId,
+    pub turn: usize,
+    pub max: usize,
+    pub text: String,
+}
+
 /// What the run manager tells the app.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OrchestraEvent {
@@ -71,6 +81,14 @@ pub enum OrchestraEvent {
     /// The orchestrator (or lazarobox, for a missing one) wrote a handoff.
     /// The ledger keeps it in memory; persisting it is the app's seam (4.2).
     Handoff { run: RunId, handoff: Box<Handoff> },
+    /// The orchestrator turn ended with work pending and the run goes on: turn
+    /// `turn` of at most `max` starts from `text`, the run ledger wrapped as
+    /// data (S4, D8). The app shows a line and starts the turn on the run.
+    Continue(Continuation),
+    /// The run was stopped by lazarobox, not by the user: the turn cap
+    /// (`max_turns`) or a ledger that could not be wrapped. `reason` is the
+    /// line to show; `Ended` follows.
+    Stopped { run: RunId, reason: String },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

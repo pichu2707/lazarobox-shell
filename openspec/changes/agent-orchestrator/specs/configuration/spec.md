@@ -17,18 +17,23 @@ The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same 
 - WHEN the configuration is loaded
 - THEN `orchestrate` is unassigned and falls back to `general`
 
-### Requirement: Orchestrator keys [S1, S3]
-The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) and `run_timeout_mins` (integer, default 60, valid range 1 to 480). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
+### Requirement: Orchestrator keys [S1, S3, S4]
+The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) `run_timeout_mins` (integer, default 60, valid range 1 to 480) and [S4] `max_turns` (integer, default 6, valid range 1 to 24; the orchestrator turns one run may take, the first included). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
 
 #### Scenario: Defaults [auto]
 - GIVEN no `[ai.orchestrator]` table
 - WHEN the configuration is loaded
-- THEN `enabled` and `acknowledged` are false, `worker_timeout_secs` is 600, `max_parallel` is 2, `max_workers` is 8 and `run_timeout_mins` is 60
+- THEN `enabled` and `acknowledged` are false, `worker_timeout_secs` is 600, `max_parallel` is 2, `max_workers` is 8, `run_timeout_mins` is 60 and `max_turns` is 6
 
 #### Scenario: Bad value falls back [auto]
 - GIVEN `max_parallel = 0` and `enabled = true`
 - WHEN the configuration is loaded
 - THEN `max_parallel` is 2, `enabled` is true and a startup notice names the key
+
+#### Scenario: Bad max_turns falls back [auto]
+- GIVEN `max_turns = 25` and `enabled = true`
+- WHEN the configuration is loaded
+- THEN `max_turns` is 6, `enabled` is true and a startup notice names the key and the range 1 to 24
 
 #### Scenario: Older build ignores keys [auto]
 - GIVEN a file with `[ai.tasks.orchestrate]` and `[ai.orchestrator]` read by the previous schema

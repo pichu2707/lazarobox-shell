@@ -14,6 +14,7 @@ use crate::core::ai::{
     config::Assignment,
     orchestra::{
         Toolset, WorkerKey,
+        event::Continuation,
         ledger::{Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
         run::{Roster, RunLimits},
@@ -150,6 +151,10 @@ impl App {
     /// other output and time leave it as it is. Events of a pane that is not
     /// a chat any more are dropped.
     pub(super) fn on_orchestra(&mut self, id: PaneId, event: OrchestraEvent) -> Vec<Effect> {
+        let event = match event {
+            OrchestraEvent::Continue(next) => return self.on_continue(id, next),
+            event => event,
+        };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -230,6 +235,15 @@ impl App {
                     ));
                 }
             }
+            // The turn cap, or a ledger that cannot be wrapped (S4): said, in
+            // the key's own name, for the run it names.
+            OrchestraEvent::Stopped { run, reason } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(reason);
+                }
+            }
+            // Handled before the pane is borrowed.
+            OrchestraEvent::Continue(_) => {}
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
                 chat.push_system_line(NO_ORCHESTRA.to_owned());
@@ -263,6 +277,49 @@ impl App {
         }
         self.dirty = true;
         Vec::new()
+    }
+
+    /// The orchestrator turn of the run of pane `id` ended with work pending
+    /// (S4, D8): the next turn starts when the pane is idle, which the turn's
+    /// own end may not have made it yet.
+    fn on_continue(&mut self, id: PaneId, next: Continuation) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if chat.phase() != Phase::Idle {
+            chat.park_continue(next);
+            return Vec::new();
+        }
+        self.start_continuation(id, next)
+    }
+
+    /// Starts the continuation turn on the open run, after a line that says
+    /// so. A turn that cannot go ends the run, said: never a silent stop.
+    pub(super) fn start_continuation(&mut self, id: PaneId, next: Continuation) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        chat.push_system_line(format!(
+            "orchestrator turn {} of {}: continuing the run from its ledger",
+            next.turn, next.max
+        ));
+        self.dirty = true;
+        let availability = self.turn_availability(id);
+        let effects = self.send_with(id, &next.text, &availability, Some(next.run));
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::OrchestrateSend { .. }))
+        {
+            return effects;
+        }
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system_line(
+                "the continuation turn could not start; the run was cancelled".to_owned(),
+            );
+        }
+        let mut effects = effects;
+        effects.extend(self.cancel_chat(id));
+        effects
     }
 
     /// A key on chat `id` for the failure alert shown there: `r` retries the
@@ -522,6 +579,7 @@ impl App {
             parallel: usize::from(orch.max_parallel),
             workers: usize::from(orch.max_workers),
             wall: Duration::from_secs(u64::from(orch.run_timeout_mins) * 60),
+            turns: usize::from(orch.max_turns),
         }
     }
 
@@ -597,6 +655,7 @@ impl App {
         id: PaneId,
         turn: u64,
         mut request: ChatRequest,
+        attach: Option<RunId>,
     ) -> Effect {
         if !self.orchestrating(id) {
             return Effect::ChatSend {
@@ -615,6 +674,15 @@ impl App {
         let roster = self.roster(&self.ai);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
         let limits = self.run_limits();
+        // The goal is what the user typed; a continuation keeps the run's.
+        let goal = match attach {
+            Some(_) => String::new(),
+            None => request
+                .messages
+                .last()
+                .map(|m| m.content.clone())
+                .unwrap_or_default(),
+        };
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
             .as_ref()
@@ -636,6 +704,8 @@ impl App {
                 profile,
                 deadline,
                 limits,
+                goal,
+                attach,
             }),
         }
     }

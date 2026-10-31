@@ -53,7 +53,7 @@ use crate::core::{
         config::{ApprovalMode, Assignment, Profile, Task},
         orchestra::{
             RunId, WorkerId, WorkerKey,
-            event::WorkerRow,
+            event::{Continuation, WorkerRow},
             overrides::{FailurePicker, RunOverrides},
             worker::{ErrorClass, WorkerStatus},
         },
@@ -406,6 +406,9 @@ pub struct ChatState {
     orch_turn: Option<u64>,
     /// The pane's run, from its first event until its `Ended`.
     orch_run: Option<RunId>,
+    /// A continuation turn that came before the turn it follows was over
+    /// (S4): it starts when that turn ends.
+    orch_continue: Option<Continuation>,
     /// Workers seen over (a terminal row) and not running again: an ask of
     /// theirs that arrives late is refused. Dropped with the run.
     ended_workers: std::collections::HashSet<WorkerKey>,
@@ -481,6 +484,7 @@ impl ChatState {
             orch: false,
             orch_turn: None,
             orch_run: None,
+            orch_continue: None,
             ended_workers: Default::default(),
             selected: None,
             cancel_armed: None,
@@ -594,9 +598,21 @@ impl ChatState {
         }
     }
 
+    /// Holds a continuation until the turn it follows is over.
+    pub fn park_continue(&mut self, next: Continuation) {
+        self.orch_continue = Some(next);
+    }
+
+    pub fn take_continue(&mut self) -> Option<Continuation> {
+        self.orch_continue.take()
+    }
+
     /// `run` is over: its overrides, picker and notes go with it when it is
     /// the pane's run, whether its alert is still up or not.
     pub fn end_orch_run(&mut self, run: RunId) {
+        if self.orch_continue.as_ref().is_some_and(|c| c.run == run) {
+            self.orch_continue = None;
+        }
         self.ended_workers.retain(|key| key.run != run);
         if self.orch_run == Some(run) {
             self.selected = None;

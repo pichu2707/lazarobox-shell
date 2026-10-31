@@ -15,7 +15,7 @@ use crate::core::ai::{
     config::Task,
     orchestra::{
         RunId, WorkerId,
-        event::{OrchestraEvent, WorkerRow},
+        event::{Continuation, OrchestraEvent, WorkerRow},
         ledger::{Handoff, Unit, Verdict},
         run::UserChoice,
         worker::{ErrorClass, WorkerStatus},
@@ -586,4 +586,109 @@ fn a_note_does_not_leak_into_the_next_alert() {
     a.update(event(halted(RunId(8), "409 conflict: session busy")));
     let text = a.chat_guidance(chat_id()).unwrap_or_default();
     assert!(!text.contains("retry failed"), "{text}");
+}
+
+fn next_turn(turn: usize) -> Continuation {
+    Continuation {
+        run: RUN,
+        turn,
+        max: 6,
+        text: "LEDGER-TEXT".to_owned(),
+    }
+}
+
+fn transcript(a: &App) -> String {
+    let chat = a.panes.get(&chat_id()).and_then(PaneState::chat_state);
+    format!("{:?}", chat.unwrap().entries())
+}
+
+fn attaches(
+    effects: &[Effect],
+) -> Option<(&ChatRequest, &crate::core::ai::chat::engine::OrchSend)> {
+    effects.iter().find_map(|effect| match effect {
+        Effect::OrchestrateSend { request, orch, .. } => Some((request, &**orch)),
+        _ => None,
+    })
+}
+
+// Spec (configuration, Orchestrator keys): `max_turns` and the user's goal
+// travel with the orchestrator turn that starts the run.
+#[test]
+fn max_turns_and_the_goal_go_with_the_orchestrator_turn() {
+    let mut ai = orch_ai();
+    ai.orchestrator.max_turns = 7;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    let effects = ask(&mut a, "plan it");
+    let (_, orch) = attaches(&effects).expect("an orchestrator turn");
+    assert_eq!(orch.limits.turns, 7);
+    assert_eq!((orch.goal.as_str(), orch.attach), ("plan it", None));
+}
+
+// Spec (orchestrator-handoffs, Continuation from the ledger): the turn that
+// ends with work pending is followed by a turn on the same run, whose input
+// is the ledger; the user is told, and a draft in the composer survives.
+#[test]
+fn a_continuation_arriving_before_the_turn_ends_starts_when_it_does() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    type_text(&mut a, "my draft");
+    assert_eq!(
+        a.update(event(OrchestraEvent::Continue(next_turn(2)))),
+        vec![]
+    );
+    let effects = a.update(finish(turn));
+    let (request, orch) = attaches(&effects).expect("the continuation turn");
+    assert_eq!(orch.attach, Some(RUN));
+    let last = request.messages.last().map(|m| m.content.as_str());
+    assert_eq!(last, Some("LEDGER-TEXT"));
+    assert!(transcript(&a).contains("orchestrator turn 2 of 6"));
+    assert_eq!(composer(&a), "my draft");
+}
+
+#[test]
+fn a_continuation_arriving_after_the_turn_ended_starts_at_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(finish(turn));
+    let effects = a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    let (_, orch) = attaches(&effects).expect("the continuation turn");
+    assert_eq!(orch.attach, Some(RUN));
+}
+
+// A run that ended meanwhile (Ctrl+C) takes its parked continuation with it.
+#[test]
+fn an_ended_run_drops_its_parked_continuation() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let effects = a.update(finish(turn));
+    assert!(attaches(&effects).is_none(), "{effects:?}");
+}
+
+// Cancel during a continuation cancels the run as for the first turn.
+#[test]
+fn ctrl_c_during_a_continuation_turn_cancels_the_run() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    let effects = a.update(ctrl('c'));
+    assert!(
+        effects.contains(&Effect::ChatCancel(chat_id())),
+        "{effects:?}"
+    );
+}
+
+// Never silent: the cap names the key.
+#[test]
+fn a_run_stopped_at_the_turn_cap_names_max_turns() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    assert!(transcript(&a).contains("max_turns (6)"));
 }

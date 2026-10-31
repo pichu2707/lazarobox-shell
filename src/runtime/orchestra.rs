@@ -67,8 +67,8 @@ use crate::core::{
             errors::classify,
             ledger::{FinishError, Handoff, HandoffError, Judgement},
             run::{
-                CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunLimits, RunState,
-                UserChoice, WorkerEvent,
+                CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
+                RunState, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
             tools::OrchCall,
@@ -85,10 +85,22 @@ use crate::core::{
     layout::PaneId,
 };
 
-pub use crate::core::ai::orchestra::event::{OrchestraEvent, WorkerRow};
+pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, WorkerRow};
 
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
+
+/// What opens a continuation turn's message; the ledger follows, wrapped.
+const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still open. Below is the run ledger: \
+     the goal and one row per worker. Collect finished workers, write a `handoff` for each, \
+     and call `finish` when the goal is met.";
+
+/// What follows an orchestrator turn that ended.
+enum Next {
+    Settle,
+    Go(OrchestraEvent),
+    Stop(String),
+}
 
 /// What `collect` answers when no nonce can be drawn: unwrapped text never
 /// goes out.
@@ -104,6 +116,9 @@ pub struct OrchScope {
     /// The read-scope roots, as typed: the chat origin by default, never
     /// model or worker text. Each one passes the path policy or is dropped.
     pub roots: Vec<String>,
+    /// What the user asked, verbatim: the ledger of a continuation turn
+    /// carries it (S4). Unused when the scope attaches to a run.
+    pub goal: String,
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
     pub limits: RunLimits,
@@ -168,6 +183,8 @@ fn clock_micros() -> u64 {
 /// The run of one pane, with what its workers' turns need.
 struct Live {
     run: Run,
+    /// The user's goal, verbatim: the ledger of every continuation holds it.
+    goal: String,
     scope: ReadScope,
     /// The roots the scope refused, sanitized, with why.
     dropped: Vec<Dropped>,
@@ -322,6 +339,7 @@ impl RunManager {
         let live = Live {
             scope: read_scope,
             dropped,
+            goal: scope.goal,
             run: Run::new(run, scope.roster, scope.deadline).with_limits(scope.limits),
             origin: scope.origin,
             profile: scope.profile,
@@ -345,6 +363,26 @@ impl RunManager {
         if let Some(old) = old {
             self.end(pane, old);
         }
+        Ok((run, self.handle(pane, run)))
+    }
+
+    /// Starts the continuation turn of run `run` of `pane` (S4, D8): the new
+    /// turn's channel, approver and pending count replace the old turn's for
+    /// the workers spawned from now on, and the run, its workers, roster and
+    /// limits stay as they are. `Err` when the run ended or was replaced.
+    pub fn attach(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        scope: OrchScope,
+    ) -> Result<(RunId, OrchHandle), String> {
+        let attached = self.on_run(pane, run, |live| {
+            live.events = scope.events;
+            live.approver = scope.approver;
+            live.pending = scope.pending;
+            live.turn_over = false;
+        });
+        attached.ok_or_else(|| ENDED.to_owned())?;
         Ok((run, self.handle(pane, run)))
     }
 
@@ -421,14 +459,62 @@ impl RunManager {
         }
     }
 
-    /// The orchestrator turn of run `run` of `pane` ended. The run ends by
+    /// The orchestrator turn of run `run` of `pane` ended. With work pending
+    /// (a worker live, or a finished one with no handoff) the run continues
+    /// in a new turn, or stops at `max_turns` (S4, D8). Otherwise it ends by
     /// itself, with its `Ended`, once none of its workers is queued or
     /// running and no failure waits for the user: at once, or when its last
     /// worker finishes (user decision, 2026-10-29). A run that ended or was
     /// replaced ignores it.
     pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
-        self.on_run(pane, run, |live| live.turn_over = true);
-        self.settle(pane, run);
+        let next = self.on_run(pane, run, |live| {
+            let next = self.next_turn(live);
+            // A run that continues waits for the turn the app starts: it must
+            // not end under it when its last worker finishes meanwhile.
+            live.turn_over = !matches!(next, Next::Go(_));
+            next
+        });
+        match next {
+            Some(Next::Settle) => self.settle(pane, run),
+            Some(Next::Go(event)) => self.send(pane, event),
+            Some(Next::Stop(reason)) => {
+                let live = lock(&self.runs).remove(&pane);
+                if let Some(live) = live {
+                    self.send(pane, OrchestraEvent::Stopped { run, reason });
+                    self.end(pane, live);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// What follows the orchestrator turn of `live` (D8): the continuation
+    /// built from the run ledger, wrapped as data under a nonce drawn for it
+    /// (never a worker transcript), the stop at `max_turns`, or nothing.
+    fn next_turn(&self, live: &mut Live) -> Next {
+        let max = live.run.limits().turns;
+        match live.run.next_turn() {
+            NextTurn::Settle => Next::Settle,
+            NextTurn::Capped(taken) => Next::Stop(format!(
+                "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled"
+            )),
+            NextTurn::Continue(turn) => match (self.nonce)() {
+                Some(bytes) => {
+                    let ledger = live.run.run_ledger(&live.goal).render();
+                    let text = label::wrap(&label::nonce_from(bytes), &ledger);
+                    let run = live.run.id();
+                    Next::Go(OrchestraEvent::Continue(Continuation {
+                        run,
+                        turn,
+                        max,
+                        text: format!("{CONTINUE_HEAD}\n\n{text}"),
+                    }))
+                }
+                None => Next::Stop(format!(
+                    "run stopped: the ledger cannot go to the orchestrator ({NO_NONCE})"
+                )),
+            },
+        }
     }
 
     /// Ends run `run` of `pane` if its turn is over and it has nothing left

@@ -342,6 +342,18 @@ impl App {
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        self.send_with(id, text, availability, None)
+    }
+
+    /// `send_text`, or with `attach` the continuation turn of that open run
+    /// (S4): the composer holds the user's own draft, so it is left alone.
+    pub(super) fn send_with(
+        &mut self,
+        id: PaneId,
+        text: &str,
+        availability: &Availability,
+        attach: Option<RunId>,
+    ) -> Vec<Effect> {
         // An orchestrator turn that could not offer its tools does not go;
         // the pane shows why.
         if self.orch_refusal(id).is_some() {
@@ -378,12 +390,14 @@ impl App {
         chat.set_tools_offered(tools);
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
-                chat.composer_mut().clear();
+                if attach.is_none() {
+                    chat.composer_mut().clear();
+                }
                 self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(self.turn_effect(id, turn, request));
+                effects.push(self.turn_effect(id, turn, request, attach));
                 effects
             }
             SendOutcome::Refused => Vec::new(),

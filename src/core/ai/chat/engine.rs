@@ -13,7 +13,10 @@ use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
     config::{AiConfig, Profile, Task},
     jail::JailSupport,
-    orchestra::run::{Roster, RunLimits},
+    orchestra::{
+        RunId,
+        run::{Roster, RunLimits},
+    },
     status_text,
     tools::{
         Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
@@ -69,6 +72,10 @@ pub struct OrchSend {
     /// How many workers run at once, how many a run may spawn and how long it
     /// may last.
     pub limits: RunLimits,
+    /// What the user asked, verbatim: kept for the run's ledger (S4).
+    pub goal: String,
+    /// The open run this turn continues (S4, D8) instead of starting one.
+    pub attach: Option<RunId>,
 }
 
 /// Whether a turn offers tools.
