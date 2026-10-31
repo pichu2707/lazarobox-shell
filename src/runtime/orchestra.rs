@@ -68,8 +68,7 @@ use crate::core::{
             errors::classify,
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
-            rdd::Consent,
-            review::{Assessment, assess},
+            review::Assessment,
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
                 RunState, StepDone, UserChoice, WorkerEvent,
@@ -95,6 +94,10 @@ pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, Worker
 mod review;
 
 pub use review::Reviewed;
+
+/// Says what is staged after a correction, in a test.
+#[cfg(test)]
+type Restage = fn(&[Change]) -> Option<Vec<Change>>;
 
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
@@ -413,6 +416,9 @@ pub struct RunManager {
     closed: AtomicBool,
     /// Woken whenever a worker's status changes, for `wait`.
     changed: Notify,
+    /// Where a test says what is staged after a correction.
+    #[cfg(test)]
+    restage: Option<Restage>,
 }
 
 impl RunManager {
@@ -429,6 +435,8 @@ impl RunManager {
             runs: Mutex::default(),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
+            #[cfg(test)]
+            restage: None,
         }
     }
 
@@ -1458,7 +1466,7 @@ impl Orchestra for Bound {
     fn assess(&self, run: RunId, changes: &[Change]) -> Assessment {
         match self.manager.upgrade() {
             Some(manager) if run == self.run => manager.assessment(self.pane, run, changes),
-            _ => assess(changes, None),
+            _ => review::gone(),
         }
     }
 
@@ -1470,22 +1478,35 @@ impl Orchestra for Bound {
         assessment: Assessment,
         answered: Answered,
     ) -> BoxFuture<'static, Result<(), String>> {
-        let consent = match answered {
-            Answered::Granted => Consent::Granted,
-            _ => Consent::Declined,
-        };
         match self.manager.upgrade() {
-            Some(manager) if run == self.run => {
-                let (pane, run) = (self.pane, run);
-                async move {
-                    manager
-                        .review(pane, run, worker, changes, assessment, consent)
-                        .await;
-                    Ok(())
-                }
-                .boxed()
-            }
-            _ => async { Ok(()) }.boxed(),
+            Some(manager) if run == self.run => manager
+                .review(self.pane, run, worker, changes, assessment, answered)
+                .boxed(),
+            Some(_) => async { Err(ENDED.to_owned()) }.boxed(),
+            None => async { Err("lazarobox is closing".to_owned()) }.boxed(),
+        }
+    }
+
+    fn late(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        changes: Vec<Change>,
+        assessment: Assessment,
+        reviewed: bool,
+    ) {
+        if let Some(manager) = self.manager.upgrade()
+            && run == self.run
+        {
+            manager.late(self.pane, run, worker, changes, assessment, reviewed);
+        }
+    }
+
+    fn unread(&self, run: RunId, worker: WorkerId, path: &str) {
+        if let Some(manager) = self.manager.upgrade()
+            && run == self.run
+        {
+            manager.unread(self.pane, run, worker, path);
         }
     }
 
