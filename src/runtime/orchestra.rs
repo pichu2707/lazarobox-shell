@@ -97,39 +97,93 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
 
 /// Where a worker's tool rows and asks go. A worker outlives the orchestrator
 /// turn that spawned it (S4 continuations), so its channel and approver are
-/// looked up when it asks, not captured at spawn.
+/// looked up when it acts, not captured at spawn. They change together, under
+/// one lock.
 struct Route {
-    events: Mutex<mpsc::Sender<StreamEvent>>,
-    approver: Mutex<Arc<dyn Approver>>,
+    key: WorkerKey,
+    state: Mutex<Current>,
+}
+
+struct Current {
+    events: mpsc::Sender<StreamEvent>,
+    approver: Arc<dyn Approver>,
+    /// Counts the retargets, so a failed send can tell whether the route moved.
+    generation: u64,
 }
 
 impl Route {
-    fn new(events: mpsc::Sender<StreamEvent>, approver: Arc<dyn Approver>) -> Arc<Self> {
+    fn new(
+        key: WorkerKey,
+        events: mpsc::Sender<StreamEvent>,
+        approver: Arc<dyn Approver>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            events: Mutex::new(events),
-            approver: Mutex::new(approver),
+            key,
+            state: Mutex::new(Current {
+                events,
+                approver,
+                generation: 0,
+            }),
         })
     }
 
-    fn retarget(&self, events: mpsc::Sender<StreamEvent>, approver: Arc<dyn Approver>) {
-        *lock(&self.events) = events;
-        *lock(&self.approver) = approver;
+    /// Points the worker at a new turn. Its asks in flight under the old turn
+    /// are denied first (the worker may ask again): their wait sits under a
+    /// turn the new prompt would not name. Then the new turn's approver of
+    /// this worker takes over, a new attempt of its session.
+    fn retarget(&self, events: mpsc::Sender<StreamEvent>, turn: &Arc<dyn Approver>) {
+        let mut state = lock(&self.state);
+        state.approver.end_worker(self.key);
+        state.approver = turn.for_worker(self.key).unwrap_or_else(|| turn.clone());
+        state.events = events;
+        state.generation += 1;
     }
 
     /// A channel for the worker's scope whose events reach the current turn's.
-    /// It ends with the worker's session.
+    /// It lives as long as the worker's session: a failed send never stops it.
     fn forward(route: &Arc<Self>) -> mpsc::Sender<StreamEvent> {
         let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
         let route = route.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                let to = lock(&route.events).clone();
-                if to.send(event).await.is_err() {
-                    break;
-                }
+                route.deliver(event).await;
             }
         });
         tx
+    }
+
+    /// Sends `event` to the current turn. A send that fails is retried once
+    /// on the new turn when the route moved meanwhile (a plain row only: an
+    /// ask in flight was denied by the move). Between turns nobody can see an
+    /// ask, so its announcement ends the worker's session (denying the wait)
+    /// until the next turn attaches; a plain row is dropped.
+    async fn deliver(&self, event: StreamEvent) {
+        let (to, seen) = {
+            let state = lock(&self.state);
+            (state.events.clone(), state.generation)
+        };
+        let asks = matches!(
+            &event,
+            StreamEvent::ToolCall {
+                approval: Some(_),
+                ..
+            }
+        );
+        let retry = if to.send(event.clone()).await.is_ok() {
+            return;
+        } else {
+            let state = lock(&self.state);
+            if state.generation == seen {
+                if asks {
+                    state.approver.end_worker(self.key);
+                }
+                return;
+            }
+            state.events.clone()
+        };
+        if !asks {
+            let _ = retry.send(event).await;
+        }
     }
 }
 
@@ -138,12 +192,12 @@ struct Rerouted(Arc<Route>);
 
 impl Approver for Rerouted {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
-        let current = lock(&self.0.approver).clone();
+        let current = lock(&self.0.state).approver.clone();
         current.ask(id, ask)
     }
 
     fn is_over(&self) -> bool {
-        lock(&self.0.approver).is_over()
+        lock(&self.0.state).approver.is_over()
     }
 }
 
@@ -436,16 +490,8 @@ impl RunManager {
             // The workers that survive into this turn ask and report through
             // it: the earlier turn's channel and approver are dead.
             live.routes.retain(|id, _| live.tasks.contains_key(id));
-            for (worker, route) in &live.routes {
-                let key = WorkerKey {
-                    run,
-                    worker: *worker,
-                };
-                let approver = scope.approver.for_worker(key);
-                route.retarget(
-                    scope.events.clone(),
-                    approver.unwrap_or(scope.approver.clone()),
-                );
+            for route in live.routes.values() {
+                route.retarget(scope.events.clone(), &scope.approver);
             }
             live.events = scope.events;
             live.approver = scope.approver;
@@ -1051,6 +1097,7 @@ impl RunManager {
         };
         let approver = live.approver.for_worker(key);
         let route = Route::new(
+            key,
             live.events.clone(),
             approver.unwrap_or_else(|| live.approver.clone()),
         );

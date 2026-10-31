@@ -2909,3 +2909,115 @@ async fn a_surviving_workers_ask_goes_through_the_current_turn() {
         "it waited"
     );
 }
+
+/// A tool call of a worker client that reads a file the run was not given.
+fn read_notes(id: u64) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}})
+}
+
+fn worker_session(run: RunId) -> SessionKey {
+    SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    )
+}
+
+/// The ask the next call of `client` raises, as the app would see it on `rx`.
+async fn raised(client: &mut Client, rx: &mut mpsc::Receiver<StreamEvent>, id: u64) -> CallId {
+    client
+        .1
+        .write_all(format!("{}\n", read_notes(id)).as_bytes())
+        .await
+        .unwrap();
+    loop {
+        match timeout(Duration::from_secs(5), rx.recv()).await.unwrap() {
+            Some(StreamEvent::ToolCall { id, .. }) => return id,
+            // The result of a call denied by the move shows up on the new turn.
+            Some(StreamEvent::ToolResult { .. }) => {}
+            other => panic!("no ask on the current turn: {other:?}"),
+        }
+    }
+}
+
+/// A lab with a hanging worker 1 spawned in turn 7, over a channel the test
+/// owns; `waits` holds its asks.
+async fn surviving_worker() -> (
+    Lab,
+    Arc<Waits>,
+    RunId,
+    Client,
+    mpsc::Receiver<StreamEvent>,
+    Pending,
+) {
+    let lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let (tx, rx) = mpsc::channel(TURN_CHANNEL);
+    let first = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending: pending.clone(),
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), first).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let client = worker_client(&lab.seen).await;
+    (lab, waits, run, client, rx, pending)
+}
+
+fn turn_scope(
+    lab: &Lab,
+    waits: &Arc<Waits>,
+    turn: u64,
+) -> (OrchScope, mpsc::Receiver<StreamEvent>, Pending) {
+    let (tx, rx) = mpsc::channel(TURN_CHANNEL);
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), turn, pending.clone()),
+        pending: pending.clone(),
+        events: tx,
+        ..lab.scope(codex_review(), &[])
+    };
+    (scope, rx, pending)
+}
+
+// Re-review fix (4.1b): an event the surviving worker emits after its turn's
+// receiver is gone and before the next turn attaches must not kill the route.
+// An ask nobody can be shown is denied, not left waiting; after `attach` the
+// worker's next ask reaches the app.
+#[tokio::test]
+async fn a_worker_that_asks_between_turns_is_denied_and_asks_again_in_the_next() {
+    let (lab, waits, run, mut client, rx, _) = surviving_worker().await;
+    drop(rx);
+    let denied = exchange(&mut client, read_notes(1)).await;
+    assert!(
+        denied["result"]["isError"].as_bool().unwrap_or(false),
+        "{denied}"
+    );
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let id = raised(&mut client, &mut next, 2).await;
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
+
+// Re-review fix (4.1b): an ask in flight when the next turn attaches is denied
+// at once (the worker may ask again), so its wait never sits under a turn the
+// prompt does not show.
+#[tokio::test]
+async fn attach_denies_the_asks_in_flight_under_the_old_turn() {
+    let (lab, waits, run, mut client, mut old, _) = surviving_worker().await;
+    let stale = raised(&mut client, &mut old, 1).await;
+    let (scope, mut next, _) = turn_scope(&lab, &waits, 8);
+    lab.manager.attach(pane(), run, scope).unwrap();
+    let mut reply = String::new();
+    let read = timeout(Duration::from_secs(5), client.0.read_line(&mut reply)).await;
+    assert!(read.is_ok() && reply.contains("isError"), "{reply}");
+    assert!(!waits.decide(worker_session(run), 7, stale, Decision::Sent));
+    let id = raised(&mut client, &mut next, 2).await;
+    assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
