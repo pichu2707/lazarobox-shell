@@ -13,6 +13,7 @@ pub mod worker;
 
 use super::config::Task;
 use super::tools::registry::{Family, FamilySet};
+use crate::core::layout::PaneId;
 
 /// One orchestrated job.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -27,6 +28,40 @@ pub struct WorkerId(pub u32);
 pub struct WorkerKey {
     pub run: RunId,
     pub worker: WorkerId,
+}
+
+impl WorkerKey {
+    #[cfg(test)]
+    pub fn for_test(run: u64, worker: u32) -> Self {
+        Self {
+            run: RunId(run),
+            worker: WorkerId(worker),
+        }
+    }
+}
+
+/// The owner of a tool session and of the approvals it waits on: a chat pane,
+/// or one worker of a run (which belongs to the pane that started the run).
+/// Two sessions never share a wait, a token or an ask.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SessionKey {
+    Pane(PaneId),
+    Worker(PaneId, WorkerKey),
+}
+
+impl SessionKey {
+    /// The chat pane the session belongs to.
+    pub fn pane(self) -> PaneId {
+        match self {
+            Self::Pane(pane) | Self::Worker(pane, _) => pane,
+        }
+    }
+}
+
+impl From<PaneId> for SessionKey {
+    fn from(pane: PaneId) -> Self {
+        Self::Pane(pane)
+    }
 }
 
 /// The tools a session is offered.
