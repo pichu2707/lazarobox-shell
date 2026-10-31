@@ -68,6 +68,45 @@ fn the_orchestrate_prompts_hold_the_coordinator_rules() {
     }
 }
 
+// Spec (prompt-profiles, Playbook per step; agent-orchestrator S5): one
+// playbook per ODD step, in order, with the closing, question and size rules,
+// the feature document in the user's words and `implement` as drafts.
+#[test]
+fn the_orchestrate_prompts_hold_one_playbook_per_odd_step_in_order() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        let mut at = 0;
+        for step in [
+            "authorize",
+            "explore",
+            "resolve",
+            "classify",
+            "track",
+            "implement",
+            "close",
+        ] {
+            let found = prompt[at..]
+                .find(&format!("\n- {step}"))
+                .unwrap_or_else(|| panic!("{profile:?}: playbook {step} in order"));
+            at += found + 1;
+        }
+        for rule in [
+            "closes only with its handoff",
+            "at most one question to the user at a time",
+            "never by counting files or tasks",
+            "read_only",
+            "scope",
+            "size",
+            "the user's own words",
+            "correction",
+            "orchestra/<run>/feature",
+            "drafts and review only",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
 // Spec (agent-orchestrator, Implement is a draft before S7; Write
 // integration and change ledger [S7]): the coordinator knows a `code`
 // worker's changes reach the disk only through the user's batch review, and

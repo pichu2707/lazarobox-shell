@@ -50,6 +50,20 @@ pub enum OrchCall {
         mark: Mark,
         note: Judgement,
     },
+    /// The feature document of a large goal, closing `track` (S5, D15):
+    /// the requirements and the tasks written `S1,S2: title`.
+    Feature {
+        specs: Vec<String>,
+        tasks: Vec<String>,
+        note: Judgement,
+    },
+    /// A user correction of the document: requirement `spec` becomes `text`
+    /// and `correction` is logged verbatim.
+    Correct {
+        spec: String,
+        text: String,
+        correction: String,
+    },
     /// The orchestrator is done (S4).
     Finish {
         summary: String,
@@ -64,7 +78,10 @@ impl OrchCall {
             OrchCall::Wait { .. } => "wait",
             OrchCall::Collect { .. } => "collect",
             OrchCall::Cancel { .. } => "cancel",
-            OrchCall::Handoff { .. } | OrchCall::StepHandoff { .. } => "handoff",
+            OrchCall::Handoff { .. }
+            | OrchCall::StepHandoff { .. }
+            | OrchCall::Feature { .. }
+            | OrchCall::Correct { .. } => "handoff",
             OrchCall::Finish { .. } => "finish",
         }
     }
@@ -84,6 +101,7 @@ impl OrchCall {
                 Cow::Owned(id.0.to_string())
             }
             OrchCall::StepHandoff { step, .. } => Cow::Borrowed(step.label()),
+            OrchCall::Feature { .. } | OrchCall::Correct { .. } => Cow::Borrowed("track"),
             OrchCall::Finish { summary } => Cow::Borrowed(summary),
         }
     }
@@ -192,6 +210,11 @@ fn wait(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
 /// `id` and the optional judgement. A wrong type is refused; a verdict that
 /// is missing or not one of the three values is `unknown`, not refused.
 fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
+    if object.get("step").and_then(Value::as_str) == Some("track")
+        && DOC_KEYS.iter().any(|key| object.contains_key(*key))
+    {
+        return document(object);
+    }
     let target =
         match (object.get("id"), object.get("step")) {
             (Some(_), Some(_)) => return Err(OrchError::ExtraArgument),
@@ -200,21 +223,7 @@ fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
             (None, Some(step)) => Ok(Step::parse(step.as_str().ok_or(OrchError::WrongType)?)
                 .ok_or(OrchError::WrongType)?),
         };
-    let optional = |key: &str| match object.get(key) {
-        None => Ok(String::new()),
-        Some(value) => value
-            .as_str()
-            .map(str::to_owned)
-            .ok_or(OrchError::WrongType),
-    };
-    let verdict = Verdict::parse(&optional("verdict")?);
-    let note = Judgement {
-        verdict,
-        reason: optional("reason")?,
-        done: optional("done")?,
-        left: optional("left")?,
-        decisions: optional("decisions")?,
-    };
+    let note = judgement(object)?;
     let notes = object.keys().filter(|k| is_note_key(k)).count();
     match target {
         Err(id) => {
@@ -227,6 +236,63 @@ fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
             Ok(OrchCall::StepHandoff { step, mark, note })
         }
     }
+}
+
+/// The keys of the feature document on a `track` handoff.
+const DOC_KEYS: [&str; 5] = ["specs", "tasks", "spec", "text", "correction"];
+
+/// The optional judgement fields of a handoff.
+fn judgement(object: &Map<String, Value>) -> Result<Judgement, OrchError> {
+    let optional = |key: &str| match object.get(key) {
+        None => Ok(String::new()),
+        Some(value) => value
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(OrchError::WrongType),
+    };
+    Ok(Judgement {
+        verdict: Verdict::parse(&optional("verdict")?),
+        reason: optional("reason")?,
+        done: optional("done")?,
+        left: optional("left")?,
+        decisions: optional("decisions")?,
+    })
+}
+
+/// The `track` handoff that carries the document: either the build (`specs`
+/// and optional `tasks`, with the usual judgement) or one correction
+/// (`spec`, `text` and `correction`, nothing else).
+fn document(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
+    let list = |key: &str| -> Result<Vec<String>, OrchError> {
+        let Some(value) = object.get(key) else {
+            return Ok(Vec::new());
+        };
+        let items = value.as_array().ok_or(OrchError::WrongType)?;
+        let text = |v: &Value| v.as_str().map(str::to_owned).ok_or(OrchError::WrongType);
+        items.iter().map(text).collect()
+    };
+    let fix = ["spec", "text", "correction"];
+    if fix.iter().any(|key| object.contains_key(*key)) {
+        let [spec, text, correction] = fix.map(|key| text(object, key));
+        let (spec, text, correction) = (spec?.to_owned(), text?.to_owned(), correction?.to_owned());
+        no_extra(object, 4)?;
+        return Ok(OrchCall::Correct {
+            spec,
+            text,
+            correction,
+        });
+    }
+    if !object.contains_key("specs") {
+        return Err(OrchError::MissingArgument);
+    }
+    let (specs, tasks) = (list("specs")?, list("tasks")?);
+    let note = judgement(object)?;
+    let known = 1 + 1 + usize::from(object.contains_key("tasks"));
+    no_extra(
+        object,
+        known + object.keys().filter(|k| is_note_key(k)).count(),
+    )?;
+    Ok(OrchCall::Feature { specs, tasks, note })
 }
 
 /// What the handoff of `step` must carry besides the note: the `scope` of

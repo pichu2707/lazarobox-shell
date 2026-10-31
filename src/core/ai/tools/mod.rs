@@ -687,7 +687,7 @@ const BUILT_INS: [ToolDef; 22] = [
     },
     ToolDef {
         name: "handoff",
-        description: "Record what a finished worker did, after collect (`id`), or close an ODD step (`step`: authorize, explore, resolve, classify, track, implement, close; give `id` or `step`, never both). `authorize` needs `scope` (read_only or implement), `classify` needs `size` (small or large) with its one-line `reason`. `verdict` is on_course, off_course or blocked against the user's goal; `reason` is one line; `done`, `left` and `decisions` say what was done, what remains and what was decided and why. Calling it again for the same worker or step replaces the record, except that `authorize` may only narrow to read_only and `classify` cannot change once a later step is closed.",
+        description: "Record what a finished worker did, after collect (`id`), or close an ODD step (`step`: authorize, explore, resolve, classify, track, implement, close; give `id` or `step`, never both). `authorize` needs `scope` (read_only or implement), `classify` needs `size` (small or large) with its one-line `reason`. `track` (large goals) needs `specs`, the user's requirements in the user's own words, and `tasks` written `S1,S2: title`; later, `spec` (like S2), `text` (its new wording) and `correction` (the user's words) rewrite one requirement. `verdict` is on_course, off_course or blocked against the user's goal; `reason` is one line; `done`, `left` and `decisions` say what was done, what remains and what was decided and why. Calling it again for the same worker or step replaces the record, except that `authorize` may only narrow to read_only and `classify` cannot change once a later step is closed.",
         access: Access::Read,
         family: Family::Orchestra,
         args: &[
@@ -695,6 +695,27 @@ const BUILT_INS: [ToolDef; 22] = [
             note("step", 16),
             note("scope", 16),
             note("size", 16),
+            ArgDef {
+                name: "specs",
+                kind: ArgKind::StrList {
+                    items: 32,
+                    each: 1024,
+                },
+                required: false,
+                gate: None,
+            },
+            ArgDef {
+                name: "tasks",
+                kind: ArgKind::StrList {
+                    items: 32,
+                    each: 512,
+                },
+                required: false,
+                gate: None,
+            },
+            note("spec", 8),
+            note("text", 1024),
+            note("correction", 2048),
             note("verdict", HANDOFF_NOTE_BYTES),
             note("reason", HANDOFF_NOTE_BYTES),
             note("done", HANDOFF_NOTE_BYTES),
@@ -1180,6 +1201,22 @@ mod tests {
         let args = json!({"id": 1, "verdict": "x".repeat(500)});
         let set = Toolset::Orchestrator.families();
         assert!(parse_built_in("handoff", &args, set).is_ok());
+    }
+
+    // Spec (orchestrator-handoffs, Step handoffs and the feature document;
+    // S5): the `track` handoff takes the document, a correction its own shape.
+    #[test]
+    fn the_handoff_tool_is_offered_the_feature_document_arguments() {
+        let set = Toolset::Orchestrator.families();
+        let build = json!({"step": "track", "specs": ["a"], "tasks": ["S1: t"], "reason": "r"});
+        assert!(parse_built_in("handoff", &build, set).is_ok());
+        let fix = json!({"step": "track", "spec": "S1", "text": "b", "correction": "c"});
+        assert!(parse_built_in("handoff", &fix, set).is_ok());
+        let many = json!({"step": "track", "specs": vec!["a"; 33]});
+        assert_eq!(
+            parse_built_in("handoff", &many, set),
+            Err(ToolError::TooLong)
+        );
     }
 
     // Review W4: oversized arguments are refused, the limit itself is not.

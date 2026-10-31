@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger};
+use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -191,6 +192,8 @@ pub struct Run {
     turns: usize,
     /// The ODD steps and their handoffs (S5).
     steps: Steps,
+    /// The feature document of a large goal, once `track` built it (S5).
+    feature: Option<FeatureDoc>,
 }
 
 impl Run {
@@ -209,6 +212,7 @@ impl Run {
             summary: None,
             turns: 1,
             steps: Steps::default(),
+            feature: None,
         }
     }
 
@@ -569,6 +573,15 @@ impl Run {
                 return Err(StepError::CodeRunning(*id));
             }
         }
+        if step == Step::Track && self.feature.is_none() {
+            return Err(StepError::Doc(FeatureError::NoDocument));
+        }
+        Ok(self.close_step(step, mark, note, narrows))
+    }
+
+    /// Records and closes a step already checked. `narrows`: the goal just
+    /// became read-only, so the queued `code` workers end refused.
+    fn close_step(&mut self, step: Step, mark: Mark, note: Judgement, narrows: bool) -> StepDone {
         let (engine, model) = match self.roster.get(Task::Orchestrate) {
             Availability::Ready { engine, model } => (engine.clone(), model.clone()),
             _ => (String::new(), None),
@@ -585,13 +598,58 @@ impl Run {
         // `blocked`: the same rule as a worker's handoff (D17).
         let handoff = Handoff::of(facts, note, self.forced_by().is_some());
         self.steps.record(step, handoff.clone());
-        self.steps.close(step, mark)?;
+        // Checked and recorded just above: closing cannot be refused.
+        let _ = self.steps.close(step, mark);
         let refused = if narrows {
             self.refuse_queued_code()
         } else {
             Vec::new()
         };
-        Ok(StepDone { handoff, refused })
+        StepDone { handoff, refused }
+    }
+
+    /// Builds the feature document of `goal` and closes `track` with it: the
+    /// handoff of the step and the document, which the app stores under its
+    /// own key. One per run; later changes are corrections. It takes the same
+    /// checks as any step handoff: the run is open and `track` is next.
+    pub fn feature_build(
+        &mut self,
+        goal: &str,
+        specs: &[String],
+        tasks: &[String],
+        note: Judgement,
+    ) -> Result<(Handoff, FeatureDoc), StepError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(StepError::Ended);
+        }
+        if self.feature.is_some() {
+            return Err(StepError::Doc(FeatureError::Exists));
+        }
+        self.steps.check(Step::Track)?;
+        let doc = FeatureDoc::build(self.id, goal, specs, tasks).map_err(StepError::Doc)?;
+        let done = self.close_step(Step::Track, Mark::None, note, false);
+        self.feature = Some(doc.clone());
+        Ok((done.handoff, doc))
+    }
+
+    /// A user correction of the feature document (S5): the log gains it and
+    /// one requirement is rewritten.
+    pub fn feature_correct(
+        &mut self,
+        spec: &str,
+        text: &str,
+        correction: &str,
+    ) -> Result<FeatureDoc, StepError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(StepError::Ended);
+        }
+        let doc = self
+            .feature
+            .as_mut()
+            .ok_or(StepError::Doc(FeatureError::NoDocument))?;
+        doc.correct(spec, text, correction)
+            .map_err(StepError::Doc)?;
+        Ok(doc.clone())
     }
 
     /// Ends the queued `code` workers as refused (the goal became read-only).
@@ -702,7 +760,15 @@ impl Run {
             let id = WorkerId(i as u32 + 1);
             Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
         });
-        Ledger::new(goal, rows.collect()).with_steps(self.steps.line(), self.steps.short_line())
+        let feature = self.feature.as_ref();
+        Ledger::new(goal, rows.collect())
+            .with_steps(self.steps.line(), self.steps.short_line())
+            .with_feature(
+                feature
+                    .map(FeatureDoc::render_for_ledger)
+                    .unwrap_or_default(),
+                feature.map(FeatureDoc::short_line).unwrap_or_default(),
+            )
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.

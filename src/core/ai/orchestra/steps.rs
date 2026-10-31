@@ -3,6 +3,7 @@
 //! or not engram stores it.
 
 use super::WorkerId;
+use super::feature::FeatureError;
 use super::ledger::Handoff;
 
 /// The ODD steps, in the order a run takes them.
@@ -118,6 +119,8 @@ pub enum StepError {
     Order { step: Step, open: Step },
     /// `track` is for large goals only.
     NotLarge,
+    /// The feature document refused (S5): `track` closes with it.
+    Doc(FeatureError),
     /// `authorize` cannot make the goal read-only while this `code` worker
     /// runs: cancel it first.
     CodeRunning(WorkerId),

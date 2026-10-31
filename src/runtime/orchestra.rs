@@ -65,6 +65,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
+            feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
@@ -833,6 +834,14 @@ impl RunManager {
             OrchCall::StepHandoff { step, mark, note } => {
                 self.handoff_step(pane, run, step, mark, note)
             }
+            OrchCall::Feature { specs, tasks, note } => {
+                self.feature_build(pane, run, &specs, &tasks, note)
+            }
+            OrchCall::Correct {
+                spec,
+                text,
+                correction,
+            } => self.feature_correct(pane, run, &spec, &text, &correction),
             OrchCall::Finish { summary } => self.finish_run(pane, run, &summary),
         };
         async move { now }.boxed()
@@ -982,30 +991,74 @@ impl RunManager {
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
                 }
-                Err(StepError::Ended) => error(ENDED),
-                Err(StepError::Order { step, open }) => error(format!(
-                    "step {} needs {} closed first",
-                    step.label(),
-                    open.label()
-                )),
-                Err(StepError::NotLarge) => error("track is for a large goal only"),
-                Err(StepError::CodeRunning(worker)) => error(format!(
-                    "cancel code worker {} first: the goal is read-only",
-                    worker.0
-                )),
-                Err(StepError::NoReason) => error("classify needs a reason"),
-                Err(StepError::Widen) => error("the goal is read-only: it cannot be widened"),
-                Err(StepError::Locked { step, later }) => error(format!(
-                    "step {} cannot change: {} is closed",
-                    step.label(),
-                    later.label()
-                )),
-                Err(StepError::NoHandoff(step)) => {
-                    error(format!("step {} has no handoff", step.label()))
-                }
+                Err(refused) => step_refusal(refused),
             }
         });
         stored.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// Builds the feature document, which closes `track`: the step's handoff
+    /// and the document go to the app, which stores both.
+    fn feature_build(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        specs: &[String],
+        tasks: &[String],
+        note: Judgement,
+    ) -> Outcome {
+        let built = self.on_run(pane, run, |live| {
+            match live.run.feature_build(&live.goal, specs, tasks, note) {
+                Ok((handoff, doc)) => {
+                    let text = format!(
+                        "feature document: {} specs, {} tasks, key orchestra/{}/feature",
+                        doc.specs().len(),
+                        doc.tasks().len(),
+                        run.0
+                    );
+                    self.announce_handoff(pane, run, handoff);
+                    self.send(
+                        pane,
+                        OrchestraEvent::Feature {
+                            run,
+                            doc: Box::new(doc),
+                        },
+                    );
+                    fine(text)
+                }
+                Err(refused) => step_refusal(refused),
+            }
+        });
+        built.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// A user correction of the document: the log gains it and one
+    /// requirement changes; the app stores the document again, same key.
+    fn feature_correct(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        spec: &str,
+        text: &str,
+        correction: &str,
+    ) -> Outcome {
+        let fixed = self.on_run(pane, run, |live| {
+            match live.run.feature_correct(spec, text, correction) {
+                Ok(doc) => {
+                    let ack = format!("{spec} rewritten, log entry L{}", doc.entries());
+                    self.send(
+                        pane,
+                        OrchestraEvent::Feature {
+                            run,
+                            doc: Box::new(doc),
+                        },
+                    );
+                    fine(ack)
+                }
+                Err(refused) => step_refusal(refused),
+            }
+        });
+        fixed.unwrap_or_else(|| error(ENDED))
     }
 
     /// Ends the run for the orchestrator: refused with a reason while a
@@ -1522,6 +1575,52 @@ fn fine(text: impl Into<String>) -> Outcome {
     Outcome {
         text: text.into(),
         is_error: false,
+    }
+}
+
+/// The model-facing reason a step or document change was refused.
+fn step_refusal(refused: StepError) -> Outcome {
+    match refused {
+        StepError::Ended => error(ENDED),
+        StepError::Order { step, open } => error(format!(
+            "step {} needs {} closed first",
+            step.label(),
+            open.label()
+        )),
+        StepError::NotLarge => error("track is for a large goal only"),
+        StepError::NoHandoff(step) => error(format!("step {} has no handoff", step.label())),
+        StepError::CodeRunning(worker) => error(format!(
+            "cancel code worker {} first: the goal is read-only",
+            worker.0
+        )),
+        StepError::NoReason => error("classify needs a reason"),
+        StepError::Widen => error("the goal is read-only: it cannot be widened"),
+        StepError::Locked { step, later } => error(format!(
+            "step {} cannot change: {} is closed",
+            step.label(),
+            later.label()
+        )),
+        StepError::Doc(why) => error(match why {
+            FeatureError::NoDocument => "track needs the feature document: specs and tasks",
+            FeatureError::Exists => "the feature document exists: send a correction",
+            FeatureError::NoSpecs => "the feature document needs at least one spec",
+            FeatureError::TooMany => "too many specs or tasks",
+            FeatureError::TooBig => {
+                "the specs and tasks alone exceed the size of the feature document"
+            }
+            FeatureError::MalformedTask(n) => {
+                return error(format!("task {n} must be `S1,S2: title`"));
+            }
+            FeatureError::UnknownRef { task, spec } => {
+                return error(format!(
+                    "task {task} names spec S{spec}, which does not exist"
+                ));
+            }
+            FeatureError::EmptySpec(n) => return error(format!("spec S{n} is empty")),
+            FeatureError::EmptyText => "a correction needs the new text",
+            FeatureError::EmptyTitle(n) => return error(format!("task {n} has no title")),
+            FeatureError::UnknownSpec => "no such spec in the document",
+        }),
     }
 }
 

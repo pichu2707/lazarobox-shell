@@ -353,6 +353,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::AnswerLost
         | OrchestraEvent::Expired { .. }
         | OrchestraEvent::Handoff { .. }
+        | OrchestraEvent::Feature { .. }
         | OrchestraEvent::Continue(_)
         | OrchestraEvent::Stopped { .. }
         | OrchestraEvent::Filled { .. }
@@ -1104,6 +1105,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Expired { .. }
             | OrchestraEvent::AnswerLost
             | OrchestraEvent::Handoff { .. }
+            | OrchestraEvent::Feature { .. }
             | OrchestraEvent::Continue(_)
             | OrchestraEvent::Stopped { .. }
             | OrchestraEvent::Filled { .. }
@@ -2649,6 +2651,72 @@ async fn a_step_handoff_is_acked_sent_to_the_app_and_kept_in_order() {
     assert_eq!(sent[0].engine_model(), "claude>opus");
 }
 
+// Spec (agent-orchestrator, A large goal needs its document; orchestrator-
+// handoffs, A correction keeps the log; S5): `track` is refused without the
+// document; the document closes it, reaches the app once per change under
+// the run, and a correction is acked with its log entry.
+#[tokio::test]
+async fn the_feature_document_closes_track_and_a_correction_rewrites_one_spec() {
+    let mut lab = lab(Script::Hang);
+    let (run, handle) = lab.start(codex_review());
+    for (step, mark) in [
+        (Step::Authorize, Mark::Grant(Grant::Implement)),
+        (Step::Explore, Mark::None),
+        (Step::Resolve, Mark::None),
+        (Step::Classify, Mark::Size(Size::Large)),
+    ] {
+        handle.call(step_call(step, mark)).await;
+    }
+    assert_eq!(
+        handle.call(step_call(Step::Track, Mark::None)).await,
+        error("track needs the feature document: specs and tasks")
+    );
+    let note = Judgement {
+        verdict: Verdict::OnCourse,
+        reason: "tracked".to_owned(),
+        done: String::new(),
+        left: String::new(),
+        decisions: String::new(),
+    };
+    let build = OrchCall::Feature {
+        specs: vec!["say \"todo bien\"".to_owned(), "b".to_owned()],
+        tasks: vec!["S1,S2: do it".to_owned()],
+        note,
+    };
+    assert_eq!(
+        handle.call(build).await,
+        fine(&format!(
+            "feature document: 2 specs, 1 tasks, key orchestra/{}/feature",
+            run.0
+        ))
+    );
+    let fix = OrchCall::Correct {
+        spec: "S2".to_owned(),
+        text: "c".to_owned(),
+        correction: "no, c".to_owned(),
+    };
+    assert_eq!(handle.call(fix).await, fine("S2 rewritten, log entry L2"));
+    let sent = lab.sent();
+    let docs: Vec<_> = sent
+        .iter()
+        .cloned()
+        .filter_map(|event| match event {
+            OrchestraEvent::Feature { run, doc } => Some((run, doc)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(docs[0].0, run);
+    assert_eq!(docs[0].1.log(), ["build the parser"]);
+    assert_eq!(docs[1].1.log(), ["build the parser", "no, c"]);
+    assert_eq!(docs[1].1.specs()[0].text, "say \"todo bien\"");
+    assert!(
+        handoffs(&sent)
+            .iter()
+            .any(|h| h.unit == Unit::Step(Step::Track))
+    );
+}
+
 // Review 1(a), 3: the refusals reach the orchestrator with their reason.
 #[tokio::test]
 async fn read_only_names_the_running_code_worker_and_classify_needs_a_reason() {
@@ -3209,4 +3277,25 @@ async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
     assert_eq!(turn_side.count(), 1, "the new orchestrator turn");
     assert_eq!(worker_side.count(), 1, "the worker's own timers");
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
+
+// Review 2, 4: the orchestrator reads why a document change was refused.
+#[test]
+fn document_refusals_name_their_reason() {
+    use crate::core::ai::orchestra::feature::FeatureError as F;
+    for (why, text) in [
+        (F::EmptySpec(2), "spec S2 is empty"),
+        (F::EmptyText, "a correction needs the new text"),
+        (F::EmptyTitle(3), "task 3 has no title"),
+        (F::MalformedTask(1), "task 1 must be `S1,S2: title`"),
+        (
+            F::UnknownRef { task: 2, spec: 9 },
+            "task 2 names spec S9, which does not exist",
+        ),
+    ] {
+        assert_eq!(
+            super::step_refusal(crate::core::ai::orchestra::steps::StepError::Doc(why)),
+            error(text)
+        );
+    }
 }

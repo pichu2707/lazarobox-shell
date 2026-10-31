@@ -307,7 +307,7 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 
 ### S5: ODD flow (2 PRs, ~500, risk Low) depends on S4 (O12, D15); S7 is already merged by then (plan change, user 2026-10-29), so `implement` may stage writes and a change counts as written only once `collect` lists it applied
 - [x] 5.1 (PR S5-1) `Ledger.step` and `Step` order, `Size` with its reason, step handoff keys, a read-only goal refuses `spawn_agent{kind: code}`. Spec: agent-orchestrator / Read-only goal spawns no code worker, Implement is a draft before S7; orchestrator-handoffs / Step needs a handoff.
-- [ ] 5.2 `FeatureDoc` (specs verbatim, tasks with `S#`, log with `L1` = goal), one handoff per run, a correction appends to the log and rewrites one `S#`; ODD playbooks `prompts/*/orchestrate*.md`. Spec: agent-orchestrator / A large goal needs its document, Specs keep the user's words; orchestrator-handoffs / A correction keeps the log; prompt-profiles / Playbook per step.
+- [x] 5.2 `FeatureDoc` (specs verbatim, tasks with `S#`, log with `L1` = goal), one handoff per run, a correction appends to the log and rewrites one `S#`; ODD playbooks `prompts/*/orchestrate*.md`. Spec: agent-orchestrator / A large goal needs its document, Specs keep the user's words; orchestrator-handoffs / A correction keeps the log; prompt-profiles / Playbook per step.
 
 ### S6: usage (1-2 PRs, ~450, risk Medium) depends on S1
 - [x] 6.1 `StreamEvent::Usage` in claude/codex/gemini/Ollama decoders, per-worker and per-run rows. (done in one PR, branch feat/agent-orchestrator-s6) Spec: chat-engines / Claude result usage, No usage reported; agent-orchestrator / Usage summed.

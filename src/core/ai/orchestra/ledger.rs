@@ -261,6 +261,10 @@ pub struct Ledger {
     steps: String,
     /// The same line without the detail, for a ledger at its bound.
     steps_short: String,
+    /// The feature document of a large goal (S5), empty before `track`, and
+    /// its count line for a ledger at its bound.
+    feature: String,
+    feature_short: String,
 }
 
 impl Ledger {
@@ -270,7 +274,16 @@ impl Ledger {
             rows,
             steps: String::new(),
             steps_short: String::new(),
+            feature: String::new(),
+            feature_short: String::new(),
         }
+    }
+
+    /// The ledger with the feature document the continuation turn needs.
+    pub(super) fn with_feature(mut self, doc: String, short: String) -> Self {
+        self.feature = doc;
+        self.feature_short = short;
+        self
     }
 
     /// The ledger with the line of the steps the run closed.
@@ -300,14 +313,24 @@ impl Ledger {
     pub(super) fn render_within(&self, budget: usize) -> String {
         // The steps line counts inside the bound: when the rows cannot make
         // room, it shrinks to a count.
-        let full = self.fit(budget, &self.steps);
-        if full.len() <= budget || self.steps_short.is_empty() {
-            return full;
+        // The feature document counts inside the bound too: it shrinks to
+        // its count line after the steps line did.
+        let tries = [
+            (&self.steps, &self.feature),
+            (&self.steps_short, &self.feature),
+            (&self.steps_short, &self.feature_short),
+        ];
+        let mut last = String::new();
+        for (steps, feature) in tries {
+            last = self.fit(budget, steps, feature);
+            if last.len() <= budget {
+                break;
+            }
         }
-        self.fit(budget, &self.steps_short)
+        last
     }
 
-    fn fit(&self, budget: usize, steps: &str) -> String {
+    fn fit(&self, budget: usize, steps: &str, feature: &str) -> String {
         let mut lens: Vec<usize> = self
             .rows
             .iter()
@@ -322,27 +345,31 @@ impl Ledger {
         let mut hidden = vec![false; self.rows.len()];
         // Shorten, oldest first.
         for at in 0..self.rows.len() {
-            if self.draw(&lens, &hidden, steps).len() <= budget {
+            if self.draw(&lens, &hidden, steps, feature).len() <= budget {
                 break;
             }
             lens[at] = SHORT_BYTES;
         }
         // Then drop the oldest resolved rows into a count, passing over the
         // failures.
-        while self.draw(&lens, &hidden, steps).len() > budget {
+        while self.draw(&lens, &hidden, steps, feature).len() > budget {
             let Some(at) = (0..self.rows.len()).find(|&at| !hidden[at] && !self.rows[at].failed())
             else {
                 break;
             };
             hidden[at] = true;
         }
-        self.draw(&lens, &hidden, steps)
+        self.draw(&lens, &hidden, steps, feature)
     }
 
-    fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str) -> String {
-        let mut out = format!("Goal: {}\n", self.goal);
+    fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str, feature: &str) -> String {
+        let mut out = format!("Goal: {}\n", super::feature::indent(&self.goal));
         if !steps.is_empty() {
             out.push_str(steps);
+            out.push('\n');
+        }
+        if !feature.is_empty() {
+            out.push_str(feature);
             out.push('\n');
         }
         out.push_str("Workers:");
