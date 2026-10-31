@@ -24,7 +24,10 @@ baseline.
   correction appends to the log and rewrites one requirement. The
   `orchestrate` prompts gain a playbook per step. A risk tier for staged
   changes (S7b, not wired yet): build, CI, dependency, lock, config and secret
-  paths are `high`, and the orchestrator can only raise it.
+  paths are `high`, and the orchestrator can only raise it. The review of a
+  `high` change (S7b, not wired yet): an inline consent prompt, the state of a
+  review (lenses, findings, refuter, one correction) and the lens and refuter
+  prompts of both profiles.
 - Agent orchestrator write integration (S7, same gate): a `code` worker gets
   `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
   staged in the pane's batch, only inside the run's read scope, and reach the

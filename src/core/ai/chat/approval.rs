@@ -168,6 +168,19 @@ pub enum ApprovalAsk {
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+    /// A worker's staged change is `high` risk and a receipt-driven review
+    /// would spend lens workers on it (S7b, D16): the user is asked first.
+    /// `y` consents; anything else declines, and the change goes on to the
+    /// batch review marked `not reviewed`. Never routed by the approval mode,
+    /// and only the user answers it: the orchestrator cannot.
+    Consent {
+        /// The worker whose change it is: the session the answer goes to.
+        worker: WorkerKey,
+        /// That worker's label (see [`worker_label`]), one clean line.
+        label: String,
+        /// Why the change is `high` and which paths it holds, one clean line.
+        change: String,
+    },
     /// Change the chat folder (the user's `/cd`, never a tool call). `from`
     /// is the current folder as one sanitized line, `to` the resolved folder
     /// that becomes the chat's on `y`, and `note` a fact the user must see
@@ -223,7 +236,7 @@ impl ApprovalAsk {
     /// proposed): only those queue behind a pending approval.
     pub fn is_worker(&self) -> bool {
         match self {
-            Self::WorkerRead { .. } => true,
+            Self::WorkerRead { .. } | Self::Consent { .. } => true,
             Self::Batch(review) => review.label().is_some(),
             _ => false,
         }
@@ -234,7 +247,7 @@ impl ApprovalAsk {
     /// that session and no other.
     pub fn worker(&self) -> Option<WorkerKey> {
         match self {
-            Self::WorkerRead { worker, .. } => Some(*worker),
+            Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
             Self::Batch(review) => review.worker(),
             _ => None,
         }
@@ -813,6 +826,8 @@ pub const SEARCH_KEYS: &str = "y search · n deny";
 pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 /// The keys of the folder prompt while the folder is checked after `y`.
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
+/// The keys of the consent prompt of a receipt-driven review.
+pub const CONSENT_KEYS: &str = "y review it · n skip the review";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 

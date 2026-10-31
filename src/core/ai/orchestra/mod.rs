@@ -9,6 +9,7 @@ pub mod feature;
 pub mod ledger;
 pub mod overrides;
 pub mod persist;
+pub mod rdd;
 pub mod review;
 pub mod run;
 pub mod scope;
@@ -112,6 +113,8 @@ mod feature_tests;
 mod ledger_tests;
 #[cfg(test)]
 mod persist_tests;
+#[cfg(test)]
+mod rdd_tests;
 #[cfg(test)]
 mod review_tests;
 #[cfg(test)]

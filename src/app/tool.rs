@@ -191,6 +191,7 @@ impl App {
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)
+            | ApprovalAsk::Consent { .. }
             | ApprovalAsk::Folder { .. } => None,
         };
         let mut why = None;
