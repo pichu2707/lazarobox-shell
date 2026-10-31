@@ -220,8 +220,9 @@ impl Waits {
         self.ended().sessions.insert(session);
     }
 
-    /// How many waits are registered (a test waits for its call to ask).
-    #[cfg(test)]
+    /// How many waits are registered (a test waits for its call to ask). Its
+    /// only caller, a host test that writes, runs on Linux.
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn registered(&self) -> usize {
         self.len()
     }
