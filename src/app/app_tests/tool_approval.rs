@@ -321,6 +321,59 @@ fn a_second_ask_is_denied_at_once_and_the_first_stays() {
     assert_eq!(pending(&a), Some((run("one"), Some((turn, CallId(1))))));
 }
 
+fn worker_read(path: &str, label: &str) -> ApprovalAsk {
+    ApprovalAsk::WorkerRead {
+        path: path.to_owned(),
+        label: label.to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    }
+}
+
+// Spec (agent-tools, FIFO order; chat-pane, Approval label and queue): worker
+// asks queue behind the one shown, which says how many wait; each answer
+// applies to its own prompt, and the next one is shown unarmed so a key
+// still in flight cannot answer it.
+#[test]
+fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
+    let (mut a, turn) = live();
+    assert!(announce(&mut a, turn, 1, worker_read("/a", "review claude>opus")).is_empty());
+    assert!(announce(&mut a, turn, 2, worker_read("/b", "general codex>x")).is_empty());
+    let first = a.approval_prompt(id2()).unwrap();
+    assert!(first.target.contains("review claude>opus"), "{first:?}");
+    assert!(first.target.contains("1 waiting"), "{first:?}");
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    let second = a.approval_prompt(id2()).unwrap();
+    assert!(second.target.contains("general codex>x"), "{second:?}");
+    assert!(!second.target.contains("waiting"), "{second:?}");
+    assert!(!second.armed, "a promoted ask is armed afresh");
+    assert!(
+        a.update(key('y')).is_empty(),
+        "a key in flight answers nothing"
+    );
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+    assert_eq!(pending(&a), None);
+}
+
+// The result of a queued call (its worker was cancelled, its turn ended)
+// takes it out of the queue; the one shown stays.
+#[test]
+fn a_queued_ask_whose_call_is_over_leaves_the_queue() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read("/a", "w"));
+    announce(&mut a, turn, 2, worker_read("/b", "w"));
+    result(&mut a, turn, 2, ToolStatus::Denied);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    assert_eq!(
+        pending(&a).and_then(|(_, call)| call),
+        Some((turn, CallId(1)))
+    );
+}
+
 #[test]
 fn a_confirm_the_user_opened_also_blocks_a_tool_ask() {
     let (mut a, turn) = live();
@@ -431,6 +484,23 @@ fn turning_tools_off_denies_the_call_that_waits() {
         "{effects:?}"
     );
     assert_eq!(pending(&a), None);
+}
+
+// Tools off denies every waiting call, the queued ones included: none is
+// promoted into a prompt that could run a tool.
+#[test]
+fn turning_tools_off_denies_the_queued_worker_asks_too() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read("/a", "w"));
+    announce(&mut a, turn, 2, worker_read("/b", "w"));
+    a.ai.set_tools_enabled(false);
+    let effects = a.sync_tools();
+    for call in [1, 2] {
+        let denied = decision(turn, call, Decision::Denied("tools are off"));
+        assert!(effects.contains(&denied), "{call}: {effects:?}");
+    }
+    assert_eq!(pending(&a), None);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
 }
 
 fn external(server: &str, tool: &str, args: &str) -> ApprovalAsk {

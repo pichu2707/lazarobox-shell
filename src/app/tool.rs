@@ -378,6 +378,16 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
+        // The asks queued behind the shown one go first: its removal would
+        // promote one of them.
+        let queued: Vec<u64> = (chat.approvals().queued())
+            .filter(|approval| approval.call().is_some_and(&stale))
+            .map(Approval::id)
+            .collect();
+        for approval_id in queued {
+            chat.approvals_mut().withdraw(approval_id);
+            self.dirty = true;
+        }
         let Some(approval) = chat.approvals().pending() else {
             return;
         };
@@ -386,7 +396,34 @@ impl App {
             chat.approvals_mut().withdraw(approval_id);
             chat.set_run_target(None);
             self.dirty = true;
+            self.arm_promoted(id);
         }
+    }
+
+    /// A queued worker ask just became the shown one: its keys start to
+    /// answer after its own delay, as for any ask the model opens, and the
+    /// review of a batch opens for it.
+    pub(super) fn arm_promoted(&mut self, id: PaneId) {
+        let clock = (self.clock)();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        if !chat.approvals_mut().take_promoted() {
+            return;
+        }
+        let Some(approval) = chat.approvals().pending() else {
+            return;
+        };
+        let batch = match approval.ask() {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            _ => None,
+        };
+        chat.set_armed_at(Some(clock + approval.ask().arm_delay()));
+        chat.set_run_target(None);
+        if let Some(review) = batch {
+            self.open_review(id, review);
+        }
+        self.dirty = true;
     }
 
     /// The request of a turn just sent from chat `id` gets the tools its

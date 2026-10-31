@@ -58,9 +58,11 @@ impl App {
                 continue;
             };
             chat.set_run_hint(on);
-            if !on && let Some(approval) = chat.approvals().pending().cloned() {
+            // Every one waiting: a withdrawal promotes the next queued ask.
+            while !on && let Some(approval) = chat.approvals().pending().cloned() {
                 chat.approvals_mut().withdraw(approval.id());
                 chat.set_run_target(None);
+                chat.approvals_mut().take_promoted();
                 // A tool call that waited for it is told, so it ends now.
                 effects.extend(Self::answer(
                     id,
@@ -171,6 +173,7 @@ impl App {
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
+        self.arm_promoted(id);
         Some(approval)
     }
 
@@ -501,6 +504,15 @@ impl App {
     /// What chat `id` shows for its pending run-in-pane confirm: the target
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
+        let mut prompt = self.pending_prompt(id)?;
+        let waiting = self.panes.get(&id)?.chat_state()?.approvals().waiting();
+        if waiting > 0 {
+            prompt.target = format!("{} ({waiting} waiting)", prompt.target);
+        }
+        Some(prompt)
+    }
+
+    fn pending_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let armed = self.approval_armed(id);
         let approval = chat.approvals().pending()?;
