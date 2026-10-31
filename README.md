@@ -1128,7 +1128,9 @@ Límites: la memoria se envía con la conversación a los adaptadores de Ollama,
 
 ### Publicar una versión (mantenedores)
 
-Las versiones se publican subiendo la etiqueta `vX.Y.Z`, una vez actualizados `version` en `Cargo.toml` y la sección correspondiente de `CHANGELOG.md`. La etiqueta debe apuntar a un commit que ya esté en `main`; si no, el workflow falla:
+La vía principal es un clic: **Actions → Release → Run workflow** sobre `main` (o `gh workflow run release.yml -f bump=auto`; añade `-f dry_run=true` para ensayar sin cambiar nada). El workflow elige la versión (`auto`: minor si `[Unreleased]` tiene una sección `### Added`, si no patch), mueve las entradas de `[Unreleased]` a la nueva versión, actualiza `Cargo.toml` y `Cargo.lock`, hace el commit `chore(release): vX.Y.Z` en `main`, crea la etiqueta y publica. Solo arranca si `ci.yml` pasó en el commit actual de `main`. Los detalles están en [RELEASING.md](RELEASING.md).
+
+También se puede publicar a mano subiendo la etiqueta `vX.Y.Z`, una vez actualizados `version` en `Cargo.toml` y la sección correspondiente de `CHANGELOG.md`. La etiqueta debe apuntar a un commit que ya esté en `main`; si no, el workflow falla:
 
 ```bash
 git tag vX.Y.Z && git push origin vX.Y.Z

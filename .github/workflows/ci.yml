@@ -52,6 +52,12 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
+      # The release script edits Cargo.toml, Cargo.lock and CHANGELOG.md; a bug
+      # there would only show up on release day.
+      - name: Release script tests
+        if: runner.os == 'Linux'
+        run: .github/scripts/tests/prepare-release-test.sh
+
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 

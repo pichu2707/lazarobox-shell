@@ -320,11 +320,12 @@ The `claude`, `codex` and `gemini` adapters MUST launch the CLI in a mode where 
 - THEN the answer is text only and no file is created
 
 ### Requirement: CLI jail
-On Linux, a CLI MUST run inside a Landlock jail applied by a re-exec helper (`__jail-exec`) before the CLI is executed. The jail has two goals: a CLI MUST NOT read, write or list the user's files outside its own state, and a CLI MUST NOT be able to execute any program other than its own interpreter, its own package and the helper binaries proven necessary. This gives a CLI connection the same guarantee as an API connection: text only. The jail MUST be applied in a single-threaded helper (never in `pre_exec`), MUST require full enforcement of every right of the probed ABI (Landlock ABI 3 or newer), and a partial or absent enforcement MUST count as not jailed: the helper exits 125 with `jail not enforced` and never executes the CLI.
+On Linux, a CLI MUST run inside a Landlock jail applied by a re-exec helper (`__jail-exec`) before the CLI is executed. On macOS the backend is Seatbelt (see Seatbelt requirements). The jail has two goals: a CLI MUST NOT read, write or list the user's files outside its own state, and a CLI MUST NOT be able to execute any program other than its own interpreter, its own package and the helper binaries proven necessary. This gives a CLI connection the same guarantee as an API connection: text only. The jail MUST be applied in a single-threaded helper (never in `pre_exec`), MUST require full enforcement of every right of the probed ABI (Landlock ABI 3 or newer), and a partial or absent enforcement MUST count as not jailed: the helper exits 125 with `jail not enforced` and never executes the CLI.
 
 Filesystem rules. Read and execute (rx) is granted only to the CLI's interpreter binary (for example the canonical node path), the CLI's own package root, and the specific helper binaries a manual check proves necessary, each by exact path and never as a whole directory. `/usr/lib`, `/usr/share`, `/lib`, `/lib64` and `/etc` MUST be read-only with NO execute right (shared libraries still load, because mapping needs only read). The folders that hold programs (`/usr/bin`, `/usr/sbin`, `/bin`) are NOT granted at all, not even for reading: Landlock does not gate `mmap(PROT_EXEC)`, so a granted ELF loader could otherwise run any program it can read (`ld.so /usr/bin/curl`). Read-only is also granted to `/etc`, the minimal `/proc` and `/sys/fs/cgroup` entries, and `/dev/urandom`, `/dev/random`; `/dev/null` is read-write. The private empty cwd is read-only and a private per-turn `TMPDIR` is read-write. Each CLI's own state directory is read-write (claude `~/.claude/` and `~/.claude.json`; codex `$CODEX_HOME` else `~/.codex/`; gemini `~/.gemini/`). Everything else, including `$HOME`, projects, `~/.ssh`, `/tmp` and other CLIs' directories, is denied. The network is not restricted, because the CLIs need their APIs. Paths MUST be resolved by existence checks and directory handles, never by reading a credential file.
 
-Policy. `codex` and `gemini` are jail-required: without a working jail they MUST NOT start and resolve to `no jail`, shown as `<engine>: not available on this system yet`. A helper exit of 125 becomes a jail error. `claude` is jail-layered: jailed when the jail is available, and run with its flags alone when it is not. Any OS without a backend (everything except Linux for now) is `Unavailable`; Ollama, the OpenAI-compatible servers and `claude` keep working there.
+Policy. `codex` and `gemini` are jail-required: without a working jail they MUST NOT start and resolve to `no jail`, shown as `<engine>: not available on this system yet`. A helper exit of 125 becomes a jail error. `claude` is jail-layered: jailed when the jail is available, and run with its flags alone when it is not, except on macOS where it is never jailed. Any OS without a backend (everything except Linux and macOS) is `Unavailable`; Ollama, the OpenAI-compatible servers and `claude` keep working there.
+(Previously: macOS was an OS without a backend, so it was always Unavailable and had no claude exemption.)
 
 If a CLI cannot work without a general shell or a wider execute right, its slice is GATED (`gated off`) and the user is told; the jail is never widened to a whole directory.
 
@@ -392,6 +393,16 @@ If a CLI cannot work without a general shell or a wider execute right, its slice
 - GIVEN a jailed `codex` or `gemini` with network access
 - WHEN the message asks it to `ssh` to a host or to `curl` a URL
 - THEN it cannot do it, no connection is made by those programs, and the answer is text only
+
+#### Scenario: Linux unchanged (S1-S4) [auto]
+- GIVEN Linux with Landlock ABI 3 or newer
+- WHEN any slice is applied
+- THEN the Landlock backend, helper, rules, policy and all scenarios above behave exactly as before
+
+#### Scenario: Other OS stays Unavailable [auto]
+- GIVEN an OS that is neither Linux nor macOS
+- WHEN the jail support is derived
+- THEN it is Unavailable
 
 ### Requirement: Context window
 Each turn MUST send the pinned system prompt followed by the most recent messages that fit a client-side cap, never splitting a message and always including the message just sent. The cap is the last 40 messages and a per-engine character cap: 12,000 characters for local servers (a default 4k-token context would otherwise silently drop the system prompt) and 100,000 characters for CLIs. Messages beyond the cap MUST be omitted oldest first, the system prompt MUST never be dropped, and the pane MUST show the truncation marker (see chat-pane). System lines are never included, and neither is reasoning: only the user and assistant message texts are history.
@@ -641,7 +652,7 @@ Each shipped OpenAI-compatible adapter MUST stream a reply from the real engine.
 - THEN the `[DONE]` marker ends the first turn with one final event, and cancel stops the second
 
 ### Requirement: Managed llama-server lifecycle
-When llamacpp is managed (see configuration), the first llamacpp chat turn MUST start `llama-server`, found in the login `PATH` lazarobox gives its tools (absolute entries only) and run by that absolute path with that `PATH`, with exactly the arguments `--host 127.0.0.1 --port <port> -m <model>` (no shell), stdin closed, in its own process group, with stdout and stderr in `llama-server.log` under the state folder (`$XDG_STATE_HOME/lazarobox`, else `~/.local/state/lazarobox`), emptied on each start, mode 0600 and never opened through a symlink. The turn MUST wait until `GET /v1/models` answers 200, for at most 90 s, and then stream as any llamacpp turn. Nothing else starts it: not config load, not detection, not a turn of another engine. At most one server runs; later turns reuse it and one that ended is started again. Before a start, if anything answers on the port, the turn MUST fail with `llama-server not started: another program answers on 127.0.0.1:<port>` and nothing is started. A start that fails MUST end the turn with one reason: `could not start llama-server: is it on the PATH?`, or `llama-server stopped` or `llama-server did not answer within 90 s` followed by `: ` and the last line of its log when it has one; a server that did not answer is killed. Quitting lazarobox MUST stop the server's whole process group; on Linux the server MUST also get SIGKILL from the kernel when lazarobox dies without quitting. A cancelled start kills the server it began.
+When llamacpp is managed (see configuration), the first llamacpp chat turn, or a menu save that turns it on (see A managed llama-server turned on from the menu), MUST start `llama-server`, found in the login `PATH` lazarobox gives its tools (absolute entries only) and run by that absolute path with that `PATH`, with exactly the arguments `--host 127.0.0.1 --port <port> -m <model>` (no shell; `<port>` is the port it runs on, see below; the extra `args` of the configuration follow), stdin closed, in its own process group, with stdout and stderr in `llama-server.log` under the state folder (`$XDG_STATE_HOME/lazarobox`, else `~/.local/state/lazarobox`), emptied on each start, mode 0600 and never opened through a symlink. The turn MUST wait until `GET /v1/models` answers 200, for at most 90 s, and then stream as any llamacpp turn. Nothing else starts it: not config load, not detection, not a turn of another engine. One server runs per model, each on its own port: before a start, lazarobox MUST look at the configured port and the seven after it, in order. A ready llama-server there (`GET /v1/models` answers 200) whose `/props` `model_path` is the same model file (links followed), behind a listening socket of the same user, MUST be used as it is, from another lazarobox or started by hand: nothing starts, the turn talks to its port, and lazarobox MUST NOT stop it (not on quit, idle or a model change). Anything else that answers on a port (another model, a server not ready, another program, a socket of another user or one whose owner cannot be read) MUST be left alone, and lazarobox's own server MUST start on the first port where nothing answers; with none, the turn MUST fail with `llama-server not started: no free port on 127.0.0.1 from <port> to <port+7>` and nothing is started. Later turns reuse the server they used; when it is gone (one of lazarobox's own that ended, or a used one that went away) the next turn looks again. A start whose server exits because another lazarobox started the same model on that port first MUST use that server. Detection probes the port the managed server runs on. A start that fails MUST end the turn with one reason: `could not start llama-server: is it on the PATH?`, or `llama-server stopped` or `llama-server did not answer within 90 s` followed by `: ` and the last line of its log when it has one; a server that did not answer is killed. Quitting lazarobox MUST stop the server's whole process group; on Linux the server MUST also get SIGKILL from the kernel when lazarobox dies without quitting. A cancelled start kills the server it began.
 
 The chat gate MUST treat a managed llamacpp whose binary is installed (`available` or `not running`) as ready, without looking up the assigned model name, which `llama-server` ignores. With no model assigned, the model path is sent.
 
@@ -655,10 +666,30 @@ The chat gate MUST treat a managed llamacpp whose binary is installed (`availabl
 - WHEN lazarobox quits
 - THEN the server and its child are gone
 
-#### Scenario: A port that already answers is not ours [auto]
-- GIVEN something that answers 200, 404 or 503 on the managed port
+#### Scenario: The same model already running is used [auto]
+- GIVEN a ready llama-server of the same user serving the configured model on the managed port
 - WHEN a llamacpp turn runs
-- THEN the turn fails with the port message and nothing is started
+- THEN nothing is started, the turn talks to that port, and the idle stop never stops it
+
+#### Scenario: Another model runs on the port [auto]
+- GIVEN a ready llama-server serving another model on the managed port
+- WHEN a llamacpp turn runs
+- THEN lazarobox's server starts with `--port <port+1>` and the turn talks to that port
+
+#### Scenario: Every port is taken [auto]
+- GIVEN something that is not the configured model answering on the managed port and the seven after it
+- WHEN a llamacpp turn runs
+- THEN the turn fails with "llama-server not started: no free port on 127.0.0.1 from <port> to <port+7>" and nothing is started
+
+#### Scenario: A socket of another user [auto]
+- GIVEN the owners of the sockets listening on a port
+- WHEN the port is looked at
+- THEN its server counts as the same user's only when every listener there is the user's own (Linux) or one of the user's processes listens there (macOS)
+
+#### Scenario: Two lazarobox start the same model at once [auto]
+- GIVEN a start whose server exits while the same model starts answering on its port
+- WHEN the turn runs
+- THEN it uses that server and nothing of its own is left
 
 #### Scenario: A failed start says why [auto]
 - GIVEN a missing program, a server that exits with `error: failed to open /m/q.gguf` on stderr, or one that never answers
@@ -674,3 +705,183 @@ The chat gate MUST treat a managed llamacpp whose binary is installed (`availabl
 - GIVEN lazarobox with a managed server running, in a terminal that is then closed
 - WHEN the terminal goes away
 - THEN lazarobox quits through its normal cleanup and no server is left
+
+#### Scenario: Two lazarobox, two models [manual]
+- GIVEN two lazarobox, one chatting with a managed model
+- WHEN the second chats with the same model, then with another one
+- THEN the second uses the first one's server, then starts its own on the next port, and both keep answering
+
+### Requirement: Nothing lazarobox started outlives it
+At start, before any pane or child process exists, lazarobox MUST start a watcher (`lazarobox-shell __watch`) in its own session. Every process group lazarobox guards with `GroupKill` MUST be listed with the watcher with its leader's start time, and taken off when lazarobox reaps it. When lazarobox ends in any way, the watcher MUST send SIGHUP and SIGTERM to every group still listed, SIGKILL after 3 s to the groups that still have members, and exit. It MUST NOT signal a group whose leader is a process other than the listed one, nor groups 0, 1 or its own. `engram serve` MUST NOT be listed. A watcher that cannot start leaves lazarobox working as before.
+
+### Requirement: Quitting is polite
+When lazarobox quits (the quit key, SIGTERM or SIGHUP), right after it restores the terminal it MUST send SIGHUP and SIGTERM to every group it started and has not reaped, and SIGKILL only to the groups still listed after 2 s; a group whose leader has ended (a zombie included) MUST get SIGKILL at once for what it left behind. The chats MUST be shut down only after that, inside the existing quit bound, while the store and the memory flush; a turn whose events nobody reads any more (the loop is gone) MUST keep running until then. In the watcher, a group lives while it has a member, so what a leader left behind also gets the grace.
+
+#### Scenario: A program that ends when asked [auto]
+- GIVEN a listed group whose leader exits on SIGHUP or SIGTERM
+- WHEN lazarobox quits
+- THEN it exits on its own, not by SIGKILL, and the quit does not wait the grace
+
+#### Scenario: The chats wait for the polite stop [auto]
+- GIVEN an open chat turn
+- WHEN lazarobox quits with a polite stop that takes 500 ms
+- THEN the turn is stopped at 500 ms, not at once
+
+#### Scenario: A streaming turn is not cut at its next line [auto]
+- GIVEN a turn that keeps streaming after the loop stopped reading
+- WHEN lazarobox quits with a polite stop that takes 500 ms
+- THEN the turn is stopped at 500 ms, not at its next event
+
+#### Scenario: The watcher gives a leader's children the grace [auto]
+- GIVEN a listed group whose leader exits on SIGTERM and whose child needs 300 ms to end
+- WHEN the watcher's input ends
+- THEN the child ends on its own
+
+#### Scenario: A crash leaves nothing behind [auto]
+- GIVEN a listed group with a child of its own
+- WHEN the watcher's input ends
+- THEN the leader ends by SIGHUP and the child is gone
+
+#### Scenario: A process that ignores the polite signals [auto]
+- GIVEN a listed group that ignores SIGHUP and SIGTERM
+- WHEN the watcher's input ends
+- THEN it is killed with SIGKILL after the grace
+
+#### Scenario: Reaped groups and reused pids are left alone [auto]
+- GIVEN a group listed and then taken off, and a group listed with another start time
+- WHEN the watcher's input ends
+- THEN both keep running
+
+#### Scenario: SIGKILL of lazarobox [manual]
+- GIVEN lazarobox with a child running in its own group
+- WHEN lazarobox gets SIGKILL
+- THEN the child is gone within the grace and the watcher has exited
+
+#### Scenario: A managed llama-server that ends on its own [auto]
+- GIVEN the managed llama-server left a child in its group
+- WHEN the server exits during its start, or after it answered and the next llamacpp turn sees it ended
+- THEN the child gets SIGKILL before the server is reaped (its group id cannot be reused until then)
+
+### Requirement: The model file is checked before each start
+Before it starts the managed llama-server, once the program is found, lazarobox MUST check that the configured model file exists. When it does not, it MUST NOT start anything and the turn MUST fail with `llama-server not started: model file not found: <path>`. The check MUST run on every start and never when the config loads.
+
+#### Scenario: Missing model [auto]
+- GIVEN `managed = true` and a `model` path with no file
+- WHEN a llamacpp turn starts
+- THEN nothing is started and the turn reads "llama-server not started: model file not found: <path>"
+
+#### Scenario: Model back in place [auto]
+- GIVEN the same config once the file exists (a drive mounted later)
+- WHEN the next llamacpp turn starts
+- THEN llama-server starts
+
+### Requirement: An idle managed llama-server stops
+The managed llama-server MUST stop once no llamacpp turn has used it for the idle time (`[ai.servers.llamacpp] idle_minutes`, default 15; 0 never stops it), checked at least every 30 s, and the next llamacpp turn MUST start it again. A turn in progress MUST keep it running, and so MUST a request it answers that is none of this lazarobox's turns (another lazarobox that uses it, as `GET /slots` says); the idle time MUST count from the end of the last turn, from the start of the server, or from the last check that saw such a request. A new idle time saved from the menu MUST apply at once, with no restart.
+
+#### Scenario: Idle [auto]
+- GIVEN a running managed server that no turn used for the idle time
+- WHEN the idle check runs
+- THEN the server is stopped, and the next llamacpp turn starts it again
+
+#### Scenario: Another lazarobox is answered [auto]
+- GIVEN a server past its idle time whose `/slots` shows a slot processing and no turn of this lazarobox
+- WHEN the idle check runs
+- THEN the server keeps running, and it stops at a later check once nothing is processing and the idle time passed again
+
+#### Scenario: A long answer [auto]
+- GIVEN a turn still streaming past the idle time
+- WHEN the idle check runs
+- THEN the server keeps running; it stops only once the idle time has passed after the turn ended
+
+### Requirement: Seatbelt backend and probe (S1)
+On macOS the jail backend MUST be Seatbelt, applied through the absolute path `/usr/bin/sandbox-exec`, never resolved through `PATH`. A startup probe, run off the render thread, MUST prove enforcement with a positive control (an allowed program runs and exits 0) and a negative control (a write to a denied directory fails). Any failed control, a missing `/usr/bin/sandbox-exec`, or a failure to spawn it MUST yield `Unavailable`. The helper path MUST come from `current_exe`, not `/proc/self/exe`.
+
+#### Scenario: Probe proves enforcement [ci-macos]
+- GIVEN a macOS 14+ runner (arm64 and Intel)
+- WHEN the probe runs
+- THEN the positive control succeeds, the negative control fails, and support is Available
+
+#### Scenario: sandbox-exec missing [auto]
+- GIVEN `/usr/bin/sandbox-exec` does not exist
+- WHEN the probe runs
+- THEN support is Unavailable and no CLI process is started
+
+#### Scenario: Negative control succeeds wrongly [auto]
+- GIVEN a probe whose denied write succeeds (profile not enforced)
+- WHEN support is derived
+- THEN it is Unavailable, never Available
+
+#### Scenario: Older macOS with a passing probe [auto]
+- GIVEN macOS older than 14 and a probe that passes
+- WHEN support is derived
+- THEN it is Available (no version block); the README lists such versions as unsupported (S4)
+
+### Requirement: Seatbelt profile rendering (S2)
+The profile MUST be rendered by a pure function from the one shared `JailSpec` into fixed SBPL text plus an ordered parameter list. It MUST start from `(deny default)`. Every path MUST enter only as `(param "Pn")` bound by `-D Pn=<path>`, never interpolated into the text. Rendering MUST be deterministic.
+
+#### Scenario: Golden profile [auto]
+- GIVEN the spec of a node CLI (nvm layout) and one of a vendor-binary CLI
+- WHEN rendered
+- THEN the output equals the checked-in golden text and parameter list
+
+#### Scenario: Hostile path cannot alter the profile [auto]
+- GIVEN rx, ro or rw paths containing `"`, `)`, `;` or a newline
+- WHEN rendered
+- THEN the profile text is byte-identical to the one for benign paths and the hostile value appears only in the parameter list
+
+#### Scenario: Same policy data as Linux [auto]
+- GIVEN any CLI layout
+- WHEN the macOS spec is built
+- THEN `$HOME`, `~/.ssh`, scratch dirs and `CREDENTIAL_DIRS` appear in no allow rule, and only the system-read set is added
+
+### Requirement: Seatbelt access rules (S2 rendered, S3 enforced)
+Under the profile: `process-exec` MUST be allowed only for the `rx` set (interpreter, CLI package, shim, vendor binary). Broad reads of system locations (`/usr/lib`, `/System/Library`, `/private/etc`, the Homebrew prefixes, dyld needs) MUST be allowed. `$HOME` MUST be denied except the CLI's own state dir and the private tmp dir (read-write). Outbound network MUST be allowed; bind and inbound MUST be denied.
+
+#### Scenario: Exec outside rx denied [ci-macos]
+- GIVEN a fake CLI jailed with one granted binary
+- WHEN it execs `/usr/bin/curl`, `/usr/bin/ssh` and `/bin/sh`
+- THEN each fails and the granted binary runs
+
+#### Scenario: Home outside the state dir denied [ci-macos]
+- GIVEN a fake CLI with its state dir granted
+- WHEN it reads or writes another path under `$HOME`, or writes outside rw
+- THEN the access fails; the state dir read-write succeeds
+
+#### Scenario: Network [ci-macos]
+- GIVEN a jailed fake CLI and a local listener
+- WHEN it connects outbound, then tries to bind a socket
+- THEN connect succeeds and bind fails
+
+### Requirement: Seatbelt apply failure is a jail error (S3)
+A `sandbox-exec` exit of 71 (profile not applied) MUST end the turn with a jail error. It MUST NOT be reported as a CLI error and MUST NOT lead to a bare run. A unique failure marker MUST let the runtime tell it from a CLI exit.
+
+#### Scenario: Exit 71 [auto]
+- GIVEN a fake helper that exits 71 with the failure marker
+- WHEN a turn runs
+- THEN the turn ends with a jail error event and no CLI process ran bare
+
+### Requirement: Enabling codex and gemini on macOS (S4)
+Until S4, `codex` and `gemini` MUST stay refused on macOS even with an Available probe. From S4, both MUST run jailed on macOS when the probe is Available, with the same profile and fake-CLI coverage; a failure MUST refuse, never run bare. The README MUST state gemini is "not yet verified on a real Mac".
+
+#### Scenario: Refused before S4 [auto]
+- GIVEN macOS, an Available probe, S1-S3 only, `chat` = `codex`
+- WHEN a message is sent
+- THEN no process is started
+
+#### Scenario: Enabled in S4 [auto, manual]
+- GIVEN macOS, an Available probe and `chat` = `codex` (or `gemini`)
+- WHEN a message is sent
+- THEN the CLI starts only through `__jail-exec` with Seatbelt; a real codex turn completes with network on a real Mac
+
+#### Scenario: Jail failure never runs bare [auto]
+- GIVEN macOS with an Unavailable probe, or exit 71
+- WHEN a message is sent to `codex` or `gemini`
+- THEN the turn is refused or ends with a jail error, never bare
+
+### Requirement: claude is never jailed on macOS (S1)
+On macOS `claude` MUST run bare with its text-only flags, never through the helper, whatever the probe says, to protect its Keychain login.
+
+#### Scenario: claude on macOS [auto]
+- GIVEN macOS with an Available probe and `chat` = `claude`
+- WHEN a message is sent
+- THEN the CLI is started directly with its flags and no helper
