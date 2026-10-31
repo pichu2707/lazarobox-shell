@@ -45,7 +45,7 @@ fn engine(id: &'static str, status: Status, models: &[&str]) -> EngineState {
 }
 
 /// ollama with llama3:8b and claude both available; codex not installed.
-fn detected() -> AppEvent {
+pub(super) fn detected() -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![
             engine("ollama", Status::Available, &["llama3:8b"]),
@@ -56,7 +56,7 @@ fn detected() -> AppEvent {
     })
 }
 
-fn prompt_ready(id: PaneId) -> AppEvent {
+pub(super) fn prompt_ready(id: PaneId) -> AppEvent {
     AppEvent::PromptReady(
         id,
         crate::core::ai::chat::prompts::Resolved {

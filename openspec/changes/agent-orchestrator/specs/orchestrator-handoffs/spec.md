@@ -53,15 +53,20 @@ When chat memory is on and engram is reachable, each handoff MUST be saved as an
 - THEN the handoff is identifiable by its category and topic-key family
 
 ### Requirement: Memory turned on for the run, degraded mode as fallback [S4]
-When chat memory is off, the run MUST turn memory on for its own handoffs only, for that run only: the menu setting and the saved configuration MUST NOT change, and other chat notes stay off. When engram is down, the run MUST try to start it as the chat memory does. In both cases the pane MUST say once that memory was turned on for this run (`memory on for this run`). When engram still cannot be reached, or errors, the run MUST still start and complete: handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
+When chat memory is off and the user accepted the memory privacy note earlier (`[ai.memory] acknowledged`, which stays set when memory is turned off), the run MUST turn memory on for its own handoffs only, for that run only: the menu setting and the saved configuration MUST NOT change, and other chat notes stay off. The run starts the memory worker but MUST NOT start `engram serve` (the chat memory starts it only after the user confirms an offer; a run asks no one). When memory was turned on the pane MUST say once per run that it was (`memory on for this run`). When the privacy note was never accepted (memory off or on but unacknowledged) the run MUST NOT turn memory on: it degrades at once with `handoffs not persisted` and a line saying the memory privacy note must be accepted. When engram still cannot be reached, or errors, the run MUST still start and complete: handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
 
 #### Scenario: Memory off is turned on for the run [auto]
 - GIVEN chat memory off and engram reachable
 - WHEN a run completes a worker
 - THEN the handoff is saved to engram, `memory on for this run` was shown once, and the menu still shows memory off
 
+#### Scenario: Never acknowledged: not turned on [auto]
+- GIVEN memory off, or on but unacknowledged, and the privacy note never accepted
+- WHEN a run completes a worker
+- THEN memory is not turned on, no engram command is sent, the handoff stays in the in-memory ledger and `handoffs not persisted` is shown once with the privacy-note reason
+
 #### Scenario: Engram unreachable [auto]
-- GIVEN chat memory off and engram that cannot be started
+- GIVEN chat memory off and engram that is not running (the run does not start it)
 - WHEN a run completes a worker
 - THEN the handoff is in the in-memory ledger, no engram save succeeded and `handoffs not persisted` is shown
 

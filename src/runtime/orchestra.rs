@@ -923,8 +923,8 @@ impl RunManager {
     }
 
     /// Stores the orchestrator's handoff for worker `id` and tells the app.
-    /// The ack says what was stored. Handoffs stay in the run's memory here:
-    /// `announce_handoff` is the seam where engram persistence plugs in.
+    /// The ack says what was stored. The run keeps the handoff in memory; the
+    /// app stores it in engram on hearing the event.
     fn handoff(&self, pane: PaneId, run: RunId, id: WorkerId, note: Judgement) -> Outcome {
         let stored = self.on_run(pane, run, |live| {
             let forced = live.run.forced_by();
@@ -958,6 +958,16 @@ impl RunManager {
         let finished = self.on_run(pane, run, |live| match live.run.finish(summary) {
             Ok(built) => {
                 self.announce_built(pane, run, built);
+                let ledger = live.run.run_ledger(&live.goal).render();
+                let summary = live.run.summary().unwrap_or(summary).to_owned();
+                self.send(
+                    pane,
+                    OrchestraEvent::Closed {
+                        run,
+                        ledger,
+                        summary,
+                    },
+                );
                 fine("run finished")
             }
             Err(FinishError::Ended) => error(ENDED),
@@ -990,8 +1000,8 @@ impl RunManager {
         }
     }
 
-    /// A handoff exists: the app hears it. Persisting it (engram, degraded
-    /// mode) hooks in on the app side of this event.
+    /// A handoff exists: the app hears it and stores it (engram, or the
+    /// degraded mode).
     fn announce_handoff(&self, pane: PaneId, run: RunId, handoff: Handoff) {
         self.send(
             pane,

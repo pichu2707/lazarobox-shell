@@ -164,6 +164,18 @@ impl App {
     /// The memory worker's answer. A reply for a pane that is gone changes
     /// nothing.
     pub(super) fn on_memory_reply(&mut self, reply: &MemReply) -> Vec<Effect> {
+        let Some(id) = reply.pane() else {
+            return self.on_chat_memory_reply(reply);
+        };
+        let (consumed, mut effects) = self.on_run_reply(id, reply);
+        if !consumed {
+            effects.extend(self.on_chat_memory_reply(reply));
+        }
+        effects
+    }
+
+    /// `on_memory_reply` for what the chat itself asked.
+    fn on_chat_memory_reply(&mut self, reply: &MemReply) -> Vec<Effect> {
         match reply {
             MemReply::ServerOffer(offer) => return self.on_server_offer(offer),
             MemReply::Server(outcome) => return self.on_server_outcome(outcome),
@@ -338,7 +350,7 @@ impl App {
 
     /// The link rows still to write for chat `id`: its session and its notes,
     /// once the conversation has a database id. Each is handed out once.
-    fn link_effects(&mut self, id: PaneId) -> Vec<Effect> {
+    pub(super) fn link_effects(&mut self, id: PaneId) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };

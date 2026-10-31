@@ -70,7 +70,7 @@ Every approval prompt raised by a worker MUST show a label `worker n/m <kind> <e
 - THEN one prompt is shown and a `2 more waiting` indicator
 
 ### Requirement: Handoff persistence hint [S4]
-When a run turned memory on the pane MUST show `memory on for this run` once per run; when handoffs are not persisted it MUST show `handoffs not persisted` once per run; and a verdict `off_course` or `blocked` MUST be shown as a transcript line.
+When a run turned memory on the pane MUST show `memory on for this run` once per run (never again for the same run, however many handoffs follow); when handoffs are not persisted it MUST show `handoffs not persisted` once per run; and a verdict `off_course` or `blocked` MUST be shown as a transcript line.
 
 #### Scenario: Hint once [auto]
 - GIVEN memory off, engram unreachable and a run with three workers

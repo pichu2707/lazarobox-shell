@@ -113,7 +113,7 @@ fn a_run_that_reached_its_wall_clock_says_which_limit() {
     assert!(said(&a));
 }
 
-fn handed_off(verdict: Verdict) -> OrchestraEvent {
+pub(super) fn handed_off(verdict: Verdict) -> OrchestraEvent {
     OrchestraEvent::Handoff {
         run: RUN,
         handoff: Box::new(Handoff {

@@ -399,3 +399,40 @@ Strict TDD: deterministic tests (channels and request/reply on the worker's sock
 | check: user cancel | a race was real: a `Continue` sent before the manager heard of Esc/Ctrl+C started a turn on the cancelled run. `ChatState::cancel_run` drops the parked one and refuses later ones for that run; the `Interrupted` of a cancelled turn is dropped (turn moved on) | `a_user_cancel_stops_every_continuation_of_the_run` (Ctrl+C and Esc, both orders) | the late `Continue` produced an `OrchestrateSend` |
 
 Residual: an ask registered under the old approver whose announcement was already queued in the forwarder when the route moved can still be shown on the new turn after its wait was denied; the answer then finds no wait (`AnswerLost`, said) and the worker already got its denial, so nothing hangs. The denial text a worker sees in these cases is the generic "the chat ended before the user answered".
+
+## S4 task 4.2: handoff persistence in engram (branch feat/agent-orchestrator-s4c, on 4.1b)
+
+Task 4.2 done. Strict TDD: behavioural RED for the app wiring (all 8 `orchestra_handoffs` tests failed with the `store_item` call disabled, then passed), compile-level RED for the event, the `MemCmd` variant and the key namespace (`the_orchestra_namespace_is_a_caller_key_too` failed first). The pure `persist` tests were written after their implementation (compile-level only). Gates: `cargo test` 7894 passed in the lib target, clippy `-D warnings` clean, `fmt --check` clean.
+
+| Unit | Change | Test |
+|------|--------|------|
+| key namespace | `valid_topic_key` accepts the `orchestra/` family next to `chat/`; `topic_key` already existed on `MemCmd::Save` (S3 summary), and engram upserts by it, so `worker.rs` needed no upsert code | `the_orchestra_namespace_is_a_caller_key_too`, `a_repeated_handoff_save_carries_the_same_run_key` (fake engram, wire) |
+| pure core | `orchestra/persist.rs`: `Item::of_handoff` (`orchestra/{run}/worker/{n}`, category `architecture`, all spec fields), `Item::of_ledger` (`orchestra/{run}/ledger`), `RunSave` (Waiting / Ready / Degraded, one `Degrade` action per run) | `persist_tests.rs` (7), redaction through `route::save`, inert data through `context_block` |
+| runtime event | `OrchestraEvent::Closed{run, ledger, summary}` after the fallbacks on `finish` | `finish_announces_the_closed_ledger_and_the_summary` |
+| runtime memory | `MemCmd::EnableForRun`: an inactive `Memory` keeps its start (`on_demand`) and starts the worker once for a run, on the configured port; the config is untouched | `a_run_starts_the_worker_of_an_inactive_memory_on_the_configured_port` |
+| app | `app/handoff.rs` (`RunStore` per run): `Handoff` and `Closed` events become quiet saves; memory off sends `EnableForRun`, says `memory on for this run` once and resolves the project itself; replies for run saves are consumed before the chat's note path (no `record_note`, no "saved note" line); a failed or unanswered save, an unreachable engram or a project that does not come in `MEMORY_WAIT` degrade the run: `handoffs not persisted` once, no more sends, run goes on; the tick keeps the timer armed while a project is awaited | 8 tests in `app_tests/orchestra_handoffs.rs` |
+
+### Decisions and deviations
+- Engram is NOT started by the run. The chat memory starts `engram serve` only after the user confirms an offer; a run must not spawn a background server unasked, so an engram that is down degrades the run (`handoffs not persisted`). Spec text "MUST try to start it as the chat memory does" is therefore only met for the worker, not for the server. Reversible: reuse the offer flow in a later slice.
+- Handoffs kept in memory in degraded mode are the `Run`'s own ledger (already holds every handoff); no second copy in the app.
+- The final ledger is saved at `finish` only; a run ended by cancel, expiry or the turn cap saves its handoffs (fallbacks included) but no ledger note.
+- Handoff notes use category `architecture` (the closed `MemKind` list is unchanged) plus the `orchestra/` key family.
+
+### 4.2 review fixes
+
+Strict TDD: all tests written first against stubs (`RUN_EPOCH`, `run_save_lost(pane, token)`), observed RED (8 of 16 app tests in `orchestra_handoffs` and `the_ledger_note_has_its_own_key_and_the_summary` failed), then fixed. Gates: fmt clean, clippy `-D warnings` clean, `cargo test` 7902 passed in the lib target (one unrelated timing flake in `runtime::chat::cli` passed on rerun). The handoff app suite now runs 16 tests (`cargo test --lib orchestra_handoffs`), the pure persistence suite 8 (`cargo test --lib persist`).
+
+| # | Fix | Test | RED observed |
+|---|-----|------|--------------|
+| 1 | run saves are matched by (pane, token) in `answered`, `run_save_lost` and `on_run_reply` | `a_run_save_is_matched_by_pane_and_token` | another pane's failed/unavailable reply and expiry degraded the run; its note reply was consumed |
+| 2 | expired run saves leave a tombstone `(pane, token)` in `lost_saves`; the late reply is consumed quietly | `a_late_reply_of_an_expired_run_save_is_dropped_quietly` | late `Saved` fell to the chat path |
+| 3 | a run save adopts a session and emits link effects only when chat memory is active and the save is not stale (`save_is_stale`) | `a_run_save_adopts_no_session_while_chat_memory_is_off`, `a_stale_run_save_reply_adopts_no_session` | session adopted in both |
+| 4 | privacy: memory is turned on for a run only when `[ai.memory] acknowledged`; else no `EnableForRun`, no lookup, `handoffs not persisted` plus `handoffs need the memory privacy note accepted`, once. `acknowledged` persists when memory is turned off (`config_edit` test `acknowledged && !enabled`) | `memory_never_acknowledged_is_not_turned_on_for_the_run` (off and on-unacknowledged) | `EnableForRun` sent |
+| 5 | `drop_pane_stores` in `drop_tab` and the pane-removal path; `Ended` ends the store before the chat check; `ended_runs` makes `store_item` refuse ended runs and gone panes | `closing_the_pane_drops_the_stores_of_its_runs`, `an_ended_run_stores_nothing_more` | store leaked; handoff after `Ended` saved |
+| 6 | the run's own `Resolve` carries `RUN_EPOCH` (`u32::MAX`, never a folder epoch); only replies with it resolve or degrade the run; the chat drops them as stale | `only_the_runs_own_project_reply_resolves_it` | chat's project reply resolved the run |
+| 7 | ledger note is `Summary: ...` then the ledger (the save cuts from the end) | `the_ledger_note_has_its_own_key_and_the_summary` | ledger first |
+| 8 | spec: hint `memory on for this run` once per run; orchestrator-handoffs and chat-memory deltas gain "Never acknowledged: not turned on"; requirement says the run never starts `engram serve`; design D13a records both |  |  |
+
+| 9 (re-review) | `RunStore.tokens` now keeps each save's sent-at; `expire_stores` (memory tick) expires run saves older than `MEMORY_WAIT` independently of the chat's `pending_saves` (a folder change clears those), with the usual tombstone and one `handoffs not persisted`; `run_store_waiting` keeps the timer armed while tokens are in flight; an ended run's store then drops | `a_run_save_in_flight_over_a_folder_change_still_expires` | degrade count 0 (never expired) |
+
+Residual: `lost_saves` and `ended_runs` are small sets that live for the app session.
