@@ -13,7 +13,7 @@ use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
     config::{AiConfig, Profile, Task},
     jail::JailSupport,
-    orchestra::run::Roster,
+    orchestra::run::{Roster, RunLimits},
     status_text,
     tools::{
         Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
@@ -66,6 +66,9 @@ pub struct OrchSend {
     pub profile: Profile,
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
+    /// How many workers run at once, how many a run may spawn and how long it
+    /// may last.
+    pub limits: RunLimits,
 }
 
 /// Whether a turn offers tools.

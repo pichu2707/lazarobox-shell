@@ -71,6 +71,46 @@ fn a_lost_answer_is_said_in_the_transcript() {
     assert!(said);
 }
 
+// Spec (configuration): the run limits of `[ai.orchestrator]` travel with the
+// orchestrator turn that starts the run.
+#[test]
+fn the_configured_run_limits_go_with_the_orchestrator_turn() {
+    let mut ai = orch_ai();
+    ai.orchestrator.max_parallel = 3;
+    ai.orchestrator.max_workers = 5;
+    ai.orchestrator.run_timeout_mins = 2;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    let effects = ask(&mut a, "plan it");
+    let [.., Effect::OrchestrateSend { orch, .. }] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    let limits = orch.limits;
+    assert_eq!((limits.parallel, limits.workers), (3, 5));
+    assert_eq!(limits.wall, std::time::Duration::from_secs(120));
+}
+
+// Spec (agent-orchestrator, Wall clock): the run that reached its limit says
+// so, with the limit named; the stale run of another one stays quiet.
+#[test]
+fn a_run_that_reached_its_wall_clock_says_which_limit() {
+    let said = |a: &App| {
+        let chat = a.panes.get(&chat_id()).and_then(PaneState::chat_state);
+        let text = format!("{:?}", chat.unwrap().entries());
+        text.contains("run_timeout_mins (60)")
+    };
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let after = std::time::Duration::from_secs(3600);
+    a.update(event(OrchestraEvent::Expired {
+        run: RunId(3),
+        after,
+    }));
+    assert!(!said(&a));
+    a.update(event(OrchestraEvent::Expired { run: RUN, after }));
+    assert!(said(&a));
+}
+
 pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
@@ -332,7 +372,10 @@ fn the_alert_is_drawn_with_the_worker_the_raw_error_and_its_keys() {
     a.update(event(row(RUN, 2, WorkerStatus::Running)));
     assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(ALERT));
     a.update(key('r'));
-    assert_eq!(a.chat_guidance(chat_id()), None, "answered");
+    // Answered: the alert is gone and worker 2, still running, gets the hint
+    // of the cancel keys.
+    let hint = a.chat_guidance(chat_id()).unwrap();
+    assert!(hint.starts_with("Alt+Up/Down select a worker"), "{hint}");
 }
 
 // The alert shows the status the worker ended with, and a line break in the

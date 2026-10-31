@@ -25,7 +25,10 @@ use crate::{
         },
         config::{McpServer, Profile, Task},
         jail::{JailOff, JailSupport},
-        orchestra::{Toolset, run::Roster},
+        orchestra::{
+            Toolset,
+            run::{Roster, RunLimits},
+        },
     },
     runtime::{
         mcp::external::fake::{Lab as Fake, lab as fake_lab},
@@ -301,6 +304,7 @@ async fn user_tool_listed_and_asked(orchestrated: bool) {
             roster: Roster::new(vec![(Task::Orchestrate, ready)]),
             profile: Profile::default(),
             deadline: Duration::from_secs(60),
+            limits: RunLimits::default(),
         };
         chats.send_orchestrated(pane(1), 4, request, orch);
     } else {

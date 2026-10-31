@@ -12,8 +12,26 @@ use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::label;
 
-/// Workers running at once. S3 makes it a setting.
-const MAX_RUNNING: usize = 1;
+/// What bounds a run: the workers that run at once, the workers it may spawn
+/// in all and its wall clock (`max_parallel`, `max_workers`,
+/// `run_timeout_mins`). A run without limits set runs one worker at a time,
+/// with no cap and no wall clock.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RunLimits {
+    pub parallel: usize,
+    pub workers: usize,
+    pub wall: Duration,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self {
+            parallel: 1,
+            workers: usize::MAX,
+            wall: Duration::MAX,
+        }
+    }
+}
 
 /// The availability of every task, as the app resolved it from the menu (and
 /// the run's override) for this request.
@@ -61,6 +79,8 @@ pub enum Refusal {
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
+    /// The run already spawned as many workers as `max_workers` allows.
+    WorkerCap(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,6 +141,7 @@ pub struct Run {
     state: RunState,
     roster: Roster,
     deadline: Duration,
+    limits: RunLimits,
     /// Worker `n` is `slots[n - 1]`.
     slots: Vec<Slot>,
     /// Queued workers, in the order they started waiting.
@@ -137,10 +158,24 @@ impl Run {
             state: RunState::Open,
             roster,
             deadline,
+            limits: RunLimits::default(),
             slots: Vec::new(),
             queue: VecDeque::new(),
             pending: VecDeque::new(),
         }
+    }
+
+    /// Bounds the run by `limits` (at least one worker runs at a time).
+    pub fn with_limits(mut self, limits: RunLimits) -> Self {
+        self.limits = RunLimits {
+            parallel: limits.parallel.max(1),
+            ..limits
+        };
+        self
+    }
+
+    pub fn limits(&self) -> RunLimits {
+        self.limits
     }
 
     pub fn id(&self) -> RunId {
@@ -236,6 +271,9 @@ impl Run {
             RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
             RunState::Open => {}
         }
+        if self.slots.len() >= self.limits.workers {
+            return Err(Refusal::WorkerCap(self.limits.workers));
+        }
         let (spec, refusal) = self.resolve(task, prompt);
         self.slots.push(Slot {
             spec,
@@ -281,7 +319,9 @@ impl Run {
     /// Starts queued workers, oldest first, while the run is open and a slot
     /// is free.
     fn promote(&mut self, now: Instant) {
-        while self.state == RunState::Open && self.count(WorkerStatus::Running) < MAX_RUNNING {
+        while self.state == RunState::Open
+            && self.count(WorkerStatus::Running) < self.limits.parallel
+        {
             let Some(next) = self.queue.pop_front() else {
                 return;
             };
@@ -451,7 +491,7 @@ impl Run {
     /// halt of their own: the caller reports the group once, with the count
     /// this returns. Only `Queued` workers of that task: one that is already
     /// `Refused` or in the `pending` list keeps the spec it was spawned with
-    /// (one worker runs at a time, so none of the task is `Running`).
+    /// (a `Running` worker of the task keeps the spec it started with).
     /// `decide` replaces the whole roster: queued workers of OTHER tasks keep
     /// the spec they were spawned with, while later spawns use the new roster.
     fn reresolve_queued(&mut self, now: Instant, failed: WorkerId) -> usize {

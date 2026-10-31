@@ -312,16 +312,30 @@ impl MemoryConfig {
 pub const DEFAULT_WORKER_TIMEOUT_SECS: u32 = 600;
 /// The valid range of `worker_timeout_secs`.
 const WORKER_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 30..=3600;
+/// The defaults and valid ranges of the S3 run limits.
+pub const DEFAULT_MAX_PARALLEL: u8 = 2;
+const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<i64> = 1..=4;
+pub const DEFAULT_MAX_WORKERS: u8 = 8;
+const MAX_WORKERS_RANGE: std::ops::RangeInclusive<i64> = 1..=32;
+pub const DEFAULT_RUN_TIMEOUT_MINS: u16 = 60;
+const RUN_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=480;
 
 /// The `[ai.orchestrator]` table. `enabled` is the global gate (the menu row
 /// `Orchestrator`); each chat pane still opts in on its own. Both flags are
-/// menu-owned; the timeout is only ever hand-edited, so a save never touches it.
+/// menu-owned; the timeout and the run limits are only ever hand-edited, so a
+/// save never touches them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct OrchestratorConfig {
     pub enabled: bool,
     /// The one-time provider notice was accepted.
     pub acknowledged: bool,
     pub worker_timeout_secs: u32,
+    /// Workers running at once; further spawns queue.
+    pub max_parallel: u8,
+    /// Workers one run may spawn.
+    pub max_workers: u8,
+    /// The wall clock of a run, in minutes.
+    pub run_timeout_mins: u16,
 }
 
 impl Default for OrchestratorConfig {
@@ -330,6 +344,9 @@ impl Default for OrchestratorConfig {
             enabled: false,
             acknowledged: false,
             worker_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
+            max_parallel: DEFAULT_MAX_PARALLEL,
+            max_workers: DEFAULT_MAX_WORKERS,
+            run_timeout_mins: DEFAULT_RUN_TIMEOUT_MINS,
         }
     }
 }
@@ -870,6 +887,27 @@ fn read_orchestrator(table: &Table, problems: &mut Vec<String>) -> OrchestratorC
         Some(_) => problems.push(
             "ai.orchestrator.worker_timeout_secs: expected an integer from 30 to 3600".to_owned(),
         ),
+    }
+    let mut limit = |name: &str, range: &std::ops::RangeInclusive<i64>| match section.get(name) {
+        None => None,
+        Some(Value::Integer(n)) if range.contains(n) => Some(*n),
+        Some(_) => {
+            let (low, high) = (range.start(), range.end());
+            problems.push(format!(
+                "ai.orchestrator.{name}: expected an integer from {low} to {high}"
+            ));
+            None
+        }
+    };
+    // The ranges fit each field, so the casts cannot truncate.
+    if let Some(n) = limit("max_parallel", &MAX_PARALLEL_RANGE) {
+        orch.max_parallel = n as u8;
+    }
+    if let Some(n) = limit("max_workers", &MAX_WORKERS_RANGE) {
+        orch.max_workers = n as u8;
+    }
+    if let Some(n) = limit("run_timeout_mins", &RUN_TIMEOUT_RANGE) {
+        orch.run_timeout_mins = n as u16;
     }
     orch
 }
@@ -2942,10 +2980,60 @@ mod tests {
                 enabled: true,
                 acknowledged: true,
                 worker_timeout_secs: 30,
+                ..OrchestratorConfig::default()
             }
         );
         let (config, _) = read_text("[ai.orchestrator]\nworker_timeout_secs = 3600\n");
         assert_eq!(config.orchestrator.worker_timeout_secs, 3600);
+    }
+
+    // Spec (configuration): the S3 run limits, their defaults and ranges.
+    #[test]
+    fn the_run_limits_are_read_with_their_ranges() {
+        let defaults = OrchestratorConfig::default();
+        assert_eq!(
+            (
+                defaults.max_parallel,
+                defaults.max_workers,
+                defaults.run_timeout_mins
+            ),
+            (2, 8, 60)
+        );
+        let (config, problems) = read_text(
+            "[ai.orchestrator]\nmax_parallel = 4\nmax_workers = 32\nrun_timeout_mins = 480\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        let orch = config.orchestrator;
+        assert_eq!(
+            (orch.max_parallel, orch.max_workers, orch.run_timeout_mins),
+            (4, 32, 480)
+        );
+        let bad = [
+            ("max_parallel", "0", "1 to 4"),
+            ("max_parallel", "5", "1 to 4"),
+            ("max_workers", "33", "1 to 32"),
+            ("run_timeout_mins", "481", "1 to 480"),
+            ("run_timeout_mins", "\"60\"", "1 to 480"),
+        ];
+        for (key, value, range) in bad {
+            let text = format!("[ai.orchestrator]\nenabled = true\n{key} = {value}\n");
+            let (config, problems) = read_text(&text);
+            assert_eq!(
+                config.orchestrator,
+                OrchestratorConfig {
+                    enabled: true,
+                    ..OrchestratorConfig::default()
+                },
+                "{key}"
+            );
+            assert_eq!(
+                problems,
+                [format!(
+                    "ai.orchestrator.{key}: expected an integer from {range}"
+                )],
+                "{key} = {value}"
+            );
+        }
     }
 
     // S5 (config freeze, 2026-10-29): the key is `acknowledged`, as in
@@ -2990,7 +3078,7 @@ mod tests {
     // Spec (configuration): Older build ignores keys; unknown keys ignored.
     #[test]
     fn unknown_orchestrator_keys_are_ignored() {
-        let (config, problems) = read_text("[ai.orchestrator]\nmax_parallel = 3\nfuture = 1\n");
+        let (config, problems) = read_text("[ai.orchestrator]\nmax_helpers = 3\nfuture = 1\n");
         assert_eq!(config.orchestrator, OrchestratorConfig::default());
         assert_eq!(problems, Vec::<String>::new());
     }

@@ -66,8 +66,8 @@ use crate::core::{
             changes::Change,
             errors::classify,
             run::{
-                CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunState, UserChoice,
-                WorkerEvent,
+                CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunLimits, RunState,
+                UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
             tools::OrchCall,
@@ -105,6 +105,7 @@ pub struct OrchScope {
     pub roots: Vec<String>,
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
+    pub limits: RunLimits,
     pub profile: Profile,
     /// The orchestrator turn's channel and approver: a worker's tool rows and
     /// asks go there (D4), and `pending` lets that turn's timers see a
@@ -187,13 +188,15 @@ struct Live {
     /// The orchestrator turn that started the run is over: the run ends once
     /// it has nothing left to do (see [`RunManager::turn_ended`]).
     turn_over: bool,
+    /// Ends the run when its wall clock passes (`run_timeout_mins`).
+    clock: Option<JoinHandle<()>>,
 }
 
 impl Drop for Live {
     /// The backstop of a run dropped without being ended, its manager's
     /// included: its worker turns would otherwise run on to their deadline.
     fn drop(&mut self) {
-        for task in self.tasks.values() {
+        for task in self.tasks.values().chain(&self.clock) {
             task.abort();
         }
     }
@@ -318,7 +321,7 @@ impl RunManager {
         let live = Live {
             scope: read_scope,
             dropped,
-            run: Run::new(run, scope.roster, scope.deadline),
+            run: Run::new(run, scope.roster, scope.deadline).with_limits(scope.limits),
             origin: scope.origin,
             profile: scope.profile,
             events: scope.events,
@@ -329,6 +332,7 @@ impl RunManager {
             alerted: None,
             retry: HashMap::new(),
             turn_over: false,
+            clock: self.start_clock(pane, run, scope.limits.wall),
         };
         let old = {
             let mut runs = lock(&self.runs);
@@ -341,6 +345,40 @@ impl RunManager {
             self.end(pane, old);
         }
         Ok((run, self.handle(pane, run)))
+    }
+
+    /// The timer of a run's wall clock; none for a run with no limit.
+    fn start_clock(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        wall: Duration,
+    ) -> Option<JoinHandle<()>> {
+        Instant::now().checked_add(wall)?;
+        let manager = Arc::downgrade(self);
+        Some(tokio::spawn(async move {
+            tokio::time::sleep(wall).await;
+            if let Some(manager) = manager.upgrade() {
+                manager.expire(pane, run, wall);
+            }
+        }))
+    }
+
+    /// The wall clock of run `run` of `pane` passed: the run ends as a
+    /// cancel ends it (its workers are killed), after `Expired` names why.
+    /// A run that ended or was replaced ignores it.
+    fn expire(self: &Arc<Self>, pane: PaneId, run: RunId, after: Duration) {
+        let live = {
+            let mut runs = lock(&self.runs);
+            if runs.get(&pane).is_none_or(|live| live.run.id() != run) {
+                return;
+            }
+            runs.remove(&pane)
+        };
+        if let Some(live) = live {
+            self.send(pane, OrchestraEvent::Expired { run, after });
+            self.end(pane, live);
+        }
     }
 
     fn handle(self: &Arc<Self>, pane: PaneId, run: RunId) -> OrchHandle {
@@ -560,6 +598,9 @@ impl RunManager {
                 Ok(id) => id,
                 Err(Refusal::Paused) => return error("run paused"),
                 Err(Refusal::Ended) => return error(ENDED),
+                Err(Refusal::WorkerCap(cap)) => {
+                    return error(format!("worker limit reached: max_workers is {cap}"));
+                }
             };
             self.sync(pane, live);
             let status = live.run.status(id).unwrap_or(WorkerStatus::Refused);
@@ -640,7 +681,7 @@ impl RunManager {
     /// Cancels one worker: its turn is aborted and its session closed, and
     /// its slot goes to the next queued worker. One that already ended stays
     /// as it was.
-    fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
+    pub fn cancel_worker(self: &Arc<Self>, pane: PaneId, run: RunId, id: WorkerId) -> Outcome {
         let cancelled = self.on_run(pane, run, |live| match live.run.cancel(now(), id) {
             CancelOutcome::Cancelled => {
                 if let Some(task) = live.tasks.remove(&id) {

@@ -290,3 +290,25 @@ Task 3.1 done (S3a + S3b). Not done: all of 3.2 and the cancel key (S3c). Four c
 | gap: finish after the run ended | none needed: `end()` closes every task's session before the run leaves `runs` | `a_run_cancelled_closes_its_workers_sessions_for_good` | green from the start |
 
 Note: a first attempt at W1a polled the wait and skipped on a denied `ENDED`; it broke `an_ended_turn_keeps_its_batch...` (an approver may deny with `ENDED` and still want the call announced), hence the explicit `is_over`.
+
+
+## S3c: run limits, wall clock and the escalating Ctrl+C (branch feat/agent-orchestrator-s3c, on s3b)
+
+Task 3.2 done; S3 complete (S3a + S3b + S3c). Two commits; strict TDD (compile-level or behavioural RED, mutation check where the test was green on first run).
+
+| Unit | Change | Test | RED observed |
+|------|--------|------|--------------|
+| config keys | `max_parallel` (default 2, 1-4), `max_workers` (8, 1-32), `run_timeout_mins` (60, 1-480) in `OrchestratorConfig`; bad value falls back with the startup problem naming the range; hand-edited like `worker_timeout_secs` (a save never touches them); `unknown_orchestrator_keys_are_ignored` now uses `max_helpers` | `the_run_limits_are_read_with_their_ranges` | left `(2,8,60)` vs `(4,32,480)` |
+| pure limits | `RunLimits {parallel, workers, wall}` + `Run::with_limits`; `MAX_RUNNING` removed; `Refusal::WorkerCap` | `the_parallel_limit_runs_two_and_queues_the_third`, `a_spawn_over_the_worker_cap_is_refused_with_the_limit`, `siblings_finish_after_a_failure_and_nothing_new_starts`, `cancel_after_a_failure_kills_the_running_sibling`, `a_retried_worker_starts_before_the_workers_already_queued` | mutation (parallel forced to 1): 4 failed; cap test green by construction |
+| wall clock | `RunManager::start_clock` timer per run, `expire` sends `OrchestraEvent::Expired{run, after}` then ends the run (workers killed); app says `run stopped: it reached run_timeout_mins (N)`; worker cap says `worker limit reached: max_workers is N` | `the_wall_clock_kills_the_running_worker_and_ends_the_run` (paused time), `a_spawn_over_the_worker_cap_is_refused_naming_the_limit`, `a_run_that_reached_its_wall_clock_says_which_limit`, `the_configured_run_limits_go_with_the_orchestrator_turn` | wall test: elapsed 600s instead of 90s |
+| live two workers | the test S3b could not write | `cancelling_one_of_two_live_workers_leaves_the_other_and_its_ask` | green from the start (S3b behaviour; now proved with two live workers) |
+| selection + escalating Ctrl+C | `ChatState::{selected, cancel_armed}`; Alt+Down/Alt+Up select a live worker (wrap, notice when none); selected row prefix `> `; `App::chat_ctrl_c`; `Effect::OrchCancelWorker` -> `Chats::cancel_worker` -> `RunManager::cancel_worker` (the row event then runs `withdraw_worker`); window 2 s on the app clock; Esc unchanged; hint in `orch_guidance` (`worker_keys`) | `src/app/app_tests/orchestra_cancel.rs` (10 tests) | compile-level RED (no `selected_worker`, no effect); mutation (`escalate` disabled) failed `a_second_ctrl_c_within_two_seconds_cancels_the_run` |
+
+### Decisions and deviations
+- No worker selection existed: minimal selection added (Alt+Down / Alt+Up, gate on only). Not a Ctrl chord, so the "new chat keys live behind the prefix" rule is untouched; flagged for the user.
+- A key held down (same key within the 500 ms hold window) does not escalate: `one_shot` swallows it.
+- Ctrl+C with a worker selected while the failure alert is up cancels that worker and leaves the alert; Esc/`c` still answer the alert.
+- Queue count: S3a's `(n waiting)` on the prompt target covers `Queue count`; the spec text says "2 more waiting", left as is.
+- Retry-first queue order was already S1/S2 (`enqueue(front=true)`), now also tested with two slots.
+- The wall clock needs a tokio runtime in `start` only when a wall is set (default `RunLimits` has none), so sync tests are unaffected.
+- `chat_guidance` gains a line while a run has a live worker (`Alt+Up/Down select a worker · Ctrl+C cancels the run`); `the_alert_is_drawn...` expectation adapted, no snapshot changed.

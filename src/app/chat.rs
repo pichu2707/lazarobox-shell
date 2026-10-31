@@ -190,8 +190,13 @@ impl App {
         };
         match (key.code, mods) {
             (KeyCode::Enter, KeyModifiers::NONE) => one_shot(App::chat_submit, self),
-            (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                one_shot(App::chat_cancel_key, self)
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => one_shot(App::chat_ctrl_c, self),
+            (KeyCode::Esc, KeyModifiers::NONE) => one_shot(App::chat_cancel_key, self),
+            (KeyCode::Down, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, true), self)
+            }
+            (KeyCode::Up, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, false), self)
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_yank(false), self)

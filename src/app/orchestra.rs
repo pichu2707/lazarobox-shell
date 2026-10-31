@@ -15,7 +15,7 @@ use crate::core::ai::{
     orchestra::{
         Toolset, WorkerKey,
         overrides::{Change, FailurePicker, Picked},
-        run::Roster,
+        run::{Roster, RunLimits},
         worker::WorkerStatus,
     },
 };
@@ -42,6 +42,12 @@ const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not 
 const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
+/// Said by the first Ctrl+C of a selected worker.
+const CANCEL_AGAIN: &str = "Ctrl+C again cancels the run";
+const NO_WORKER: &str = "No worker to select";
+/// How long a second Ctrl+C escalates to the whole run.
+const ESCALATE: Duration = Duration::from_secs(2);
+
 /// What the chat footer says about ORCH while the gate is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OrchHint {
@@ -57,6 +63,65 @@ impl App {
     /// the live configuration every time.
     fn orch_gate(&self) -> bool {
         self.ai.orchestrator.enabled
+    }
+
+    /// Ctrl+C on chat `id`. With a worker row selected the first press
+    /// cancels only that worker and says so; a second one within
+    /// [`ESCALATE`], or one with no worker selected, is the chat cancel: the
+    /// turn and the whole run (modal-input, Cancel keys for workers).
+    pub(super) fn chat_ctrl_c(&mut self, id: PaneId) -> Vec<Effect> {
+        let now = (self.clock)();
+        let gate = self.orch_gate();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let target = chat.orch_run().zip(chat.selected_worker());
+        let escalate = chat.cancel_is_armed(now);
+        let live = chat.live_workers();
+        let Some((run, worker)) = target.filter(|(_, worker)| gate && live.contains(worker)) else {
+            return self.chat_cancel_key(id);
+        };
+        if escalate {
+            return self.chat_cancel_key(id);
+        }
+        chat.select_worker(None);
+        chat.arm_cancel(Some(now + ESCALATE));
+        self.notice = Some(CANCEL_AGAIN.to_owned());
+        self.dirty = true;
+        vec![Effect::OrchCancelWorker {
+            pane: id,
+            run,
+            worker,
+        }]
+    }
+
+    /// Alt+Down and Alt+Up: select the next or the previous worker of the
+    /// run that has not ended, wrapping; said when there is none.
+    pub(super) fn select_worker(&mut self, id: PaneId, forward: bool) -> Vec<Effect> {
+        if !self.orch_gate() {
+            return Vec::new();
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let live = chat.live_workers();
+        if live.is_empty() {
+            self.notice = Some(NO_WORKER.to_owned());
+            self.dirty = true;
+            return Vec::new();
+        }
+        let at = chat
+            .selected_worker()
+            .and_then(|worker| live.iter().position(|w| *w == worker));
+        let next = match (at, forward) {
+            (None, true) => 0,
+            (None, false) => live.len() - 1,
+            (Some(i), true) => (i + 1) % live.len(),
+            (Some(i), false) => (i + live.len() - 1) % live.len(),
+        };
+        chat.select_worker(Some(live[next]));
+        self.dirty = true;
+        Vec::new()
     }
 
     /// Whether pane `id` orchestrates: the global gate and the pane's mode
@@ -97,6 +162,9 @@ impl App {
                 };
                 let is_over = !matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running);
                 chat.set_worker_over(key, is_over);
+                if is_over && chat.selected_worker() == Some(row.id) {
+                    chat.select_worker(None);
+                }
                 if is_over {
                     over = Some(key);
                 }
@@ -151,6 +219,15 @@ impl App {
             }
             OrchestraEvent::AnswerLost => {
                 chat.push_system_line(ANSWER_LOST.to_owned());
+            }
+            // A newer run of the pane is not this run's business.
+            OrchestraEvent::Expired { run, after } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    let mins = after.as_secs() / 60;
+                    chat.push_system_line(format!(
+                        "run stopped: it reached run_timeout_mins ({mins}); running workers were cancelled"
+                    ));
+                }
             }
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
@@ -347,8 +424,27 @@ impl App {
         });
         match (notice, alert) {
             (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
-            (notice, alert) => notice.or(alert),
+            (notice, alert) => notice.or(alert).or_else(|| self.worker_keys(chat)),
         }
+    }
+
+    /// The cancel keys, while a run has a worker that has not ended and
+    /// nothing else needs the line.
+    fn worker_keys(&self, chat: &ChatState) -> Option<String> {
+        if !self.orch_gate() {
+            return None;
+        }
+        let live = chat.live_workers();
+        if live.is_empty() {
+            return None;
+        }
+        Some(match chat.selected_worker() {
+            Some(worker) => format!(
+                "worker {} selected \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
+                worker.0
+            ),
+            None => "Alt+Up/Down select a worker \u{b7} Ctrl+C cancels the run".to_owned(),
+        })
     }
 
     /// Whether the provider notice is shown in pane `id`.
@@ -401,6 +497,16 @@ impl App {
             self.dirty = true;
         }
         Vec::new()
+    }
+
+    /// The run limits of the configuration.
+    fn run_limits(&self) -> RunLimits {
+        let orch = &self.ai.orchestrator;
+        RunLimits {
+            parallel: usize::from(orch.max_parallel),
+            workers: usize::from(orch.max_workers),
+            wall: Duration::from_secs(u64::from(orch.run_timeout_mins) * 60),
+        }
     }
 
     /// The ORCH hint of the chat footer of pane `id`; `None` with the gate
@@ -492,6 +598,7 @@ impl App {
         // run's first event ends them.
         let roster = self.roster(&self.ai);
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
+        let limits = self.run_limits();
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
             .as_ref()
@@ -512,6 +619,7 @@ impl App {
                 roster,
                 profile,
                 deadline,
+                limits,
             }),
         }
     }

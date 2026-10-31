@@ -911,6 +911,7 @@ impl Chats {
                     // origin that is not UTF-8 gives no root.
                     roots: origin.to_str().map(str::to_owned).into_iter().collect(),
                     deadline: orch.deadline,
+                    limits: orch.limits,
                     profile: orch.profile,
                     events: events.clone(),
                     approver: approver.clone(),
@@ -1130,6 +1131,20 @@ impl Chats {
         self.orchestra
             .as_ref()
             .is_some_and(|orchestra| orchestra.decide(pane, run, choice).is_ok())
+    }
+
+    /// Cancels worker `worker` of run `run` of `pane` (the cancel tool's
+    /// path, `RunManager::cancel_worker`); a run or a worker that is gone is
+    /// a no-op, its rows having said so.
+    pub fn cancel_worker(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+    ) {
+        if let Some(orchestra) = &self.orchestra {
+            orchestra.cancel_worker(pane, run, worker);
+        }
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been

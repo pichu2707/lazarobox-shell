@@ -781,6 +781,7 @@ async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
         roster: Roster::new(vec![(Task::Orchestrate, unusable)]),
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
     };
     chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
     let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
@@ -829,6 +830,7 @@ async fn an_orchestrator_turn_without_a_session_ends_its_run() {
         roster: Roster::new(vec![(Task::Orchestrate, ready)]),
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
     };
     chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
     let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
@@ -874,6 +876,7 @@ async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
         )]),
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
     };
     chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
     assert!(manager.scope(pane(1)).is_some(), "the run started");
@@ -938,6 +941,7 @@ async fn an_orchestrator_run_scopes_its_reads_to_the_chat_origin() {
             )]),
             profile: Profile::default(),
             deadline: Duration::from_secs(30),
+            limits: crate::core::ai::orchestra::run::RunLimits::default(),
         };
         let mut req = with_tools(&lab);
         if let Tools::On { origin: o, .. } = &mut req.tools {

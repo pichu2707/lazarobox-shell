@@ -64,6 +64,9 @@ pub enum OrchestraEvent {
     /// The user's `y` for a worker's ask reached nothing: the worker ended
     /// first. The answer was not applied.
     AnswerLost,
+    /// The run reached its wall clock (`run_timeout_mins`) and was stopped:
+    /// its running workers were killed. `Ended` follows.
+    Expired { run: RunId, after: Duration },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },
