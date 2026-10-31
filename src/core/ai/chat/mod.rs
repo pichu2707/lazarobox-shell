@@ -518,8 +518,10 @@ impl ChatState {
     }
 
     pub fn set_orch_run(&mut self, run: Option<RunId>) {
+        // The selection and an armed second Ctrl+C belong to the old run.
         if self.orch_run != run {
             self.selected = None;
+            self.cancel_armed = None;
         }
         self.orch_run = run;
     }

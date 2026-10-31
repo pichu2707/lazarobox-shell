@@ -164,6 +164,27 @@ fn a_second_ctrl_c_within_two_seconds_cancels_the_run() {
     assert_eq!(press(&mut late, 1_500, ctrl('c')), vec![cancel_worker(2)]);
 }
 
+// modal-input / Ctrl+C: the escalation belongs to its run. A new run started
+// within the two seconds is not cancelled whole by its first Ctrl+C.
+#[test]
+fn a_new_run_drops_the_armed_second_ctrl_c() {
+    let mut a = two_running();
+    select(&mut a, next_worker());
+    assert_eq!(press(&mut a, 600, ctrl('c')), vec![cancel_worker(1)]);
+    let next = RunId(RUN.0 + 1);
+    for id in [1, 2] {
+        a.update(event(row(next, id, WorkerStatus::Running)));
+    }
+    select(&mut a, next_worker());
+    let effects = press(&mut a, 600, ctrl('c'));
+    let one = Effect::OrchCancelWorker {
+        pane: chat_id(),
+        run: next,
+        worker: WorkerId(1),
+    };
+    assert_eq!(effects, vec![one]);
+}
+
 // modal-input / Ctrl+C: with no worker selected it cancels the turn and the
 // run, as it always did; so does Esc, selected or not.
 #[test]
