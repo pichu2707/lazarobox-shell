@@ -64,7 +64,7 @@ pub enum OrchHint {
 impl App {
     /// The global orchestrator gate (`[ai.orchestrator] enabled`), read from
     /// the live configuration every time.
-    fn orch_gate(&self) -> bool {
+    pub(super) fn orch_gate(&self) -> bool {
         self.ai.orchestrator.enabled
     }
 
@@ -202,6 +202,8 @@ impl App {
                 chat.set_orch_run(Some(run));
                 chat.keep_override();
                 chat.drop_orch_alert();
+                // The alert is the user's to answer: the transcript gives way.
+                chat.close_run_view();
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
                     worker,
@@ -219,6 +221,7 @@ impl App {
             } => {
                 chat.set_orch_run(Some(run));
                 chat.drop_orch_alert();
+                chat.close_run_view();
                 chat.set_orch_note(Some(OrchNote::RetryFailed(reason)));
                 chat.set_orch_alert(Some(OrchAlert {
                     run,
@@ -259,6 +262,8 @@ impl App {
                     chat.push_system_line(text);
                 }
             }
+            // What a worker's turn produced, for its transcript view (S9).
+            OrchestraEvent::Trace { run, worker, item } => chat.trace(run, worker, item),
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) => {}
             OrchestraEvent::Unavailable => {
@@ -598,7 +603,7 @@ impl App {
         }
         Some(match chat.selected_worker() {
             Some(worker) => format!(
-                "worker {} selected \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
+                "worker {} selected \u{b7} Ctrl+Space W transcript \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
                 worker.0
             ),
             None => "Alt+Up/Down select a worker \u{b7} Ctrl+C cancels the run".to_owned(),

@@ -312,14 +312,31 @@ impl Lab {
         self.manager.start(pane(), self.scope(roster, &[])).unwrap()
     }
 
-    /// The next event, from pane 1.
+    /// The next event, from pane 1. A worker's transcript steps (`Trace`) are
+    /// skipped: they come with every turn and the tests that read the story
+    /// of a run do not tell them.
     async fn next(&mut self) -> OrchestraEvent {
-        let (from, event) = timeout(Duration::from_secs(5), self.events.recv())
-            .await
-            .expect("no event")
-            .expect("channel open");
-        assert_eq!(from, pane());
-        event
+        loop {
+            let (from, event) = timeout(Duration::from_secs(5), self.events.recv())
+                .await
+                .expect("no event")
+                .expect("channel open");
+            assert_eq!(from, pane());
+            if !matches!(event, OrchestraEvent::Trace { .. }) {
+                return event;
+            }
+        }
+    }
+
+    /// The next event with no timeout of its own (a paused clock moves to the
+    /// worker's deadline first), transcript steps skipped.
+    async fn untimed(&mut self) -> OrchestraEvent {
+        loop {
+            let (_, event) = self.events.recv().await.unwrap();
+            if !matches!(event, OrchestraEvent::Trace { .. }) {
+                return event;
+            }
+        }
     }
 
     /// The events already sent.
@@ -373,6 +390,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Review { .. }
         | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Closed { .. }
+        | OrchestraEvent::Trace { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -531,7 +549,7 @@ async fn the_deadline_kills_a_worker_that_never_ends_and_times_it_out() {
     let started = Instant::now();
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(status_of(&lab.next().await), Some(WorkerStatus::Running));
-    let (_, ended) = lab.events.recv().await.unwrap();
+    let ended = lab.untimed().await;
     assert_eq!(started.elapsed(), Duration::from_secs(600));
     assert!(
         lab.seen.dropped.load(Ordering::SeqCst),
@@ -1161,6 +1179,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Review { .. }
             | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Closed { .. }
+            | OrchestraEvent::Trace { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -2085,9 +2104,16 @@ async fn races_keep_exactly_one_ended_as_the_last_event() {
         raced.unwrap();
         ended.unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        // A dropped answer may follow `Ended`: it is no event of the run.
+        // A dropped answer or a last piece of a killed worker's output may
+        // follow `Ended`: they are no events of the run (the app ignores a
+        // trace of a run it does not hold).
         let events: Vec<_> = (lab.sent().into_iter())
-            .filter(|event| !matches!(event, OrchestraEvent::Dropped { .. }))
+            .filter(|event| {
+                !matches!(
+                    event,
+                    OrchestraEvent::Dropped { .. } | OrchestraEvent::Trace { .. }
+                )
+            })
             .collect();
         assert_eq!(ends(&events), 1, "round {round}: {events:?}");
         assert_eq!(
@@ -2449,15 +2475,12 @@ async fn the_wall_clock_kills_the_running_worker_and_ends_the_run() {
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     let started = Instant::now();
     handle.call(spawn(Task::Review, "check")).await;
-    assert_eq!(
-        status_of(&lab.events.recv().await.unwrap().1),
-        Some(WorkerStatus::Running)
-    );
-    let expired = lab.events.recv().await.unwrap().1;
+    assert_eq!(status_of(&lab.untimed().await), Some(WorkerStatus::Running));
+    let expired = lab.untimed().await;
     assert_eq!(started.elapsed(), wall);
     assert_eq!(expired, OrchestraEvent::Expired { run, after: wall });
     assert_eq!(
-        status_of(&lab.events.recv().await.unwrap().1),
+        status_of(&lab.untimed().await),
         Some(WorkerStatus::Cancelled)
     );
     // The cancelled worker's missing handoff is built before the run ends.
@@ -4388,5 +4411,120 @@ async fn a_receipt_of_a_run_that_is_gone_says_so() {
         lines.iter().filter(|l| l.contains("run is gone")).count(),
         2,
         "{lines:?}"
+    );
+}
+
+/// The trace events of worker `worker` among `events`, in order.
+fn traced(events: &[OrchestraEvent], worker: u32) -> Vec<TraceItem> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Trace {
+                worker: w, item, ..
+            } if w.0 == worker => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Spec (agent-orchestrator, Run view and persistence): the app can show what a
+// worker streamed. A turn starts a transcript and every piece of its answer
+// follows, as the worker produced it.
+#[tokio::test]
+async fn a_workers_answer_reaches_the_app_as_it_streams() {
+    let mut lab = lab(Script::Answer("found it"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let events = lab.sent();
+    assert_eq!(
+        traced(&events, 1),
+        [TraceItem::Begin, TraceItem::Text("found it".into())]
+    );
+}
+
+// A relaunch (retry) is a new attempt: its transcript starts over.
+#[tokio::test]
+async fn a_relaunched_worker_begins_a_new_transcript() {
+    let mut lab = lab(Script::FailOnce("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let items = traced(&lab.sent(), 1);
+    assert_eq!(
+        items.iter().filter(|i| **i == TraceItem::Begin).count(),
+        2,
+        "{items:?}"
+    );
+    assert_eq!(items.last(), Some(&TraceItem::Text("fixed".into())));
+}
+
+// The tool rows of a worker go to its transcript too, whichever orchestrator
+// turn is current.
+#[tokio::test]
+async fn a_routes_tool_rows_reach_the_app_as_trace() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer {
+        events,
+        pane: pane(),
+        key,
+    };
+    let (turn, mut seen) = mpsc::channel(TURN_CHANNEL);
+    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let tx = Route::forward(&route);
+    let call = StreamEvent::ToolCall {
+        id: CallId(4),
+        name: "read_file".into(),
+        summary: "a.rs".into(),
+        approval: None,
+    };
+    let result = StreamEvent::ToolResult {
+        id: CallId(4),
+        status: ToolStatus::Ok,
+        summary: "3 lines".into(),
+    };
+    tx.send(call).await.unwrap();
+    tx.send(result).await.unwrap();
+    tx.send(StreamEvent::Delta("not a row".into()))
+        .await
+        .unwrap();
+    // The orchestrator turn still hears them.
+    for _ in 0..3 {
+        timeout(Duration::from_secs(5), seen.recv()).await.unwrap();
+    }
+    let mut got = Vec::new();
+    while let Ok((_, event)) = app.try_recv() {
+        got.push(event);
+    }
+    let items: Vec<_> = got
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Trace { run, worker, item } => {
+                assert_eq!((run, worker), (RunId(7), WorkerId(2)));
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items,
+        [
+            TraceItem::Call {
+                id: CallId(4),
+                name: "read_file".into(),
+                summary: "a.rs".into()
+            },
+            TraceItem::Result {
+                id: CallId(4),
+                status: ToolStatus::Ok,
+                summary: "3 lines".into()
+            },
+        ]
     );
 }

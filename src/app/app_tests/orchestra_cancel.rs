@@ -28,7 +28,7 @@ fn press(a: &mut App, after_ms: u64, ev: AppEvent) -> Vec<Effect> {
     a.update(ev)
 }
 
-fn select(a: &mut App, ev: AppEvent) {
+pub(super) fn select(a: &mut App, ev: AppEvent) {
     press(a, 600, ev);
 }
 
@@ -50,7 +50,7 @@ fn two_running() -> App {
     a
 }
 
-fn next_worker() -> AppEvent {
+pub(super) fn next_worker() -> AppEvent {
     code(KeyCode::Down, KeyModifiers::ALT)
 }
 

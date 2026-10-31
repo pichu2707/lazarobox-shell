@@ -69,6 +69,7 @@ mod picker;
 mod review;
 mod run;
 mod run_store;
+mod run_view;
 mod scroll;
 mod summary;
 mod tags;
@@ -2382,6 +2383,7 @@ impl App {
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
+                | PrefixAction::ViewWorker
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
@@ -2421,6 +2423,13 @@ impl App {
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
+            // They would replace the transcript of a worker.
+            Step::Run(
+                PrefixAction::EditTags
+                | PrefixAction::SaveNote
+                | PrefixAction::Summarize
+                | PrefixAction::RunInPane,
+            ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
                 PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
@@ -2456,6 +2465,7 @@ impl App {
                 self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
+            Step::Run(PrefixAction::ViewWorker) => self.view_worker(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -8363,6 +8373,8 @@ mod app_tests {
     mod orchestra_store;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;
+    /// The full-pane transcript of a worker (S9).
+    mod orchestra_view;
 
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;

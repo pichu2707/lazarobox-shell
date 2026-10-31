@@ -141,7 +141,7 @@ pub fn worker_label(row: &WorkerRow) -> String {
 
 /// A worker row as text: `review codex>gpt-5 running`, then how long it ran
 /// once it ended (`done 12.3s`).
-fn worker_line(row: &WorkerRow) -> String {
+pub(super) fn worker_line(row: &WorkerRow) -> String {
     let marker = if row.overridden { " (override)" } else { "" };
     let mut line = format!("{}{marker} {}", worker_label(row), row.status.label());
     if let Some(elapsed) = row.elapsed {
@@ -329,7 +329,7 @@ pub(super) fn is_fence(line: &str, in_code: bool) -> bool {
 
 /// Wraps every line of `text` to `width` columns less the prefix. `first`
 /// leads the first row, `rest` every other one.
-fn push_wrapped(
+pub(super) fn push_wrapped(
     out: &mut Vec<Line>,
     kind: LineKind,
     first: &str,

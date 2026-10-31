@@ -690,3 +690,17 @@ Decisions and limits:
 - A run only exists in the store from its first worker row (a run with no workers has nothing to resume).
 - The floor read does a short synchronous SQLite open at the first run start of the process (on the chat runtime thread). A failure reads zero (the clock alone, as before) and the next save failure is said by `could not save the run`.
 - Sequencing choice: run pane ids are not stored (they restart each process and mean nothing later).
+
+## S9, PR 9.1b: full-pane worker transcript (branch feat/agent-orchestrator-s9b, on feat/agent-orchestrator-s9; 9.1b `[x]`, 9.1c open)
+
+Strict TDD, RED first and observed per unit: core `run_trace_tests` (11 of 11 failed against `unimplemented!()` stubs, then 12 of 13 green after the store, the empty-transcript test failed alone before its line existed; `a_step_that_comes_after_its_run_ended_is_dropped` was added after the strict `orch_run == Some(run)` rule and was not seen red), runtime `a_workers_answer_reaches_the_app_as_it_streams`, `a_relaunched_worker_begins_a_new_transcript`, `a_routes_tool_rows_reach_the_app_as_trace` (3 of 3 failed against a no-op `Tracer`), prefix `capital_w_...` (failed: no `W` leaf), app `orchestra_view` (16 of 16 failed against no-op wiring, after making the two vacuous tests assert the view opened), UI `run_view_tests` (4 of 5 failed against an empty render; the tiny-pane no-panic test passes by design). `another_open_view_says_to_close_it_first` was added after the code (not seen red).
+
+| Unit | What |
+|------|------|
+| `OrchestraEvent::Trace{run, worker, item}`, `TraceItem::{Begin, Text, Call, Result}` | what a worker's turn produced, raw; never logged |
+| `runtime/orchestra.rs` `Tracer` | `launch` sends `Begin`; `drive` sends every sanitized `Delta`; `Route::deliver` sends the worker's `ToolCall`/`ToolResult` rows (the orchestrator turn still gets them) |
+| `core/ai/chat/run_trace.rs` | `Traces` in `ChatState` (never in `entries`, so never stored or sent as history): per worker, 128 KiB (oldest dropped on a row/char boundary, `(earlier output dropped)`), 16 workers (oldest not on view dropped), sanitized again on entry, one line per tool row, orphan results ignored, `Begin` clears (retry), only the pane's run kept and a trace after `Ended` dropped; the view (`RunView`, scroll `top: Option<usize>` = follow when `None`) keeps its run's transcript until closed |
+| `app/run_view.rs` | `Prefix W` (`view_worker`), keys of the open view, `refuse_over_run_view`; a failure alert closes the view; `chat.rs` routes view keys right after the approval, picker and folder checks |
+| `ui/components/chat/run_view.rs` | title row (worker line), rows, key line; with an approval the prompt keeps its bottom rows |
+
+Decisions: key `Ctrl+Space W` (capital like `T`, since `w` is the window group; `v`, `x`, `d`... are free but carry no meaning); unhinted root leaf (the root hint is full); gate off, no selection, a shell pane and another open view each show a notice. Ctrl+C is not swallowed in the view (it still cancels the selected worker / run); Esc closes the view instead of cancelling. Known limits: the transcript only holds what the app saw this process (nothing after a restart); a worker that ended is no longer selectable, so the view can only be opened on a live worker (an open one stays after its worker ends); a trace event is sent per delta (unbatched).

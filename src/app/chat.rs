@@ -130,6 +130,11 @@ impl App {
         if self.folder_pending(id) {
             return Vec::new();
         }
+        // A worker's transcript is the whole conversation view: it takes the
+        // keys the offer, the notice and the alert would (they are hidden).
+        if self.run_view_open(id) {
+            return self.on_run_view_key(id, &key, repeat);
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides. A held key never answers it.

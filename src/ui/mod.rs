@@ -87,7 +87,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 let review = chat_view.review_shown();
                 frame.render_widget(chat_view, area);
                 // The review hides the transcript the badge speaks of.
-                if !review && let Some(offset) = app.scrolled_by(id) {
+                if !review
+                    && chat.run_view().is_none()
+                    && let Some(offset) = app.scrolled_by(id)
+                {
                     frame.render_widget(ScrollBadge::new(offset, theme), area);
                 }
                 if let Some(position) = cursor {

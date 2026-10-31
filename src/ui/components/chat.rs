@@ -132,7 +132,7 @@ impl<'a> ChatView<'a> {
             return self.tag_cursor(editor, area);
         }
         // The prompt owns the bottom rows: the composer is hidden under it.
-        if self.approval.is_some() {
+        if self.approval.is_some() || self.chat.run_view().is_some() {
             return None;
         }
         if self.chat.list().is_some() {
@@ -366,6 +366,10 @@ impl ChatView<'_> {
             review::render(view, now, self.theme, area, buf);
             return;
         }
+        if self.chat.run_view().is_some() {
+            self.render_run_view(area, buf);
+            return;
+        }
         let (layout, plan) = self.plan(area);
         // The row the badge reserved is drawn over by `render`.
         if layout.transcript.y > area.y {
@@ -450,6 +454,9 @@ mod note;
 mod note_tests;
 #[cfg(test)]
 mod orch_tests;
+mod run_view;
+#[cfg(test)]
+mod run_view_tests;
 mod summary;
 #[cfg(test)]
 mod summary_tests;
