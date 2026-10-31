@@ -309,9 +309,16 @@ pub type Log = Arc<dyn Fn(LogLine) + Send + Sync>;
 #[derive(Default)]
 struct RunIds {
     last: u64,
+    /// The stored highest id was read (S9).
+    floored: bool,
 }
 
 impl RunIds {
+    /// Raises the last id to the highest the store has seen.
+    fn raise(&mut self, floor: u64) {
+        self.last = self.last.max(floor);
+    }
+
     fn next(&mut self, now_micros: u64) -> RunId {
         self.last = now_micros.max(self.last.saturating_add(1));
         RunId(self.last)
@@ -322,6 +329,9 @@ fn clock_micros() -> u64 {
     let since = SystemTime::now().duration_since(UNIX_EPOCH);
     since.map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
+
+/// Reads the highest run id the store has seen.
+type RunFloor = Box<dyn Fn() -> u64 + Send + Sync>;
 
 /// The run of one pane, with what its workers' turns need.
 struct Live {
@@ -411,6 +421,9 @@ pub struct RunManager {
     /// Where a nonce's bytes come from: the OS CSPRNG (a test swaps it).
     nonce: fn() -> Option<[u8; 8]>,
     ids: Mutex<RunIds>,
+    /// The highest run id the store has seen, read before the first id of
+    /// the process (S9); `None` reads none.
+    floor: Option<RunFloor>,
     runs: Mutex<HashMap<PaneId, Live>>,
     /// Set by `shutdown`, under the `runs` lock: no run starts after it.
     closed: AtomicBool,
@@ -432,6 +445,7 @@ impl RunManager {
             scratch: jail::is_scratch,
             nonce: nonce_bytes,
             ids: Mutex::default(),
+            floor: None,
             runs: Mutex::default(),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
@@ -450,6 +464,25 @@ impl RunManager {
             hub: Mutex::new(None),
         });
         self
+    }
+
+    /// Starts run ids above what `floor` reads, once, before the first id: the
+    /// highest one the store has seen, so a clock set back across a restart
+    /// never reuses one (S9). It may read a file; a failure reads zero.
+    pub fn with_run_floor(mut self, floor: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
+        self.floor = Some(Box::new(floor));
+        self
+    }
+
+    /// The next run id.
+    fn next_run(&self) -> RunId {
+        let mut ids = lock(&self.ids);
+        if let Some(floor) = &self.floor
+            && !std::mem::replace(&mut ids.floored, true)
+        {
+            ids.raise(floor());
+        }
+        ids.next(clock_micros())
     }
 
     /// Judges broad scratch folders with `scratch` instead of the jail's:
@@ -487,7 +520,7 @@ impl RunManager {
         if let Some(reason) = guidance(scope.roster.get(Task::Orchestrate)) {
             return Err(reason);
         }
-        let run = lock(&self.ids).next(clock_micros());
+        let run = self.next_run();
         let (read_scope, dropped) = self.read_scope(run, &scope.origin, &scope.roots);
         let live = Live {
             scope: read_scope,

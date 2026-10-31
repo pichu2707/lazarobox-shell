@@ -158,11 +158,13 @@ impl App {
         };
         // A run that ended stores nothing more, whether its pane is still a
         // chat or not.
+        let mut kept = Vec::new();
         if let OrchestraEvent::Ended { run } = &event {
             self.end_store(*run);
+            kept = self.keep_end(*run);
         }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
-            return Vec::new();
+            return kept;
         };
         // A worker that is over takes its waiting asks with it.
         let mut over = None;
@@ -188,7 +190,8 @@ impl App {
                 row.overridden = chat.orch_overrides().is_some_and(|over| {
                     over.is_on(row.kind, &row.engine, row.model.as_deref(), menu.as_deref())
                 });
-                chat.worker_row(row);
+                chat.worker_row(row.clone());
+                kept = self.keep_worker(id, &row);
             }
             OrchestraEvent::Halted {
                 run,
@@ -314,7 +317,11 @@ impl App {
             self.withdraw_worker(id, key);
         }
         self.dirty = true;
-        store.map_or_else(Vec::new, |(run, item)| self.store_item(id, run, item))
+        let mut effects = kept;
+        if let Some((run, item)) = store {
+            effects.extend(self.store_item(id, run, item));
+        }
+        effects
     }
 
     /// The orchestrator turn of the run of pane `id` ended with work pending
@@ -682,9 +689,15 @@ impl App {
         if !self.orch_gate() || self.orch_run_active(id) {
             return Vec::new();
         }
+        let mut now_on = false;
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.set_orch(!chat.orch());
+            now_on = chat.orch();
             self.dirty = true;
+        }
+        // The first ORCH of a start asks which runs a restart interrupted.
+        if now_on {
+            return self.recover_runs(id);
         }
         Vec::new()
     }
@@ -761,6 +774,9 @@ impl App {
                 .map(|m| m.content.clone())
                 .unwrap_or_default(),
         };
+        if attach.is_none() {
+            self.keep_goal(id, &goal);
+        }
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
             .as_ref()

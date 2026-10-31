@@ -234,7 +234,13 @@ fn the_toggle_applies_to_the_next_message() {
     let first = ask(&mut a, "one");
     assert_chat_turn(&first, chat_id());
     let (_, turn, _) = chatted(&first).unwrap();
-    assert_eq!(toggle(&mut a), vec![], "nothing reaches the running turn");
+    // Only the one-time question about interrupted runs (S9) leaves.
+    let recover = Effect::Store(StoreCmd::RecoverRuns { pane: chat_id() });
+    assert_eq!(
+        toggle(&mut a),
+        vec![recover],
+        "nothing reaches the running turn"
+    );
     assert!(a.orchestrating(chat_id()));
     a.update(finish(turn));
     let next = ask(&mut a, "two");

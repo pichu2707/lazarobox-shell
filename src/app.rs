@@ -68,6 +68,7 @@ mod orchestra;
 mod picker;
 mod review;
 mod run;
+mod run_store;
 mod scroll;
 mod summary;
 mod tags;
@@ -834,6 +835,8 @@ pub struct App {
     run_stores: HashMap<RunId, handoff::RunStore>,
     /// Runs that ended or lost their pane: they store nothing more.
     ended_runs: HashSet<RunId>,
+    /// The runs saved to the local store, and what is said about it (S9).
+    run_keep: run_store::RunKeep,
     /// Run saves whose wait ran out: their late answer is dropped.
     lost_saves: HashSet<(PaneId, crate::core::ai::memory::port::SaveId)>,
     /// What still runs in the panes, named by the open quit prompt.
@@ -988,6 +991,7 @@ impl App {
             summary_failure_shown: false,
             run_stores: HashMap::new(),
             ended_runs: HashSet::new(),
+            run_keep: run_store::RunKeep::default(),
             lost_saves: HashSet::new(),
             still_running: Vec::new(),
             serving_others: false,
@@ -1917,6 +1921,7 @@ impl App {
             AppEvent::Store(reply) => {
                 let mut effects = self.on_history_reply(&reply);
                 effects.extend(self.on_store_reply(&reply));
+                self.on_runs_reply(&reply);
                 effects
             }
             // What was just installed is not news any more.
@@ -8354,6 +8359,8 @@ mod app_tests {
     /// The failure alert of a run, its keys and the run's events.
     mod orchestra_run;
     mod orchestra_send;
+    /// The runs the local store keeps and shows after a restart (S9).
+    mod orchestra_store;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;
 

@@ -18,6 +18,7 @@ use crate::{
             engine::Role,
             store::{ERROR_MAX, LinkKind, StoredMessage},
         },
+        ai::orchestra::record::{RunPhase, RunRecord, WorkerRecord},
         layout::PaneId,
     },
     runtime::chat_store::open_as,
@@ -2234,5 +2235,103 @@ fn recent_folders_answer_after_a_v2_store_migrates_to_v3() {
     assert!(
         folders.contains(&PathBuf::from("/home/u/work/parser")),
         "{folders:?}"
+    );
+}
+
+// ---- orchestrator runs (S9) ------------------------------------------------
+
+fn stored_run(id: u64, phase: RunPhase) -> Box<RunRecord> {
+    Box::new(RunRecord {
+        id,
+        goal: "g".into(),
+        phase,
+        workers: vec![WorkerRecord {
+            id: 1,
+            kind: "review".into(),
+            engine: "codex".into(),
+            model: None,
+            status: "running".into(),
+        }],
+    })
+}
+
+#[test]
+fn a_saved_run_is_written_silently_and_a_restart_finds_it_interrupted() {
+    let (_dir, mut worker, conn) = fixture();
+    let saved = worker.handle(StoreCmd::SaveRun {
+        pane: pane(),
+        run: stored_run(5, RunPhase::Live),
+    });
+    assert_eq!(saved, None);
+    assert_eq!(count(&conn, "runs"), 1);
+    // This process owns it, so it is not interrupted.
+    let own = worker.handle(StoreCmd::RecoverRuns { pane: pane() });
+    assert_eq!(
+        own,
+        Some(StoreReply::RunsRecovered {
+            pane: pane(),
+            runs: vec![]
+        })
+    );
+    // A process that is gone owned it.
+    conn.execute("UPDATE runs SET owner = 4000000", []).unwrap();
+    let Some(StoreReply::RunsRecovered { runs, .. }) =
+        worker.handle(StoreCmd::RecoverRuns { pane: pane() })
+    else {
+        panic!("expected the recovered runs");
+    };
+    assert_eq!(runs.len(), 1);
+    assert_eq!((runs[0].id, runs[0].phase), (5, RunPhase::Interrupted));
+    assert_eq!(runs[0].workers[0].status, "running");
+}
+
+#[test]
+fn run_commands_on_an_unusable_store_answer_failures() {
+    let mut worker = Worker::new(|| Err(StoreError::NoPath));
+    assert_eq!(
+        worker.handle(StoreCmd::SaveRun {
+            pane: pane(),
+            run: stored_run(1, RunPhase::Live)
+        }),
+        Some(StoreReply::RunsFailed {
+            pane: pane(),
+            saving: true
+        })
+    );
+    assert_eq!(
+        worker.handle(StoreCmd::RecoverRuns { pane: pane() }),
+        Some(StoreReply::RunsFailed {
+            pane: pane(),
+            saving: false
+        })
+    );
+}
+
+#[test]
+fn a_handle_without_a_thread_answers_the_run_commands() {
+    let (tx, mut rx) = mpsc::channel(8);
+    let handle = spawn_with(
+        |_| Err(std::io::Error::other("no threads left")),
+        || Err(StoreError::NoPath),
+        tx,
+    );
+    handle.send(StoreCmd::SaveRun {
+        pane: pane(),
+        run: stored_run(1, RunPhase::Live),
+    });
+    handle.send(StoreCmd::RecoverRuns { pane: pane() });
+    assert_eq!(
+        rx.blocking_recv(),
+        Some(StoreReply::RunsFailed {
+            pane: pane(),
+            saving: true
+        })
+    );
+    assert_eq!(
+        rx.blocking_recv(),
+        Some(StoreReply::RunsFailed {
+            pane: pane(),
+            saving: false
+        })
     );
 }

@@ -12,7 +12,9 @@ use std::{
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
+pub mod runs;
 pub mod worker;
+pub use runs::highest_run;
 pub use worker::{StoreHandle, spawn, spawn_at};
 
 /// The schema version this build writes and understands.
@@ -470,6 +472,9 @@ fn migrate_locked(
     }
     if target >= 2 {
         ensure_folder(&tx)?;
+    }
+    if target >= 3 {
+        tx.execute_batch(runs::SCHEMA_RUNS)?;
     }
     let mut dropped = 0;
     let rebuilt = (1..3).contains(&version) && target >= 3;

@@ -830,6 +830,41 @@ fn run_ids_grow_with_the_clock_and_never_repeat() {
     assert!(later.next(clock_micros()).0 > last.0);
 }
 
+// S9: the highest id the store has seen is a floor, so a clock set back across
+// a restart never reuses an id.
+#[test]
+fn run_ids_start_above_the_stored_floor_whatever_the_clock_says() {
+    let mut ids = RunIds::default();
+    ids.raise(10_000);
+    assert_eq!(
+        ids.next(5),
+        RunId(10_001),
+        "the clock is far behind the store"
+    );
+    ids.raise(3);
+    assert_eq!(ids.next(5), RunId(10_002), "a lower floor changes nothing");
+}
+
+#[tokio::test]
+async fn the_manager_asks_for_the_floor_once_before_its_first_id() {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    let lab = lab_with(Script::Hang, |m, _| {
+        m.with_run_floor(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            u64::MAX / 2
+        })
+    });
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "nothing is read before a run"
+    );
+    let (first, second) = (lab.manager.next_run(), lab.manager.next_run());
+    assert_eq!((first.0, second.0), (u64::MAX / 2 + 1, u64::MAX / 2 + 2));
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
 // S1b-2 security obligation: a run's read scope lives with its run only. A
 // later run, or a run of an earlier process resumed, gets only its own scope:
 // the old one grants nothing.

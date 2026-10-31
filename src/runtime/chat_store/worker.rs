@@ -14,7 +14,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
-use super::{StoreError, open};
+use super::{StoreError, open, runs};
 use crate::core::{
     ai::{
         chat::{
@@ -279,6 +279,24 @@ impl Worker {
                     None => StoreReply::ResumeFailed { pane },
                 })
             }
+            StoreCmd::SaveRun { pane, run } => {
+                let saved = self.conn().ok().is_some_and(|conn| {
+                    runs::save_run(conn, &run, std::process::id(), now()).is_ok()
+                });
+                (!saved).then_some(StoreReply::RunsFailed { pane, saving: true })
+            }
+            StoreCmd::RecoverRuns { pane } => {
+                let found = self.conn().ok().and_then(|conn| {
+                    runs::recover_runs(conn, std::process::id(), runs::pid_alive, now()).ok()
+                });
+                Some(match found {
+                    Some(runs) => StoreReply::RunsRecovered { pane, runs },
+                    None => StoreReply::RunsFailed {
+                        pane,
+                        saving: false,
+                    },
+                })
+            }
             StoreCmd::Delete { pane, conversation } => {
                 let gone = self
                     .conn()
@@ -329,6 +347,8 @@ impl Worker {
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
+            StoreCmd::SaveRun { pane, .. } => (*pane, Panicked::Runs(true)),
+            StoreCmd::RecoverRuns { pane } => (*pane, Panicked::Runs(false)),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -347,6 +367,7 @@ impl Worker {
                         | Panicked::SetTags
                         | Panicked::SetFolder
                         | Panicked::Recent
+                        | Panicked::Runs(_)
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -361,6 +382,7 @@ impl Worker {
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
                     Panicked::SetFolder => return None,
+                    Panicked::Runs(saving) => StoreReply::RunsFailed { pane, saving },
                     Panicked::Recent => StoreReply::RecentFolders {
                         pane,
                         folders: Vec::new(),
@@ -388,6 +410,8 @@ enum Panicked {
     SetTags,
     SetFolder,
     Recent,
+    /// A run command; `true` when it was a save.
+    Runs(bool),
 }
 
 /// The message of a panic payload, or a generic line.
@@ -873,6 +897,11 @@ impl StoreHandle {
             StoreCmd::RecentFolders { pane, .. } => StoreReply::RecentFolders {
                 pane,
                 folders: Vec::new(),
+            },
+            StoreCmd::SaveRun { pane, .. } => StoreReply::RunsFailed { pane, saving: true },
+            StoreCmd::RecoverRuns { pane } => StoreReply::RunsFailed {
+                pane,
+                saving: false,
             },
             _ => return,
         };

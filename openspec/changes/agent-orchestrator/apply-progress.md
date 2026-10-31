@@ -668,3 +668,25 @@ Strict TDD, RED first: UI header test (the receipt after the gate; 2 of 2 failed
 | 4 | `late` records a path once | `a_path_seen_late_twice_counts_once` |
 | 5 | `receipt` and `receipt_line` say `(the run is gone)` on the review line | `a_receipt_of_a_run_that_is_gone_says_so` |
 | 6 | `fit` clips a first line over the cap instead of dropping it | `a_single_line_over_the_cap_is_clipped_not_dropped` |
+
+## S9 (run view and persistence), PR 9.1a: runs table and interrupted-run notice (branch feat/agent-orchestrator-s9, on s7b4; 9.1a `[x]`, 9.1b and 9.1c open)
+
+Split planned up front in tasks.md: 9.1a store + interrupted notice, 9.1b run view (key), 9.1c resume choice + the two S4b between-turn gaps. Only 9.1a is done; the split follows the suggested one because the store, the view and the resume choice each have their own review surface.
+
+Strict TDD evidence: core `record_tests` (5) were written beside `record.rs`, not RED first (one test of mine was wrong: `y` appears in "by"; fixed). The store, worker, app and manager tests were written with or just before their code; behavioural RED was seen when the existing tests that assert the exact table list (`a_fresh_store_gets_schema_v3`, `an_empty_database_at_version_zero_is_migrated`) and the two "toggle returns no effect" tests (`ctrl_o_turns_the_orch_mode_on_then_off`, `the_toggle_applies_to_the_next_message`) failed against the new behaviour and were updated deliberately; the first full run also failed my own `recovery_interrupts_only...` (wrong last assertion) and `more_than_three...` (a "more" line contains the counted words). Honest gap: not every unit was RED first.
+
+| Unit | What |
+|------|------|
+| `core/ai/orchestra/record.rs` | `RunRecord`, `WorkerRecord`, `RunPhase` (`live`/`ended`/`interrupted`), `stored_goal` (sanitized, cut to 2 KiB on a char boundary), `interrupted_line` (goal first line, sanitized, clipped to 60 chars) |
+| `runtime/chat_store/runs.rs` | tables `runs`, `run_workers`, `run_high` created `IF NOT EXISTS` by `migrate_locked` (target >= 3), no version bump: an older build ignores them and an old file gains them; `save_run` (upsert, replace workers, raise `run_high`, keep the newest 50 non-live runs), `recover_runs` (live + owner pid not this process + `kill(pid,0)` ESRCH becomes `interrupted`), `highest_run(path)` |
+| `StoreCmd::SaveRun` / `RecoverRuns`, `StoreReply::RunsRecovered` / `RunsFailed{saving}` | worker handles, panic guard keeps the connection, a handle without a thread answers failures |
+| `app/run_store.rs` | `RunKeep`: goal taken at the fresh turn, run saved on every `Worker` event, closed on `Ended`, `RecoverRuns` sent once per process at the first ORCH toggle-on, up to 3 interrupted runs named plus `N more runs...`, a save failure and a read failure said once each |
+| `RunManager::with_run_floor` | the floor is read lazily once before the first id of the process (sync read of `run_high` at the first run start), `RunIds::raise` |
+
+Decisions and limits:
+- Gate OFF: no run command is ever sent; the three tables exist, empty (harmless: created by the migration for every user).
+- Multi-instance safety: a second lazarobox must not interrupt the first's live run, hence `owner` pid plus a liveness check (pid reuse could keep a dead run `live`; it stays `live` in the DB, not shown, harmless).
+- The notice appears at the first ORCH toggle-on after a start, not at process start: the store is opened lazily by design and a session that never orchestrates must not touch the run tables. A process that quits first leaves the runs `live`, found next time.
+- A run only exists in the store from its first worker row (a run with no workers has nothing to resume).
+- The floor read does a short synchronous SQLite open at the first run start of the process (on the chat runtime thread). A failure reads zero (the clock alone, as before) and the next save failure is said by `could not save the run`.
+- Sequencing choice: run pane ids are not stored (they restart each process and mean nothing later).
