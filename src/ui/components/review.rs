@@ -40,16 +40,12 @@ fn seconds(left: Duration) -> String {
 
 /// The counter row, and whether it is a warning.
 fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
-    // A worker's batch names the worker first, then the line of its review's
-    // receipt when it had one (S7b: a note, never a gate); a chat's batch is
-    // unchanged.
+    // A worker's batch names the worker first; a chat's batch is unchanged.
+    // The line of its review's receipt (S7b: a note, never a gate) goes last,
+    // so a narrow pane cuts it before the gate or the refusal.
     let review = view.review();
-    let by = review.label().map_or_else(String::new, |label| {
-        let receipt = review
-            .receipt()
-            .map_or_else(String::new, |r| format!("{r} · "));
-        format!("{label} · {receipt}")
-    });
+    let by = (review.label()).map_or_else(String::new, |label| format!("{label} · "));
+    let note = (review.receipt()).map_or_else(String::new, |line| format!(" · {line}"));
     if !view.reviewable() {
         let text = if view.refused_hint(now) {
             "y can't approve this batch · press n"
@@ -58,7 +54,7 @@ fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
         } else {
             WARN_TRUNCATED
         };
-        return (format!("{by}{text}"), true);
+        return (format!("{by}{text}{note}"), true);
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
@@ -81,7 +77,10 @@ fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
     };
     let counts = view.review().counts();
     (
-        format!("{by}{counts} · seen {}/{total} · {gate}", total - remaining),
+        format!(
+            "{by}{counts} · seen {}/{total} · {gate}{note}",
+            total - remaining
+        ),
         false,
     )
 }
@@ -195,7 +194,7 @@ mod label_tests {
         let counts = header_of(plain.clone());
         assert_eq!(
             header_of(with.clone()),
-            format!("code x \u{b7} {line} \u{b7} {counts}")
+            format!("code x \u{b7} {counts} \u{b7} {line}")
         );
         // A chat's batch ignores a receipt: its header is as it was.
         let chat = Arc::new(BatchReview::new(plain.doc().clone()).with_receipt(Some(line.into())));
@@ -212,5 +211,49 @@ mod label_tests {
         assert_eq!(a.can_approve(now), b.can_approve(now));
         assert_eq!(a.remaining(), b.remaining());
         assert_eq!(a.arm_left(now), b.arm_left(now));
+    }
+
+    /// The first row of `view` drawn in a pane `width` wide.
+    fn first_row(view: &ReviewView, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 6);
+        let mut buf = Buffer::empty(area);
+        let later = Instant::now() + Duration::from_secs(3600);
+        render(view, later, &LazaroboxTheme::default(), area, &mut buf);
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_owned())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    // The receipt goes after the gate and the refusal text: a narrow pane cuts
+    // it first, and never the words the user needs to answer.
+    #[test]
+    fn a_narrow_pane_cuts_the_receipt_before_the_gate_or_the_refusal() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        let line = "review: high \u{b7} consent granted \u{b7} blockers open: 2 \u{b7} not reviewed: 3 paths";
+        let worker = |plain: &Arc<BatchReview>, receipt: Option<&str>| {
+            let doc = plain.doc().clone();
+            let review = BatchReview::labelled(doc, "code x".into(), key)
+                .with_receipt(receipt.map(str::to_owned));
+            ReviewView::new(Arc::new(review), (80, 20))
+        };
+        let full = review_of(&[("a.txt", "one\n", false)]);
+        for width in [80_u16, 50] {
+            let bare = first_row(&worker(&full, None), width);
+            let with = first_row(&worker(&full, Some(line)), width);
+            assert!(bare.contains("remaining"), "{width}: {bare}");
+            assert!(with.starts_with(&bare), "{width}: {with}");
+            if width == 50 {
+                assert_eq!(with, bare, "the receipt takes no room from the gate");
+            }
+        }
+        let empty = review_of(&[]);
+        for width in [80_u16, 50] {
+            let bare = first_row(&worker(&empty, None), width);
+            let with = first_row(&worker(&empty, Some(line)), width);
+            assert!(bare.contains("empty batch"), "{width}: {bare}");
+            assert!(with.starts_with(&bare), "{width}: {with}");
+        }
     }
 }
