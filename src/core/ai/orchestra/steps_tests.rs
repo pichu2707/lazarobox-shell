@@ -3,25 +3,30 @@
 use std::time::{Duration, Instant};
 
 use super::RunId;
+use super::WorkerId;
 use super::ledger::{Judgement, Unit, Verdict};
-use super::run::{Refusal, Roster, Run, RunLimits};
+use super::run::{Refusal, Roster, Run, RunLimits, RunState, UserChoice, WorkerEvent};
 use super::steps::{Grant, Mark, Size, Step, StepError};
 use super::tools::{OrchCall, OrchError, parse};
+use super::worker::{ErrorClass, WorkerStatus};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
 use serde_json::json;
 
-fn run() -> Run {
+fn roster() -> Roster {
     let ready = Availability::Ready {
         engine: "claude".to_owned(),
         model: Some("opus".to_owned()),
     };
-    let roster = Roster::new(vec![
+    Roster::new(vec![
         (Task::Orchestrate, ready.clone()),
         (Task::Code, ready.clone()),
         (Task::Review, ready),
-    ]);
-    Run::new(RunId(5), roster, Duration::from_secs(600)).with_limits(RunLimits {
+    ])
+}
+
+fn run() -> Run {
+    Run::new(RunId(5), roster(), Duration::from_secs(600)).with_limits(RunLimits {
         parallel: 4,
         ..Default::default()
     })
@@ -61,7 +66,8 @@ fn a_step_is_not_closed_without_its_handoff() {
     assert!(!run.steps().is_closed(Step::Authorize));
     let handoff = run
         .handoff_step(Step::Authorize, Mark::Grant(Grant::Implement), note("ok"))
-        .expect("stored");
+        .expect("stored")
+        .handoff;
     assert_eq!(handoff.unit, Unit::Step(Step::Authorize));
     assert_eq!(handoff.kind, Task::Orchestrate);
     assert_eq!(handoff.engine_model(), "claude>opus");
@@ -146,13 +152,164 @@ fn a_read_only_goal_refuses_a_code_worker() {
     assert_eq!(run.spawn(now, Task::Code, "p"), Err(Refusal::ReadOnly));
     assert_eq!(run.worker_count(), 0);
     assert!(run.spawn(now, Task::Review, "p").is_ok());
+    assert_eq!(
+        run.handoff_step(
+            Step::Authorize,
+            Mark::Grant(Grant::Implement),
+            note("again")
+        ),
+        Err(StepError::Widen)
+    );
+    assert_eq!(run.spawn(now, Task::Code, "p"), Err(Refusal::ReadOnly));
+    assert_eq!(
+        run.steps()
+            .handoff(Step::Authorize)
+            .map(|h| h.done.as_str()),
+        Some("explain")
+    );
+}
+
+// Review 1(a): a code worker already running keeps the grant from turning
+// read-only; cancelling it first lets the grant through.
+#[test]
+fn read_only_is_refused_while_a_code_worker_runs() {
+    let mut run = run();
+    let now = Instant::now();
+    let code = run.spawn(now, Task::Code, "p").expect("spawn");
+    assert_eq!(
+        run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x")),
+        Err(StepError::CodeRunning(code))
+    );
+    assert!(!run.steps().read_only());
+    assert!(!run.steps().is_closed(Step::Authorize));
+    run.cancel(now, code);
+    assert!(
+        run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x"))
+            .is_ok()
+    );
+}
+
+// Review 1(b): a queued code worker is ended refused with a reason when the
+// goal becomes read-only, without halting the run; other kinds still start.
+#[test]
+fn read_only_refuses_the_queued_code_workers() {
+    let mut run = run().with_limits(RunLimits::default());
+    let now = Instant::now();
+    let review = run.spawn(now, Task::Review, "a").expect("spawn");
+    let code = run.spawn(now, Task::Code, "b").expect("spawn");
+    let second = run.spawn(now, Task::Review, "c").expect("spawn");
+    assert_eq!(run.status(code), Some(WorkerStatus::Queued));
+    let done = run
+        .handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x"))
+        .expect("authorized");
+    assert_eq!(done.refused, vec![code]);
+    assert_eq!(run.status(code), Some(WorkerStatus::Refused));
+    let error = run.result(code).and_then(|r| r.error.clone());
+    assert!(error.is_some_and(|(_, text)| text.contains("read-only")));
+    assert_eq!(*run.state(), RunState::Open);
+    run.on_event(
+        now,
+        review,
+        WorkerEvent::Done {
+            text: "t".to_owned(),
+        },
+    );
+    assert_eq!(run.status(second), Some(WorkerStatus::Running));
+    assert_eq!(run.status(code), Some(WorkerStatus::Refused));
+}
+
+fn failed_code(run: &mut Run) -> WorkerId {
+    let now = Instant::now();
+    let code = run.spawn(now, Task::Code, "p").expect("spawn");
+    run.on_event(
+        now,
+        code,
+        WorkerEvent::Failed {
+            class: ErrorClass::Other,
+            text: "boom".to_owned(),
+        },
+    );
+    code
+}
+
+// Review 1(c): a halted code worker is not started again on a read-only run,
+// by a retry or a relaunch; the halt names the reason.
+#[test]
+fn a_retry_or_relaunch_never_restarts_a_code_worker_on_a_read_only_run() {
+    for relaunch in [false, true] {
+        let mut run = run();
+        let code = failed_code(&mut run);
+        run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x"))
+            .expect("authorized while halted");
+        let choice = if relaunch {
+            UserChoice::Relaunch(roster())
+        } else {
+            UserChoice::Retry
+        };
+        run.decide(Instant::now(), choice).expect("halted");
+        assert_eq!(run.status(code), Some(WorkerStatus::Refused), "{relaunch}");
+        let RunState::Halted { text, .. } = run.state() else {
+            panic!("{:?}", run.state());
+        };
+        assert!(text.contains("read-only"), "{text}");
+    }
+}
+
+// Review 3: a classification without its reason is refused.
+#[test]
+fn classify_needs_a_reason() {
+    let mut run = run();
+    close_all(&mut run, &[Step::Authorize, Step::Explore, Step::Resolve]);
+    let mut blank = note("x");
+    blank.reason = " \n".to_owned();
+    assert_eq!(
+        run.handoff_step(Step::Classify, Mark::Size(Size::Small), blank),
+        Err(StepError::NoReason)
+    );
+    assert!(!run.steps().is_closed(Step::Classify));
+    assert_eq!(run.steps().size(), None);
+}
+
+// Review 4: authorize may repeat to narrow; classify only until a later step
+// closes.
+#[test]
+fn a_repeat_may_narrow_authorize_and_classify_locks_with_the_next_step() {
+    let mut run = run();
+    close_all(&mut run, &[Step::Authorize, Step::Explore, Step::Resolve]);
     run.handoff_step(
         Step::Authorize,
-        Mark::Grant(Grant::Implement),
-        note("again"),
+        Mark::Grant(Grant::ReadOnly),
+        note("narrow"),
     )
-    .expect("replaced");
-    assert_eq!(run.spawn(now, Task::Code, "p"), Err(Refusal::ReadOnly));
+    .expect("implement to read_only");
+    assert!(run.steps().read_only());
+    run.handoff_step(Step::Classify, Mark::Size(Size::Large), note("a"))
+        .expect("first");
+    run.handoff_step(Step::Classify, Mark::Size(Size::Small), note("b"))
+        .expect("repeat before a later step");
+    assert_eq!(run.steps().size(), Some(Size::Small));
+    close_all(&mut run, &[Step::Implement]);
+    assert_eq!(
+        run.handoff_step(Step::Classify, Mark::Size(Size::Large), note("c")),
+        Err(StepError::Locked {
+            step: Step::Classify,
+            later: Step::Implement
+        })
+    );
+    assert_eq!(run.steps().size(), Some(Size::Small));
+}
+
+// Review 5: a step closes while the run is halted, its verdict forced to
+// blocked as for a worker's handoff.
+#[test]
+fn a_step_closes_while_halted_with_a_blocked_verdict() {
+    let mut run = run();
+    failed_code(&mut run);
+    let done = run
+        .handoff_step(Step::Authorize, Mark::Grant(Grant::Implement), note("x"))
+        .expect("closed");
+    assert_eq!(done.handoff.verdict, Verdict::Blocked);
+    assert!(run.steps().is_closed(Step::Authorize));
 }
 
 #[test]

@@ -541,3 +541,24 @@ fn a_handoff_after_the_run_ended_is_refused() {
         Some(Verdict::OnCourse)
     );
 }
+
+// Review 6: the steps line counts inside the bound: a goal and failures that
+// fill it leave the compact line, never an overflow.
+#[test]
+fn the_steps_line_counts_inside_the_budget() {
+    let goal = "g".repeat(300);
+    let full = format!(
+        "Steps: authorize (read_only), classify (large: {})",
+        "r".repeat(200)
+    );
+    let ledger = Ledger::new(&goal, Vec::new()).with_steps(full, "Steps: 2 closed".to_owned());
+    let budget = "Goal: ".len() + goal.len() + 1 + "Steps: 2 closed".len() + 1 + "Workers:".len();
+    let text = ledger.render_within(budget);
+    assert!(text.len() <= budget, "{} > {budget}", text.len());
+    assert!(
+        text.contains("Steps: 2 closed") && text.contains(&goal),
+        "{text}"
+    );
+    let roomy = ledger.render_within(budget + 400);
+    assert!(roomy.contains("(large: rrr"), "{roomy}");
+}

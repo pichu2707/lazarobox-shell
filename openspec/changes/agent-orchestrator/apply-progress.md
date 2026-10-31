@@ -457,6 +457,23 @@ Strict TDD: `steps_tests.rs` (8), two runtime tests, one persist test and one ap
 - `Step::Track` is refused for a goal classified `small`, and skipped in the order check for it; the "large needs its document" check beyond the track step itself is 5.2 (`FeatureDoc`).
 - Spec "Implement is a draft before S7": S7 is merged, so a `code` worker may stage under the user's batch review; no change in this PR, the playbook text is 5.2.
 
+### 5.1 review fixes
+
+Strict TDD: the tests were written first against inert stubs (new `StepError` variants, `StepDone`, empty `short_line`, no checks). RED observed: 7 of 15 new/changed tests failed (`read_only_is_refused_while_a_code_worker_runs`, `read_only_refuses_the_queued_code_workers`, `a_retry_or_relaunch_never_restarts_a_code_worker_on_a_read_only_run`, `classify_needs_a_reason`, `a_repeat_may_narrow_authorize_and_classify_locks_with_the_next_step`, `a_read_only_goal_refuses_a_code_worker` (widen), `the_steps_line_counts_inside_the_budget`). `a_step_closes_while_halted_with_a_blocked_verdict` pins existing behaviour and passed at once. Gates: fmt clean, clippy `-D warnings` clean, `cargo test` 7923 passed (lib).
+
+| # | Fix | Test |
+|---|-----|------|
+| 1a | `authorize read_only` is refused while a `code` worker runs: `cancel code worker N first: the goal is read-only` | `read_only_is_refused_while_a_code_worker_runs`, runtime `read_only_names_the_running_code_worker_and_classify_needs_a_reason` |
+| 1b | queued `code` workers end `Refused` (reason `READ_ONLY`, no halt) when the goal becomes read-only; the ack lists them and the manager syncs their rows and transcript lines | `read_only_refuses_the_queued_code_workers` |
+| 1c | `enqueue` refuses any `code` worker on a read-only run, so Retry and Relaunch halt again with the reason | `a_retry_or_relaunch_never_restarts_a_code_worker_on_a_read_only_run` |
+| 3 | `classify` with a blank reason: `classify needs a reason` | `classify_needs_a_reason` |
+| 4 | `read_only` to `implement` is refused (`Widen`); narrowing may repeat; `classify` cannot repeat once a later step is closed (`Locked`); tool description updated | `a_read_only_goal_refuses_a_code_worker`, `a_repeat_may_narrow_authorize_and_classify_locks_with_the_next_step` |
+| 5 | comment: a step closes while halted with a forced `blocked` verdict | `a_step_closes_while_halted_with_a_blocked_verdict` |
+| 6 | the steps line counts inside `render_within`; if the rows cannot make room it shrinks to `Steps: N closed` | `the_steps_line_counts_inside_the_budget` |
+| 7 | `steps_mut` is used by `steps_tests`, which is not Linux-gated: left as is | |
+
+Known limit (2): the read-only marker comes from the orchestrator's `authorize`, so a model that never calls it is never restricted; writes still wait for the user's batch review. Recorded in design D15 with the S7b/S10 revisit options (gate spawn on `authorize` closed, or derive the default from the goal).
+
 ## S5 (ODD flow), PR S5-2: task 5.2 (branch feat/agent-orchestrator-s5b, on 5.1)
 
 Strict TDD: `feature_tests.rs` (7 pure tests) written against stubs (`build`/`correct` returned `NoDocument`, `draw` empty, `of_feature` empty key): 7 of 7 RED, then implemented. Run/tool tests (4) written before `Run::feature_build`/`feature_correct`, `StepError::Doc` and `OrchCall::{Feature, Correct}` existed (compile-level RED). Prompt playbook test RED (`playbook authorize in order`) before the `orchestrate_odd.md` files. The runtime test and the app test were written with the wiring (both passed after one test-side fix; the app one is a thin pass-through, its RED is the missing `OrchestraEvent::Feature`). The registry-args test was written together with the args (no separate RED). Gates: fmt clean, clippy `-D warnings` clean, `cargo test` 7930 passed in the lib target plus the integration suites.
@@ -476,3 +493,4 @@ Strict TDD: `feature_tests.rs` (7 pure tests) written against stubs (`build`/`co
 - `Scenario: A large goal needs its document`: the order check from 5.1 already names `track` when `implement` is attempted; 5.2 makes `track` itself unclosable without the document.
 - Playbook `implement` stays "drafts and review only" although S7 write tools exist for `code` workers: the spec asks for it and the user's batch review is what makes anything final. S8 will add the test-evidence rule.
 - The goal is not copied into the ledger twice: the ledger form of the document shows L1 as `(the goal above)`.
+- Merged with the 5.1 review fixes (09c20789): `close_step` carries the `narrows` flag and returns `StepDone` (queued code workers refused, the runtime syncs them); the document build takes the same `Ended`/order checks, and `Widen`, `Locked`, `NoReason`, `CodeRunning` do not apply to `track` (they belong to `authorize`/`classify`). `step_refusal` maps every `StepError`. The ledger counts the feature document inside the bound: full steps and document, then the short steps line, then the document as a count line (`FeatureDoc::short_line`).

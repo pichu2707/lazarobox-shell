@@ -2,6 +2,7 @@
 //! Pure: a step is closed only with its handoff, kept in the ledger whether
 //! or not engram stores it.
 
+use super::WorkerId;
 use super::feature::FeatureError;
 use super::ledger::Handoff;
 
@@ -50,6 +51,9 @@ impl Step {
         Self::ALL.iter().position(|step| *step == self).unwrap_or(0)
     }
 }
+
+/// The reason a `code` worker is refused on a read-only goal.
+pub const READ_ONLY: &str = "code workers are not spawned for a read-only goal";
 
 /// How big `classify` found the goal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,6 +121,15 @@ pub enum StepError {
     NotLarge,
     /// The feature document refused (S5): `track` closes with it.
     Doc(FeatureError),
+    /// `authorize` cannot make the goal read-only while this `code` worker
+    /// runs: cancel it first.
+    CodeRunning(WorkerId),
+    /// `classify` needs a reason (its one line).
+    NoReason,
+    /// A read-only goal cannot be authorized to implement again.
+    Widen,
+    /// `step` cannot be handed off again: `later` is already closed.
+    Locked { step: Step, later: Step },
 }
 
 /// The steps of one run.
@@ -152,6 +165,12 @@ impl Steps {
     /// `track` for a goal not found large.
     pub fn check(&self, step: Step) -> Result<(), StepError> {
         let small = self.size() == Some(Size::Small);
+        if step == Step::Classify && self.is_closed(step) {
+            let later = Step::ALL.into_iter().skip(step.at() + 1);
+            if let Some(later) = later.into_iter().find(|s| self.is_closed(*s)) {
+                return Err(StepError::Locked { step, later });
+            }
+        }
         if step == Step::Track && small {
             return Err(StepError::NotLarge);
         }
@@ -162,6 +181,17 @@ impl Steps {
             }
         }
         Ok(())
+    }
+
+    /// Whether `mark` may replace what `step` stored: a read-only grant is
+    /// never widened, so the record and the ledger agree.
+    pub fn check_mark(&self, step: Step, mark: Mark) -> Result<(), StepError> {
+        match (step, mark) {
+            (Step::Authorize, Mark::Grant(Grant::Implement)) if self.read_only => {
+                Err(StepError::Widen)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Keeps the handoff of `step`, replacing an earlier one.
@@ -189,15 +219,21 @@ impl Steps {
         Ok(())
     }
 
+    /// The ledger's line without grants, sizes and reasons.
+    pub fn short_line(&self) -> String {
+        let closed = Step::ALL.into_iter().filter(|s| self.is_closed(*s)).count();
+        match closed {
+            0 => String::new(),
+            n => format!("Steps: {n} closed"),
+        }
+    }
+
     /// The ledger's line: each closed step, with its grant or size.
     pub fn line(&self) -> String {
         let closed: Vec<String> = Step::ALL
             .into_iter()
             .filter(|step| self.is_closed(*step))
             .map(|step| match (step, self.grant, &self.size) {
-                (Step::Authorize, Some(_), _) if self.read_only => {
-                    format!("{} ({})", step.label(), Grant::ReadOnly.label())
-                }
                 (Step::Authorize, Some(grant), _) => {
                     format!("{} ({})", step.label(), grant.label())
                 }

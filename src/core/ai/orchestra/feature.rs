@@ -154,6 +154,16 @@ impl FeatureDoc {
         self.draw(Some("(the goal above)"))
     }
 
+    /// The count line the ledger keeps when it has no room for the document.
+    pub fn short_line(&self) -> String {
+        format!(
+            "Feature document: {} specs, {} tasks, {} log entries",
+            self.specs.len(),
+            self.tasks.len(),
+            self.log.len()
+        )
+    }
+
     fn draw(&self, goal: Option<&str>) -> String {
         let mut out = format!("Feature document (run {})\nSpecs:", self.run.0);
         for spec in &self.specs {

@@ -291,3 +291,20 @@ fn the_handoff_tool_carries_the_document_and_its_corrections() {
         assert_eq!(parse("handoff", &args), Err(error), "{args}");
     }
 }
+
+// The document counts inside the ledger bound like the steps line: at a tight
+// budget it shrinks to its count line, with room it is whole.
+#[test]
+fn the_ledger_shrinks_the_document_to_a_count_line_at_its_bound() {
+    let mut run = large_run();
+    run.feature_build(GOAL, &strings(&["first", "second"]), &[], judgement())
+        .expect("built");
+    let ledger = run.run_ledger(GOAL);
+    assert!(ledger.render().contains("S2: second"));
+    let tight = ledger.render_within(GOAL.len() + 110);
+    assert!(
+        tight.contains("Feature document: 2 specs, 0 tasks, 1 log entries"),
+        "{tight}"
+    );
+    assert!(!tight.contains("S2: second"));
+}
