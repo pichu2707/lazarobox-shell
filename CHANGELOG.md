@@ -10,6 +10,25 @@ baseline.
 
 ## [Unreleased]
 
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
+
+## [1.0.1] - 2026-10-31
+
 ### Changed
 
 - The batch review no longer reads `y locked` in the counter: it says
@@ -27,6 +46,13 @@ baseline.
   replacing a file drops its extended attributes, ACLs, quarantine flag and
   Finder tags, and the new file takes its group from the parent folder (BSD
   semantics).
+
+### Internal
+
+- Releases can be started with one click: Actions -> Release -> Run workflow
+  bumps the version, moves `[Unreleased]` under it, commits, tags and
+  publishes, and `dry_run` rehearses it. Pushing a `vX.Y.Z` tag by hand still
+  works. See `RELEASING.md`.
 
 ## [1.0.0] - 2026-10-30
 
@@ -184,23 +210,6 @@ promise described in the README.
 - Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
   key repeat of a held key (about 600-760 ms) can never answer one.
 - The feedback form's footers say what `Esc` does on every screen.
-
-### Internal
-
-- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
-  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
-  rows coloured by status, the provider notice and the failure alert above the
-  composer, and the final `orchestrate` prompts of both profiles.
-- Agent orchestrator write integration (S7, same gate): a `code` worker gets
-  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
-  staged in the pane's batch, only inside the run's read scope, and reach the
-  disk only when the user approves the batch, whose review header names the
-  worker. `collect` lists the worker's `files changed` (path, size, diff
-  hash, applied or not applied).
-- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
-  Ollama decoders report the tokens (and the cost, where claude gives one) of
-  a turn. A worker row shows its own numbers, or `n/a` when its engine
-  reported none, and a `run` row shows the sum. Nothing is estimated.
 
 ## [0.29.0] - 2026-10-28
 
@@ -1527,7 +1536,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
 [0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
