@@ -355,6 +355,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Continue(_)
         | OrchestraEvent::Stopped { .. }
         | OrchestraEvent::Filled { .. }
+        | OrchestraEvent::Closed { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1105,6 +1106,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Continue(_)
             | OrchestraEvent::Stopped { .. }
             | OrchestraEvent::Filled { .. }
+            | OrchestraEvent::Closed { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -2694,6 +2696,37 @@ async fn finish_announces_the_handoffs_it_filled_in_and_closes_the_record() {
         handle.call(handoff(1, Verdict::OnCourse)).await,
         error("run ended")
     );
+}
+
+// D17: finishing hands the app the ledger and the summary to store, once, after
+// the handoffs it filled in.
+#[tokio::test]
+async fn finish_announces_the_closed_ledger_and_the_summary() {
+    let mut lab = lab(Script::Answer("t"));
+    let (run, handle) = lab.start(codex_review());
+    let finish = OrchCall::Finish {
+        summary: "all done".to_owned(),
+    };
+    handle.call(spawn(Task::Review, "a")).await;
+    handle.call(wait(1)).await;
+    handle.call(finish.clone()).await;
+    handle.call(finish).await;
+    let closed: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Closed {
+                run: at,
+                ledger,
+                summary,
+            } => Some((at, ledger, summary)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].0, run);
+    assert!(closed[0].1.contains("Goal:"), "{}", closed[0].1);
+    assert_eq!(closed[0].2, "all done");
 }
 
 #[tokio::test]

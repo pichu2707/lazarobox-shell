@@ -36,7 +36,10 @@ baseline.
   finished worker with a `handoff` (verdict, reason, done, left, decisions)
   and ends the run with `finish`; an `off_course` or `blocked` verdict shows
   in the transcript. Missing handoffs are filled in by lazarobox, never from
-  worker text.
+  worker text. Each handoff and the closed run ledger are saved to engram
+  under `orchestra/<run>/...` keys; with memory off the run turns it on for
+  itself only (`memory on for this run`), and when engram cannot be used the
+  run goes on with `handoffs not persisted`, said once.
 
 ## [1.0.1] - 2026-10-31
 

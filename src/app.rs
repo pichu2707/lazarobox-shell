@@ -58,6 +58,7 @@ mod chat_copy;
 mod compact;
 mod context;
 mod folder;
+mod handoff;
 mod history;
 mod hub;
 mod install;
@@ -829,6 +830,8 @@ pub struct App {
     summary_notice_shown: bool,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
+    /// The saves of the live orchestrator runs' handoffs.
+    run_stores: HashMap<RunId, handoff::RunStore>,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -979,6 +982,7 @@ impl App {
             config_path: None,
             summary_notice_shown: false,
             summary_failure_shown: false,
+            run_stores: HashMap::new(),
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -8332,6 +8336,8 @@ mod app_tests {
 
     /// Selecting a worker row and the escalating Ctrl+C (S3).
     mod orchestra_cancel;
+    /// The handoffs of a run in engram, and the degraded mode.
+    mod orchestra_handoffs;
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.

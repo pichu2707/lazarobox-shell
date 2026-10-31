@@ -92,6 +92,14 @@ pub enum OrchestraEvent {
     /// lazarobox wrote the handoffs of these workers itself: the orchestrator
     /// never did. Sent once per batch, after their `Handoff` events.
     Filled { run: RunId, workers: Vec<WorkerId> },
+    /// The orchestrator finished the run: its ledger as rendered and its
+    /// summary, for the app to store (D17). Sent once, after the `Handoff`
+    /// and `Filled` events of the fallbacks.
+    Closed {
+        run: RunId,
+        ledger: String,
+        summary: String,
+    },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

@@ -17,6 +17,7 @@ use crate::core::ai::{
         event::Continuation,
         ledger::{NO_HANDOFF, Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
+        persist::Item,
         run::{Roster, RunLimits},
         worker::WorkerStatus,
     },
@@ -160,6 +161,9 @@ impl App {
         };
         // A worker that is over takes its waiting asks with it.
         let mut over = None;
+        // What the run stores in engram once the pane is not borrowed.
+        let mut store = None;
+        let mut ended = None;
         match event {
             OrchestraEvent::Worker(mut row) => {
                 let key = WorkerKey {
@@ -248,10 +252,11 @@ impl App {
                 chat.undo_override();
                 chat.push_system_line(NO_ORCHESTRA.to_owned());
             }
-            // The ledger lives in the run manager; the transcript hears the
-            // verdicts that need the user's eye (S4). Persisting the handoff
-            // (engram, degraded mode) is the next slice's seam, right here.
-            OrchestraEvent::Handoff { handoff, .. } => {
+            // The transcript hears the verdicts that need the user's eye (S4);
+            // every handoff is stored in engram (D13), or kept in the ledger
+            // when engram cannot be used.
+            OrchestraEvent::Handoff { run, handoff } => {
+                store = Some((run, Item::of_handoff(&handoff)));
                 if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
                     let Unit::Worker(worker) = handoff.unit;
                     chat.push_system_line(format!(
@@ -263,6 +268,12 @@ impl App {
                     ));
                 }
             }
+            // The finished run's ledger and summary, stored like a handoff.
+            OrchestraEvent::Closed {
+                run,
+                ledger,
+                summary,
+            } => store = Some((run, Item::of_ledger(run, &ledger, &summary))),
             // Never a silent fallback: say which handoffs lazarobox wrote.
             OrchestraEvent::Filled { workers, .. } => {
                 let ids: Vec<_> = workers.iter().map(|id| id.0.to_string()).collect();
@@ -276,6 +287,7 @@ impl App {
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
+                ended = Some(run);
                 chat.end_orch_run(run);
                 if chat.orch_run() == Some(run) {
                     chat.set_orch_run(None);
@@ -286,7 +298,11 @@ impl App {
             self.withdraw_worker(id, key);
         }
         self.dirty = true;
-        Vec::new()
+        let effects = store.map_or_else(Vec::new, |(run, item)| self.store_item(id, run, item));
+        if let Some(run) = ended {
+            self.end_store(run);
+        }
+        effects
     }
 
     /// The orchestrator turn of the run of pane `id` ended with work pending
