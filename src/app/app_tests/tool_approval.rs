@@ -421,6 +421,31 @@ fn a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker() {
     );
 }
 
+// A worker's ask that reaches the app after the worker's terminal row (it
+// was announced just as the worker was cancelled) is refused, never shown; a
+// retry of the worker (running again) asks normally.
+#[test]
+fn an_ask_that_arrives_after_its_worker_ended_is_refused_unseen() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let effects = announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    assert_eq!(
+        effects,
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 2)),
+            turn,
+            call: CallId(1),
+            decision: Decision::Denied("the worker already ended"),
+        }]
+    );
+    assert_eq!(pending(&a), None);
+    worker_over(&mut a, 2, WorkerStatus::Running);
+    assert!(announce(&mut a, turn, 2, worker_read_of(2, "/b")).is_empty());
+    assert!(pending(&a).is_some());
+}
+
 // Another worker ending leaves the shown prompt and the queue as they are.
 #[test]
 fn another_worker_ending_leaves_the_shown_ask_and_the_queue_alone() {

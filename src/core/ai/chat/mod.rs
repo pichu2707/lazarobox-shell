@@ -52,7 +52,7 @@ use crate::core::{
     ai::{
         config::{ApprovalMode, Assignment, Profile, Task},
         orchestra::{
-            RunId, WorkerId,
+            RunId, WorkerId, WorkerKey,
             event::WorkerRow,
             overrides::{FailurePicker, RunOverrides},
             worker::{ErrorClass, WorkerStatus},
@@ -406,6 +406,9 @@ pub struct ChatState {
     orch_turn: Option<u64>,
     /// The pane's run, from its first event until its `Ended`.
     orch_run: Option<RunId>,
+    /// Workers seen over (a terminal row) and not running again: an ask of
+    /// theirs that arrives late is refused. Dropped with the run.
+    ended_workers: std::collections::HashSet<WorkerKey>,
     /// The failure the run waits on, until the user answers it or the run
     /// ends.
     orch_alert: Option<OrchAlert>,
@@ -474,6 +477,7 @@ impl ChatState {
             orch: false,
             orch_turn: None,
             orch_run: None,
+            ended_workers: Default::default(),
             orch_alert: None,
             orch_note: None,
             orch_picker: None,
@@ -582,6 +586,7 @@ impl ChatState {
     /// `run` is over: its overrides, picker and notes go with it when it is
     /// the pane's run, whether its alert is still up or not.
     pub fn end_orch_run(&mut self, run: RunId) {
+        self.ended_workers.retain(|key| key.run != run);
         let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
         if self.orch_run != Some(run) && !alerted {
             return;
@@ -590,6 +595,20 @@ impl ChatState {
             self.orch_overrides = None;
         }
         self.drop_orch_alert();
+    }
+
+    /// Notes that `worker` is over (`true`) or runs again (`false`).
+    pub fn set_worker_over(&mut self, worker: WorkerKey, over: bool) {
+        if over {
+            self.ended_workers.insert(worker);
+        } else {
+            self.ended_workers.remove(&worker);
+        }
+    }
+
+    /// Whether `worker` was seen over and has not run since.
+    pub fn worker_is_over(&self, worker: WorkerKey) -> bool {
+        self.ended_workers.contains(&worker)
     }
 
     /// A worker's status changed: its row, keyed by run and worker, shows the

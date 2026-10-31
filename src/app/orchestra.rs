@@ -90,11 +90,14 @@ impl App {
         let mut over = None;
         match event {
             OrchestraEvent::Worker(mut row) => {
-                if !matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running) {
-                    over = Some(WorkerKey {
-                        run: row.run,
-                        worker: row.id,
-                    });
+                let key = WorkerKey {
+                    run: row.run,
+                    worker: row.id,
+                };
+                let is_over = !matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running);
+                chat.set_worker_over(key, is_over);
+                if is_over {
+                    over = Some(key);
                 }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();

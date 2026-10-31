@@ -27,6 +27,7 @@ use crate::core::ai::{
 pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
+const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
@@ -144,6 +145,14 @@ impl App {
         let worker = ask.worker();
         if !self.ai.tools_enabled() {
             return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
+        }
+        // Announced just as its worker was cancelled: nobody could answer it.
+        let over = worker.is_some_and(|key| {
+            (self.panes.get(&id).and_then(PaneState::chat_state))
+                .is_some_and(|c| c.worker_is_over(key))
+        });
+        if over {
+            return Self::deny_for(id, worker, turn, call, WORKER_OVER);
         }
         // A read or a search the mode answers needs no overlay, so a pending
         // approval does not stand in its way. A reply that lets it go is not
