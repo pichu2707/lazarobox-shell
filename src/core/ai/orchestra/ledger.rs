@@ -19,8 +19,13 @@ pub const REASON_BYTES: usize = 200;
 /// The longest `done`, `left` or `decisions`, in bytes.
 pub const FIELD_BYTES: usize = 2 * 1024;
 
-/// The most a rendered ledger takes, in bytes, apart from the goal.
+/// The most a rendered ledger takes, in bytes, the goal included. The goal
+/// is the user's own message and is never cut, so only a goal of that size
+/// alone can pass it.
 pub const LEDGER_BYTES: usize = 8 * 1024;
+
+/// The longest summary of a failed worker's row.
+const FAILED_BYTES: usize = 200;
 
 /// What a summary is shortened to when the ledger is over its bound.
 const SHORT_BYTES: usize = 24;
@@ -75,10 +80,10 @@ impl Judgement {
     /// The judgement as it is stored: a one-line reason, blank fields as
     /// `none`, everything capped.
     fn normalised(self) -> Self {
-        let first = self.reason.lines().next().unwrap_or("");
+        let first = self.reason.trim().lines().next().unwrap_or("");
         Self {
             verdict: self.verdict,
-            reason: field(first, REASON_BYTES),
+            reason: field(&plain(first), REASON_BYTES),
             done: field(&self.done, FIELD_BYTES),
             left: field(&self.left, FIELD_BYTES),
             decisions: field(&self.decisions, FIELD_BYTES),
@@ -152,7 +157,7 @@ impl Handoff {
 
     /// The first line of `done`: what the ledger row says.
     fn summary(&self) -> String {
-        self.done.lines().next().unwrap_or(NONE).to_owned()
+        plain(self.done.lines().next().unwrap_or(NONE))
     }
 }
 
@@ -171,6 +176,8 @@ pub(super) struct Facts {
 pub enum HandoffError {
     Unknown,
     NotFinished,
+    /// The run is over: its record is closed.
+    Ended,
 }
 
 /// Why `finish` did not end the run.
@@ -218,7 +225,7 @@ impl Row {
         }
     }
 
-    /// A failure nobody dealt with: never shortened.
+    /// A failure: the row is never hidden, its summary is capped.
     fn failed(&self) -> bool {
         matches!(
             self.status,
@@ -271,42 +278,50 @@ impl Ledger {
         self.render_within(LEDGER_BYTES)
     }
 
-    /// The ledger within `budget` bytes. The goal and an unresolved failure
-    /// are kept whole; the oldest summaries are shortened first, then the
-    /// oldest resolved rows collapse into a count.
+    /// The ledger within `budget` bytes. The goal and the id and status of
+    /// every failure are kept; a failure's summary is capped, the oldest
+    /// summaries are shortened first, then the oldest resolved rows collapse
+    /// into a count.
     pub(super) fn render_within(&self, budget: usize) -> String {
-        let mut lens = vec![usize::MAX; self.rows.len()];
-        let mut hidden = 0;
-        let draw = |lens: &[usize], hidden: usize| self.draw(lens, hidden);
+        let mut lens: Vec<usize> = self
+            .rows
+            .iter()
+            .map(|row| {
+                if row.failed() {
+                    FAILED_BYTES
+                } else {
+                    usize::MAX
+                }
+            })
+            .collect();
+        let mut hidden = vec![false; self.rows.len()];
         // Shorten, oldest first.
         for at in 0..self.rows.len() {
-            if draw(&lens, hidden).len() <= budget {
+            if self.draw(&lens, &hidden).len() <= budget {
                 break;
             }
-            if !self.rows[at].failed() {
-                lens[at] = SHORT_BYTES;
-            }
+            lens[at] = SHORT_BYTES;
         }
-        // Then drop the oldest resolved rows into a count.
-        while draw(&lens, hidden).len() > budget && hidden < self.rows.len() {
-            let Some(at) = (hidden..self.rows.len()).find(|&at| !self.rows[at].failed()) else {
+        // Then drop the oldest resolved rows into a count, passing over the
+        // failures.
+        while self.draw(&lens, &hidden).len() > budget {
+            let Some(at) = (0..self.rows.len()).find(|&at| !hidden[at] && !self.rows[at].failed())
+            else {
                 break;
             };
-            // Rows are hidden as a prefix: a failure inside it stops the run.
-            if (hidden..at).any(|i| self.rows[i].failed()) {
-                break;
-            }
-            hidden = at + 1;
+            hidden[at] = true;
         }
-        draw(&lens, hidden)
+        self.draw(&lens, &hidden)
     }
 
-    fn draw(&self, lens: &[usize], hidden: usize) -> String {
+    fn draw(&self, lens: &[usize], hidden: &[bool]) -> String {
         let mut out = format!("Goal: {}\nWorkers:", self.goal);
-        if hidden > 0 {
-            out.push_str(&format!("\n{hidden} earlier workers, resolved"));
+        let count = hidden.iter().filter(|hidden| **hidden).count();
+        if count > 0 {
+            out.push_str(&format!("\n{count} earlier workers, resolved"));
         }
-        for (row, max) in self.rows.iter().zip(lens).skip(hidden) {
+        let shown = self.rows.iter().zip(lens).zip(hidden);
+        for ((row, max), _) in shown.filter(|(_, hidden)| !**hidden) {
             out.push('\n');
             out.push_str(&row.line(*max));
         }
@@ -317,6 +332,12 @@ impl Ledger {
         }
         out
     }
+}
+
+/// `text` without its control characters (ESC, a lone `\r`...): it may go to
+/// the transcript and to a model.
+fn plain(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// `text` trimmed, as `none` when blank, cut to `max` bytes.

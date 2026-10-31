@@ -7,7 +7,8 @@ use serde_json::json;
 use super::RunId;
 use super::WorkerId;
 use super::ledger::{
-    FinishError, Handoff, HandoffError, Judgement, LEDGER_BYTES, NO_HANDOFF, NONE, Unit, Verdict,
+    Facts, FinishError, Handoff, HandoffError, Judgement, LEDGER_BYTES, Ledger, NO_HANDOFF, NONE,
+    Row, Unit, Verdict,
 };
 use super::run::{NextTurn, Refusal, Roster, Run, RunLimits, RunState, WorkerEvent};
 use super::tools::{OrchCall, OrchError, parse};
@@ -422,4 +423,121 @@ fn a_halted_or_finished_run_is_not_continued() {
     done.fallbacks();
     done.finish("ok").expect("finish");
     assert_eq!(done.next_turn(), NextTurn::Settle);
+}
+
+/// A failed worker whose handoff says `done`.
+fn failed_row(id: u32, done: &str) -> Row {
+    let facts = Facts {
+        run: RunId(7),
+        worker: WorkerId(id),
+        kind: Task::Code,
+        engine: "codex".to_owned(),
+        model: None,
+        status: WorkerStatus::Failed,
+    };
+    let note = Judgement {
+        done: done.to_owned(),
+        ..note(Verdict::Blocked)
+    };
+    let handoff = Handoff::of(facts, note, true);
+    Row::new(
+        WorkerId(id),
+        Task::Code,
+        WorkerStatus::Failed,
+        Some(&handoff),
+    )
+}
+
+// Spec (Ledger bounded): the bound holds for any input; a failure keeps its
+// id and status, its summary shrinks like the others.
+#[test]
+fn many_failures_with_long_summaries_stay_within_the_bound_and_listed() {
+    let rows: Vec<_> = (1..=32)
+        .map(|id| failed_row(id, &"f".repeat(2048)))
+        .collect();
+    let text = Ledger::new("the goal", rows).render();
+    assert!(text.len() <= LEDGER_BYTES, "{}", text.len());
+    for id in 1..=32 {
+        assert!(
+            text.contains(&format!("\n{id} code failed")),
+            "{id}: {text}"
+        );
+    }
+}
+
+// An old failure does not stop the resolved rows after it from collapsing.
+#[test]
+fn an_old_failure_does_not_block_later_rows_from_collapsing() {
+    let mut rows = vec![failed_row(1, "boom")];
+    for id in 2..=30 {
+        let facts = Facts {
+            run: RunId(7),
+            worker: WorkerId(id),
+            kind: Task::Review,
+            engine: "codex".to_owned(),
+            model: None,
+            status: WorkerStatus::Done,
+        };
+        let handoff = Handoff::of(facts, note(Verdict::OnCourse), false);
+        rows.push(Row::new(
+            WorkerId(id),
+            Task::Review,
+            WorkerStatus::Done,
+            Some(&handoff),
+        ));
+    }
+    let text = Ledger::new("the goal", rows).render_within(600);
+    assert!(text.len() <= 600, "{}", text.len());
+    assert!(text.contains("\n1 code failed"), "{text}");
+    assert!(text.contains("earlier workers"), "{text}");
+    assert!(text.contains("30 review done"), "{text}");
+    assert!(!text.contains("\n2 review done"), "{text}");
+}
+
+// D17: a terminal worker that shows up after the warning makes finish refuse
+// again, naming it; the warning is still once per worker.
+#[test]
+fn finish_refuses_again_for_a_worker_that_ended_after_the_warning() {
+    let mut run = run();
+    let one = finished(&mut run, Task::Review, "t");
+    assert_eq!(run.finish("s"), Err(FinishError::Missing(vec![one])));
+    run.handoff(one, note(Verdict::OnCourse)).expect("stored");
+    let two = finished(&mut run, Task::Review, "t");
+    assert_eq!(run.finish("s"), Err(FinishError::Missing(vec![two])));
+    assert!(run.finish("s").is_ok());
+}
+
+// D17: the reason is one clean line: no control characters, and a leading
+// blank line does not turn it into `none`.
+#[test]
+fn the_reason_is_trimmed_before_its_first_line_and_loses_control_characters() {
+    let mut run = run();
+    let id = finished(&mut run, Task::Review, "t");
+    let dirty = Judgement {
+        reason: "\n\n \x1b[2Jfits\rthe goal\x07\nsecond line".to_owned(),
+        done: "\x1b[31mdid it\rfast\nmore".to_owned(),
+        ..note(Verdict::OnCourse)
+    };
+    let handoff = run.handoff(id, dirty).expect("stored");
+    assert_eq!(handoff.reason, "[2Jfitsthe goal");
+    let text = run.run_ledger("g").render();
+    assert!(!text.contains(['\x1b', '\r', '\x07']), "{text:?}");
+    assert!(text.contains("1 review done: [31mdid itfast"), "{text:?}");
+}
+
+// Spec (Handoff for a finished run): refused like finish, with a reason.
+#[test]
+fn a_handoff_after_the_run_ended_is_refused() {
+    let mut run = run();
+    let id = finished(&mut run, Task::Review, "t");
+    run.handoff(id, note(Verdict::OnCourse)).expect("stored");
+    run.finish("s").expect("finished");
+    assert_eq!(
+        run.handoff(id, note(Verdict::OffCourse)),
+        Err(HandoffError::Ended)
+    );
+    assert_eq!(
+        run.stored_handoff(id).map(|h| h.verdict),
+        Some(Verdict::OnCourse)
+    );
 }

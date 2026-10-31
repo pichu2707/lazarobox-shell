@@ -354,6 +354,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Handoff { .. }
         | OrchestraEvent::Continue(_)
         | OrchestraEvent::Stopped { .. }
+        | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1103,6 +1104,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Handoff { .. }
             | OrchestraEvent::Continue(_)
             | OrchestraEvent::Stopped { .. }
+            | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -2409,6 +2411,13 @@ async fn the_wall_clock_kills_the_running_worker_and_ends_the_run() {
     ));
     assert_eq!(
         lab.events.recv().await.unwrap().1,
+        OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1)]
+        }
+    );
+    assert_eq!(
+        lab.events.recv().await.unwrap().1,
         OrchestraEvent::Ended { run }
     );
     assert!(
@@ -2562,9 +2571,12 @@ fn handoff_of(id: u32) -> OrchCall {
 }
 
 fn without_handoffs(events: Vec<OrchestraEvent>) -> Vec<OrchestraEvent> {
-    let kept = events
-        .into_iter()
-        .filter(|event| !matches!(event, OrchestraEvent::Handoff { .. }));
+    let kept = events.into_iter().filter(|event| {
+        !matches!(
+            event,
+            OrchestraEvent::Handoff { .. } | OrchestraEvent::Filled { .. }
+        )
+    });
     kept.collect()
 }
 
@@ -2647,6 +2659,39 @@ async fn finish_is_refused_for_live_workers_and_missing_handoffs_then_ends_the_r
     assert!(!format!("{:?}", built[0]).contains("must not copy"));
     assert_eq!(
         handle.call(spawn(Task::Review, "more")).await,
+        error("run ended")
+    );
+}
+
+// Spec (A missing handoff gets a fallback): what lazarobox filled in is
+// announced once, naming the workers; a handoff after the end is refused.
+#[tokio::test]
+async fn finish_announces_the_handoffs_it_filled_in_and_closes_the_record() {
+    let mut lab = lab(Script::Answer("t"));
+    let (run, handle) = lab.start(codex_review());
+    let finish = OrchCall::Finish {
+        summary: "all done".to_owned(),
+    };
+    handle.call(spawn(Task::Review, "a")).await;
+    handle.call(wait(1)).await;
+    handle.call(spawn(Task::Review, "b")).await;
+    handle.call(wait(2)).await;
+    handle.call(finish.clone()).await;
+    assert_eq!(handle.call(finish).await, fine("run finished"));
+    let filled: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter(|event| matches!(event, OrchestraEvent::Filled { .. }))
+        .collect();
+    assert_eq!(
+        filled,
+        [OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1), WorkerId(2)]
+        }]
+    );
+    assert_eq!(
+        handle.call(handoff(1, Verdict::OnCourse)).await,
         error("run ended")
     );
 }
@@ -2779,6 +2824,13 @@ async fn at_max_turns_the_run_ends_with_its_fallbacks_and_names_the_key() {
         "{events:?}"
     );
     assert_eq!(handoffs(&events).len(), 1, "the fallback is built");
+    assert!(
+        events.contains(&OrchestraEvent::Filled {
+            run,
+            workers: vec![WorkerId(1)]
+        }),
+        "the fallback is announced: {events:?}"
+    );
     assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
     assert!(lab.manager.scope(pane()).is_none());
 }

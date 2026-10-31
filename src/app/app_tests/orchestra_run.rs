@@ -158,6 +158,23 @@ fn an_off_course_or_blocked_handoff_is_shown_in_the_transcript() {
     }
 }
 
+// Spec (A missing handoff gets a fallback): the transcript says which workers
+// lazarobox wrote a handoff for.
+#[test]
+fn the_handoffs_lazarobox_filled_in_are_named_in_the_transcript() {
+    let (mut a, _) = running();
+    a.update(event(OrchestraEvent::Filled {
+        run: RUN,
+        workers: vec![WorkerId(2), WorkerId(3)],
+    }));
+    let chat = a.panes.get(&chat_id()).and_then(PaneState::chat_state);
+    let text = format!("{:?}", chat.unwrap().entries());
+    assert!(
+        text.contains("no handoff from the orchestrator for workers 2, 3"),
+        "{text}"
+    );
+}
+
 pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
