@@ -36,6 +36,12 @@ fn step_key(run: RunId, step: Step) -> String {
     format!("{ORCHESTRA_PREFIX}{}/step/{}", run.0, step.label())
 }
 
+/// The key of a receipt-driven review's receipt (S7b): the `n`th review of the
+/// worker's change; a receipt rebuilt after a late path updates the note.
+fn receipt_key(run: RunId, worker: u32, n: u32) -> String {
+    format!("{ORCHESTRA_PREFIX}{}/receipt/{worker}/{n}", run.0)
+}
+
 /// The key of the run's feature document (S5, D15).
 fn feature_key(run: RunId) -> String {
     format!("{ORCHESTRA_PREFIX}{}/feature", run.0)
@@ -60,6 +66,11 @@ impl Item {
                 step_key(handoff.run, step),
                 format!("Run {} step {} handoff", handoff.run.0, step.label()),
                 format!("step: {}", step.label()),
+            ),
+            Unit::Receipt(worker, n) => (
+                receipt_key(handoff.run, worker.0, n),
+                format!("Run {} worker {} receipt {n}", handoff.run.0, worker.0),
+                format!("receipt: worker {} review {n}", worker.0),
             ),
         };
         let content = format!(

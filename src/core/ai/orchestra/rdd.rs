@@ -452,6 +452,32 @@ impl Review {
         &self.findings
     }
 
+    /// The user's answer to the consent, `None` before it came.
+    pub fn consent_answer(&self) -> Option<Consent> {
+        self.consent
+    }
+
+    /// What the refuter said of finding `at`, for the receipt: `upheld`,
+    /// `refuted`, `unanswered` (settled without an answer) or `not asked`.
+    pub fn refuter_word(&self, at: usize) -> &'static str {
+        match self.verdicts.get(at).copied().flatten() {
+            Some(Verdict::Said(Refutation::Upheld)) => "upheld",
+            Some(Verdict::Said(Refutation::Refuted)) => "refuted",
+            Some(Verdict::Unanswered) => "unanswered",
+            None => "not asked",
+        }
+    }
+
+    /// The one correction, for the receipt: how many blockers it was aimed
+    /// at and how many of those stayed open. `None` when it never began.
+    pub fn correction_targets(&self) -> Option<(usize, usize)> {
+        match &self.correction {
+            Correction::Unused => None,
+            Correction::Running(targets) => Some((targets.len(), targets.len())),
+            Correction::Done { targets, open } => Some((targets.len(), open.len())),
+        }
+    }
+
     /// Per lens that reported: the lines that did not fit the shape and the
     /// findings past the cap. Both are shown in the receipt.
     pub fn counts(&self) -> &[LensCount] {

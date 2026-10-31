@@ -639,3 +639,32 @@ Strict TDD, RED first: the runtime tests for W-A (2), W-C and W-D (2) failed aga
 | W-D | `Orchestra::review` returns the set as last reviewed (post-correction hashes for checked files). The host compares (path, hash) at seal time: new paths `Late::Staged`, reviewed paths with another hash `Late::Changed` (`changed after review, not reviewed: <paths>`, also in `Reviewed.unreviewed`) | `the_review_returns_the_hashes_it_last_reviewed`, `a_file_changed_after_its_review_is_said_as_not_reviewed`, `a_reviewed_file_restaged_during_the_review_is_reported_as_changed` |
 | W-E | `unread` counts only a refused path that is a file of the staged set (`ReviewRead::RefusedStaged`); probes (`.git`, `node_modules`, `~`, absolute paths, outside the scope) are refused with a reason and count for nothing. An absolute path is refused as before (`resolve_write` takes relative paths only), uncounted | `a_review_worker_reads_staged_only_files_in_scope_and_never_asks` |
 | S | A `Guard` dropped with no runtime says `its workers could not be cancelled (no runtime)` on the review line instead of failing silently | `a_guard_dropped_without_a_runtime_says_it_could_not_cancel` |
+
+## S7b (RDD), PR S7b-4: task 7b.3 receipt handoff and its batch line (branch feat/agent-orchestrator-s7b4, on s7b3; 7b.3 now `[x]`, S7b complete)
+
+Strict TDD, RED first: core `receipt_tests` 12 of 12 failed against a stub (`unimplemented!`/empty returns); runtime 4 of 4 receipt tests failed against the stub `receipt_line`/no emission; UI `a_receipt_line_heads_a_worker_batch...` failed behaviourally (header lacked the line). The `Run::receipt`, ledger-count and persist-key tests were written beside their code (no separate RED; one test of mine was wrong and was rewritten). Host assertion (`review.receipt()` through `seal`) compile-RED then green.
+
+| Unit | What |
+|------|------|
+| `orchestra/receipt.rs` (core) | `Evidence`, `summary`, `judgement`, `line`: the receipt handoff built by lazarobox from the kept review (change = worker + staged paths, tier and source, consent word `granted`/`declined`/`not answered (why)`/`not asked`, lenses with why, correction, outcome in `done`; open blockers, not reviewed, could not read, omitted/malformed/unanswered in `left`; each finding with severity, cause, basis, blocked or not and the refuter word in `decisions`). Verdict is `blocked` while a blocker is open, else `unknown`: never `on_course`. Every dynamic string through `ledger::one_line`, clipped; lists show `+N more`; a field over 2 KiB ends `(+N more lines)` |
+| `Unit::Receipt(worker, n)` | one handoff type (D17); key `orchestra/{run}/receipt/{worker}/{n}` (`persist.rs`); the app stores it like any handoff (redacted by the save) |
+| `Run::receipt` | stores it (replaced by the same worker and n), facts from the reviewed worker; refused for an unknown worker or an ended run; ledger line `Reviews: N (M not reviewed, K blockers open)`, shrinking to `Reviews: N` as the last step of the 8 KiB bound |
+| `Review` accessors | `consent_answer`, `refuter_word`, `correction_targets` |
+| runtime `review.rs` | `Reviewed.paths`; `keep` and `late` call `receipt()`: the receipt is built and announced (`OrchestraEvent::Handoff`) after the review and again when a late or changed path is added (same key, an upsert); a receipt that cannot be stored is said on the review line. `RunManager::receipt_line`, `Orchestra::receipt_line` (default `None`) |
+| batch review | `BatchReview::with_receipt` (worker batches only), `seal` asks the handle for the line, `ui/components/review.rs` header `label · receipt · counts…`; a chat's header is unchanged |
+
+Decisions: a review that never began because only a late path was found (passive assessment) also gets a receipt (consent `not asked`, outcome `not reviewed`); several reviews of one worker are numbered 1.., the header shows the last. The header line is cut from the right in a narrow pane like the rest, so the gate text can go before it on very narrow panes.
+Known limits: `findings carry no path`, so the receipt cannot say which path a blocker is in; the lens pick is still the default pair.
+
+### 7b.3 review fixes
+
+Strict TDD, RED first: UI header test (the receipt after the gate; 2 of 2 failed, the narrow 80/50 column test and the reordered expectation), core `a_clean_outcome_with_unreviewed_paths_does_not_read_clean_alone` and `a_single_line_over_the_cap_is_clipped_not_dropped` (2 of 2 failed), runtime `a_receipt_line_only_heads_the_batch_it_described`, `a_path_seen_late_twice_counts_once` and `a_receipt_of_a_run_that_is_gone_says_so` (3 of 3 failed against the old code).
+
+| # | Fix | Test |
+|---|-----|------|
+| 1 | `Orchestra::receipt_line(run, worker, current)` takes the set being sealed (the host re-reads it in `seal`; unreadable = no line). `Reviewed.set` keeps (path, hash) as last reviewed; the line is shown only when every sealed path was reviewed as it is or is listed not reviewed (a late-only entry describes a set holding a listed path). A later batch wears no earlier receipt | `a_receipt_line_only_heads_the_batch_it_described` |
+| 2 | The receipt note goes last in the header, after the gate and the refusal texts, so a narrow pane cuts it first | `a_narrow_pane_cuts_the_receipt_before_the_gate_or_the_refusal` (80 and 50 columns, batch and empty batch) |
+| 3 | `clean`/`corrected` with unseen paths reads `clean (reviewed paths only)` in the line and in `outcome:` | `a_clean_outcome_with_unreviewed_paths_does_not_read_clean_alone` |
+| 4 | `late` records a path once | `a_path_seen_late_twice_counts_once` |
+| 5 | `receipt` and `receipt_line` say `(the run is gone)` on the review line | `a_receipt_of_a_run_that_is_gone_says_so` |
+| 6 | `fit` clips a first line over the cap instead of dropping it | `a_single_line_over_the_cap_is_clipped_not_dropped` |

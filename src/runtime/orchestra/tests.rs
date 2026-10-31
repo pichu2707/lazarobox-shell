@@ -3654,7 +3654,13 @@ async fn declining_the_consent_leaves_the_workers_call_to_the_batch_review() {
     assert!(!lab.app().join("Cargo.lock").exists());
     assert!(waits.decide(worker, 7, consent_id, Decision::Denied("the user declined")));
     let (batch_id, ask) = next_ask(&mut lab).await;
-    assert!(matches!(ask, ApprovalAsk::Batch(_)), "{ask:?}");
+    let ApprovalAsk::Batch(review) = &ask else {
+        panic!("{ask:?}");
+    };
+    // The batch review carries the receipt's line, and only a note: nothing
+    // is written until the user's `y`.
+    let receipt = review.receipt().unwrap_or_default();
+    assert!(receipt.contains("consent declined"), "{receipt}");
     assert_ne!(consent_id, batch_id);
     // The decline was said, and no review worker ran.
     assert_eq!(lab.seen.requests().len(), 1);
@@ -4172,5 +4178,180 @@ async fn a_file_changed_after_its_review_is_said_as_not_reviewed() {
     assert_eq!(
         lab.manager.reviews(pane(), run)[0].unreviewed,
         ["Cargo.lock"]
+    );
+}
+
+fn receipts(lab: &mut Lab) -> Vec<Handoff> {
+    lab.sent()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Handoff { handoff, .. }
+                if matches!(handoff.unit, Unit::Receipt(..)) =>
+            {
+                Some(*handoff)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+// Spec (orchestrator-handoffs, Declined consent still leaves a receipt): a
+// declined review is announced as a receipt with consent `declined`, no
+// lenses and `not reviewed`, and the batch review has a line for it.
+#[tokio::test]
+async fn a_declined_review_leaves_a_receipt_and_a_batch_line() {
+    let (mut lab, run, handle) = reviewed(quiet, Answered::Declined, RunLimits::default()).await;
+    let made = receipts(&mut lab);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert_eq!(made[0].unit, Unit::Receipt(WorkerId(1), 1));
+    assert!(
+        made[0].done.contains("consent: declined"),
+        "{}",
+        made[0].done
+    );
+    assert!(made[0].done.contains("lenses: none"), "{}", made[0].done);
+    assert!(
+        made[0].done.contains("outcome: not reviewed"),
+        "{}",
+        made[0].done
+    );
+    assert!(made[0].done.contains("Cargo.lock"), "{}", made[0].done);
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].paths, ["Cargo.lock"]);
+    let line = handle
+        .receipt_line(run, WorkerId(1), &lock_change())
+        .expect("a line");
+    assert!(line.contains("consent declined"), "{line}");
+    assert!(
+        handle
+            .receipt_line(run, WorkerId(2), &lock_change())
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_granted_clean_review_leaves_a_receipt_with_its_lenses() {
+    let (mut lab, run, handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    let made = receipts(&mut lab);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(
+        made[0].done.contains("consent: granted"),
+        "{}",
+        made[0].done
+    );
+    assert!(made[0].done.contains("risk ("), "{}", made[0].done);
+    assert!(made[0].done.contains("outcome: clean"), "{}", made[0].done);
+    let line = handle
+        .receipt_line(run, WorkerId(1), &lock_change())
+        .expect("a line");
+    assert!(line.contains("clean"), "{line}");
+}
+
+#[tokio::test]
+async fn an_unanswered_consent_leaves_a_receipt_that_says_so() {
+    let answered = Answered::Unanswered("expired".to_owned());
+    let (mut lab, _run, _handle) = reviewed(quiet, answered, RunLimits::default()).await;
+    let made = receipts(&mut lab);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(
+        made[0].done.contains("consent: not answered (expired)"),
+        "{}",
+        made[0].done
+    );
+}
+
+// Spec (A late path is not reviewed): the receipt is rebuilt with the late
+// path listed, under the same key, so engram updates the note.
+#[tokio::test]
+async fn a_late_path_updates_the_receipt_and_its_line() {
+    let (mut lab, run, handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    let _ = receipts(&mut lab);
+    let late = vec![Change {
+        path: ".github/workflows/x".to_owned(),
+        size: Some(1),
+        hash: "h".to_owned(),
+        applied: false,
+    }];
+    let assessment = handle.assess(run, &late);
+    handle.late(run, WorkerId(1), late, assessment, true, Late::Staged);
+    let made = receipts(&mut lab);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert_eq!(made[0].unit, Unit::Receipt(WorkerId(1), 1));
+    assert!(
+        made[0].left.contains("not reviewed: .github/workflows/x"),
+        "{}",
+        made[0].left
+    );
+    let line = handle
+        .receipt_line(run, WorkerId(1), &lock_change())
+        .expect("a line");
+    assert!(line.contains("not reviewed: 1 path"), "{line}");
+}
+
+fn other_change(path: &str, hash: &str) -> Change {
+    Change {
+        path: path.to_owned(),
+        size: Some(1),
+        hash: hash.to_owned(),
+        applied: false,
+    }
+}
+
+// A receipt describes the batch it reviewed and no other: a later batch of
+// the same worker (another path, or the same path with other content) shows
+// no receipt line, and a path found late is covered by the receipt's list.
+#[tokio::test]
+async fn a_receipt_line_only_heads_the_batch_it_described() {
+    let (_lab, run, handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    let line = |set: &[Change]| handle.receipt_line(run, WorkerId(1), set);
+    assert!(line(&lock_change()).is_some());
+    // Batch B: a low-risk file the review never saw.
+    assert!(line(&[other_change("src/a.rs", "z")]).is_none());
+    // The reviewed path again, with other content, and not reported late.
+    assert!(line(&[other_change("Cargo.lock", "other")]).is_none());
+    // The reviewed set plus a passive path nobody reported.
+    let mut both = lock_change();
+    both.push(other_change("src/a.rs", "z"));
+    assert!(line(&both).is_none());
+    assert!(line(&[]).is_none());
+    // A path reported late is covered: the receipt lists it as not reviewed.
+    let late = vec![other_change("src/a.rs", "z")];
+    let assessment = handle.assess(run, &late);
+    handle.late(run, WorkerId(1), late, assessment, true, Late::Staged);
+    let covered = line(&both).expect("the receipt lists the late path");
+    assert!(covered.contains("not reviewed: 1 path"), "{covered}");
+}
+
+// A path seen late twice counts once.
+#[tokio::test]
+async fn a_path_seen_late_twice_counts_once() {
+    let (lab, run, handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    for _ in 0..2 {
+        let late = vec![other_change(".github/workflows/x", "h")];
+        let assessment = handle.assess(run, &late);
+        handle.late(run, WorkerId(1), late, assessment, true, Late::Staged);
+    }
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].unreviewed, [".github/workflows/x"]);
+    let line = handle.receipt_line(run, WorkerId(1), &lock_change());
+    assert!(line.is_some_and(|l| l.contains("not reviewed: 1 path")));
+}
+
+// Never silent: a receipt or a line asked of a run that is gone says so.
+#[tokio::test]
+async fn a_receipt_of_a_run_that_is_gone_says_so() {
+    let (mut lab, _run, _handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    let _ = review_lines(&mut lab);
+    lab.manager.receipt(pane(), RunId(999), WorkerId(1));
+    assert!(
+        lab.manager
+            .receipt_line(pane(), RunId(999), WorkerId(1), &lock_change())
+            .is_none()
+    );
+    let lines = review_lines(&mut lab);
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("run is gone")).count(),
+        2,
+        "{lines:?}"
     );
 }

@@ -324,7 +324,7 @@ Decision (user, 2026-10-29): "El worker propone su lote". A `code` worker stages
 ### S7b: receipt-driven review, RDD (3 PRs, ~900, risk High) depends on S7 and S4 (O12, D16; design final after P1-P4)
 - [x] 7b.1 `assess` and `Tier` in the pure core: path rules give the floor, the orchestrator only raises, a failed assessment is `High`. Spec: agent-orchestrator / A lockfile is high, The orchestrator cannot lower.
 - [x] 7b.2 `ConsentAsk` inline, decline goes on `not reviewed`, lens workers over the staged view (candidate wrapped), refuter batch, at most one correction, lens and refuter prompts. Spec: agent-orchestrator / Consent first, Declined goes on unreviewed, One correction at most; prompt-profiles / Lens prompts exist.
-- [ ] 7b.3 Receipt handoff and its line in the batch review; a receipt never approves. Spec: agent-orchestrator / A receipt never approves; orchestrator-handoffs / Declined consent still leaves a receipt.
+- [x] 7b.3 Receipt handoff and its line in the batch review; a receipt never approves. Spec: agent-orchestrator / A receipt never approves; orchestrator-handoffs / Declined consent still leaves a receipt.
 
 ### S8: ODD test-first evidence (1 PR, ~400, risk Medium) EXTERNAL DEPENDENCY: coding-tools M3 `run_command` (not started) plus S7
 - [ ] 8.1 `Evidence{command, exit, digest}` from `run_command`, failing then passing, or an explicit exception with its reason. Spec: agent-orchestrator / Green without red refused, Exception recorded.

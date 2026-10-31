@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use super::changes::{Change, ChangeLedger};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
+use super::receipt::{self, Evidence};
 use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
@@ -145,6 +146,13 @@ pub enum WorkerEvent {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NotHalted;
 
+/// A receipt and the counts the ledger line is made of.
+#[derive(Clone, Debug)]
+struct Stored {
+    handoff: Handoff,
+    summary: receipt::Summary,
+}
+
 #[derive(Clone, Debug)]
 struct Slot {
     spec: WorkerSpec,
@@ -195,6 +203,8 @@ pub struct Run {
     turns: usize,
     /// The ODD steps and their handoffs (S5).
     steps: Steps,
+    /// The receipts of the run's reviews, one per review (S7b, D16).
+    receipts: Vec<Stored>,
     /// The feature document of a large goal, once `track` built it (S5).
     feature: Option<FeatureDoc>,
 }
@@ -215,6 +225,7 @@ impl Run {
             summary: None,
             turns: 1,
             steps: Steps::default(),
+            receipts: Vec::new(),
             feature: None,
         }
     }
@@ -554,6 +565,49 @@ impl Run {
         Ok(handoff)
     }
 
+    /// Stores the receipt of a review of worker `ev.worker`'s change: built
+    /// from the review, never from the model; the same review again (a path
+    /// found late) replaces it. The facts are the reviewed worker's.
+    pub fn receipt(&mut self, ev: &Evidence) -> Result<Handoff, HandoffError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(HandoffError::Ended);
+        }
+        self.slot(ev.worker).ok_or(HandoffError::Unknown)?;
+        let facts = Facts {
+            unit: Unit::Receipt(ev.worker, ev.n),
+            ..self.facts(ev.worker)
+        };
+        let handoff = Handoff::of(facts, receipt::judgement(ev), self.forced_by().is_some());
+        let stored = Stored {
+            handoff: handoff.clone(),
+            summary: receipt::summary(ev),
+        };
+        match self
+            .receipts
+            .iter_mut()
+            .find(|s| s.handoff.unit == handoff.unit)
+        {
+            Some(known) => *known = stored,
+            None => self.receipts.push(stored),
+        }
+        Ok(handoff)
+    }
+
+    /// The receipt line of a ledger: the reviews, those not reviewed and the
+    /// blockers open, and the shorter count for a ledger at its bound.
+    fn reviews_lines(&self) -> (String, String) {
+        let count = self.receipts.len();
+        if count == 0 {
+            return (String::new(), String::new());
+        }
+        let unreviewed = self.receipts.iter().filter(|s| !s.summary.reviewed).count();
+        let open: usize = self.receipts.iter().map(|s| s.summary.open).sum();
+        (
+            format!("Reviews: {count} ({unreviewed} not reviewed, {open} blockers open)"),
+            format!("Reviews: {count}"),
+        )
+    }
+
     fn facts(&self, id: WorkerId) -> Facts {
         let slot = &self.slots[index(id)];
         Facts {
@@ -791,7 +845,9 @@ impl Run {
             Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
         });
         let feature = self.feature.as_ref();
+        let (reviews, reviews_short) = self.reviews_lines();
         Ledger::new(goal, rows.collect())
+            .with_reviews(reviews, reviews_short)
             .with_steps(self.steps.line(), self.steps.short_line())
             .with_feature(
                 feature

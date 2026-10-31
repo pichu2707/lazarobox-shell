@@ -348,6 +348,9 @@ impl Scoped {
     }
 }
 
+/// The line a scoped fake run says of the receipt of a worker's review.
+const RECEIPT: &str = "review: high · consent granted · clean";
+
 impl Orchestra for Scoped {
     fn call(&self, _: OrchCall) -> BoxFuture<'static, Outcome> {
         std::future::pending().boxed()
@@ -375,6 +378,10 @@ impl Orchestra for Scoped {
 
     fn staged(&self, _: RunId, _: WorkerId, change: Change) {
         self.ledger.lock().unwrap().staged(change);
+    }
+
+    fn receipt_line(&self, _: RunId, _: WorkerId, _: &[Change]) -> Option<String> {
+        Some(RECEIPT.to_owned())
     }
 
     fn review(
@@ -1157,6 +1164,8 @@ async fn a_worker_write_in_scope_is_staged_and_only_the_users_review_writes_it()
         panic!("{asked:?}");
     };
     assert_eq!(review.label(), Some("1/1 review claude>opus"));
+    // The receipt's line rides in the review, and the mode still wrote nothing.
+    assert_eq!(review.receipt(), Some(RECEIPT));
     assert!(
         !app.join("new.rs").exists(),
         "the approval mode wrote nothing"

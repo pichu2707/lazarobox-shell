@@ -273,6 +273,7 @@ impl App {
                             format!("worker {} {}", worker.0, handoff.kind.id())
                         }
                         Unit::Step(step) => format!("step {}", step.label()),
+                        Unit::Receipt(worker, n) => format!("receipt {n} of worker {}", worker.0),
                     };
                     chat.push_system_line(format!(
                         "handoff {subject} {}: {}",

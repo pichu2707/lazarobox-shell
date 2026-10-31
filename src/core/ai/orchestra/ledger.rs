@@ -61,12 +61,14 @@ impl Verdict {
     }
 }
 
-/// What a handoff is about. Receipts (S7b) join the worker and the step.
+/// What a handoff is about: a worker, an ODD step or the receipt of a review.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Unit {
     Worker(WorkerId),
     /// An ODD step (S5, D15).
     Step(Step),
+    /// The `n`th receipt-driven review of a worker's change (S7b, D16).
+    Receipt(WorkerId, u32),
 }
 
 /// The part of a handoff the orchestrator writes.
@@ -264,6 +266,10 @@ pub struct Ledger {
     /// its count line for a ledger at its bound.
     feature: String,
     feature_short: String,
+    /// The receipts of the run's reviews (S7b): one count line, and a shorter
+    /// one for a ledger at its bound.
+    reviews: String,
+    reviews_short: String,
 }
 
 impl Ledger {
@@ -275,7 +281,16 @@ impl Ledger {
             steps_short: String::new(),
             feature: String::new(),
             feature_short: String::new(),
+            reviews: String::new(),
+            reviews_short: String::new(),
         }
+    }
+
+    /// The ledger with the line of the receipts the run's reviews left.
+    pub(super) fn with_reviews(mut self, line: String, short: String) -> Self {
+        self.reviews = line;
+        self.reviews_short = short;
+        self
     }
 
     /// The ledger with the feature document the continuation turn needs.
@@ -314,14 +329,16 @@ impl Ledger {
         // room, it shrinks to a count.
         // The feature document counts inside the bound too: it shrinks to
         // its count line after the steps line did.
+        // The receipts line counts inside the bound as well, and shrinks last.
         let tries = [
-            (&self.steps, &self.feature),
-            (&self.steps_short, &self.feature),
-            (&self.steps_short, &self.feature_short),
+            (&self.steps, &self.feature, &self.reviews),
+            (&self.steps_short, &self.feature, &self.reviews),
+            (&self.steps_short, &self.feature_short, &self.reviews),
+            (&self.steps_short, &self.feature_short, &self.reviews_short),
         ];
         let mut last = String::new();
-        for (steps, feature) in tries {
-            last = self.fit(budget, steps, feature);
+        for (steps, feature, reviews) in tries {
+            last = self.fit(budget, [steps, feature, reviews]);
             if last.len() <= budget {
                 break;
             }
@@ -329,7 +346,7 @@ impl Ledger {
         last
     }
 
-    fn fit(&self, budget: usize, steps: &str, feature: &str) -> String {
+    fn fit(&self, budget: usize, notes: [&str; 3]) -> String {
         let mut lens: Vec<usize> = self
             .rows
             .iter()
@@ -344,31 +361,27 @@ impl Ledger {
         let mut hidden = vec![false; self.rows.len()];
         // Shorten, oldest first.
         for at in 0..self.rows.len() {
-            if self.draw(&lens, &hidden, steps, feature).len() <= budget {
+            if self.draw(&lens, &hidden, notes).len() <= budget {
                 break;
             }
             lens[at] = SHORT_BYTES;
         }
         // Then drop the oldest resolved rows into a count, passing over the
         // failures.
-        while self.draw(&lens, &hidden, steps, feature).len() > budget {
+        while self.draw(&lens, &hidden, notes).len() > budget {
             let Some(at) = (0..self.rows.len()).find(|&at| !hidden[at] && !self.rows[at].failed())
             else {
                 break;
             };
             hidden[at] = true;
         }
-        self.draw(&lens, &hidden, steps, feature)
+        self.draw(&lens, &hidden, notes)
     }
 
-    fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str, feature: &str) -> String {
+    fn draw(&self, lens: &[usize], hidden: &[bool], notes: [&str; 3]) -> String {
         let mut out = format!("Goal: {}\n", super::feature::indent(&self.goal));
-        if !steps.is_empty() {
-            out.push_str(steps);
-            out.push('\n');
-        }
-        if !feature.is_empty() {
-            out.push_str(feature);
+        for note in notes.into_iter().filter(|note| !note.is_empty()) {
+            out.push_str(note);
             out.push('\n');
         }
         out.push_str("Workers:");

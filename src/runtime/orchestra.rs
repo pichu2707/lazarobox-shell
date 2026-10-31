@@ -1123,7 +1123,7 @@ impl RunManager {
             .iter()
             .filter_map(|handoff| match handoff.unit {
                 Unit::Worker(worker) => Some(worker),
-                Unit::Step(_) => None,
+                Unit::Step(_) | Unit::Receipt(..) => None,
             })
             .collect();
         for handoff in built {
@@ -1529,6 +1529,13 @@ impl Orchestra for Bound {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.staged(worker, change));
         }
+    }
+
+    fn receipt_line(&self, run: RunId, worker: WorkerId, current: &[Change]) -> Option<String> {
+        let manager = self.manager.upgrade()?;
+        (run == self.run)
+            .then(|| manager.receipt_line(self.pane, run, worker, current))
+            .flatten()
     }
 
     fn applied(&self, run: RunId, worker: WorkerId, paths: &[String]) {
