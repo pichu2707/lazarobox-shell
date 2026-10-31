@@ -19,7 +19,6 @@ use crate::{
         orchestra::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
-            rdd::Consent,
             review::{self, Assessment},
             tools::OrchCall,
         },
@@ -27,6 +26,16 @@ use crate::{
     },
     runtime::mcp::Outcome,
 };
+
+/// What the consent ask came back with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Answered {
+    Granted,
+    /// The user's `n`.
+    Declined,
+    /// Nobody answered: the ask was cancelled or expired, `reason` says how.
+    Unanswered(String),
+}
 
 /// The run manager, as the host calls it.
 pub trait Orchestra: Send + Sync {
@@ -76,19 +85,37 @@ pub trait Orchestra: Send + Sync {
     }
 
     /// Runs the receipt-driven review of `changes` (S7b), the user's answer
-    /// to the consent being `consent`. Returns when it ended; it never
+    /// to the consent being `answered`. Returns when it ended; it never
     /// approves anything, and the worker's batch goes to the user's review
-    /// whatever it found. The default does nothing.
+    /// whatever it found. `Err` is why it could not start at all: the host
+    /// shows it and the batch goes on unreviewed. The default does nothing.
     fn review(
         &self,
         _run: RunId,
         _worker: WorkerId,
         _changes: Vec<Change>,
         _assessment: Assessment,
-        _consent: Consent,
-    ) -> BoxFuture<'static, ()> {
-        Box::pin(async {})
+        _answered: Answered,
+    ) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
+
+    /// `changes` were staged after the set `worker` consented to or was
+    /// assessed on, and so were not reviewed. `reviewed` is whether a review
+    /// ran for the rest. The default keeps nothing.
+    fn late(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _changes: Vec<Change>,
+        _assessment: Assessment,
+        _reviewed: bool,
+    ) {
+    }
+
+    /// A review worker could not read `path`, which is outside the run's
+    /// scope: its review cannot count as clean.
+    fn unread(&self, _run: RunId, _worker: WorkerId, _path: &str) {}
 
     /// Whether `worker` is the correction of a review: it stages fixes but
     /// the worker whose change is under review proposes the batch.

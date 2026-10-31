@@ -16,7 +16,7 @@ use tokio::{
 use super::*;
 use crate::core::ai::orchestra::{
     changes::Change,
-    rdd::{Consent, Lens, Outcome as Ended},
+    rdd::{Lens, Outcome as Ended},
     review::Tier,
     steps::{Grant, Size},
 };
@@ -37,7 +37,7 @@ use crate::{
         },
         tools::{label, registry::FamilySet},
     },
-    runtime::tools::{Limits, Unwired, Waits},
+    runtime::tools::{Answered, Limits, Unwired, Waits},
 };
 
 const JAIL: JailSupport = JailSupport::Available {
@@ -3348,7 +3348,7 @@ fn user_of(request: &ChatRequest) -> &str {
 /// workers. Returns once the review ended.
 async fn reviewed(
     by: fn(&ChatRequest) -> Option<&'static str>,
-    consent: Consent,
+    consent: Answered,
     limits: RunLimits,
 ) -> (Lab, RunId, OrchHandle) {
     let lab = lab_with(Script::By(by), |m, home| RunManager {
@@ -3366,9 +3366,8 @@ async fn reviewed(
     let assessment = handle.assess(run, &changes);
     assert_eq!(assessment.tier, Tier::High);
     let done = handle.review(run, WorkerId(1), changes, assessment, consent);
-    timeout(Duration::from_secs(10), done)
-        .await
-        .expect("the review ended");
+    let ended = timeout(Duration::from_secs(10), done).await;
+    assert!(ended.expect("the review ended").is_ok());
     (lab, run, handle)
 }
 
@@ -3402,7 +3401,7 @@ fn quiet(request: &ChatRequest) -> Option<&'static str> {
 // `not reviewed` and the transcript says so.
 #[tokio::test]
 async fn a_declined_consent_runs_no_review_worker_and_says_so() {
-    let (mut lab, run, _handle) = reviewed(quiet, Consent::Declined, RunLimits::default()).await;
+    let (mut lab, run, _handle) = reviewed(quiet, Answered::Declined, RunLimits::default()).await;
     assert_eq!(lab.seen.requests().len(), 1, "only the code worker");
     let kept = lab.manager.reviews(pane(), run);
     assert_eq!(kept.len(), 1);
@@ -3421,7 +3420,7 @@ async fn a_declined_consent_runs_no_review_worker_and_says_so() {
 // lens prompt, and a quiet review is clean.
 #[tokio::test]
 async fn a_granted_review_runs_read_only_lens_workers_and_ends_clean() {
-    let (mut lab, run, _handle) = reviewed(quiet, Consent::Granted, RunLimits::default()).await;
+    let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
     let requests = lab.seen.requests();
     let lenses: Vec<_> = requests.iter().filter(|r| is_lens(r)).collect();
     assert_eq!(lenses.len(), 2, "{} requests", requests.len());
@@ -3462,7 +3461,7 @@ fn blocker_then_fixed(request: &ChatRequest) -> Option<&'static str> {
 #[tokio::test]
 async fn a_blocker_gets_one_code_correction_and_a_cleared_one_is_corrected() {
     let (_lab, run, _handle) =
-        reviewed(blocker_then_fixed, Consent::Granted, RunLimits::default()).await;
+        reviewed(blocker_then_fixed, Answered::Granted, RunLimits::default()).await;
     let lab = _lab;
     let requests = lab.seen.requests();
     let fixes: Vec<_> = requests.iter().filter(|r| is_correction(r)).collect();
@@ -3486,7 +3485,8 @@ fn blocker_stays(request: &ChatRequest) -> Option<&'static str> {
 // open and no second correction runs.
 #[tokio::test]
 async fn a_blocker_that_survives_the_correction_stays_open_with_no_second_one() {
-    let (lab, run, _handle) = reviewed(blocker_stays, Consent::Granted, RunLimits::default()).await;
+    let (lab, run, _handle) =
+        reviewed(blocker_stays, Answered::Granted, RunLimits::default()).await;
     let requests = lab.seen.requests();
     assert_eq!(requests.iter().filter(|r| is_correction(r)).count(), 1);
     assert_eq!(
@@ -3512,7 +3512,7 @@ fn inferred(request: &ChatRequest) -> Option<&'static str> {
 // incomplete, not clean.
 #[tokio::test]
 async fn an_unanswered_inferred_claim_is_not_upheld_and_the_review_is_incomplete() {
-    let (lab, run, _handle) = reviewed(inferred, Consent::Granted, RunLimits::default()).await;
+    let (lab, run, _handle) = reviewed(inferred, Answered::Granted, RunLimits::default()).await;
     let requests = lab.seen.requests();
     assert_eq!(requests.iter().filter(|r| is_refuter(r)).count(), 1);
     assert_eq!(requests.iter().filter(|r| is_correction(r)).count(), 0);
@@ -3530,7 +3530,7 @@ async fn a_review_over_the_worker_cap_stops_visibly() {
         workers: 2,
         ..RunLimits::default()
     };
-    let (mut lab, run, _handle) = reviewed(quiet, Consent::Granted, limits).await;
+    let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
     let kept = lab.manager.reviews(pane(), run);
     assert_eq!(kept[0].outcome, None);
     let lines = review_lines(&mut lab);

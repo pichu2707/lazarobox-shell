@@ -374,7 +374,10 @@ impl RunManager {
             .host
             .staged_changes(StageKey::Pane(pane), &origin)
             .await;
-        if now.is_empty() { before.to_vec() } else { now }
+        match now {
+            Some(now) if !now.is_empty() => now,
+            _ => before.to_vec(),
+        }
     }
 
     /// Starts one review worker as a worker of the run.

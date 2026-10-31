@@ -469,6 +469,26 @@ fn ledger_change(env: &ToolEnv, staged: &Staged) -> Change {
     }
 }
 
+/// Whether a review worker may read `input` through the staged view: its
+/// write target (which exists on disk or only in the batch) resolves inside
+/// the chat's root and under one of the run's scope roots, and no secret rule
+/// refuses it. The read itself is kept in the chat root by the caller.
+pub(super) async fn review_reach(host: &ToolHost, scope: &TurnScope, input: &str) -> bool {
+    let Some(worker) = scope.read_scope.clone() else {
+        return false;
+    };
+    let (env, input) = (host.env(&scope.origin), input.to_owned());
+    let check = tokio::task::spawn_blocking(move || {
+        let roots = load_roots(&env).ok()?;
+        let target = resolve_write(&roots, &env.origin, &input)?;
+        worker
+            .handle
+            .allows_write(worker.run, worker.worker, &target.real)
+            .then_some(())
+    });
+    matches!(check.await, Ok(Some(())))
+}
+
 /// The change set of the batch of `key`, as a worker's ledger names it.
 pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEnv) -> Vec<Change> {
     let stages = lock(stages);

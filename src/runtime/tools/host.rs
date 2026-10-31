@@ -243,15 +243,16 @@ impl ToolHost {
     }
 
     /// The change set staged in the batch of `key`, as a worker's ledger
-    /// names it (S7b: the run manager re-reads it after a correction).
+    /// names it (S7b: the run manager re-reads it after a correction). `None`
+    /// when the read itself failed.
     pub(crate) async fn staged_changes(
         &self,
         key: StageKey,
         origin: &Path,
-    ) -> Vec<crate::core::ai::orchestra::changes::Change> {
+    ) -> Option<Vec<crate::core::ai::orchestra::changes::Change>> {
         let (stages, env) = (self.stages.clone(), self.env(origin));
         let taken = tokio::task::spawn_blocking(move || files::staged_changes(&stages, key, &env));
-        taken.await.unwrap_or_default()
+        review::joined(taken.await)
     }
 
     /// The dispatch of one turn.
@@ -349,6 +350,9 @@ impl Unprompted {
         }
     }
 }
+
+/// What a review worker is told when it reads outside the run's scope.
+const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the review cannot read it";
 
 /// What a correction worker is told when it proposes the batch.
 const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
@@ -479,6 +483,15 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // display shows it unchanged. The ask carries where the read
             // leads, for the approval mode. A cloud read always asks; a local
             // one only when it leads outside the root.
+            // A review worker never asks: its reads stay inside the run's
+            // scope, staged-only files included, or are refused and told to
+            // its review (S7b).
+            (Call::ReadFile { path, .. }, _, Some(worker)) if scope.sees_stage() => {
+                if !files::review_reach(&host, &scope, path).await {
+                    worker.handle.unread(worker.run, worker.worker, path);
+                    checked = Err(OUT_OF_REVIEW_SCOPE.into());
+                }
+            }
             (Call::ReadFile { path, .. }, locality, worker) => {
                 if let Some(worker) = worker {
                     let env = host.env(&scope.origin);
@@ -774,7 +787,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     // A review worker (read-only, with the pane's batch to
                     // look at, S7b) reads through the staged view instead,
                     // kept in the root: the staged text is not on disk.
-                    (Some(_), Call::ReadFile { .. }) if scope.sees_stage() => {
+                    (_, Call::ReadFile { .. }) if scope.sees_stage() => {
                         files::run_within(&host, &scope, call, Within::Root).await
                     }
                     (Some((roots, real)), Call::ReadFile { lines, .. }) => {

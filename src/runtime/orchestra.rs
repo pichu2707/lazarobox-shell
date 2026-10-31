@@ -43,7 +43,8 @@ use super::{
     mcp::{Dispatch, Hub, Outcome, external::Slot},
     prompts::load_prompt,
     tools::{
-        Approver, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope, fs::load_roots,
+        Answered, Approver, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
+        fs::load_roots,
     },
 };
 use crate::core::{
@@ -1467,13 +1468,24 @@ impl Orchestra for Bound {
         worker: WorkerId,
         changes: Vec<Change>,
         assessment: Assessment,
-        consent: Consent,
-    ) -> BoxFuture<'static, ()> {
+        answered: Answered,
+    ) -> BoxFuture<'static, Result<(), String>> {
+        let consent = match answered {
+            Answered::Granted => Consent::Granted,
+            _ => Consent::Declined,
+        };
         match self.manager.upgrade() {
-            Some(manager) if run == self.run => manager
-                .review(self.pane, run, worker, changes, assessment, consent)
-                .boxed(),
-            _ => async {}.boxed(),
+            Some(manager) if run == self.run => {
+                let (pane, run) = (self.pane, run);
+                async move {
+                    manager
+                        .review(pane, run, worker, changes, assessment, consent)
+                        .await;
+                    Ok(())
+                }
+                .boxed()
+            }
+            _ => async { Ok(()) }.boxed(),
         }
     }
 
