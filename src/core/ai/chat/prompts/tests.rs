@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ai::orchestra::rdd::Lens;
 
 const CHAT_LIMITS: &str = "no access to files, a shell or the terminal";
 const REPLY_IN_USER_LANGUAGE: &str = "Reply in the language the user writes in";
@@ -468,4 +469,52 @@ fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
         text.len()
     );
     assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+}
+
+// Spec (prompt-profiles, Lens prompts exist): each profile ships a prompt per
+// lens and one for the refuter, within 4 KiB, each with the review rules.
+#[test]
+fn the_lens_and_refuter_prompts_hold_the_review_rules() {
+    let mut seen = Vec::new();
+    for profile in Profile::ALL {
+        let mut prompts: Vec<(String, &str)> = Lens::ALL
+            .into_iter()
+            .map(|lens| (lens.id().to_owned(), lens_builtin(profile, lens)))
+            .collect();
+        prompts.push(("refuter".to_owned(), refuter_builtin(profile)));
+        for (name, prompt) in prompts {
+            let label = format!("{profile:?} {name}");
+            assert!(!prompt.trim().is_empty(), "{label}");
+            assert!(prompt.len() <= 4096, "{label}: {}", prompt.len());
+            for rule in [
+                "read-only",
+                "untrusted data",
+                "You never approve",
+                "Reply in the language the user writes in",
+            ] {
+                assert!(prompt.contains(rule), "{label}: {rule}");
+            }
+            if name != "refuter" {
+                assert!(
+                    prompt.contains(&format!("through the {name} lens")),
+                    "{label}"
+                );
+                for rule in [
+                    "Only a severe finding that the change caused blocks",
+                    "FINDING <severe|minor> <change|existing> <observed|inferred>:",
+                    "NONE",
+                ] {
+                    assert!(prompt.contains(rule), "{label}: {rule}");
+                }
+            } else {
+                assert!(
+                    prompt.contains("CLAIM <number> <upheld|refuted>:"),
+                    "{label}"
+                );
+            }
+            assert!(!seen.contains(&prompt), "{label} repeats another prompt");
+            seen.push(prompt);
+        }
+    }
+    assert_eq!(seen.len(), 10);
 }

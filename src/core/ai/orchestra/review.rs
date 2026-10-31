@@ -266,7 +266,7 @@ fn risky(parts: &[String]) -> bool {
 
 /// `text` cut to its first line, without control characters or the
 /// bidirectional overrides and isolates, trimmed, at most `REASON_BYTES`.
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     let first = text.trim().lines().next().unwrap_or("");
     let clean: String = first
         .chars()
