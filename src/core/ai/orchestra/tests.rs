@@ -1009,3 +1009,67 @@ fn a_cancelled_or_timed_out_worker_counts_as_missing_a_refused_one_does_not() {
 fn run_with_deadline(deadline: Duration) -> Run {
     Run::new(RunId(1), roster(ready("codex", "default")), deadline)
 }
+
+// Spec (agent-orchestrator, Override reaches later workers; S1b re-review):
+// a relaunch re-resolves the queued workers of the same task too, not those of
+// other tasks.
+#[test]
+fn a_relaunch_reaches_the_queued_workers_of_its_task_only() {
+    let (t0, mut run) = (Instant::now(), run());
+    let first = run.spawn(t0, Task::Review, "p1").unwrap();
+    let second = run.spawn(t0, Task::Review, "p2").unwrap();
+    let code = run.spawn(t0, Task::Code, "p3").unwrap();
+    run.on_event(t0, first, failed(ErrorClass::RateLimit, "429"));
+    let over = Roster::new(vec![
+        (Task::Code, ready("gemini", "flash")),
+        (Task::Review, ready("claude", "sonnet")),
+    ]);
+    run.decide(t0, UserChoice::Relaunch(over)).unwrap();
+    let engine = |id| run.spec(id).unwrap().engine.clone();
+    assert_eq!(engine(first), "claude");
+    assert_eq!(engine(second), "claude", "queued review uses the override");
+    assert_eq!(engine(code), "claude", "another task keeps its spawn spec");
+    assert_eq!(run.spec(second).unwrap().model.as_deref(), Some("sonnet"));
+}
+
+// The group of workers an unavailable engine refuses is ONE failure: the run
+// halts once, on the failed worker, and the text counts the workers.
+#[test]
+fn a_relaunch_on_an_unavailable_engine_refuses_the_queued_workers_too() {
+    let (t0, mut run) = (Instant::now(), run());
+    let first = run.spawn(t0, Task::Review, "p1").unwrap();
+    let second = run.spawn(t0, Task::Review, "p2").unwrap();
+    let third = run.spawn(t0, Task::Review, "p3").unwrap();
+    run.on_event(t0, first, failed(ErrorClass::RateLimit, "429"));
+    let gone = Availability::Undetected {
+        engine: "codex".to_owned(),
+        status: "not installed".to_owned(),
+    };
+    run.decide(t0, UserChoice::Relaunch(roster(gone.clone())))
+        .unwrap();
+    for id in [first, second, third] {
+        assert_eq!(run.status(id), Some(WorkerStatus::Refused), "{id:?}");
+    }
+    // One halt, on the worker that failed, naming the group.
+    let RunState::Halted { worker, text, .. } = run.state().clone() else {
+        panic!("halted: {:?}", run.state());
+    };
+    assert_eq!(worker, first);
+    assert!(text.starts_with("3 workers refused: "), "{text}");
+    // A retry on the same roster halts again, on the same worker alone: the
+    // other two are not queued any more, so nothing else waits.
+    run.decide(t0, UserChoice::Retry).unwrap();
+    let RunState::Halted { worker, text, .. } = run.state().clone() else {
+        panic!("halted: {:?}", run.state());
+    };
+    assert_eq!(worker, first);
+    assert!(!text.contains("workers refused"), "{text}");
+    // A relaunch on an engine that runs starts the failed worker; the two
+    // refused ones keep their refusal (only queued workers follow).
+    run.decide(t0, UserChoice::Relaunch(roster(ready("claude", "sonnet"))))
+        .unwrap();
+    assert_eq!(run.status(first), Some(WorkerStatus::Running));
+    assert_eq!(run.status(second), Some(WorkerStatus::Refused));
+    assert_eq!(run.status(third), Some(WorkerStatus::Refused));
+    assert_eq!(run.state(), &RunState::Open);
+}

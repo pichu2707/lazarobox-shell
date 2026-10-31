@@ -415,12 +415,21 @@ impl Run {
                 true
             }
         };
+        let others = if reresolve {
+            self.reresolve_queued(now, worker)
+        } else {
+            0
+        };
         let slot = &self.slots[index(worker)];
         // A refused worker has no engine to reuse: it is resolved again.
         let refusal = if reresolve || slot.status == WorkerStatus::Refused {
             let (spec, refusal) = self.resolve(slot.spec.task, &slot.spec.prompt.clone());
             self.slots[index(worker)].spec = spec;
-            refusal
+            // The queued workers refused with it are one failure, said once.
+            refusal.map(|reason| match others {
+                0 => reason,
+                n => format!("{} workers refused: {reason}", n + 1),
+            })
         } else {
             None
         };
@@ -429,6 +438,35 @@ impl Run {
         self.enqueue(now, worker, refusal, true);
         self.reopen(now);
         Ok(Vec::new())
+    }
+
+    /// The queued workers of `failed`'s task take the roster of a relaunch,
+    /// so a run override reaches workers spawned before it; an engine that
+    /// cannot run refuses them like the relaunched worker, and they add no
+    /// halt of their own: the caller reports the group once, with the count
+    /// this returns. Only `Queued` workers of that task: one that is already
+    /// `Refused` or in the `pending` list keeps the spec it was spawned with
+    /// (one worker runs at a time, so none of the task is `Running`).
+    /// `decide` replaces the whole roster: queued workers of OTHER tasks keep
+    /// the spec they were spawned with, while later spawns use the new roster.
+    fn reresolve_queued(&mut self, now: Instant, failed: WorkerId) -> usize {
+        let task = self.slots[index(failed)].spec.task;
+        let queued: Vec<WorkerId> = self.queue.iter().copied().collect();
+        let mut refused = Vec::new();
+        for id in queued {
+            let slot = &self.slots[index(id)];
+            if slot.spec.task != task {
+                continue;
+            }
+            let (spec, refusal) = self.resolve(task, &slot.spec.prompt.clone());
+            self.slots[index(id)].spec = spec;
+            if let Some(reason) = refusal {
+                self.enqueue(now, id, Some(reason), false);
+                refused.push(id);
+            }
+        }
+        self.pending.retain(|id| !refused.contains(id));
+        refused.len()
     }
 
     /// After a decision: halts again on the oldest unresolved failure, else
