@@ -37,7 +37,7 @@ use crate::{
         },
         tools::{label, registry::FamilySet},
     },
-    runtime::tools::{Answered, Limits, Unwired, Waits},
+    runtime::tools::{Answered, Late, Limits, Unwired, Waits},
 };
 
 const JAIL: JailSupport = JailSupport::Available {
@@ -3397,7 +3397,11 @@ fn is_lens(request: &ChatRequest) -> bool {
 }
 
 fn is_refuter(request: &ChatRequest) -> bool {
-    user_of(request).contains("Claims to refute:")
+    user_of(request).contains("Claims to refute:") || is_check(request)
+}
+
+fn is_check(request: &ChatRequest) -> bool {
+    user_of(request).contains("Claims to check:")
 }
 
 fn is_correction(request: &ChatRequest) -> bool {
@@ -3731,7 +3735,7 @@ async fn a_late_path_is_recorded_and_said_as_not_reviewed() {
         applied: false,
     }];
     let assessment = handle.assess(run, &late);
-    handle.late(run, WorkerId(1), late, assessment, true);
+    handle.late(run, WorkerId(1), late, assessment, true, Late::Staged);
     let kept = lab.manager.reviews(pane(), run);
     assert_eq!(kept[0].unreviewed, [".github/workflows/x"]);
     let lines = review_lines(&mut lab);
@@ -3752,7 +3756,7 @@ async fn held_review(
     lab: &Lab,
     run: RunId,
     handle: &OrchHandle,
-) -> tokio::task::JoinHandle<Result<(), String>> {
+) -> tokio::task::JoinHandle<Result<Vec<Change>, String>> {
     let changes = lock_change();
     let assessment = handle.assess(run, &changes);
     let review = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
@@ -3822,7 +3826,7 @@ async fn ctrl_c_during_a_review_ends_it_and_its_workers() {
     let task = held_review(&lab, run, &handle).await;
     lab.manager.cancel(pane());
     let ended = timeout(Duration::from_secs(5), task).await;
-    assert!(ended.expect("the review ended").is_ok());
+    assert!(ended.expect("the review ended").unwrap().is_ok());
 }
 
 // W2: cancelling the waiting worker ends its review and the review workers.
@@ -3832,7 +3836,7 @@ async fn cancelling_the_proposer_ends_its_review() {
     let task = held_review(&lab, run, &handle).await;
     handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
     let ended = timeout(Duration::from_secs(5), task).await;
-    assert!(ended.expect("the review ended").is_ok());
+    assert!(ended.expect("the review ended").unwrap().is_ok());
     until("lens cancelled", || {
         status(&lab, 2) == Some(WorkerStatus::Cancelled)
     })
@@ -3991,11 +3995,182 @@ async fn a_run_halted_during_a_review_ends_it_incomplete() {
     };
     lab.manager.finish(pane(), key, Some(vec![failure]));
     let ended = timeout(Duration::from_secs(5), task).await;
-    assert!(ended.expect("the review ended").is_ok());
+    assert!(ended.expect("the review ended").unwrap().is_ok());
     assert_eq!(
         lab.manager.reviews(pane(), run)[0].outcome,
         Some(Ended::Incomplete)
     );
     let lines = review_lines(&mut lab);
     assert!(lines.iter().any(|l| l.contains("halted")), "{lines:?}");
+}
+
+// W-A: with no room for a correction and its check (workers 4: code, two
+// lenses, one left), the correction is skipped, said, and the blocker stays
+// open.
+#[tokio::test]
+async fn a_correction_without_room_for_its_check_is_skipped_visibly() {
+    let limits = RunLimits {
+        workers: 4,
+        ..RunLimits::default()
+    };
+    let (mut lab, run, _handle) = reviewed_with(
+        blocker_then_fixed,
+        Answered::Granted,
+        limits,
+        Some(restaged_differently),
+    )
+    .await;
+    assert!(lab.seen.requests().iter().all(|r| !is_correction(r)));
+    assert_eq!(
+        lab.manager.reviews(pane(), run)[0].outcome,
+        Some(Ended::BlockersOpen)
+    );
+    let lines = review_lines(&mut lab);
+    assert!(
+        lines.iter().any(|l| l.contains("correction was skipped")),
+        "{lines:?}"
+    );
+}
+
+fn correction_held(request: &ChatRequest) -> Option<&'static str> {
+    if is_correction(request) {
+        None
+    } else {
+        blocker_then_fixed(request)
+    }
+}
+
+// W-A: a check that cannot start (the last slot was taken meanwhile) keeps
+// the blockers open and says so; the review is not lost.
+#[tokio::test]
+async fn a_check_that_cannot_start_keeps_the_blockers_open() {
+    let limits = RunLimits {
+        workers: 5,
+        ..RunLimits::default()
+    };
+    let lab = lab_with(Script::By(correction_held), |m, home| RunManager {
+        scratch: |_| false,
+        restage: Some(restaged_differently),
+        ..tooled(m, home)
+    });
+    let scope = OrchScope {
+        limits,
+        ..lab.scope(codex_both(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let review = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    let task = tokio::spawn(review);
+    until("the correction started", || {
+        lab.seen.requests().iter().any(is_correction)
+    })
+    .await;
+    // Something else takes the last slot before the check is started.
+    handle.call(spawn(Task::Review, "x")).await;
+    let done = WorkerEvent::Done {
+        text: "staged".to_owned(),
+    };
+    let key = WorkerKey {
+        run,
+        worker: WorkerId(4),
+    };
+    lab.manager.finish(pane(), key, Some(vec![done]));
+    let ended = timeout(Duration::from_secs(5), task).await;
+    assert!(ended.expect("the review ended").unwrap().is_ok());
+    assert_eq!(
+        lab.manager.reviews(pane(), run)[0].outcome,
+        Some(Ended::BlockersOpen)
+    );
+    let mut lab = lab;
+    let lines = review_lines(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("correction could not be checked")),
+        "{lines:?}"
+    );
+}
+
+/// The correction staged only an unrelated file.
+fn restaged_elsewhere(before: &[Change]) -> Option<Vec<Change>> {
+    let mut now = before.to_vec();
+    now.push(Change {
+        path: "README.md".to_owned(),
+        size: Some(1),
+        hash: "r".to_owned(),
+        applied: false,
+    });
+    Some(now)
+}
+
+// W-C: a new unrelated path is no fix of the reviewed files.
+#[tokio::test]
+async fn a_correction_that_only_stages_an_unrelated_file_leaves_the_blocker_open() {
+    let (mut lab, run, _handle) = reviewed_with(
+        blocker_then_fixed,
+        Answered::Granted,
+        RunLimits::default(),
+        Some(restaged_elsewhere),
+    )
+    .await;
+    assert_eq!(
+        lab.manager.reviews(pane(), run)[0].outcome,
+        Some(Ended::BlockersOpen)
+    );
+    let lines = review_lines(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("did not change the reviewed files")),
+        "{lines:?}"
+    );
+}
+
+// W-D: the review hands back the set as last reviewed: a corrected file
+// carries its post-correction hash.
+#[tokio::test]
+async fn the_review_returns_the_hashes_it_last_reviewed() {
+    let lab = lab_with(Script::By(blocker_then_fixed), |m, home| RunManager {
+        scratch: |_| false,
+        restage: Some(restaged_differently),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab
+        .manager
+        .start(pane(), lab.scope(codex_both(), &[]))
+        .unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    let set = timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(set[0].path, "Cargo.lock");
+    assert_eq!(set[0].hash, "h-fixed");
+}
+
+// W-D: a file changed after its review is said as such.
+#[tokio::test]
+async fn a_file_changed_after_its_review_is_said_as_not_reviewed() {
+    let (mut lab, run, handle) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    let changed = lock_change();
+    let assessment = handle.assess(run, &changed);
+    handle.late(run, WorkerId(1), changed, assessment, true, Late::Changed);
+    let lines = review_lines(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("changed after review, not reviewed: Cargo.lock")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lab.manager.reviews(pane(), run)[0].unreviewed,
+        ["Cargo.lock"]
+    );
 }

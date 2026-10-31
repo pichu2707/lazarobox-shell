@@ -39,7 +39,9 @@ use crate::core::{
     },
     layout::PaneId,
 };
-use crate::runtime::tools::{Answered, Orchestra, Pending, Waits, WorkerScope, approver::ENDED};
+use crate::runtime::tools::{
+    Answered, Late, Orchestra, Pending, Waits, WorkerScope, approver::ENDED,
+};
 
 /// A run manager that answers every call with `answer` and remembers them.
 struct Fake {
@@ -379,10 +381,10 @@ impl Orchestra for Scoped {
         &self,
         _: RunId,
         _: WorkerId,
-        _: Vec<Change>,
+        changes: Vec<Change>,
         _: Assessment,
         answered: Answered,
-    ) -> BoxFuture<'static, Result<(), String>> {
+    ) -> BoxFuture<'static, Result<Vec<Change>, String>> {
         self.log
             .lock()
             .unwrap()
@@ -393,13 +395,26 @@ impl Orchestra for Scoped {
             if let Some((dispatch, path)) = sibling {
                 dispatch.call(write_call(path, "late")).await;
             }
-            error.map_or(Ok(()), |why| Err(why.to_owned()))
+            error.map_or(Ok(changes), |why| Err(why.to_owned()))
         })
     }
 
-    fn late(&self, _: RunId, _: WorkerId, changes: Vec<Change>, a: Assessment, reviewed: bool) {
+    fn late(
+        &self,
+        _: RunId,
+        _: WorkerId,
+        changes: Vec<Change>,
+        a: Assessment,
+        reviewed: bool,
+        kind: Late,
+    ) {
         let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
-        let line = format!("late {} {:?} reviewed={reviewed}", paths.join(","), a.tier);
+        let line = format!(
+            "{} {} {:?} reviewed={reviewed}",
+            format!("{kind:?}").to_lowercase(),
+            paths.join(","),
+            a.tier
+        );
         self.log.lock().unwrap().push(line);
     }
 
@@ -1523,7 +1538,7 @@ async fn a_path_staged_during_the_review_is_reported_as_not_reviewed() {
         [
             "consent",
             "review Granted",
-            "late Cargo.toml High reviewed=true"
+            "staged Cargo.toml High reviewed=true"
         ],
         "{log:?}"
     );
@@ -1560,7 +1575,7 @@ async fn a_high_path_staged_after_a_passive_assessment_is_reported() {
     super::review::before_batch_with(&host, &scope, async { Some(seen) }).await;
     assert_eq!(
         *handle.log.lock().unwrap(),
-        ["late Cargo.lock High reviewed=false"]
+        ["staged Cargo.lock High reviewed=false"]
     );
 }
 
@@ -1588,16 +1603,52 @@ async fn a_review_worker_reads_staged_only_files_in_scope_and_never_asks() {
     let lens = host.dispatch(scope);
     let seen = lens.call(read("fresh.rs")).await;
     assert!(seen.text.contains("only staged"), "{seen:?}");
-    let outside = lens.call(read("../other/a.rs")).await;
-    assert!(outside.is_error, "{outside:?}");
+    // Harmless probes are refused to the worker with a reason, asked of
+    // nobody, and do not make the review incomplete.
+    for probe in [
+        "../other/a.rs",
+        ".git/config",
+        "node_modules/x",
+        "~/.ssh/id",
+        "/etc/passwd",
+    ] {
+        let out = lens.call(read(probe)).await;
+        assert!(out.is_error, "{probe}: {out:?}");
+    }
     assert!(reader.asked.lock().unwrap().is_empty(), "never asked");
-    assert!(
-        handle
-            .log
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|l| l.starts_with("unread")),
-        "the review is told"
+    let told =
+        |log: &Mutex<Vec<String>>| log.lock().unwrap().iter().any(|l| l.starts_with("unread"));
+    assert!(!told(&handle.log), "{:?}", handle.log);
+    // A staged file the scope no longer lets the worker read is counted.
+    handle.cancel();
+    let gone = lens.call(read("fresh.rs")).await;
+    assert!(gone.is_error, "{gone:?}");
+    assert!(told(&handle.log), "{:?}", handle.log);
+}
+
+// W-D: a reviewed file re-staged with other content while the review ran is
+// reported as changed after the review.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_reviewed_file_restaged_during_the_review_is_reported_as_changed() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = ByAsk::new(&handle, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, handle.clone(), user.clone());
+    let other = writer(&host, Locality::Cloud, &home, handle.clone(), user);
+    *handle.sibling.lock().unwrap() = Some((other, "Cargo.lock"));
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    let log = handle.log.lock().unwrap().clone();
+    assert_eq!(
+        log[..3],
+        [
+            "consent",
+            "review Granted",
+            "changed Cargo.lock High reviewed=true"
+        ],
+        "{log:?}"
     );
 }

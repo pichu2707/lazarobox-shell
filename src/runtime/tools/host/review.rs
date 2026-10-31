@@ -25,7 +25,7 @@ use crate::{
         },
         tools::summary::clip,
     },
-    runtime::tools::{Answered, WorkerScope},
+    runtime::tools::{Answered, Late, WorkerScope},
 };
 
 /// The row of the consent, a call of its own.
@@ -67,6 +67,9 @@ pub(super) async fn before_batch_with(
     }
     let assessment = worker.handle.assess(worker.run, &changes);
     let mut reviewed = false;
+    // The set as last reviewed: the review hands it back with the hashes of
+    // the files it corrected and checked.
+    let mut base = changes.clone();
     if assessment.tier >= Tier::High {
         let Some(answered) = consent(host, scope, worker, &assessment, &changes).await else {
             return;
@@ -83,7 +86,10 @@ pub(super) async fn before_batch_with(
             )
             .await;
         match started {
-            Ok(()) => reviewed = granted,
+            Ok(set) => {
+                reviewed = granted;
+                base = set;
+            }
             Err(why) => {
                 let why = format!("review could not start: {why}; the change is not reviewed");
                 note(host, scope, ToolStatus::Error, &why).await;
@@ -98,17 +104,42 @@ pub(super) async fn before_batch_with(
         return;
     };
     let late: Vec<Change> = now
-        .into_iter()
-        .filter(|change| !changes.iter().any(|seen| seen.path == change.path))
+        .iter()
+        .filter(|change| !base.iter().any(|seen| seen.path == change.path))
+        .cloned()
         .collect();
-    if late.is_empty() {
-        return;
+    if !late.is_empty() {
+        let assessment = worker.handle.assess(worker.run, &late);
+        if reviewed || assessment.tier >= Tier::High {
+            worker.handle.late(
+                worker.run,
+                worker.worker,
+                late,
+                assessment,
+                reviewed,
+                Late::Staged,
+            );
+        }
     }
-    let assessment = worker.handle.assess(worker.run, &late);
-    if reviewed || assessment.tier >= Tier::High {
-        worker
-            .handle
-            .late(worker.run, worker.worker, late, assessment, reviewed);
+    // A reviewed file staged again with other content was not reviewed in
+    // that form.
+    let changed: Vec<Change> = now
+        .into_iter()
+        .filter(|change| {
+            base.iter()
+                .any(|seen| seen.path == change.path && seen.hash != change.hash)
+        })
+        .collect();
+    if reviewed && !changed.is_empty() {
+        let assessment = worker.handle.assess(worker.run, &changed);
+        worker.handle.late(
+            worker.run,
+            worker.worker,
+            changed,
+            assessment,
+            reviewed,
+            Late::Changed,
+        );
     }
 }
 

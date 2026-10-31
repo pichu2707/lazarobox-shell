@@ -487,9 +487,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // scope, staged-only files included, or are refused and told to
             // its review (S7b).
             (Call::ReadFile { path, .. }, _, Some(worker)) if scope.sees_stage() => {
-                if !files::review_reach(&host, &scope, path).await {
-                    worker.handle.unread(worker.run, worker.worker, path);
-                    checked = Err(OUT_OF_REVIEW_SCOPE.into());
+                match files::review_reach(&host, &scope, path).await {
+                    files::ReviewRead::Allowed => {}
+                    // A probe is refused with its reason and counts for nothing.
+                    files::ReviewRead::Refused => checked = Err(OUT_OF_REVIEW_SCOPE.into()),
+                    files::ReviewRead::RefusedStaged => {
+                        worker.handle.unread(worker.run, worker.worker, path);
+                        checked = Err(OUT_OF_REVIEW_SCOPE.into());
+                    }
                 }
             }
             (Call::ReadFile { path, .. }, locality, worker) => {

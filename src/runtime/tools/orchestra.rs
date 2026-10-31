@@ -37,6 +37,15 @@ pub enum Answered {
     Unanswered(String),
 }
 
+/// Why a path was not reviewed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Late {
+    /// A path that was not in the set assessed or consented to.
+    Staged,
+    /// A reviewed path whose content changed after it was reviewed.
+    Changed,
+}
+
 /// The run manager, as the host calls it.
 pub trait Orchestra: Send + Sync {
     /// Runs one orchestration call of the orchestrator turn. What it returns
@@ -87,22 +96,26 @@ pub trait Orchestra: Send + Sync {
     /// Runs the receipt-driven review of `changes` (S7b), the user's answer
     /// to the consent being `answered`. Returns when it ended; it never
     /// approves anything, and the worker's batch goes to the user's review
-    /// whatever it found. `Err` is why it could not start at all: the host
-    /// shows it and the batch goes on unreviewed. The default does nothing.
+    /// whatever it found. `Ok` holds the set as it was last reviewed: the
+    /// hashes of the files a correction changed and the review checked
+    /// included, so the host can tell a file re-staged since. `Err` is why it
+    /// could not start at all: the host shows it and the batch goes on
+    /// unreviewed. The default reviews nothing and returns `changes`.
     fn review(
         &self,
         _run: RunId,
         _worker: WorkerId,
-        _changes: Vec<Change>,
+        changes: Vec<Change>,
         _assessment: Assessment,
         _answered: Answered,
-    ) -> BoxFuture<'static, Result<(), String>> {
-        Box::pin(async { Ok(()) })
+    ) -> BoxFuture<'static, Result<Vec<Change>, String>> {
+        Box::pin(async { Ok(changes) })
     }
 
     /// `changes` were staged after the set `worker` consented to or was
-    /// assessed on, and so were not reviewed. `reviewed` is whether a review
-    /// ran for the rest. The default keeps nothing.
+    /// assessed on, or changed after it was reviewed (`kind`), and so were
+    /// not reviewed. `reviewed` is whether a review ran for the rest. The
+    /// default keeps nothing.
     fn late(
         &self,
         _run: RunId,
@@ -110,6 +123,7 @@ pub trait Orchestra: Send + Sync {
         _changes: Vec<Change>,
         _assessment: Assessment,
         _reviewed: bool,
+        _kind: Late,
     ) {
     }
 

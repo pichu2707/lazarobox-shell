@@ -33,7 +33,7 @@ use crate::core::ai::{
     orchestra::{
         rdd::{
             Consent, Finding, Lens, Outcome as Ended, Refutation, Review, ReviewError,
-            correction_prompt, lens_prompt, parse_verdicts, refuter_prompt,
+            correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, validation_prompt,
         },
         review::{Assessment, Raise, Tier, assess},
     },
@@ -44,10 +44,6 @@ const DEFAULT_LENSES: [Lens; 2] = [Lens::Risk, Lens::Reliability];
 
 /// Why the default lenses are picked.
 const DEFAULT_WHY: &str = "default lens for a high-risk change";
-
-/// What the refuter is told when it checks a correction.
-const VALIDATE: &str = "These claims were reported before a correction was staged. \
-                        Uphold a claim only if the staged text still has the problem.\n";
 
 /// A finished review, kept for the receipt (7b.3).
 #[derive(Clone, Debug)]
@@ -171,8 +167,19 @@ impl Drop for Guard {
         }
         let (manager, pane, run, worker) = (self.manager.clone(), self.pane, self.run, self.worker);
         let spawned = std::mem::take(&mut self.spawned);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { manager.release(pane, run, worker, &spawned) });
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move { manager.release(pane, run, worker, &spawned) });
+            }
+            // Nothing can cancel them here: say so, never fail silently.
+            Err(_) => manager.say(
+                pane,
+                run,
+                format!(
+                    "review of worker {}: its workers could not be cancelled (no runtime)",
+                    worker.0
+                ),
+            ),
         }
     }
 }
@@ -234,6 +241,7 @@ impl RunManager {
     }
 
     /// Paths staged after the set that was assessed or consented to.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn late(
         &self,
         pane: PaneId,
@@ -242,14 +250,19 @@ impl RunManager {
         changes: Vec<Change>,
         assessment: Assessment,
         reviewed: bool,
+        kind: Late,
     ) {
         let after = if reviewed {
             "consent"
         } else {
             "the assessment"
         };
+        let what = match kind {
+            Late::Staged => format!("staged after {after}"),
+            Late::Changed => "changed after review".to_owned(),
+        };
         let line = format!(
-            "review of worker {}: staged after {after}, not reviewed: {}",
+            "review of worker {}: {what}, not reviewed: {}",
             worker.0,
             paths_line(&changes)
         );
@@ -300,7 +313,7 @@ impl RunManager {
         changes: Vec<Change>,
         assessment: Assessment,
         answered: Answered,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Change>, String> {
         let of = format!("review of worker {}", worker.0);
         let mut review = Review::new(assessment);
         let unanswered = match &answered {
@@ -319,7 +332,7 @@ impl RunManager {
                     run,
                     Reviewed::new(worker, review, Some(Ended::NotReviewed)),
                 );
-                return Ok(());
+                return Ok(changes);
             }
             Answered::Unanswered(why) => Some(why.clone()),
         };
@@ -335,7 +348,7 @@ impl RunManager {
             let mut kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
             kept.unanswered = Some(why);
             self.keep(pane, run, kept);
-            return Ok(());
+            return Ok(changes);
         }
         let _ = review.consent(Consent::Granted);
         let mut guard = Guard {
@@ -352,10 +365,21 @@ impl RunManager {
             parked
         });
         let parked = parked.ok_or_else(|| ENDED.to_owned())?;
+        // The set as last reviewed: a corrected and checked file moves to its
+        // post-correction hash.
+        let mut reviewed = changes.clone();
         let stopped = if parked {
-            self.conduct(pane, run, worker, &changes, &mut review, &mut guard)
-                .await
-                .err()
+            self.conduct(
+                pane,
+                run,
+                worker,
+                &changes,
+                &mut reviewed,
+                &mut review,
+                &mut guard,
+            )
+            .await
+            .err()
         } else {
             Some(Stop::Start(format!("worker {} is not running", worker.0)))
         };
@@ -382,7 +406,7 @@ impl RunManager {
         let mut kept = Reviewed::new(worker, review, outcome);
         kept.unread = unread;
         self.keep(pane, run, kept);
-        Ok(())
+        Ok(reviewed)
     }
 
     /// What the review concluded and the line that says it. A staged file a
@@ -443,12 +467,14 @@ impl RunManager {
     /// The lenses, the refuter and the one correction, in that order. A
     /// `Stop` is why the review ended early; what was learned stays in
     /// `review`.
+    #[allow(clippy::too_many_arguments)]
     async fn conduct(
         self: &Arc<Self>,
         pane: PaneId,
         run: RunId,
         worker: WorkerId,
         changes: &[Change],
+        reviewed: &mut [Change],
         review: &mut Review,
         guard: &mut Guard,
     ) -> Result<(), Stop> {
@@ -525,7 +551,9 @@ impl RunManager {
             Err(e) => return Err(other(refused(e))),
         };
         let open = self
-            .correct(pane, run, worker, guard, changes, review, &targets)
+            .correct(
+                pane, run, worker, guard, changes, reviewed, review, &targets,
+            )
             .await?;
         review
             .finish_correction(&open)
@@ -556,11 +584,16 @@ impl RunManager {
             .iter()
             .filter_map(|&at| review.findings().get(at))
             .collect();
-        let (lead, system) = match check {
-            Check::Refute => ("", refuter_builtin(profile)),
-            Check::Validate => (VALIDATE, validator_builtin(profile)),
+        let (prompt, system) = match check {
+            Check::Refute => (
+                refuter_prompt(nonce, changes, &claims),
+                refuter_builtin(profile),
+            ),
+            Check::Validate => (
+                validation_prompt(nonce, changes, &claims),
+                validator_builtin(profile),
+            ),
         };
-        let prompt = format!("{lead}{}", refuter_prompt(nonce, changes, &claims));
         let id = self
             .start_review(pane, run, Role::Reader, prompt, Some(system))
             .map_err(Stop::Start)?;
@@ -580,9 +613,27 @@ impl RunManager {
         worker: WorkerId,
         guard: &mut Guard,
         changes: &[Change],
+        reviewed: &mut [Change],
         review: &Review,
         targets: &[usize],
     ) -> Result<Vec<usize>, Stop> {
+        // The correction and its check: both or neither, so a correction is
+        // never left unchecked for want of a slot.
+        let room = self.on_run(pane, run, |live| {
+            let workers = live.run.limits().workers;
+            workers.saturating_sub(live.run.worker_count())
+        });
+        let room = room.ok_or_else(|| Stop::Other(ENDED.to_owned()))?;
+        if room < 2 {
+            self.say(
+                pane,
+                run,
+                format!(
+                    "the correction was skipped: max_workers leaves room for {room} more worker(s), a correction and its check need 2; the blockers stay open"
+                ),
+            );
+            return Ok(targets.to_vec());
+        }
         let nonce = (self.nonce)()
             .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
         let blockers: Vec<&Finding> = targets
@@ -614,16 +665,22 @@ impl RunManager {
             );
             return Ok(targets.to_vec());
         };
-        let moved = fresh.iter().any(|now| {
-            !changes
+        // The reviewed files themselves must have changed: a new unrelated
+        // path fixes nothing.
+        let moved = changes.iter().any(|was| {
+            fresh
                 .iter()
-                .any(|was| was.path == now.path && was.hash == now.hash)
+                .any(|now| now.path == was.path && now.hash != was.hash)
         });
         if !moved {
-            self.say(pane, run, "the correction staged nothing new".to_owned());
+            self.say(
+                pane,
+                run,
+                "the correction did not change the reviewed files".to_owned(),
+            );
             return Ok(targets.to_vec());
         }
-        let text = self
+        let checked = self
             .refute(
                 pane,
                 run,
@@ -634,7 +691,25 @@ impl RunManager {
                 targets,
                 Check::Validate,
             )
-            .await?;
+            .await;
+        let text = match checked {
+            Ok(text) => text,
+            Err(Stop::Start(why)) => {
+                self.say(
+                    pane,
+                    run,
+                    format!("the correction could not be checked: {why}; the blockers stay open"),
+                );
+                return Ok(targets.to_vec());
+            }
+            Err(other) => return Err(other),
+        };
+        // What the check looked at is what was last reviewed.
+        for kept in reviewed.iter_mut() {
+            if let Some(now) = fresh.iter().find(|now| now.path == kept.path) {
+                kept.hash.clone_from(&now.hash);
+            }
+        }
         let verdicts = parse_verdicts(&text.unwrap_or_default(), targets.len());
         // Only an explicit "refuted" clears a blocker: upheld and unsettled
         // (or no answer) leave it open.
@@ -771,4 +846,31 @@ pub(super) fn gone() -> Assessment {
 
 fn refused(why: ReviewError) -> String {
     format!("the review state refused a step ({why:?})")
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    // A review dropped where no runtime can cancel its workers says so.
+    #[test]
+    fn a_guard_dropped_without_a_runtime_says_it_could_not_cancel() {
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let runner: Runner = Arc::new(|_, _| Box::pin(async {}));
+        let manager = Arc::new(RunManager::new(runner, None, tx));
+        let guard = Guard {
+            manager,
+            pane: PaneId::for_test(1),
+            run: RunId(1),
+            worker: WorkerId(1),
+            spawned: vec![WorkerId(2)],
+            armed: true,
+        };
+        drop(guard);
+        let (_, event) = events.try_recv().expect("a line");
+        let OrchestraEvent::Review { text, .. } = event else {
+            panic!("{event:?}");
+        };
+        assert!(text.contains("could not be cancelled"), "{text}");
+    }
 }

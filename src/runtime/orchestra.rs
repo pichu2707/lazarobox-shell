@@ -43,7 +43,7 @@ use super::{
     mcp::{Dispatch, Hub, Outcome, external::Slot},
     prompts::load_prompt,
     tools::{
-        Answered, Approver, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
+        Answered, Approver, Late, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
         fs::load_roots,
     },
 };
@@ -1477,7 +1477,7 @@ impl Orchestra for Bound {
         changes: Vec<Change>,
         assessment: Assessment,
         answered: Answered,
-    ) -> BoxFuture<'static, Result<(), String>> {
+    ) -> BoxFuture<'static, Result<Vec<Change>, String>> {
         match self.manager.upgrade() {
             Some(manager) if run == self.run => manager
                 .review(self.pane, run, worker, changes, assessment, answered)
@@ -1494,11 +1494,12 @@ impl Orchestra for Bound {
         changes: Vec<Change>,
         assessment: Assessment,
         reviewed: bool,
+        kind: Late,
     ) {
         if let Some(manager) = self.manager.upgrade()
             && run == self.run
         {
-            manager.late(self.pane, run, worker, changes, assessment, reviewed);
+            manager.late(self.pane, run, worker, changes, assessment, reviewed, kind);
         }
     }
 

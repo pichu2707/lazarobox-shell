@@ -626,3 +626,16 @@ Strict TDD, RED first (host: 7 of 7 new tests failed against the stubbed hook; r
 | S5 | a halted run, an ended proposer or a gone run end the wait: halted gives `Incomplete` with a line | `a_run_halted_during_a_review_ends_it_incomplete` |
 
 Known limits kept: the lens pair is still the default; `Review::pick` by the orchestrator, the receipt (7b.3).
+
+### 7b.2b re-review fixes
+
+Strict TDD, RED first: the runtime tests for W-A (2), W-C and W-D (2) failed against the old manager (5 of 5; the check-cannot-start test also needed the trait to compile first), the host tests for W-D and W-E failed (2 of 2: the unread log held all five probes; no `changed` line), and the validation prompt test failed against a stub that returned the refuter prompt. The guard drop test was written after the code (no RED).
+
+| # | Fix | Test |
+|---|-----|------|
+| W-A | Before the correction the room for it AND its check is counted (`worker_count` counts every slot ever spawned): with less, the correction is skipped with `the correction was skipped: ...` and the blockers stay open. A check that cannot start (a slot was taken meanwhile) is treated like a failed correction start: `the correction could not be checked: ...`, targets open, outcome `BlockersOpen`, review kept | `a_correction_without_room_for_its_check_is_skipped_visibly`, `a_check_that_cannot_start_keeps_the_blockers_open` |
+| W-B | `validation_prompt` (rdd.rs): header `Claims to check: N`, and a lead that refutes only on clear evidence in the staged text that the problem is gone, else unsettled and open; replaces the `VALIDATE` lead and the refuter header | `the_validation_prompt_asks_for_clear_evidence_before_refuting` |
+| W-C | The gate needs a path of the reviewed set whose hash changed; a new unrelated path counts for nothing: `the correction did not change the reviewed files` | `a_correction_that_only_stages_an_unrelated_file_leaves_the_blocker_open` |
+| W-D | `Orchestra::review` returns the set as last reviewed (post-correction hashes for checked files). The host compares (path, hash) at seal time: new paths `Late::Staged`, reviewed paths with another hash `Late::Changed` (`changed after review, not reviewed: <paths>`, also in `Reviewed.unreviewed`) | `the_review_returns_the_hashes_it_last_reviewed`, `a_file_changed_after_its_review_is_said_as_not_reviewed`, `a_reviewed_file_restaged_during_the_review_is_reported_as_changed` |
+| W-E | `unread` counts only a refused path that is a file of the staged set (`ReviewRead::RefusedStaged`); probes (`.git`, `node_modules`, `~`, absolute paths, outside the scope) are refused with a reason and count for nothing. An absolute path is refused as before (`resolve_write` takes relative paths only), uncounted | `a_review_worker_reads_staged_only_files_in_scope_and_never_asks` |
+| S | A `Guard` dropped with no runtime says `its workers could not be cancelled (no runtime)` on the review line instead of failing silently | `a_guard_dropped_without_a_runtime_says_it_could_not_cancel` |
