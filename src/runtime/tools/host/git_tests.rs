@@ -321,6 +321,31 @@ async fn without_a_jail_a_read_verb_is_refused_before_it_asks() {
     assert!(asks.asked().is_empty());
 }
 
+// A broad chat folder (HOME, a folder above it, `/`) gets the folder-level
+// text from a git verb too, not the uniform refusal.
+#[tokio::test]
+async fn a_git_verb_in_a_broad_folder_asks_for_a_project_folder() {
+    let w = bare_world(LANDLOCK);
+    let above = w.home.parent().unwrap().to_path_buf();
+    for origin in [w.home.clone(), above, PathBuf::from("/")] {
+        let (tx, _rx) = mpsc::channel(64);
+        let mut scope = TurnScope::new(tx, Locality::Local, origin.clone());
+        scope.approver = Asks::new(Decision::Sent);
+        scope.families = write_set();
+        scope.stage_key = Some(key());
+        let d = w.host.dispatch(scope);
+        for call in [diff(), add(&["a.txt"])] {
+            let out = d.call(call.clone()).await;
+            assert!(out.is_error, "{origin:?} {call:?}");
+            assert_eq!(
+                out.text,
+                "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>",
+                "{origin:?} {call:?}"
+            );
+        }
+    }
+}
+
 // Scenario "Unproposed batch" (design: every git tool is refused while this
 // chat has a batch staged or proposed). Linux only: staging a write needs the
 // write tools, which macOS does not have yet (same gate as the exec test).
