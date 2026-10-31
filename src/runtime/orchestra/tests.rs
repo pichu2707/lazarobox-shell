@@ -3278,3 +3278,24 @@ async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
     assert_eq!(worker_side.count(), 1, "the worker's own timers");
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
+
+// Review 2, 4: the orchestrator reads why a document change was refused.
+#[test]
+fn document_refusals_name_their_reason() {
+    use crate::core::ai::orchestra::feature::FeatureError as F;
+    for (why, text) in [
+        (F::EmptySpec(2), "spec S2 is empty"),
+        (F::EmptyText, "a correction needs the new text"),
+        (F::EmptyTitle(3), "task 3 has no title"),
+        (F::MalformedTask(1), "task 1 must be `S1,S2: title`"),
+        (
+            F::UnknownRef { task: 2, spec: 9 },
+            "task 2 names spec S9, which does not exist",
+        ),
+    ] {
+        assert_eq!(
+            super::step_refusal(crate::core::ai::orchestra::steps::StepError::Doc(why)),
+            error(text)
+        );
+    }
+}

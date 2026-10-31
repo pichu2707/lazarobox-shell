@@ -363,7 +363,7 @@ impl Ledger {
     }
 
     fn draw(&self, lens: &[usize], hidden: &[bool], steps: &str, feature: &str) -> String {
-        let mut out = format!("Goal: {}\n", self.goal);
+        let mut out = format!("Goal: {}\n", super::feature::indent(&self.goal));
         if !steps.is_empty() {
             out.push_str(steps);
             out.push('\n');

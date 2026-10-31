@@ -38,8 +38,19 @@ pub enum FeatureError {
     NoSpecs,
     TooMany,
     TooBig,
-    /// The task (counted from 1) is not `S1,S2: title` with known specs.
-    BadTask(usize),
+    /// The task (counted from 1) is not written `S1,S2: title`.
+    MalformedTask(usize),
+    /// The task (counted from 1) covers a spec the document does not have.
+    UnknownRef {
+        task: usize,
+        spec: u32,
+    },
+    /// Spec `n` (counted from 1) is blank.
+    EmptySpec(usize),
+    /// A correction without the new wording of the requirement.
+    EmptyText,
+    /// The task (counted from 1) has no title.
+    EmptyTitle(usize),
     /// A correction names a requirement the document does not have.
     UnknownSpec,
 }
@@ -52,6 +63,8 @@ pub struct FeatureDoc {
     tasks: Vec<TaskRow>,
     /// `log[0]` is the goal; `L{n}` is `log[n - 1]`.
     log: Vec<String>,
+    /// Entries dropped after `log[0]`, the oldest first: numbers stay stable.
+    omitted: usize,
 }
 
 impl FeatureDoc {
@@ -69,6 +82,9 @@ impl FeatureDoc {
         if specs.len() > MAX_ITEMS || tasks.len() > MAX_ITEMS {
             return Err(FeatureError::TooMany);
         }
+        if let Some(at) = specs.iter().position(|t| text_of(t).trim().is_empty()) {
+            return Err(FeatureError::EmptySpec(at + 1));
+        }
         let specs: Vec<Spec> = specs
             .iter()
             .enumerate()
@@ -79,16 +95,28 @@ impl FeatureDoc {
             .collect();
         let mut rows = Vec::new();
         for (at, task) in tasks.iter().enumerate() {
-            let bad = FeatureError::BadTask(at + 1);
+            let bad = FeatureError::MalformedTask(at + 1);
             let (refs, title) = task.split_once(':').ok_or(bad)?;
-            let refs: Vec<String> = refs.split(',').map(|r| r.trim().to_owned()).collect();
-            if refs.iter().any(|r| specs.iter().all(|s| &s.id != r)) {
-                return Err(bad);
+            let mut covers = Vec::new();
+            for r in refs.split(',').map(str::trim) {
+                let number = r.strip_prefix('S').and_then(|n| n.parse::<u32>().ok());
+                let number = number.ok_or(bad)?;
+                if number == 0 || number as usize > specs.len() {
+                    return Err(FeatureError::UnknownRef {
+                        task: at + 1,
+                        spec: number,
+                    });
+                }
+                covers.push(format!("S{number}"));
+            }
+            let title = text_of(title).replace(['\n', '\t'], " ").trim().to_owned();
+            if title.is_empty() {
+                return Err(FeatureError::EmptyTitle(at + 1));
             }
             rows.push(TaskRow {
                 id: format!("T{}", at + 1),
-                specs: refs,
-                title: text_of(title).replace(['\n', '\t'], " ").trim().to_owned(),
+                specs: covers,
+                title,
                 status: "todo".to_owned(),
             });
         }
@@ -96,7 +124,8 @@ impl FeatureDoc {
             run,
             specs,
             tasks: rows,
-            log: vec![goal.to_owned()],
+            log: vec![text_of(goal)],
+            omitted: 0,
         };
         doc.fits()
     }
@@ -114,9 +143,17 @@ impl FeatureDoc {
             .iter()
             .position(|s| s.id == spec)
             .ok_or(FeatureError::UnknownSpec)?;
+        if text_of(text).trim().is_empty() {
+            return Err(FeatureError::EmptyText);
+        }
         let mut next = self.clone();
         next.specs[at].text = text_of(text);
         next.log.push(text_of(correction));
+        // Keep the goal and the newest entries: drop the oldest until it fits.
+        while next.log.len() > 2 && next.render_for_ledger().len() > MAX_BYTES {
+            next.log.remove(1);
+            next.omitted += 1;
+        }
         *self = next.fits()?;
         Ok(())
     }
@@ -136,8 +173,19 @@ impl FeatureDoc {
         &self.tasks
     }
 
+    /// The log entries kept: the goal, then the newest ones.
     pub fn log(&self) -> &[String] {
         &self.log
+    }
+
+    /// How many entries the log dropped (the oldest after the goal).
+    pub fn omitted(&self) -> usize {
+        self.omitted
+    }
+
+    /// The number of the newest log entry (`L{n}`).
+    pub fn entries(&self) -> usize {
+        self.log.len() + self.omitted
     }
 
     pub fn run(&self) -> RunId {
@@ -160,14 +208,14 @@ impl FeatureDoc {
             "Feature document: {} specs, {} tasks, {} log entries",
             self.specs.len(),
             self.tasks.len(),
-            self.log.len()
+            self.entries()
         )
     }
 
     fn draw(&self, goal: Option<&str>) -> String {
         let mut out = format!("Feature document (run {})\nSpecs:", self.run.0);
         for spec in &self.specs {
-            out.push_str(&format!("\n{}: {}", spec.id, spec.text));
+            out.push_str(&format!("\n{}: {}", spec.id, indent(&spec.text)));
         }
         out.push_str("\nTasks:");
         for task in &self.tasks {
@@ -179,21 +227,33 @@ impl FeatureDoc {
         }
         out.push_str("\nLog:");
         for (at, entry) in self.log.iter().enumerate() {
+            if at == 1 && self.omitted > 0 {
+                out.push_str(&format!("\n({} older log entries omitted)", self.omitted));
+            }
             let entry = if at == 0 {
                 goal.unwrap_or(entry)
             } else {
                 entry
             };
-            out.push_str(&format!("\nL{}: {entry}", at + 1));
+            let number = if at == 0 { 1 } else { at + 1 + self.omitted };
+            out.push_str(&format!("\nL{number}: {}", indent(entry)));
         }
         out
     }
 }
 
-/// `text` without control characters other than line breaks and tabs: it may
-/// reach a model and the engram note. The words are otherwise untouched.
+/// `text` with every continuation line indented, so that no line of the
+/// user's words can start like a line of the document or the ledger.
+pub fn indent(text: &str) -> String {
+    text.replace('\n', "\n    ")
+}
+
+/// `text` without control characters other than line breaks and tabs, and
+/// without the bidirectional overrides and isolates: it may reach a model and
+/// the engram note. The words are otherwise untouched.
 fn text_of(text: &str) -> String {
     text.chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
         .collect()
 }

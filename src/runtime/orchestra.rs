@@ -1045,7 +1045,7 @@ impl RunManager {
         let fixed = self.on_run(pane, run, |live| {
             match live.run.feature_correct(spec, text, correction) {
                 Ok(doc) => {
-                    let ack = format!("{spec} rewritten, log entry L{}", doc.log().len());
+                    let ack = format!("{spec} rewritten, log entry L{}", doc.entries());
                     self.send(
                         pane,
                         OrchestraEvent::Feature {
@@ -1605,8 +1605,20 @@ fn step_refusal(refused: StepError) -> Outcome {
             FeatureError::Exists => "the feature document exists: send a correction",
             FeatureError::NoSpecs => "the feature document needs at least one spec",
             FeatureError::TooMany => "too many specs or tasks",
-            FeatureError::TooBig => "the feature document is too big",
-            FeatureError::BadTask(n) => return error(format!("task {n} must be `S1,S2: title`")),
+            FeatureError::TooBig => {
+                "the specs and tasks alone exceed the size of the feature document"
+            }
+            FeatureError::MalformedTask(n) => {
+                return error(format!("task {n} must be `S1,S2: title`"));
+            }
+            FeatureError::UnknownRef { task, spec } => {
+                return error(format!(
+                    "task {task} names spec S{spec}, which does not exist"
+                ));
+            }
+            FeatureError::EmptySpec(n) => return error(format!("spec S{n} is empty")),
+            FeatureError::EmptyText => "a correction needs the new text",
+            FeatureError::EmptyTitle(n) => return error(format!("task {n} has no title")),
             FeatureError::UnknownSpec => "no such spec in the document",
         }),
     }

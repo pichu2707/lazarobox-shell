@@ -494,3 +494,15 @@ Strict TDD: `feature_tests.rs` (7 pure tests) written against stubs (`build`/`co
 - Playbook `implement` stays "drafts and review only" although S7 write tools exist for `code` workers: the spec asks for it and the user's batch review is what makes anything final. S8 will add the test-evidence rule.
 - The goal is not copied into the ledger twice: the ledger form of the document shows L1 as `(the goal above)`.
 - Merged with the 5.1 review fixes (09c20789): `close_step` carries the `narrows` flag and returns `StepDone` (queued code workers refused, the runtime syncs them); the document build takes the same `Ended`/order checks, and `Widen`, `Locked`, `NoReason`, `CodeRunning` do not apply to `track` (they belong to `authorize`/`classify`). `step_refusal` maps every `StepError`. The ledger counts the feature document inside the bound: full steps and document, then the short steps line, then the document as a count line (`FeatureDoc::short_line`).
+
+### 5.2 review fixes
+
+Strict TDD: five pure tests in `feature_tests.rs` and one runtime test written first against variant/accessor stubs (`omitted()` returned 0, new `FeatureError` variants unused); observed RED: 6 of 17 failed (`a_newline_in_a_text_cannot_forge_a_line`, `blank_texts_are_refused`, `a_full_log_drops_its_oldest_entries_and_says_so`, `a_task_error_says_what_is_wrong`, `bidi_format_characters_are_dropped`, `a_document_needs_specs_and_known_references` for the unknown-ref split), then fixed. Gates: fmt, clippy `-D warnings` clean; `cargo test` 7945 lib tests passed.
+
+| # | Fix | Test |
+|---|-----|------|
+| 1 | newlines are kept (the user's words) but every continuation line of a spec, a log entry (L1 included) and the ledger `Goal:` line is indented 4 spaces (`feature::indent`), in the stored note and the ledger; the goal in L1 goes through the same sanitiser | `a_newline_in_a_text_cannot_forge_a_line` (forged `S9:`, `S8:`, `L2:`, `L5:`, `Steps:` never at column 0 in note, ledger form and ledger) |
+| 2 | blank spec (`spec S2 is empty`), blank correction text (`a correction needs the new text`), blank task title (`task 3 has no title`) are refused | `blank_texts_are_refused`, `document_refusals_name_their_reason` |
+| 3 | a correction that overflows drops the oldest non-L1 entries; `omitted` keeps `L#` numbers stable and the render says `(N older log entries omitted)`; if the specs and tasks alone exceed the cap it is refused (`the specs and tasks alone exceed the size of the feature document`), nothing changes; the ack uses the true entry number | `a_full_log_drops_its_oldest_entries_and_says_so` |
+| 4 | `MalformedTask(n)` vs `UnknownRef{task, spec}` (`task 2 names spec S9, which does not exist`) | `a_task_error_says_what_is_wrong` |
+| 5 | bidi overrides U+202A-202E and isolates U+2066-2069 dropped in the same sanitiser | `bidi_format_characters_are_dropped` |
