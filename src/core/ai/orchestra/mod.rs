@@ -3,6 +3,7 @@
 //! of `scope`; time comes in as explicit `Instant`s.
 
 pub mod changes;
+pub mod errors;
 pub mod event;
 pub mod run;
 pub mod scope;

@@ -243,13 +243,14 @@ impl Run {
             gap: false,
         });
         let id = WorkerId(self.slots.len() as u32);
-        self.enqueue(now, id, refusal);
+        self.enqueue(now, id, refusal, false);
         self.promote(now);
         Ok(id)
     }
 
-    /// A worker waits at the back of the queue; a refusal ends it at once.
-    fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>) {
+    /// A worker waits in the queue, at the back for a new one and at the
+    /// front for a retried one; a refusal ends it at once.
+    fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
         if let Some(reason) = refusal {
@@ -265,7 +266,11 @@ impl Run {
         slot.result = None;
         slot.reported = false;
         slot.status = WorkerStatus::Queued;
-        self.queue.push_back(id);
+        if front {
+            self.queue.push_front(id);
+        } else {
+            self.queue.push_back(id);
+        }
     }
 
     /// Starts queued workers, oldest first, while the run is open and a slot
@@ -421,7 +426,7 @@ impl Run {
         };
         // The run stays halted while the worker is queued again, so a refusal
         // lands in `pending` like any other late failure.
-        self.enqueue(now, worker, refusal);
+        self.enqueue(now, worker, refusal, true);
         self.reopen(now);
         Ok(Vec::new())
     }
