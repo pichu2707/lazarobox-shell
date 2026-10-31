@@ -2,11 +2,17 @@
 //! deterministic path rules, which the orchestrator may only raise, and which
 //! is `High` whenever the assessment itself fails. Pure: it reads no file and
 //! follows no symlink, it only judges the path strings the ledger holds.
+//!
+//! Limits, on purpose: a rename or a deletion is assessed by its staged path
+//! only, because `Change` has no source path; when S7 stages moves, the old
+//! path must be added and judged too (moving `Cargo.lock` away must be `high`).
+//! A symlink or hard link is judged by its own staged name, never by what it
+//! points to.
 
 use std::fmt;
 
 use super::changes::Change;
-use super::ledger::REASON_BYTES;
+use super::ledger::{REASON_BYTES, cut, one_line};
 use crate::core::ai::tools::paths::is_excluded_name;
 
 /// How much a change needs a second look. Ordered: `Passive < Medium < High`.
@@ -58,6 +64,8 @@ pub struct Raise {
 pub enum RaiseError {
     Tier,
     Reason,
+    /// The tier asked for is `passive`: a raise goes up, never down.
+    Lowering,
 }
 
 impl fmt::Display for RaiseError {
@@ -65,6 +73,9 @@ impl fmt::Display for RaiseError {
         f.write_str(match self {
             Self::Tier => "raise refused: tier must be passive, medium or high",
             Self::Reason => "raise refused: a reason is required",
+            Self::Lowering => {
+                "raise refused: the orchestrator can only raise the tier above passive"
+            }
         })
     }
 }
@@ -80,8 +91,11 @@ impl Raise {
             "high" => Tier::High,
             _ => return Err(RaiseError::Tier),
         };
-        let reason = one_line(reason);
-        if reason.is_empty() {
+        if tier == Tier::Passive {
+            return Err(RaiseError::Lowering);
+        }
+        let reason = cut(&one_line(reason), REASON_BYTES).trim_end().to_owned();
+        if !reason.chars().any(|c| !c.is_whitespace()) {
             return Err(RaiseError::Reason);
         }
         Ok(Self { tier, reason })
@@ -157,7 +171,7 @@ fn parts_of(path: &str) -> Result<Vec<String>, String> {
                 }
                 let name = part.trim_end_matches(['.', ' ']);
                 if !name.is_empty() {
-                    parts.push(name.to_ascii_lowercase());
+                    parts.push(fold(name));
                 }
             }
         }
@@ -166,6 +180,21 @@ fn parts_of(path: &str) -> Result<Vec<String>, String> {
         return Err("empty path".to_owned());
     }
     Ok(parts)
+}
+
+/// A name folded for matching: every char goes through its uppercase and back
+/// to lowercase, so the KELVIN SIGN (K) and the LONG S (s) land on `k` and
+/// `s` and cannot hide `Makefile` or `.ssh`. Plain ASCII folds as before. Not
+/// a full Unicode normalization: other confusables (fullwidth letters,
+/// homoglyphs) are not folded onto a rule name.
+fn fold(name: &str) -> String {
+    if name.is_ascii() {
+        return name.to_ascii_lowercase();
+    }
+    name.chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn drive_letter(part: &str) -> bool {
@@ -183,6 +212,8 @@ const RISKY_DIRS: &[&str] = &[
     ".woodpecker",
     ".git",
     ".cargo",
+    ".husky",
+    ".githooks",
     ".ssh",
     ".gnupg",
 ];
@@ -214,13 +245,29 @@ const RISKY_FILES: &[&str] = &[
     "pnpm-lock.yaml",
     "package-lock.json",
     "npm-shrinkwrap.json",
+    "rakefile",
+    "procfile",
+    "containerfile",
+    "vagrantfile",
+    "brewfile",
+    "podfile",
+    "rust-toolchain",
+    ".gitmodules",
+    ".gitattributes",
+    ".tool-versions",
+    ".yarnrc",
+    ".pypirc",
+    "known_hosts",
     "id_rsa",
     "id_dsa",
     "id_ecdsa",
     "id_ed25519",
 ];
 
-/// Extensions of config formats, locks and key material.
+/// Extensions of config formats, build projects, scripts, locks and key
+/// material. Broad on purpose (any `*.json`, `*.xml` or `*.sh` is `high`): a
+/// false positive costs one consent prompt, a miss costs an unreviewed
+/// change to the build or to code that runs by itself.
 const RISKY_EXTENSIONS: &[&str] = &[
     "toml",
     "yaml",
@@ -241,11 +288,21 @@ const RISKY_EXTENSIONS: &[&str] = &[
     "pfx",
     "gpg",
     "asc",
+    "gradle",
+    "sbt",
+    "csproj",
+    "sln",
+    "props",
+    "targets",
+    "xml",
+    "mk",
+    "tf",
+    "sh",
 ];
 
 /// Whether the normalized, lowercased `parts` name a risky path: a build,
-/// CI, dependency, lock, config or secret entry. Matching is by name, ASCII
-/// case-insensitive, at any depth.
+/// CI, dependency, lock, config or secret entry. Matching is by name, case-folded
+/// (see [`fold`]), at any depth.
 fn risky(parts: &[String]) -> bool {
     let Some((name, dirs)) = parts.split_last() else {
         return false;
@@ -262,21 +319,4 @@ fn risky(parts: &[String]) -> bool {
             .rsplit_once('.')
             .is_some_and(|(stem, ext)| !stem.is_empty() && RISKY_EXTENSIONS.contains(&ext))
         || is_excluded_name(name)
-}
-
-/// `text` cut to its first line, without control characters or the
-/// bidirectional overrides and isolates, trimmed, at most `REASON_BYTES`.
-fn one_line(text: &str) -> String {
-    let first = text.trim().lines().next().unwrap_or("");
-    let clean: String = first
-        .chars()
-        .filter(|c| !c.is_control())
-        .filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'))
-        .collect();
-    let clean = clean.trim();
-    let mut end = REASON_BYTES.min(clean.len());
-    while !clean.is_char_boundary(end) {
-        end -= 1;
-    }
-    clean[..end].to_owned()
 }

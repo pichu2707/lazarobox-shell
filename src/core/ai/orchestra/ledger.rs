@@ -83,10 +83,9 @@ impl Judgement {
     /// The judgement as it is stored: a one-line reason, blank fields as
     /// `none`, everything capped.
     fn normalised(self) -> Self {
-        let first = self.reason.trim().lines().next().unwrap_or("");
         Self {
             verdict: self.verdict,
-            reason: field(&plain(first), REASON_BYTES),
+            reason: field(&one_line(&self.reason), REASON_BYTES),
             done: field(&self.done, FIELD_BYTES),
             left: field(&self.left, FIELD_BYTES),
             decisions: field(&self.decisions, FIELD_BYTES),
@@ -397,6 +396,35 @@ fn plain(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// The first line of untrusted `text` as one plain line: tabs become spaces,
+/// control characters, line and paragraph separators, bidirectional
+/// controls and invisible characters (zero-width, word joiner, BOM, hangul
+/// and braille fillers) are dropped, the ends trimmed. Shared by every
+/// one-line field a model or a worker can fill (handoff reason, raise reason).
+pub(super) fn one_line(text: &str) -> String {
+    let first = text.trim().lines().next().unwrap_or("");
+    let clean: String = first
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control() && !invisible(*c))
+        .collect();
+    clean.trim().to_owned()
+}
+
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{061C}'
+            | '\u{FEFF}'
+            | '\u{3164}'
+            | '\u{2800}'
+    )
+}
+
 /// `text` trimmed, as `none` when blank, cut to `max` bytes.
 fn field(text: &str, max: usize) -> String {
     let text = text.trim();
@@ -408,7 +436,7 @@ fn field(text: &str, max: usize) -> String {
 }
 
 /// The longest prefix of `text` of at most `max` bytes, on a char boundary.
-fn cut(text: &str, max: usize) -> &str {
+pub(super) fn cut(text: &str, max: usize) -> &str {
     let mut end = max.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
