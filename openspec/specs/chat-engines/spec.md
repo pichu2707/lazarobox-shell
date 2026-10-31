@@ -641,7 +641,7 @@ Each shipped OpenAI-compatible adapter MUST stream a reply from the real engine.
 - THEN the `[DONE]` marker ends the first turn with one final event, and cancel stops the second
 
 ### Requirement: Managed llama-server lifecycle
-When llamacpp is managed (see configuration), the first llamacpp chat turn MUST start `llama-server`, found in the login `PATH` lazarobox gives its tools (absolute entries only) and run by that absolute path with that `PATH`, with exactly the arguments `--host 127.0.0.1 --port <port> -m <model>` (no shell), stdin closed, in its own process group, with stdout and stderr in `llama-server.log` under the state folder (`$XDG_STATE_HOME/lazarobox`, else `~/.local/state/lazarobox`), emptied on each start, mode 0600 and never opened through a symlink. The turn MUST wait until `GET /v1/models` answers 200, for at most 90 s, and then stream as any llamacpp turn. Nothing else starts it: not config load, not detection, not a turn of another engine. At most one server runs; later turns reuse it and one that ended is started again. Before a start, if anything answers on the port, the turn MUST fail with `llama-server not started: another program answers on 127.0.0.1:<port>` and nothing is started. A start that fails MUST end the turn with one reason: `could not start llama-server: is it on the PATH?`, or `llama-server stopped` or `llama-server did not answer within 90 s` followed by `: ` and the last line of its log when it has one; a server that did not answer is killed. Quitting lazarobox MUST stop the server's whole process group; on Linux the server MUST also get SIGKILL from the kernel when lazarobox dies without quitting. A cancelled start kills the server it began.
+When llamacpp is managed (see configuration), the first llamacpp chat turn, or a menu save that turns it on (see A managed llama-server turned on from the menu), MUST start `llama-server`, found in the login `PATH` lazarobox gives its tools (absolute entries only) and run by that absolute path with that `PATH`, with exactly the arguments `--host 127.0.0.1 --port <port> -m <model>` (no shell; `<port>` is the port it runs on, see below; the extra `args` of the configuration follow), stdin closed, in its own process group, with stdout and stderr in `llama-server.log` under the state folder (`$XDG_STATE_HOME/lazarobox`, else `~/.local/state/lazarobox`), emptied on each start, mode 0600 and never opened through a symlink. The turn MUST wait until `GET /v1/models` answers 200, for at most 90 s, and then stream as any llamacpp turn. Nothing else starts it: not config load, not detection, not a turn of another engine. One server runs per model, each on its own port: before a start, lazarobox MUST look at the configured port and the seven after it, in order. A ready llama-server there (`GET /v1/models` answers 200) whose `/props` `model_path` is the same model file (links followed), behind a listening socket of the same user, MUST be used as it is, from another lazarobox or started by hand: nothing starts, the turn talks to its port, and lazarobox MUST NOT stop it (not on quit, idle or a model change). Anything else that answers on a port (another model, a server not ready, another program, a socket of another user or one whose owner cannot be read) MUST be left alone, and lazarobox's own server MUST start on the first port where nothing answers; with none, the turn MUST fail with `llama-server not started: no free port on 127.0.0.1 from <port> to <port+7>` and nothing is started. Later turns reuse the server they used; when it is gone (one of lazarobox's own that ended, or a used one that went away) the next turn looks again. A start whose server exits because another lazarobox started the same model on that port first MUST use that server. Detection probes the port the managed server runs on. A start that fails MUST end the turn with one reason: `could not start llama-server: is it on the PATH?`, or `llama-server stopped` or `llama-server did not answer within 90 s` followed by `: ` and the last line of its log when it has one; a server that did not answer is killed. Quitting lazarobox MUST stop the server's whole process group; on Linux the server MUST also get SIGKILL from the kernel when lazarobox dies without quitting. A cancelled start kills the server it began.
 
 The chat gate MUST treat a managed llamacpp whose binary is installed (`available` or `not running`) as ready, without looking up the assigned model name, which `llama-server` ignores. With no model assigned, the model path is sent.
 
@@ -655,10 +655,30 @@ The chat gate MUST treat a managed llamacpp whose binary is installed (`availabl
 - WHEN lazarobox quits
 - THEN the server and its child are gone
 
-#### Scenario: A port that already answers is not ours [auto]
-- GIVEN something that answers 200, 404 or 503 on the managed port
+#### Scenario: The same model already running is used [auto]
+- GIVEN a ready llama-server of the same user serving the configured model on the managed port
 - WHEN a llamacpp turn runs
-- THEN the turn fails with the port message and nothing is started
+- THEN nothing is started, the turn talks to that port, and the idle stop never stops it
+
+#### Scenario: Another model runs on the port [auto]
+- GIVEN a ready llama-server serving another model on the managed port
+- WHEN a llamacpp turn runs
+- THEN lazarobox's server starts with `--port <port+1>` and the turn talks to that port
+
+#### Scenario: Every port is taken [auto]
+- GIVEN something that is not the configured model answering on the managed port and the seven after it
+- WHEN a llamacpp turn runs
+- THEN the turn fails with "llama-server not started: no free port on 127.0.0.1 from <port> to <port+7>" and nothing is started
+
+#### Scenario: A socket of another user [auto]
+- GIVEN the owners of the sockets listening on a port
+- WHEN the port is looked at
+- THEN its server counts as the same user's only when every listener there is the user's own (Linux) or one of the user's processes listens there (macOS)
+
+#### Scenario: Two lazarobox start the same model at once [auto]
+- GIVEN a start whose server exits while the same model starts answering on its port
+- WHEN the turn runs
+- THEN it uses that server and nothing of its own is left
 
 #### Scenario: A failed start says why [auto]
 - GIVEN a missing program, a server that exits with `error: failed to open /m/q.gguf` on stderr, or one that never answers
@@ -674,6 +694,11 @@ The chat gate MUST treat a managed llamacpp whose binary is installed (`availabl
 - GIVEN lazarobox with a managed server running, in a terminal that is then closed
 - WHEN the terminal goes away
 - THEN lazarobox quits through its normal cleanup and no server is left
+
+#### Scenario: Two lazarobox, two models [manual]
+- GIVEN two lazarobox, one chatting with a managed model
+- WHEN the second chats with the same model, then with another one
+- THEN the second uses the first one's server, then starts its own on the next port, and both keep answering
 
 ### Requirement: Nothing lazarobox started outlives it
 At start, before any pane or child process exists, lazarobox MUST start a watcher (`lazarobox-shell __watch`) in its own session. Every process group lazarobox guards with `GroupKill` MUST be listed with the watcher with its leader's start time, and taken off when lazarobox reaps it. When lazarobox ends in any way, the watcher MUST send SIGHUP and SIGTERM to every group still listed, SIGKILL after 3 s to the groups that still have members, and exit. It MUST NOT signal a group whose leader is a process other than the listed one, nor groups 0, 1 or its own. `engram serve` MUST NOT be listed. A watcher that cannot start leaves lazarobox working as before.
@@ -725,3 +750,34 @@ When lazarobox quits (the quit key, SIGTERM or SIGHUP), right after it restores 
 - GIVEN the managed llama-server left a child in its group
 - WHEN the server exits during its start, or after it answered and the next llamacpp turn sees it ended
 - THEN the child gets SIGKILL before the server is reaped (its group id cannot be reused until then)
+
+### Requirement: The model file is checked before each start
+Before it starts the managed llama-server, once the program is found, lazarobox MUST check that the configured model file exists. When it does not, it MUST NOT start anything and the turn MUST fail with `llama-server not started: model file not found: <path>`. The check MUST run on every start and never when the config loads.
+
+#### Scenario: Missing model [auto]
+- GIVEN `managed = true` and a `model` path with no file
+- WHEN a llamacpp turn starts
+- THEN nothing is started and the turn reads "llama-server not started: model file not found: <path>"
+
+#### Scenario: Model back in place [auto]
+- GIVEN the same config once the file exists (a drive mounted later)
+- WHEN the next llamacpp turn starts
+- THEN llama-server starts
+
+### Requirement: An idle managed llama-server stops
+The managed llama-server MUST stop once no llamacpp turn has used it for the idle time (`[ai.servers.llamacpp] idle_minutes`, default 15; 0 never stops it), checked at least every 30 s, and the next llamacpp turn MUST start it again. A turn in progress MUST keep it running, and so MUST a request it answers that is none of this lazarobox's turns (another lazarobox that uses it, as `GET /slots` says); the idle time MUST count from the end of the last turn, from the start of the server, or from the last check that saw such a request. A new idle time saved from the menu MUST apply at once, with no restart.
+
+#### Scenario: Idle [auto]
+- GIVEN a running managed server that no turn used for the idle time
+- WHEN the idle check runs
+- THEN the server is stopped, and the next llamacpp turn starts it again
+
+#### Scenario: Another lazarobox is answered [auto]
+- GIVEN a server past its idle time whose `/slots` shows a slot processing and no turn of this lazarobox
+- WHEN the idle check runs
+- THEN the server keeps running, and it stops at a later check once nothing is processing and the idle time passed again
+
+#### Scenario: A long answer [auto]
+- GIVEN a turn still streaming past the idle time
+- WHEN the idle check runs
+- THEN the server keeps running; it stops only once the idle time has passed after the turn ended
