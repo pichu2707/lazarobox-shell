@@ -14,7 +14,7 @@ use crate::core::ai::{
     config::Assignment,
     orchestra::{
         Toolset, WorkerKey,
-        ledger::{Unit, Verdict},
+        ledger::{NO_HANDOFF, Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
         run::{Roster, RunLimits},
         worker::WorkerStatus,
@@ -248,6 +248,16 @@ impl App {
                         handoff.reason
                     ));
                 }
+            }
+            // Never a silent fallback: say which handoffs lazarobox wrote.
+            OrchestraEvent::Filled { workers, .. } => {
+                let ids: Vec<_> = workers.iter().map(|id| id.0.to_string()).collect();
+                let noun = if workers.len() == 1 {
+                    "worker"
+                } else {
+                    "workers"
+                };
+                chat.push_system_line(format!("{NO_HANDOFF} for {noun} {}", ids.join(", ")));
             }
             // Only the run it names ends: a replaced run ends after the new
             // one started.

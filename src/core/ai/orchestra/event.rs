@@ -71,6 +71,9 @@ pub enum OrchestraEvent {
     /// The orchestrator (or lazarobox, for a missing one) wrote a handoff.
     /// The ledger keeps it in memory; persisting it is the app's seam (4.2).
     Handoff { run: RunId, handoff: Box<Handoff> },
+    /// lazarobox wrote the handoffs of these workers itself: the orchestrator
+    /// never did. Sent once per batch, after their `Handoff` events.
+    Filled { run: RunId, workers: Vec<WorkerId> },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

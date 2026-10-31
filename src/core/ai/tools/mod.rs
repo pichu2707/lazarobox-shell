@@ -692,7 +692,7 @@ const BUILT_INS: [ToolDef; 22] = [
         family: Family::Orchestra,
         args: &[
             id("id", true),
-            note("verdict", HANDOFF_VERDICT_BYTES),
+            note("verdict", HANDOFF_NOTE_BYTES),
             note("reason", HANDOFF_NOTE_BYTES),
             note("done", HANDOFF_NOTE_BYTES),
             note("left", HANDOFF_NOTE_BYTES),
@@ -715,11 +715,9 @@ const BUILT_INS: [ToolDef; 22] = [
     },
 ];
 
-/// The longest `verdict` text accepted: any longer is refused, a wrong one
-/// that fits is stored as `unknown`.
-const HANDOFF_VERDICT_BYTES: usize = 32;
-
-/// The longest handoff text accepted; the run cuts the fields it stores.
+/// The longest handoff text accepted; the run cuts the fields it stores. A
+/// `verdict` that is not one of the three values is stored as `unknown`,
+/// however long.
 const HANDOFF_NOTE_BYTES: usize = 16 * 1024;
 
 const fn note(name: &'static str, max: usize) -> ArgDef {
@@ -1170,6 +1168,15 @@ mod tests {
             parse_call("run_in_pane", &json!({"command": "ls", "enter": true})),
             Err(ToolError::ExtraArgument)
         );
+    }
+
+    // Spec (orchestrator-handoffs): a verdict that is not one of the three
+    // values is `unknown`, however long; only a non-string is refused.
+    #[test]
+    fn an_overlong_verdict_is_accepted_for_the_run_to_store_as_unknown() {
+        let args = json!({"id": 1, "verdict": "x".repeat(500)});
+        let set = Toolset::Orchestrator.families();
+        assert!(parse_built_in("handoff", &args, set).is_ok());
     }
 
     // Review W4: oversized arguments are refused, the limit itself is not.

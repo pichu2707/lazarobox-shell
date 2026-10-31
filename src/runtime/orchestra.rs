@@ -65,7 +65,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
-            ledger::{FinishError, Handoff, HandoffError, Judgement},
+            ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             run::{
                 CancelOutcome, CollectError, NotHalted, Refusal, Roster, Run, RunLimits, RunState,
                 UserChoice, WorkerEvent,
@@ -566,9 +566,7 @@ impl RunManager {
             })
             .collect();
         self.sync(pane, &mut live);
-        for handoff in built {
-            self.announce_handoff(pane, run, handoff);
-        }
+        self.announce_built(pane, run, built);
         self.send(pane, OrchestraEvent::Ended { run });
         tasks
     }
@@ -711,6 +709,7 @@ impl RunManager {
                 }
                 Err(HandoffError::Unknown) => error(format!("no worker {}", id.0)),
                 Err(HandoffError::NotFinished) => error(format!("worker {} is not finished", id.0)),
+                Err(HandoffError::Ended) => error(ENDED),
             }
         });
         stored.unwrap_or_else(|| error(ENDED))
@@ -723,9 +722,7 @@ impl RunManager {
     fn finish_run(&self, pane: PaneId, run: RunId, summary: &str) -> Outcome {
         let finished = self.on_run(pane, run, |live| match live.run.finish(summary) {
             Ok(built) => {
-                for handoff in built {
-                    self.announce_handoff(pane, run, handoff);
-                }
+                self.announce_built(pane, run, built);
                 fine("run finished")
             }
             Err(FinishError::Ended) => error(ENDED),
@@ -738,6 +735,24 @@ impl RunManager {
             }
         });
         finished.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// The handoffs lazarobox built: the app hears each, then which workers
+    /// they were for (never a silent fallback).
+    fn announce_built(&self, pane: PaneId, run: RunId, built: Vec<Handoff>) {
+        let workers: Vec<_> = built
+            .iter()
+            .map(|handoff| {
+                let Unit::Worker(worker) = handoff.unit;
+                worker
+            })
+            .collect();
+        for handoff in built {
+            self.announce_handoff(pane, run, handoff);
+        }
+        if !workers.is_empty() {
+            self.send(pane, OrchestraEvent::Filled { run, workers });
+        }
     }
 
     /// A handoff exists: the app hears it. Persisting it (engram, degraded
@@ -1183,12 +1198,12 @@ fn nonce_bytes() -> Option<[u8; 8]> {
     Some(bytes)
 }
 
-/// The run's clock: tokio's, so a paused test clock moves the deadlines.
 fn ids_text(ids: &[WorkerId]) -> String {
     let ids: Vec<_> = ids.iter().map(|id| id.0.to_string()).collect();
     ids.join(", ")
 }
 
+/// The run's clock: tokio's, so a paused test clock moves the deadlines.
 fn now() -> std::time::Instant {
     Instant::now().into_std()
 }

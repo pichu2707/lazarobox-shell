@@ -153,9 +153,9 @@ pub struct Run {
     /// Failures that ended while the run was already halted, in order. Each
     /// halts the run in turn once the one before is decided.
     pending: VecDeque<WorkerId>,
-    /// A `finish` was refused for missing handoffs: the next one builds
-    /// them (D17).
-    finish_warned: bool,
+    /// The workers a refused `finish` named as missing a handoff: the next
+    /// one builds theirs, unless another worker ended since (D17).
+    finish_warned: Vec<WorkerId>,
     /// The run was cancelled while a failure waited: the handoffs built
     /// after that are `blocked` too (D17).
     halted_at_cancel: bool,
@@ -174,7 +174,7 @@ impl Run {
             slots: Vec::new(),
             queue: VecDeque::new(),
             pending: VecDeque::new(),
-            finish_warned: false,
+            finish_warned: Vec::new(),
             halted_at_cancel: false,
             summary: None,
         }
@@ -468,6 +468,9 @@ impl Run {
     /// an earlier one. The facts come from the run; the verdict is `blocked`
     /// while a failure is unresolved (D17).
     pub fn handoff(&mut self, id: WorkerId, note: Judgement) -> Result<Handoff, HandoffError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(HandoffError::Ended);
+        }
         let slot = self.slot(id).ok_or(HandoffError::Unknown)?;
         if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
             return Err(HandoffError::NotFinished);
@@ -533,8 +536,8 @@ impl Run {
             return Err(FinishError::Live(live));
         }
         let missing = self.without_handoff();
-        if !missing.is_empty() && !self.finish_warned {
-            self.finish_warned = true;
+        if missing.iter().any(|id| !self.finish_warned.contains(id)) {
+            self.finish_warned.extend(missing.iter().copied());
             return Err(FinishError::Missing(missing));
         }
         let built = self.fallbacks();
