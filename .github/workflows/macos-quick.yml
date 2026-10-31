@@ -3,7 +3,7 @@ name: macOS quick
 # A fast, manual macOS run for work that cannot be tested on Linux.
 #
 #   gh workflow run macos-quick.yml --ref <branch> \
-#     -f filter='tools::open' -f os=macos-14
+#     -f filter='tools::open' -f os=macos-15
 #
 # It runs only the tests that match `filter` (all of them when empty), plus
 # the Seatbelt integration tests when `jail` is true. With `debug` true it
@@ -16,8 +16,8 @@ on:
       os:
         description: Runner image
         type: choice
-        options: [macos-14, macos-15-intel]
-        default: macos-14
+        options: [macos-15, macos-15-intel]
+        default: macos-15
       filter:
         description: Test name filter for the library tests (empty runs all)
         type: string
