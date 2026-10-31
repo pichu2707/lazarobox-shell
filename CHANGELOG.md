@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-31
+
 ### Changed
 
 - The batch review no longer reads `y locked` in the counter: it says
@@ -1517,7 +1519,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
 [0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
