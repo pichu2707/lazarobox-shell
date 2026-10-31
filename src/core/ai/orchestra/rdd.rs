@@ -114,11 +114,38 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
         };
         match finding(lens, rest) {
             None => report.malformed += 1,
-            Some(_) if report.findings.len() >= MAX_FINDINGS => report.omitted += 1,
             Some(found) => report.findings.push(found),
         }
     }
+    cap(&mut report);
     report
+}
+
+/// Keeps [`MAX_FINDINGS`] findings, the blockers before the rest, in the
+/// order found; the others are counted as omitted.
+fn cap(report: &mut Report) {
+    if report.findings.len() <= MAX_FINDINGS {
+        return;
+    }
+    let total = report.findings.len();
+    let blockers = report.findings.iter().filter(|f| f.blocks()).count();
+    let mut room_for_rest = MAX_FINDINGS.saturating_sub(blockers);
+    let mut room_for_blockers = MAX_FINDINGS;
+    let kept: Vec<Finding> = std::mem::take(&mut report.findings)
+        .into_iter()
+        .filter(|found| {
+            let room = if found.blocks() {
+                &mut room_for_blockers
+            } else {
+                &mut room_for_rest
+            };
+            let keep = *room > 0;
+            *room = room.saturating_sub(1);
+            keep
+        })
+        .collect();
+    report.omitted += total - kept.len();
+    report.findings = kept;
 }
 
 fn finding(lens: Lens, rest: &str) -> Option<Finding> {
@@ -198,6 +225,9 @@ pub enum Outcome {
     Corrected,
     /// Blockers remain for the user to decide.
     BlockersOpen,
+    /// Nothing blocks, but the review could not read everything: findings
+    /// were omitted or malformed, or the refuter left claims unanswered.
+    Incomplete,
 }
 
 /// Why a step of the review was refused.
@@ -217,6 +247,9 @@ pub enum ReviewError {
     NoCorrection,
     NotTargeted,
     Pending,
+    AlreadyJudged,
+    LensesPicked,
+    Waived,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -224,10 +257,27 @@ enum Correction {
     Unused,
     /// Running, aimed at these findings.
     Running(Vec<usize>),
-    /// Done; these findings are still blockers.
+    /// Done; `open` of its `targets` are still blockers.
     Done {
+        targets: Vec<usize>,
         open: Vec<usize>,
     },
+}
+
+/// What the refuter said about one inferred blocker, as the review keeps it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Verdict {
+    Said(Refutation),
+    /// Settled without an answer: not upheld.
+    Unanswered,
+}
+
+/// What one lens's report left out, for the receipt.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LensCount {
+    pub lens: Lens,
+    pub malformed: usize,
+    pub omitted: usize,
 }
 
 /// The state of one review: the consent, the lenses, what they found, what
@@ -237,9 +287,11 @@ pub struct Review {
     assessment: Assessment,
     consent: Option<Consent>,
     lenses: Vec<(Lens, String)>,
-    reported: Vec<Lens>,
+    /// The review needs no lens: said by the orchestrator after consent.
+    waived: bool,
+    counts: Vec<LensCount>,
     findings: Vec<Finding>,
-    verdicts: Vec<Option<Refutation>>,
+    verdicts: Vec<Option<Verdict>>,
     correction: Correction,
 }
 
@@ -249,7 +301,8 @@ impl Review {
             assessment,
             consent: None,
             lenses: Vec::new(),
-            reported: Vec::new(),
+            waived: false,
+            counts: Vec::new(),
             findings: Vec::new(),
             verdicts: Vec::new(),
             correction: Correction::Unused,
@@ -278,9 +331,21 @@ impl Review {
         }
     }
 
+    /// Consent given and no correction begun: the lenses may still change.
+    fn open_for_lenses(&self) -> Result<(), ReviewError> {
+        self.consented()?;
+        match self.correction {
+            Correction::Unused => Ok(()),
+            _ => Err(ReviewError::CorrectionUsed),
+        }
+    }
+
     /// The orchestrator picks lens `id` with a one-line `reason`.
     pub fn pick(&mut self, id: &str, reason: &str) -> Result<Lens, ReviewError> {
-        self.consented()?;
+        self.open_for_lenses()?;
+        if self.waived {
+            return Err(ReviewError::Waived);
+        }
         let lens = Lens::parse(id).ok_or(ReviewError::UnknownLens)?;
         let reason = one_line(reason);
         if reason.is_empty() {
@@ -293,6 +358,17 @@ impl Review {
         Ok(lens)
     }
 
+    /// The consented review needs no lens (the change calls for none): it
+    /// can end `Clean` with none picked. Refused once a lens is picked.
+    pub fn no_lenses_needed(&mut self) -> Result<(), ReviewError> {
+        self.open_for_lenses()?;
+        if !self.lenses.is_empty() {
+            return Err(ReviewError::LensesPicked);
+        }
+        self.waived = true;
+        Ok(())
+    }
+
     /// The lenses picked, each with its reason, in the order picked.
     pub fn lenses(&self) -> Vec<(Lens, &str)> {
         let lenses = self.lenses.iter();
@@ -300,17 +376,22 @@ impl Review {
     }
 
     /// A picked lens reported `text`: the findings are kept. Returns how many
-    /// `FINDING` lines did not fit the shape.
+    /// `FINDING` lines did not fit the shape. Refused once the correction
+    /// began: it was aimed at what the lenses had reported by then.
     pub fn report(&mut self, lens: Lens, text: &str) -> Result<usize, ReviewError> {
-        self.consented()?;
+        self.open_for_lenses()?;
         if !self.lenses.iter().any(|(known, _)| *known == lens) {
             return Err(ReviewError::NotPicked);
         }
-        if self.reported.contains(&lens) {
+        if self.counts.iter().any(|count| count.lens == lens) {
             return Err(ReviewError::LensTaken);
         }
-        self.reported.push(lens);
         let report = parse_report(lens, text);
+        self.counts.push(LensCount {
+            lens,
+            malformed: report.malformed,
+            omitted: report.omitted,
+        });
         self.verdicts.extend(report.findings.iter().map(|_| None));
         self.findings.extend(report.findings);
         Ok(report.malformed)
@@ -318,6 +399,26 @@ impl Review {
 
     pub fn findings(&self) -> &[Finding] {
         &self.findings
+    }
+
+    /// Per lens that reported: the lines that did not fit the shape and the
+    /// findings past the cap. Both are shown in the receipt.
+    pub fn counts(&self) -> &[LensCount] {
+        &self.counts
+    }
+
+    pub fn omitted(&self) -> usize {
+        self.counts.iter().map(|count| count.omitted).sum()
+    }
+
+    pub fn malformed(&self) -> usize {
+        self.counts.iter().map(|count| count.malformed).sum()
+    }
+
+    /// The claims settled without an answer from the refuter.
+    pub fn unanswered(&self) -> usize {
+        let settled = self.verdicts.iter();
+        settled.filter(|v| **v == Some(Verdict::Unanswered)).count()
     }
 
     /// The inferred blockers no verdict covers yet: the refuter's batch.
@@ -334,13 +435,28 @@ impl Review {
     }
 
     /// The refuter's verdict on finding `at`, which must be an inferred
-    /// blocker.
+    /// blocker. A verdict is final, and none comes after the correction began.
     pub fn refute(&mut self, at: usize, verdict: Refutation) -> Result<(), ReviewError> {
+        self.open_for_lenses()?;
         if !self.inferred_blocker(at) {
             return Err(ReviewError::NotABlocker);
         }
-        self.verdicts[at] = Some(verdict);
+        if self.verdicts[at].is_some() {
+            return Err(ReviewError::AlreadyJudged);
+        }
+        self.verdicts[at] = Some(Verdict::Said(verdict));
         Ok(())
+    }
+
+    /// The refuter ended without answering some claims: they are not upheld.
+    /// Returns how many were settled; `unanswered` keeps the count.
+    pub fn settle_unanswered(&mut self) -> Result<usize, ReviewError> {
+        self.open_for_lenses()?;
+        let pending = self.to_refute();
+        for &at in &pending {
+            self.verdicts[at] = Some(Verdict::Unanswered);
+        }
+        Ok(pending.len())
     }
 
     /// The findings that count as blockers: severe, caused by the change, and
@@ -351,17 +467,29 @@ impl Review {
                 let found = &self.findings[at];
                 found.blocks()
                     && (found.basis == Basis::Observed
-                        || self.verdicts[at] == Some(Refutation::Upheld))
+                        || self.verdicts[at] == Some(Verdict::Said(Refutation::Upheld)))
             })
             .collect()
     }
 
+    /// Every picked lens reported (or none was needed).
+    fn all_reported(&self) -> bool {
+        if self.lenses.is_empty() {
+            return self.waived;
+        }
+        self.counts.len() >= self.lenses.len()
+    }
+
     /// Starts the one correction, aimed at the blockers that survived, and
-    /// returns them. Refused a second time.
+    /// returns them. Refused a second time, and while a lens has not
+    /// reported or the refuter has not answered.
     pub fn begin_correction(&mut self) -> Result<Vec<usize>, ReviewError> {
         self.consented()?;
         if self.correction != Correction::Unused {
             return Err(ReviewError::CorrectionUsed);
+        }
+        if !self.all_reported() {
+            return Err(ReviewError::Pending);
         }
         if !self.to_refute().is_empty() {
             return Err(ReviewError::RefuterPending);
@@ -383,43 +511,61 @@ impl Review {
         if open.iter().any(|at| !targets.contains(at)) {
             return Err(ReviewError::NotTargeted);
         }
+        let targets = targets.clone();
         let open = targets
             .iter()
             .copied()
             .filter(|at| open.contains(at))
             .collect();
-        self.correction = Correction::Done { open };
+        self.correction = Correction::Done { targets, open };
         Ok(())
     }
 
-    /// How the review ends, once nothing is pending.
+    /// How the review ends, once nothing is pending. A blocker open, in or
+    /// out of the correction's targets, is `BlockersOpen`; a review that could
+    /// not read everything is never `Clean` or `Corrected`.
     pub fn conclude(&self) -> Result<Outcome, ReviewError> {
         match self.consent {
             None => return Err(ReviewError::ConsentFirst),
             Some(Consent::Declined) => return Ok(Outcome::NotReviewed),
             Some(Consent::Granted) => {}
         }
-        if self.lenses.is_empty() || self.reported.len() < self.lenses.len() {
+        if !self.all_reported() {
             return Err(ReviewError::Pending);
         }
         if !self.to_refute().is_empty() {
             return Err(ReviewError::RefuterPending);
         }
-        match &self.correction {
-            Correction::Running(_) => Err(ReviewError::Pending),
-            Correction::Done { open } if open.is_empty() => Ok(Outcome::Corrected),
-            Correction::Done { .. } => Ok(Outcome::BlockersOpen),
-            Correction::Unused if self.blockers().is_empty() => Ok(Outcome::Clean),
-            Correction::Unused => Ok(Outcome::BlockersOpen),
+        if matches!(self.correction, Correction::Running(_)) {
+            return Err(ReviewError::Pending);
         }
+        if !self.open().is_empty() {
+            return Ok(Outcome::BlockersOpen);
+        }
+        if self.omitted() + self.malformed() + self.unanswered() > 0 {
+            return Ok(Outcome::Incomplete);
+        }
+        Ok(match self.correction {
+            Correction::Done { .. } => Outcome::Corrected,
+            _ => Outcome::Clean,
+        })
     }
 
-    /// The blockers still open for the user to decide.
+    /// The blockers still open for the user to decide: those the correction
+    /// did not clear, and any the correction was not aimed at.
     pub fn open(&self) -> Vec<usize> {
         match &self.correction {
-            Correction::Done { open } => open.clone(),
-            Correction::Running(targets) => targets.clone(),
             Correction::Unused => self.blockers(),
+            Correction::Running(targets) => targets.clone(),
+            Correction::Done { targets, open } => {
+                let mut open = open.clone();
+                open.extend(
+                    self.blockers()
+                        .into_iter()
+                        .filter(|at| !targets.contains(at)),
+                );
+                open
+            }
         }
     }
 }

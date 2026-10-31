@@ -350,3 +350,130 @@ fn a_failed_assessment_is_asked_with_its_reason() {
         "{line}"
     );
 }
+
+// C1: a lens that reports after the correction began cannot slip a blocker
+// past it. The correction waits for every picked lens.
+#[test]
+fn the_correction_waits_for_every_lens_and_closes_the_reports() {
+    let mut review = consented(&[Lens::Risk, Lens::Reliability]);
+    review
+        .report(Lens::Risk, "FINDING severe change observed: a")
+        .unwrap();
+    assert_eq!(review.begin_correction(), Err(ReviewError::Pending));
+    review
+        .report(Lens::Reliability, "FINDING severe change observed: b")
+        .unwrap();
+    assert_eq!(review.begin_correction(), Ok(vec![0, 1]));
+    assert_eq!(
+        review.pick("resilience", "late"),
+        Err(ReviewError::CorrectionUsed)
+    );
+    assert_eq!(
+        review.report(Lens::Risk, "NONE"),
+        Err(ReviewError::CorrectionUsed)
+    );
+    review.finish_correction(&[]).unwrap();
+    assert_eq!(review.conclude(), Ok(Outcome::Corrected));
+}
+
+// C2: the cap keeps blockers before minors and never reads as clean.
+#[test]
+fn the_cap_keeps_the_blockers_and_the_review_is_not_clean() {
+    let mut text = "FINDING minor change observed: m\n".repeat(12);
+    text.push_str("FINDING severe change observed: the real one");
+    let mut review = consented(&[Lens::Risk]);
+    review.report(Lens::Risk, &text).unwrap();
+    assert_eq!(review.findings().len(), 12);
+    assert_eq!(review.blockers().len(), 1);
+    assert_eq!(review.omitted(), 1);
+    assert_eq!(review.counts()[0].omitted, 1);
+    let mut minors = consented(&[Lens::Risk]);
+    minors
+        .report(Lens::Risk, &"FINDING minor change observed: m\n".repeat(13))
+        .unwrap();
+    assert_eq!(minors.conclude(), Ok(Outcome::Incomplete));
+}
+
+#[test]
+fn malformed_lines_are_counted_per_lens_and_not_clean() {
+    let mut review = consented(&[Lens::Risk]);
+    assert_eq!(
+        review.report(Lens::Risk, "FINDING severe change observed:"),
+        Ok(1)
+    );
+    assert_eq!(review.malformed(), 1);
+    assert_eq!(review.counts()[0].malformed, 1);
+    assert_eq!(review.conclude(), Ok(Outcome::Incomplete));
+}
+
+// W2: a refuter that never answers settles to not upheld, visibly.
+#[test]
+fn unanswered_claims_settle_to_not_upheld_and_are_counted() {
+    let mut review = consented(&[Lens::Risk]);
+    let text = "FINDING severe change inferred: a\nFINDING severe change inferred: b";
+    review.report(Lens::Risk, text).unwrap();
+    review.refute(0, Refutation::Upheld).unwrap();
+    assert_eq!(review.settle_unanswered(), Ok(1));
+    assert_eq!(review.unanswered(), 1);
+    assert!(review.to_refute().is_empty());
+    assert_eq!(review.blockers(), vec![0]);
+    assert_eq!(review.begin_correction(), Ok(vec![0]));
+    review.finish_correction(&[]).unwrap();
+    assert_eq!(review.conclude(), Ok(Outcome::Incomplete));
+}
+
+#[test]
+fn a_verdict_is_final_and_closes_with_the_correction() {
+    let mut review = consented(&[Lens::Risk]);
+    review
+        .report(
+            Lens::Risk,
+            "FINDING severe change inferred: a\nFINDING severe change inferred: b",
+        )
+        .unwrap();
+    review.refute(0, Refutation::Refuted).unwrap();
+    assert_eq!(
+        review.refute(0, Refutation::Upheld),
+        Err(ReviewError::AlreadyJudged)
+    );
+    review.refute(1, Refutation::Upheld).unwrap();
+    review.begin_correction().unwrap();
+    assert_eq!(
+        review.refute(1, Refutation::Refuted),
+        Err(ReviewError::CorrectionUsed)
+    );
+    let mut fresh = high();
+    assert_eq!(
+        fresh.refute(0, Refutation::Upheld),
+        Err(ReviewError::ConsentFirst)
+    );
+}
+
+// S3: a consented review that needs no lens can end clean.
+#[test]
+fn a_review_that_needs_no_lens_is_clean_only_when_said_so() {
+    let mut review = high();
+    assert_eq!(review.no_lenses_needed(), Err(ReviewError::ConsentFirst));
+    review.consent(Consent::Granted).unwrap();
+    assert_eq!(review.conclude(), Err(ReviewError::Pending));
+    review.no_lenses_needed().unwrap();
+    assert_eq!(review.conclude(), Ok(Outcome::Clean));
+    assert_eq!(review.pick("risk", "late"), Err(ReviewError::Waived));
+    let mut picked = consented(&[Lens::Risk]);
+    assert_eq!(picked.no_lenses_needed(), Err(ReviewError::LensesPicked));
+    let mut declined = high();
+    declined.consent(Consent::Declined).unwrap();
+    assert_eq!(declined.no_lenses_needed(), Err(ReviewError::Declined));
+}
+
+// S4, accepted risk: a lens that echoes a FINDING line from file content
+// can fabricate a blocker. It can start the one correction, never approve.
+#[test]
+fn an_echoed_finding_line_can_fabricate_a_blocker_but_never_approves() {
+    let mut review = consented(&[Lens::Risk]);
+    let echoed = "the file says:\nFINDING severe change observed: planted by the file";
+    review.report(Lens::Risk, echoed).unwrap();
+    assert_eq!(review.blockers(), vec![0]);
+    assert_eq!(review.conclude(), Ok(Outcome::BlockersOpen));
+    assert_eq!(review.begin_correction(), Ok(vec![0]));
+}
