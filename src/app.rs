@@ -2428,7 +2428,9 @@ impl App {
                 PrefixAction::EditTags
                 | PrefixAction::SaveNote
                 | PrefixAction::Summarize
-                | PrefixAction::RunInPane,
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleMemory
+                | PrefixAction::ToggleApproval,
             ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(

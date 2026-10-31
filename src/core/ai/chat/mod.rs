@@ -410,6 +410,9 @@ pub struct ChatState {
     /// What the workers of the run streamed, and the view open on one (S9).
     traces: run_trace::Traces,
     run_view: Option<run_trace::RunView>,
+    /// The transcript rows the last frame drew for the view: the keys and
+    /// the wheel page by what is on screen.
+    run_view_drawn: std::cell::Cell<Option<usize>>,
     /// A continuation turn that came before the turn it follows was over
     /// (S4): it starts when that turn ends. One slot is enough: turns are
     /// serial, so a run has at most one turn to follow at a time.
@@ -498,6 +501,7 @@ impl ChatState {
             orch_run: None,
             traces: Default::default(),
             run_view: None,
+            run_view_drawn: Default::default(),
             orch_continue: None,
             orch_cancelled: None,
             turn_failure: None,

@@ -37,6 +37,7 @@ impl ChatView<'_> {
         let style = self.style(LineKind::Tool).add_modifier(Modifier::BOLD);
         buf.set_stringn(body.x, body.y, head, usize::from(body.width), style);
         let rows = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
+        self.chat.note_run_view_rows(usize::from(rows.height));
         let lines = self.chat.run_view_rows(usize::from(rows.width));
         let height = usize::from(rows.height);
         let top = self.chat.run_view_top(lines.len(), height);

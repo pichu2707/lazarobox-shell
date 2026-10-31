@@ -280,8 +280,19 @@ impl ChatState {
         true
     }
 
+    /// The frame drew `rows` transcript rows of the view.
+    pub fn note_run_view_rows(&self, rows: usize) {
+        self.run_view_drawn.set(Some(rows));
+    }
+
+    /// The transcript rows the last frame drew for the view.
+    pub fn run_view_drawn(&self) -> Option<usize> {
+        self.run_view_drawn.get()
+    }
+
     pub fn close_run_view(&mut self) {
         self.run_view = None;
+        self.run_view_drawn.set(None);
         self.prune_traces();
     }
 

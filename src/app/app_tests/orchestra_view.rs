@@ -3,7 +3,7 @@
 //! for the selected worker, Esc or `q` closes it, it follows new output and
 //! never takes the keys of an approval.
 
-use super::chat_live::{chat_of, composer, ctrl, plain};
+use super::chat_live::{chat_id, chat_of, composer, ctrl, plain};
 use super::orchestra_cancel::{next_worker, select};
 use super::orchestra_run::{RUN, event, row, running};
 use super::orchestra_toggle::screen;
@@ -336,4 +336,112 @@ fn a_trace_redraws_only_when_its_worker_is_on_view() {
     assert!(a.take_dirty(), "the worker on view");
     let shown = screen(&a);
     assert!(shown.contains("fresh"), "{shown}");
+}
+
+/// A wheel tick over the chat pane (the mouse on).
+fn wheel(a: &mut App, kind: ratatui::crossterm::event::MouseEventKind) {
+    a.config.mouse = true;
+    let rect = a
+        .tiling()
+        .panes
+        .iter()
+        .find(|(id, _)| *id == chat_id())
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    a.update(AppEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+        kind,
+        column: rect.x + 2,
+        row: rect.y + 2,
+        modifiers: KeyModifiers::NONE,
+    }));
+}
+
+/// The `line N` numbers on screen.
+fn visible(screen: &str) -> Vec<u32> {
+    screen
+        .split("line ")
+        .skip(1)
+        .filter_map(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .collect()
+}
+
+fn sixty_lines() -> String {
+    (0..60).map(|n| format!("line {n}\n")).collect()
+}
+
+// The wheel moves the view, not the conversation hidden under it.
+#[test]
+fn the_wheel_scrolls_the_transcript_and_not_the_hidden_conversation() {
+    use ratatui::crossterm::event::MouseEventKind::{ScrollDown, ScrollUp};
+    let mut a = viewing();
+    a.update(say(1, &sixty_lines()));
+    let conversation = chat_of(&a).scroll();
+    let end = visible(&screen(&a)).into_iter().max().unwrap();
+    wheel(&mut a, ScrollUp);
+    let up = visible(&screen(&a)).into_iter().max().unwrap();
+    assert!(up < end, "{up} < {end}");
+    wheel(&mut a, ScrollDown);
+    assert_eq!(visible(&screen(&a)).into_iter().max(), Some(end));
+    assert_eq!(chat_of(&a).scroll(), conversation);
+}
+
+// The keys and the wheel scroll by the rows the frame really drew, also when
+// an approval prompt takes the bottom of the pane.
+#[test]
+fn scrolling_uses_the_rows_drawn_with_an_approval_pending() {
+    use ratatui::crossterm::event::MouseEventKind::ScrollUp;
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(trace(1, TraceItem::Begin));
+    a.update(say(1, &sixty_lines()));
+    select(&mut a, next_worker());
+    assert_eq!(open(&mut a), vec![]);
+    announce(&mut a, turn, 1, read("~/notes.txt"));
+    let end = visible(&screen(&a)).into_iter().max().unwrap();
+    assert_eq!(end, 59, "following the end");
+    wheel(&mut a, ScrollUp);
+    let up = visible(&screen(&a)).into_iter().max().unwrap();
+    assert_eq!(end - up, 3, "one tick moves three rows, not a jump");
+}
+
+// A paste never reaches the composer hidden under the view, and says so.
+#[test]
+fn a_paste_is_refused_while_the_transcript_is_open() {
+    let mut a = viewing();
+    a.update(AppEvent::Paste("pasted".into()));
+    assert_eq!(composer(&a), "");
+    assert_eq!(a.notice(), Some("Close the worker transcript first (Esc)"));
+}
+
+// Never silent: a key the view does not use says how to leave it.
+#[test]
+fn an_unused_key_says_how_to_close_the_view() {
+    let mut a = viewing();
+    tapped(&mut a, plain(KeyCode::Char('x')));
+    assert_eq!(a.notice(), Some("Esc closes the transcript"));
+}
+
+// Memory and approval-mode keys would act on the hidden conversation.
+#[test]
+fn the_memory_and_approval_keys_wait_while_the_transcript_is_open() {
+    for leaf in ["o", "a"] {
+        let mut a = viewing();
+        press(&mut a, leaf);
+        assert_eq!(
+            a.notice(),
+            Some("Close the worker transcript first (Esc)"),
+            "{leaf}"
+        );
+    }
+}
+
+// The key stays whole when the hint wraps in a narrow pane.
+#[test]
+fn the_footer_key_is_not_split_by_the_wrap() {
+    let a = selected_one();
+    let shown = screen(&a);
+    assert!(shown.contains("Ctrl+Space W transcript"), "{shown}");
 }

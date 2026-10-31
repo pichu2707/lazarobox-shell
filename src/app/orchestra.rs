@@ -614,7 +614,7 @@ impl App {
         }
         Some(match chat.selected_worker() {
             Some(worker) => format!(
-                "worker {} selected \u{b7} Ctrl+Space W transcript \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
+                "worker {} \u{b7} Ctrl+Space W transcript \u{b7} Ctrl+C cancels it \u{b7} Alt+Up/Down change \u{b7} Ctrl+C twice cancels the run",
                 worker.0
             ),
             None => "Alt+Up/Down select a worker \u{b7} Ctrl+C cancels the run".to_owned(),

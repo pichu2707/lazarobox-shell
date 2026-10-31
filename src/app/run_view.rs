@@ -15,8 +15,10 @@ const GATE_OFF: &str = "The orchestrator is off; enable it in the menu (Ctrl+Spa
 const CHAT_ONLY: &str = "The worker transcript is for chat panes; open one with Ctrl+Space c";
 /// Said when another view of the chat is open.
 const VIEW_OPEN: &str = "Close this view first";
+/// Said by a key the view does not use.
+const UNUSED_KEY: &str = "Esc closes the transcript";
 /// Said by a prefix key that would replace the transcript.
-const CLOSE_FIRST: &str = "Close the worker transcript first (Esc)";
+pub(super) const CLOSE_FIRST: &str = "Close the worker transcript first (Esc)";
 
 impl App {
     /// Whether the transcript of a worker is open in chat `id`.
@@ -75,9 +77,7 @@ impl App {
         if !plain {
             return Vec::new();
         }
-        let size = self.focused_state().size;
-        // The title and the key line take two rows.
-        let rows = usize::from(size.rows).saturating_sub(2).max(1);
+        let rows = self.run_view_page(id);
         let scroll = match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 if !repeat && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
@@ -93,13 +93,40 @@ impl App {
             KeyCode::PageDown => Scroll::Down(rows),
             KeyCode::Home | KeyCode::Char('g') => Scroll::Top,
             KeyCode::End | KeyCode::Char('G') => Scroll::Follow,
-            _ => return Vec::new(),
+            _ => {
+                if !repeat {
+                    self.notice = Some(UNUSED_KEY.to_owned());
+                }
+                return Vec::new();
+            }
         };
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            let total = chat.run_view_rows(usize::from(size.cols)).len();
-            chat.run_view_scroll(scroll, total, rows);
+        self.scroll_run_view(id, scroll);
+        Vec::new()
+    }
+
+    /// The transcript rows on screen in chat `id`: what the last frame drew
+    /// (an approval prompt takes rows the view then lacks); before the first
+    /// frame, the pane less the title and the key line.
+    fn run_view_page(&self, id: PaneId) -> usize {
+        let state = self.panes.get(&id);
+        let drawn = state
+            .and_then(PaneState::chat_state)
+            .and_then(ChatState::run_view_drawn);
+        let size = state.map_or(0, |state| usize::from(state.size.rows));
+        drawn.unwrap_or_else(|| size.saturating_sub(2)).max(1)
+    }
+
+    /// Scrolls the open transcript of chat `id`.
+    pub(super) fn scroll_run_view(&mut self, id: PaneId, by: Scroll) {
+        let rows = self.run_view_page(id);
+        let Some(state) = self.panes.get_mut(&id) else {
+            return;
+        };
+        let cols = usize::from(state.size.cols);
+        if let Some(chat) = state.chat_mut() {
+            let total = chat.run_view_rows(cols).len();
+            chat.run_view_scroll(by, total, rows);
             self.dirty = true;
         }
-        Vec::new()
     }
 }

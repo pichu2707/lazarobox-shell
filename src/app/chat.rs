@@ -1,6 +1,7 @@
 //! The live chat pane: opening it, its key table, yank, scrolling and the
 //! engine check before a send.
 
+use super::run_view::CLOSE_FIRST;
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
@@ -242,6 +243,11 @@ impl App {
         }
         if self.picker_open(id) {
             self.picker_paste(id, text);
+            return;
+        }
+        // The composer is hidden under a worker's transcript.
+        if self.run_view_open(id) {
+            self.notice = Some(CLOSE_FIRST.to_owned());
             return;
         }
         // A chat that waits for its folder takes no text either.
