@@ -13,9 +13,10 @@ use crate::core::ai::{
     },
     config::Assignment,
     orchestra::{
-        Toolset,
+        Toolset, WorkerKey,
         overrides::{Change, FailurePicker, Picked},
         run::Roster,
+        worker::WorkerStatus,
     },
 };
 
@@ -85,8 +86,16 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A worker that is over takes its waiting asks with it.
+        let mut over = None;
         match event {
             OrchestraEvent::Worker(mut row) => {
+                if !matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running) {
+                    over = Some(WorkerKey {
+                        run: row.run,
+                        worker: row.id,
+                    });
+                }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
                 let menu = self.ai.resolve(row.kind).0.engine;
@@ -148,6 +157,9 @@ impl App {
                     chat.set_orch_run(None);
                 }
             }
+        }
+        if let Some(key) = over {
+            self.withdraw_worker(id, key);
         }
         self.dirty = true;
         Vec::new()

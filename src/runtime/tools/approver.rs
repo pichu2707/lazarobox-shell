@@ -232,6 +232,8 @@ impl Drop for Entry {
 impl Approver for ForTurn {
     fn for_worker(&self, key: WorkerKey) -> Option<Arc<dyn Approver>> {
         let session = SessionKey::Worker(self.session.pane(), key);
+        // A new attempt of a worker that ended (a retry) asks again.
+        self.waits.ended().sessions.remove(&session);
         Some(
             self.waits
                 .approver(session, self.turn, self.pending.clone()),
@@ -434,6 +436,26 @@ mod tests {
         let late = of_worker(&waits, 2).ask(CallId(1), &read("/a"));
         assert_eq!(late.now_or_never(), Some(Decision::Denied(ENDED).into()));
         assert_eq!(waits.len(), 0);
+    }
+
+    // A failed worker retried keeps its key: its next attempt opens a fresh
+    // session, whose asks wait again.
+    #[tokio::test]
+    async fn a_retried_worker_asks_again_after_its_first_attempt_ended() {
+        let waits = Waits::new();
+        let turn = waits.approver(pane(1), 7, Pending::new());
+        let first = turn.for_worker(worker(2)).expect("a session approver");
+        waits.end_worker(pane(1), worker(2));
+        let late = first.ask(CallId(1), &read("/a"));
+        assert_eq!(late.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        let second = turn.for_worker(worker(2)).expect("a session approver");
+        let mut wait = second.ask(CallId(2), &read("/a"));
+        assert!(
+            (&mut wait).now_or_never().is_none(),
+            "it waits for the user"
+        );
+        let session = SessionKey::Worker(pane(1), worker(2));
+        assert!(waits.decide(session, 7, CallId(2), Decision::Sent));
     }
 
     // The pane closing or the turn ending takes its workers' asks too.

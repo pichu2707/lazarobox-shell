@@ -345,6 +345,101 @@ fn worker_read(path: &str, label: &str) -> ApprovalAsk {
     }
 }
 
+fn worker_read_of(worker: u32, path: &str) -> ApprovalAsk {
+    let ApprovalAsk::WorkerRead {
+        path, reach, cloud, ..
+    } = worker_read(path, &format!("{worker}/3 review claude>opus"))
+    else {
+        unreachable!()
+    };
+    ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+        label: format!("{worker}/3 review claude>opus"),
+        path,
+        reach,
+        cloud,
+    }
+}
+
+fn worker_over(a: &mut App, worker: u32, status: crate::core::ai::orchestra::worker::WorkerStatus) {
+    use crate::core::ai::{
+        config::Task,
+        orchestra::{
+            RunId, WorkerId,
+            event::{OrchestraEvent, WorkerRow},
+        },
+    };
+    a.update(AppEvent::Orchestra(
+        id2(),
+        OrchestraEvent::Worker(WorkerRow {
+            run: RunId(1),
+            id: WorkerId(worker),
+            kind: Task::Review,
+            engine: "claude".into(),
+            model: Some("opus".into()),
+            status,
+            elapsed: None,
+            usage: None,
+            partial: false,
+            overridden: false,
+        }),
+    ));
+}
+
+// Spec (agent-orchestrator, Cancel denies pending asks; chat-pane, Approval
+// label and queue): worker 2 has the shown ask and a queued one, worker 1 one
+// in between. Worker 2 ending takes both of its asks and nothing of worker
+// 1's, which is promoted and armed afresh.
+#[test]
+fn a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(1, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(2, "/c"));
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 2/3 review"), "{shown:?}");
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let now = a.approval_prompt(id2()).unwrap();
+    assert!(now.target.contains("worker 1/3 review"), "{now:?}");
+    assert!(
+        !now.target.contains("waiting"),
+        "worker 2's queued ask went: {now:?}"
+    );
+    assert!(!now.armed, "the promoted ask is armed afresh");
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
+            turn,
+            call: CallId(2),
+            decision: Decision::Sent,
+        }]
+    );
+}
+
+// Another worker ending leaves the shown prompt and the queue as they are.
+#[test]
+fn another_worker_ending_leaves_the_shown_ask_and_the_queue_alone() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(1, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(2, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(3, "/c"));
+    let armed = chat(&a, id2()).armed_at();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 1/3 review"), "{shown:?}");
+    assert!(shown.target.contains("1 waiting"), "{shown:?}");
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    // A running or queued row of any worker withdraws nothing.
+    worker_over(&mut a, 3, WorkerStatus::Running);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+}
+
 // Spec (agent-tools, FIFO order; chat-pane, Approval label and queue): worker
 // asks queue behind the one shown, which says how many wait; each answer
 // applies to its own prompt, and the next one is shown unarmed so a key

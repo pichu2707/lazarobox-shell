@@ -405,13 +405,27 @@ impl App {
     /// Ends the pending approval of chat `id` when it belongs to a tool call
     /// that `stale` names. A confirm the user opened is never touched.
     fn withdraw_tool_approval(&mut self, id: PaneId, stale: impl Fn((u64, CallId)) -> bool) {
+        self.withdraw_where(id, |approval| approval.call().is_some_and(&stale));
+    }
+
+    /// Ends every approval of worker `key` of chat `id`, the shown one and the
+    /// queued ones: the worker was cancelled or is over. The other workers'
+    /// asks stay in their order; when the shown ask was the worker's, the
+    /// oldest one left is promoted and armed afresh. The runtime has denied
+    /// the calls under the worker's session already (`Waits::end_worker`), so
+    /// no answer is sent. The one door for a per-worker cancel (S3c).
+    pub(super) fn withdraw_worker(&mut self, id: PaneId, key: WorkerKey) {
+        self.withdraw_where(id, |approval| approval.ask().worker() == Some(key));
+    }
+
+    fn withdraw_where(&mut self, id: PaneId, stale: impl Fn(&Approval) -> bool) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
         // The asks queued behind the shown one go first: its removal would
         // promote one of them.
         let queued: Vec<u64> = (chat.approvals().queued())
-            .filter(|approval| approval.call().is_some_and(&stale))
+            .filter(|approval| stale(approval))
             .map(Approval::id)
             .collect();
         for approval_id in queued {
@@ -421,7 +435,7 @@ impl App {
         let Some(approval) = chat.approvals().pending() else {
             return;
         };
-        if approval.call().is_some_and(stale) {
+        if stale(approval) {
             let approval_id = approval.id();
             chat.approvals_mut().withdraw(approval_id);
             chat.set_run_target(None);
