@@ -38,6 +38,7 @@ fn viewing(id: u32) -> ChatState {
     state.worker_row(row(id, WorkerStatus::Running));
     state.set_orch_run(Some(RUN));
     assert!(state.open_run_view(WorkerId(id)));
+    state.trace(RUN, WorkerId(id), TraceItem::Begin);
     state
 }
 
@@ -249,4 +250,85 @@ fn a_step_that_comes_after_its_run_ended_is_dropped() {
     let mut state = chat();
     state.trace(RUN, WorkerId(1), text("late"));
     assert!(!state.has_trace(RUN, WorkerId(1)));
+}
+
+/// The bytes of the text rows of the view.
+fn kept(state: &ChatState) -> usize {
+    rows(state).iter().map(String::len).sum()
+}
+
+#[test]
+fn a_call_after_a_full_text_drops_only_the_excess() {
+    let mut state = viewing(1);
+    let line = format!("{}\n", "x".repeat(99));
+    let lines = (TRACE_CAP - 100) / line.len();
+    let text_bytes = line.len() * lines;
+    state.trace(RUN, WorkerId(1), text(&line.repeat(lines)));
+    let before = kept(&state);
+    assert!(before > TRACE_CAP / 2, "{before} of {text_bytes}");
+    state.trace(
+        RUN,
+        WorkerId(1),
+        TraceItem::Call {
+            id: CallId(1),
+            name: "run".into(),
+            summary: "y".repeat(400),
+        },
+    );
+    state.trace(RUN, WorkerId(1), text(&line.repeat(3)));
+    let shown = rows(&state);
+    assert!(
+        kept(&state) > TRACE_CAP / 2,
+        "the text was wiped: {}",
+        kept(&state)
+    );
+    assert!(shown.iter().any(|row| row.starts_with("\u{bb} run")));
+    // The 99-character rows wrap at 80 columns: the last row is the 19 left.
+    assert_eq!(shown.last().map(String::len), Some(19));
+}
+
+#[test]
+fn a_trim_cuts_down_to_leave_room() {
+    let mut state = viewing(1);
+    let line = format!("{}\n", "x".repeat(1023));
+    for _ in 0..(TRACE_CAP / line.len() + 2) {
+        state.trace(RUN, WorkerId(1), text(&line));
+    }
+    let after = kept(&state);
+    assert!(after <= TRACE_CAP / 8 * 7 + 1100, "kept {after}");
+}
+
+#[test]
+fn a_worker_traced_again_after_an_eviction_shows_the_cut() {
+    let mut state = viewing(1);
+    // No `Begin` first: its start was dropped with an evicted trace.
+    state.trace(RUN, WorkerId(2), text("tail"));
+    state.close_run_view();
+    state.worker_row(row(2, WorkerStatus::Running));
+    assert!(state.open_run_view(WorkerId(2)));
+    assert_eq!(rows(&state), [CUT_LINE, "tail"]);
+}
+
+#[test]
+fn tool_rows_are_capped() {
+    let mut state = viewing(1);
+    state.trace(
+        RUN,
+        WorkerId(1),
+        TraceItem::Call {
+            id: CallId(1),
+            name: "run".into(),
+            summary: "y".repeat(5000),
+        },
+    );
+    state.trace(
+        RUN,
+        WorkerId(1),
+        TraceItem::Result {
+            id: CallId(1),
+            status: ToolStatus::Ok,
+            summary: "z".repeat(5000),
+        },
+    );
+    assert!(kept(&state) < 1200, "{}", kept(&state));
 }

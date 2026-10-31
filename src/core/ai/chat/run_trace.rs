@@ -17,6 +17,10 @@ use crate::core::ai::sanitize::clean;
 pub const TRACE_CAP: usize = 128 * 1024;
 /// The most workers whose transcript is kept at once.
 pub const MAX_TRACED: usize = 16;
+/// How far past a cut a text looks for the start of a row, in bytes.
+const ROW_NEAR: usize = 1024;
+/// The most bytes of a tool call row or of its result.
+pub const ROW_CAP: usize = 512;
 /// The row that says the start of a transcript was dropped.
 pub const CUT_LINE: &str = "(earlier output dropped)";
 /// What an empty transcript shows.
@@ -60,7 +64,7 @@ impl WorkerTrace {
             }
             TraceItem::Call { id, name, summary } => {
                 let call = format!("{} {}", one_line(&name), one_line(&summary));
-                let call = call.trim().to_owned();
+                let call = clip(call.trim());
                 self.bytes += call.len();
                 self.parts.push_back(Part::Tool {
                     id,
@@ -73,7 +77,7 @@ impl WorkerTrace {
                 status,
                 summary,
             } => {
-                let summary = one_line(&summary);
+                let summary = clip(&one_line(&summary));
                 let open = self.parts.iter_mut().rev().find_map(|part| match part {
                     Part::Tool { id: at, result, .. } if *at == id && result.is_none() => {
                         Some(result)
@@ -91,29 +95,39 @@ impl WorkerTrace {
         self.trim();
     }
 
-    /// Drops the oldest output past [`TRACE_CAP`], on a character boundary.
+    /// Past [`TRACE_CAP`], drops the oldest output down to seven eighths of
+    /// it (so the next pieces do not trim again), and only the excess: a
+    /// part is popped whole only when it fits in what is to go, a text is cut
+    /// on a character boundary, then to the next row start if one is near.
     fn trim(&mut self) {
-        while self.bytes > TRACE_CAP {
-            self.cut = true;
-            if self.parts.len() > 1 {
-                if let Some(old) = self.parts.pop_front() {
-                    self.bytes -= part_bytes(&old);
-                }
-                continue;
-            }
-            let Some(Part::Text(text)) = self.parts.front_mut() else {
+        if self.bytes <= TRACE_CAP {
+            return;
+        }
+        self.cut = true;
+        let mut excess = self.bytes - (TRACE_CAP - TRACE_CAP / 8);
+        while excess > 0 {
+            let Some(front) = self.parts.front_mut() else {
                 break;
             };
-            let mut at = text.len() - TRACE_CAP;
-            while !text.is_char_boundary(at) {
-                at += 1;
+            let size = part_bytes(front);
+            if let Part::Text(text) = front
+                && size > excess
+            {
+                let mut at = excess;
+                while !text.is_char_boundary(at) {
+                    at += 1;
+                }
+                let mut near = text.as_bytes()[at..].iter().take(ROW_NEAR);
+                if let Some(nl) = near.position(|b| *b == b'\n') {
+                    at += nl + 1;
+                }
+                text.drain(..at);
+                self.bytes -= at;
+                break;
             }
-            // Start on a whole row when there is one.
-            if let Some(line) = text[at..].find('\n') {
-                at += line + 1;
-            }
-            text.drain(..at);
-            self.bytes = text.len();
+            self.bytes -= size;
+            excess = excess.saturating_sub(size);
+            self.parts.pop_front();
         }
     }
 
@@ -160,6 +174,15 @@ fn part_bytes(part: &Part) -> usize {
     }
 }
 
+/// `text` cut to [`ROW_CAP`] bytes on a character boundary.
+fn clip(text: &str) -> String {
+    let mut end = text.len().min(ROW_CAP);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
 /// Worker text on one clean line.
 fn one_line(text: &str) -> String {
     clean(text).split_whitespace().collect::<Vec<_>>().join(" ")
@@ -195,7 +218,14 @@ impl ChatState {
         let at = match self.traces.kept.iter().position(|(k, _)| *k == key) {
             Some(at) => at,
             None => {
-                self.traces.kept.push((key, WorkerTrace::default()));
+                // A first step that is not `Begin` means the start of this
+                // worker's transcript went with an evicted one.
+                let cut = !matches!(item, TraceItem::Begin);
+                let fresh = WorkerTrace {
+                    cut,
+                    ..WorkerTrace::default()
+                };
+                self.traces.kept.push((key, fresh));
                 self.traces.kept.len() - 1
             }
         };

@@ -41,6 +41,7 @@ fn viewing() -> ChatState {
     });
     chat.set_orch_run(Some(RUN));
     assert!(chat.open_run_view(WorkerId(1)));
+    chat.trace(RUN, WorkerId(1), TraceItem::Begin);
     chat
 }
 

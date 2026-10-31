@@ -18,12 +18,16 @@ use crate::core::ai::{
     },
 };
 
-fn say(worker: u32, text: &str) -> AppEvent {
+fn trace(worker: u32, item: TraceItem) -> AppEvent {
     event(OrchestraEvent::Trace {
         run: RUN,
         worker: WorkerId(worker),
-        item: TraceItem::Text(text.to_owned()),
+        item,
     })
+}
+
+fn say(worker: u32, text: &str) -> AppEvent {
+    trace(worker, TraceItem::Text(text.to_owned()))
 }
 
 /// The prefix and `W`, after a pause so no key is taken for a hold.
@@ -37,6 +41,9 @@ fn selected_one() -> App {
     let (mut a, _) = running();
     for id in [1, 2] {
         a.update(event(row(RUN, id, WorkerStatus::Running)));
+    }
+    for id in [1, 2] {
+        a.update(trace(id, TraceItem::Begin));
     }
     a.update(say(1, "hello from one"));
     a.update(say(2, "hello from two"));
