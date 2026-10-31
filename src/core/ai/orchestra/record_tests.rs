@@ -84,3 +84,18 @@ fn the_interruption_line_clips_and_cleans_the_goal() {
     let shown = wide.split(" \u{b7} ").nth(1).unwrap();
     assert_eq!(shown.chars().count(), 60);
 }
+
+#[test]
+fn the_stored_goal_hides_a_token_the_user_pasted() {
+    let secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+    let stored = RunRecord::stored_goal(&format!("deploy with {secret} now"));
+    assert!(!stored.contains(secret), "{stored}");
+    assert!(stored.starts_with("deploy with ") && stored.ends_with(" now"));
+}
+
+#[test]
+fn the_interruption_line_hides_a_token_in_an_older_stored_goal() {
+    let secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+    let line = record(&format!("use {secret}"), vec![]).interrupted_line();
+    assert!(!line.contains(secret), "{line}");
+}

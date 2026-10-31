@@ -24,6 +24,8 @@ struct Kept {
     pane: PaneId,
     goal: String,
     workers: BTreeMap<u32, WorkerRecord>,
+    /// A save of this run failed: the next one carries every worker.
+    resend: bool,
 }
 
 /// What the app keeps to save runs.
@@ -39,17 +41,25 @@ pub(super) struct RunKeep {
 }
 
 impl Kept {
-    fn record(&self, run: RunId, phase: RunPhase) -> Box<RunRecord> {
+    /// The run's record carrying only the workers that changed: the store
+    /// upserts them and keeps the others.
+    fn record(&self, run: RunId, phase: RunPhase, changed: Vec<WorkerRecord>) -> Box<RunRecord> {
         Box::new(RunRecord {
             id: run.0,
             goal: self.goal.clone(),
             phase,
-            workers: self.workers.values().cloned().collect(),
+            workers: changed,
         })
     }
 }
 
 impl App {
+    /// How many goals wait for their run's first worker.
+    #[cfg(test)]
+    pub(super) fn kept_goals(&self) -> usize {
+        self.run_keep.goals.len()
+    }
+
     /// A fresh run of pane `id` starts from `goal`: the user's words, which
     /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
@@ -74,18 +84,29 @@ impl App {
             pane: id,
             goal: keep.goals.remove(&id).unwrap_or_default(),
             workers: BTreeMap::new(),
+            resend: false,
         });
-        kept.workers.insert(
-            row.id.0,
-            WorkerRecord {
-                id: row.id.0,
-                kind: row.kind.id().to_owned(),
-                engine: row.engine.clone(),
-                model: row.model.clone(),
-                status: row.status.label().to_owned(),
-            },
-        );
-        let (pane, run) = (kept.pane, kept.record(row.run, RunPhase::Live));
+        let worker = WorkerRecord {
+            id: row.id.0,
+            kind: row.kind.id().to_owned(),
+            engine: row.engine.clone(),
+            model: row.model.clone(),
+            status: row.status.label().to_owned(),
+        };
+        // Usage, elapsed time and the like are not stored: a row that changes
+        // none of what is stored writes nothing.
+        let unchanged = kept.workers.get(&worker.id) == Some(&worker);
+        if unchanged && !kept.resend {
+            return Vec::new();
+        }
+        kept.workers.insert(worker.id, worker.clone());
+        // After a failed save the store may lack earlier workers: send all.
+        let changed = if std::mem::take(&mut kept.resend) {
+            kept.workers.values().cloned().collect()
+        } else {
+            vec![worker]
+        };
+        let (pane, run) = (kept.pane, kept.record(row.run, RunPhase::Live, changed));
         vec![Effect::Store(StoreCmd::SaveRun { pane, run })]
     }
 
@@ -94,8 +115,33 @@ impl App {
         let Some(kept) = self.run_keep.runs.remove(&run) else {
             return Vec::new();
         };
-        let (pane, record) = (kept.pane, kept.record(run, RunPhase::Ended));
+        // The close carries every known worker: it repairs a lost save.
+        let all = kept.workers.values().cloned().collect();
+        let (pane, record) = (kept.pane, kept.record(run, RunPhase::Ended, all));
         vec![Effect::Store(StoreCmd::SaveRun { pane, run: record })]
+    }
+
+    /// Pane `id` is gone: the runs it had are closed in the store now, so the
+    /// next start does not report them as interrupted by a restart, and its
+    /// waiting goal goes. The run manager's own `Ended` saves nothing more.
+    pub(super) fn keep_pane_closed(&mut self, id: PaneId) -> Vec<Effect> {
+        self.run_keep.goals.remove(&id);
+        let runs: Vec<RunId> = (self.run_keep.runs.iter())
+            .filter(|(_, kept)| kept.pane == id)
+            .map(|(run, _)| *run)
+            .collect();
+        let mut effects = Vec::new();
+        for run in runs {
+            self.ended_runs.insert(run);
+            effects.extend(self.keep_end(run));
+        }
+        effects
+    }
+
+    /// The turn of pane `id` failed before any run began: its goal is not
+    /// kept for a later one.
+    pub(super) fn forget_goal(&mut self, id: PaneId) {
+        self.run_keep.goals.remove(&id);
     }
 
     /// The store's answer about runs: the interrupted ones are named in the
@@ -120,6 +166,13 @@ impl App {
                 } else {
                     &mut self.run_keep.read_failure_said
                 };
+                // Which run failed is not known: every run of the pane is
+                // resent in full by its next save.
+                if *saving {
+                    for kept in self.run_keep.runs.values_mut().filter(|k| k.pane == *pane) {
+                        kept.resend = true;
+                    }
+                }
                 if std::mem::replace(said, true) {
                     return;
                 }

@@ -141,6 +141,9 @@ pub enum OrchestraEvent {
     /// blocker) the first blocker's text, a lens worker's own words clipped
     /// to 120 characters on one line. The receipt handoff is 7b.3.
     Review { run: RunId, text: String },
+    /// A line for the pane's transcript that belongs to no run yet (a floor
+    /// of run ids that could not be read, S9). `text` is lazarobox's own.
+    Notice { text: String },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

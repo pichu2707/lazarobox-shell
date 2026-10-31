@@ -424,10 +424,9 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             .with_tools(tool_host.clone(), socket_dirs.clone())
             .with_run_floor({
                 let path = store_path.clone();
-                move || {
-                    path.as_deref()
-                        .and_then(chat_store::highest_run)
-                        .unwrap_or(0)
+                move || match path.as_deref() {
+                    Some(path) => chat_store::highest_run(path).map_err(|why| why.to_string()),
+                    None => Ok(0),
                 }
             }),
     );

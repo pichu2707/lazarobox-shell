@@ -4,7 +4,7 @@
 //! came from a model or the user is data, sanitized when it is shown.
 
 use super::worker::WorkerStatus;
-use crate::core::ai::sanitize::clean;
+use crate::core::ai::sanitize::{clean, redact_tokens};
 
 /// The most bytes of a goal a record keeps.
 pub const GOAL_MAX: usize = 2048;
@@ -73,7 +73,7 @@ impl RunRecord {
     /// The goal as stored: sanitized and cut to [`GOAL_MAX`] bytes on a
     /// character boundary.
     pub fn stored_goal(goal: &str) -> String {
-        let mut text = clean(goal);
+        let mut text = redact_tokens(&clean(goal));
         if text.len() > GOAL_MAX {
             let mut end = GOAL_MAX;
             while !text.is_char_boundary(end) {
@@ -87,7 +87,7 @@ impl RunRecord {
     /// The transcript line for a run found interrupted: lazarobox's words
     /// around the goal, which is data (first line, sanitized, clipped).
     pub fn interrupted_line(&self) -> String {
-        let goal = clean(&self.goal);
+        let goal = redact_tokens(&clean(&self.goal));
         let goal = goal.lines().map(str::trim).find(|l| !l.is_empty());
         let goal: String = goal
             .unwrap_or("(no goal)")

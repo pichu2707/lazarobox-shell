@@ -1,7 +1,7 @@
 //! Runs in the local store (agent-orchestrator S9): what the app saves as a
 //! run goes by, and what it says when a restart finds one interrupted.
 
-use super::chat_live::{ask, chat_id, chat_of};
+use super::chat_live::{ask, chat_id, chat_of, plain};
 use super::orchestra_run::{RUN, event, row, running};
 use super::orchestra_send::{orch_ai, orch_app_with, toggle};
 use super::*;
@@ -178,18 +178,128 @@ fn a_run_is_saved_as_its_workers_change_and_closed_when_it_ends() {
             status: "running".into(),
         }]
     );
+    // Only the worker that changed is sent.
     let second = a.update(event(row(RUN, 2, WorkerStatus::Queued)));
     let third = a.update(event(row(RUN, 1, WorkerStatus::Done)));
-    assert_eq!(saves(&second)[0].workers.len(), 2);
-    let both = &saves(&third)[0].workers;
+    let [second] = saves(&second).try_into().unwrap();
+    let [third] = saves(&third).try_into().unwrap();
+    assert_eq!((second.workers.len(), second.workers[0].id), (1, 2));
     assert_eq!(
-        (both[0].status.as_str(), both[1].status.as_str()),
-        ("done", "queued")
+        (third.workers.len(), third.workers[0].status.as_str()),
+        (1, "done")
     );
     let end = a.update(event(OrchestraEvent::Ended { run: RUN }));
     let [closed] = saves(&end).try_into().unwrap();
+    // The close carries every known worker, so a lost earlier save is repaired.
     assert_eq!((closed.phase, closed.workers.len()), (RunPhase::Ended, 2));
     // An ended run stores nothing more.
     let late = a.update(event(row(RUN, 2, WorkerStatus::Running)));
     assert!(saves(&late).is_empty());
+}
+
+// Write amplification: a row that changes only its usage or elapsed time is
+// not a change of the run, so nothing is written.
+#[test]
+fn a_row_that_changes_nothing_stored_is_not_saved_again() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let OrchestraEvent::Worker(mut busier) = row(RUN, 1, WorkerStatus::Running) else {
+        unreachable!()
+    };
+    busier.elapsed = Some(std::time::Duration::from_secs(3));
+    busier.partial = true;
+    let again = a.update(event(OrchestraEvent::Worker(busier)));
+    assert!(saves(&again).is_empty(), "{again:?}");
+    let moved = a.update(event(row(RUN, 1, WorkerStatus::Done)));
+    assert_eq!(saves(&moved).len(), 1);
+}
+
+// A pane closed with its run live leaves no `live` row for the next start to
+// report as an interruption by a restart.
+#[test]
+fn closing_the_pane_of_a_live_run_closes_the_stored_run() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(row(RUN, 2, WorkerStatus::Queued)));
+    press(&mut a, "wq");
+    let effects = a.update(key('y'));
+    let [closed] = saves(&effects).try_into().unwrap_or_else(|_| {
+        panic!("one close save expected: {effects:?}");
+    });
+    assert_eq!((closed.id, closed.phase), (RUN.0, RunPhase::Ended));
+    assert_eq!(closed.workers.len(), 2, "the close carries every worker");
+    // The run manager's own `Ended` for the gone pane saves nothing more.
+    let late = a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(saves(&late).is_empty());
+}
+
+// The goal of a start that failed is not kept for a later run.
+#[test]
+fn a_failed_start_forgets_its_goal() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let (mut a, turn) = running();
+    assert_eq!(a.kept_goals(), 1);
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("could not start".into())),
+    ));
+    assert_eq!(a.kept_goals(), 0);
+}
+
+// Closing the pane forgets the goal too.
+#[test]
+fn closing_a_pane_forgets_its_goal() {
+    let (mut a, _) = running();
+    assert_eq!(a.kept_goals(), 1);
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert_eq!(a.kept_goals(), 0);
+}
+
+// A save that failed is repaired: the next save of that run resends every
+// worker, not just the one that changed.
+#[test]
+fn after_a_failed_save_the_next_save_carries_every_worker() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(row(RUN, 2, WorkerStatus::Queued)));
+    reply(
+        &mut a,
+        StoreReply::RunsFailed {
+            pane: chat_id(),
+            saving: true,
+        },
+    );
+    let next = a.update(event(row(RUN, 1, WorkerStatus::Done)));
+    let [full] = saves(&next).try_into().unwrap();
+    let ids: Vec<_> = full.workers.iter().map(|w| w.id).collect();
+    assert_eq!(ids, [1, 2]);
+    // Repaired once: the save after that is a delta again.
+    let after = a.update(event(row(RUN, 2, WorkerStatus::Running)));
+    assert_eq!(saves(&after)[0].workers.len(), 1);
+}
+
+#[test]
+fn a_failed_save_resends_even_a_row_that_changed_nothing() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    reply(
+        &mut a,
+        StoreReply::RunsFailed {
+            pane: chat_id(),
+            saving: true,
+        },
+    );
+    let again = a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    assert_eq!(saves(&again).len(), 1);
+}
+
+// A turn cancelled before any run began leaves no goal behind.
+#[test]
+fn a_cancelled_turn_with_no_run_forgets_its_goal() {
+    let (mut a, _) = running();
+    assert_eq!(a.kept_goals(), 1);
+    a.update(plain(crossterm::event::KeyCode::Esc));
+    assert_eq!(a.kept_goals(), 0);
 }

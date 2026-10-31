@@ -2274,7 +2274,8 @@ fn a_saved_run_is_written_silently_and_a_restart_finds_it_interrupted() {
         })
     );
     // A process that is gone owned it.
-    conn.execute("UPDATE runs SET owner = 4000000", []).unwrap();
+    conn.execute("UPDATE runs SET owner = 4000000, token = token + 1", [])
+        .unwrap();
     let Some(StoreReply::RunsRecovered { runs, .. }) =
         worker.handle(StoreCmd::RecoverRuns { pane: pane() })
     else {
@@ -2334,4 +2335,31 @@ fn a_handle_without_a_thread_answers_the_run_commands() {
             saving: false
         })
     );
+}
+
+// The close of a run is never dropped for a busy queue: commands go over an
+// unbounded queue (only replies use a bounded channel), and `shutdown` drains
+// it before it returns.
+#[test]
+fn the_close_of_a_run_survives_a_long_queue() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, _rx) = mpsc::channel(1);
+    let handle = spawn_at(Some(db.clone()), tx);
+    for n in 0..300u64 {
+        handle.send(StoreCmd::SaveRun {
+            pane: pane(),
+            run: stored_run(n % 7 + 1, RunPhase::Live),
+        });
+    }
+    handle.send(StoreCmd::SaveRun {
+        pane: pane(),
+        run: stored_run(3, RunPhase::Ended),
+    });
+    handle.shutdown(Duration::from_secs(10));
+    let conn = Connection::open(&db).unwrap();
+    let phase: String = conn
+        .query_row("SELECT phase FROM runs WHERE id = 3", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(phase, "ended");
 }

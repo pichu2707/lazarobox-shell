@@ -2590,6 +2590,7 @@ impl App {
         for id in leaves {
             self.panes.remove(&id);
             self.drop_pane_stores(id);
+            effects.extend(self.keep_pane_closed(id));
             self.drop_parked_send(id);
             self.drop_note_choices(id);
             self.drop_folder_state(id);
@@ -2749,6 +2750,10 @@ impl App {
         if finished {
             chat.set_turn_failure(failure);
         }
+        // A start that failed leaves no run to give its goal to.
+        if finished && how == Ended::Error && chat.orch_run().is_none() {
+            self.forget_goal(id);
+        }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
         let mut effects = self.store_effects(id);
@@ -2822,6 +2827,7 @@ impl App {
                 ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
                 self.drop_pane_stores(id);
+                ends.extend(self.keep_pane_closed(id));
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
                 self.drop_folder_state(id);

@@ -406,6 +406,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Closed { .. }
         | OrchestraEvent::Trace { .. }
+        | OrchestraEvent::Notice { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -882,10 +883,10 @@ fn run_ids_start_above_the_stored_floor_whatever_the_clock_says() {
 async fn the_manager_asks_for_the_floor_once_before_its_first_id() {
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = asked.clone();
-    let lab = lab_with(Script::Hang, |m, _| {
+    let mut lab = lab_with(Script::Hang, |m, _| {
         m.with_run_floor(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            u64::MAX / 2
+            Ok(u64::MAX / 2)
         })
     });
     assert_eq!(
@@ -893,9 +894,32 @@ async fn the_manager_asks_for_the_floor_once_before_its_first_id() {
         0,
         "nothing is read before a run"
     );
-    let (first, second) = (lab.manager.next_run(), lab.manager.next_run());
+    let pane = PaneId::FIRST;
+    let (first, second) = (lab.manager.next_run(pane), lab.manager.next_run(pane));
     assert_eq!((first.0, second.0), (u64::MAX / 2 + 1, u64::MAX / 2 + 2));
     assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(lab.events.try_recv().is_err(), "a good read says nothing");
+}
+
+// Never silent: a floor that could not be read is said once, and the run goes
+// on with the clock alone.
+#[tokio::test]
+async fn a_floor_that_cannot_be_read_is_said_once_and_ids_still_flow() {
+    let mut lab = lab_with(Script::Hang, |m, _| {
+        m.with_run_floor(|| Err("database is locked".to_owned()))
+    });
+    let pane = PaneId::FIRST;
+    let (first, second) = (lab.manager.next_run(pane), lab.manager.next_run(pane));
+    assert!(second.0 > first.0);
+    let (to, event) = lab.events.try_recv().unwrap();
+    assert_eq!(to, pane);
+    assert_eq!(
+        event,
+        OrchestraEvent::Notice {
+            text: "run ids could not be checked against stored runs (ids follow the clock this session): database is locked".to_owned()
+        }
+    );
+    assert!(lab.events.try_recv().is_err(), "said once");
 }
 
 // S1b-2 security obligation: a run's read scope lives with its run only. A
@@ -1195,6 +1219,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Closed { .. }
             | OrchestraEvent::Trace { .. }
+            | OrchestraEvent::Notice { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
