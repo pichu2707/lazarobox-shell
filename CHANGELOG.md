@@ -10,6 +10,23 @@ baseline.
 
 ## [Unreleased]
 
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
+
 ## [1.0.1] - 2026-10-31
 
 ### Changed
@@ -193,23 +210,6 @@ promise described in the README.
 - Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
   key repeat of a held key (about 600-760 ms) can never answer one.
 - The feedback form's footers say what `Esc` does on every screen.
-
-### Internal
-
-- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
-  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
-  rows coloured by status, the provider notice and the failure alert above the
-  composer, and the final `orchestrate` prompts of both profiles.
-- Agent orchestrator write integration (S7, same gate): a `code` worker gets
-  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
-  staged in the pane's batch, only inside the run's read scope, and reach the
-  disk only when the user approves the batch, whose review header names the
-  worker. `collect` lists the worker's `files changed` (path, size, diff
-  hash, applied or not applied).
-- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
-  Ollama decoders report the tokens (and the cost, where claude gives one) of
-  a turn. A worker row shows its own numbers, or `n/a` when its engine
-  reported none, and a `run` row shows the sum. Nothing is estimated.
 
 ## [0.29.0] - 2026-10-28
 
