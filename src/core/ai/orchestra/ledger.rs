@@ -3,6 +3,7 @@
 //! D17). Pure: the run fills the metadata, the orchestrator only writes the
 //! judgement.
 
+use super::steps::Step;
 use super::worker::WorkerStatus;
 use super::{RunId, WorkerId};
 use crate::core::ai::config::Task;
@@ -60,10 +61,12 @@ impl Verdict {
     }
 }
 
-/// What a handoff is about. Steps (S5) and receipts (S7b) join the worker.
+/// What a handoff is about. Receipts (S7b) join the worker and the step.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Unit {
     Worker(WorkerId),
+    /// An ODD step (S5, D15).
+    Step(Step),
 }
 
 /// The part of a handoff the orchestrator writes.
@@ -119,13 +122,12 @@ pub struct Handoff {
 }
 
 impl Handoff {
-    /// The handoff of a worker `facts` describes. `blocked` forces the
-    /// verdict.
+    /// The handoff `facts` describes. `blocked` forces the verdict.
     pub(super) fn of(facts: Facts, judgement: Judgement, blocked: bool) -> Self {
         let judgement = judgement.normalised();
         Self {
             run: facts.run,
-            unit: Unit::Worker(facts.worker),
+            unit: facts.unit,
             kind: facts.kind,
             engine: facts.engine,
             model: facts.model,
@@ -164,7 +166,7 @@ impl Handoff {
 /// What the run knows about a worker, for its handoff.
 pub(super) struct Facts {
     pub run: RunId,
-    pub worker: WorkerId,
+    pub unit: Unit,
     pub kind: Task,
     pub engine: String,
     pub model: Option<String>,
@@ -255,6 +257,8 @@ impl Row {
 pub struct Ledger {
     goal: String,
     rows: Vec<Row>,
+    /// The closed ODD steps, one line (S5); empty before the first.
+    steps: String,
 }
 
 impl Ledger {
@@ -262,7 +266,14 @@ impl Ledger {
         Self {
             goal: goal.to_owned(),
             rows,
+            steps: String::new(),
         }
+    }
+
+    /// The ledger with the line of the steps the run closed.
+    pub(super) fn with_steps(mut self, line: String) -> Self {
+        self.steps = line;
+        self
     }
 
     /// The workers that ended with no handoff yet.
@@ -315,7 +326,12 @@ impl Ledger {
     }
 
     fn draw(&self, lens: &[usize], hidden: &[bool]) -> String {
-        let mut out = format!("Goal: {}\nWorkers:", self.goal);
+        let mut out = format!("Goal: {}\n", self.goal);
+        if !self.steps.is_empty() {
+            out.push_str(&self.steps);
+            out.push('\n');
+        }
+        out.push_str("Workers:");
         let count = hidden.iter().filter(|hidden| **hidden).count();
         if count > 0 {
             out.push_str(&format!("\n{count} earlier workers, resolved"));

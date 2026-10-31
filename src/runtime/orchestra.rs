@@ -71,6 +71,7 @@ use crate::core::{
                 RunState, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
+            steps::{Mark, Step, StepError},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
@@ -829,6 +830,9 @@ impl RunManager {
             OrchCall::Collect { id } => self.collect(pane, run, id),
             OrchCall::Cancel { id } => self.cancel_worker(pane, run, id),
             OrchCall::Handoff { id, note } => self.handoff(pane, run, id, note),
+            OrchCall::StepHandoff { step, mark, note } => {
+                self.handoff_step(pane, run, step, mark, note)
+            }
             OrchCall::Finish { summary } => self.finish_run(pane, run, &summary),
         };
         async move { now }.boxed()
@@ -842,6 +846,9 @@ impl RunManager {
                 Ok(id) => id,
                 Err(Refusal::Paused) => return error("run paused"),
                 Err(Refusal::Ended) => return error(ENDED),
+                Err(Refusal::ReadOnly) => {
+                    return error("code workers are not spawned for a read-only goal");
+                }
                 Err(Refusal::WorkerCap(cap)) => {
                     return error(format!("worker limit reached: max_workers is {cap}"));
                 }
@@ -950,6 +957,38 @@ impl RunManager {
         stored.unwrap_or_else(|| error(ENDED))
     }
 
+    /// Stores the orchestrator's handoff for an ODD step and closes the step;
+    /// refused out of order. The app stores it like a worker's.
+    fn handoff_step(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        step: Step,
+        mark: Mark,
+        note: Judgement,
+    ) -> Outcome {
+        let stored = self.on_run(pane, run, |live| {
+            match live.run.handoff_step(step, mark, note) {
+                Ok(handoff) => {
+                    let text = format!("step {}: {}", step.label(), handoff.verdict.label());
+                    self.announce_handoff(pane, run, handoff);
+                    fine(text)
+                }
+                Err(StepError::Ended) => error(ENDED),
+                Err(StepError::Order { step, open }) => error(format!(
+                    "step {} needs {} closed first",
+                    step.label(),
+                    open.label()
+                )),
+                Err(StepError::NotLarge) => error("track is for a large goal only"),
+                Err(StepError::NoHandoff(step)) => {
+                    error(format!("step {} has no handoff", step.label()))
+                }
+            }
+        });
+        stored.unwrap_or_else(|| error(ENDED))
+    }
+
     /// Ends the run for the orchestrator: refused with a reason while a
     /// worker is live, a failure waits or handoffs are missing (once); then
     /// lazarobox builds the missing handoffs and the run is `Finished`. The
@@ -987,9 +1026,9 @@ impl RunManager {
     fn announce_built(&self, pane: PaneId, run: RunId, built: Vec<Handoff>) {
         let workers: Vec<_> = built
             .iter()
-            .map(|handoff| {
-                let Unit::Worker(worker) = handoff.unit;
-                worker
+            .filter_map(|handoff| match handoff.unit {
+                Unit::Worker(worker) => Some(worker),
+                Unit::Step(_) => None,
             })
             .collect();
         for handoff in built {

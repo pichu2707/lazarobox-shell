@@ -429,7 +429,7 @@ fn a_halted_or_finished_run_is_not_continued() {
 fn failed_row(id: u32, done: &str) -> Row {
     let facts = Facts {
         run: RunId(7),
-        worker: WorkerId(id),
+        unit: Unit::Worker(WorkerId(id)),
         kind: Task::Code,
         engine: "codex".to_owned(),
         model: None,
@@ -472,7 +472,7 @@ fn an_old_failure_does_not_block_later_rows_from_collapsing() {
     for id in 2..=30 {
         let facts = Facts {
             run: RunId(7),
-            worker: WorkerId(id),
+            unit: Unit::Worker(WorkerId(id)),
             kind: Task::Review,
             engine: "codex".to_owned(),
             model: None,

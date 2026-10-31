@@ -436,3 +436,23 @@ Strict TDD: all tests written first against stubs (`RUN_EPOCH`, `run_save_lost(p
 | 9 (re-review) | `RunStore.tokens` now keeps each save's sent-at; `expire_stores` (memory tick) expires run saves older than `MEMORY_WAIT` independently of the chat's `pending_saves` (a folder change clears those), with the usual tombstone and one `handoffs not persisted`; `run_store_waiting` keeps the timer armed while tokens are in flight; an ended run's store then drops | `a_run_save_in_flight_over_a_folder_change_still_expires` | degrade count 0 (never expired) |
 
 Residual: `lost_saves` and `ended_runs` are small sets that live for the app session.
+
+## S5 (ODD flow), PR S5-1: task 5.1
+
+Strict TDD: `steps_tests.rs` (8), two runtime tests, one persist test and one app test written first against stubs (`Steps::check`/`close`/`line` inert, no `scope`/`size` parse); observed RED (6 of 8 core tests failed: no ordering, no `NoHandoff`, read-only not honoured, ledger line empty, tool parse refused), then implemented. Gates: fmt clean, clippy `-D warnings` clean, `cargo test` 7915 passed (lib) plus the integration suites.
+
+| Unit | What | Test |
+|------|------|------|
+| `core/ai/orchestra/steps.rs` | `Step` (7, ODD order), `Size`, `Grant{ReadOnly, Implement}`, `Mark`, `StepError`, `Steps` (handoff per step, closed flags, size with reason, sticky read-only, `line()` for the ledger) | `steps_tests.rs` |
+| `run.rs` | `Run::handoff_step` (order check, then record, then close; engine from the `orchestrate` roster entry, status `done`; blocked verdict while halted as for workers); `Refusal::ReadOnly` before the worker cap; ledger gets the `Steps:` line | `a_step_is_not_closed_without_its_handoff`, `steps_close_in_order`, `track_is_for_large_goals_only`, `a_read_only_goal_refuses_a_code_worker`, `the_ledger_lists_the_closed_steps_with_grant_and_size` |
+| `ledger.rs` | `Unit::Step(Step)`; `Facts.unit` replaces `worker` | existing ledger tests |
+| `tools.rs` + registry | `handoff{id xor step}`; `OrchCall::StepHandoff{step, mark, note}`; `authorize` requires `scope` (read_only/implement), `classify` requires `size` (small/large) with the `reason` as its one line; the mark on any other step, or `id` with `step`, is an extra argument | `the_handoff_tool_takes_a_step_or_a_worker_never_both` |
+| `persist.rs` | step key `orchestra/{run}/step/{step}`, title and `step:` line; no `worker:` line | `a_step_handoff_is_stored_under_its_own_stable_key` |
+| runtime | `handoff_step` acks `step X: verdict` and announces the handoff (the app stores it like a worker's, or keeps it in the ledger when degraded); out of order says `step X needs Y closed first`; `code` on a read-only goal says `code workers are not spawned for a read-only goal` | `a_step_handoff_is_acked_sent_to_the_app_and_kept_in_order`, `a_read_only_goal_refuses_a_code_worker_with_a_reason` |
+| app | transcript line `handoff step X off_course: reason`; save under the step key | `a_step_handoff_is_saved_under_its_step_key_and_off_course_is_said` |
+
+### Decisions and deviations
+- The read-only marker is chosen by the orchestrator in the `authorize` handoff (`scope`), not parsed from the goal text by lazarobox (a keyword match on user text is brittle across languages). It can only narrow: `read_only` is sticky, a later `implement` handoff does not lift it, and the default (no authorize) is the S7 behaviour where every write still waits for the user's batch review.
+- Closing a step is the act of handing it off: the handoff is recorded and the step closes in the same call; `Steps::close` still refuses a step with no handoff (core invariant), and an out-of-order handoff stores nothing.
+- `Step::Track` is refused for a goal classified `small`, and skipped in the order check for it; the "large needs its document" check beyond the track step itself is 5.2 (`FeatureDoc`).
+- Spec "Implement is a draft before S7": S7 is merged, so a `code` worker may stage under the user's batch review; no change in this PR, the playbook text is 5.2.

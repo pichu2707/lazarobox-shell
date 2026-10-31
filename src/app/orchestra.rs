@@ -262,11 +262,14 @@ impl App {
             OrchestraEvent::Handoff { run, handoff } => {
                 store = Some((run, Item::of_handoff(&handoff)));
                 if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
-                    let Unit::Worker(worker) = handoff.unit;
+                    let subject = match handoff.unit {
+                        Unit::Worker(worker) => {
+                            format!("worker {} {}", worker.0, handoff.kind.id())
+                        }
+                        Unit::Step(step) => format!("step {}", step.label()),
+                    };
                     chat.push_system_line(format!(
-                        "handoff worker {} {} {}: {}",
-                        worker.0,
-                        handoff.kind.id(),
+                        "handoff {subject} {}: {}",
                         handoff.verdict.label(),
                         handoff.reason
                     ));

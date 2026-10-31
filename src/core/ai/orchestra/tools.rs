@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 
 use super::WorkerId;
 use super::ledger::{Judgement, Verdict};
+use super::steps::{Grant, Mark, Size, Step};
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::ToolError;
 
@@ -42,6 +43,13 @@ pub enum OrchCall {
         id: WorkerId,
         note: Judgement,
     },
+    /// The orchestrator's handoff for an ODD step (S5, D15): the same tool
+    /// as a worker's, with `step` in place of `id`.
+    StepHandoff {
+        step: Step,
+        mark: Mark,
+        note: Judgement,
+    },
     /// The orchestrator is done (S4).
     Finish {
         summary: String,
@@ -56,7 +64,7 @@ impl OrchCall {
             OrchCall::Wait { .. } => "wait",
             OrchCall::Collect { .. } => "collect",
             OrchCall::Cancel { .. } => "cancel",
-            OrchCall::Handoff { .. } => "handoff",
+            OrchCall::Handoff { .. } | OrchCall::StepHandoff { .. } => "handoff",
             OrchCall::Finish { .. } => "finish",
         }
     }
@@ -75,6 +83,7 @@ impl OrchCall {
             OrchCall::Collect { id } | OrchCall::Cancel { id } | OrchCall::Handoff { id, .. } => {
                 Cow::Owned(id.0.to_string())
             }
+            OrchCall::StepHandoff { step, .. } => Cow::Borrowed(step.label()),
             OrchCall::Finish { summary } => Cow::Borrowed(summary),
         }
     }
@@ -183,7 +192,14 @@ fn wait(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
 /// `id` and the optional judgement. A wrong type is refused; a verdict that
 /// is missing or not one of the three values is `unknown`, not refused.
 fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
-    let id = worker_id(object.get("id").ok_or(OrchError::MissingArgument)?)?;
+    let target =
+        match (object.get("id"), object.get("step")) {
+            (Some(_), Some(_)) => return Err(OrchError::ExtraArgument),
+            (None, None) => return Err(OrchError::MissingArgument),
+            (Some(id), None) => Err(worker_id(id)?),
+            (None, Some(step)) => Ok(Step::parse(step.as_str().ok_or(OrchError::WrongType)?)
+                .ok_or(OrchError::WrongType)?),
+        };
     let optional = |key: &str| match object.get(key) {
         None => Ok(String::new()),
         Some(value) => value
@@ -199,8 +215,44 @@ fn handoff(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
         left: optional("left")?,
         decisions: optional("decisions")?,
     };
-    no_extra(object, object.keys().filter(|k| is_note_key(k)).count() + 1)?;
-    Ok(OrchCall::Handoff { id, note })
+    let notes = object.keys().filter(|k| is_note_key(k)).count();
+    match target {
+        Err(id) => {
+            no_extra(object, notes + 1)?;
+            Ok(OrchCall::Handoff { id, note })
+        }
+        Ok(step) => {
+            let mark = step_mark(object, step)?;
+            no_extra(object, notes + 1 + usize::from(mark != Mark::None))?;
+            Ok(OrchCall::StepHandoff { step, mark, note })
+        }
+    }
+}
+
+/// What the handoff of `step` must carry besides the note: the `scope` of
+/// `authorize`, the `size` of `classify`, nothing for the others.
+fn step_mark(object: &Map<String, Value>, step: Step) -> Result<Mark, OrchError> {
+    let value = |key: &str| -> Result<Option<&str>, OrchError> {
+        object
+            .get(key)
+            .map(|value| value.as_str().ok_or(OrchError::WrongType))
+            .transpose()
+    };
+    match step {
+        Step::Authorize => {
+            let scope = value("scope")?.ok_or(OrchError::MissingArgument)?;
+            Grant::parse(scope)
+                .map(Mark::Grant)
+                .ok_or(OrchError::WrongType)
+        }
+        Step::Classify => {
+            let size = value("size")?.ok_or(OrchError::MissingArgument)?;
+            Size::parse(size)
+                .map(Mark::Size)
+                .ok_or(OrchError::WrongType)
+        }
+        _ => Ok(Mark::None),
+    }
 }
 
 fn is_note_key(key: &str) -> bool {

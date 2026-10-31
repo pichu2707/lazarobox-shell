@@ -4,6 +4,7 @@
 
 use super::RunId;
 use super::ledger::{Handoff, Unit};
+use super::steps::Step;
 use crate::core::ai::memory::{kind::MemKind, port::Note, slug::ORCHESTRA_PREFIX};
 
 /// The pane says this once when memory was off and the run turned it on.
@@ -29,6 +30,11 @@ fn worker_key(run: RunId, worker: u32) -> String {
     format!("{ORCHESTRA_PREFIX}{}/worker/{worker}", run.0)
 }
 
+/// The key of an ODD step's handoff (S5, D15).
+fn step_key(run: RunId, step: Step) -> String {
+    format!("{ORCHESTRA_PREFIX}{}/step/{}", run.0, step.label())
+}
+
 /// The key of the run's final ledger and summary.
 fn ledger_key(run: RunId) -> String {
     format!("{ORCHESTRA_PREFIX}{}/ledger", run.0)
@@ -38,12 +44,22 @@ impl Item {
     /// The note of a handoff. The text is not redacted here: the save call
     /// redacts title and content like any note.
     pub fn of_handoff(handoff: &Handoff) -> Self {
-        let Unit::Worker(worker) = handoff.unit;
+        let (key, title, subject) = match handoff.unit {
+            Unit::Worker(worker) => (
+                worker_key(handoff.run, worker.0),
+                format!("Run {} worker {} handoff", handoff.run.0, worker.0),
+                format!("worker: {}", worker.0),
+            ),
+            Unit::Step(step) => (
+                step_key(handoff.run, step),
+                format!("Run {} step {} handoff", handoff.run.0, step.label()),
+                format!("step: {}", step.label()),
+            ),
+        };
         let content = format!(
-            "run: {}\nworker: {}\nkind: {}\nengine: {}\nstatus: {}\nverdict: {}\nreason: {}\n\
+            "run: {}\n{subject}\nkind: {}\nengine: {}\nstatus: {}\nverdict: {}\nreason: {}\n\
              done: {}\nleft: {}\ndecisions: {}",
             handoff.run.0,
-            worker.0,
             handoff.kind.id(),
             handoff.engine_model(),
             handoff.status.label(),
@@ -54,10 +70,10 @@ impl Item {
             handoff.decisions,
         );
         Self {
-            key: worker_key(handoff.run, worker.0),
+            key,
             note: Note {
                 kind: MemKind::Architecture,
-                title: format!("Run {} worker {} handoff", handoff.run.0, worker.0),
+                title,
                 content,
             },
         }

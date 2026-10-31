@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::core::ai::orchestra::steps::Grant;
 use crate::{
     core::ai::{
         Detection, EngineState, Status,
@@ -2607,6 +2608,65 @@ async fn a_handoff_is_stored_acked_and_sent_to_the_app() {
     assert_eq!(sent[0].run, run);
     assert_eq!(sent[0].verdict, Verdict::OffCourse);
     assert_eq!(sent[0].engine_model(), "codex>default");
+}
+
+fn step_call(step: Step, mark: Mark) -> OrchCall {
+    OrchCall::StepHandoff {
+        step,
+        mark,
+        note: Judgement {
+            verdict: Verdict::OnCourse,
+            reason: "fits".to_owned(),
+            done: "did it".to_owned(),
+            left: "none".to_owned(),
+            decisions: "none".to_owned(),
+        },
+    }
+}
+
+// Spec (orchestrator-handoffs, Step needs a handoff; S5): a step handoff is
+// acked and sent to the app like a worker's, and an out-of-order one is
+// refused with the step it needs, storing nothing.
+#[tokio::test]
+async fn a_step_handoff_is_acked_sent_to_the_app_and_kept_in_order() {
+    let mut lab = lab(Script::Hang);
+    let (run, handle) = lab.start(codex_review());
+    assert_eq!(
+        handle.call(step_call(Step::Explore, Mark::None)).await,
+        error("step explore needs authorize closed first")
+    );
+    assert!(handoffs(&lab.sent()).is_empty());
+    let ack = handle
+        .call(step_call(Step::Authorize, Mark::Grant(Grant::Implement)))
+        .await;
+    assert_eq!(ack, fine("step authorize: on_course"));
+    let sent = handoffs(&lab.sent());
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].run, sent[0].unit),
+        (run, Unit::Step(Step::Authorize))
+    );
+    assert_eq!(sent[0].engine_model(), "claude>opus");
+}
+
+// Spec (agent-orchestrator, Read-only goal spawns no code worker): refused
+// with a reason the orchestrator reads; no worker row appears.
+#[tokio::test]
+async fn a_read_only_goal_refuses_a_code_worker_with_a_reason() {
+    let mut lab = lab(Script::Hang);
+    let (_, handle) = lab.start(codex_review());
+    handle
+        .call(step_call(Step::Authorize, Mark::Grant(Grant::ReadOnly)))
+        .await;
+    assert_eq!(
+        handle.call(spawn(Task::Code, "edit it")).await,
+        error("code workers are not spawned for a read-only goal")
+    );
+    assert!(
+        lab.sent()
+            .iter()
+            .all(|e| !matches!(e, OrchestraEvent::Worker(_)))
+    );
 }
 
 // Spec (Handoff for a running worker is refused): a reason, no event.

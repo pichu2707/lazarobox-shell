@@ -1,5 +1,6 @@
 use super::ledger::{Handoff, Unit, Verdict};
 use super::persist::{Action, Item, RunSave};
+use super::steps::Step;
 use super::worker::WorkerStatus;
 use super::{RunId, WorkerId};
 use crate::core::ai::config::Task;
@@ -49,6 +50,23 @@ fn a_handoff_note_holds_the_run_facts_and_the_judgement_under_a_stable_key() {
     // The same worker twice is the same key: an upsert, not a second note.
     assert_eq!(Item::of_handoff(&handoff(2)).key, item.key);
     assert_ne!(Item::of_handoff(&handoff(3)).key, item.key);
+}
+
+// Spec (Step handoffs follow the same stable-key rule; S5, D15): one key per
+// run and step, an upsert on a repeat, never a worker's key.
+#[test]
+fn a_step_handoff_is_stored_under_its_own_stable_key() {
+    let mut step = handoff(1);
+    step.unit = Unit::Step(Step::Classify);
+    let item = Item::of_handoff(&step);
+    assert_eq!(item.key, "orchestra/77/step/classify");
+    assert!(valid_topic_key(&item.key));
+    assert_eq!(item.note.title, "Run 77 step classify handoff");
+    assert!(item.note.content.contains("step: classify"));
+    assert!(!item.note.content.contains("worker:"));
+    assert_eq!(Item::of_handoff(&step).key, item.key);
+    step.unit = Unit::Step(Step::Close);
+    assert_ne!(Item::of_handoff(&step).key, item.key);
 }
 
 #[test]

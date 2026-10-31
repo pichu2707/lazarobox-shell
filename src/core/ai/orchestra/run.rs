@@ -5,7 +5,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger};
-use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row};
+use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
+use super::steps::{Mark, Step, StepError, Steps};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -97,6 +98,8 @@ pub enum Refusal {
     Ended,
     /// The run already spawned as many workers as `max_workers` allows.
     WorkerCap(usize),
+    /// `authorize` made the goal read-only: no `code` worker (S5, D15).
+    ReadOnly,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -178,6 +181,8 @@ pub struct Run {
     summary: Option<String>,
     /// The orchestrator turns taken so far, the first included.
     turns: usize,
+    /// The ODD steps and their handoffs (S5).
+    steps: Steps,
 }
 
 impl Run {
@@ -195,6 +200,7 @@ impl Run {
             halted_at_cancel: false,
             summary: None,
             turns: 1,
+            steps: Steps::default(),
         }
     }
 
@@ -303,6 +309,9 @@ impl Run {
             RunState::Halted { .. } => return Err(Refusal::Paused),
             RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
             RunState::Open => {}
+        }
+        if self.steps.read_only() && task == Task::Code {
+            return Err(Refusal::ReadOnly);
         }
         if self.slots.len() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
@@ -502,12 +511,53 @@ impl Run {
         let slot = &self.slots[index(id)];
         Facts {
             run: self.id,
-            worker: id,
+            unit: Unit::Worker(id),
             kind: slot.spec.task,
             engine: slot.spec.engine.clone(),
             model: slot.spec.model.clone(),
             status: slot.status,
         }
+    }
+
+    pub fn steps(&self) -> &Steps {
+        &self.steps
+    }
+
+    #[cfg(test)]
+    pub(super) fn steps_mut(&mut self) -> &mut Steps {
+        &mut self.steps
+    }
+
+    /// Stores the orchestrator's handoff for `step` and closes it. Refused
+    /// out of order, or once the run is over; nothing is stored then. A
+    /// closed step may be handed off again: the record is replaced. The
+    /// orchestrator that writes it is the run's `orchestrate` engine.
+    pub fn handoff_step(
+        &mut self,
+        step: Step,
+        mark: Mark,
+        note: Judgement,
+    ) -> Result<Handoff, StepError> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Err(StepError::Ended);
+        }
+        self.steps.check(step)?;
+        let (engine, model) = match self.roster.get(Task::Orchestrate) {
+            Availability::Ready { engine, model } => (engine.clone(), model.clone()),
+            _ => (String::new(), None),
+        };
+        let facts = Facts {
+            run: self.id,
+            unit: Unit::Step(step),
+            kind: Task::Orchestrate,
+            engine,
+            model,
+            status: WorkerStatus::Done,
+        };
+        let handoff = Handoff::of(facts, note, self.forced_by().is_some());
+        self.steps.record(step, handoff.clone());
+        self.steps.close(step, mark)?;
+        Ok(handoff)
     }
 
     /// The workers that ended and have no handoff, oldest first.
@@ -593,7 +643,7 @@ impl Run {
             let id = WorkerId(i as u32 + 1);
             Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
         });
-        Ledger::new(goal, rows.collect())
+        Ledger::new(goal, rows.collect()).with_steps(self.steps.line())
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.
