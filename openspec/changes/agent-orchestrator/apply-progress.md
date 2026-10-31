@@ -243,3 +243,11 @@ Tasks: the S1b-2 security item (done), 3.1 first half (approval queue). Not done
 ### Recommended split for the rest of S3
 - S3b: `SessionKey` (pane or run+worker) through `Waits`, `Tagged` and the stream/tool events so a cancelled worker withdraws its own pending and queued asks (spec: cancel denies pending asks), the `worker n/m` label, and the hub/token cross-session test.
 - S3c: task 3.2 (`max_parallel`, `max_workers`, `run_timeout_mins`, siblings, retry before queued, escalating Ctrl+C cancel one/all).
+
+### S3a review fixes (RED observed before each fix)
+
+| Finding | Fix | Test | RED |
+|---------|-----|------|-----|
+| CRITICAL: a queued ask ran the shown-ask branch of `open_prompt` (re-aimed the chat, re-armed, replaced the review) | `open_prompt` touches the chat only when the new ask became the pending one; a queued ask only marks dirty | `a_queued_read_leaves_the_shown_batch_delay_and_target_alone`, `a_queued_batch_does_not_replace_the_shown_review`, `a_promoted_batch_opens_its_review_with_the_batch_delay` | all three failed with the guard disabled |
+| WARNING: queue full denied silently as `another approval is pending` | own reason `QUEUE_FULL` ("approval queue full") and a pane notice | `a_full_queue_denies_with_its_own_reason_and_a_notice`, core `the_worker_queue_is_bounded` | reason constant did not exist (compile error) |
+| SUGGESTION: user-opened review never queues | `open` queues only a tool call (`call.is_some()`) that `is_worker` | `a_labelled_orphan_review_is_refused_beside_a_pending_ask` | failed with the `call.is_some()` check removed |

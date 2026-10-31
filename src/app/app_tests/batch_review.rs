@@ -659,6 +659,80 @@ fn the_scroll_badge_does_not_cover_the_review_counter() {
 // close and quit"): the badge comes from the runtime's poll, Ctrl+G asks the
 // runtime for the review, and the same view and gate answer with an id.
 
+fn worker_batch(n: usize, label: &str) -> ApprovalAsk {
+    let doc = numbered(n).doc().clone();
+    ApprovalAsk::Batch(std::sync::Arc::new(
+        crate::core::ai::chat::review::BatchReview::labelled(doc, label.to_owned()),
+    ))
+}
+
+fn worker_read(path: &str) -> ApprovalAsk {
+    ApprovalAsk::WorkerRead {
+        path: path.to_owned(),
+        label: "w".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    }
+}
+
+// A queued ask belongs to nobody yet: it must not shorten the delay of the
+// batch on screen, nor re-aim the chat (S3a review).
+#[test]
+fn a_queued_read_leaves_the_shown_batch_delay_and_target_alone() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(5, "review claude>opus"));
+    let armed = chat(&a, id2()).armed_at();
+    let target = chat(&a, id2()).run_target();
+    NOW_MS.with(|n| n.set(n.get() + 300));
+    announce_now(&mut a, turn, 2, worker_read("/b"));
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    assert_eq!(chat(&a, id2()).run_target(), target);
+}
+
+// The user answers the batch they are looking at: a second batch queued
+// behind it does not replace the view.
+#[test]
+fn a_queued_batch_does_not_replace_the_shown_review() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(3, "first"));
+    let shown = review(&a).review().clone();
+    announce_now(&mut a, turn, 2, worker_batch(9, "second"));
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+    assert!(std::sync::Arc::ptr_eq(review(&a).review(), &shown));
+}
+
+// Answering the shown ask promotes the queued batch: its review opens and its
+// own (long) delay applies.
+#[test]
+fn a_promoted_batch_opens_its_review_with_the_batch_delay() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_read("/a"));
+    announce_now(&mut a, turn, 2, worker_batch(4, "second"));
+    assert!(chat(&a, id2()).approvals().review().is_none());
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    let now = (a.clock)();
+    assert_eq!(a.update(key('n')).len(), 1);
+    assert_eq!(review(&a).review().label(), Some("second"));
+    assert_eq!(chat(&a, id2()).armed_at(), Some(now + ARM_DELAY));
+}
+
+// A full queue is said, not swallowed: its own reason and a notice.
+#[test]
+fn a_full_queue_denies_with_its_own_reason_and_a_notice() {
+    use crate::core::ai::chat::approval::{MAX_QUEUED, QUEUE_FULL};
+    let (mut a, turn) = live();
+    for call in 0..=MAX_QUEUED as u64 {
+        assert!(announce_now(&mut a, turn, call, worker_read("/a")).is_empty());
+    }
+    let effects = announce_now(&mut a, turn, 99, worker_read("/z"));
+    assert_eq!(
+        effects,
+        vec![decision(turn, 99, Decision::Denied(QUEUE_FULL))]
+    );
+    assert!(a.notice.is_some());
+}
+
 mod orphan {
     use super::*;
     use crate::core::ai::{
@@ -721,6 +795,35 @@ mod orphan {
         // A pane that is not a chat is not a place for a badge.
         a.sync_batches(&HashMap::from([(PaneId::FIRST, Badge::Orphan(1))]));
         assert_eq!(badge(&a), None);
+    }
+
+    // A review the user opened is never a worker's ask, even when its batch
+    // carries a worker label: beside a pending ask it is refused and said.
+    #[test]
+    fn a_labelled_orphan_review_is_refused_beside_a_pending_ask() {
+        let mut a = orphaned(2);
+        let pending = chat(&a, id2()).approvals().pending().is_some();
+        assert!(!pending);
+        let mine = super::worker_read("/a");
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .approvals_mut()
+            .request(mine, crate::core::ai::chat::approval::Origin::Block)
+            .unwrap();
+        let labelled = super::worker_batch(2, "review claude>opus");
+        let ApprovalAsk::Batch(review) = labelled else {
+            unreachable!()
+        };
+        a.update(AppEvent::Batch(
+            id2(),
+            BatchEvent::Review(batch_id(), review),
+        ));
+        assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+        assert_eq!(
+            a.notice.as_deref(),
+            Some(crate::core::ai::chat::approval::ANOTHER_PENDING)
+        );
     }
 
     #[test]

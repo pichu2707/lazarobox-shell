@@ -61,6 +61,9 @@ pub const ANOTHER_PENDING: &str = "another approval is pending";
 /// with [`ANOTHER_PENDING`], so a flood never grows without limit.
 pub const MAX_QUEUED: usize = 16;
 
+/// The reason given to a worker ask that finds the queue full.
+pub const QUEUE_FULL: &str = "approval queue full";
+
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
 
@@ -864,9 +867,16 @@ impl Approvals {
         call: Option<(u64, CallId)>,
         why: Option<String>,
     ) -> Result<u64, Refusal> {
-        let queues = ask.is_worker() && self.queue.len() < MAX_QUEUED;
-        if self.pending.is_some() && !queues {
-            return Err(Refusal::new(ANOTHER_PENDING));
+        // Only a tool call (it has a call) queues: a review the user opened
+        // is never a worker's ask, whatever its label.
+        let worker = call.is_some() && ask.is_worker();
+        if self.pending.is_some() {
+            if !worker {
+                return Err(Refusal::new(ANOTHER_PENDING));
+            }
+            if self.queue.len() >= MAX_QUEUED {
+                return Err(Refusal::new(QUEUE_FULL));
+            }
         }
         let id = next_id();
         let approval = Approval {
@@ -1760,7 +1770,7 @@ mod tests {
         let err = a
             .request_call(worker_read("z", "w"), 1, CallId(999), None)
             .unwrap_err();
-        assert_eq!(err.reason(), ANOTHER_PENDING);
+        assert_eq!(err.reason(), QUEUE_FULL);
         assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
