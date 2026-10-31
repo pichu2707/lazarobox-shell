@@ -56,13 +56,13 @@ unreleased="$(awk '
 ' "$changelog")"
 
 # Headings and blank lines are not entries.
-if ! printf '%s\n' "$unreleased" | grep -qvE '^([[:space:]]*|### .*)$'; then
+if ! grep -qvE '^([[:space:]]*|### .*)$' <<<"$unreleased"; then
   echo "[Unreleased] in $changelog has no entries; nothing to release" >&2
   exit 1
 fi
 
 if [ "$bump" = auto ]; then
-  if printf '%s\n' "$unreleased" | grep -q '^### Added'; then bump="minor"; else bump="patch"; fi
+  if grep -qE '^### Added[[:space:]]*$' <<<"$unreleased"; then bump="minor"; else bump="patch"; fi
 fi
 
 case "$bump" in

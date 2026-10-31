@@ -60,6 +60,24 @@ Review the entries in `[Unreleased]` by hand before releasing: the script moves
 them as they are. The script is `.github/scripts/prepare-release.sh`, with
 tests in `.github/scripts/tests/` that run in CI.
 
+### If a release fails after `prepare`
+
+Once `prepare` succeeds, the version commit and the tag are already on `main`,
+so a later failure (a new clippy lint in the gate, a crates.io hiccup) leaves
+the release half done. Do not dispatch again: `[Unreleased]` is now empty and
+the version commit has no CI run, so `prepare` refuses.
+
+- A flaky failure: open the run and use **Re-run failed jobs**. The jobs keep
+  `prepare`'s outputs, and `publish` skips a version already on crates.io.
+- A real fix is needed and the version is not on crates.io yet: delete the
+  tag (`git push origin :refs/tags/vX.Y.Z`), merge the fix to `main` with its
+  entry under the `## [X.Y.Z]` section, wait for CI, then tag the new `main`
+  commit and push it to run the tag path
+  (`git tag -f vX.Y.Z origin/main && git push origin vX.Y.Z`). `Cargo.toml`
+  already says `X.Y.Z`, so the tag check passes.
+- The version is already on crates.io: it can never be replaced. Merge the
+  fix with an `[Unreleased]` entry and release it as the next patch.
+
 ## Manual release (fallback)
 
 Pushing a tag still works exactly as before and runs the same verify, gate,

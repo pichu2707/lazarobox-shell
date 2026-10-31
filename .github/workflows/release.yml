@@ -30,9 +30,10 @@ permissions:
   contents: read
 
 # Never cancel a release halfway: a half-published release is worse than a
-# queued one. One group for every trigger, so two releases never overlap.
+# queued one. Grouped by ref: every dispatch runs on main and shares a group,
+# while each pushed tag keeps its own, so a second queued tag is never dropped.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -128,7 +129,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore(release): v${VERSION}"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v${VERSION}"
           git tag "$TAG"
           git push --atomic origin HEAD:refs/heads/main "refs/tags/${TAG}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
