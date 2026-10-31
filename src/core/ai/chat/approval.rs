@@ -21,6 +21,7 @@ use crate::core::ai::{
         review_view::ReviewView,
     },
     config::{ApprovalMode, Task},
+    orchestra::WorkerKey,
     sanitize::clean,
     tools::{
         Call, Locality, allow,
@@ -108,6 +109,8 @@ pub enum ApprovalAsk {
     WorkerRead {
         path: String,
         label: String,
+        /// The worker that asks: the session the answer is addressed to.
+        worker: WorkerKey,
         reach: Reach,
         cloud: bool,
     },
@@ -223,6 +226,17 @@ impl ApprovalAsk {
             Self::WorkerRead { .. } => true,
             Self::Batch(review) => review.label().is_some(),
             _ => false,
+        }
+    }
+
+    /// The worker whose session the ask belongs to, `None` for a chat's own.
+    /// The answer, and the withdrawal when the worker ends, are addressed to
+    /// that session and no other.
+    pub fn worker(&self) -> Option<WorkerKey> {
+        match self {
+            Self::WorkerRead { worker, .. } => Some(*worker),
+            Self::Batch(review) => review.worker(),
+            _ => None,
         }
     }
 
@@ -1042,6 +1056,7 @@ mod tests {
             (Reach::Other, false),
         ] {
             let worker = ApprovalAsk::WorkerRead {
+                worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
                 path: "~/a".into(),
                 label: "review claude>opus".into(),
                 reach,
@@ -1533,6 +1548,7 @@ mod tests {
         // A worker's read outside its run's scope follows the same table
         // (agent-orchestrator, Outside read follows the mode as a chat read).
         let worker = |reach, cloud| ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
             path: "~/a".into(),
             label: "review claude>opus".into(),
             reach,
@@ -1683,6 +1699,7 @@ mod tests {
 
     fn worker_read(path: &str, label: &str) -> ApprovalAsk {
         ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
             path: path.into(),
             label: label.into(),
             reach: Reach::Other,

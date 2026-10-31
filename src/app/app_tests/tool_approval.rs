@@ -76,6 +76,18 @@ pub(super) fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> V
 pub(super) fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
     Effect::ToolDecision {
         pane: id2(),
+        worker: None,
+        turn,
+        call: CallId(call),
+        decision,
+    }
+}
+
+/// The answer to a worker's call: addressed to the worker's session.
+pub(super) fn worker_decision(turn: u64, call: u64, decision: Decision) -> Effect {
+    Effect::ToolDecision {
+        pane: id2(),
+        worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
         turn,
         call: CallId(call),
         decision,
@@ -147,6 +159,7 @@ fn a_read_ask_shows_read_and_the_path() {
 fn a_worker_read_ask_shows_the_label_and_the_path() {
     let (mut a, turn) = live();
     let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: "/home/u/dev/other/a.rs".to_owned(),
         label: "review claude>opus".to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -168,6 +181,7 @@ fn the_screen_shows_a_worker_read_prompt_with_its_label() {
     use ratatui::{Terminal, backend::TestBackend};
     let (mut a, turn) = live();
     let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: "~/dev/other/a.rs".to_owned(),
         label: "review claude>opus".to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -323,11 +337,132 @@ fn a_second_ask_is_denied_at_once_and_the_first_stays() {
 
 fn worker_read(path: &str, label: &str) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: path.to_owned(),
         label: label.to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
         cloud: true,
     }
+}
+
+fn worker_read_of(worker: u32, path: &str) -> ApprovalAsk {
+    let ApprovalAsk::WorkerRead {
+        path, reach, cloud, ..
+    } = worker_read(path, &format!("{worker}/3 review claude>opus"))
+    else {
+        unreachable!()
+    };
+    ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+        label: format!("{worker}/3 review claude>opus"),
+        path,
+        reach,
+        cloud,
+    }
+}
+
+fn worker_over(a: &mut App, worker: u32, status: crate::core::ai::orchestra::worker::WorkerStatus) {
+    use crate::core::ai::{
+        config::Task,
+        orchestra::{
+            RunId, WorkerId,
+            event::{OrchestraEvent, WorkerRow},
+        },
+    };
+    a.update(AppEvent::Orchestra(
+        id2(),
+        OrchestraEvent::Worker(WorkerRow {
+            run: RunId(1),
+            id: WorkerId(worker),
+            kind: Task::Review,
+            engine: "claude".into(),
+            model: Some("opus".into()),
+            status,
+            elapsed: None,
+            usage: None,
+            partial: false,
+            overridden: false,
+        }),
+    ));
+}
+
+// Spec (agent-orchestrator, Cancel denies pending asks; chat-pane, Approval
+// label and queue): worker 2 has the shown ask and a queued one, worker 1 one
+// in between. Worker 2 ending takes both of its asks and nothing of worker
+// 1's, which is promoted and armed afresh.
+#[test]
+fn a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(1, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(2, "/c"));
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 2/3 review"), "{shown:?}");
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let now = a.approval_prompt(id2()).unwrap();
+    assert!(now.target.contains("worker 1/3 review"), "{now:?}");
+    assert!(
+        !now.target.contains("waiting"),
+        "worker 2's queued ask went: {now:?}"
+    );
+    assert!(!now.armed, "the promoted ask is armed afresh");
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
+            turn,
+            call: CallId(2),
+            decision: Decision::Sent,
+        }]
+    );
+}
+
+// A worker's ask that reaches the app after the worker's terminal row (it
+// was announced just as the worker was cancelled) is refused, never shown; a
+// retry of the worker (running again) asks normally.
+#[test]
+fn an_ask_that_arrives_after_its_worker_ended_is_refused_unseen() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let effects = announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    assert_eq!(
+        effects,
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 2)),
+            turn,
+            call: CallId(1),
+            decision: Decision::Denied("the worker already ended"),
+        }]
+    );
+    assert_eq!(pending(&a), None);
+    worker_over(&mut a, 2, WorkerStatus::Running);
+    assert!(announce(&mut a, turn, 2, worker_read_of(2, "/b")).is_empty());
+    assert!(pending(&a).is_some());
+}
+
+// Another worker ending leaves the shown prompt and the queue as they are.
+#[test]
+fn another_worker_ending_leaves_the_shown_ask_and_the_queue_alone() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(1, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(2, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(3, "/c"));
+    let armed = chat(&a, id2()).armed_at();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 1/3 review"), "{shown:?}");
+    assert!(shown.target.contains("1 waiting"), "{shown:?}");
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    // A running or queued row of any worker withdraws nothing.
+    worker_over(&mut a, 3, WorkerStatus::Running);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
 }
 
 // Spec (agent-tools, FIFO order; chat-pane, Approval label and queue): worker
@@ -342,7 +477,10 @@ fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
     let first = a.approval_prompt(id2()).unwrap();
     assert!(first.target.contains("review claude>opus"), "{first:?}");
     assert!(first.target.contains("1 waiting"), "{first:?}");
-    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![worker_decision(turn, 1, Decision::Sent)]
+    );
     let second = a.approval_prompt(id2()).unwrap();
     assert!(second.target.contains("general codex>x"), "{second:?}");
     assert!(!second.target.contains("waiting"), "{second:?}");
@@ -354,7 +492,11 @@ fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
     NOW_MS.with(|n| n.set(n.get() + 1_000));
     assert_eq!(
         a.update(key('n')),
-        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+        vec![worker_decision(
+            turn,
+            2,
+            Decision::Denied("the user declined")
+        )]
     );
     assert_eq!(pending(&a), None);
 }
@@ -496,7 +638,7 @@ fn turning_tools_off_denies_the_queued_worker_asks_too() {
     a.ai.set_tools_enabled(false);
     let effects = a.sync_tools();
     for call in [1, 2] {
-        let denied = decision(turn, call, Decision::Denied("tools are off"));
+        let denied = worker_decision(turn, call, Decision::Denied("tools are off"));
         assert!(effects.contains(&denied), "{call}: {effects:?}");
     }
     assert_eq!(pending(&a), None);
@@ -656,6 +798,7 @@ fn a_chat_whose_tab_has_no_shell_denies_a_run() {
         effects,
         vec![Effect::ToolDecision {
             pane: chat_pane,
+            worker: None,
             turn,
             call: CallId(1),
             decision: Decision::Denied("there is no shell pane in this tab"),
@@ -812,6 +955,7 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
         for effect in effects {
             if let Effect::ToolDecision {
                 pane,
+                worker: None,
                 turn,
                 call,
                 decision,
@@ -1489,6 +1633,7 @@ mod root_reads {
             for effect in effects {
                 if let Effect::ToolDecision {
                     pane,
+                    worker: None,
                     turn,
                     call,
                     decision,

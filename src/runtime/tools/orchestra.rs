@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     core::ai::{
-        orchestra::{RunId, WorkerId, changes::Change, tools::OrchCall},
+        orchestra::{RunId, WorkerId, WorkerKey, changes::Change, tools::OrchCall},
         tools::paths::SecretRoots,
     },
     runtime::mcp::Outcome,
@@ -51,6 +51,13 @@ pub trait Orchestra: Send + Sync {
         false
     }
 
+    /// How many workers `run` has so far, for the `n/m` of a worker's label.
+    /// `0` (the default) when it is not known: the label then counts only up
+    /// to the asking worker.
+    fn workers(&self, _run: RunId) -> usize {
+        0
+    }
+
     /// The host staged `change` for `worker` of `run`: its change ledger
     /// records it (S7). Nothing is written by it.
     fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
@@ -74,4 +81,21 @@ pub struct WorkerScope {
     /// `<kind> <engine>><model>`, already sanitized for display
     /// (`approval::worker_label`).
     pub label: String,
+}
+
+impl WorkerScope {
+    /// The session the worker's asks belong to.
+    pub fn key(&self) -> WorkerKey {
+        WorkerKey {
+            run: self.run,
+            worker: self.worker,
+        }
+    }
+
+    /// The label its asks show: `n/m <kind> <engine>><model>`, worker `n` of
+    /// the `m` the run has now.
+    pub fn ask_label(&self) -> String {
+        let of = self.handle.workers(self.run).max(self.worker.0 as usize);
+        format!("{}/{of} {}", self.worker.0, self.label)
+    }
 }

@@ -3,7 +3,7 @@
 //! that rejects the whole batch.
 
 use super::chat_live::{ctrl, plain};
-use super::tool_approval::{announce_now, chat, decision, live, pending, result};
+use super::tool_approval::{announce_now, chat, decision, live, pending, result, worker_decision};
 use super::*;
 use crate::app::tool::DECLINED;
 use crate::core::ai::chat::{
@@ -662,12 +662,17 @@ fn the_scroll_badge_does_not_cover_the_review_counter() {
 fn worker_batch(n: usize, label: &str) -> ApprovalAsk {
     let doc = numbered(n).doc().clone();
     ApprovalAsk::Batch(std::sync::Arc::new(
-        crate::core::ai::chat::review::BatchReview::labelled(doc, label.to_owned()),
+        crate::core::ai::chat::review::BatchReview::labelled(
+            doc,
+            label.to_owned(),
+            crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        ),
     ))
 }
 
 fn worker_read(path: &str) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: path.to_owned(),
         label: "w".to_owned(),
         reach: crate::core::ai::chat::approval::Reach::Other,
@@ -728,7 +733,7 @@ fn a_full_queue_denies_with_its_own_reason_and_a_notice() {
     let effects = announce_now(&mut a, turn, 99, worker_read("/z"));
     assert_eq!(
         effects,
-        vec![decision(turn, 99, Decision::Denied(QUEUE_FULL))]
+        vec![worker_decision(turn, 99, Decision::Denied(QUEUE_FULL))]
     );
     assert!(a.notice.is_some());
 }

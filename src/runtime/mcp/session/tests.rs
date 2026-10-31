@@ -1007,6 +1007,38 @@ async fn each_worker_gets_its_own_socket_and_token_named_by_run_and_worker() {
     assert!(!two.socket.exists() && !a.socket.exists() && !b.socket.exists());
 }
 
+// Spec (agent-tools, Cross-session call refused): with two worker sessions,
+// a call made with the other's token is refused and reaches neither
+// dispatch; each token still reaches its own worker's dispatch only.
+#[tokio::test]
+async fn a_workers_token_reaches_no_other_workers_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = worker_hub(tmp.path());
+    let (fake_one, fake_two) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let open = |hub: &mut Hub<WorkerKey>, key, fake: &Arc<Fake>| {
+        hub.open(
+            key,
+            fake.clone(),
+            Slot::default(),
+            Toolset::ReadOnly.families(),
+        )
+        .unwrap()
+    };
+    let one = open(&mut hub, worker(1, 1), &fake_one);
+    let two = open(&mut hub, worker(1, 2), &fake_two);
+    let call = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#;
+    let mut crossed = connect(&two.socket).await;
+    send(&mut crossed, &hello(one.token.reveal())).await;
+    send(&mut crossed, call).await;
+    assert_eq!(recv(&mut crossed).await, None, "refused and closed");
+    assert!(fake_one.0.lock().unwrap().is_empty() && fake_two.0.lock().unwrap().is_empty());
+    let mut own = ready(&two).await;
+    send(&mut own, call).await;
+    assert!(recv(&mut own).await.is_some());
+    assert_eq!(fake_two.0.lock().unwrap().len(), 1);
+    assert!(fake_one.0.lock().unwrap().is_empty());
+}
+
 // A pane and a worker may share a folder: their names never meet.
 #[tokio::test]
 async fn a_pane_socket_and_a_worker_socket_do_not_collide() {

@@ -391,8 +391,9 @@ fn worker_ask(home: &Path, path: &str) -> ApprovalAsk {
 /// engine or not.
 fn worker_ask_as(home: &Path, path: &str, reach: Reach, cloud: bool) -> ApprovalAsk {
     ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
         path: home.join(path).to_str().unwrap().to_owned(),
-        label: "review claude>opus".into(),
+        label: "1/1 review claude>opus".into(),
         reach,
         cloud,
     }
@@ -738,7 +739,10 @@ async fn a_denied_or_expired_scope_asks() {
         scope.approver = approver.clone();
         let out = host.dispatch(scope).call(read("~/dev/app/a.rs")).await;
         let (_, ask, status, _) = pair(&events(&mut rx));
-        let want = worker_ask(&home, "dev/app/a.rs");
+        let mut want = worker_ask(&home, "dev/app/a.rs");
+        if let (ApprovalAsk::WorkerRead { worker, .. }, "another run") = (&mut want, case) {
+            worker.run = RunId(2);
+        }
         assert_eq!(ask.as_ref(), Some(&want), "{case}");
         assert_eq!(*approver.asked.lock().unwrap(), [want], "{case}");
         assert!(out.text.contains("inside the scope"), "{case}: {out:?}");
@@ -964,6 +968,39 @@ async fn a_cancelled_workers_pending_read_ends_denied() {
     }
 }
 
+// Spec (agent-orchestrator, Cancel denies pending asks): a worker ended while
+// its ask waits for room in the events channel is not announced at all: the
+// user is never shown a prompt nobody can answer.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_ended_before_its_ask_is_announced_never_shows_it() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let waits = Waits::new();
+    let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+    let (mut scope, _rx) = worker(Locality::Cloud, &home, Scoped::over(&home, &["~/dev/app"]));
+    let session = crate::core::ai::orchestra::SessionKey::Worker(PANE, key);
+    scope.approver = waits.approver(session, TURN, Pending::new());
+    // A channel with no room: the announcement has to wait for a slot.
+    let (tx, mut rx) = mpsc::channel(2);
+    for _ in 0..2 {
+        tx.send(StreamEvent::Notice("full".into())).await.unwrap();
+    }
+    scope.events = tx;
+    let task = tokio::spawn(host.dispatch(scope).call(read("~/dev/other/a.rs")));
+    while waits.registered() == 0 {
+        tokio::task::yield_now().await;
+    }
+    waits.end_worker(PANE, key);
+    for _ in 0..2 {
+        assert!(matches!(next(&mut rx).await, StreamEvent::Notice(_)));
+    }
+    let out = task.await.unwrap();
+    assert!(out.is_error, "{out:?}");
+    assert!(rx.try_recv().is_err(), "no ToolCall was announced");
+}
+
 /// A `code` worker turn of pane [`PANE`] in `~/dev/app`: the read and write
 /// families and the pane's batch, as the run manager opens it (S7).
 fn writer(
@@ -1055,7 +1092,7 @@ async fn a_worker_write_in_scope_is_staged_and_only_the_users_review_writes_it()
     let [ApprovalAsk::Batch(review)] = asked.as_slice() else {
         panic!("{asked:?}");
     };
-    assert_eq!(review.label(), Some("review claude>opus"));
+    assert_eq!(review.label(), Some("1/1 review claude>opus"));
     assert!(
         !app.join("new.rs").exists(),
         "the approval mode wrote nothing"

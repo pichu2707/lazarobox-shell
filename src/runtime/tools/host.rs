@@ -47,7 +47,10 @@ use crate::{
             approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
-        orchestra::tools::{OrchCall, WAIT_MAX_SECS},
+        orchestra::{
+            WorkerKey,
+            tools::{OrchCall, WAIT_MAX_SECS},
+        },
         tools::{
             Call, Locality, ToolError, command,
             edit::EditError,
@@ -80,6 +83,23 @@ pub const NOT_APPROVED: &str = "the user did not approve it";
 /// when the future is first polled could miss it.
 pub trait Approver: Send + Sync {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer>;
+
+    /// The approver of one worker of this turn's run, whose asks wait under
+    /// the worker's own session. `None` when the approver keeps no sessions:
+    /// the worker then asks through this one.
+    fn for_worker(&self, _key: WorkerKey) -> Option<Arc<dyn Approver>> {
+        None
+    }
+
+    /// The worker ended or was cancelled: its asks are denied, the other
+    /// workers' are not touched.
+    fn end_worker(&self, _key: WorkerKey) {}
+
+    /// Whether this approver's worker session is over (cancelled, or replaced
+    /// by a retry): its asks are denied unseen and must not be announced.
+    fn is_over(&self) -> bool {
+        false
+    }
 }
 
 /// The approver of a turn that has none: it denies every call. A turn that
@@ -439,11 +459,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     let env = host.env(&scope.origin);
                     scoped = super::in_scope(worker, env, path, &host.limits).await;
                 }
-                let label = worker.as_ref().map(|worker| worker.label.clone());
+                let label = worker
+                    .as_ref()
+                    .map(|worker| (worker.ask_label(), worker.key()));
                 let read = |path: String, reach: Reach, cloud: bool| match &label {
-                    Some(label) => ApprovalAsk::WorkerRead {
+                    Some((label, key)) => ApprovalAsk::WorkerRead {
                         path,
                         label: label.clone(),
+                        worker: *key,
                         reach,
                         cloud,
                     },
@@ -562,6 +585,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let Ok(slot) = scope.events.clone().reserve_owned().await else {
         return gone();
     };
+    // The worker's session ended while the slot was awaited (a cancel): the
+    // wait is already denied, so nothing is announced that the user could be
+    // shown and never answer. The slot drops unused.
+    if pending.is_some() && scope.approver.is_over() {
+        return gone();
+    }
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),

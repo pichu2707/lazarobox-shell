@@ -13,9 +13,10 @@ use crate::core::ai::{
     },
     config::Assignment,
     orchestra::{
-        Toolset,
+        Toolset, WorkerKey,
         overrides::{Change, FailurePicker, Picked},
         run::Roster,
+        worker::WorkerStatus,
     },
 };
 
@@ -38,6 +39,7 @@ const RETRY_AGAIN: &str = "r try again";
 /// Said when the run manager is not attached: the answer was not applied.
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
 /// Said when the run manager dropped an answer: its run is over.
+const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
 /// What the chat footer says about ORCH while the gate is on.
@@ -85,8 +87,19 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A worker that is over takes its waiting asks with it.
+        let mut over = None;
         match event {
             OrchestraEvent::Worker(mut row) => {
+                let key = WorkerKey {
+                    run: row.run,
+                    worker: row.id,
+                };
+                let is_over = !matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running);
+                chat.set_worker_over(key, is_over);
+                if is_over {
+                    over = Some(key);
+                }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
                 let menu = self.ai.resolve(row.kind).0.engine;
@@ -136,6 +149,9 @@ impl App {
                 chat.undo_override();
                 chat.push_system_line(MOVED_ON.to_owned());
             }
+            OrchestraEvent::AnswerLost => {
+                chat.push_system_line(ANSWER_LOST.to_owned());
+            }
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
                 chat.push_system_line(NO_ORCHESTRA.to_owned());
@@ -148,6 +164,9 @@ impl App {
                     chat.set_orch_run(None);
                 }
             }
+        }
+        if let Some(key) = over {
+            self.withdraw_worker(id, key);
         }
         self.dirty = true;
         Vec::new()

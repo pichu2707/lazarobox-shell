@@ -31,7 +31,7 @@ use crate::core::{
             port::{MemCmd, MemReply, Reason},
         },
         ollama_lib::{self, Pull},
-        orchestra::{RunId, event::OrchestraEvent, run::UserChoice},
+        orchestra::{RunId, WorkerKey, event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -358,6 +358,8 @@ pub enum Effect {
     /// ended meanwhile ignores it.
     ToolDecision {
         pane: PaneId,
+        /// The worker session the call belongs to; `None` for the chat's own.
+        worker: Option<WorkerKey>,
         turn: u64,
         call: CallId,
         decision: Decision,

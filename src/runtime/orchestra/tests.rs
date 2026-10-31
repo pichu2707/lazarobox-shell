@@ -24,7 +24,7 @@ use crate::{
         },
         config::{AiConfig, Assignment, DEFAULT_WORKER_TIMEOUT_SECS},
         jail::{Backend, JailOff, JailSupport},
-        orchestra::{Toolset, run::UserChoice},
+        orchestra::{SessionKey, Toolset, WorkerKey, run::UserChoice},
         tools::{label, registry::FamilySet},
     },
     runtime::tools::{Limits, Unwired, Waits},
@@ -53,6 +53,8 @@ enum Script {
     Hang,
     /// The first turn fails with the message; later turns answer `fixed`.
     FailOnce(&'static str),
+    /// Fails the first turn, then hangs every later one.
+    FailThenHang(&'static str),
     /// The first turn hangs; later turns answer `fixed`.
     HangOnce,
     /// The first two turns fail with these messages, in order; later turns
@@ -119,6 +121,10 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                 Script::FailOnce(error) if first => {
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
                 }
+                Script::FailThenHang(error) if first => {
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::FailThenHang(_) => return std::future::pending().await,
                 Script::HangOnce if first => {
                     let _dropped = OnDrop(mine);
                     return std::future::pending().await;
@@ -337,6 +343,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Declined { .. }
         | OrchestraEvent::Dropped { .. }
         | OrchestraEvent::Unavailable
+        | OrchestraEvent::AnswerLost
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1081,6 +1088,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             OrchestraEvent::Halted { .. }
             | OrchestraEvent::Declined { .. }
             | OrchestraEvent::Dropped { .. }
+            | OrchestraEvent::AnswerLost
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -1119,6 +1127,98 @@ async fn retry_relaunches_the_same_spec_with_the_error_wrapped() {
     assert_eq!(statuses, [Running, Failed, Running, Done]);
     let collected = handle.call(collect(1)).await;
     assert!(collected.text.contains("fixed"), "{collected:?}");
+}
+
+// Spec (agent-orchestrator, Cancel denies pending asks): a failed worker keeps
+// its key when retried, so the session its first attempt closed must be open
+// again for the retry: the retry's ask waits for the user (it is not denied
+// as the first attempt's leftover), and answering it under the worker works.
+#[tokio::test]
+async fn a_retried_workers_ask_waits_under_the_revived_session() {
+    let mut lab = lab_with(Script::FailThenHang("409 conflict: session busy"), tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    let request = loop {
+        if let Some(second) = lab.seen.requests().into_iter().nth(1) {
+            break second;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &request.tools
+    else {
+        panic!("{:?}", request.tools);
+    };
+    let mut client = ready(wire).await;
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+    client
+        .1
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let Some(StreamEvent::ToolCall { id, .. }) = timeout(Duration::from_secs(5), lab.turn.1.recv())
+        .await
+        .unwrap()
+    else {
+        panic!("no ask");
+    };
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(
+        waits.decide(worker, 7, id, Decision::Denied("no")),
+        "it waited"
+    );
+}
+
+// Spec (agent-orchestrator, Cancel): cancelling the run closes every worker
+// session through `end`, so a worker's late ask is denied unseen and `finish`
+// of an aborted turn, which finds no run, has nothing left to close.
+#[tokio::test]
+async fn a_run_cancelled_closes_its_workers_sessions_for_good() {
+    let lab = lab(Script::Hang);
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    lab.seen.first().await;
+    lab.manager.cancel(pane());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let key = WorkerKey {
+        run,
+        worker: WorkerId(1),
+    };
+    let late = waits
+        .approver(SessionKey::Worker(pane(), key), 7, Pending::new())
+        .ask(
+            crate::core::ai::chat::engine::CallId(1),
+            &ApprovalAsk::read("/a"),
+        );
+    assert_eq!(
+        late.now_or_never(),
+        Some(Decision::Denied(crate::runtime::tools::approver::ENDED).into())
+    );
 }
 
 // Spec (agent-orchestrator, Retry relaunches the same spec; user decision
@@ -1446,7 +1546,7 @@ async fn cancelling_a_finished_worker_says_it_already_ended() {
 
 // Spec (tasks.md 1d.3b; agent-tools, worker read outside the scope): a
 // worker's read outside its run's scope reaches the orchestrator turn's
-// approver as `WorkerRead` with the worker's label; cancelling the run
+// approver as `WorkerRead` with the worker's `n/m` label; cancelling the run
 // denies it, nothing is opened, and no wait is left for an answer.
 #[tokio::test]
 async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_it() {
@@ -1459,8 +1559,9 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
         pending,
         ..lab.scope(codex_review(), &[])
     };
-    let (_, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     handle.call(spawn(Task::Review, "check")).await;
+    handle.call(spawn(Task::Review, "queued")).await;
     let request = lab.seen.first().await;
     let Tools::On {
         mcp: Some(wire), ..
@@ -1482,11 +1583,16 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     else {
         panic!("no ask");
     };
-    let label = worker_label(Task::Review, "codex", "default");
+    // Spec (chat-pane, Label shown): worker 1 of the 2 the run has so far.
+    let label = format!("1/2 {}", worker_label(Task::Review, "codex", "default"));
     let path = lab.home.path().join("notes.txt");
     let expected = ApprovalAsk::WorkerRead {
         path: path.to_str().unwrap().into(),
         label,
+        worker: WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
         reach: Reach::Broad,
         cloud: true,
     };
@@ -1507,7 +1613,74 @@ async fn a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_
     assert!(killed(&lab.seen).await, "the worker's process is killed");
     use WorkerStatus::*;
     let story = story(&lab.sent());
-    assert_eq!(story, [(1, Some(Running)), (1, Some(Cancelled)), (0, None)]);
+    let rows = [
+        (1, Some(Running)),
+        (2, Some(Queued)),
+        (1, Some(Cancelled)),
+        (2, Some(Cancelled)),
+        (0, None),
+    ];
+    assert_eq!(story, rows);
+}
+
+// Spec (agent-tools, Cross-session call refused; agent-orchestrator, Cancel
+// denies pending asks): a worker's ask waits under the worker's own session,
+// so the orchestrator's session cannot answer it, and cancelling the worker
+// leaves no wait for it.
+#[tokio::test]
+async fn a_worker_ask_waits_under_its_own_session_and_cancelling_it_denies_the_ask() {
+    let mut lab = lab_with(Script::Hang, tooled);
+    std::fs::write(lab.home.path().join("notes.txt"), "TOP-SECRET").unwrap();
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let scope = OrchScope {
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    let request = lab.seen.first().await;
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &request.tools
+    else {
+        panic!("{:?}", request.tools);
+    };
+    let mut client = ready(wire).await;
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "read_file", "arguments": {"path": "~/notes.txt"}}});
+    client
+        .1
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
+    let asked = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+    let Some(StreamEvent::ToolCall { id, .. }) = asked.unwrap() else {
+        panic!("no ask");
+    };
+    assert!(
+        !waits.decide(pane(), 7, id, Decision::Sent),
+        "the orchestrator's session cannot answer a worker's ask"
+    );
+    let cancelled = handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert_eq!(cancelled, fine("worker 1: cancelled"));
+    let result = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+    let Some(StreamEvent::ToolResult { id: of, status, .. }) = result.unwrap() else {
+        panic!("no result");
+    };
+    assert_eq!((of, status), (id, ToolStatus::Denied));
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(
+        !waits.decide(worker, 7, id, Decision::Sent),
+        "no wait is left"
+    );
 }
 
 // Spec (agent-orchestrator, Ctrl+C cancels all): with an orchestrator turn
@@ -1943,6 +2116,10 @@ impl Lab {
     }
 
     fn start_writing(&self, waits: &Arc<Waits>, deadline: Duration) -> OrchHandle {
+        self.start_writing_run(waits, deadline).1
+    }
+
+    fn start_writing_run(&self, waits: &Arc<Waits>, deadline: Duration) -> (RunId, OrchHandle) {
         let pending = Pending::new();
         let scope = OrchScope {
             origin: self.app(),
@@ -1951,7 +2128,7 @@ impl Lab {
             deadline,
             ..self.scope(codex_code(), &["~/dev/app"])
         };
-        self.manager.start(pane(), scope).unwrap().1
+        self.manager.start(pane(), scope).unwrap()
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
@@ -2084,7 +2261,7 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
     for answer in [Decision::Unprompted, Decision::Sent] {
         let mut lab = writing_lab(Script::Held("done"));
         let waits = Waits::new();
-        let handle = lab.start_writing(&waits, TEN_MINUTES);
+        let (run, handle) = lab.start_writing_run(&waits, TEN_MINUTES);
         handle.call(spawn(Task::Code, "write a")).await;
         let mut client = worker_client(&lab.seen).await;
         let call = tool_call(
@@ -2107,7 +2284,7 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
                     let ApprovalAsk::Batch(review) = *ask else {
                         panic!("{ask:?}");
                     };
-                    assert_eq!(review.label(), Some("code codex>default"));
+                    assert_eq!(review.label(), Some("1/1 code codex>default"));
                     break id;
                 }
                 _ => continue,
@@ -2117,7 +2294,14 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
             !lab.app().join("a.txt").exists(),
             "nothing before the answer"
         );
-        assert!(waits.decide(pane(), 7, id, answer));
+        let worker = SessionKey::Worker(
+            pane(),
+            WorkerKey {
+                run,
+                worker: WorkerId(1),
+            },
+        );
+        assert!(waits.decide(worker, 7, id, answer));
         let mut reply = String::new();
         let read = timeout(Duration::from_secs(5), client.0.read_line(&mut reply));
         read.await.unwrap().unwrap();

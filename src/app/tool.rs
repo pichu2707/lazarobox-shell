@@ -27,6 +27,7 @@ use crate::core::ai::{
 pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
+const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
@@ -62,6 +63,7 @@ impl App {
         let (turn, call) = approval.call()?;
         Some(Effect::ToolDecision {
             pane,
+            worker: approval.ask().worker(),
             turn,
             call,
             decision,
@@ -69,8 +71,20 @@ impl App {
     }
 
     pub(super) fn deny(pane: PaneId, turn: u64, call: CallId, reason: &'static str) -> Vec<Effect> {
+        Self::deny_for(pane, None, turn, call, reason)
+    }
+
+    /// [`App::deny`] for a call of `worker`'s session.
+    pub(super) fn deny_for(
+        pane: PaneId,
+        worker: Option<WorkerKey>,
+        turn: u64,
+        call: CallId,
+        reason: &'static str,
+    ) -> Vec<Effect> {
         vec![Effect::ToolDecision {
             pane,
+            worker,
             turn,
             call,
             decision: Decision::Denied(reason),
@@ -111,7 +125,9 @@ impl App {
                 Vec::new()
             }
             Some(ToolEvent::Ask(call, ask)) if live => self.on_tool_ask(id, turn, call, ask),
-            Some(ToolEvent::Ask(call, _)) => Self::deny(id, turn, call, TURN_OVER),
+            Some(ToolEvent::Ask(call, ask)) => {
+                Self::deny_for(id, ask.worker(), turn, call, TURN_OVER)
+            }
             None => Vec::new(),
         }
     }
@@ -126,8 +142,17 @@ impl App {
         call: CallId,
         ask: ApprovalAsk,
     ) -> Vec<Effect> {
+        let worker = ask.worker();
         if !self.ai.tools_enabled() {
-            return Self::deny(id, turn, call, TOOLS_OFF);
+            return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
+        }
+        // Announced just as its worker was cancelled: nobody could answer it.
+        let over = worker.is_some_and(|key| {
+            (self.panes.get(&id).and_then(PaneState::chat_state))
+                .is_some_and(|c| c.worker_is_over(key))
+        });
+        if over {
+            return Self::deny_for(id, worker, turn, call, WORKER_OVER);
         }
         // A read or a search the mode answers needs no overlay, so a pending
         // approval does not stand in its way. A reply that lets it go is not
@@ -138,6 +163,7 @@ impl App {
         if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode)) {
             return vec![Effect::ToolDecision {
                 pane: id,
+                worker,
                 turn,
                 call,
                 decision,
@@ -192,13 +218,14 @@ impl App {
         why: Option<String>,
     ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ask.arm_delay();
+        let worker = ask.worker();
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
             ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
             _ => None,
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
-            return Self::deny(id, turn, call, CHAT_GONE);
+            return Self::deny_for(id, worker, turn, call, CHAT_GONE);
         };
         match chat.approvals_mut().request_call(ask, turn, call, why) {
             // A queued ask touches nothing of the chat: its target, delay and
@@ -220,7 +247,7 @@ impl App {
                 if refusal.reason() == QUEUE_FULL {
                     self.notice = Some(QUEUE_FULL_NOTICE.to_owned());
                 }
-                Self::deny(id, turn, call, refusal.reason())
+                Self::deny_for(id, worker, turn, call, refusal.reason())
             }
         }
     }
@@ -387,13 +414,27 @@ impl App {
     /// Ends the pending approval of chat `id` when it belongs to a tool call
     /// that `stale` names. A confirm the user opened is never touched.
     fn withdraw_tool_approval(&mut self, id: PaneId, stale: impl Fn((u64, CallId)) -> bool) {
+        self.withdraw_where(id, |approval| approval.call().is_some_and(&stale));
+    }
+
+    /// Ends every approval of worker `key` of chat `id`, the shown one and the
+    /// queued ones: the worker was cancelled or is over. The other workers'
+    /// asks stay in their order; when the shown ask was the worker's, the
+    /// oldest one left is promoted and armed afresh. The runtime has denied
+    /// the calls under the worker's session already (`Waits::end_worker`), so
+    /// no answer is sent. The one door for a per-worker cancel (S3c).
+    pub(super) fn withdraw_worker(&mut self, id: PaneId, key: WorkerKey) {
+        self.withdraw_where(id, |approval| approval.ask().worker() == Some(key));
+    }
+
+    fn withdraw_where(&mut self, id: PaneId, stale: impl Fn(&Approval) -> bool) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
         // The asks queued behind the shown one go first: its removal would
         // promote one of them.
         let queued: Vec<u64> = (chat.approvals().queued())
-            .filter(|approval| approval.call().is_some_and(&stale))
+            .filter(|approval| stale(approval))
             .map(Approval::id)
             .collect();
         for approval_id in queued {
@@ -403,7 +444,7 @@ impl App {
         let Some(approval) = chat.approvals().pending() else {
             return;
         };
-        if approval.call().is_some_and(stale) {
+        if stale(approval) {
             let approval_id = approval.id();
             chat.approvals_mut().withdraw(approval_id);
             chat.set_run_target(None);

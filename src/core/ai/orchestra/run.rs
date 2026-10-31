@@ -157,6 +157,11 @@ impl Run {
         self.roster = roster;
     }
 
+    /// How many workers the run has spawned so far.
+    pub fn worker_count(&self) -> usize {
+        self.slots.len()
+    }
+
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {
         self.slot(id).map(|slot| slot.status)
     }

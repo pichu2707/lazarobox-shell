@@ -96,6 +96,7 @@ use crate::{
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
+            orchestra::SessionKey,
         },
         config::{Config, config_path},
         layout::PaneId,
@@ -1647,12 +1648,21 @@ impl Panes {
                 // on nothing when the call is over.
                 Effect::ToolDecision {
                     pane,
+                    worker,
                     turn,
                     call,
                     decision,
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(pane, turn, call, decision);
+                        let session = worker
+                            .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
+                        let sent = decision == crate::core::ai::chat::engine::Decision::Sent;
+                        // A `y` for a worker that ended meanwhile reaches no
+                        // wait: said, never dropped without a word.
+                        if !chats.decide(session, turn, call, decision) && sent && worker.is_some()
+                        {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::AnswerLost));
+                        }
                     }
                 }
                 // The write and the answer are one step: the answer is claimed
@@ -4628,6 +4638,7 @@ mod tests {
         assert!(session(&panes), "a turn with tools has a session");
         panes.apply(vec![Effect::ToolDecision {
             pane: id(1),
+            worker: None,
             turn: 1,
             call: CallId(99),
             decision: Decision::Sent,
@@ -4702,6 +4713,36 @@ mod tests {
             feedback,
             vec![AppEvent::Orchestra(id(1), OrchestraEvent::Unavailable)]
         );
+    }
+
+    // No silent no-op: the user's `y` for a worker's ask that nothing waits
+    // for any more (the worker ended) is told to the pane.
+    #[tokio::test]
+    async fn a_yes_that_reaches_no_worker_wait_is_told() {
+        use crate::core::ai::orchestra::WorkerKey;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let decision = |worker, decision| Effect::ToolDecision {
+            pane: id(1),
+            worker,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(7),
+            decision,
+        };
+        let key = Some(WorkerKey::for_test(1, 1));
+        let (_, feedback) = panes.apply(vec![decision(
+            key,
+            crate::core::ai::chat::engine::Decision::Sent,
+        )]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::AnswerLost)]
+        );
+        // A denial lost, or a chat's own answer lost, changes nothing to say.
+        let (_, quiet) = panes.apply(vec![
+            decision(key, crate::core::ai::chat::engine::Decision::Denied("no")),
+            decision(None, crate::core::ai::chat::engine::Decision::Sent),
+        ]);
+        assert!(quiet.is_empty(), "{quiet:?}");
     }
 
     // The effect writes to the target, not to the chat, and only at a prompt.

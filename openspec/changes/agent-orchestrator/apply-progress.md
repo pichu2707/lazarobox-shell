@@ -251,3 +251,42 @@ Tasks: the S1b-2 security item (done), 3.1 first half (approval queue). Not done
 | CRITICAL: a queued ask ran the shown-ask branch of `open_prompt` (re-aimed the chat, re-armed, replaced the review) | `open_prompt` touches the chat only when the new ask became the pending one; a queued ask only marks dirty | `a_queued_read_leaves_the_shown_batch_delay_and_target_alone`, `a_queued_batch_does_not_replace_the_shown_review`, `a_promoted_batch_opens_its_review_with_the_batch_delay` | all three failed with the guard disabled |
 | WARNING: queue full denied silently as `another approval is pending` | own reason `QUEUE_FULL` ("approval queue full") and a pane notice | `a_full_queue_denies_with_its_own_reason_and_a_notice`, core `the_worker_queue_is_bounded` | reason constant did not exist (compile error) |
 | SUGGESTION: user-opened review never queues | `open` queues only a tool call (`call.is_some()`) that `is_worker` | `a_labelled_orphan_review_is_refused_beside_a_pending_ask` | failed with the `call.is_some()` check removed |
+
+
+## S3b: session key through the waits, the asks and the answers (branch feat/agent-orchestrator-s3b, on s3a)
+
+Task 3.1 done (S3a + S3b). Not done: all of 3.2 and the cancel key (S3c). Four commits; strict TDD, behavioural RED where it could be.
+
+| Unit | Change | Test | RED observed |
+|------|--------|------|--------------|
+| waits by session | `SessionKey {Pane, Worker(pane, WorkerKey)}` (core/ai/orchestra); `Waits` keyed `(SessionKey, turn, call)` with `impl Into<SessionKey>` so pane callers are unchanged; `Waits::end_worker` denies one worker's waits and refuses its later asks; `end_pane`/`end_turn` still take the workers' | `ending_one_worker_denies_only_its_own_asks`, `an_ended_worker_is_denied_its_later_asks`; guards green from the start: `an_answer_names_its_session` (spec: Cross-session call refused), `a_closed_pane_denies_its_workers_asks_as_well` | `left: None` (stub `end_worker` did nothing) |
+| worker approver | `Approver::for_worker` / `end_worker` (defaults keep fakes working); `RunManager` gives each worker its own approver and calls `end_worker` on cancel, end and finish | `a_worker_ask_waits_under_its_own_session_and_cancelling_it_denies_the_ask`; `a_code_workers_batch_waits_for_the_users_review` now answers under the worker | the orchestrator session could still answer the ask |
+| ask and answer carry the worker | `ApprovalAsk::WorkerRead.worker`, `BatchReview::labelled(.., worker)`, `ApprovalAsk::worker()`; `Effect::ToolDecision.worker`; `Chats::decide(impl Into<SessionKey>)`; `App::deny_for` | existing app tests now expect `worker: Some(..)` for worker asks and `None` for chat asks | (refactor, tests adapted) |
+| n/m label | `Orchestra::workers(run)`, `Run::worker_count`, `WorkerScope::ask_label()` = `n/m <kind> <engine>><model>` | `a_worker_read_outside_the_scope_reaches_the_approver_and_cancel_denies_it` (worker 1 of 2) | label was `review codex>default` |
+| retry keeps the key | `for_worker` revives an ended worker session so a retried worker asks again | `a_retried_worker_asks_again_after_its_first_attempt_ended` | second ask denied |
+| app withdraws one worker | `App::withdraw_worker(pane, key)` (the door S3c calls) runs on a worker row that is not queued or running; `withdraw_where` generalizes `withdraw_tool_approval`; promotion is the S3a path | `a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker`, `another_worker_ending_leaves_the_shown_ask_and_the_queue_alone` | both workers' asks stayed (`2 waiting`) |
+| hub token | guard only | `a_workers_token_reaches_no_other_workers_dispatch` (spec: Cross-session call refused, Own socket per worker) | green from the start (S1 behaviour) |
+
+### Decisions and deviations
+- `Tagged`/stream events are NOT re-keyed: a worker's rows and asks arrive on the orchestrator turn's channel and render in its pane, and `CallId` comes from one per-host counter, so `(pane, turn, call)` is unambiguous in the app. The session travels on the ask instead (`ApprovalAsk::worker`), which is what the answer needs.
+- The manager runs one worker at a time until 3.2, so "worker 1's ask is unaffected" is proved at `Waits` and app level, not with two live workers.
+- `m` in `n/m` is the run's worker count when the ask is built.
+- The runtime denies a cancelled worker's calls itself (`end_worker`); the app only drops the prompt, it sends no answer.
+
+### For S3c
+- Per-worker cancel: send the runtime's existing cancel of one worker (`RunManager::cancel_worker`, already reachable through the `cancel` tool); the row event it produces runs `withdraw_worker`. The escalating Ctrl+C needs a new `Effect` that calls `cancel_worker` for the selected worker and the "Ctrl+C again cancels the run" note.
+- `max_parallel` makes "other workers' asks untouched" testable with live workers.
+
+
+### S3b review fixes (RED observed before each fix)
+
+| Finding | Fix | Test | RED |
+|---------|-----|------|-----|
+| W2 revived key had no attempt | `for_worker` gives each approver an attempt number (`Ended.current`); only the current attempt may ask, an earlier attempt's approver is denied unseen (`Ended::over`) | `the_approver_of_an_earlier_attempt_cannot_ask_after_a_retry` | stale ask waited (`left: None`) |
+| W1a ghost ask, runtime end | `Approver::is_over`; `execute` skips the announce when its worker session is over after the slot wait | `a_worker_ended_before_its_ask_is_announced_never_shows_it` (full channel, end_worker meanwhile) | a ToolCall was announced |
+| W1b ghost ask, app end | `ChatState::ended_workers` (set on a terminal row, cleared by a running row and by the run's end); `on_tool_ask` denies such an ask `the worker already ended` | `an_ask_that_arrives_after_its_worker_ended_is_refused_unseen` | no denial, ask queued |
+| never silent | a `y` whose `decide` returns false for a worker ask emits `OrchestraEvent::AnswerLost`, shown as a system line | `a_yes_that_reaches_no_worker_wait_is_told`, `a_lost_answer_is_said_in_the_transcript` | written with the code (compile-level RED only) |
+| gap: retry through `open_session` | none needed | `a_retried_workers_ask_waits_under_the_revived_session` (new `Script::FailThenHang`) | green from the start |
+| gap: finish after the run ended | none needed: `end()` closes every task's session before the run leaves `runs` | `a_run_cancelled_closes_its_workers_sessions_for_good` | green from the start |
+
+Note: a first attempt at W1a polled the wait and skipped on a denied `ENDED`; it broke `an_ended_turn_keeps_its_batch...` (an approver may deny with `ENDED` and still want the call announced), hence the explicit `is_over`.

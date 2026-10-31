@@ -27,6 +27,7 @@ mod commit;
 pub use commit::CommitReview;
 
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
+use crate::core::ai::orchestra::WorkerKey;
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
 use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
 
@@ -212,19 +213,31 @@ pub struct BatchReview {
     /// label (`approval::worker_label`), one sanitized line, shown in the
     /// review header. `None` for a chat's own batch.
     label: Option<String>,
+    /// The session of that worker, which the answer is addressed to.
+    worker: Option<WorkerKey>,
 }
 
 impl BatchReview {
     pub fn new(doc: ReviewDoc) -> Self {
-        Self { doc, label: None }
+        Self {
+            doc,
+            label: None,
+            worker: None,
+        }
     }
 
     /// The review of a batch a worker proposed, headed by its `label`.
-    pub fn labelled(doc: ReviewDoc, label: String) -> Self {
+    pub fn labelled(doc: ReviewDoc, label: String, worker: WorkerKey) -> Self {
         Self {
             doc,
             label: Some(label),
+            worker: Some(worker),
         }
+    }
+
+    /// The session of the worker that proposed the batch.
+    pub fn worker(&self) -> Option<WorkerKey> {
+        self.worker
     }
 
     /// The worker that proposed the batch; `None` for a chat's own.

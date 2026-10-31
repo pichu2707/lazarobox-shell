@@ -21,7 +21,10 @@ use crate::{
             approval::Reach,
             review::{BatchReview, ReviewDoc, TOO_LARGE},
         },
-        orchestra::changes::{Change, diff_hash},
+        orchestra::{
+            WorkerKey,
+            changes::{Change, diff_hash},
+        },
         tools::{
             Call, ToolError,
             mcp::refusal_text,
@@ -133,7 +136,7 @@ pub(super) async fn seal(
         .ok_or(refusal_text(ToolError::UnknownTool))?;
     let stages = host.stages.clone();
     // A worker's batch is headed by its label in the review (S7).
-    let label = scope.read_scope.as_ref().map(|worker| worker.label.clone());
+    let label = (scope.read_scope.as_ref()).map(|worker| (worker.ask_label(), worker.key()));
     let env = host.env(&scope.origin);
     tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await
@@ -143,7 +146,7 @@ pub(super) async fn seal(
 fn seal_in(
     shared: Arc<Mutex<Stages>>,
     key: StageKey,
-    label: Option<String>,
+    label: Option<(String, WorkerKey)>,
     env: &ToolEnv,
 ) -> Result<(Sealed, Arc<BatchReview>), String> {
     let mut stages = lock(&shared);
@@ -155,7 +158,7 @@ fn seal_in(
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
     let doc = ReviewDoc::build(batch);
     let review = Arc::new(match label {
-        Some(label) => BatchReview::labelled(doc, label),
+        Some((label, key)) => BatchReview::labelled(doc, label, key),
         None => BatchReview::new(doc),
     });
     let reviewable = review.doc().reviewable();
