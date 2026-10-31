@@ -276,3 +276,17 @@ Task 3.1 done (S3a + S3b). Not done: all of 3.2 and the cancel key (S3c). Four c
 ### For S3c
 - Per-worker cancel: send the runtime's existing cancel of one worker (`RunManager::cancel_worker`, already reachable through the `cancel` tool); the row event it produces runs `withdraw_worker`. The escalating Ctrl+C needs a new `Effect` that calls `cancel_worker` for the selected worker and the "Ctrl+C again cancels the run" note.
 - `max_parallel` makes "other workers' asks untouched" testable with live workers.
+
+
+### S3b review fixes (RED observed before each fix)
+
+| Finding | Fix | Test | RED |
+|---------|-----|------|-----|
+| W2 revived key had no attempt | `for_worker` gives each approver an attempt number (`Ended.current`); only the current attempt may ask, an earlier attempt's approver is denied unseen (`Ended::over`) | `the_approver_of_an_earlier_attempt_cannot_ask_after_a_retry` | stale ask waited (`left: None`) |
+| W1a ghost ask, runtime end | `Approver::is_over`; `execute` skips the announce when its worker session is over after the slot wait | `a_worker_ended_before_its_ask_is_announced_never_shows_it` (full channel, end_worker meanwhile) | a ToolCall was announced |
+| W1b ghost ask, app end | `ChatState::ended_workers` (set on a terminal row, cleared by a running row and by the run's end); `on_tool_ask` denies such an ask `the worker already ended` | `an_ask_that_arrives_after_its_worker_ended_is_refused_unseen` | no denial, ask queued |
+| never silent | a `y` whose `decide` returns false for a worker ask emits `OrchestraEvent::AnswerLost`, shown as a system line | `a_yes_that_reaches_no_worker_wait_is_told`, `a_lost_answer_is_said_in_the_transcript` | written with the code (compile-level RED only) |
+| gap: retry through `open_session` | none needed | `a_retried_workers_ask_waits_under_the_revived_session` (new `Script::FailThenHang`) | green from the start |
+| gap: finish after the run ended | none needed: `end()` closes every task's session before the run leaves `runs` | `a_run_cancelled_closes_its_workers_sessions_for_good` | green from the start |
+
+Note: a first attempt at W1a polled the wait and skipped on a denied `ENDED`; it broke `an_ended_turn_keeps_its_batch...` (an approver may deny with `ENDED` and still want the call announced), hence the explicit `is_over`.
