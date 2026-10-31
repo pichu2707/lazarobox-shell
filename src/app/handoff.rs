@@ -4,7 +4,7 @@
 //! cannot be reached or a save fails the run goes on with the handoffs in its
 //! ledger and the pane says so, once. Never silent, never blocking.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use super::*;
 use crate::core::ai::{
@@ -25,7 +25,7 @@ pub(super) struct RunStore {
     pane: PaneId,
     save: RunSave,
     /// The saves sent whose answer has not come.
-    tokens: HashSet<SaveId>,
+    tokens: HashMap<SaveId, Instant>,
     /// The run is over: the store goes when its last answer does.
     ended: bool,
     /// When the project was asked for, while it is awaited.
@@ -102,7 +102,7 @@ impl App {
             RunStore {
                 pane: id,
                 save,
-                tokens: HashSet::new(),
+                tokens: HashMap::new(),
                 ended: false,
                 asked: now,
             },
@@ -135,7 +135,7 @@ impl App {
                     // registered with.
                     let project = chat.session().map_or(project, |s| s.project.clone());
                     let token = chat.quiet_save_sent_at(&project, now);
-                    store.tokens.insert(token);
+                    store.tokens.insert(token, now);
                     effects.push(Effect::Memory(MemCmd::Save {
                         pane: store.pane,
                         id: token,
@@ -183,10 +183,12 @@ impl App {
     /// Whether a run's store waits for the project of its pane: the runtime
     /// keeps the memory timer armed meanwhile.
     pub(super) fn run_store_waiting(&self) -> bool {
-        self.run_stores.values().any(|store| store.save.waiting())
+        self.run_stores
+            .values()
+            .any(|store| store.save.waiting() || !store.tokens.is_empty())
     }
 
-    /// Gives up on a project that did not come in `MEMORY_WAIT`.
+    /// Gives up on a project or a save that did not come in `MEMORY_WAIT`.
     pub(super) fn expire_stores(&mut self, now: Instant) -> Vec<Effect> {
         let runs: Vec<RunId> = self
             .run_stores
@@ -205,6 +207,22 @@ impl App {
                 .unwrap_or_default();
             effects.extend(self.store_actions(run, actions));
             self.drop_if_over(run);
+        }
+        // A save the chat no longer tracks (a folder change clears its
+        // pending saves) expires on its own clock.
+        let stale: Vec<(PaneId, SaveId)> = self
+            .run_stores
+            .values()
+            .flat_map(|store| {
+                store
+                    .tokens
+                    .iter()
+                    .filter(|(_, sent)| now.saturating_duration_since(**sent) >= MEMORY_WAIT)
+                    .map(|(token, _)| (store.pane, *token))
+            })
+            .collect();
+        for (pane, token) in stale {
+            effects.extend(self.run_save_lost(pane, token));
         }
         effects
     }
@@ -280,7 +298,7 @@ impl App {
     /// run is over and nothing else awaits.
     fn answered(&mut self, pane: PaneId, token: SaveId) -> Option<RunId> {
         let run = self.run_stores.iter().find_map(|(run, store)| {
-            (store.pane == pane && store.tokens.contains(&token)).then_some(*run)
+            (store.pane == pane && store.tokens.contains_key(&token)).then_some(*run)
         })?;
         self.run_stores.get_mut(&run)?.tokens.remove(&token);
         Some(run)

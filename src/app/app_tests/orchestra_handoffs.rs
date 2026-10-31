@@ -459,3 +459,23 @@ fn only_the_runs_own_project_reply_resolves_it() {
     }));
     assert_eq!(saves(&own).len(), 1);
 }
+
+// Re-review fix: a folder change clears the chat's pending saves, so a run
+// save in flight must expire on its own. The user hears it once, and the
+// store of an ended run goes.
+#[test]
+fn a_run_save_in_flight_over_a_folder_change_still_expires() {
+    let mut a = app(true);
+    with_project(&mut a);
+    at(&mut a, 0, handoff_of(1));
+    a.apply_folder(chat_id(), std::path::PathBuf::from("/srv/other"));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(a.run_stores.len(), 1, "the save still awaits its answer");
+    assert!(a.memory_waiting(), "the timer stays armed");
+    at(&mut a, 6_000, AppEvent::MemoryTick);
+    assert_eq!(count(&a, NOT_PERSISTED), 1);
+    assert!(a.run_stores.is_empty(), "the ended run's store is dropped");
+    assert!(!a.memory_waiting());
+    at(&mut a, 12_000, AppEvent::MemoryTick);
+    assert_eq!(count(&a, NOT_PERSISTED), 1, "said once");
+}

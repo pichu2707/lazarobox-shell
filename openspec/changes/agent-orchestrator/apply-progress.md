@@ -433,4 +433,6 @@ Strict TDD: all tests written first against stubs (`RUN_EPOCH`, `run_save_lost(p
 | 7 | ledger note is `Summary: ...` then the ledger (the save cuts from the end) | `the_ledger_note_has_its_own_key_and_the_summary` | ledger first |
 | 8 | spec: hint `memory on for this run` once per run; orchestrator-handoffs and chat-memory deltas gain "Never acknowledged: not turned on"; requirement says the run never starts `engram serve`; design D13a records both |  |  |
 
+| 9 (re-review) | `RunStore.tokens` now keeps each save's sent-at; `expire_stores` (memory tick) expires run saves older than `MEMORY_WAIT` independently of the chat's `pending_saves` (a folder change clears those), with the usual tombstone and one `handoffs not persisted`; `run_store_waiting` keeps the timer armed while tokens are in flight; an ended run's store then drops | `a_run_save_in_flight_over_a_folder_change_still_expires` | degrade count 0 (never expired) |
+
 Residual: `lost_saves` and `ended_runs` are small sets that live for the app session.
