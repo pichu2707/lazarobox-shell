@@ -243,6 +243,37 @@ impl std::fmt::Debug for Call {
 }
 
 impl Call {
+    /// The call with every path argument `f` rewrites replaced.
+    pub fn map_paths(self, f: impl Fn(&str) -> Option<String>) -> Call {
+        let swap = |path: String| f(&path).unwrap_or(path);
+        match self {
+            Call::ListDir { path } => Call::ListDir { path: swap(path) },
+            Call::ReadFile { path, lines } => Call::ReadFile {
+                path: swap(path),
+                lines,
+            },
+            Call::Glob { pattern, dir } => Call::Glob {
+                pattern,
+                dir: dir.map(swap),
+            },
+            Call::Grep { pattern, dir } => Call::Grep {
+                pattern,
+                dir: dir.map(swap),
+            },
+            Call::CreateDir { path } => Call::CreateDir { path: swap(path) },
+            Call::WriteFile { path, content } => Call::WriteFile {
+                path: swap(path),
+                content,
+            },
+            Call::EditFile { path, old, new } => Call::EditFile {
+                path: swap(path),
+                old,
+                new,
+            },
+            other => other,
+        }
+    }
+
     /// The tool's name, as the registry offers it (qualified for a user tool).
     pub fn name(&self) -> &str {
         match self {

@@ -445,7 +445,27 @@ async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatu
     (outcome, status, summary)
 }
 
+/// The private cwds of a CLI turn (`<data>/lazarobox/cli-cwd`), as typed and
+/// canonical: a CLI joins a relative path to its own cwd before it calls a
+/// host tool, so a path under it names a file of the project.
+fn cli_cwds(host: &ToolHost) -> Vec<PathBuf> {
+    let home = host.home.as_deref();
+    let Ok(data) = crate::core::desktop::data_home(host.xdg_data_home.as_deref(), home) else {
+        return Vec::new();
+    };
+    let cwd = data.join("lazarobox").join("cli-cwd");
+    let mut all = vec![cwd.clone()];
+    if let Ok(real) = std::fs::canonicalize(&cwd)
+        && real != cwd
+    {
+        all.push(real);
+    }
+    all
+}
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
+    let cwds = cli_cwds(&host);
+    let call = call.map_paths(|path| crate::core::ai::tools::paths::rehome(&cwds, path));
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
     let mut checked: Result<Call, Cow<'static, str>> = match &call {

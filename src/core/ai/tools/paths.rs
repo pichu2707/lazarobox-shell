@@ -2116,3 +2116,68 @@ mod write_tests {
         }
     }
 }
+
+/// A path a CLI worker built by joining a relative path to its private cwd
+/// (`<data>/lazarobox/cli-cwd`, where nothing lives) means the project's file:
+/// the part below the cwd, relative. `None` for any other path, and for one
+/// with `..` below the cwd, which really leaves it and is judged as it is.
+pub fn rehome(cli_cwds: &[PathBuf], input: &str) -> Option<String> {
+    let path = Path::new(input);
+    let rest = cli_cwds
+        .iter()
+        .find_map(|cwd| path.strip_prefix(cwd).ok())?;
+    if rest
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let rest = rest.to_string_lossy();
+    Some(if rest.is_empty() {
+        ".".to_owned()
+    } else {
+        rest.into_owned()
+    })
+}
+
+#[cfg(test)]
+mod rehome_tests {
+    use super::*;
+
+    const CWD: &str = "/data/lazarobox/cli-cwd";
+
+    fn roots() -> Vec<PathBuf> {
+        vec![PathBuf::from(CWD)]
+    }
+
+    // D8: a CLI joins a relative path to its own private cwd; the path means
+    // the project's file.
+    #[test]
+    fn a_path_under_the_cli_cwd_is_the_project_relative_path() {
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd/README.md").as_deref(),
+            Some("README.md")
+        );
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd/src/a.rs").as_deref(),
+            Some("src/a.rs")
+        );
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd").as_deref(),
+            Some(".")
+        );
+    }
+
+    #[test]
+    fn other_paths_are_left_alone() {
+        for input in [
+            "README.md",
+            "/data/lazarobox/cli-cwd2/a",
+            "/data/lazarobox/chat.db",
+            "/data/lazarobox/cli-cwd/../chat.db",
+            "~/data/lazarobox/cli-cwd/a",
+        ] {
+            assert_eq!(rehome(&roots(), input), None, "{input}");
+        }
+    }
+}

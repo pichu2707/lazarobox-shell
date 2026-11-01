@@ -1711,3 +1711,30 @@ async fn every_spelling_of_a_secret_is_refused_at_the_ask_with_the_one_text() {
         assert!(out.is_error, "{input}");
     }
 }
+
+// D8: a CLI worker joins a relative path to its private cwd; the path means
+// the project's file. It is read from the project, unasked, and never offered
+// for approval.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_path_under_the_cli_cwd_is_read_from_the_project_and_never_asked() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let input = cwd.join("a.rs");
+    let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    let approver = Scripted::new(Decision::Denied("must not be asked"));
+    scope.approver = approver.clone();
+    let out = host
+        .dispatch(scope)
+        .call(read(input.to_str().unwrap()))
+        .await;
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert!(out.text.contains("inside the scope"), "{out:?}");
+    assert_eq!(status, ToolStatus::Ok);
+    assert_eq!(ask, None);
+    assert!(approver.asked.lock().unwrap().is_empty());
+}
