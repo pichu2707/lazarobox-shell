@@ -1548,6 +1548,10 @@ impl RunManager {
                 worker: key.worker,
                 label: worker_label(spec.task, &spec.engine, model),
             }),
+            cli: !matches!(
+                adapter_for(&request.engine),
+                Some(Adapter::Ollama | Adapter::Llamacpp)
+            ),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

@@ -78,6 +78,7 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         next: AtomicU64::new(1),
         stages: Arc::default(),
         exec,
+        cli_cwds: std::sync::OnceLock::new(),
     });
     World {
         _dir: dir,

@@ -1726,6 +1726,7 @@ async fn a_path_under_the_cli_cwd_is_read_from_the_project_and_never_asked() {
     let handle = Scoped::over(&home, &["~/dev/app"]);
     let input = cwd.join("a.rs");
     let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    scope.cli = true;
     let approver = Scripted::new(Decision::Denied("must not be asked"));
     scope.approver = approver.clone();
     let out = host
@@ -1737,4 +1738,35 @@ async fn a_path_under_the_cli_cwd_is_read_from_the_project_and_never_asked() {
     assert_eq!(status, ToolStatus::Ok);
     assert_eq!(ask, None);
     assert!(approver.asked.lock().unwrap().is_empty());
+}
+
+// D8: the rewrite is for CLI turns; a server engine's path is judged as typed
+// (and so asked), and the row says when a path was rewritten.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn only_a_cli_turn_has_its_cli_cwd_paths_rewritten_and_the_row_says_so() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let input = cwd.join("a.rs");
+    for cli in [false, true] {
+        let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+        scope.cli = cli;
+        scope.approver = Scripted::new(Decision::Denied("declined"));
+        let out = host
+            .dispatch(scope)
+            .call(read(input.to_str().unwrap()))
+            .await;
+        let seen = events(&mut rx);
+        let row = seen.iter().find_map(|e| match e {
+            StreamEvent::ToolCall { summary, .. } => Some(summary.clone()),
+            _ => None,
+        });
+        let row = row.expect("a row");
+        assert_eq!(out.is_error, !cli, "{out:?}");
+        assert_eq!(row.ends_with("(from cli-cwd path)"), cli, "{row}");
+    }
 }

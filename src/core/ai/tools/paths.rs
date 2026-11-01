@@ -2126,10 +2126,9 @@ pub fn rehome(cli_cwds: &[PathBuf], input: &str) -> Option<String> {
     let rest = cli_cwds
         .iter()
         .find_map(|cwd| path.strip_prefix(cwd).ok())?;
-    if rest
-        .components()
-        .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
+    // A `~` name would be expanded to HOME once the path is relative.
+    let plain = |c: std::path::Component| matches!(c, std::path::Component::Normal(name) if !name.to_string_lossy().starts_with('~'));
+    if !rest.components().all(plain) {
         return None;
     }
     let rest = rest.to_string_lossy();
@@ -2176,6 +2175,11 @@ mod rehome_tests {
             "/data/lazarobox/chat.db",
             "/data/lazarobox/cli-cwd/../chat.db",
             "~/data/lazarobox/cli-cwd/a",
+            // A literal `~` name below the cwd would expand to HOME as a
+            // relative path: left as it is.
+            "/data/lazarobox/cli-cwd/~/x",
+            "/data/lazarobox/cli-cwd/~root/x",
+            "/data/lazarobox/cli-cwd/a/~",
         ] {
             assert_eq!(rehome(&roots(), input), None, "{input}");
         }

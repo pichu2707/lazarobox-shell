@@ -955,6 +955,10 @@ impl Chats {
             // workers'.
             orchestra,
             read_scope: None,
+            cli: !matches!(
+                adapter_for(&request.engine),
+                Some(Adapter::Ollama | Adapter::Llamacpp)
+            ),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

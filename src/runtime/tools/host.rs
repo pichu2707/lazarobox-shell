@@ -144,6 +144,10 @@ pub struct TurnScope {
     /// Set for a worker turn only: the run whose read scope its reads are
     /// judged against, and the label of its asks.
     pub read_scope: Option<WorkerScope>,
+    /// The engine of the turn is a CLI. It runs in a private cwd and may
+    /// join a relative path to it before it calls a tool; a server engine
+    /// never does, so the path rewrite is for CLI turns only.
+    pub cli: bool,
 }
 
 impl TurnScope {
@@ -161,6 +165,7 @@ impl TurnScope {
             allowed: Mutex::default(),
             orchestra: None,
             read_scope: None,
+            cli: false,
         }
     }
 
@@ -202,6 +207,8 @@ pub struct ToolHost {
     stages: Arc<Mutex<Stages>>,
     /// Who may run a command now, and what the sandbox is.
     exec: exec::Exec,
+    /// The private cwds of CLI turns, found on first use.
+    cli_cwds: std::sync::OnceLock<Arc<[PathBuf]>>,
 }
 
 impl ToolHost {
@@ -229,6 +236,7 @@ impl ToolHost {
             next: AtomicU64::new(1),
             stages: Arc::default(),
             exec: exec::Exec::system(),
+            cli_cwds: std::sync::OnceLock::new(),
         })
     }
 
@@ -464,8 +472,30 @@ fn cli_cwds(host: &ToolHost) -> Vec<PathBuf> {
 }
 
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
-    let cwds = cli_cwds(&host);
-    let call = call.map_paths(|path| crate::core::ai::tools::paths::rehome(&cwds, path));
+    let rehomed = std::cell::Cell::new(false);
+    let call = if scope.cli {
+        let cwds = match host.cli_cwds.get() {
+            Some(known) => known.clone(),
+            // The folders are looked up off the async path, once.
+            None => {
+                let finder = host.clone();
+                let found = tokio::task::spawn_blocking(move || {
+                    finder
+                        .cli_cwds
+                        .get_or_init(|| cli_cwds(&finder).into())
+                        .clone()
+                });
+                found.await.unwrap_or_default()
+            }
+        };
+        call.map_paths(|path| {
+            let home = crate::core::ai::tools::paths::rehome(&cwds, path);
+            rehomed.set(rehomed.get() || home.is_some());
+            home
+        })
+    } else {
+        call
+    };
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
     let mut checked: Result<Call, Cow<'static, str>> = match &call {
@@ -669,7 +699,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),
-        summary: clip(&call.argument()),
+        summary: if rehomed.get() {
+            clip(&format!("{} (from cli-cwd path)", call.argument()))
+        } else {
+            clip(&call.argument())
+        },
         approval: ask.map(Box::new),
     };
     if scope.events.send(announce).await.is_err() {
