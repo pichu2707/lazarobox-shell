@@ -22,22 +22,80 @@ use super::{
             OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
         },
     },
-    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
+    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE, TOOLS_TABLE},
     layout::Rect,
 };
 
 /// A setting that cycles through an ordered list of values. The value string
 /// is both the display text and the TOML value.
-pub struct Choice {
+pub struct Choice<T = Config> {
     pub table: &'static str,
     pub key: &'static str,
     pub values: &'static [&'static str],
-    pub get: fn(&Config) -> usize,
-    pub set: fn(&mut Config, usize),
+    pub get: fn(&T) -> usize,
+    pub set: fn(&mut T, usize),
+}
+
+/// What a draft row edits. More shapes (lists, minutes) join the flag.
+pub enum DraftValue {
+    /// An `off`/`on` flag of the AI draft, written as a TOML boolean.
+    Flag(Choice<AiConfig>),
+}
+
+/// A mark a draft row can wear next to its value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Badge {
+    /// `on` says it needs the Linux sandbox when the system has none.
+    NeedsSandbox,
+}
+
+/// A row of the AI draft, declared in one place: its value, where it sits in
+/// the save order (`rank`, unique) and the optional fields.
+pub struct AiChoice {
+    pub value: DraftValue,
+    pub rank: u8,
+    /// The row can change files or run code: the caution line shows.
+    pub caution: bool,
+    pub badge: Option<Badge>,
+    /// `t` tests the notification settings on this row.
+    pub test: bool,
+}
+
+impl AiChoice {
+    /// The flag this row edits.
+    fn flag(&self) -> &Choice<AiConfig> {
+        let DraftValue::Flag(flag) = &self.value;
+        flag
+    }
+}
+
+/// A draft flag row of the Tools tab: the five coding families.
+macro_rules! family {
+    ($label:literal, $toggle:ident, $key:literal, $rank:literal, $caution:literal, $badge:expr) => {
+        Item {
+            label: $label,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: TOOLS_TABLE,
+                    key: $key,
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.toggle(ToolToggle::$toggle)),
+                    set: |c, i| c.set_toggle(ToolToggle::$toggle, i == 1),
+                }),
+                rank: $rank,
+                caution: $caution,
+                badge: $badge,
+                test: false,
+            }),
+        }
+    };
 }
 
 pub enum ItemKind {
     Choice(Choice),
+    /// A row of the AI draft declared by one [`AiChoice`] (Context, Sound,
+    /// Tools and the family switches).
+    Draft(AiChoice),
     /// An `off`/`on` setting persisted as a TOML boolean (`on` is written
     /// `true`), with an empty table for a root key.
     Toggle(Choice),
@@ -46,28 +104,16 @@ pub enum ItemKind {
     /// The AI profile: a static choice (`ai.profile`) that lives in the AI
     /// draft, not in the live [`Config`].
     Profile,
-    /// The workspace context flag (`ai.context`): an on/off row that lives in
-    /// the AI draft, like [`ItemKind::Profile`].
-    Context,
     /// The memory opt-in row: a static `off`/`on` item over the AI draft.
     /// Turning it on without the acknowledgement opens the privacy warning.
     Memory(MemoryRow),
     /// The chat notify mode (`ai.notify`): a Settings row that cycles
     /// auto, desktop, bell and off.
     Notify,
-    /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
-    /// the AI draft, like [`ItemKind::Notify`].
-    Tools,
-    /// One coding-tools family switch (`ai.tools.<key>`): an on/off row over
-    /// the AI draft, found by its toggle and never by position.
-    Family(ToolToggle),
     /// The approval mode of the model's commands (`ai.tools.approval`): an
     /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
     /// and conversation switches, never an open chat or a pending approval.
     Approval,
-    /// The notification sound flag (`ai.notify_sound`): an on/off row over
-    /// the AI draft.
-    NotifySound,
     /// The orchestrator gate (`ai.orchestrator.enabled`): an on/off row over
     /// the AI draft. Each chat pane still opts in on its own.
     Orchestrator,
@@ -104,7 +150,10 @@ pub struct MemoryRow {
 impl ItemKind {
     /// Whether the row edits the AI draft, so it needs the AI section.
     const fn needs_ai(&self) -> bool {
-        matches!(self, Self::Notify | Self::NotifySound | Self::ManagedIdle)
+        matches!(
+            self,
+            Self::Notify | Self::ManagedIdle | Self::Draft(_) | Self::Assign(_) | Self::HfAccount
+        )
     }
 }
 
@@ -172,7 +221,19 @@ pub static SECTIONS: &[Section] = &[Section {
         },
         Item {
             label: "Sound",
-            kind: ItemKind::NotifySound,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: "ai",
+                    key: "notify_sound",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.notify_sound()),
+                    set: |c, i| c.set_notify_sound(i == 1),
+                }),
+                rank: 50,
+                caution: false,
+                badge: None,
+                test: true,
+            }),
         },
         Item {
             label: "llama-server idle",
@@ -236,28 +297,25 @@ pub static TOOLS_SECTION: Section = Section {
     items: &[
         Item {
             label: "Tools",
-            kind: ItemKind::Tools,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: TOOLS_TABLE,
+                    key: "enabled",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.tools_enabled()),
+                    set: |c, i| c.set_tools_enabled(i == 1),
+                }),
+                rank: 60,
+                caution: false,
+                badge: None,
+                test: false,
+            }),
         },
-        Item {
-            label: "Search",
-            kind: ItemKind::Family(ToolToggle::Search),
-        },
-        Item {
-            label: "Write",
-            kind: ItemKind::Family(ToolToggle::Write),
-        },
-        Item {
-            label: "Exec",
-            kind: ItemKind::Family(ToolToggle::Exec),
-        },
-        Item {
-            label: "Git",
-            kind: ItemKind::Family(ToolToggle::Git),
-        },
-        Item {
-            label: "Git write",
-            kind: ItemKind::Family(ToolToggle::GitWrite),
-        },
+        family!("Search", Search, "search", 61, false, None),
+        family!("Write", Write, "write", 62, true, None),
+        family!("Exec", Exec, "exec", 63, true, Some(Badge::NeedsSandbox)),
+        family!("Git", Git, "git", 64, false, None),
+        family!("Git write", GitWrite, "git_write", 65, true, None),
         Item {
             label: "Approval",
             kind: ItemKind::Approval,
@@ -279,7 +337,19 @@ pub static CHAT_SECTION: Section = Section {
         },
         Item {
             label: "Context",
-            kind: ItemKind::Context,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: "ai",
+                    key: "context",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.context()),
+                    set: |c, i| c.set_context(i == 1),
+                }),
+                rank: 20,
+                caution: false,
+                badge: None,
+                test: false,
+            }),
         },
         Item {
             label: "Memory",
@@ -391,14 +461,11 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) | ItemKind::Toggle(choice) => Some((item, choice)),
             ItemKind::Assign(_)
+            | ItemKind::Draft(_)
             | ItemKind::Profile
-            | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
-            | ItemKind::Tools
-            | ItemKind::Family(_)
             | ItemKind::Approval
-            | ItemKind::NotifySound
             | ItemKind::Orchestrator
             | ItemKind::ManagedIdle
             | ItemKind::Updates
@@ -1064,9 +1131,7 @@ impl MenuState {
             return None;
         }
         match self.selected_kind()? {
-            ItemKind::Family(ToolToggle::Write | ToolToggle::Exec | ToolToggle::GitWrite) => {
-                Some(CAUTION)
-            }
+            ItemKind::Draft(choice) if choice.caution => Some(CAUTION),
             _ => None,
         }
     }
@@ -1339,14 +1404,11 @@ impl MenuState {
         matches!(
             self.selected_kind(),
             Some(
-                ItemKind::Profile
-                    | ItemKind::Context
+                ItemKind::Draft(_)
+                    | ItemKind::Profile
                     | ItemKind::Memory(_)
                     | ItemKind::Notify
-                    | ItemKind::Tools
-                    | ItemKind::Family(_)
                     | ItemKind::Approval
-                    | ItemKind::NotifySound
                     | ItemKind::Orchestrator
                     | ItemKind::ManagedIdle
             )
@@ -1355,10 +1417,11 @@ impl MenuState {
 
     /// Whether the selection is on the Notify or the Sound row.
     fn on_notify_row(&self) -> bool {
-        matches!(
-            self.selected_kind(),
-            Some(ItemKind::Notify | ItemKind::NotifySound)
-        )
+        match self.selected_kind() {
+            Some(ItemKind::Notify) => true,
+            Some(ItemKind::Draft(choice)) => choice.test,
+            _ => false,
+        }
     }
 
     fn test_notify(&self) -> MenuCommand {
@@ -1459,14 +1522,11 @@ impl MenuState {
             ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
             ItemKind::Choice(_)
             | ItemKind::Toggle(_)
+            | ItemKind::Draft(_)
             | ItemKind::Profile
-            | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
-            | ItemKind::Tools
-            | ItemKind::Family(_)
             | ItemKind::Approval
-            | ItemKind::NotifySound
             | ItemKind::Orchestrator
             | ItemKind::ManagedIdle
             | ItemKind::Updates
@@ -1545,11 +1605,18 @@ impl MenuState {
                         index += 1;
                         row
                     }
-                    ItemKind::Context => {
+                    ItemKind::Draft(choice) => {
+                        let flag = choice.flag();
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().context() { "on" } else { "off" })
+                                let on = (flag.get)(ai.draft());
+                                Cow::Borrowed(match (choice.badge, on) {
+                                    (Some(Badge::NeedsSandbox), 1) if self.no_sandbox => {
+                                        "on · needs Linux sandbox"
+                                    }
+                                    _ => flag.values[on],
+                                })
                             }),
                             selected: self.selected == Some(index),
                             enabled: true,
@@ -1565,56 +1632,6 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::NotifySound => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().notify_sound() {
-                                    "on"
-                                } else {
-                                    "off"
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Tools => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().tools_enabled() {
-                                    "on"
-                                } else {
-                                    "off"
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Family(toggle) => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(match (ai.draft().toggle(*toggle), toggle) {
-                                    (false, _) => "off",
-                                    (true, ToolToggle::Exec) if self.no_sandbox => {
-                                        "on · needs Linux sandbox"
-                                    }
-                                    (true, _) => "on",
-                                })
-                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -2106,14 +2123,12 @@ impl MenuState {
                 match kind {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
-                    Some(ItemKind::Tools) => ai.toggle_tools(),
-                    Some(ItemKind::Family(toggle)) => ai.toggle_family(*toggle),
+                    Some(ItemKind::Draft(choice)) => ai.step_flag(choice.flag(), forward),
                     Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
-                    Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
                     Some(ItemKind::Orchestrator) => ai.toggle_orchestrator(),
                     Some(ItemKind::ManagedIdle) => ai.cycle_idle(forward),
-                    _ => ai.toggle_context(),
+                    _ => {}
                 }
             }
             return MenuCommand::None;
@@ -2175,15 +2190,6 @@ impl MenuState {
                 key: "profile",
                 value: Cow::Borrowed(profile.id()),
             });
-        let context = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_context)
-            .map(|on| ConfigEdit {
-                table: "ai",
-                key: "context",
-                value: Cow::Borrowed(if on { "true" } else { "false" }),
-            });
         let memory = self.ai.iter().flat_map(|ai| {
             ai.changed_memory()
                 .into_iter()
@@ -2198,25 +2204,30 @@ impl MenuState {
                 key: "notify",
                 value: Cow::Borrowed(mode.id()),
             });
-        let sound = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_notify_sound)
-            .map(|on| ConfigEdit {
-                table: "ai",
-                key: "notify_sound",
-                value: Cow::Borrowed(if on { "true" } else { "false" }),
-            });
-        let tools = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_tools)
-            .map(ConfigEdit::tools_flag);
-        let families = self
-            .ai
-            .iter()
-            .flat_map(AiMenu::changed_toggles)
-            .map(|(toggle, on)| ConfigEdit::toggle(toggle, on));
+        let drafts = self.ai.iter().flat_map(|ai| {
+            table()
+                .iter()
+                .flat_map(|tab| tab.sections.iter())
+                .flat_map(|section| section.items.iter())
+                .filter_map(|item| match &item.kind {
+                    ItemKind::Draft(choice) => Some(choice),
+                    _ => None,
+                })
+                .filter_map(|choice| {
+                    let flag = choice.flag();
+                    ai.changed_flag(flag).map(|now| {
+                        let value = if now == 1 { "true" } else { "false" };
+                        (
+                            choice.rank,
+                            ConfigEdit {
+                                table: flag.table,
+                                key: flag.key,
+                                value: Cow::Borrowed(value),
+                            },
+                        )
+                    })
+                })
+        });
         let approval = self
             .ai
             .as_ref()
@@ -2255,18 +2266,20 @@ impl MenuState {
                     },
                 ]
             });
+        // The save order is the rank. The rows that are not descriptors yet
+        // carry their own rank here: profile 10, memory 30, notify 40,
+        // approval 70, orchestrator 80, idle 90.
+        let mut ranked: Vec<(u8, ConfigEdit)> = drafts.collect();
+        ranked.extend(profile.map(|edit| (10, edit)));
+        ranked.extend(memory.map(|edit| (30, edit)));
+        ranked.extend(notify.map(|edit| (40, edit)));
+        ranked.extend(approval.map(|edit| (70, edit)));
+        ranked.extend(orchestrator.map(|edit| (80, edit)));
+        ranked.extend(idle.map(|edit| (90, edit)));
+        ranked.sort_by_key(|(rank, _)| *rank);
         settings
             .chain(tasks)
-            .chain(profile)
-            .chain(context)
-            .chain(memory)
-            .chain(notify)
-            .chain(sound)
-            .chain(tools)
-            .chain(families)
-            .chain(approval)
-            .chain(orchestrator)
-            .chain(idle)
+            .chain(ranked.into_iter().map(|(_, edit)| edit))
             .chain(managed)
             .collect()
     }
@@ -2874,5 +2887,7 @@ mod account_tests;
 #[cfg(test)]
 mod feedback_tests;
 
+#[cfg(test)]
+mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;

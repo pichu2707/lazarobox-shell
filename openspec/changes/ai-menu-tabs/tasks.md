@@ -43,10 +43,10 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 
 ## PR 2.1: Descriptor and on/off rows (~370)
 
-- [ ] 2.1.1 RED: `get(set(i)) == i` and `values[i] == ALL[i].id()` for every descriptor; rank uniqueness.
-- [ ] 2.1.2 GREEN: `Choice<T = Config>`, `AiChoice`, `DraftValue::Flag`, `rank`, `caution`, `badge`, `test` (D3, D7, D8) in `src/core/menu.rs`, `src/core/ai/menu.rs`.
-- [ ] 2.1.3 Migrate Context, Sound, Tools, 5 families; delete their `rows()` arms, `AiMenu` methods and `edits` blocks; `needs_ai()` derived from kind (D5).
-- [ ] 2.1.4 Gate: 1.9 test and snapshots unchanged (no pending `.snap`).
+- [x] 2.1.1 RED: `get(set(i)) == i` and `values[i] == ALL[i].id()` for every descriptor; rank uniqueness.
+- [x] 2.1.2 GREEN: `Choice<T = Config>`, `AiChoice`, `DraftValue::Flag`, `rank`, `caution`, `badge`, `test` (D3, D7, D8) in `src/core/menu.rs`, `src/core/ai/menu.rs`.
+- [x] 2.1.3 Migrate Context, Sound, Tools, 5 families; delete their `rows()` arms, `AiMenu` methods and `edits` blocks; `needs_ai()` derived from kind (D5).
+- [x] 2.1.4 Gate: 1.9 test and snapshots unchanged (no pending `.snap`).
 
 ## PR 2.2: List rows and Minutes (~270)
 

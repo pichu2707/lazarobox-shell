@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::core::menu::Choice;
+
 use super::{
     Detection, Status,
     config::{
-        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
-        cycled_idle,
+        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, cycled_idle,
     },
     hf::{Answer, Ask},
     ollama_lib,
@@ -110,44 +111,15 @@ impl AiMenu {
         (self.draft.profile() != self.original.profile()).then(|| self.draft.profile())
     }
 
-    /// Flips the context flag of the draft.
-    pub fn toggle_context(&mut self) {
-        let next = !self.draft.context();
-        self.draft.set_context(next);
-    }
-
-    /// The context flag in the draft, when it differs from the open one.
-    pub fn changed_context(&self) -> Option<bool> {
-        (self.draft.context() != self.original.context()).then(|| self.draft.context())
-    }
-
     /// Steps the notify mode of the draft.
     pub fn cycle_notify(&mut self, forward: bool) {
         let next = self.draft.notify().cycled(forward);
         self.draft.set_notify(next);
     }
 
-    /// Flips the notify sound flag of the draft.
-    pub fn toggle_notify_sound(&mut self) {
-        let next = !self.draft.notify_sound();
-        self.draft.set_notify_sound(next);
-    }
-
-    /// The notify sound flag in the draft, when it differs from the open one.
-    pub fn changed_notify_sound(&self) -> Option<bool> {
-        (self.draft.notify_sound() != self.original.notify_sound())
-            .then(|| self.draft.notify_sound())
-    }
-
     /// The notify mode in the draft, when it differs from the open one.
     pub fn changed_notify(&self) -> Option<NotifyMode> {
         (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
-    }
-
-    /// Flips the agent tools flag of the draft.
-    pub fn toggle_tools(&mut self) {
-        let next = !self.draft.tools_enabled();
-        self.draft.set_tools_enabled(next);
     }
 
     /// The model file of `assignment` when it is one lazarobox starts a
@@ -211,25 +183,18 @@ impl AiMenu {
             .flatten()
     }
 
-    /// Flips one family switch of the draft.
-    pub fn toggle_family(&mut self, toggle: ToolToggle) {
-        let next = !self.draft.toggle(toggle);
-        self.draft.set_toggle(toggle, next);
+    /// Steps a flag row of the draft to its next (or previous) value.
+    pub fn step_flag(&mut self, flag: &Choice<AiConfig>, forward: bool) {
+        let len = flag.values.len();
+        let now = (flag.get)(&self.draft);
+        let next = if forward { now + 1 } else { now + len - 1 } % len;
+        (flag.set)(&mut self.draft, next);
     }
 
-    /// The family switches whose draft differs from the open one, in row
-    /// order, with the draft value.
-    pub fn changed_toggles(&self) -> impl Iterator<Item = (ToolToggle, bool)> + '_ {
-        ToolToggle::ALL
-            .into_iter()
-            .filter(|t| self.draft.toggle(*t) != self.original.toggle(*t))
-            .map(|t| (t, self.draft.toggle(t)))
-    }
-
-    /// The tools flag in the draft, when it differs from the open one.
-    pub fn changed_tools(&self) -> Option<bool> {
-        (self.draft.tools_enabled() != self.original.tools_enabled())
-            .then(|| self.draft.tools_enabled())
+    /// The value of a flag row in the draft, when it differs from the open one.
+    pub fn changed_flag(&self, flag: &Choice<AiConfig>) -> Option<usize> {
+        let now = (flag.get)(&self.draft);
+        (now != (flag.get)(&self.original)).then_some(now)
     }
 
     /// Cycles the approval mode of the draft.
