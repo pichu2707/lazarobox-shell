@@ -44,15 +44,15 @@ fn tools_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is right after Memory; the five
-// family rows and then Approval follow it.
+// Spec (config-menu, Tools row): the row is the first of the Tools tab; the
+// five family rows and then Approval follow it.
 #[test]
-fn the_tools_row_follows_memory_and_is_found_by_kind() {
-    let items = AI_SECTION.items;
-    let tools = &items[items.len() - 9];
+fn the_tools_row_opens_its_tab_and_is_found_by_kind() {
+    let items = TOOLS_SECTION.items;
+    let tools = &items[0];
     assert_eq!(tools.label, "Tools");
     assert!(matches!(tools.kind, ItemKind::Tools));
-    assert_eq!(items[items.len() - 10].label, "Memory");
+    assert_eq!(items[1].label, "Search");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Tools))
@@ -61,14 +61,14 @@ fn the_tools_row_follows_memory_and_is_found_by_kind() {
 }
 
 #[test]
-fn navigation_goes_memory_tools_search() {
+fn navigation_wraps_from_tools_to_orchestrator_and_goes_to_search() {
     let mut m = on_tools(true);
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Search");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Memory");
+    assert_eq!(selected_label(&m), "Orchestrator", "wraps inside the tab");
 }
 
 #[test]

@@ -46,8 +46,8 @@ impl<'a> MenuPopup<'a> {
 }
 
 const FALLBACK: &str = "MENU · s save · Esc cancel";
-/// The hint at the right of the tab bar: the key that switches tabs.
-const TAB_HINT: &str = "⇥ Tab";
+/// The hint at the right of the tab bar: the keys that switch tabs.
+const TAB_HINT: &str = "⇥ Tab · 1-5";
 /// The one line shown instead of the privacy warning on a tiny terminal. It
 /// offers no choice: the menu declines every key then (informed consent).
 const FALLBACK_WARNING: &str = "Enlarge the terminal to read the privacy note";
@@ -1527,9 +1527,13 @@ mod tests {
     fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
         for menu in [mixed(), ai_tab()] {
             let l = lines(&draw(62, POPUP_H, &menu));
-            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
             assert!(
-                l[1].ends_with("⇥ Tab │"),
+                l[1].starts_with("│ Settings │ Models │ Tools │ Chat "),
+                "{}",
+                l[1]
+            );
+            assert!(
+                l[1].ends_with("⇥ Tab · 1-5 │"),
                 "hint one column from the edge: {}",
                 l[1]
             );
@@ -1544,17 +1548,17 @@ mod tests {
         assert_eq!(settings[(2, 1)].fg, theme.bg_base);
         assert!(settings[(2, 1)].modifier.contains(Modifier::BOLD));
         assert!(!settings[(2, 1)].modifier.contains(Modifier::REVERSED));
-        assert_ne!(settings[(13, 1)].bg, theme.primary_cyan, "AI is idle");
+        assert_ne!(settings[(13, 1)].bg, theme.primary_cyan, "Models is idle");
         let ai = draw(62, POPUP_H, &ai_tab());
         assert_ne!(ai[(2, 1)].bg, theme.primary_cyan);
-        assert_eq!(ai[(13, 1)].bg, theme.primary_cyan, "AI is active");
+        assert_eq!(ai[(13, 1)].bg, theme.primary_cyan, "Models is active");
     }
 
     #[test]
     fn the_hint_is_absent_over_every_sub_level_and_the_bar_stays() {
         for menu in sub_levels() {
             let l = lines(&draw(62, POPUP_H, &menu));
-            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
+            assert!(l[1].starts_with("│ Settings │ Models "), "{}", l[1]);
             assert!(!l[1].contains('⇥'), "{}", l[1]);
         }
     }
@@ -1568,12 +1572,12 @@ mod tests {
             settings[2]
         );
         assert!(
-            !settings[2..].iter().any(|l| l.starts_with("│ AI")),
+            !settings[2..].iter().any(|l| l.starts_with("│ Models")),
             "{settings:?}"
         );
         let ai = lines(&draw(62, POPUP_H, &ai_tab()));
         assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
-        assert!(ai[12].starts_with("│ Tools"), "{}", ai[12]);
+        assert!(ai[9].starts_with("│ Hugging Face"), "{}", ai[9]);
     }
 
     // Spec (config-menu): the caution line of a family that can change files
@@ -1615,9 +1619,14 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_is_twenty_five_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 25);
+    fn the_popup_is_sixteen_rows_on_every_tab_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 16);
         let mut views = vec![mixed(), ai_tab(), with_update()];
+        for digit in ['3', '5'] {
+            let mut menu = mixed();
+            press(&mut menu, &[KeyCode::Char(digit)]);
+            views.push(menu);
+        }
         views.extend(sub_levels());
         for menu in &views {
             let l = lines(&draw(80, 26, menu));
@@ -1625,7 +1634,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 25);
+            assert_eq!(border[1] - border[0] + 1, 16);
         }
     }
 
@@ -1633,21 +1642,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[20].contains("lazarobox 0.16.0 is available."),
+            l[11].contains("lazarobox 0.16.0 is available."),
             "{}",
-            l[20]
+            l[11]
         );
         assert!(
-            l[21].contains("Go to Updates and press Enter."),
+            l[12].contains("Go to Updates and press Enter."),
             "{}",
-            l[21]
+            l[12]
         );
         assert_eq!(
-            l[22].trim_matches(|c| c == '│' || c == ' '),
+            l[13].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[23].contains("s save"), "footer: {}", l[23]);
+        assert!(l[14].contains("s save"), "footer: {}", l[14]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1666,10 +1675,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[20]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[21]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[11]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[23]),
+            body(&l[14]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1681,10 +1690,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[20]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[21]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[11]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[23]),
+            body(&l[14]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1711,16 +1720,88 @@ mod tests {
     }
 
     #[test]
-    fn at_24_columns_the_star_drops_the_hint_and_the_plain_label_keeps_it() {
+    fn at_24_columns_the_bar_shows_only_the_active_tab_without_the_hint() {
         let starred = lines(&draw(24, MIN_HEIGHT, &with_update()));
-        assert!(
-            starred[1].starts_with("│ Settings* │ AI "),
-            "{}",
-            starred[1]
-        );
+        assert!(starred[1].contains("‹ Settings* ›"), "{}", starred[1]);
         assert!(!starred[1].contains('⇥'), "{}", starred[1]);
         let plain = lines(&draw(24, MIN_HEIGHT, &mixed()));
-        assert!(plain[1].contains("⇥ Tab"), "{}", plain[1]);
+        assert!(plain[1].contains("‹ Settings ›"), "{}", plain[1]);
+        assert!(!plain[1].contains('⇥'), "{}", plain[1]);
+        let mut models = mixed();
+        press(&mut models, &[KeyCode::Tab]);
+        let models = lines(&draw(24, MIN_HEIGHT, &models));
+        assert!(models[1].contains("‹ Models ›"), "{}", models[1]);
+    }
+
+    /// The bar of `width` columns, drawn from the real menu (popup width is
+    /// the terminal width up to 62).
+    fn bar(width: u16, menu: &MenuState) -> String {
+        lines(&draw(width, POPUP_H, menu))[1]
+            .trim_matches('│')
+            .to_owned()
+    }
+
+    // Spec: Thresholds of the four-tab bar.
+    #[test]
+    fn the_four_tab_bar_degrades_at_its_thresholds() {
+        let menu = mixed();
+        let whole = " Settings │ Models │ Tools │ Chat ";
+        assert!(bar(49, &menu).contains(whole) && bar(49, &menu).contains("⇥ Tab · 1-5"));
+        assert!(bar(48, &menu).contains(whole) && !bar(48, &menu).contains('⇥'));
+        assert!(bar(36, &menu).contains(whole) && !bar(36, &menu).contains('⇥'));
+        assert!(!bar(35, &menu).contains("Models │"));
+        assert!(bar(35, &menu).contains(" ‹ Settings › "));
+    }
+
+    // Spec: Thresholds of the five-tab bar, and five tabs with an update.
+    #[test]
+    fn the_five_tab_bar_degrades_at_its_thresholds() {
+        let theme = LazaroboxTheme::default();
+        let labels = ["Settings", "Models", "Tools", "Connectors", "Chat"];
+        let line = |w: usize, hint: bool, labels: &[&str]| {
+            tab_line(labels, 1, w, hint.then_some(TAB_HINT), &theme)
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<String>()
+        };
+        let whole = " Settings │ Models │ Tools │ Connectors │ Chat ";
+        assert_eq!(cells(whole), 47);
+        assert_eq!(
+            line(60, true, &labels),
+            format!("{whole}{}⇥ Tab · 1-5 ", " ")
+        );
+        assert_eq!(line(47, true, &labels), whole, "49 columns: no hint");
+        assert_eq!(line(46, true, &labels), " ‹ Models › ", "48 columns");
+        let starred = ["Settings*", "Models", "Tools", "Connectors", "Chat"];
+        let out = line(60, true, &starred);
+        assert!(!out.contains('⇥'), "an update drops the hint: {out}");
+        assert!(out.contains("Settings* │"), "{out}");
+    }
+
+    #[test]
+    fn the_smallest_full_popup_is_24_by_15_and_the_zero_size_is_empty() {
+        assert_eq!(MIN_HEIGHT, 15);
+        for digit in ['1', '2', '3', '5'] {
+            let mut menu = mixed();
+            press(&mut menu, &[KeyCode::Char(digit)]);
+            let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+            assert!(!shown.contains("MENU"), "tab {digit}: {shown}");
+        }
+        assert!(text(&draw(0, 0, &mixed())).is_empty());
+    }
+
+    // Spec: Hidden Connectors shows a notice, in the footer, until the next key.
+    #[test]
+    fn snapshot_the_hidden_connectors_notice_replaces_the_footer() {
+        let mut menu = ai_tab();
+        goto(&mut menu, "code");
+        press(&mut menu, &[KeyCode::Char('4')]);
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("No connectors yet"), "{shown}");
+        insta::assert_snapshot!(shown);
+        press(&mut menu, &[KeyCode::Char('j')]);
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(!shown.contains("No connectors yet"), "{shown}");
     }
 
     #[test]
@@ -1771,7 +1852,8 @@ mod tests {
                 .position(|l| l.contains(label))
                 .unwrap_or_else(|| panic!("no {label}"))
         };
-        assert!(at("Approval") < at("Hugging Face"));
+        assert!(at("orchestrate") < at("Hugging Face"));
+        assert!(!shown.contains("Approval"), "Approval lives on Tools");
         let row = shown.lines().nth(at("Hugging Face")).unwrap();
         assert!(row.contains("not connected"), "{row}");
         insta::assert_snapshot!(shown);
@@ -1825,7 +1907,8 @@ mod tests {
     // popup.
     #[test]
     fn the_run_value_shows_and_the_popup_keeps_its_height() {
-        let ask = ai_tab();
+        let mut ask = ai_tab();
+        ask.goto("Approval");
         let mut run = ai_tab();
         run.goto("Approval");
         press(&mut run, &[KeyCode::Char('l'), KeyCode::Char('l')]);

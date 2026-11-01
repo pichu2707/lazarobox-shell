@@ -31,12 +31,12 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 
 ## PR 1: Tabs, jump keys, notices, docs (~290)
 
-- [ ] 1.1 RED: `src/core/menu/tabs_tests.rs` visibility, wrap, digits by fixed position, absolute cursor memory (Connectors hidden/appears, spec "Menu tabs", "Jump keys").
-- [ ] 1.2 GREEN: `src/core/menu.rs`: 4 sections, 5 `TABS`, `TAB_COUNT = 5`, visibility = `needs_ai` AND non-empty `tab_items()`, `tab`/`tab_cursor` keyed by `TABS` position (D1, D2), `active_tab()` mapping.
-- [ ] 1.3 RED: notice tests: `4` hidden, `2`-`5` without AI, `0`/`6`-`9` show `Tabs are 1-5`, Tab/Shift+Tab with one tab shows `No other tabs`, Ctrl/Alt+digit swallowed, cleared by next key, `s`/Esc not blocked.
-- [ ] 1.4 GREEN: `notice` field and digit handling at top level only (D10); sub-views keep digits and Tab inert; footer shows notice with error precedence.
-- [ ] 1.5 RED: `src/ui/components/menu.rs` bar thresholds (49/48/62 five tabs; 49/48/36/35 four tabs), `Settings*`, 16-row height, 24x15 minimum, 0x0 no panic.
-- [ ] 1.6 GREEN: `TAB_HINT = "⇥ Tab · 1-5"`, `VIEW_BODY` = 11, hint hidden in sub-levels, Update note Settings-only.
+- [x] 1.1 RED: `src/core/menu/tabs_tests.rs` visibility, wrap, digits by fixed position, absolute cursor memory (Connectors hidden/appears, spec "Menu tabs", "Jump keys").
+- [x] 1.2 GREEN: `src/core/menu.rs`: 4 sections, 5 `TABS`, `TAB_COUNT = 5`, visibility = `needs_ai` AND non-empty `tab_items()`, `tab`/`tab_cursor` keyed by `TABS` position (D1, D2), `active_tab()` mapping.
+- [x] 1.3 RED: notice tests: `4` hidden, `2`-`5` without AI, `0`/`6`-`9` show `Tabs are 1-5`, Tab/Shift+Tab with one tab shows `No other tabs`, Ctrl/Alt+digit swallowed, cleared by next key, `s`/Esc not blocked.
+- [x] 1.4 GREEN: `notice` field and digit handling at top level only (D10); sub-views keep digits and Tab inert; footer shows notice with error precedence.
+- [x] 1.5 RED: `src/ui/components/menu.rs` bar thresholds (49/48/62 five tabs; 49/48/36/35 four tabs), `Settings*`, 16-row height, 24x15 minimum, 0x0 no panic.
+- [x] 1.6 GREEN: `TAB_HINT = "⇥ Tab · 1-5"`, `VIEW_BODY` = 11, hint hidden in sub-levels, Update note Settings-only.
 - [ ] 1.7 Docs: orchestrator `manual-tests.md` T02 and every "Tab to AI" step; `docs/assets/tapes/ai-menu.tape` (reach Models with `2`); README menu section (Spanish prose: five tabs, Tab/Shift+Tab, `1`-`5`); CHANGELOG (AI tab split, jump keys).
 - [ ] 1.8 Commit: `test(menu): update snapshots` holding only `.snap` files (~40).
 - [ ] 1.9 LAST commit, test-only: characterization test `src/core/menu/edits_tests.rs` asserting exact `Vec<ConfigEdit>` and `apply_edit` TOML from an empty file (one changed row of every kind, live row, tasks, managed, memory `enabled = true` with `acknowledged = false`, off-list idle 45). Visit-order and unchanged-tabs scenarios. Must pass untouched in later PRs.

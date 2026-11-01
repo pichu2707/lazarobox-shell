@@ -7243,7 +7243,7 @@ mod app_tests {
                 ..
             }
         ));
-        // The AI tab starts on its first row too: the old cursor is gone.
+        // The Models tab starts on its first row too: the old cursor is gone.
         a.update(code(KeyCode::Tab));
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
@@ -8791,7 +8791,7 @@ mod app_tests {
     mod hf_download;
     mod ollama_download;
 
-    /// The Hugging Face account row of the AI tab (config-menu).
+    /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;
 
     /// The llama-server install wizard of the llamacpp picker

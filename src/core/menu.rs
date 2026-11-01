@@ -189,13 +189,10 @@ pub static SECTIONS: &[Section] = &[Section {
     ],
 }];
 
-/// The AI section, attached only by [`MenuState::with_ai`]. The labels of
-/// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
-/// family switches, `Approval`, the `Orchestrator` gate and `Hugging Face`, in that
-/// order. `Notify`, `Sound` and `llama-server idle` live in the Settings section.
-pub static AI_SECTION: Section = Section {
-    title: "AI",
+/// The Models tab: the task rows (their labels are the task ids; their key
+/// path is `Task::table`) and the `Hugging Face` account.
+pub static MODELS_SECTION: Section = Section {
+    title: "Models",
     items: &[
         Item {
             label: "Set all tasks",
@@ -226,21 +223,17 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Orchestrate)),
         },
         Item {
-            label: "Profile",
-            kind: ItemKind::Profile,
+            label: "Hugging Face",
+            kind: ItemKind::HfAccount,
         },
-        Item {
-            label: "Context",
-            kind: ItemKind::Context,
-        },
-        Item {
-            label: "Memory",
-            kind: ItemKind::Memory(MemoryRow {
-                table: MEMORY_TABLE,
-                key: "enabled",
-                values: &["off", "on"],
-            }),
-        },
+    ],
+};
+
+/// The Tools tab: the tools switch, the five family switches, `Approval` and
+/// the `Orchestrator` gate.
+pub static TOOLS_SECTION: Section = Section {
+    title: "Tools",
+    items: &[
         Item {
             label: "Tools",
             kind: ItemKind::Tools,
@@ -273,9 +266,28 @@ pub static AI_SECTION: Section = Section {
             label: "Orchestrator",
             kind: ItemKind::Orchestrator,
         },
+    ],
+};
+
+/// The Chat tab: `Profile`, `Context` and `Memory`.
+pub static CHAT_SECTION: Section = Section {
+    title: "Chat",
+    items: &[
         Item {
-            label: "Hugging Face",
-            kind: ItemKind::HfAccount,
+            label: "Profile",
+            kind: ItemKind::Profile,
+        },
+        Item {
+            label: "Context",
+            kind: ItemKind::Context,
+        },
+        Item {
+            label: "Memory",
+            kind: ItemKind::Memory(MemoryRow {
+                table: MEMORY_TABLE,
+                key: "enabled",
+                values: &["off", "on"],
+            }),
         },
     ],
 };
@@ -294,11 +306,12 @@ pub struct Tab {
 }
 
 /// Number of entries of [`TABS`].
-pub const TAB_COUNT: usize = 2;
+pub const TAB_COUNT: usize = 5;
 
-/// The tabs of the menu, in bar order: Settings first, then AI. A new tab is
-/// one entry here plus a bump of [`TAB_COUNT`]; the compiler enforces the
-/// pair.
+/// The tabs of the menu, in bar order. Their place here is their number for
+/// the jump keys (`1` to `5`). A tab with no rows is hidden, so Connectors
+/// stays out of the bar until MCP gives it rows. A new tab is one entry here
+/// plus a bump of [`TAB_COUNT`]; the compiler enforces the pair.
 pub static TABS: [Tab; TAB_COUNT] = [
     Tab {
         label: "Settings",
@@ -308,13 +321,67 @@ pub static TABS: [Tab; TAB_COUNT] = [
         caution: false,
     },
     Tab {
-        label: "AI",
-        sections: std::slice::from_ref(&AI_SECTION),
+        label: "Models",
+        sections: std::slice::from_ref(&MODELS_SECTION),
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
+    Tab {
+        label: "Tools",
+        sections: std::slice::from_ref(&TOOLS_SECTION),
         needs_ai: true,
         note: false,
         caution: true,
     },
+    Tab {
+        label: "Connectors",
+        sections: &[],
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
+    Tab {
+        label: "Chat",
+        sections: std::slice::from_ref(&CHAT_SECTION),
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
 ];
+
+#[cfg(test)]
+thread_local! {
+    /// A tab table a test swaps in, for the tabs that have no rows yet.
+    static TEST_TABS: std::cell::Cell<Option<&'static [Tab]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The tab table in force: [`TABS`], or a test table.
+fn table() -> &'static [Tab] {
+    #[cfg(test)]
+    if let Some(tabs) = TEST_TABS.with(std::cell::Cell::get) {
+        return tabs;
+    }
+    &TABS
+}
+
+/// Whether the row shows: the AI-only rows need the AI section.
+fn row_shown(item: &Item, has_ai: bool) -> bool {
+    has_ai || !item.kind.needs_ai()
+}
+
+/// Whether a tab is visible: it has the AI section it needs and at least one
+/// row to show. A tab with no rows (Connectors today) stays out of the bar
+/// and out of reach of Tab, and appears by itself with its first row.
+fn tab_shown(tab: &Tab, has_ai: bool) -> bool {
+    (has_ai || !tab.needs_ai)
+        && tab
+            .sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .any(|item| row_shown(item, has_ai))
+}
 
 /// The selectable settings, in table order.
 fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
@@ -344,9 +411,9 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 pub const CHROME: u16 = 4;
 /// The tab bar takes one row at the top of the body when the menu is tabbed.
 pub const TAB_BAR: usize = 1;
-/// The caution under the AI tab for a family that can change files or run code.
+/// The caution under the Tools tab for a family that can change files or run code.
 const CAUTION: &str = "Can change files or run code";
-/// Lines of the caution, reserved at the foot of the AI tab so the popup
+/// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;
 /// Lines of the update note (see [`MenuState::update_note`]).
@@ -530,6 +597,11 @@ pub enum MenuCommand {
     SendIssue(Box<feedback::Issue>),
 }
 
+/// Footer notices of the tab keys: a refused key always says why.
+const NOTICE_RANGE: &str = "Tabs are 1-5";
+const NOTICE_ONE_TAB: &str = "No other tabs";
+const NOTICE_NO_AI: &str = "AI section not available";
+
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
@@ -605,8 +677,14 @@ pub enum Row {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MenuState {
     selected: Option<usize>,
+    /// The active tab, as its position in [`TABS`] (hidden tabs count), so a
+    /// digit and a cursor memory mean the same tab whatever is visible.
     tab: usize,
+    /// The remembered cursor of each tab, by its position in [`TABS`].
     tab_cursor: [usize; TAB_COUNT],
+    /// Why the last tab key did nothing; shown in the footer until the next
+    /// press.
+    notice: Option<String>,
     original: Config,
     error: Option<String>,
     /// What the last copy did, shown in the footer until the next press.
@@ -630,7 +708,7 @@ pub struct MenuState {
     /// The version an install in this run put on disk; the running binary is
     /// still the old one, so the row says so until the restart.
     installed: Option<String>,
-    /// The `Hugging Face` row of the AI tab.
+    /// The `Hugging Face` row of the Models tab.
     account: account::Account,
     /// What the Feedback form attaches.
     facts: feedback::Facts,
@@ -667,6 +745,7 @@ impl MenuState {
             selected: (SECTIONS.iter().any(|s| !s.items.is_empty())).then_some(0),
             tab: 0,
             tab_cursor: [0; TAB_COUNT],
+            notice: None,
             original: *original,
             error: None,
             test_report: None,
@@ -971,7 +1050,7 @@ impl MenuState {
     /// pickers, which have their own full-height views.
     pub fn update_note(&self) -> Option<[String; NOTE_ROWS]> {
         let latest = self.update.as_deref()?;
-        let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
+        let on_note_tab = table().get(self.tab).is_some_and(|tab| tab.note);
         (on_note_tab && !self.in_sub_level()).then(|| match self.command_shown {
             Some(why) => crate::core::update::fallback_lines(why),
             None => crate::core::update::menu_lines(latest),
@@ -1181,11 +1260,11 @@ impl MenuState {
             .unwrap_or_default()
     }
 
-    /// The tabs this menu shows, in table order. The AI tab needs the AI
-    /// section.
+    /// The tabs this menu shows, in table order: the ones that pass
+    /// [`tab_shown`].
     pub fn tabs(&self) -> impl Iterator<Item = &'static Tab> + use<> {
         let has_ai = self.ai.is_some();
-        TABS.iter().filter(move |tab| has_ai || !tab.needs_ai)
+        table().iter().filter(move |tab| tab_shown(tab, has_ai))
     }
 
     /// The labels of the tab bar. The tab with the update note wears a `*`
@@ -1203,9 +1282,15 @@ impl MenuState {
             .collect()
     }
 
-    /// The index of the active tab among [`MenuState::tabs`].
+    /// The index of the active tab among [`MenuState::tabs`] (its place in
+    /// the bar, which is not its place in [`TABS`] while a tab is hidden).
     pub fn active_tab(&self) -> usize {
-        self.tab
+        let has_ai = self.ai.is_some();
+        table()
+            .iter()
+            .take(self.tab)
+            .filter(|tab| tab_shown(tab, has_ai))
+            .count()
     }
 
     /// Whether the menu is in a view that replaces the rows: the privacy
@@ -1227,12 +1312,12 @@ impl MenuState {
     /// the AI draft, so a menu without an AI section has none of them.
     fn tab_items(&self) -> impl Iterator<Item = &'static Item> + use<> {
         let has_ai = self.ai.is_some();
-        self.tabs()
-            .nth(self.tab)
+        table()
+            .get(self.tab)
             .into_iter()
             .flat_map(|tab| tab.sections.iter())
             .flat_map(|section| section.items.iter())
-            .filter(move |item| has_ai || !item.kind.needs_ai())
+            .filter(move |item| row_shown(item, has_ai))
     }
 
     /// The descriptor kind under the selection, in the active tab. Rows are
@@ -1426,10 +1511,7 @@ impl MenuState {
         // With tabs the bar names the section; a title only stays when the
         // menu has a single tab (no bar is drawn then).
         let titled = self.tabs().count() == 1;
-        let sections = self
-            .tabs()
-            .nth(self.tab)
-            .map_or(&[][..], |tab| tab.sections);
+        let sections = table().get(self.tab).map_or(&[][..], |tab| tab.sections);
         for section in sections {
             if titled {
                 rows.push(Row::Title(Cow::Borrowed(section.title)));
@@ -1647,6 +1729,7 @@ impl MenuState {
         }
         if !repeat {
             self.error = None;
+            self.notice = None;
             self.copied = None;
             self.test_report = None;
             // Enter and `y` on the row copy the shown command; any other
@@ -1680,6 +1763,7 @@ impl MenuState {
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.step_tab(false),
             KeyCode::Tab => self.step_tab(true),
             KeyCode::BackTab => self.step_tab(false),
+            KeyCode::Char(digit @ '0'..='9') => self.jump_tab(digit),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
@@ -1937,22 +2021,57 @@ impl MenuState {
         }
     }
 
-    /// Moves to the next (or previous) tab, wrapping. Each tab remembers its
-    /// own cursor; the active tab's lives in `selected`, so it is saved on
-    /// the way out and loaded on the way in. A single tab does nothing.
+    /// Moves to the next (or previous) visible tab, wrapping. Each tab
+    /// remembers its own cursor. A single tab says so in the footer.
     fn step_tab(&mut self, forward: bool) -> MenuCommand {
-        let count = self.tabs().count();
-        if count < 2 {
+        let has_ai = self.ai.is_some();
+        let shown: Vec<usize> = (0..table().len())
+            .filter(|&index| tab_shown(&table()[index], has_ai))
+            .collect();
+        if shown.len() < 2 {
+            self.notice = Some(NOTICE_ONE_TAB.to_owned());
             return MenuCommand::None;
         }
+        let at = shown.iter().position(|&index| index == self.tab);
+        let target = match (at, forward) {
+            (Some(at), true) => shown[(at + 1) % shown.len()],
+            (Some(at), false) => shown[(at + shown.len() - 1) % shown.len()],
+            (None, _) => shown[0],
+        };
+        self.go_to_tab(target)
+    }
+
+    /// The jump keys: `1` to `5` go to that place of [`TABS`], whatever is
+    /// visible. A tab that is not there says why in the footer, and so does a
+    /// digit outside the table.
+    fn jump_tab(&mut self, digit: char) -> MenuCommand {
+        let target = (digit as usize).wrapping_sub('1' as usize);
+        let Some(tab) = table().get(target) else {
+            self.notice = Some(NOTICE_RANGE.to_owned());
+            return MenuCommand::None;
+        };
+        if target == self.tab {
+            return MenuCommand::None;
+        }
+        let has_ai = self.ai.is_some();
+        if !tab_shown(tab, has_ai) {
+            self.notice = Some(if tab.needs_ai && !has_ai {
+                NOTICE_NO_AI.to_owned()
+            } else {
+                format!("No {} yet", tab.label.to_lowercase())
+            });
+            return MenuCommand::None;
+        }
+        self.go_to_tab(target)
+    }
+
+    /// Leaves the active tab saving its cursor and loads the one of `target`.
+    /// The active tab's cursor lives in `selected`.
+    fn go_to_tab(&mut self, target: usize) -> MenuCommand {
         if let Some(selected) = self.selected {
             self.tab_cursor[self.tab] = selected;
         }
-        self.tab = if forward {
-            (self.tab + 1) % count
-        } else {
-            (self.tab + count - 1) % count
-        };
+        self.tab = target;
         let rows = self.selectable();
         self.selected = (rows > 0).then(|| self.tab_cursor[self.tab].min(rows - 1));
         MenuCommand::None
@@ -2176,6 +2295,9 @@ impl MenuState {
     pub fn footer(&self) -> Footer<'_> {
         if let Some(error) = self.error() {
             return Footer::Error(error);
+        }
+        if let Some(notice) = &self.notice {
+            return Footer::Hint(Cow::Owned(notice.clone()));
         }
         if self.in_warning() {
             return Footer::Hint(Cow::Borrowed(HINT_WARNING));
