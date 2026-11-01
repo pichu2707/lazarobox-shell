@@ -62,7 +62,7 @@ fn each_row_is_found_by_its_own_kind_and_key_paths_are_distinct() {
             .find(|i| i.label == label)
             .unwrap();
         assert!(
-            matches!(item.kind, ItemKind::Family(t) if t == toggle),
+            matches!(&item.kind, ItemKind::Draft(c) if c.flag().key == toggle.key()),
             "{label}"
         );
         paths.push(format!("ai.tools.{}", toggle.key()));
