@@ -93,6 +93,7 @@ use crate::{
                 store::StoreReply,
             },
             config::{AiConfig, NotifyMode, Profile},
+            marks,
             memory::port::MemReply,
         },
         config::{Config, config_path},
@@ -255,16 +256,18 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         &launch_cwd,
     );
     let cwd = started.dir.clone();
+    let utf8 = approval::names_utf8(
+        env::var("LC_ALL").ok().as_deref(),
+        env::var("LC_CTYPE").ok().as_deref(),
+        env::var("LANG").ok().as_deref(),
+    );
     let mut app = started
         .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
-        .with_utf8_locale(approval::names_utf8(
-            env::var("LC_ALL").ok().as_deref(),
-            env::var("LC_CTYPE").ok().as_deref(),
-            env::var("LANG").ok().as_deref(),
-        ))
+        .with_utf8_locale(utf8)
+        .with_tool_glyph(marks::tool_glyph(env::var("TERM").ok().as_deref(), utf8))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)

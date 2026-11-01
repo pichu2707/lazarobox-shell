@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Installed Ollama models in the model picker show a tool mark: `🔧` beside
+  `✓` for a model of 3B parameters or more that declares tool support, and
+  `tools: unreliable` for a smaller one. A model without tool support, or with
+  unknown support or size, shows no mark. The mark is informational (the model
+  stays selectable) and shows even with `[ai.tools] enabled = false`. On
+  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Ollama detection now sends one `POST /api/show` per installed model to the
+  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
+  2 seconds in total, cached by digest) to read whether it declares tools.
+
 ## [1.0.1] - 2026-10-31
 
 ### Changed

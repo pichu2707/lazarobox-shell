@@ -26,6 +26,7 @@ use crate::core::{
         gguf,
         hf::{AccountAsk, AccountReply, Answer, Ask, End, Job, TokenFacts},
         jail::{JailOff, JailSupport},
+        marks::ToolGlyph,
         memory::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
@@ -834,6 +835,8 @@ pub struct App {
     tool_engines: &'static [&'static str],
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,
+    /// How the tool badge of a model row is drawn (injected).
+    tool_glyph: ToolGlyph,
     /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
     cwd_readable: bool,
     /// Monotonic clock, injected so `update` stays deterministic.
@@ -948,6 +951,7 @@ impl App {
             hold: Hold::default(),
             tool_engines: MCP_VERIFIED,
             utf8_locale: false,
+            tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
             clock: Instant::now,
             session_id: || None,
@@ -1112,6 +1116,16 @@ impl App {
     pub fn with_utf8_locale(mut self, utf8: bool) -> Self {
         self.utf8_locale = utf8;
         self
+    }
+
+    pub fn with_tool_glyph(mut self, glyph: ToolGlyph) -> Self {
+        self.tool_glyph = glyph;
+        self
+    }
+
+    /// How the tool badge of a model row is drawn.
+    pub fn tool_glyph(&self) -> ToolGlyph {
+        self.tool_glyph
     }
 
     /// Names this machine so OSC 7 reports for it are accepted.
@@ -8286,6 +8300,7 @@ mod app_tests {
 
     /// A menu save names the file it wrote.
     mod save_notice;
+    mod tool_glyph;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;

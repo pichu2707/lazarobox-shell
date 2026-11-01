@@ -58,14 +58,14 @@ Order note: S2 and S3 are independent of each other (both need S1b); the chain k
 
 ## S1b: Badge and render (`src/core/ai/{marks,picker}.rs`, `src/core/ai/picker/{hub,manage}.rs`, `src/core/menu.rs`, `src/app.rs`, `src/runtime.rs`, `src/ui/mod.rs`, `src/ui/components/menu.rs`, `README.md`, `CHANGELOG.md`)
 
-- [ ] S1b.1 RED: `marks::tool_glyph(term, utf8)` table (`linux` → Text, non-UTF-8 → Text, `xterm-256color`+UTF-8 → Emoji, None term + UTF-8 → Emoji); pin `unicode-width` of `🔧` == 2.
-- [ ] S1b.2 RED: picker tests for installed Ollama rows: `llama3:8b ✓ 🔧`, `tiny:1b ✓ tools: unreliable`, `mid:3b` (exactly 3B) `🔧`, `no tools` and `unknown` → no mark, size unknown → no mark, `[ai.tools] enabled = false` still marks, Enter on a marked row assigns exactly as an unmarked one, not-detected rows (`old:7b`, `mistral:7b`) carry only `download required`.
-- [ ] S1b.3 RED: render tests (`TestBackend`, `ui/components/menu.rs`): tail `✓ 🔧 ●`, text mode `✓ tools`, `tools: unreliable` in both modes, width of the badge counted in `mark_cap`, badge kept (not clipped) in a narrow popup, no misalignment.
-- [ ] S1b.4 GREEN: `PickRow.tools: Option<ToolMark>` and `Row::Pick.tools`; installed Ollama rows call `tool_mark(facts)`; `core/menu.rs` carries it through; `Mark` and `disabled_reason` untouched.
-- [ ] S1b.5 GREEN: `App::with_tool_glyph`, `MenuPopup::with_glyph`; glyph computed once at `runtime.rs` next to `approval::names_utf8`; default `Text`; render tail = mark + badge + dot.
-- [ ] S1b.6 REFACTOR: one function maps `(ToolMark, ToolGlyph)` to text; no env reads in the widget.
-- [ ] S1b.7 Gate.
-- [ ] S1b.8 Docs: README (tool marks, `tools` fallback on `TERM=linux`, detection now sends `POST /api/show` to local Ollama only); CHANGELOG entry; doc comments.
+- [x] S1b.1 RED: `marks::tool_glyph(term, utf8)` table (`linux` → Text, non-UTF-8 → Text, `xterm-256color`+UTF-8 → Emoji, None term + UTF-8 → Emoji); pin `unicode-width` of `🔧` == 2.
+- [x] S1b.2 RED: picker tests for installed Ollama rows: `llama3:8b ✓ 🔧`, `tiny:1b ✓ tools: unreliable`, `mid:3b` (exactly 3B) `🔧`, `no tools` and `unknown` → no mark, size unknown → no mark, `[ai.tools] enabled = false` still marks, Enter on a marked row assigns exactly as an unmarked one, not-detected rows (`old:7b`, `mistral:7b`) carry only `download required`.
+- [x] S1b.3 RED: render tests (`TestBackend`, `ui/components/menu.rs`): tail `✓ 🔧 ●`, text mode `✓ tools`, `tools: unreliable` in both modes, width of the badge counted in `mark_cap`, badge kept (not clipped) in a narrow popup, no misalignment.
+- [x] S1b.4 GREEN: `PickRow.tools: Option<ToolMark>` and `Row::Pick.tools`; installed Ollama rows call `tool_mark(facts)`; `core/menu.rs` carries it through; `Mark` and `disabled_reason` untouched.
+- [x] S1b.5 GREEN: `App::with_tool_glyph`, `MenuPopup::with_glyph`; glyph computed once at `runtime.rs` next to `approval::names_utf8`; default `Text`; render tail = mark + badge + dot.
+- [x] S1b.6 REFACTOR: one function maps `(ToolMark, ToolGlyph)` to text; no env reads in the widget.
+- [x] S1b.7 Gate.
+- [x] S1b.8 Docs: README (tool marks, `tools` fallback on `TERM=linux`, detection now sends `POST /api/show` to local Ollama only); CHANGELOG entry; doc comments.
 
 ## S2: CLI engine rows (`src/core/ai/picker.rs`, README, CHANGELOG)
 

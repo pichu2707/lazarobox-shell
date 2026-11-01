@@ -22,6 +22,35 @@ pub enum ToolMark {
     Unreliable,
 }
 
+/// How the tool badge is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ToolGlyph {
+    Emoji,
+    #[default]
+    Text,
+}
+
+/// The glyph for a terminal: text on the Linux console and on any
+/// non-UTF-8 locale, where the emoji would not draw.
+// `utf8` comes from lazarobox's own environment, not from the host terminal.
+pub fn tool_glyph(term: Option<&str>, utf8: bool) -> ToolGlyph {
+    let plain = term.is_some_and(|t| t == "linux" || t == "dumb" || t.starts_with("linux-"));
+    if utf8 && !plain {
+        ToolGlyph::Emoji
+    } else {
+        ToolGlyph::Text
+    }
+}
+
+/// The badge text of a mark; the single place that maps both.
+pub fn badge_text(mark: ToolMark, glyph: ToolGlyph) -> &'static str {
+    match (mark, glyph) {
+        (ToolMark::Capable, ToolGlyph::Emoji) => "🔧",
+        (ToolMark::Capable, ToolGlyph::Text) => "tools",
+        (ToolMark::Unreliable, _) => "tools: unreliable",
+    }
+}
+
 /// Parameters of a size such as `8.0B`, `137M` or `8x7B`.
 pub fn params_of(size: &str) -> Option<u64> {
     super::ollama_lib::size_params(&size.to_ascii_lowercase())
