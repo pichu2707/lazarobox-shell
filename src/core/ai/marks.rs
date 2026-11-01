@@ -32,8 +32,10 @@ pub enum ToolGlyph {
 
 /// The glyph for a terminal: text on the Linux console and on any
 /// non-UTF-8 locale, where the emoji would not draw.
+// `utf8` comes from lazarobox's own environment, not from the host terminal.
 pub fn tool_glyph(term: Option<&str>, utf8: bool) -> ToolGlyph {
-    if utf8 && term != Some("linux") {
+    let plain = term.is_some_and(|t| t == "linux" || t == "dumb" || t.starts_with("linux-"));
+    if utf8 && !plain {
         ToolGlyph::Emoji
     } else {
         ToolGlyph::Text

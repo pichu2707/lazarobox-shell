@@ -78,3 +78,18 @@ fn the_badge_is_kept_when_the_popup_is_narrow() {
     assert!(shown.contains('…'), "{shown}");
     assert_eq!(cells(&shown), 24);
 }
+
+#[test]
+fn at_the_ai_popup_width_the_label_gives_way_before_the_badge_and_dot() {
+    let inner = crate::core::menu::WANT_WIDTH_AI - 2;
+    let row = pick(
+        "a-very-long-model-name-from-some-registry:70b-instruct-q4_K_M",
+        Mark::Downloaded,
+        true,
+        Some(ToolMark::Unreliable),
+    );
+    let shown = line(&row, ToolGlyph::Emoji, inner);
+    assert!(shown.ends_with(" ✓ tools: unreliable ●"), "{shown}");
+    assert!(shown.contains('…'), "{shown}");
+    assert_eq!(cells(&shown), usize::from(inner));
+}

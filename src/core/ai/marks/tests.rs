@@ -93,3 +93,15 @@ fn badge_text_maps_both_marks_in_both_modes() {
         "tools: unreliable"
     );
 }
+
+#[test]
+fn linux_console_variants_and_dumb_terminals_get_text() {
+    assert_eq!(tool_glyph(Some("linux-16color"), true), ToolGlyph::Text);
+    assert_eq!(tool_glyph(Some("linux-c"), true), ToolGlyph::Text);
+    assert_eq!(tool_glyph(Some("dumb"), true), ToolGlyph::Text);
+}
+
+#[test]
+fn a_term_that_only_contains_linux_still_gets_the_emoji() {
+    assert_eq!(tool_glyph(Some("xterm-linux"), true), ToolGlyph::Emoji);
+}
