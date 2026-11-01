@@ -262,6 +262,34 @@ fn a_binary_outside_cargo_only_shows_the_command_and_copies_it() {
     }
 }
 
+// copy-selection: Other callers get the same notice (update command).
+#[test]
+fn the_update_command_copy_goes_through_the_local_tool_too() {
+    let mut a = on_updates(Some("0.15.4"), Some(distro_env()))
+        .with_clipboard(Some(crate::core::clipboard::Tool::WlCopy), false);
+    a.update(enter());
+    let_go();
+    let copy = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        copy,
+        vec![
+            Effect::SetClipboard(crate::core::copy::osc52(INSTALL_COMMAND).unwrap()),
+            Effect::CopyLocal {
+                seq: 1,
+                text: INSTALL_COMMAND.to_owned()
+            }
+        ]
+    );
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Ok(()),
+    });
+    assert_eq!(footer(&a), "Copied (wl-copy)");
+}
+
 #[test]
 fn without_cargo_on_the_path_the_command_is_shown_not_run() {
     let env = InstallEnv {
