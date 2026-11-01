@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-shell"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]

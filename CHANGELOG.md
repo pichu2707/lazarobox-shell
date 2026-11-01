@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-01
+
 ### Added
 
 - Agent orchestrator (experimental, off by default). One coordinator model
@@ -1689,7 +1691,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
