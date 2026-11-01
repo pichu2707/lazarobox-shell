@@ -185,7 +185,64 @@ fn cli_model_rows_carry_no_mark() {
 }
 
 #[test]
-fn the_engine_mark_falls_back_to_text() {
+fn the_capable_badge_is_spelled_by_the_glyph() {
     use crate::core::ai::marks::{ToolGlyph, badge_text};
     assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Text), "tools");
+    assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Emoji), "🔧");
+}
+
+fn with_jail(id: &'static str, jail: Option<&str>) -> Detection {
+    let mut s = state(id, Status::Available, &[]);
+    s.diagnostics.jail = jail.map(str::to_owned);
+    Detection {
+        engines: vec![s],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_refused_engine_gets_no_mark() {
+    for id in ["codex", "gemini"] {
+        let rows = engine_rows(
+            Target::Task(Task::Code),
+            &AiConfig::default(),
+            Some(&with_jail(id, Some("Landlock ABI 2, needs 3+"))),
+        );
+        assert_eq!(engine_mark_of(&rows, id), None, "{id}");
+        let ok = engine_rows(
+            Target::Task(Task::Code),
+            &AiConfig::default(),
+            Some(&with_jail(id, None)),
+        );
+        assert_eq!(engine_mark_of(&ok, id), Some(ToolMark::Capable), "{id}");
+    }
+}
+
+#[test]
+fn a_stopped_server_gets_no_mark() {
+    let d = engines_detected(&[("vllm", Status::NotRunning), ("ollama", Status::NotRunning)]);
+    let rows = engine_rows(Target::Task(Task::Code), &AiConfig::default(), Some(&d));
+    assert_eq!(engine_mark_of(&rows, "vllm"), None);
+    assert_eq!(engine_mark_of(&rows, "ollama"), None);
+}
+
+#[test]
+fn a_claude_that_needs_an_update_gets_no_mark() {
+    let with_version = |v: &str| {
+        let mut s = state("claude", Status::Available, &[]);
+        s.version = Some(v.to_owned());
+        Detection {
+            engines: vec![s],
+            ..Default::default()
+        }
+    };
+    let rows = |d: &Detection| engine_rows(Target::Task(Task::Code), &AiConfig::default(), Some(d));
+    assert_eq!(
+        engine_mark_of(&rows(&with_version("2.1.100")), "claude"),
+        None
+    );
+    assert_eq!(
+        engine_mark_of(&rows(&with_version("2.1.302")), "claude"),
+        Some(ToolMark::Capable)
+    );
 }

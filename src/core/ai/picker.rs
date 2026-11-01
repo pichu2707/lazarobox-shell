@@ -10,7 +10,7 @@ use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
-use super::chat::adapters::adapter_for;
+use super::chat::adapters::{adapter_for, claude_too_old};
 use super::chat::engine::MCP_VERIFIED;
 use super::config::{AiConfig, Assignment, Task};
 use super::marks::{ToolMark, tool_mark};
@@ -238,7 +238,7 @@ pub fn engine_rows(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
                 adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
-                cli_tool_mark(engine).filter(|_| !is_refused(detection, engine.id)),
+                cli_tool_mark(engine, detection),
             );
         }
     }
@@ -274,9 +274,17 @@ pub fn engine_rows(
 
 /// The mark of a detected CLI engine whose tools passed the manual MCP check.
 /// Independent of `[ai.tools]`: it says what the engine can do, not what is
-/// switched on. A refused engine (jail) is left unmarked by the caller.
-fn cli_tool_mark(engine: &Engine) -> Option<ToolMark> {
-    (matches!(engine.kind, Kind::Cli) && MCP_VERIFIED.contains(&engine.id))
+/// switched on. Never a wrong mark: a refused engine (jail) and a claude that
+/// needs an update cannot run tools, so they carry none.
+fn cli_tool_mark(engine: &Engine, detection: Option<&Detection>) -> Option<ToolMark> {
+    let outdated = engine.id == "claude"
+        && detection
+            .and_then(|d| d.engines.iter().find(|s| s.id == engine.id))
+            .is_some_and(|s| claude_too_old(s.version.as_deref()));
+    (matches!(engine.kind, Kind::Cli)
+        && MCP_VERIFIED.contains(&engine.id)
+        && !is_refused(detection, engine.id)
+        && !outdated)
         .then_some(ToolMark::Capable)
 }
 

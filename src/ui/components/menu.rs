@@ -1358,7 +1358,7 @@ mod tests {
         for version in ["2.1.100 (Claude Code)", "1.0.0", "2.1.258 (Claude Code)"] {
             let row = claude_row(version);
             assert!(
-                row.contains("claude available · update needed: 2.1.259+ tools ●"),
+                row.contains("claude available · update needed: 2.1.259+ ●"),
                 "{version}: {row}"
             );
         }

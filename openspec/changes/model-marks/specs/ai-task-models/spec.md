@@ -51,7 +51,7 @@ Exactly 3B counts as 3B or more. The mark describes the model, not the configura
 - THEN `old:7b` and `mistral:7b` carry only `download required` and no tool mark
 
 ### Requirement: Tool mark on CLI engine rows
-In the engine list of a picker, the engine rows `claude`, `codex` and `gemini` MUST carry the tool mark `🔧`, because lazarobox gives those engines its tools (the engines in the chat tool gate, `MCP_VERIFIED`). The mark follows that gate, not the configuration: it MUST show whether `[ai.tools] enabled` is true or false. It is shown together with the status text, which stays unchanged and first, with the mark after it. The `ollama` engine row MUST carry no tool mark, because only its models carry marks. The rows of `opencode`, `lmstudio`, `llamacpp` and `vllm` carry no tool mark. The CLI model rows (`Opus 5.5`, `default`, `custom…` and so on) MUST carry no tool mark. An engine listed as `(not detected)` keeps its text and gets no tool mark.
+In the engine list of a picker, the engine rows `claude`, `codex` and `gemini` MUST carry the tool mark `🔧`, because lazarobox gives those engines its tools (the engines in the chat tool gate, `MCP_VERIFIED`). The mark follows that gate, not the configuration: it MUST show whether `[ai.tools] enabled` is true or false. It is shown together with the status text, which stays unchanged and first, with the mark after it. The `ollama` engine row MUST carry no tool mark, because only its models carry marks. The rows of `opencode`, `lmstudio`, `llamacpp` and `vllm` carry no tool mark. The CLI model rows (`Opus 5.5`, `default`, `custom…` and so on) MUST carry no tool mark. An engine listed as `(not detected)` keeps its text and gets no tool mark. A mark is never wrong: an engine the jail refuses (`refused · …`) and a `claude` that shows `update needed` cannot run tools, so their rows carry no tool mark.
 
 #### Scenario: CLI engine rows [auto]
 - GIVEN claude, codex, gemini, opencode and ollama are available
@@ -67,6 +67,11 @@ In the engine list of a picker, the engine rows `claude`, `codex` and `gemini` M
 - GIVEN claude is available
 - WHEN its model list is built
 - THEN no row carries a tool mark
+
+#### Scenario: Refused or outdated engine [auto]
+- GIVEN `codex` is refused by the jail, or `claude` is older than the minimum version
+- WHEN the engine list is built
+- THEN the row keeps its status text (`refused · …`, `update needed: …`) and carries no tool mark
 
 #### Scenario: Not detected engine [auto]
 - GIVEN code is assigned `codex`, which is `not installed`
