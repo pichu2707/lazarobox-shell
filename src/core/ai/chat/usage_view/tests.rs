@@ -132,7 +132,17 @@ fn the_today_segment_is_tokens_then_per_token_spend() {
     assert_eq!(today_segment(Some(1234), None), "today: 1234 tok");
     assert_eq!(
         today_segment(Some(5000), Some(420_000)),
-        "today: 5000 tok · $0.4200"
+        "today: 5000 tok · $0.42"
+    );
+    assert_eq!(
+        today_segment(Some(5000), Some(12_345_600)),
+        "today: 5000 tok · $12.35"
+    );
+    // A zero sum shows no figure; a sub-cent one is not rounded down to $0.00.
+    assert_eq!(today_segment(Some(5000), Some(0)), "today: 5000 tok");
+    assert_eq!(
+        today_segment(Some(5000), Some(4_936)),
+        "today: 5000 tok · <$0.01"
     );
     assert_eq!(today_segment(None, None), "today: no data");
     assert_eq!(today_segment(Some(0), None), "today: 0 tok");

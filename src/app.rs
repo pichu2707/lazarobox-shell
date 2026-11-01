@@ -1529,6 +1529,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        chat.set_usage_config(self.ai.usage().clone());
         match chat.cancel() {
             Follow::CancelEngine => {
                 self.dirty = true;

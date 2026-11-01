@@ -80,8 +80,14 @@ pub fn today_segment(tokens: Option<u64>, spend_micros: Option<u64>) -> String {
         || "today: no data".to_owned(),
         |n| format!("today: {n} tok"),
     );
-    if let Some(micros) = spend_micros {
-        text.push_str(&format!(" · {}", format_usd(micros)));
+    // A zero sum is no figure; a sub-cent one is not rounded down to $0.00.
+    match spend_micros {
+        None | Some(0) => {}
+        Some(micros) if micros < 5_000 => text.push_str(" · <$0.01"),
+        Some(micros) => {
+            let cents = micros.saturating_add(5_000) / 10_000;
+            text.push_str(&format!(" · ${}.{:02}", cents / 100, cents % 100));
+        }
     }
     text
 }

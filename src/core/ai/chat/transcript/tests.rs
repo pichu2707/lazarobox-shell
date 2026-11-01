@@ -49,6 +49,7 @@ fn rows(lines: &[Line]) -> Vec<String> {
                 LineKind::Hint => 'T',
                 LineKind::Tool => 'L',
                 LineKind::ToolAlert => 'X',
+                LineKind::Usage => 'G',
                 LineKind::Blank => '_',
             };
             format!("{k}|{}", l.text)
@@ -587,7 +588,7 @@ fn a_usage_line_is_a_system_row_right_below_its_answer() {
     state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(base, 2));
     assert_eq!(
         rows(&build(&state, 40)),
-        ["U|› hi", "_|", "A|hello", "_|", "S|• usage: no data"]
+        ["U|› hi", "_|", "A|hello", "_|", "G|• usage: no data"]
     );
 }
 

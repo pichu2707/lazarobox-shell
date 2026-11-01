@@ -205,14 +205,32 @@ fn only_per_token_engines_add_dollars_to_the_segment() {
         Some(5000),
         &[("claude", 420_000), ("codex", 900_000), ("ollama", 5)],
     ));
-    assert_eq!(
-        a.status_usage().as_deref(),
-        Some("today: 5000 tok · $0.4200")
-    );
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok · $0.42"));
     // Subscription engines only: tokens and no dollars.
     let mut a = conversation();
     a.update(recorded_with(Some(5000), &[("claude", 420_000)]));
     assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok"));
+}
+
+#[test]
+fn a_zero_dollar_sum_adds_no_figure() {
+    let mut per_token = ollama();
+    per_token.set_usage(billing_config(
+        "[ai.usage.billing]\nclaude = \"per-token\"\n",
+    ));
+    let mut a = launched(120, 30).with_ai(per_token);
+    a.update(AppEvent::EnginesDetected(super::chat_history::detection()));
+    press(&mut a, "c");
+    a.update(prompt_for(chat_id()));
+    a.update(recorded_with(Some(5000), &[("claude", 0)]));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok"));
+}
+
+fn billing_config(text: &str) -> crate::core::ai::config::UsageConfig {
+    let table: toml::Table = text.parse().unwrap();
+    crate::core::ai::config::read_with_port_env(&table, &mut Vec::new(), None)
+        .usage()
+        .clone()
 }
 
 #[test]

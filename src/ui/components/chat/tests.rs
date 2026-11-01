@@ -504,3 +504,26 @@ fn no_cursor_when_the_pane_cannot_hold_it() {
         Some(Position::new(0, 0))
     );
 }
+
+// Spec (chat-pane, Per-answer usage line): a dim line, not a warning.
+#[test]
+fn the_usage_line_is_muted_and_not_the_warning_orange_of_a_system_line() {
+    let mut chat = exchange("q", "answer");
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::default());
+    let turn = chat.turn();
+    send(&mut chat, "again", 30);
+    let turn2 = chat.turn();
+    assert_ne!(turn, turn2);
+    chat.apply_at(turn2, StreamEvent::Done(Finish::Stop), at(40));
+    let buf = draw(&chat, 40, 12);
+    let shown = text(&buf);
+    let row = shown
+        .lines()
+        .position(|l| l.contains("usage: no data"))
+        .unwrap_or_else(|| panic!("no usage row in:\n{shown}"));
+    let row = u16::try_from(row).unwrap();
+    // Past the `• ` prefix, on the first letter.
+    let x = 2;
+    assert_eq!(fg(&buf, x, row), Some(theme().text_muted));
+    assert_ne!(fg(&buf, x, row), Some(theme().warning_orange));
+}

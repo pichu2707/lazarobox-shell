@@ -104,7 +104,8 @@ impl App {
             .iter()
             .filter(|(engine, _)| usage.billing(engine) == Some(Billing::PerToken))
             .map(|(_, micros)| *micros)
-            .reduce(u64::saturating_add);
+            .reduce(u64::saturating_add)
+            .filter(|micros| *micros > 0);
         Some(today_segment(today.tokens, spend))
     }
 
@@ -441,6 +442,9 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // The line of a cancelled turn follows the settings of now: a menu
+        // save may have changed them since the last event of the turn.
+        chat.set_usage_config(self.ai.usage().clone());
         let follow = chat.cancel();
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
