@@ -47,18 +47,18 @@ Resolved by the user: chained PRs with feature-branch-chain. Only the tracker me
 
 Spec: copy-selection "Yank to the clipboard via OSC 52" (all scenarios tagged [auto]).
 
-- [ ] 1.1 RED: `core::clipboard::candidates(Session)` table tests: ssh gives `[]`; wsl gives `[ClipExe, WlCopy, Xclip, Xsel]`; wayland gives `WlCopy` first; display-only gives `Xclip, Xsel`; nothing gives `[]`.
-- [ ] 1.2 RED: `args(Tool)` (`xclip -selection clipboard`, `xsel --clipboard --input`, others none) and `payload(Tool, &str)` (UTF-8; `ClipExe` UTF-16LE with BOM, marked unverified until the Windows Terminal record) tests.
-- [ ] 1.3 RED: notice text tests: `Copying (wl-copy)`, `Copied (wl-copy)`, `wl-copy failed (<reason>); sent to the terminal (OSC 52)`, OSC 52-only local text, OSC 52-only SSH text. The failure text never starts with `Copied`.
-- [ ] 1.4 GREEN: implement `Tool`, `Session`, `candidates`, `args`, `payload`, notice fns in `src/core/clipboard.rs`.
-- [ ] 1.5 RED: app tests through `App::update`: with a tool, `y` emits `SetClipboard(osc52)` and `CopyLocal{seq,text}` and notice `Copying (wl-copy)`; without a tool only `SetClipboard` and the local OSC 52-only notice (existing ~25 assertions stay valid); SSH gives the SSH notice and no `CopyLocal`; too-large text with a tool emits `CopyLocal` only, without a tool keeps `Selection too large to copy` (D5).
-- [ ] 1.6 RED: `AppEvent::Clipboard{seq, result}` tests: Ok gives `Copied (wl-copy)`; Err gives the failure notice; a stale `seq` is dropped; an open menu footer is updated too (as `on_open_failed`).
-- [ ] 1.7 GREEN: `Effect::CopyLocal`, `AppEvent::Clipboard`, `App::with_clipboard(Option<Tool>, ssh)`, `copy_to_clipboard` change (`app.rs:~2222`). Chat copy, feedback and update callers get the notices with no edit (assert one test per caller).
-- [ ] 1.8 RED: runtime worker tests with fake tool scripts in a temp dir (as `runtime/opener.rs` tests): exit 0 gives Ok; exit 1 gives Err with reason; sleep beyond `CLIP_TIMEOUT` (2 s, make it injectable) gives `timed out` and the child is killed; stdout and stderr are null; two quick jobs run only the newest (latest copy wins).
-- [ ] 1.9 GREEN: `Clipboard::find(path)` (PATH lookup once at startup), one worker thread with std mpsc, stdin written on a helper thread, `try_wait` poll. Wire in `src/runtime.rs`: Inbox field, `select!` arm, `apply` arm for `CopyLocal`, startup detection of `Session` from env (`SSH_CONNECTION`, `WAYLAND_DISPLAY`, `DISPLAY`, WSL).
-- [ ] 1.10 REFACTOR: remove duplicated notice strings; keep `copy_to_clipboard` the single choke point.
-- [ ] 1.11 Gate. Re-measure production lines (target 190-240).
-- [ ] 1.12 Docs: doc comments on `Tool`, `Session`, worker invariants (latest wins, timeout, null stdio).
+- [x] 1.1 RED: `core::clipboard::candidates(Session)` table tests: ssh gives `[]`; wsl gives `[ClipExe, WlCopy, Xclip, Xsel]`; wayland gives `WlCopy` first; display-only gives `Xclip, Xsel`; nothing gives `[]`.
+- [x] 1.2 RED: `args(Tool)` (`xclip -selection clipboard`, `xsel --clipboard --input`, others none) and `payload(Tool, &str)` (UTF-8; `ClipExe` UTF-16LE with BOM, marked unverified until the Windows Terminal record) tests.
+- [x] 1.3 RED: notice text tests: `Copying (wl-copy)`, `Copied (wl-copy)`, `wl-copy failed (<reason>); sent to the terminal (OSC 52)`, OSC 52-only local text, OSC 52-only SSH text. The failure text never starts with `Copied`.
+- [x] 1.4 GREEN: implement `Tool`, `Session`, `candidates`, `args`, `payload`, notice fns in `src/core/clipboard.rs`.
+- [x] 1.5 RED: app tests through `App::update`: with a tool, `y` emits `SetClipboard(osc52)` and `CopyLocal{seq,text}` and notice `Copying (wl-copy)`; without a tool only `SetClipboard` and the local OSC 52-only notice (existing ~25 assertions stay valid); SSH gives the SSH notice and no `CopyLocal`; too-large text with a tool emits `CopyLocal` only, without a tool keeps `Selection too large to copy` (D5).
+- [x] 1.6 RED: `AppEvent::Clipboard{seq, result}` tests: Ok gives `Copied (wl-copy)`; Err gives the failure notice; a stale `seq` is dropped; an open menu footer is updated too (as `on_open_failed`).
+- [x] 1.7 GREEN: `Effect::CopyLocal`, `AppEvent::Clipboard`, `App::with_clipboard(Option<Tool>, ssh)`, `copy_to_clipboard` change (`app.rs:~2222`). Chat copy, feedback and update callers get the notices with no edit (assert one test per caller).
+- [x] 1.8 RED: runtime worker tests with fake tool scripts in a temp dir (as `runtime/opener.rs` tests): exit 0 gives Ok; exit 1 gives Err with reason; sleep beyond `CLIP_TIMEOUT` (2 s, make it injectable) gives `timed out` and the child is killed; stdout and stderr are null; two quick jobs run only the newest (latest copy wins).
+- [x] 1.9 GREEN: `Clipboard::find(path)` (PATH lookup once at startup), one worker thread with std mpsc, stdin written on a helper thread, `try_wait` poll. Wire in `src/runtime.rs`: Inbox field, `select!` arm, `apply` arm for `CopyLocal`, startup detection of `Session` from env (`SSH_CONNECTION`, `WAYLAND_DISPLAY`, `DISPLAY`, WSL).
+- [x] 1.10 REFACTOR: remove duplicated notice strings; keep `copy_to_clipboard` the single choke point.
+- [x] 1.11 Gate. Re-measure production lines (target 190-240).
+- [x] 1.12 Docs: doc comments on `Tool`, `Session`, worker invariants (latest wins, timeout, null stdio).
 - [ ] 1.13 [manual] Local desktop: `y` shows `Copied (<tool>)` and the text pastes in another app; with PATH stripped of tools, the OSC 52-only notice shows. Result goes in the Kitty record (task 4.6).
 
 ## S2a: Prefix alias `Ctrl+]` (`src/core/prefix.rs`, `src/app.rs`, `src/core/ai/chat/copy.rs`)

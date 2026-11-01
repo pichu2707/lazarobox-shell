@@ -140,6 +140,8 @@ const PROMPT_CHANNEL: usize = 16;
 /// Capacity of the Hugging Face channel: the replies, and a download's
 /// progress about every 250 ms (dropped while the loop is behind).
 const HUB_CHANNEL: usize = 16;
+/// Capacity of the channel the clipboard worker reports on.
+const CLIPBOARD_CHANNEL: usize = 8;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -299,6 +301,29 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
+    // The local clipboard tool of this session, looked up once on the same
+    // PATH; none over SSH, where the terminal's clipboard is the one that
+    // matters.
+    let session = crate::core::clipboard::Session::from_env(
+        |name| env::var(name).ok(),
+        feedback::host_facts().wsl,
+    );
+    let (clipboard_tx, clipboard_rx) = mpsc::channel(CLIPBOARD_CHANNEL);
+    let clipboard = clipboard::Clipboard::find(&cli_env.path, session).map(|(tool, program)| {
+        let tx = clipboard_tx.clone();
+        clipboard::Clipboard::start(
+            tool,
+            program,
+            clipboard::CLIP_TIMEOUT,
+            Box::new(move |seq, result| {
+                let _ = tx.blocking_send((seq, result));
+            }),
+        )
+    });
+    app = app.with_clipboard(
+        clipboard.as_ref().map(clipboard::Clipboard::tool),
+        session.ssh,
+    );
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
@@ -506,6 +531,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                 });
             }
         }))
+        // A copy through the tool comes back as `AppEvent::Clipboard`; a
+        // worker that is gone answers with an error at once.
+        .with_clipboard(Box::new(move |seq, text| {
+            if let Some(clipboard) = &clipboard
+                && let Err(reason) = clipboard.copy(seq, text)
+            {
+                let _ = clipboard_tx.try_send((seq, Err(reason)));
+            }
+        }))
         // An opener that fails comes back as `AppEvent::OpenFailed`: the
         // app copies the link instead.
         .with_opener(Box::new(move |url| {
@@ -644,6 +678,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
+        clipboard: clipboard_rx,
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
@@ -876,6 +911,8 @@ struct Inbox {
     issue: mpsc::Receiver<SendReply>,
     /// A link the opener failed to open.
     open_failed: mpsc::Receiver<String>,
+    /// How a local clipboard copy went: its number and the outcome.
+    clipboard: mpsc::Receiver<(u64, Result<(), String>)>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
@@ -929,6 +966,7 @@ async fn run_loop(
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
+        clipboard: mut clipboard_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
@@ -1052,6 +1090,11 @@ async fn run_loop(
             }
             Some(reply) = issue_rx.recv() => {
                 if step(&mut app, AppEvent::IssueSent(reply), panes) {
+                    return Ok(());
+                }
+            }
+            Some((seq, result)) = clipboard_rx.recv() => {
+                if step(&mut app, AppEvent::Clipboard { seq, result }, panes) {
                     return Ok(());
                 }
             }
@@ -1250,6 +1293,10 @@ struct Panes {
     /// Starts the host's opener on a link, without waiting for it. Does
     /// nothing unless `with_opener` installs the production one.
     open_url: Box<dyn FnMut(&str)>,
+    /// Starts one local clipboard copy (its number and text) without
+    /// waiting; the outcome comes back on its channel. Does nothing unless
+    /// `with_clipboard` installs the production one.
+    copy_local: Box<dyn FnMut(u64, String)>,
     /// Starts sending the Feedback issue with `gh`, without waiting; the
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
@@ -1317,6 +1364,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             open_url: Box::new(|_| {}),
+            copy_local: Box::new(|_, _| {}),
             send_issue: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
@@ -1440,6 +1488,12 @@ impl Panes {
     /// Sets what opens a link in the browser.
     fn with_opener(mut self, open: Box<dyn FnMut(&str)>) -> Self {
         self.open_url = open;
+        self
+    }
+
+    /// Sets what starts a local clipboard copy.
+    fn with_clipboard(mut self, copy: Box<dyn FnMut(u64, String)>) -> Self {
+        self.copy_local = copy;
         self
     }
 
@@ -1567,7 +1621,8 @@ impl Panes {
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 // Returns at once: the opener is reaped on its own thread.
-                Effect::CopyLocal { .. } => {}
+                // Returns at once: the tool runs on the clipboard worker.
+                Effect::CopyLocal { seq, text } => (self.copy_local)(seq, text),
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
                 Effect::SendIssue(issue) => (self.send_issue)(*issue),
@@ -2651,6 +2706,26 @@ mod tests {
             self.flushes += 1;
             Ok(())
         }
+    }
+
+    // copy-selection: Local tool ran (runtime part): the copy is handed to
+    // the clipboard worker with its number, and `apply` returns at once.
+    #[test]
+    fn copy_local_is_handed_to_the_clipboard_starter() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = std::rc::Rc::clone(&calls);
+        let mut panes = panes.with_clipboard(Box::new(move |seq, text| {
+            seen.borrow_mut().push((seq, text));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::CopyLocal {
+            seq: 4,
+            text: "hello".to_owned(),
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty());
+        assert_eq!(*calls.borrow(), vec![(4, "hello".to_owned())]);
     }
 
     // copy-selection: Yank emits OSC 52 (runtime part).
