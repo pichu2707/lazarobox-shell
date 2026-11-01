@@ -325,6 +325,9 @@ pub struct ChatState {
     tools_offered: bool,
     /// The engine of the request in flight, as sent.
     request_engine: String,
+    /// What the last turn used, summed over its `Usage` events. Cleared by
+    /// the next send, so it outlives the turn for whoever stores it.
+    turn_usage: Option<usage::TurnUsage>,
     /// `close_stream` already queued the answer in progress.
     closing: bool,
     /// The profile changed while the first system prompt was still being
@@ -399,6 +402,7 @@ impl ChatState {
             fill: None,
             tools_offered: false,
             request_engine: String::new(),
+            turn_usage: None,
             closing: false,
             reprepare_prompt: false,
             approvals: approval::Approvals::default(),
@@ -699,6 +703,12 @@ impl ChatState {
         self.scroll = scroll;
     }
 
+    /// What the last turn used, if its engine reported any. Stays until the
+    /// next send.
+    pub fn turn_usage(&self) -> Option<&usage::TurnUsage> {
+        self.turn_usage.as_ref()
+    }
+
     /// Moves with every change of the transcript; the line cache keys on it.
     pub fn generation(&self) -> u64 {
         self.generation
@@ -936,6 +946,7 @@ impl ChatState {
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
+        self.turn_usage = None;
         self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
@@ -1000,13 +1011,16 @@ impl ChatState {
         if self.summarizing.is_some() {
             return self.apply_summary(event);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_)) {
+        if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
-            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+            StreamEvent::Slow
+                | StreamEvent::Notice(_)
+                | StreamEvent::Error(_)
+                | StreamEvent::Usage(_)
         ) {
             self.told_sent.clear();
         }
@@ -1024,7 +1038,16 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
-            StreamEvent::Usage(_) => Follow::Nothing,
+            StreamEvent::Usage(mut usage) => {
+                if usage.model.is_none() && !self.request_model.is_empty() {
+                    usage.model = usage::model_id(&self.request_model);
+                }
+                match self.turn_usage.as_mut() {
+                    Some(sum) => sum.merge(&usage),
+                    None => self.turn_usage = Some(usage),
+                }
+                Follow::Nothing
+            }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
             StreamEvent::ToolCall {
                 id, name, summary, ..

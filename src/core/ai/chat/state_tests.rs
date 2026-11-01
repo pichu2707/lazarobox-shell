@@ -485,3 +485,74 @@ fn a_told_line_survives_a_turn_that_ended_before_any_event() {
     let (_, fourth) = sent(&mut state, "four");
     assert_eq!(fourth.system, SYSTEM, "the model heard it once");
 }
+
+mod usage_tests {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    fn usage(input: u64, output: u64) -> StreamEvent {
+        StreamEvent::Usage(TurnUsage {
+            input: Some(input),
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    #[test]
+    fn a_new_chat_has_no_usage() {
+        assert_eq!(chat().turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_events_of_the_turn_are_summed() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(100, 20));
+        state.apply(turn, usage(150, 30));
+        state.apply(turn, StreamEvent::Done(Finish::Stop));
+        let got = state.turn_usage().expect("usage");
+        assert_eq!(
+            (got.input, got.output, got.partial),
+            (Some(250), Some(50), false)
+        );
+    }
+
+    #[test]
+    fn usage_survives_the_end_of_the_turn_and_is_cleared_by_the_next_send() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
+        assert!(state.turn_usage().is_some());
+        sent(&mut state, "again");
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_without_a_model_gets_the_request_model() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        assert_eq!(
+            state.turn_usage().and_then(|u| u.model.as_deref()),
+            Some("llama3:8b")
+        );
+    }
+
+    #[test]
+    fn usage_of_another_turn_is_dropped() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn + 1, usage(1, 1));
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_changes_nothing_visible() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        let before = (state.generation(), state.entries().len());
+        state.apply(turn, usage(1, 1));
+        assert_eq!((state.generation(), state.entries().len()), before);
+    }
+}

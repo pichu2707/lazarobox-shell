@@ -40,7 +40,7 @@ No README or CHANGELOG entry: this slice adds nothing the user can see.
 - [x] 1a.2 GREEN: create `core/ai/chat/usage.rs` (TurnUsage, CostSource, merge); add `StreamEvent::Usage` in `engine.rs`/`mod.rs`.
 - [x] 1a.3 RED+GREEN `claude.rs`: modelUsage sum incl. sub-agent fixture, total_cost_usd, fallback; Usage before Done.
 - [x] 1a.4 RED+GREEN `codex.rs` and `gemini.rs`: cached subtracted saturating; lenient stats (bad stats = None, no Error).
-- [ ] 1a.5 RED+GREEN `stream.rs` Pipe pass-through and `ChatState::apply_at` merge; Usage emitted before Error too.
+- [x] 1a.5 RED+GREEN `stream.rs` Pipe pass-through and `ChatState::apply_at` merge; Usage emitted before Error too.
 - [ ] 1a.6 RED+GREEN `runtime/chat/ollama.rs` round fold (ollama, llama.cpp finish-chunk timings, missing prompt_eval_count = None, cap/error).
 
 ## Slice 1b: Persist (PR 1b)
