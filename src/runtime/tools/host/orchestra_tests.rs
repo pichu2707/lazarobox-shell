@@ -1711,3 +1711,28 @@ async fn every_spelling_of_a_secret_is_refused_at_the_ask_with_the_one_text() {
         assert!(out.is_error, "{input}");
     }
 }
+
+// D4: the diff text a review prompt carries is built from the staged batch,
+// only for paths the review may read; the others are named and not shown.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_staged_diff_holds_readable_paths_and_names_the_others() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = Scripted::new(Decision::Sent);
+    let w = writer(&host, Locality::Cloud, &home, handle.clone(), user);
+    assert!(!w.call(write_call("fresh.rs", "only staged")).await.is_error);
+    let origin = home.join("dev/app");
+    let key = StageKey::Pane(PANE);
+    let all = host.staged_diff(key, &origin, |_| true).await.unwrap();
+    assert!(all.contains("diff of fresh.rs"), "{all}");
+    assert!(all.contains("+only staged"), "{all}");
+    let none = host.staged_diff(key, &origin, |_| false).await.unwrap();
+    assert!(!none.contains("only staged"), "{none}");
+    assert!(
+        none.contains("not shown (not readable by a review): fresh.rs"),
+        "{none}"
+    );
+}

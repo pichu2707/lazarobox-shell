@@ -405,3 +405,23 @@ mod stored {
         assert!(text.contains("Reviews: 2"), "{text}");
     }
 }
+
+// D4: a review whose reader could not see the change says so in the line the
+// batch review shows, never `clean`.
+#[test]
+fn an_unseen_change_is_never_called_clean_in_the_batch_line() {
+    let mut review = high();
+    review.consent(Consent::Granted).unwrap();
+    review.pick("risk", "touches the lockfile").unwrap();
+    review
+        .report(Lens::Risk, "UNSEEN: only file metadata")
+        .unwrap();
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let text = line(&held.evidence());
+    assert!(!text.contains("clean"), "{text}");
+    assert!(
+        text.contains("incomplete (a reviewer could not see the change)"),
+        "{text}"
+    );
+}

@@ -59,6 +59,9 @@ fn outcome_word(ev: &Evidence) -> String {
         Some(Outcome::Clean) => "clean",
         Some(Outcome::Corrected) => "corrected",
         Some(Outcome::BlockersOpen) => "blockers open",
+        Some(Outcome::Incomplete) if ev.review.unseen() > 0 => {
+            "incomplete (a reviewer could not see the change)"
+        }
         Some(Outcome::Incomplete) => "incomplete",
         Some(Outcome::NotReviewed) | None => "not reviewed",
     };
@@ -200,6 +203,7 @@ fn left(ev: &Evidence) -> String {
     for (what, n) in [
         ("omitted", review.omitted()),
         ("malformed", review.malformed()),
+        ("reviewers that could not see the change", review.unseen()),
         ("unanswered", review.unanswered()),
     ] {
         if n > 0 {

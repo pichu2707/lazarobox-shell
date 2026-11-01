@@ -573,6 +573,9 @@ pub struct RunManager {
     /// Where a test says what is staged after a correction.
     #[cfg(test)]
     restage: Option<Restage>,
+    /// Where a test says what the staged diff text is.
+    #[cfg(test)]
+    diff: Option<fn() -> String>,
 }
 
 impl RunManager {
@@ -593,6 +596,8 @@ impl RunManager {
             changed: Notify::new(),
             #[cfg(test)]
             restage: None,
+            #[cfg(test)]
+            diff: None,
         }
     }
 

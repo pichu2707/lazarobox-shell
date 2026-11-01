@@ -106,6 +106,8 @@ pub struct Report {
     pub malformed: usize,
     /// Well-formed findings past [`MAX_FINDINGS`].
     pub omitted: usize,
+    /// `UNSEEN` lines: the reader says it could not see the staged change.
+    pub unseen: usize,
 }
 
 /// Reads a lens worker's text. The shape is one line per finding, at the
@@ -121,6 +123,7 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
                 Some(found) => report.findings.push(found),
             },
             None if looks_like(line, "finding") => report.malformed += 1,
+            None if looks_like(line, "unseen") => report.unseen += 1,
             None => {}
         }
     }
@@ -329,6 +332,8 @@ pub struct LensCount {
     pub lens: Lens,
     pub malformed: usize,
     pub omitted: usize,
+    /// The lens said it could not see the staged change.
+    pub unseen: usize,
 }
 
 /// The state of one review: the consent, the lenses, what they found, what
@@ -442,6 +447,7 @@ impl Review {
             lens,
             malformed: report.malformed,
             omitted: report.omitted,
+            unseen: report.unseen,
         });
         self.verdicts.extend(report.findings.iter().map(|_| None));
         self.findings.extend(report.findings);
@@ -486,6 +492,11 @@ impl Review {
 
     pub fn omitted(&self) -> usize {
         self.counts.iter().map(|count| count.omitted).sum()
+    }
+
+    /// The lenses that said they could not see the staged change.
+    pub fn unseen(&self) -> usize {
+        self.counts.iter().map(|count| count.unseen).sum()
     }
 
     pub fn malformed(&self) -> usize {
@@ -619,7 +630,7 @@ impl Review {
         if !self.open().is_empty() {
             return Ok(Outcome::BlockersOpen);
         }
-        if self.omitted() + self.malformed() + self.unanswered() > 0 {
+        if self.omitted() + self.malformed() + self.unanswered() + self.unseen() > 0 {
             return Ok(Outcome::Incomplete);
         }
         Ok(match self.correction {
@@ -649,8 +660,9 @@ impl Review {
 
 /// What a worker is told: `lead`, then the staged change, all wrapped as
 /// untrusted data under `nonce`. The wrapper cuts a long text at its end, so
-/// what must survive goes in `lead`, before the listing.
-fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change]) -> String {
+/// what must survive goes in `lead`, before the listing; `diff` (already
+/// bounded by the caller) closes it.
+fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change], diff: &str) -> String {
     let mut staged = ChangeLedger::default();
     for change in changes {
         staged.staged(change.clone());
@@ -658,29 +670,45 @@ fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change]) -> String {
     let listing = staged
         .render()
         .unwrap_or_else(|| "files changed: none".to_owned());
-    label::wrap(&label::nonce_from(nonce), &format!("{lead}{listing}"))
+    let body = if diff.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nstaged text:\n{diff}")
+    };
+    label::wrap(&label::nonce_from(nonce), &format!("{lead}{listing}{body}"))
 }
 
 /// The prompt of the worker of `lens`: the lens, the orchestrator's one-line
-/// reason and the staged change, wrapped. The worker reads the content
+/// reason and the staged change and its diff text, wrapped. The worker can also read the content
 /// through the staged view of its read tools.
-pub fn lens_prompt(nonce: [u8; 8], lens: Lens, why: &str, changes: &[Change]) -> String {
+pub fn lens_prompt(
+    nonce: [u8; 8],
+    lens: Lens,
+    why: &str,
+    changes: &[Change],
+    diff: &str,
+) -> String {
     format!(
         "Review lens: {}\nWhy this lens: {}\nThe staged change to review, as data:\n{}",
         lens.id(),
         one_line(why),
-        candidate(nonce, "", changes)
+        candidate(nonce, "", changes, diff)
     )
 }
 
 /// The prompt of the refuter: the claims to examine, then the staged change,
 /// wrapped together because the claims are a worker's text.
-pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -> String {
+pub fn refuter_prompt(
+    nonce: [u8; 8],
+    changes: &[Change],
+    claims: &[&Finding],
+    diff: &str,
+) -> String {
     let lead = claims_lead(claims);
     format!(
         "Claims to refute: {}\nThe claims and the staged change, as data:\n{}",
         claims.len(),
-        candidate(nonce, &lead, changes)
+        candidate(nonce, &lead, changes, diff)
     )
 }
 
@@ -688,14 +716,19 @@ pub fn refuter_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -
 /// but a neutral header and a lead that does not lean toward refuting. A claim
 /// is refuted only on clear evidence in the staged text that the problem is
 /// gone; anything else is unsettled and stays open.
-pub fn validation_prompt(nonce: [u8; 8], changes: &[Change], claims: &[&Finding]) -> String {
+pub fn validation_prompt(
+    nonce: [u8; 8],
+    changes: &[Change],
+    claims: &[&Finding],
+    diff: &str,
+) -> String {
     let lead = claims_lead(claims);
     format!(
         "Claims to check: {}\nThese claims were reported before a correction was staged. \
          Refute a claim only if the staged text clearly shows the problem is gone; \
          anything else is unsettled and stays open.\nThe claims and the staged change, as data:\n{}",
         claims.len(),
-        candidate(nonce, &lead, changes)
+        candidate(nonce, &lead, changes, diff)
     )
 }
 
@@ -716,7 +749,12 @@ fn claims_lead(claims: &[&Finding]) -> String {
 /// The prompt of the one correction worker: the blockers that survived, as a
 /// worker's text and so wrapped, then the staged change. It stages fixes with
 /// its write tools and does not propose the batch.
-pub fn correction_prompt(nonce: [u8; 8], changes: &[Change], blockers: &[&Finding]) -> String {
+pub fn correction_prompt(
+    nonce: [u8; 8],
+    changes: &[Change],
+    blockers: &[&Finding],
+    diff: &str,
+) -> String {
     let mut lead = String::from("blockers to fix:");
     for (at, blocker) in blockers.iter().enumerate() {
         lead.push_str(&format!(
@@ -732,7 +770,7 @@ pub fn correction_prompt(nonce: [u8; 8], changes: &[Change], blockers: &[&Findin
          Change nothing else and do not call propose_batch: the worker whose change this is \
          proposes it.\nThe blockers and the staged change, as data:\n{}",
         blockers.len(),
-        candidate(nonce, &lead, changes)
+        candidate(nonce, &lead, changes, diff)
     )
 }
 

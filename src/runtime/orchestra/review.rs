@@ -626,12 +626,13 @@ impl RunManager {
                 room.1, room.0
             )));
         }
+        let diff = self.diff_text(pane, run).await;
         let mut lenses = Vec::new();
         for lens in DEFAULT_LENSES {
             review
                 .pick(lens.id(), DEFAULT_WHY)
                 .map_err(|e| other(refused(e)))?;
-            let prompt = lens_prompt(wrap()?, lens, DEFAULT_WHY, changes);
+            let prompt = lens_prompt(wrap()?, lens, DEFAULT_WHY, changes, &diff);
             let system = Some(lens_builtin(profile, lens));
             let id = self
                 .start_review(pane, run, Role::Reader, prompt, system)
@@ -708,17 +709,18 @@ impl RunManager {
         let profile = self
             .on_run(pane, run, |live| live.profile)
             .ok_or(Stop::Start(ENDED.to_owned()))?;
+        let diff = self.diff_text(pane, run).await;
         let claims: Vec<&Finding> = asked
             .iter()
             .filter_map(|&at| review.findings().get(at))
             .collect();
         let (prompt, system) = match check {
             Check::Refute => (
-                refuter_prompt(nonce, changes, &claims),
+                refuter_prompt(nonce, changes, &claims, &diff),
                 refuter_builtin(profile),
             ),
             Check::Validate => (
-                validation_prompt(nonce, changes, &claims),
+                validation_prompt(nonce, changes, &claims, &diff),
                 validator_builtin(profile),
             ),
         };
@@ -768,7 +770,8 @@ impl RunManager {
             .iter()
             .filter_map(|&at| review.findings().get(at))
             .collect();
-        let prompt = correction_prompt(nonce, changes, &blockers);
+        let diff = self.diff_text(pane, run).await;
+        let prompt = correction_prompt(nonce, changes, &blockers, &diff);
         let started = self.start_review(pane, run, Role::Correction, prompt, None);
         let id = match started {
             Ok(id) => id,
@@ -862,6 +865,30 @@ impl RunManager {
             .await
     }
 
+    /// The diff text of the staged batch for a review prompt, bounded; the
+    /// files outside the run's scope are named, not shown. When it cannot be
+    /// read the prompt says so and the reviewer falls back to its read tools.
+    async fn diff_text(self: &Arc<Self>, pane: PaneId, run: RunId) -> String {
+        #[cfg(test)]
+        if let Some(diff) = self.diff {
+            return diff();
+        }
+        let origin = self.on_run(pane, run, |live| live.origin.clone());
+        let (Some(origin), Some(tooling)) = (origin, self.tooling.as_ref()) else {
+            return UNAVAILABLE_DIFF.to_owned();
+        };
+        let me = self.clone();
+        let allow = move |real: &Path| {
+            me.on_run(pane, run, |live| live.scope.allows_write(&live.run, real))
+                .unwrap_or(false)
+        };
+        tooling
+            .host
+            .staged_diff(StageKey::Pane(pane), &origin, allow)
+            .await
+            .unwrap_or_else(|| UNAVAILABLE_DIFF.to_owned())
+    }
+
     /// Starts one review worker as a worker of the run.
     fn start_review(
         self: &Arc<Self>,
@@ -951,6 +978,10 @@ impl RunManager {
         }
     }
 }
+
+/// What a prompt says when the staged text could not be put in it.
+const UNAVAILABLE_DIFF: &str =
+    "staged text: not included (it could not be read); read it with your read tools";
 
 /// Which prompt a refuter-shaped worker gets.
 #[derive(Clone, Copy)]

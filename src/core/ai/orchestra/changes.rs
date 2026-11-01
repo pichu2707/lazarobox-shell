@@ -107,3 +107,112 @@ pub fn diff_hash(base: Option<&str>, text: &str) -> String {
     eat(text.as_bytes());
     format!("{hash:016x}")
 }
+
+/// The most diff text a review prompt carries, in bytes. Below the cap the
+/// prompt wrapper applies (32 KiB), so the cut is ours and says so instead of
+/// the wrapper's silent one.
+pub const DIFF_CAP: usize = 24 * 1024;
+
+/// One staged file as a review reads it: the text it replaces (none for a
+/// create) and the text it becomes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StagedText {
+    pub path: String,
+    pub base: Option<String>,
+    pub text: String,
+}
+
+/// The unified diff of `files` for a review prompt, within [`DIFF_CAP`].
+/// `skipped` are staged paths a review may not read (outside its scope or
+/// guarded by the secret rules): named, never shown. A cut is always said,
+/// with how much is missing, so a reviewer knows it did not see everything.
+pub fn render_diff(files: &[StagedText], skipped: &[String]) -> String {
+    use crate::core::ai::tools::diff::diff;
+    let mut out = String::new();
+    let mut hidden = 0;
+    for (at, file) in files.iter().enumerate() {
+        let mut block = format!("diff of {}\n", file.path);
+        block.push_str(&diff(file.base.as_deref(), &file.text).to_string());
+        if !block.ends_with('\n') {
+            block.push('\n');
+        }
+        let room = DIFF_CAP.saturating_sub(out.len());
+        if block.len() <= room {
+            out.push_str(&block);
+            continue;
+        }
+        let mut end = room;
+        while !block.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.push_str(&block[..end]);
+        out.push_str(&format!(
+            "\n[diff truncated: {} byte(s) of {} cut]\n",
+            block.len() - end,
+            file.path
+        ));
+        hidden = files.len() - at - 1;
+        break;
+    }
+    if hidden > 0 {
+        out.push_str(&format!(
+            "[diff truncated: {hidden} more file(s) not shown]\n"
+        ));
+    }
+    for path in skipped {
+        out.push_str(&format!("not shown (not readable by a review): {path}\n"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    fn staged(path: &str, base: Option<&str>, text: &str) -> StagedText {
+        StagedText {
+            path: path.to_owned(),
+            base: base.map(str::to_owned),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_diff_holds_the_added_and_removed_lines() {
+        let files = [staged(
+            "Makefile",
+            Some("all:\n\techo build\n"),
+            "all:\n\techo lint\n",
+        )];
+        let text = render_diff(&files, &[]);
+        assert!(text.starts_with("diff of Makefile\n"), "{text}");
+        assert!(text.contains("-\techo build"), "{text}");
+        assert!(text.contains("+\techo lint"), "{text}");
+    }
+
+    #[test]
+    fn a_create_shows_every_line_as_added() {
+        let text = render_diff(&[staged("a.txt", None, "one\ntwo\n")], &[]);
+        assert!(text.contains("+one") && text.contains("+two"), "{text}");
+    }
+
+    #[test]
+    fn a_long_diff_is_cut_at_the_cap_and_says_how_much() {
+        let big = "x".repeat(40 * 1024);
+        let files = [staged("big.txt", None, &big), staged("b.txt", None, "b\n")];
+        let text = render_diff(&files, &[]);
+        assert!(text.len() < DIFF_CAP + 300, "{}", text.len());
+        assert!(
+            text.contains("[diff truncated:"),
+            "{}",
+            &text[text.len() - 200..]
+        );
+        assert!(text.contains("1 more file(s) not shown"));
+    }
+
+    #[test]
+    fn a_path_a_review_may_not_read_is_named_and_not_shown() {
+        let text = render_diff(&[], &[".env".to_owned()]);
+        assert!(text.contains("not shown (not readable by a review): .env"));
+    }
+}

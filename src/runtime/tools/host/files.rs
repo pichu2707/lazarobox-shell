@@ -23,7 +23,7 @@ use crate::{
         },
         orchestra::{
             WorkerKey,
-            changes::{Change, diff_hash},
+            changes::{Change, StagedText, diff_hash, render_diff},
         },
         tools::{
             Call, ToolError,
@@ -538,6 +538,39 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
         .iter()
         .map(|staged| ledger_change(env, staged))
         .collect()
+}
+
+/// The diff text of the batch of `key` for a review prompt: the files `allow`
+/// lets a review read, as a bounded unified diff, and the others named only.
+/// Those are the files the review's read tools show it through the staged
+/// view, so this hands the prompt nothing the tools would refuse.
+pub(super) fn staged_diff(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+    allow: &dyn Fn(&Path) -> bool,
+) -> String {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return String::new();
+    };
+    let (mut shown, mut skipped) = (Vec::new(), Vec::new());
+    for staged in batch.entries() {
+        let Entry::File { text, base } = &staged.entry else {
+            continue;
+        };
+        let path = ledger_path(env, &staged.target.real);
+        if allow(&staged.target.real) {
+            shown.push(StagedText {
+                path,
+                base: base.clone(),
+                text: text.clone(),
+            });
+        } else {
+            skipped.push(path);
+        }
+    }
+    render_diff(&shown, &skipped)
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change

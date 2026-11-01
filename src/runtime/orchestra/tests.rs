@@ -3584,6 +3584,64 @@ async fn reviewed_with(
     (lab, run, handle)
 }
 
+fn staged_text() -> String {
+    "diff of Cargo.lock\n+yanked = 1\n".to_owned()
+}
+
+/// [`reviewed`] where the staged diff text is `staged_text`.
+async fn reviewed_diff(by: fn(&ChatRequest) -> Option<&'static str>) -> (Lab, RunId, OrchHandle) {
+    let lab = lab_with(Script::By(by), |m, home| RunManager {
+        scratch: |_| false,
+        diff: Some(staged_text),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab
+        .manager
+        .start(pane(), lab.scope(codex_both(), &[]))
+        .unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    let ended = timeout(Duration::from_secs(10), done).await;
+    assert!(ended.expect("the review ended").is_ok());
+    (lab, run, handle)
+}
+
+// D4: every lens worker gets the staged diff text in its prompt, inside the
+// untrusted wrapper, not only the file listing.
+#[tokio::test]
+async fn the_lens_workers_receive_the_staged_diff_text() {
+    let (lab, _run, _handle) = reviewed_diff(quiet).await;
+    let requests = lab.seen.requests();
+    let lenses: Vec<_> = requests.iter().filter(|r| is_lens(r)).collect();
+    assert_eq!(lenses.len(), 2);
+    for lens in lenses {
+        let prompt = user_of(lens);
+        let open = prompt.find("<untrusted").unwrap();
+        let at = prompt.find("+yanked = 1").expect("the diff body");
+        let close = prompt.find("</untrusted").unwrap();
+        assert!(open < at && at < close, "{prompt}");
+    }
+}
+
+fn unseen(request: &ChatRequest) -> Option<&'static str> {
+    is_lens(request).then_some("UNSEEN: I only got file metadata, no diff")
+}
+
+// D4: reviewers that say they could not see the change never yield `clean`;
+// the receipt line says so.
+#[tokio::test]
+async fn reviewers_that_could_not_see_the_change_leave_an_incomplete_review() {
+    let (mut lab, run, _handle) = reviewed_diff(unseen).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    let lines = review_lines(&mut lab);
+    assert!(lines.iter().all(|l| !l.contains("clean")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("incomplete")), "{lines:?}");
+}
+
 fn review_lines(lab: &mut Lab) -> Vec<String> {
     lab.sent()
         .into_iter()
