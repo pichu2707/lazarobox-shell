@@ -39,6 +39,8 @@ cd ~/scratch/orch-demo && lazarobox-shell
 
 Assignments used below (menu, `Prefix m`, tab AI, `s` to save): `orchestrate`, `code`, `review` on a cloud engine; `general` on whatever you have. Tools row `on`. A shell pane in the same tab is handy for `git status` and for running tests yourself.
 
+Cloud engines and the XDG overrides: the overrides above move only lazarobox's own `config.toml` and `chat.db` (and its private CLI working folders). The jail grants each CLI its own login folder under `$HOME` (`~/.claude`, `~/.codex` or `$CODEX_HOME`, `~/.gemini`), so claude, codex and gemini should stay logged in. I did not verify whether each CLI itself reads XDG paths; if one reports "not logged in", `unset XDG_CONFIG_HOME XDG_DATA_HOME` for the cloud tests (A-K) and use your real config, or log in again inside the sandbox.
+
 Evidence to keep: the pane text of each run (`Prefix [` then copy) when a test fails.
 
 ---
@@ -67,7 +69,7 @@ Evidence to keep: the pane text of each run (`Prefix [` then copy) when a test f
 - Setup: gate on and saved, `orchestrate` on a cloud engine.
 - Steps: 1. Open two chat panes (`Prefix w v`, `Prefix c` in each). 2. `Ctrl+O` in pane A. 3. Press it again. 4. Turn it on in A, then send `hello` in A and in B. 5. Hold `Ctrl+O` for a second. 6. Close and reopen a chat.
 - Expect: ORCH badge beside AUTO/RUN only in A while on; a new pane starts off; A's message is an orchestrator turn, B's a plain chat turn on the `chat` engine; a held key toggles once; nothing is written to `config.toml` for ORCH.
-- Footer hint: with the gate on and the composer ready, the line above the composer reads `Ctrl+O: orchestrate this pane` (ORCH off) or `Ctrl+O: stop orchestrating` (ORCH on); during a run it reads `A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode`, and pressing `Ctrl+O` then shows the same text as a notice. With the gate off no hint is drawn.
+- Footer hint: with the gate on and the composer ready, the line above the composer reads `Ctrl+O: orchestrate this pane` (ORCH off) or `Ctrl+O: stop orchestrating` (ORCH on); it is drawn muted (not warning orange) and shows only on an idle pane whose engine is ready (engine guidance, the provider notice and failure alerts take precedence). During a run it reads `A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode` only while no worker is live (live workers show the worker keys instead); pressing `Ctrl+O` during a run always shows that text as a notice. With the gate off no hint is drawn.
 - [ ] Pass   Notes:
 
 ### T05 · Gate off then on keeps pane modes [ANY]
@@ -78,8 +80,8 @@ Evidence to keep: the pane text of each run (`Prefix [` then copy) when a test f
 
 ### T06 · Provider notice [CLOUD]
 - Setup: `acknowledged` absent or `false`; ORCH on in a pane.
-- Steps: 1. Send `list the files in src` (a short goal). 2. While the run starts, read the line above the composer. 3. Type `y`; check it appears in the composer; clear it. 4. With text in the composer press `Enter`. 5. Empty the composer; press `Esc`. 6. Start another run. 7. This time press `Enter` on the empty composer. 8. Start a third run.
-- Expect: the notice says providers recommend API keys for automation and consumer-account logins carry risk, with `Enter accept · Esc dismiss`; the first worker starts without waiting for any key; `y` is typed, not an answer; `Enter` with text sends the message and does not accept; `Esc` dismisses and the notice returns on the next run; `Enter` on an empty composer accepts and `config.toml` gets `acknowledged = true`; no notice on the third run; no API key is ever asked.
+- Steps: 1. Send `list the files in src` (a short goal). 2. While the run starts, read the line above the composer. 3. Type `y`; check it appears in the composer; clear it. 4. While the first turn is still streaming, type `more` and press `Enter`. 5. Empty the composer; press `Esc`. 6. Start another run. 7. This time press `Enter` on the empty composer. 8. Start a third run.
+- Expect: the notice says providers recommend API keys for automation and consumer-account logins carry risk, with `Enter accept · Esc dismiss`; the first worker starts without waiting for any key; `y` is typed, not an answer; `Enter` with text does not accept the notice, and nothing is sent while the turn streams: the pane adds the system line `still answering: wait for it or press Esc to cancel` and the text stays in the composer; `Esc` dismisses and the notice returns on the next run; `Enter` on an empty composer accepts and `config.toml` gets `acknowledged = true`; no notice on the third run; no API key is ever asked.
 - [ ] Pass   Notes:
 
 ### T07 · Unusable engine and tools off [ANY]
@@ -112,7 +114,7 @@ Spec: agent-orchestrator / Small task from the chat (amended for 1.1.0: no test 
 
 ### T11 · A run ends by itself [CLOUD]
 - Steps: 1. During a run, press `Ctrl+O`. 2. Wait for the final message. 3. Press `Ctrl+O` again.
-- Expect: step 1 changes nothing; after the orchestrator's last turn and the last worker are done, `Ctrl+O` works again with no other key.
+- Expect: step 1 changes nothing and shows the notice `A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode`; after the orchestrator's last turn and the last worker are done, `Ctrl+O` works again with no other key.
 - [ ] Pass   Notes:
 
 ### T12 · Usage rows [CLOUD]
@@ -133,7 +135,7 @@ Spec: agent-orchestrator / Small task from the chat (amended for 1.1.0: no test 
 ### T14 · Approval queue [CLOUD]
 - Setup: ORCH on, `ask` mode.
 - Steps: 1. Send `start two review workers at once: one reads ~/scratch/orch-other/note.txt, the other reads ~/scratch/orch-other/two.txt (create it first with any text)`. 2. When both ask, read the prompt and count indicator. 3. Answer one with `y`, the other with `n`.
-- Expect: one prompt at a time, a `1 more waiting` style indicator, each prompt with its own `worker n/m` label; each answer applies to its own prompt only.
+- Expect: one prompt at a time, with `(1 waiting)` appended to the prompt's target (`({n} waiting)`), each prompt with its own `worker n/m` label; each answer applies to its own prompt only.
 - [ ] Pass   Notes:
 
 ### T15 · Quitting kills every worker [CLOUD]
@@ -165,7 +167,7 @@ Spec: agent-orchestrator / Small task from the chat (amended for 1.1.0: no test 
 - [ ] Pass   Notes:
 
 ### T19 · Transcript with an approval or a failure [CLOUD]
-- Steps: 1. With the view open, trigger an outside read (T09). 2. Answer with `y`. 3. Trigger a worker failure (T24) while the view is open.
+- Steps: 1. With the view open, trigger an outside read (T09). 2. Answer with `y`. 3. Trigger a worker failure (T34) while the view is open.
 - Expect: the approval shows under the transcript and `y` answers it while `q` does not close the view; a failure alert closes the transcript; `Ctrl+C` keeps cancelling inside the view.
 - [ ] Pass   Notes:
 
@@ -240,7 +242,7 @@ Spec: agent-orchestrator / Small task from the chat (amended for 1.1.0: no test 
 
 ### T32 · A receipt never approves [CLOUD]
 - Steps: 1. In T29, when the receipt says no blockers, do not press anything.
-- Expect: the batch stays pending; `y` needs every line seen and the delay (`y needs every line seen: N left, scroll ↓`).
+- Expect: the batch stays pending; `y` needs every line seen and the delay: while lines are unseen the counter reads `N remaining · ↓ to unlock y`, and pressing `y` early shows for 2 seconds `scroll ↓ · N lines unseen · y needs all` (narrow pane: `scroll ↓ · N unseen`).
 - [ ] Pass   Notes:
 
 ### T33 · Review time counts against the deadline; orphan batch [CLOUD]

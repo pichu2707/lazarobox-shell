@@ -92,7 +92,7 @@ S4: turn ends, run Open → ledger continuation turn (lists pending handoffs); f
 | 6b | S7b receipt-driven review of high-risk staged changes (D16) | this SDD (needs 6, S4) |
 | 7 | **coding-tools M3** (shipped in 0.28.0 for chat panes; not offered to workers, which is why S8 is deferred to 1.2): a captured, non-pane `run_command` with a timeout, output caps, a jail/profile for toolchains (cargo/npm/pytest; dependency fetch needs the network) | coding-tools |
 | 8 | S8 ODD test-first: `Evidence{command, exit, digest}`, failing then passing, or an explicit exception. DEFERRED to 1.2 (user, 2026-10-31) | this SDD (needs 7, 6, and a worker Exec design) |
-| 9 | S5 ODD playbooks become real (classify → track → implement → close, with writes and evidence) | this SDD |
+| 9 | S5 ODD playbooks become real (classify → track → implement → close, with writes and evidence (evidence deferred with S8)) | this SDD |
 | 10 | S9 run view, persistence; S10 README | this SDD |
 
 Step 5 is done. Steps 1-4 and step 7 can proceed in parallel; step 7 (coding-tools M3) is the longest pole. Commits stay with the user (non-goal), through the pane.
