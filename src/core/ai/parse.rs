@@ -16,7 +16,9 @@ pub fn ollama_tags(body: &[u8]) -> Option<Vec<String>> {
 
 /// Name, size and digest of each model of a valid Ollama `/api/tags` body;
 /// tool support starts `Unknown`. Same names, in the same order, as
-/// [`ollama_tags`].
+/// [`ollama_tags`]. A name that sanitising or the length cap changed would not
+/// be the name Ollama knows, so its `/api/show` call finds no model and the
+/// model stays `Unknown` (no mark) on purpose.
 pub fn ollama_tag_facts(body: &[u8]) -> Option<Vec<ModelFacts>> {
     let items = array_field(body, "models")?;
     Some(
@@ -580,6 +582,8 @@ mod tests {
         include_bytes!("../../../tests/fixtures/ollama/api-show-deepseek-r1-70b.json");
     const SHOW_EMBED: &[u8] =
         include_bytes!("../../../tests/fixtures/ollama/api-show-nomic-embed-text-latest.json");
+    const SHOW_FULL: &[u8] =
+        include_bytes!("../../../tests/fixtures/ollama/api-show-llama3.2-3b-ctx-full.json");
     const SHOW_OLD: &[u8] = include_bytes!("../../../tests/fixtures/ollama/api-show-old.json");
 
     #[test]
@@ -588,6 +592,12 @@ mod tests {
         // The tags of this model omit `tools`; show is the source of truth.
         assert_eq!(show_tools(SHOW_DEEPSEEK), Tools::Yes);
         assert_eq!(show_tools(SHOW_EMBED), Tools::No);
+    }
+
+    #[test]
+    fn show_tools_reads_a_realistic_full_reply() {
+        assert!(SHOW_FULL.len() > 4 * 1024);
+        assert_eq!(show_tools(SHOW_FULL), Tools::Yes);
     }
 
     #[test]

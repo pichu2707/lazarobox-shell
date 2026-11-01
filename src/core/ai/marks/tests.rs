@@ -9,6 +9,12 @@ fn params_of_reads_the_ollama_size_strings() {
 }
 
 #[test]
+fn params_of_accepts_lowercase_and_rejects_a_fractional_expert_count() {
+    assert_eq!(params_of("8b"), Some(8_000_000_000));
+    assert_eq!(params_of("1.5x7B"), None);
+}
+
+#[test]
 fn params_of_rejects_what_is_not_a_size() {
     assert_eq!(params_of(""), None);
     assert_eq!(params_of("junk"), None);
