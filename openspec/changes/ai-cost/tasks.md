@@ -47,11 +47,11 @@ No README or CHANGELOG entry: this slice adds nothing the user can see.
 
 No README or CHANGELOG entry: this slice adds nothing the user can see (the privacy text lands in 2b.2).
 
-- [ ] 1b.1 RED: store tests on a v3 file: ensure_usage, opens under `open_with(..,3)`, SET NULL on delete, 90-day prune, no text.
-- [ ] 1b.2 GREEN: `ensure_usage` in `runtime/chat_store.rs`; worker insert, prune, today sum in `chat_store/worker.rs`.
-- [ ] 1b.3 RED+GREEN `core/ai/chat/store.rs` RecordUsage/UsageRecorded; `app/history.rs` writes only when history is on (no rows when off).
-- [ ] 1b.4 RED+GREEN row on no-data turn (all None); compaction/summary role in `app.rs`.
-- [ ] 1b.5 RED+GREEN failed write shows `Usage not saved: <reason>` once per run, never blocks the turn.
+- [x] 1b.1 RED: store tests on a v3 file: ensure_usage, opens under `open_with(..,3)`, SET NULL on delete, 90-day prune, no text.
+- [x] 1b.2 GREEN: `ensure_usage` in `runtime/chat_store.rs`; worker insert, prune, today sum in `chat_store/worker.rs`.
+- [x] 1b.3 RED+GREEN `core/ai/chat/store.rs` RecordUsage/UsageRecorded; `app/history.rs` writes only when history is on (no rows when off).
+- [x] 1b.4 RED+GREEN compaction/summary rows carry their role (`compaction`, `summary`); a no-data turn writes no row (ai-usage: No data, no row).
+- [x] 1b.5 RED+GREEN failed write shows `Usage not saved: <reason>` once per run, never blocks the turn.
 
 ## Slice 1c: /cost text (PR 1c)
 

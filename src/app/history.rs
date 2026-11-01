@@ -9,7 +9,8 @@ use crate::core::ai::chat::{
         notes_result_line, notes_stay_line,
     },
     store::{
-        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
+        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE,
+        USAGE_NOT_SAVED, bounded_error, skipped_line,
     },
     tags::Tags,
 };
@@ -380,13 +381,31 @@ impl App {
                 self.on_tags_reply(reply);
                 Vec::new()
             }
-            StoreReply::SessionLinked { .. }
-            | StoreReply::LinkFailed { .. }
-            | StoreReply::UsageRecorded { .. } => Vec::new(),
+            StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::UsageRecorded { pane, problem, .. } => {
+                self.on_usage_reply(*pane, problem.as_deref());
+                Vec::new()
+            }
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())
             }
         }
+    }
+
+    /// The answer to a usage write. A lost row, a failed migration or a
+    /// failed prune is told once per run in the pane that asked, with a
+    /// reason free of text; the turn is never touched.
+    fn on_usage_reply(&mut self, id: PaneId, problem: Option<&str>) {
+        let Some(reason) = problem else { return };
+        if self.usage_notice_shown {
+            return;
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        self.usage_notice_shown = true;
+        chat.push_system(format!("{USAGE_NOT_SAVED}{}", bounded_error(reason)));
+        self.dirty = true;
     }
 
     /// The list arrived (or could not be read): the pane learns its project

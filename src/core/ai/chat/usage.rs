@@ -118,6 +118,59 @@ impl TurnUsage {
     }
 }
 
+/// The usage of one run, waiting for the store. `role` says what ran: `chat`,
+/// `compaction` or `summary`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Pending {
+    pub role: &'static str,
+    pub engine: String,
+    pub usage: TurnUsage,
+}
+
+/// What a compaction or summary run used so far. Their model calls are real
+/// spend the chat turns do not show, so each ends as a row of its own.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SideRun {
+    role: &'static str,
+    engine: String,
+    model: Option<String>,
+    usage: Option<TurnUsage>,
+}
+
+impl SideRun {
+    pub fn new(role: &'static str, engine: &str, model: Option<&str>) -> Self {
+        Self {
+            role,
+            engine: engine.to_owned(),
+            model: model.and_then(model_id),
+            usage: None,
+        }
+    }
+
+    /// A `Usage` event of the run.
+    pub fn add(&mut self, mut usage: TurnUsage) {
+        if usage.model.is_none() && !usage.multi_model {
+            usage.model.clone_from(&self.model);
+        }
+        match self.usage.as_mut() {
+            Some(sum) => sum.merge(&usage),
+            None => self.usage = Some(usage),
+        }
+    }
+
+    /// The run ended; `cut` when it did not end well. `None` when it reported
+    /// no usage: no data writes no row.
+    pub fn end(self, cut: bool) -> Option<Pending> {
+        let mut usage = self.usage?;
+        usage.partial |= cut;
+        Some(Pending {
+            role: self.role,
+            engine: self.engine,
+            usage,
+        })
+    }
+}
+
 /// Folds the requests of one turn into one value.
 #[derive(Default)]
 pub struct UsageFold {

@@ -18,6 +18,7 @@ use super::{
     },
     sendable_indices,
     summary::COLLECT_CAP,
+    usage::SideRun,
 };
 use crate::core::ai::{
     memory::{context::neutralize, redact::redact},
@@ -249,6 +250,7 @@ impl ChatState {
         ));
         self.turn += 1;
         self.compaction.turns = 0;
+        self.side_run = Some(SideRun::new("compaction", engine, model.as_deref()));
         self.compaction.run = Some(Run {
             turn: self.turn,
             text: String::new(),
@@ -283,19 +285,31 @@ impl ChatState {
                 };
                 if run.text.len() + text.len() > COLLECT_CAP {
                     self.compaction.run = None;
+                    self.end_side_run(true);
                     // Anything the engine still sends belongs to a turn nobody awaits.
                     self.turn += 1;
                     return Follow::CancelEngine;
                 }
                 run.text.push_str(&text);
             }
-            StreamEvent::Done(_) => self.keep_compaction(),
-            StreamEvent::Error(_) => self.compaction.run = None,
+            StreamEvent::Done(_) => {
+                self.keep_compaction();
+                self.end_side_run(false);
+            }
+            StreamEvent::Error(_) => {
+                self.compaction.run = None;
+                self.end_side_run(true);
+            }
+            StreamEvent::Usage(usage) => {
+                if self.compaction.run.is_some()
+                    && let Some(run) = self.side_run.as_mut()
+                {
+                    run.add(*usage);
+                }
+            }
             StreamEvent::Slow
             | StreamEvent::Notice(_)
             | StreamEvent::ThinkingDelta(_)
-            // Not recorded yet: the compaction's own usage lands with 1b.4.
-            | StreamEvent::Usage(_)
             | StreamEvent::ToolCall { .. }
             | StreamEvent::ToolResult { .. } => {}
         }

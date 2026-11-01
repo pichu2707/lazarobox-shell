@@ -2300,13 +2300,14 @@ fn a_count_the_engine_did_not_report_stays_null() {
         ..TurnUsage::default()
     };
     worker.handle(record(None, only_output));
-    let row: (
+    type Row = (
         Option<i64>,
         Option<i64>,
         Option<i64>,
         Option<i64>,
         Option<String>,
-    ) = conn
+    );
+    let row: Row = conn
         .query_row(
             "SELECT input, output, cache_read, cost_micros, model FROM turn_usage",
             [],

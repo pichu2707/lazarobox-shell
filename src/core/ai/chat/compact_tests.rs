@@ -476,3 +476,83 @@ fn a_summary_for_a_turn_that_changed_without_a_send_is_not_a_compaction_turn() {
     state.apply(turn, StreamEvent::Done(Finish::Stop));
     assert_eq!(state.summary_block(), None);
 }
+
+// ai-cost 1b.4: the run's own usage is a row with its role ---------------------
+
+mod usage_rows {
+    use super::*;
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    use crate::core::layout::PaneId;
+
+    fn used(output: u64) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    type Row = (String, String, Option<String>, bool, Option<u64>);
+
+    fn rows(state: &mut ChatState) -> Vec<Row> {
+        state
+            .store_cmds(PaneId::FIRST, &[])
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                StoreCmd::RecordUsage {
+                    engine,
+                    role,
+                    usage,
+                    ..
+                } => Some((
+                    role,
+                    engine,
+                    usage.model.clone(),
+                    usage.partial,
+                    usage.output,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_compaction_run_that_reported_usage_is_a_compaction_row() {
+        let mut state = overflowing(10);
+        // The chat turns report nothing here, so only the run is a row.
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(turn, used(40));
+        finish(&mut state, turn, "summary");
+        assert_eq!(
+            rows(&mut state),
+            vec![(
+                "compaction".into(),
+                "ollama".into(),
+                Some("llama3:8b".into()),
+                false,
+                Some(40)
+            )]
+        );
+        assert!(rows(&mut state).is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_failed_compaction_run_is_partial_and_one_without_usage_is_no_row() {
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(turn, used(3));
+        state.apply_compaction_event(
+            turn,
+            StreamEvent::Error(super::super::engine::ChatError::Interrupted),
+        );
+        let got = rows(&mut state);
+        assert_eq!((got[0].0.as_str(), got[0].3), ("compaction", true));
+
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        finish(&mut state, turn, "summary");
+        assert!(rows(&mut state).is_empty());
+    }
+}

@@ -145,15 +145,30 @@ impl ChatState {
             folder: self.origin_cwd.clone(),
             open: open.to_vec(),
         };
-        std::mem::take(&mut self.outbox)
+        let saves: Vec<StoreCmd> = std::mem::take(&mut self.outbox)
             .into_iter()
             .filter_map(|message| self.store.save(pane, message, &new))
-            .collect()
+            .collect();
+        // Usage follows the messages, so a conversation created by them is
+        // named by its pane. A detached conversation stores its usage
+        // unlinked: the rows outlive the conversation.
+        let conversation = self.store.conversation();
+        let usage = std::mem::take(&mut self.usage_outbox)
+            .into_iter()
+            .map(|pending| StoreCmd::RecordUsage {
+                pane,
+                conversation,
+                engine: pending.engine,
+                role: pending.role.to_owned(),
+                usage: Box::new(pending.usage),
+            });
+        saves.into_iter().chain(usage).collect()
     }
 
     /// Forgets what is waiting to be saved (history is off).
     pub fn drop_saves(&mut self) {
         self.outbox.clear();
+        self.usage_outbox.clear();
     }
 
     /// The store's answer to a write of this pane.
@@ -237,6 +252,7 @@ impl ChatState {
             self.turn += 1;
         }
         self.compaction.reset();
+        self.side_run = None;
         self.store = super::store::PaneStore::open(conversation);
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

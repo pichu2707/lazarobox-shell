@@ -328,6 +328,10 @@ pub struct ChatState {
     /// What the last turn used, summed over its `Usage` events. Cleared by
     /// the next send, so it outlives the turn for whoever stores it.
     turn_usage: Option<usage::TurnUsage>,
+    /// Usage of ended runs the store has not been told about yet.
+    usage_outbox: Vec<usage::Pending>,
+    /// The compaction or summary run in flight, for its own usage.
+    side_run: Option<usage::SideRun>,
     /// `close_stream` already queued the answer in progress.
     closing: bool,
     /// The profile changed while the first system prompt was still being
@@ -403,6 +407,8 @@ impl ChatState {
             tools_offered: false,
             request_engine: String::new(),
             turn_usage: None,
+            usage_outbox: Vec::new(),
+            side_run: None,
             closing: false,
             reprepare_prompt: false,
             approvals: approval::Approvals::default(),
@@ -926,6 +932,7 @@ impl ChatState {
             summarized = true;
         }
         self.compaction.cancel();
+        self.side_run = None;
         self.compaction.sent(room);
         let memory_text = memory.as_deref().unwrap_or_default();
         self.fill = budget::fill(
@@ -1221,6 +1228,13 @@ impl ChatState {
         {
             usage.partial = true;
         }
+        if let Some(usage) = self.turn_usage.clone() {
+            self.usage_outbox.push(usage::Pending {
+                role: "chat",
+                engine: self.request_engine.clone(),
+                usage,
+            });
+        }
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
@@ -1245,6 +1259,14 @@ impl ChatState {
         self.started = None;
         self.request_model.clear();
         self.request_engine.clear();
+    }
+
+    /// The compaction or summary run ended: its usage, if it reported any,
+    /// waits for the store. `cut` when it did not end well.
+    fn end_side_run(&mut self, cut: bool) {
+        if let Some(pending) = self.side_run.take().and_then(|run| run.end(cut)) {
+            self.usage_outbox.push(pending);
+        }
     }
 
     /// Stops the turn in flight, keeping the partial answer.

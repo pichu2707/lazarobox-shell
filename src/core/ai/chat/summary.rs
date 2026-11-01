@@ -20,6 +20,7 @@ use super::{
         history_chars,
     },
     note::REDACTED_AGAIN as NOTE_REDACTED_AGAIN,
+    usage::SideRun,
     yank,
 };
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
@@ -270,6 +271,7 @@ impl ChatState {
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();
         self.summarizing = Some(String::new());
+        self.side_run = Some(SideRun::new("summary", engine, model.as_deref()));
         self.generation += 1;
         Some((
             self.turn,
@@ -295,9 +297,13 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Usage(usage) => {
+                if let Some(run) = self.side_run.as_mut() {
+                    run.add(*usage);
+                }
+                Follow::Nothing
+            }
             StreamEvent::ThinkingDelta(_)
-            // Not recorded yet: the summary's own usage lands with 1b.4.
-            | StreamEvent::Usage(_)
             | StreamEvent::Notice(_)
             | StreamEvent::ToolCall { .. }
             | StreamEvent::ToolResult { .. } => Follow::Nothing,
@@ -350,6 +356,7 @@ impl ChatState {
     /// Ends the run: the draft opens on the text, or the failure is said once.
     /// `cut` marks a stream that ended early: the draft says so.
     fn finish_summary(&mut self, failure: Option<String>, cut: bool) {
+        self.end_side_run(failure.is_some() || cut);
         let text = self.summarizing.take().unwrap_or_default();
         self.phase = Phase::Idle;
         self.started = None;
@@ -374,6 +381,7 @@ impl ChatState {
 
     /// Stops the run in flight; no draft opens.
     pub(super) fn cancel_summary(&mut self) -> Follow {
+        self.end_side_run(true);
         self.summarizing = None;
         self.phase = Phase::Idle;
         self.started = None;
