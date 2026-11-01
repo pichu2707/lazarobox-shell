@@ -386,7 +386,6 @@ impl App {
                 self.on_usage_reply(*pane, problem.as_deref());
                 Vec::new()
             }
-            // The `/cost` view that reads it lands in the next slice.
             StoreReply::UsageReport { .. } => Vec::new(),
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())

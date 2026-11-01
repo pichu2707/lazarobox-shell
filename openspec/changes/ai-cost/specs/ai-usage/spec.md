@@ -244,7 +244,7 @@ The two per-day notes MUST appear once per threshold per local day per app run (
 3. `last 7 days: <T> · <K> turns` (the last 7 local days including today);
 4. `by engine and model (last 7 days):` followed by one line per engine/model pair, sorted by total tokens descending: `  <engine> › <model>: in <N> · out <N>` plus the cached, dollar and partial parts as in Usage text formats, dollars labelled by the engine's billing mode;
 5. `this chat: <T> · <K> turns` for the current conversation (records still linked to it), or `this chat: no data` when it has none.
-Sums MUST skip `None` values rather than treating them as 0, and a pair that has at least one partial record or at least one record with a missing count MUST be marked `partial`. With no records at all the view is `AI usage (alpha)` followed by `no usage recorded yet`. Reading the store happens off the UI thread; until the answer arrives the pane shows `reading usage…`; if the store is unavailable the view is `usage history is not available` with no other lines. When chat history is off, no usage rows are written; the view then shows only the current session, built from memory, with the line `chat history is off: showing this session only`.
+`<K> turns` counts chat records only (compaction and summary runs add their tokens but are not turns). Sums MUST skip `None` values rather than treating them as 0. A pair line, and every summary line (`today`, `last 7 days`, `this chat`, `this session`), MUST end with ` · partial` when any record in it is partial or lacks its input or output count. A pair line that shows a dollar figure is also `partial` when some of its records reported tokens but no dollars while others did (the figure is then a floor). With no records at all the view is `AI usage (alpha)` followed by `no usage recorded yet`. Reading the store happens off the UI thread; until the answer arrives the pane shows `reading usage…`; if the store is unavailable the view is `usage history is not available` with no other lines. When chat history is off, no usage rows are written; the view then shows only the current session, built from memory, with the line `chat history is off: showing this session only`.
 
 #### Scenario: Aggregates all chats [auto]
 - GIVEN records in two chats and in one deleted chat, today
@@ -264,7 +264,22 @@ Sums MUST skip `None` values rather than treating them as 0, and a pair that has
 #### Scenario: No data is not zero [auto]
 - GIVEN today's only record has `output_tokens` and no input
 - WHEN `/cost` runs
-- THEN `today: no data · 1 turns` is shown and the pair line reads `in no data · out <N> · partial`
+- THEN `today: no data · 1 turns · partial` is shown and the pair line reads `in no data · out <N> · partial`
+
+#### Scenario: Summary lines are partial too [auto]
+- GIVEN one partial record and one complete record today
+- WHEN `/cost` runs
+- THEN `today`, `last 7 days` and the pair line end with ` · partial`, and a view with only complete records has no `partial`
+
+#### Scenario: Cost gap is partial [auto]
+- GIVEN two claude records of one model, only one with a dollar figure
+- WHEN `/cost` runs
+- THEN the pair line shows the figure followed by ` · partial`
+
+#### Scenario: Turns are chat records only [auto]
+- GIVEN a chat record and a compaction record of one engine
+- WHEN `/cost` runs
+- THEN the tokens of both are summed and the turns read 1
 
 #### Scenario: Empty store [auto]
 - GIVEN no usage records

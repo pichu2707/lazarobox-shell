@@ -569,16 +569,25 @@ fn record_usage(
 /// count stays NULL (`None`), never 0; a row is partial when a record was or
 /// lacked its input or output.
 fn usage_report(
-    conn: &mut Connection,
+    conn: &Connection,
     conversation: Option<i64>,
     at: i64,
 ) -> Result<Vec<UsageRow>, rusqlite::Error> {
-    ensure_usage(conn)?;
+    // Reading never runs DDL: a store without the table has no usage.
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'turn_usage')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok(Vec::new());
+    }
     let mut stmt = conn.prepare(
         "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
                       - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
                 engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
-                COUNT(*), SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
+                COALESCE(SUM(role = 'chat'), 0), COUNT(*), COUNT(cost_micros),
+                SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
                 SUM(CASE WHEN input IS NOT NULL AND output IS NOT NULL
                          THEN input + output END),
                 MAX(partial OR input IS NULL OR output IS NULL)
@@ -592,12 +601,14 @@ fn usage_report(
             model: r.get(2)?,
             in_chat: r.get(3)?,
             turns: count(Some(r.get(4)?)).unwrap_or(0),
-            input: count(r.get(5)?),
-            output: count(r.get(6)?),
-            cache_read: count(r.get(7)?),
-            cost_micros: count(r.get(8)?),
-            total: count(r.get(9)?),
-            partial: r.get(10)?,
+            records: count(Some(r.get(5)?)).unwrap_or(0),
+            costed: count(Some(r.get(6)?)).unwrap_or(0),
+            input: count(r.get(7)?),
+            output: count(r.get(8)?),
+            cache_read: count(r.get(9)?),
+            cost_micros: count(r.get(10)?),
+            total: count(r.get(11)?),
+            partial: r.get(12)?,
         })
     })?;
     rows.collect()
