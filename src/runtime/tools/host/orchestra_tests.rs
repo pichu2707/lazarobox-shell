@@ -1661,3 +1661,53 @@ async fn a_reviewed_file_restaged_during_the_review_is_reported_as_changed() {
         "{log:?}"
     );
 }
+
+// T10: every spelling of a secret file, and the same name under another
+// folder of the run (a worker's own cwd, where nothing exists), reaches the
+// ask as `Refused`, so the approval mode can answer it with the refusal and
+// no prompt. The answer comes back as the one refusal text, reading nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn every_spelling_of_a_secret_is_refused_at_the_ask_with_the_one_text() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    std::fs::write(home.join("dev/app/.env"), "SECRET=1").unwrap();
+    std::fs::create_dir_all(home.join("dev/app/cli-cwd")).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let abs = home.join("dev/app/.env").to_str().unwrap().to_owned();
+    let elsewhere = home
+        .join("dev/app/cli-cwd/.env")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    for input in [
+        ".env",
+        "./.env",
+        "sub/../.env",
+        "~/dev/app/.env",
+        abs.as_str(),
+        elsewhere.as_str(),
+        "cli-cwd/.env",
+    ] {
+        let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+        let approver = Scripted::new(Decision::Unprompted);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(read(input)).await;
+        let _ = pair(&events(&mut rx));
+        let asked = approver.asked.lock().unwrap().clone();
+        assert!(
+            matches!(
+                asked.as_slice(),
+                [ApprovalAsk::WorkerRead {
+                    reach: Reach::Refused,
+                    cloud: true,
+                    ..
+                }]
+            ),
+            "{input}: {asked:?}"
+        );
+        assert_eq!(out.text, REFUSED, "{input}");
+        assert!(out.is_error, "{input}");
+    }
+}

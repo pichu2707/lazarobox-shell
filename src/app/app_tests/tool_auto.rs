@@ -748,6 +748,21 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
             Some(Decision::Unprompted),
         ),
         (ApprovalMode::Run, Reach::Other, true, true, None),
+        // A path the guard refuses (`.env`) never prompts, in any mode (T10).
+        (
+            ApprovalMode::Ask,
+            Reach::Refused,
+            true,
+            false,
+            Some(Decision::Unprompted),
+        ),
+        (
+            ApprovalMode::Auto,
+            Reach::Refused,
+            true,
+            false,
+            Some(Decision::Unprompted),
+        ),
         (
             ApprovalMode::Run,
             Reach::Unshowable,

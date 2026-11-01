@@ -174,7 +174,7 @@ A run MUST start with no prompt and no key: its read scope is set at run start, 
 #### Scenario: Deny-list wins inside the scope [auto]
 - GIVEN a scope `~/dev/app` containing `.env` and a symlink `link` to `~/.ssh/id_ed25519`
 - WHEN `read_file` is called on each
-- THEN both are refused with the one identical refusal message and no approval is offered
+- THEN both are refused with the one identical refusal message and no approval is offered, in `ask`, `auto` and `run` alike, for any spelling of the path
 
 #### Scenario: Requested and resolved path both checked [auto]
 - GIVEN a scope `~/dev/app` and `~/dev/app/x` is a symlink to `~/other/y`
