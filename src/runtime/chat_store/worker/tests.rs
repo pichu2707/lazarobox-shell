@@ -2864,3 +2864,132 @@ fn the_reply_sums_todays_dollars_per_engine_and_leaves_other_days_out() {
     let last = cost_reply(worker.handle(record_for("claude", dollars(100))));
     assert_eq!(last, [("claude".to_owned(), 500), ("codex".to_owned(), 50)]);
 }
+
+// ---- today's figures at open and across midnight (ai-cost 2a review) ---------
+
+fn today_reply(worker: &mut Worker) -> StoreReply {
+    worker
+        .handle(StoreCmd::UsageToday { pane: pane() })
+        .expect("a reply")
+}
+
+#[test]
+fn reading_today_gives_the_figures_and_the_next_midnight_without_writing() {
+    let (_dir, mut worker, conn) = fixture();
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, read_problem, problem),
+        (None, Vec::new(), None, None)
+    );
+    let until = until.expect("the day was read");
+    let at = now();
+    // Midnight is at most a day (plus a DST hour) away and still ahead.
+    assert!(until > at && until <= at + DAY + 3_600, "{until} vs {at}");
+    assert_eq!(usage_count(&conn), 0, "reading writes nothing");
+}
+
+#[test]
+fn reading_today_sees_what_was_recorded() {
+    let (_dir, mut worker, _conn) = fixture();
+    worker.handle(record(None, tokens(100, 20)));
+    let StoreReply::UsageRecorded { today, until, .. } = today_reply(&mut worker) else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!((today, until.is_some()), (Some(120), true));
+}
+
+// Spec (never fail silently): a read that fails is not "no data".
+#[test]
+fn a_day_that_cannot_be_read_says_so_and_carries_no_figures() {
+    let dir = TempDir::new().unwrap();
+    {
+        let conn = open_as(&db_path(&dir), me()).unwrap();
+        // A table of the wrong shape: the read fails, the table exists.
+        conn.execute_batch(
+            "DROP TABLE turn_usage; CREATE TABLE turn_usage (ts INTEGER, engine TEXT)",
+        )
+        .unwrap();
+    }
+    let mut worker = worker_at(&db_path(&dir));
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, until, problem),
+        (None, Vec::new(), None, None)
+    );
+    let reason = read_problem.expect("the failure is reported");
+    assert!(!reason.is_empty() && !reason.contains('/'), "{reason}");
+}
+
+// Opening the store may prune old usage (as for every command); the read
+// itself adds nothing and runs no DDL.
+#[test]
+fn reading_the_day_of_a_store_without_the_table_is_no_data_not_a_problem() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage").unwrap();
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, read_problem, problem),
+        (None, Vec::new(), None, None)
+    );
+    assert!(until.expect("the day was read") > now());
+    let back: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turn_usage'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(back, 0, "reading never creates the table");
+}
+
+// A panic while reading is a read problem: it never spends the write notice.
+#[test]
+fn a_panic_while_reading_the_day_is_a_read_problem_with_a_fixed_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(StoreCmd::UsageToday { pane: pane() }, |_, _| {
+        panic!("ZZ-MARKER-ZZ /home/secret")
+    });
+    let Some(StoreReply::UsageRecorded {
+        until,
+        read_problem,
+        problem,
+        ..
+    }) = reply
+    else {
+        panic!("expected UsageRecorded, got {reply:?}");
+    };
+    assert_eq!(
+        (until, read_problem.as_deref(), problem),
+        (None, Some("internal error"), None)
+    );
+}

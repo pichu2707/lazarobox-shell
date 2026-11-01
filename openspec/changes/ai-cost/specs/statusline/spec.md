@@ -51,3 +51,41 @@ While the focused pane is a chat pane and the `ai.usage.statusline` setting is o
 - GIVEN a displayed total of 1000 tokens
 - WHEN a turn of 200 tokens is stored
 - THEN the next frame after the store answers shows 1200
+
+### Requirement: Reading and ageing the usage figures
+The figures MUST be read once through the store worker when the first chat pane is focused with history on and the setting on, and again once the local day changes (the worker answers the next local midnight with them; the app has no timezone logic). A figure MUST never be shown at or after its midnight. One read is in flight at a time; a read with no answer after 30 seconds is given up on and may be asked again. A read that fails MUST keep the last valid figure, be retried no sooner than 60 seconds later, and be told once as the system line `Usage not read: <reason>`; the notice is told again after a later read succeeds and fails again. While no valid figure exists because a read failed, the segment reads `today: ?` (never `today: no data`, which means a read day without a known total). An answer whose midnight is not after the current time (a zone with no midnight that day) MUST NOT be re-read before 60 seconds. When the wall clock moves by more than one hour between two events, backwards or forwards, the figures MUST be read again. With no store thread, the read is answered at once with a read problem.
+
+#### Scenario: Read at open [auto]
+- GIVEN history on and a chat pane just focused
+- WHEN the first event is handled
+- THEN exactly one read is asked of the store worker, and none again until it is answered
+
+#### Scenario: Yesterday never shown [auto]
+- GIVEN figures valid until a given second and the clock reaching it
+- WHEN the segment is drawn and the next event is handled
+- THEN no usage text appears and one new read is asked
+
+#### Scenario: Failed read [auto]
+- GIVEN a valid figure and then a failed read
+- WHEN the segment is drawn
+- THEN the figure stays, `Usage not read: <reason>` is told once, and no new read is asked within 60 seconds
+
+#### Scenario: Unknown, not no data [auto]
+- GIVEN no valid figure and a failed read
+- WHEN the segment is drawn
+- THEN it reads `today: ?`
+
+#### Scenario: Answer already past [auto]
+- GIVEN an answer whose midnight is before the current time
+- WHEN events are handled during the next 59 seconds
+- THEN no read is asked, and one is asked at 60 seconds
+
+#### Scenario: Unanswered read [auto]
+- GIVEN a read in flight that nobody answers
+- WHEN 30 seconds pass
+- THEN another read may be asked
+
+#### Scenario: Clock jump [auto]
+- GIVEN a valid figure and a wall clock that moves 4 hours forwards, or 4 hours backwards
+- WHEN the next event is handled
+- THEN a read is asked

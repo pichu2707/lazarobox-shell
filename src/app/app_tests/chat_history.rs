@@ -231,10 +231,14 @@ fn a_chat_opens_on_the_list_and_asks_the_store_for_it() {
     assert!(!chat_of(&a).list().unwrap().loaded());
     assert_eq!(
         stores(&effects),
-        vec![StoreCmd::List {
-            pane: chat_id(),
-            origin: Some(LAUNCH.into()),
-        }]
+        vec![
+            StoreCmd::List {
+                pane: chat_id(),
+                origin: Some(LAUNCH.into()),
+            },
+            // The day's usage figures, for the status segment.
+            StoreCmd::UsageToday { pane: chat_id() },
+        ]
     );
 }
 

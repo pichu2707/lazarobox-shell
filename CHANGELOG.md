@@ -28,8 +28,10 @@ baseline.
   not part of a yank and not shown after a resume.
 - The status bar of a focused chat shows ` · today: N tok` (all chats and
   engines, today), on by default. Dollars are added only for engines in
-  `per-token` mode (`$0.42`, `<$0.01` below half a cent, nothing for a zero
-  sum). It is the first segment dropped when the bar is narrow.
+  `per-token` mode (`$0.42`, `<$0.01` below half a cent, nothing for a zero sum). It is read from the history when the first chat
+  is focused and again when the local day changes, never shows yesterday's
+  figure, and a read that fails keeps the last figure, is told as `Usage not read: <reason>`, shows `today: ?` when no valid figure is left, and is retried after a minute. It
+  is the first segment dropped when the bar is narrow.
 - `[ai.usage]` (`line`, `statusline`, and the thresholds `turn_tokens`,
   `day_tokens`, `day_usd`, which are read but do nothing yet) and
   `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the

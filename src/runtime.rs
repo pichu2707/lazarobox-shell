@@ -90,7 +90,7 @@ use crate::{
                 approval,
                 notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
-                store::StoreReply,
+                store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
@@ -1800,6 +1800,17 @@ impl Panes {
                 Effect::Store(cmd) => {
                     if let Some(store) = self.store.as_ref() {
                         store.send(cmd);
+                    } else if let StoreCmd::UsageToday { pane } = cmd {
+                        // Nobody will answer: say so at once, or the app
+                        // would wait for a read that never comes.
+                        feedback.push(AppEvent::Store(StoreReply::UsageRecorded {
+                            pane,
+                            today: None,
+                            cost: Vec::new(),
+                            until: None,
+                            read_problem: Some("store not available".to_owned()),
+                            problem: None,
+                        }));
                     }
                 }
                 // Returns at once: the files are read on their own thread.
@@ -3823,6 +3834,30 @@ mod tests {
         panes.shutdown_store(STORE_JOIN_BOUND);
     }
 
+    // A day that nobody can read is answered at once, so the app never waits.
+    #[test]
+    fn a_day_read_without_a_store_thread_is_answered_with_a_read_problem() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pane = PaneId::for_test(2);
+        let (_, feedback) = panes.apply(vec![Effect::Store(StoreCmd::UsageToday { pane })]);
+        let [
+            AppEvent::Store(StoreReply::UsageRecorded {
+                until,
+                read_problem,
+                problem,
+                ..
+            }),
+        ] = feedback.as_slice()
+        else {
+            panic!("expected one UsageRecorded, got {feedback:?}");
+        };
+        assert_eq!(
+            (until, read_problem.as_deref(), problem),
+            (&None, Some("store not available"), &None)
+        );
+        panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
     #[tokio::test]
     async fn a_slow_store_does_not_delay_keys_or_frames() {
         let dir = tempfile::tempdir().unwrap();
@@ -4083,7 +4118,8 @@ mod tests {
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         // The list is answered by the real store: empty.
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             chat,
             crate::core::ai::chat::prompts::Resolved {
@@ -4237,7 +4273,8 @@ mod tests {
         let mut app = history_app(&dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4322,7 +4359,8 @@ mod tests {
         let mut app = history_app(dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4350,6 +4388,7 @@ mod tests {
         // The one stored conversation was opened from the same directory.
         let resume = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, resume, 1).await;
+
         app.update(hkey(KeyCode::Char('x'), KeyModifiers::NONE));
         let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         let turn = sent

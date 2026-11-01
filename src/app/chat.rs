@@ -21,6 +21,76 @@ pub(super) struct UsageToday {
     pub(super) tokens: Option<u64>,
     /// Dollars the engines reported today, per engine.
     pub(super) cost: Vec<(String, u64)>,
+    /// The wall-clock second they stop being today's (the next local midnight).
+    pub(super) until: i64,
+}
+
+/// A read in flight that nobody answers is given up on after this long.
+const READ_TIMEOUT_SECS: i64 = 30;
+/// A failed read, or an answer already out of date, waits this long.
+const READ_RETRY_SECS: i64 = 60;
+/// A wall clock that moves by more than this between two events was set.
+const CLOCK_JUMP_SECS: i64 = 3600;
+
+/// The bookkeeping of the reads of today's figures, in wall-clock seconds.
+#[derive(Default)]
+pub(super) struct UsageRead {
+    /// When the read in flight was asked.
+    pending_since: Option<i64>,
+    /// No new read is asked before this second.
+    next: i64,
+    /// The wall clock at the last event, to notice a jump.
+    seen: Option<i64>,
+    /// The last read failed.
+    failed: bool,
+    /// The `Usage not read` notice was shown since the last good read.
+    told: bool,
+}
+
+impl UsageRead {
+    /// An answer to a read arrived: `until` is the end of the day it read.
+    pub(super) fn answered(&mut self, now: i64, until: Option<i64>, failed: bool) {
+        self.pending_since = None;
+        self.failed = failed;
+        if failed {
+            self.next = now.saturating_add(READ_RETRY_SECS);
+        } else if let Some(until) = until {
+            self.told = false;
+            // An end already past (a zone with no midnight that day) is not
+            // read again at once.
+            self.next = if until > now {
+                until
+            } else {
+                now.saturating_add(READ_RETRY_SECS)
+            };
+        }
+    }
+
+    /// Whether the notice is still to be told, marking it told.
+    pub(super) fn tell(&mut self) -> bool {
+        !std::mem::replace(&mut self.told, true)
+    }
+
+    /// Whether a read is due at `now` (and `wanted`), marking it asked. The
+    /// clock is watched either way.
+    fn due(&mut self, now: i64, wanted: bool) -> bool {
+        let jumped = self.seen.is_some_and(|s| (now - s).abs() > CLOCK_JUMP_SECS);
+        self.seen = Some(now);
+        if jumped {
+            self.next = 0;
+        }
+        if let Some(since) = self.pending_since {
+            if (now - since).abs() < READ_TIMEOUT_SECS {
+                return false;
+            }
+            self.pending_since = None;
+        }
+        if !wanted || now < self.next {
+            return false;
+        }
+        self.pending_since = Some(now);
+        true
+    }
 }
 
 impl App {
@@ -98,7 +168,15 @@ impl App {
             return None;
         }
         self.focused_state().chat_state()?;
-        let today = self.usage_today.as_ref()?;
+        // Yesterday's figure is never shown; when the read that would replace
+        // it failed, the segment says it does not know.
+        let Some(today) = self
+            .usage_today
+            .as_ref()
+            .filter(|today| (self.wall)() < today.until)
+        else {
+            return self.usage_read.failed.then(|| "today: ?".to_owned());
+        };
         let spend = today
             .cost
             .iter()
@@ -107,6 +185,26 @@ impl App {
             .reduce(u64::saturating_add)
             .filter(|micros| *micros > 0);
         Some(today_segment(today.tokens, spend))
+    }
+
+    /// Asks the store thread for today's figures when they are missing or no
+    /// longer today's: the first time a chat is focused with history on, and
+    /// again after the local midnight. One read at a time, and a failed one
+    /// waits a minute. Nothing here touches SQLite.
+    pub(super) fn usage_read_effects(&mut self) -> Vec<Effect> {
+        let now = (self.wall)();
+        let focus = self.tab().focus;
+        let wanted = self.history
+            && self.ai.usage().statusline()
+            && self
+                .panes
+                .get(&focus)
+                .and_then(PaneState::chat_state)
+                .is_some();
+        if !self.usage_read.due(now, wanted) {
+            return Vec::new();
+        }
+        vec![Effect::Store(StoreCmd::UsageToday { pane: focus })]
     }
 
     /// How full the focused chat's context was at its last send, in percent.
