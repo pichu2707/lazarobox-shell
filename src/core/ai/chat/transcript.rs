@@ -150,6 +150,9 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 push_wrapped(out, LineKind::Reasoning, GUTTER, GUTTER, line.text(), width);
             }
         }
+        Entry::Usage(text) => {
+            push_wrapped(out, LineKind::System, SYSTEM_PREFIX, "  ", text, width);
+        }
         Entry::Tool(row) => {
             let call = format!("{} {}", row.name(), row.summary());
             push_wrapped(

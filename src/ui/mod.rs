@@ -136,9 +136,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
     let download = app.status_download();
+    let usage = app.status_usage();
     let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
+            .usage(usage.as_deref())
             .memory(app.status_memory())
             .context(app.status_context())
             .update(app.status_update())

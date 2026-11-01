@@ -437,6 +437,17 @@ mod tests {
         assert_eq!(last_shell_block(&state).as_deref(), Some("new"));
     }
 
+    // Spec (chat-pane, Per-answer usage line): the line is not part of the answer.
+    #[test]
+    fn the_usage_line_after_an_answer_does_not_hide_it() {
+        let state = answered("```bash\nls\n```");
+        assert!(
+            matches!(state.entries.last(), Some(Entry::Usage(_))),
+            "the turn ended with its usage line"
+        );
+        assert_eq!(last_shell_block(&state).as_deref(), Some("ls"));
+    }
+
     #[test]
     fn a_cancelled_or_failed_answer_offers_nothing() {
         let mut state = chat();
@@ -451,7 +462,11 @@ mod tests {
         ] {
             let mut state = answered("```bash\nls\n```");
             assert_eq!(last_shell_block(&state).as_deref(), Some("ls"));
-            if let Some(Entry::Message(m)) = state.entries.last_mut() {
+            let last = state.entries.iter_mut().rev().find_map(|e| match e {
+                Entry::Message(m) => Some(m),
+                _ => None,
+            });
+            if let Some(m) = last {
                 m.status = status;
             }
             assert_eq!(last_shell_block(&state), None, "{status:?}");

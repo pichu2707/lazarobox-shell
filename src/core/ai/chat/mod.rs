@@ -161,6 +161,9 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// The usage line under an answer: shown, never stored, never sent as
+    /// history, never part of a yank.
+    Usage(String),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -330,6 +333,8 @@ pub struct ChatState {
     /// What the last turn used, summed over its `Usage` events. Cleared by
     /// the next send, so it outlives the turn for whoever stores it.
     turn_usage: Option<usage::TurnUsage>,
+    /// The usage settings, handed in by the app before each event.
+    usage_config: crate::core::ai::config::UsageConfig,
     /// The `/cost` overlay, while it is shown over the conversation.
     cost: Option<cost_view::CostView>,
     /// What this pane used, kept in memory for `/cost` with the history off.
@@ -413,6 +418,7 @@ impl ChatState {
             tools_offered: false,
             request_engine: String::new(),
             turn_usage: None,
+            usage_config: crate::core::ai::config::UsageConfig::default(),
             cost: None,
             session_usage: usage_view::Session::default(),
             usage_outbox: Vec::new(),
@@ -697,7 +703,11 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_) => None,
         })
     }
 
@@ -740,6 +750,11 @@ impl ChatState {
 
     pub fn close_cost(&mut self) {
         self.cost = None;
+    }
+
+    /// The usage settings the next usage line follows.
+    pub fn set_usage_config(&mut self, config: crate::core::ai::config::UsageConfig) {
+        self.usage_config = config;
     }
 
     /// What this pane used since it opened.
@@ -1240,7 +1255,11 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_) => None,
         })
     }
 
@@ -1269,6 +1288,8 @@ impl ChatState {
                 usage,
             });
         }
+        // Read before the engine is handed to the saved answer below.
+        let usage_line = self.usage_line_for(status);
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
@@ -1289,10 +1310,25 @@ impl ChatState {
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
         }
+        if let Some(line) = usage_line {
+            self.entries.push(Entry::Usage(line));
+        }
         self.phase = Phase::Idle;
         self.started = None;
         self.request_model.clear();
         self.request_engine.clear();
+    }
+
+    /// The usage line of the turn that ends with `status`, when the setting is
+    /// on: a clean end without a record reads `no data`; an unclean end gets
+    /// one only if it has a record.
+    fn usage_line_for(&self, status: MsgStatus) -> Option<String> {
+        let usage = self.turn_usage.as_ref();
+        if !self.usage_config.line() || (usage.is_none() && status != MsgStatus::Complete) {
+            return None;
+        }
+        let billing = self.usage_config.billing(&self.request_engine);
+        Some(usage_view::usage_line(usage, billing))
     }
 
     /// The compaction or summary run ended: its usage, if it reported any,

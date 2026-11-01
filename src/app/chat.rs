@@ -10,8 +10,18 @@ use crate::core::ai::chat::{
     memory::MemBadge,
     prompts::Resolved,
     streams::StreamInfo,
+    usage_view::{Billing, today_segment},
     yank,
 };
+
+/// What the last store answer said about the local day: the status segment's
+/// figures. They come from the store thread, so drawing never reads SQLite.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct UsageToday {
+    pub(super) tokens: Option<u64>,
+    /// Dollars the engines reported today, per engine.
+    pub(super) cost: Vec<(String, u64)>,
+}
 
 impl App {
     /// `Prefix c`: a chat pane as a right split of the focused pane, opened
@@ -77,6 +87,25 @@ impl App {
             return None;
         }
         self.focused_state().chat_state().map(ChatState::mem_badge)
+    }
+
+    /// The usage segment for the statusline (` · today: 1234 tok`): only over
+    /// a focused chat, with the setting on, and once the store has answered.
+    /// Dollars are the spend of the engines in `per-token` mode.
+    pub fn status_usage(&self) -> Option<String> {
+        let usage = self.ai.usage();
+        if !usage.statusline() {
+            return None;
+        }
+        self.focused_state().chat_state()?;
+        let today = self.usage_today.as_ref()?;
+        let spend = today
+            .cost
+            .iter()
+            .filter(|(engine, _)| usage.billing(engine) == Some(Billing::PerToken))
+            .map(|(_, micros)| *micros)
+            .reduce(u64::saturating_add);
+        Some(today_segment(today.tokens, spend))
     }
 
     /// How full the focused chat's context was at its last send, in percent.

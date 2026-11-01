@@ -296,11 +296,15 @@ pub enum StoreReply {
         pane: PaneId,
     },
     /// The answer to `RecordUsage`. `today` is the known tokens of the local
-    /// day, `None` when the row was not stored. `problem` is a short reason,
+    /// day (input plus output of the records that have both), `None` when the
+    /// day has no known total or the row was not stored. `cost` is the
+    /// dollars the engines reported today, summed per engine (the app keeps
+    /// the per-token ones). `problem` is a short reason,
     /// free of text and paths, for a write, migration or prune that failed.
     UsageRecorded {
         pane: PaneId,
         today: Option<u64>,
+        cost: Vec<(String, u64)>,
         problem: Option<String>,
     },
     /// The answer to `UsageReport`. `rows` is `None` when the store could not

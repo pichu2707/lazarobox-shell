@@ -781,6 +781,8 @@ pub struct App {
     summary_notice_shown: bool,
     /// The `Usage not saved` notice was shown in this run.
     usage_notice_shown: bool,
+    /// Today's figures, as the store last answered; none until it has.
+    usage_today: Option<chat::UsageToday>,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
@@ -927,6 +929,7 @@ impl App {
             config_path: None,
             summary_notice_shown: false,
             usage_notice_shown: false,
+            usage_today: None,
             summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
@@ -2658,6 +2661,8 @@ impl App {
                 event,
                 StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
             );
+        // The usage line follows the settings at the moment the turn ends.
+        chat.set_usage_config(self.ai.usage().clone());
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;

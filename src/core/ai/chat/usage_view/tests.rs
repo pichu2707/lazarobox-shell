@@ -1,5 +1,10 @@
 use super::*;
 use crate::core::ai::chat::usage::TurnUsage;
+use crate::core::ai::config::UsageConfig;
+
+fn default_billing(engine: &str) -> Option<Billing> {
+    UsageConfig::default().billing(engine)
+}
 
 fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
     UsageRow {
@@ -41,14 +46,96 @@ fn the_billing_mode_only_labels_the_figure() {
     assert_eq!(dollar_part(4_936, Billing::PerToken), "$0.0049");
 }
 
+fn used(input: Option<u64>, output: Option<u64>) -> TurnUsage {
+    TurnUsage {
+        input,
+        output,
+        ..TurnUsage::default()
+    }
+}
+
+// Spec (ai-usage, Usage text formats).
 #[test]
-fn cli_engines_default_to_subscription_and_local_ones_have_no_mode() {
-    for engine in ["claude", "codex", "gemini"] {
-        assert_eq!(default_billing(engine), Some(Billing::Subscription));
-    }
-    for engine in ["ollama", "lmstudio", "llamacpp", "vllm", "other"] {
-        assert_eq!(default_billing(engine), None);
-    }
+fn the_usage_line_shows_in_and_out_then_what_is_present() {
+    let full = TurnUsage {
+        cache_read: Some(0),
+        cost_micros: Some(4_936),
+        ..used(Some(2), Some(4))
+    };
+    assert_eq!(
+        usage_line(Some(&full), Some(Billing::Subscription)),
+        "usage: in 2 · out 4 · cached 0 · $0.0049 list-price equivalent"
+    );
+    assert_eq!(
+        usage_line(Some(&full), Some(Billing::PerToken)),
+        "usage: in 2 · out 4 · cached 0 · $0.0049"
+    );
+    let reasoning = TurnUsage {
+        reasoning: Some(7),
+        ..used(Some(12), Some(34))
+    };
+    assert_eq!(
+        usage_line(Some(&reasoning), None),
+        "usage: in 12 · out 34 · reasoning 7"
+    );
+}
+
+#[test]
+fn a_missing_in_or_out_reads_no_data_and_never_zero() {
+    assert_eq!(
+        usage_line(Some(&used(None, Some(567))), None),
+        "usage: in no data · out 567"
+    );
+    assert_eq!(
+        usage_line(Some(&used(Some(5), None)), None),
+        "usage: in 5 · out no data"
+    );
+}
+
+#[test]
+fn a_partial_record_is_marked_last() {
+    let partial = TurnUsage {
+        partial: true,
+        cost_micros: Some(1_000_000),
+        ..used(Some(100), Some(20))
+    };
+    assert_eq!(
+        usage_line(Some(&partial), None),
+        "usage: in 100 · out 20 · partial"
+    );
+    assert_eq!(
+        usage_line(Some(&partial), Some(Billing::PerToken)),
+        "usage: in 100 · out 20 · $1.00 · partial"
+    );
+}
+
+#[test]
+fn a_local_engine_never_shows_dollars_even_if_reported() {
+    let local = TurnUsage {
+        cost_micros: Some(10),
+        ..used(Some(1), Some(2))
+    };
+    assert_eq!(usage_line(Some(&local), None), "usage: in 1 · out 2");
+}
+
+#[test]
+fn no_record_reads_exactly_no_data() {
+    assert_eq!(
+        usage_line(None, Some(Billing::Subscription)),
+        "usage: no data"
+    );
+}
+
+// Spec (statusline, Usage segment).
+#[test]
+fn the_today_segment_is_tokens_then_per_token_spend() {
+    assert_eq!(today_segment(Some(1234), None), "today: 1234 tok");
+    assert_eq!(
+        today_segment(Some(5000), Some(420_000)),
+        "today: 5000 tok · $0.4200"
+    );
+    assert_eq!(today_segment(None, None), "today: no data");
+    assert_eq!(today_segment(Some(0), None), "today: 0 tok");
 }
 
 #[test]

@@ -8,6 +8,9 @@ use toml::{Table, Value};
 use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, Kind, ServerPorts};
 
+mod usage;
+pub use usage::UsageConfig;
+
 /// The fixed set of AI tasks, in display order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Task {
@@ -336,6 +339,7 @@ pub struct AiConfig {
     context: bool,
     notify: NotifyMode,
     notify_sound: bool,
+    usage: UsageConfig,
     tools: bool,
     approval: ApprovalMode,
     compaction: CompactionMode,
@@ -424,6 +428,7 @@ impl Default for AiConfig {
             context: true,
             notify: NotifyMode::Off,
             notify_sound: true,
+            usage: UsageConfig::default(),
             tools: true,
             approval: ApprovalMode::Ask,
             compaction: CompactionMode::Auto,
@@ -481,6 +486,16 @@ impl AiConfig {
 
     pub fn set_notify_sound(&mut self, sound: bool) {
         self.notify_sound = sound;
+    }
+
+    /// What is shown about token use and how dollars are labelled
+    /// (`[ai.usage]`).
+    pub fn usage(&self) -> &UsageConfig {
+        &self.usage
+    }
+
+    pub fn set_usage(&mut self, usage: UsageConfig) {
+        self.usage = usage;
     }
 
     /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
@@ -752,6 +767,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
     config.notify_sound = read_notify_sound(section, problems);
+    config.usage = usage::read(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,

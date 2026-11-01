@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/usage_tests.rs
+expression: shown
+---
+ ◐ CHAT  /srv/app                                                  ollama › llama3:8b · today: 1234 tok · mem: ready
