@@ -12,7 +12,8 @@ change a result, so each record names both.
 
 | Terminal | Status | Record |
 | :-- | :-- | :-- |
-| Kitty | record pending (template ready) | [kitty/](kitty/README.md) |
+| Kitty | recorded | [kitty/](kitty/README.md) |
+| zutty | recorded | [zutty/](zutty/README.md) |
 | Windows Terminal (WSL) | pending, not yet in `RECORDED_TERMINALS` | [windows-terminal/](windows-terminal/README.md) |
 | WezTerm | deferred, no record yet | - |
 

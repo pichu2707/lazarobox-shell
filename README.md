@@ -90,7 +90,7 @@ La terminal se elige en este orden:
 4. La primera encontrada en el `PATH`: `kitty`, `ghostty`, `wezterm`, `alacritty`, `foot`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `x-terminal-emulator`.
 5. Si no hay ninguna, el lanzador usa `Terminal=true` y el escritorio decide qué terminal abrir.
 
-Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Solo las terminales con un registro en [docs/terminals](docs/terminals/README.md) cuentan como probadas (hoy, Kitty, con el registro por rellenar); en las demás algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar sin negarse nunca a instalar.
+Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Solo las terminales con un registro en [docs/terminals](docs/terminals/README.md) cuentan como probadas (hoy, Kitty y zutty, con el registro rellenado el 2026-11-01); en las demás algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar sin negarse nunca a instalar.
 
 Sin `--terminal`, y solo si la entrada y la salida son una terminal (TTY), `install-desktop` pregunta cuál usar: lista las terminales instaladas, marca las que tienen registro, `Enter` mantiene la elección automática de arriba y `Ctrl+D` cancela sin escribir nada. Con `--terminal` o en un script no pregunta. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
 
