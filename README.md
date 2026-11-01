@@ -421,6 +421,8 @@ Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores
 
 **Marcas de herramientas.** En la lista de modelos de Ollama, un modelo instalado que declara soporte de herramientas lleva `🔧` junto a `✓` (`llama3:8b ✓ 🔧`) cuando tiene 3B parámetros o más, y `tools: unreliable` si es más pequeño, porque los modelos pequeños suelen fallar al llamar herramientas. Un modelo sin soporte, con soporte desconocido o de tamaño desconocido no lleva marca. La marca es informativa: no impide elegir el modelo, y se muestra también con `[ai.tools] enabled = false`. En `TERM=linux` (la consola de Linux) o con un locale que no es UTF-8, `🔧` se escribe `tools`. Para saber si un modelo declara herramientas, la detección envía una petición `POST /api/show` por modelo a tu servidor de Ollama en `127.0.0.1` (como máximo 32 por detección, 4 a la vez y 2 segundos en total; el resultado se recuerda por digest mientras lazarobox está abierto). No se envía nada a ningún otro sitio, y la detección sigue sin tocar `/api/pull`, `/api/delete` ni `/api/push`.
 
+En la lista de motores, `claude`, `codex` y `gemini` detectados llevan `🔧` (o `tools` en `TERM=linux` o con un locale que no es UTF-8) tras su estado: sus herramientas están verificadas. No lo llevan `opencode`, `ollama` ni un motor no detectado, y tampoco las filas de modelos de un CLI. Se muestra también con `[ai.tools] enabled = false`.
+
 La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
 
 Si un servidor escucha en otro puerto (por ejemplo, porque el suyo está ocupado), indícalo en `config.toml`. La detección y el chat usan ese mismo puerto, siempre en `127.0.0.1`:

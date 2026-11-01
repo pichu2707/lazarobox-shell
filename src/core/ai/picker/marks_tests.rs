@@ -116,3 +116,76 @@ fn enter_on_a_marked_row_assigns_like_an_unmarked_one() {
     assert_eq!(commit(&marked_d), expected);
     assert_eq!(commit(&plain_d), expected);
 }
+
+fn engines_detected(ids: &[(&'static str, Status)]) -> Detection {
+    Detection {
+        engines: ids.iter().map(|(id, s)| state(id, *s, &[])).collect(),
+        ..Default::default()
+    }
+}
+
+fn engine_mark_of(rows: &[PickRow], id: &str) -> Option<ToolMark> {
+    rows.iter()
+        .find(|r| r.key == PickKey::Engine(id.to_owned()))
+        .unwrap()
+        .tools
+}
+
+#[test]
+fn verified_cli_engines_carry_the_mark_and_the_others_do_not() {
+    let d = engines_detected(&[
+        ("claude", Status::Available),
+        ("codex", Status::Available),
+        ("gemini", Status::Available),
+        ("opencode", Status::Available),
+        ("ollama", Status::Available),
+    ]);
+    let rows = engine_rows(Target::Task(Task::Code), &AiConfig::default(), Some(&d));
+    for id in ["claude", "codex", "gemini"] {
+        assert_eq!(engine_mark_of(&rows, id), Some(ToolMark::Capable), "{id}");
+    }
+    assert_eq!(engine_mark_of(&rows, "opencode"), None);
+    assert_eq!(engine_mark_of(&rows, "ollama"), None);
+    let claude = rows
+        .iter()
+        .find(|r| r.key == PickKey::Engine("claude".to_owned()))
+        .unwrap();
+    assert!(matches!(claude.mark, Mark::Status(_)));
+}
+
+#[test]
+fn the_engine_mark_ignores_the_tools_switch() {
+    let d = engines_detected(&[("claude", Status::Available)]);
+    let mut draft = AiConfig::default();
+    draft.set_tools_enabled(false);
+    let rows = engine_rows(Target::Task(Task::Code), &draft, Some(&d));
+    assert_eq!(engine_mark_of(&rows, "claude"), Some(ToolMark::Capable));
+}
+
+#[test]
+fn an_engine_that_is_not_detected_gets_no_mark() {
+    let d = engines_detected(&[("ollama", Status::Available)]);
+    let draft = code_with("claude", "sonnet");
+    let rows = engine_rows(Target::Task(Task::Code), &draft, Some(&d));
+    assert_eq!(engine_mark_of(&rows, "claude"), None);
+    let rows = engine_rows(Target::Task(Task::Code), &draft, None);
+    assert_eq!(engine_mark_of(&rows, "claude"), None);
+}
+
+#[test]
+fn cli_model_rows_carry_no_mark() {
+    let d = engines_detected(&[("claude", Status::Available)]);
+    let rows = model_rows(
+        "claude",
+        Target::Task(Task::Code),
+        &AiConfig::default(),
+        Some(&d),
+    );
+    assert!(rows.iter().all(|r| r.tools.is_none()));
+}
+
+#[test]
+fn the_engine_mark_falls_back_to_text() {
+    use crate::core::ai::marks::{ToolGlyph, badge_text};
+    assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Text), "tools");
+}
