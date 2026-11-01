@@ -34,6 +34,8 @@ Every task is RED (failing test) then GREEN (code); refactor at slice end.
 
 ## Slice 1a: Capture (PR 1a)
 
+No README or CHANGELOG entry: this slice adds nothing the user can see.
+
 - [x] 1a.1 RED: `usage.rs` tests for TurnUsage merge, partial, micros rounding, None-not-0 (ai-usage: summing).
 - [x] 1a.2 GREEN: create `core/ai/chat/usage.rs` (TurnUsage, CostSource, merge); add `StreamEvent::Usage` in `engine.rs`/`mod.rs`.
 - [x] 1a.3 RED+GREEN `claude.rs`: modelUsage sum incl. sub-agent fixture, total_cost_usd, fallback; Usage before Done.
@@ -42,6 +44,8 @@ Every task is RED (failing test) then GREEN (code); refactor at slice end.
 - [ ] 1a.6 RED+GREEN `runtime/chat/ollama.rs` round fold (ollama, llama.cpp finish-chunk timings, missing prompt_eval_count = None, cap/error).
 
 ## Slice 1b: Persist (PR 1b)
+
+No README or CHANGELOG entry: this slice adds nothing the user can see (the privacy text lands in 2b.2).
 
 - [ ] 1b.1 RED: store tests on a v3 file: ensure_usage, opens under `open_with(..,3)`, SET NULL on delete, 90-day prune, no text.
 - [ ] 1b.2 GREEN: `ensure_usage` in `runtime/chat_store.rs`; worker insert, prune, today sum in `chat_store/worker.rs`.
@@ -55,26 +59,31 @@ Every task is RED (failing test) then GREEN (code); refactor at slice end.
 - [ ] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
 - [ ] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
 - [ ] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, Esc closes; history off shows session-only view from memory with the history-off line.
+- [ ] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the history-off line; CHANGELOG entry.
 
 ## Slice 2a: Display (PR 2a)
 
 - [ ] 2a.1 RED+GREEN `core/ai/config.rs` parse `[ai.usage]`, `[ai.usage.billing]`; local-engine key = config problem.
 - [ ] 2a.2 RED+GREEN `Entry::Usage` render (not stored, not sent); `usage: no data`, `(partial)`, billing labels.
 - [ ] 2a.3 RED+GREEN `statusline.rs` ` · today N tok` from UsageRecorded, first segment dropped.
+- [ ] 2a.4 Docs: README documents the per-answer usage line, the status-bar segment (on by default) and the `[ai.usage]` / `[ai.usage.billing]` keys; CHANGELOG entry.
 
 ## Slice 2b: Menu (PR 2b)
 
 - [ ] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage` row and sub-view (toggles, billing); confirm AI-tab row capacity.
 - [ ] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
+- [ ] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
 
 ## Slice 3: Thresholds (PR 3)
 
 - [ ] 3.1 RED+GREEN checks in `usage.rs`: turn_tokens, day_tokens, day_usd (per-token engines only; list-price never counts).
 - [ ] 3.2 RED+GREEN app notes once per day key per run; never block a send.
+- [ ] 3.3 Docs: README documents the thresholds (`turn_tokens`, `day_tokens`, `day_usd`; spend-only; passive notes); CHANGELOG entry.
 
 ## Slice 4: Charts (PR 4)
 
 - [ ] 4.1 RED+GREEN `Sparkline`/`BarChart` in `cost.rs` with snapshot tests; narrow-terminal fallback.
+- [ ] 4.2 Docs: README documents the charts; CHANGELOG entry.
 
 ## Final manual check (real engines)
 
