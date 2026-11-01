@@ -122,6 +122,7 @@ impl App {
         }
         // Off the list while it starts; the first worker closes it in the store.
         self.run_keep.interrupted.remove(at);
+        self.run_keep.awaiting_reply.remove(&id);
         self.run_keep.resuming.insert(id, run);
         effects
     }
@@ -129,6 +130,16 @@ impl App {
     /// The resume of pane `id` got no worker (its turn failed, was cancelled
     /// or ended): the run is offered again and the pane says so.
     pub(super) fn resume_not_started(&mut self, id: PaneId) {
+        self.resume_ended(id, false);
+    }
+
+    /// The resume turn of pane `id` ended normally with no worker: the
+    /// coordinator waits for the user, whose reply may relaunch the worker.
+    pub(super) fn resume_awaits_reply(&mut self, id: PaneId) {
+        self.resume_ended(id, true);
+    }
+
+    fn resume_ended(&mut self, id: PaneId, answered: bool) {
         let Some(run) = self.run_keep.resuming.remove(&id) else {
             return;
         };
@@ -137,6 +148,9 @@ impl App {
             run.id
         );
         self.run_keep.resume_of.insert(id, run.id);
+        if answered {
+            self.run_keep.awaiting_reply.insert(id, run.id);
+        }
         self.run_keep.offer_again(run);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(line);

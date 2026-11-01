@@ -2891,8 +2891,14 @@ impl App {
         if finished && how == Ended::Error && chat.orch_run().is_none() {
             self.forget_goal(id);
         } else if finished && chat.orch_run().is_none() {
-            // A turn that ended with no run never gave a resumed one a worker.
-            self.resume_not_started(id);
+            // A turn that ended with no run never gave a resumed one a worker;
+            // one that ended normally left the coordinator waiting for the
+            // user, whose reply can still relaunch it.
+            if how == Ended::Done {
+                self.resume_awaits_reply(id);
+            } else {
+                self.resume_not_started(id);
+            }
         }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).

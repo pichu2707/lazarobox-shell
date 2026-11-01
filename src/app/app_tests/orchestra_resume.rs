@@ -422,10 +422,38 @@ fn a_worker_arriving_after_the_turns_done_still_closes_the_old_run() {
     assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
 
-// The link does not outlive the next turn: a later, unrelated run of the pane
-// never closes an interrupted run.
+// The link does not outlive the next turn: after a resume turn that failed, a
+// later, unrelated run of the pane never closes an interrupted run.
 #[test]
 fn a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("could not start".into())),
+    ));
+    super::chat_live::ask(&mut a, "something else");
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, None);
+    // Still on the list: the refusal is the active run, not an empty list.
+    keys(&mut a, "rr");
+    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: the resume turn ends with the coordinator waiting for the user; the
+// user's reply starts the run that relaunches the worker, and that run closes
+// the interrupted one, so a restart does not name it again.
+#[test]
+fn the_run_the_users_reply_starts_closes_the_resumed_run() {
     use crate::core::ai::chat::engine::{Finish, StreamEvent};
     let mut a = interrupted_app();
     let effects = keys(&mut a, "rr");
@@ -441,10 +469,48 @@ fn a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    super::chat_live::ask(&mut a, "something else");
+    super::chat_live::ask(&mut a, "ok, relaunch");
     let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    // Closed in the store and no longer offered here.
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: the link lasts for the reply only; a second unrelated turn after it
+// closes nothing.
+#[test]
+fn the_link_to_the_resumed_run_lasts_for_the_reply_only() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let reply = super::chat_live::ask(&mut a, "what is left?");
+    let turn = reply
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("the reply is a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    // The reply started no worker; the next turn is a different question.
+    super::chat_live::ask(&mut a, "something else");
+    let saved = saved_runs(&a.update(event(row(RunId(902), 1, WorkerStatus::Running))));
     assert_eq!(saved[0].supersedes, None);
-    // Still on the list: the refusal is the active run, not an empty list.
-    keys(&mut a, "rr");
-    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
 }
