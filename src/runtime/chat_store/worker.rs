@@ -26,6 +26,7 @@ use crate::core::{
             },
             tags::Tags,
             usage::TurnUsage,
+            usage_view::UsageRow,
         },
         config::Profile,
         sanitize::clean,
@@ -272,6 +273,14 @@ impl Worker {
                     },
                 })
             }
+            StoreCmd::UsageReport { pane, conversation } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied());
+                let rows = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| usage_report(conn, conversation, now()).ok());
+                Some(StoreReply::UsageReport { pane, rows })
+            }
             StoreCmd::RecentFolders { pane, limit } => Some(StoreReply::RecentFolders {
                 pane,
                 // A store that cannot be read has no recent folders.
@@ -377,6 +386,7 @@ impl Worker {
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
             StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
+            StoreCmd::UsageReport { pane, .. } => (*pane, Panicked::Report),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -396,6 +406,7 @@ impl Worker {
                         | Panicked::SetFolder
                         | Panicked::Recent
                         | Panicked::Usage
+                        | Panicked::Report
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -414,6 +425,7 @@ impl Worker {
                         pane,
                         folders: Vec::new(),
                     },
+                    Panicked::Report => StoreReply::UsageReport { pane, rows: None },
                     // A fixed reason: panic text can quote anything.
                     Panicked::Usage => StoreReply::UsageRecorded {
                         pane,
@@ -444,6 +456,7 @@ enum Panicked {
     SetFolder,
     Recent,
     Usage,
+    Report,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -549,6 +562,45 @@ fn record_usage(
         )
         .ok();
     Ok((today.and_then(|t| u64::try_from(t).ok()), pruned))
+}
+
+/// The usage records folded for `/cost`: by local day (days before `at`),
+/// engine and model, with the rows of `conversation` kept apart. A missing
+/// count stays NULL (`None`), never 0; a row is partial when a record was or
+/// lacked its input or output.
+fn usage_report(
+    conn: &mut Connection,
+    conversation: Option<i64>,
+    at: i64,
+) -> Result<Vec<UsageRow>, rusqlite::Error> {
+    ensure_usage(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
+                      - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
+                engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
+                COUNT(*), SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
+                SUM(CASE WHEN input IS NOT NULL AND output IS NOT NULL
+                         THEN input + output END),
+                MAX(partial OR input IS NULL OR output IS NULL)
+         FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
+    )?;
+    let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
+    let rows = stmt.query_map(rusqlite::params![at, conversation], |r| {
+        Ok(UsageRow {
+            days_ago: u32::try_from(r.get::<_, i64>(0)?).unwrap_or(u32::MAX),
+            engine: r.get(1)?,
+            model: r.get(2)?,
+            in_chat: r.get(3)?,
+            turns: count(Some(r.get(4)?)).unwrap_or(0),
+            input: count(r.get(5)?),
+            output: count(r.get(6)?),
+            cache_read: count(r.get(7)?),
+            cost_micros: count(r.get(8)?),
+            total: count(r.get(9)?),
+            partial: r.get(10)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// The first non-empty line of the first message, cut to `TITLE_MAX` characters.
@@ -1024,6 +1076,7 @@ impl StoreHandle {
                 today: None,
                 problem: Some(reason),
             },
+            StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },
             _ => return,
         };
         let _ = self.replies.try_send(reply);
