@@ -9,10 +9,10 @@ use ratatui::{
 };
 
 use super::{ChatView, fill};
-use crate::core::ai::chat::usage_view::CostView;
+use crate::core::ai::chat::cost_view::CostView;
 
 /// The keys line.
-const HINT: &str = "Esc close";
+const HINT: &str = "Esc close · ↑↓ scroll";
 
 impl ChatView<'_> {
     /// Draws the cost view over `area`.
@@ -25,8 +25,7 @@ impl ChatView<'_> {
                 buf.set_stringn(area.x, area.y + y, text, usize::from(area.width), style);
             }
         };
-        let lines = view.lines();
-        if let Some(title) = lines.first() {
+        if let Some(title) = view.lines().first() {
             put(
                 buf,
                 0,
@@ -35,25 +34,24 @@ impl ChatView<'_> {
             );
         }
         // Row 0 is the header and the last row the keys; the rows between
-        // them are the window on the other lines.
+        // them are the window on the wrapped body.
         let window = usize::from(area.height.saturating_sub(2));
-        let body = lines.iter().skip(1);
-        let top = view.scroll().min(lines.len().saturating_sub(2));
-        for (n, line) in body.skip(top).take(window).enumerate() {
+        let rows = view.body_rows(usize::from(area.width));
+        view.set_layout(window, rows.len());
+        for (n, (row, mine)) in rows.iter().skip(view.scroll()).take(window).enumerate() {
             let y = 1 + u16::try_from(n).unwrap_or(0);
             // This chat stands out from the totals of all of them.
-            let style = if line.starts_with("this chat") {
+            let style = if *mine {
                 base.fg(theme.primary_cyan)
             } else {
                 base
             };
-            put(buf, y, line, style);
+            put(buf, y, row, style);
         }
-        put(
-            buf,
-            area.height.saturating_sub(1).max(1),
-            HINT,
-            base.fg(theme.text_muted),
-        );
+        let (keys, style) = match view.note() {
+            Some(note) => (note, base.fg(theme.warning_orange)),
+            None => (HINT, base.fg(theme.text_muted)),
+        };
+        put(buf, area.height.saturating_sub(1).max(1), keys, style);
     }
 }

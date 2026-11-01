@@ -4,10 +4,11 @@
 use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
+    cost_view::READING_LINE,
     engine::StreamEvent,
     store::{StoreCmd, StoreReply},
     usage::TurnUsage,
-    usage_view::{HEADER, HISTORY_OFF_LINE, READING_LINE, UNAVAILABLE_LINE, UsageRow},
+    usage_view::{HEADER, HISTORY_OFF_LINE, UNAVAILABLE_LINE, UsageRow},
 };
 
 fn sends(effects: &[Effect]) -> usize {
@@ -52,6 +53,8 @@ fn today_row() -> UsageRow {
         model: Some("sonnet".into()),
         in_chat: true,
         turns: 2,
+        records: 2,
+        costed: 2,
         input: Some(2),
         output: Some(4),
         cache_read: None,
@@ -107,15 +110,72 @@ fn an_unreadable_store_says_so_and_nothing_else() {
 }
 
 #[test]
-fn a_detached_store_does_not_wait_for_an_answer() {
+fn a_detached_pane_still_asks_and_the_reply_decides() {
     let mut a = conversation();
     a.update(AppEvent::Store(StoreReply::Unavailable {
         pane: chat_id(),
         reason: "database is corrupt".into(),
     }));
     let effects = ask(&mut a, "/cost");
-    assert_eq!(reports(&effects), Vec::<Option<i64>>::new());
-    assert_eq!(view_lines(&a), vec![UNAVAILABLE_LINE]);
+    assert_eq!(reports(&effects), vec![None]);
+    assert_eq!(view_lines(&a), vec![HEADER, READING_LINE]);
+    // A store that does read answers with rows, whatever the pane believes.
+    a.update(answer(Some(vec![today_row()])));
+    assert_eq!(view_lines(&a)[1], "today: 6 tokens · 2 turns");
+}
+
+#[test]
+fn after_a_failed_create_this_chat_has_no_data() {
+    let mut a = conversation();
+    ask(&mut a, "hello");
+    a.update(AppEvent::Store(StoreReply::Failed {
+        pane: chat_id(),
+        notify: true,
+    }));
+    let effects = ask(&mut a, "/cost");
+    assert_eq!(reports(&effects), vec![None]);
+    let mut row = today_row();
+    row.in_chat = false;
+    a.update(answer(Some(vec![row])));
+    assert_eq!(view_lines(&a).last().unwrap(), "this chat: no data");
+}
+
+#[test]
+fn a_first_reply_arriving_after_esc_and_a_second_cost_ends_with_the_data() {
+    let mut a = conversation();
+    ask(&mut a, "/cost");
+    a.update(plain(KeyCode::Esc));
+    ask(&mut a, "/cost");
+    a.update(answer(Some(vec![today_row()])));
+    a.update(answer(Some(vec![today_row()])));
+    assert_eq!(view_lines(&a)[1], "today: 6 tokens · 2 turns");
+    assert_eq!(
+        view_lines(&a)
+            .iter()
+            .filter(|l| l.starts_with("today"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn ctrl_c_with_the_overlay_open_says_what_to_do_and_the_stream_goes_on() {
+    let mut a = conversation();
+    let turn = sent_turn(&ask(&mut a, "question"));
+    a.update(delta(chat_id(), turn, "par"));
+    ask(&mut a, "/cost");
+    a.update(super::chat_history::code(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(
+        chat_of(&a).cost().and_then(|v| v.note()),
+        Some(crate::core::ai::chat::cost_view::CLOSE_FIRST)
+    );
+    assert!(chat_of(&a).cost().is_some());
+    a.update(delta(chat_id(), turn, "tial"));
+    a.update(finish(chat_id(), turn));
+    assert_eq!(chat_of(&a).messages().last().unwrap().text, "partial");
 }
 
 #[test]

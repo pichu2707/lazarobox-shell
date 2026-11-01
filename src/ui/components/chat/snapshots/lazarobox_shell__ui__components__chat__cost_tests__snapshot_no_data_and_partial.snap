@@ -1,0 +1,13 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "text(&draw(&chat, 60, 9))"
+---
+AI usage (alpha)
+today: no data · 1 turns · partial
+last 7 days: no data · 1 turns · partial
+by engine and model (last 7 days):
+  ollama › llama3:8b: in no data · out 20 · partial
+this chat: no data
+
+
+Esc close · ↑↓ scroll

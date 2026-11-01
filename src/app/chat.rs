@@ -144,6 +144,7 @@ impl App {
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
+            && !self.cost_open(id)
             && let Some(effects) = self.answer_server_offer(offered)
         {
             return effects;

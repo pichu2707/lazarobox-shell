@@ -3,9 +3,9 @@
 //! the reading; nothing here waits for it.
 
 use super::*;
-use crate::core::ai::chat::usage_view::{
-    CostView, NO_ARGUMENTS, UNAVAILABLE_LINE, UsageRow, default_billing, report_lines,
-    session_lines,
+use crate::core::ai::chat::{
+    cost_view::{CostView, NO_ARGUMENTS},
+    usage_view::{UNAVAILABLE_LINE, UsageRow, default_billing, report_lines, session_lines},
 };
 
 impl App {
@@ -40,9 +40,8 @@ impl App {
         if !history {
             let lines = session_lines(chat.session_usage(), &default_billing);
             chat.open_cost(CostView::with(lines));
-        } else if chat.store_detached() {
-            chat.open_cost(CostView::with(vec![UNAVAILABLE_LINE.to_owned()]));
         } else {
+            // A detached store answers `None` itself: the reply decides.
             let conversation = chat.conversation();
             chat.open_cost(CostView::reading());
             effects.push(Effect::Store(StoreCmd::UsageReport {

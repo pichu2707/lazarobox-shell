@@ -15,7 +15,7 @@ baseline.
 - `/cost` (alpha) in the chat composer opens a view over the conversation,
   headed `AI usage (alpha)`, with the tokens of today and of the last 7 days
   over every stored chat, the usage per engine and model, this chat and this
-  session. `Esc` closes it. It is a command of yours: no message, no request,
+  session. `Esc` closes it, the arrows and `PageUp`/`PageDown` scroll it and long lines wrap. It is a command of yours: no message, no request,
   and it works during a stream. `/cost` followed by text says `/cost takes no
   arguments`; `//cost` sends the text `/cost`. A value an engine did not report
   reads `no data` (never 0) and dollars appear only when the engine reports

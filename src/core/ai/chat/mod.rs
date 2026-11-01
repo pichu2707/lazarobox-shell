@@ -15,6 +15,7 @@ pub mod codex;
 pub mod compact;
 pub mod composer;
 pub mod copy;
+pub mod cost_view;
 pub mod engine;
 pub mod folder;
 pub mod folder_picker;
@@ -330,7 +331,7 @@ pub struct ChatState {
     /// the next send, so it outlives the turn for whoever stores it.
     turn_usage: Option<usage::TurnUsage>,
     /// The `/cost` overlay, while it is shown over the conversation.
-    cost: Option<usage_view::CostView>,
+    cost: Option<cost_view::CostView>,
     /// What this pane used, kept in memory for `/cost` with the history off.
     session_usage: usage_view::Session,
     /// Usage of ended runs the store has not been told about yet.
@@ -724,16 +725,16 @@ impl ChatState {
     }
 
     /// The `/cost` overlay, while it is shown.
-    pub fn cost(&self) -> Option<&usage_view::CostView> {
+    pub fn cost(&self) -> Option<&cost_view::CostView> {
         self.cost.as_ref()
     }
 
-    pub fn cost_mut(&mut self) -> Option<&mut usage_view::CostView> {
+    pub fn cost_mut(&mut self) -> Option<&mut cost_view::CostView> {
         self.cost.as_mut()
     }
 
     /// Shows the `/cost` overlay.
-    pub fn open_cost(&mut self, view: usage_view::CostView) {
+    pub fn open_cost(&mut self, view: cost_view::CostView) {
         self.cost = Some(view);
     }
 
@@ -742,8 +743,8 @@ impl ChatState {
     }
 
     /// What this pane used since it opened.
-    pub fn session_usage(&self) -> &[usage_view::UsageRow] {
-        self.session_usage.rows()
+    pub fn session_usage(&self) -> &usage_view::Session {
+        &self.session_usage
     }
 
     /// Moves with every change of the transcript; the line cache keys on it.
@@ -1260,7 +1261,8 @@ impl ChatState {
             usage.partial = true;
         }
         if let Some(usage) = self.turn_usage.clone() {
-            self.session_usage.add(&self.request_engine, &usage);
+            self.session_usage
+                .add(&self.request_engine, usage_view::Run::Chat, &usage);
             self.usage_outbox.push(usage::Pending {
                 role: "chat",
                 engine: self.request_engine.clone(),
@@ -1297,7 +1299,8 @@ impl ChatState {
     /// waits for the store. `cut` when it did not end well.
     fn end_side_run(&mut self, cut: bool) {
         if let Some(pending) = self.side_run.take().and_then(|run| run.end(cut)) {
-            self.session_usage.add(&pending.engine, &pending.usage);
+            self.session_usage
+                .add(&pending.engine, usage_view::Run::Side, &pending.usage);
             self.usage_outbox.push(pending);
         }
     }
