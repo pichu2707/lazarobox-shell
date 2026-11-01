@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_toggle.rs
+expression: shown
+---
+                                       │                                   ORCH
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │Ctrl+O: stop orchestrating
+                                       │
+ ◐ CHAT  /launch                                          ollama › llama3:8b

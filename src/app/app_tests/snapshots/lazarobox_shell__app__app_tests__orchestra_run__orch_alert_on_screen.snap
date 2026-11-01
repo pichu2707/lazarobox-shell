@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_run.rs
+expression: screen(&a)
+---
+                                       │› plan it                          ORCH
+                                       │
+                                       │» review codex>gpt-5 failed
+                                       │
+                                       │waiting for the model…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │run paused: worker review codex>gpt-5
+                                       │failed: 409 conflict: session busy · r
+                                       │retry · m change model · p change
+                                       │provider · c/Esc cancel
+                                       │
+ ◐ CHAT  /launch                      ⠋ thinking opus 0s  ollama › llama3:8b

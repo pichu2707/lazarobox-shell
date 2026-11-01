@@ -12,6 +12,60 @@ baseline.
 
 ### Added
 
+- Agent orchestrator (experimental, off by default). One coordinator model
+  splits a job across workers, each running on the engine and model the menu
+  assigns to its task, and every step is recorded. Turn it on with the
+  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
+  row picks the coordinator's engine (it falls back to `general`, and Ollama
+  is marked `not recommended`). Workers run in parallel (`max_parallel`,
+  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
+  the chat folder without asking and ask for anything outside it; a `code`
+  worker only stages files, which reach the disk through your batch review. A
+  high-risk change asks your consent first and then gets a lens review and a
+  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
+  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
+  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
+  named after a restart and resumed or discarded with `Ctrl+Space r r` and
+  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
+  recommend API keys for automation and consumer-account logins carry risk; no
+  key is required. Known limit: workers cannot run commands or tests yet, so
+  the coordinator asks you to run them (test-first evidence is planned for
+  1.2). The ODD flow (classify, feature document, one question at a time)
+  depends on the model following its instructions and is not reliable yet; a
+  later version will enforce it. See the README, "Orquestador de agentes".
+- Installed Ollama models in the model picker show a tool mark: `🔧` beside
+  `✓` for a model of 3B parameters or more that declares tool support, and
+  `tools: unreliable` for a smaller one. A model without tool support, or with
+  unknown support or size, shows no mark. The mark is informational (the model
+  stays selectable) and shows even with `[ai.tools] enabled = false`. On
+  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
+  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
+  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
+  detected and CLI model rows carry none.
+- The Ollama download screens mark models that declare tools: a Popular row
+  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
+  fits this PC, and each Sizes row by its own tag. No new request is made.
+- Ollama detection now sends one `POST /api/show` per installed model to the
+  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
+  2 seconds in total, cached by digest) to read whether it declares tools.
+- Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
+  `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
+  happened, short and action first so it fits an 80-column statusline:
+  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
+  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
+  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
+- `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
+- First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
+  use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
+  again.
+- `install-desktop` asks which terminal to use when run on a TTY without
+  `--terminal`, marks terminals with a test record, and prints notes for WSL.
+- `docs/terminals/` holds the support policy, the checklist and the record
+  templates. A terminal is supported only with a filled record.
+- Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
+  known issues they found; `zutty` joins `RECORDED_TERMINALS`.
 - `/cost` (alpha) in the chat composer opens a view over the conversation,
   headed `AI usage (alpha)`, with the tokens of today and of the last 7 days
   over every stored chat, the usage per engine and model, this chat and this
@@ -37,6 +91,119 @@ baseline.
   `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
   default, or `per-token`). A wrong value falls back to its default and is
   reported at startup; a threshold of 0 or less is off.
+
+### Fixed
+
+- Alt+Enter is no longer lost in zutty, which sends it as `CSI 27;3;13~` while
+  xterm modifyOtherKeys is on (the input library cannot parse that form):
+  startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
+  asks it to return to its initial value. zutty then sends ESC LF, which the
+  chat now treats as a newline (Alt+Ctrl+J).
+- When the jail refuses the tools shim (or an interpreter) because it or its
+  folder is writable, the notice now names the cause and the fix instead of the
+  generic "they could not be set up": `tools are off: ~/.cargo/bin and
+  ~/.cargo/bin/lazarobox-shell are writable by its group; run: chmod g-w
+  ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell'`. With umask 002 (Ubuntu,
+  Debian, Parrot) `cargo install` leaves those at 775, so a default install
+  needs that one chmod (#496). Paths you do not own are listed apart for their
+  owner. A path that cannot be inspected says `cannot check <path>: permission
+  denied` instead of being called writable. The trust rule itself is
+  unchanged.
+
+### Changed
+
+- A single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane: it is
+  the prefix alias now and takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This
+  affects vim tag jump and the telnet escape.
+- `install-desktop` no longer says lazarobox is "tested in Kitty"; it says
+  whether the terminal has a test record, and never refuses to install.
+- README: Windows is described as WSL only, and the terminal record policy is
+  linked.
+
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+  The `handoff` tool also closes an ODD step (`step` instead of `id`): steps
+  close in order, each with its handoff, and a goal authorized `read_only`
+  refuses `code` workers. A large goal gets a feature document (the user's
+  requirements in their own words, tasks and a log that starts with the goal),
+  saved to engram under one key per run and kept in the run ledger; a
+  correction appends to the log and rewrites one requirement. The
+  `orchestrate` prompts gain a playbook per step. A risk tier for staged
+  changes (S7b): build, CI, dependency, lock, config and secret
+  paths are `high`, and the orchestrator can only raise it with the new `raise`
+  tool. The review of a `high` change (S7b): a `code` worker's `propose_batch`
+  asks an inline consent first; on `y` read-only lens workers and a refuter
+  look at the staged change and at most one correction worker fixes the
+  blockers that survived, all under the run limits; on `n` the change goes on
+  to your batch review marked not reviewed. Nothing approves the batch. Each
+  review leaves a receipt (tier, consent, lenses, findings, outcome, paths not
+  reviewed), saved to engram, and a one-line note in the batch review header.
+  Runs are stored locally (S9, first part): a run is saved in the chat database as
+  its workers change, and after a restart a run that was live is marked
+  interrupted and named in the pane the first time ORCH is turned on; nothing
+  runs again on its own. Run ids start above the highest one stored. With a
+  worker selected (Alt+Up/Down), `Ctrl+Space W` opens a full-pane, read-only
+  transcript of it (its output and tool rows, the last 128 KiB, cleaned of
+  control characters); Esc or `q` close it and it follows new output.
+  An interrupted run is named again at each start until you answer it, in the
+  folder it started in only (runs of other folders are counted, never shown):
+  `Ctrl+Space r r` starts a new run from its goal, with its read scope set again
+  from the chat folder and the orchestrator told to relaunch no worker until you
+  say so, and `Ctrl+Space r d` discards it. The old run closes when the new one
+  has a worker; one older than 30 days is closed unseen. An approval refused
+  between two orchestrator turns now says so in the pane.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
+- Agent orchestrator multiple workers (S3, same gate): read grants belong to
+  one worker, worker approvals queue one prompt at a time, each worker has its
+  own session, and `[ai.orchestrator]` `max_parallel`, `max_workers` and
+  `run_timeout_mins` bound the run. With a worker row selected (Alt+Down,
+  Alt+Up) the first Ctrl+C cancels only that worker and a second one within
+  two seconds cancels the run.
+- Agent orchestrator handoffs (S4, same gate): the orchestrator records each
+  finished worker with a `handoff` (verdict, reason, done, left, decisions)
+  and ends the run with `finish`; an `off_course` or `blocked` verdict shows
+  in the transcript. Missing handoffs are filled in by lazarobox, never from
+  worker text. Each handoff and the closed run ledger are saved to engram
+  under `orchestra/<run>/...` keys; with memory off the run turns it on for
+  itself only (`memory on for this run`), and when engram cannot be used the
+  run goes on with `handoffs not persisted`, said once.
+
+### Known limits
+
+- Chat with `codex` and `gemini` is not fully isolated from the user's own
+  setup: they still load the global instruction files (`~/.codex/AGENTS.md`,
+  `~/.gemini/GEMINI.md`) and, for gemini, the user's skills in
+  `~/.gemini/skills/`. That text reaches the provider and can change
+  answers. `claude` is isolated. It predates 1.1.0 and is planned for 1.1.1
+  (#519).
+
+### Not yet checked by hand
+
+These parts passed automated tests but have not been tried by hand yet.
+Reports are welcome.
+
+- Terminals: WSL and WezTerm have no manual record yet (#490).
+- Kitty: keys, paste refusal, and typing commands in bash and zsh (including
+  auto mode) were checked. fish, launching from rofi and the desktop entry
+  `Path=` in other terminals were not.
+- Orchestrator, MCP: a hand-started session against the lazarobox MCP server
+  (P04, P05) has not been checked.
+- Orchestrator, model-dependent steps: classification, the feature document
+  and correcting a written spec (T21 to T25) depend on the coordinator model
+  following its instructions (#503).
 
 ## [1.0.1] - 2026-10-31
 

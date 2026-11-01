@@ -261,7 +261,8 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 let outcome = self.start_server().await;
                 self.say(MemReply::Server(outcome)).await;
             }
-            MemCmd::Quit => {}
+            // Answered by `Memory` before the worker exists.
+            MemCmd::EnableForRun | MemCmd::Quit => {}
         }
     }
 

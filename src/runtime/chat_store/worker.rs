@@ -14,7 +14,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
-use super::{StoreError, ensure_usage, open};
+use super::{StoreError, ensure_usage, open, runs};
 use crate::core::{
     ai::{
         chat::{
@@ -336,6 +336,25 @@ impl Worker {
                     None => StoreReply::ResumeFailed { pane },
                 })
             }
+            StoreCmd::SaveRun { pane, run } => {
+                let saved = self.conn().ok().is_some_and(|conn| {
+                    runs::save_run(conn, &run, runs::Owner::this_process(), now()).is_ok()
+                });
+                (!saved).then_some(StoreReply::RunsFailed { pane, saving: true })
+            }
+            StoreCmd::RecoverRuns { pane } => {
+                let found = self.conn().ok().and_then(|conn| {
+                    runs::recover_runs(conn, runs::Owner::this_process(), runs::pid_alive, now())
+                        .ok()
+                });
+                Some(match found {
+                    Some(runs) => StoreReply::RunsRecovered { pane, runs },
+                    None => StoreReply::RunsFailed {
+                        pane,
+                        saving: false,
+                    },
+                })
+            }
             StoreCmd::Delete { pane, conversation } => {
                 let gone = self
                     .conn()
@@ -389,6 +408,8 @@ impl Worker {
             StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
             StoreCmd::UsageToday { pane } => (*pane, Panicked::Today),
             StoreCmd::UsageReport { pane, .. } => (*pane, Panicked::Report),
+            StoreCmd::SaveRun { pane, .. } => (*pane, Panicked::Runs(true)),
+            StoreCmd::RecoverRuns { pane } => (*pane, Panicked::Runs(false)),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -410,6 +431,7 @@ impl Worker {
                         | Panicked::Usage
                         | Panicked::Today
                         | Panicked::Report
+                        | Panicked::Runs(_)
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -424,6 +446,7 @@ impl Worker {
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
                     Panicked::SetFolder => return None,
+                    Panicked::Runs(saving) => StoreReply::RunsFailed { pane, saving },
                     Panicked::Recent => StoreReply::RecentFolders {
                         pane,
                         folders: Vec::new(),
@@ -462,6 +485,8 @@ enum Panicked {
     Recent,
     Usage,
     Report,
+    /// A run command; `true` when it was a save.
+    Runs(bool),
 }
 
 /// The message of a panic payload, or a generic line.
@@ -1156,6 +1181,11 @@ impl StoreHandle {
             StoreCmd::RecordUsage { pane, .. } => day_reply(pane, Err(String::new()), Some(reason)),
             StoreCmd::UsageToday { pane } => day_reply(pane, Err(reason), None),
             StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },
+            StoreCmd::SaveRun { pane, .. } => StoreReply::RunsFailed { pane, saving: true },
+            StoreCmd::RecoverRuns { pane } => StoreReply::RunsFailed {
+                pane,
+                saving: false,
+            },
             _ => return,
         };
         let _ = self.replies.try_send(reply);

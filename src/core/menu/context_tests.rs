@@ -58,6 +58,7 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "chat",
             "review",
             "summarize",
+            "orchestrate",
             "Profile",
             "Context",
             "Memory",
@@ -68,10 +69,11 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "Git",
             "Git write",
             "Approval",
+            "Orchestrator",
             "Hugging Face",
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 10];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 11];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -91,6 +93,7 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
         "Git",
         "Git write",
         "Approval",
+        "Orchestrator",
         "Hugging Face",
     ] {
         press(&mut m, 'j');
@@ -105,6 +108,7 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Hugging Face");
     for label in [
+        "Orchestrator",
         "Approval",
         "Git write",
         "Git",

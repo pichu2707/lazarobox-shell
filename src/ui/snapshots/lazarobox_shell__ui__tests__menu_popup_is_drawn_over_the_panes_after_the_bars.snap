@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-expression: "(0..25).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..27).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
 h┌ Menu ──────────────────────────────────────────────────────┐
@@ -13,6 +13,8 @@ h┌ Menu ───────────────────────�
  │ llama-server idle                                   15 min │
  │ Updates                                             0.15.3 │
  │ Feedback                                bug report or idea │
+ │                                                            │
+ │                                                            │
  │                                                            │
  │                                                            │
  │                                                            │

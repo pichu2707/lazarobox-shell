@@ -26,6 +26,7 @@ mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
+pub mod clipboard;
 mod config_write;
 pub mod desktop;
 pub mod engram;
@@ -43,6 +44,8 @@ pub mod mcp;
 pub mod notify;
 pub mod ollama_lib;
 pub mod opener;
+pub mod orchestra;
+pub mod probe_store;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]
@@ -64,6 +67,7 @@ use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
+use orchestra::{OrchestraEvent, RunManager};
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -93,7 +97,9 @@ use crate::{
                 store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
+            marks,
             memory::port::MemReply,
+            orchestra::SessionKey,
         },
         config::{Config, config_path},
         layout::PaneId,
@@ -139,6 +145,8 @@ const PROMPT_CHANNEL: usize = 16;
 /// Capacity of the Hugging Face channel: the replies, and a download's
 /// progress about every 250 ms (dropped while the loop is behind).
 const HUB_CHANNEL: usize = 16;
+/// Capacity of the channel the clipboard worker reports on.
+const CLIPBOARD_CHANNEL: usize = 8;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -255,16 +263,18 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         &launch_cwd,
     );
     let cwd = started.dir.clone();
+    let utf8 = approval::names_utf8(
+        env::var("LC_ALL").ok().as_deref(),
+        env::var("LC_CTYPE").ok().as_deref(),
+        env::var("LANG").ok().as_deref(),
+    );
     let mut app = started
         .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
-        .with_utf8_locale(approval::names_utf8(
-            env::var("LC_ALL").ok().as_deref(),
-            env::var("LC_CTYPE").ok().as_deref(),
-            env::var("LANG").ok().as_deref(),
-        ))
+        .with_utf8_locale(utf8)
+        .with_tool_glyph(marks::tool_glyph(env::var("TERM").ok().as_deref(), utf8))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)
@@ -298,10 +308,44 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
+    // The local clipboard tool of this session, looked up once on the same
+    // PATH; none over SSH, where the terminal's clipboard is the one that
+    // matters.
+    let session = crate::core::clipboard::Session::from_env(
+        |name| env::var(name).ok(),
+        feedback::host_facts().wsl,
+    );
+    let (clipboard_tx, clipboard_rx) = mpsc::channel(CLIPBOARD_CHANNEL);
+    let clipboard = clipboard::Clipboard::find(&cli_env.path, session).map(|(tool, program)| {
+        let tx = clipboard_tx.clone();
+        clipboard::Clipboard::start(
+            tool,
+            program,
+            clipboard::CLIP_TIMEOUT,
+            Box::new(move |seq, result| {
+                let _ = tx.blocking_send((seq, result));
+            }),
+        )
+    });
+    app = app.with_clipboard(
+        clipboard.as_ref().map(clipboard::Clipboard::tool),
+        session.ssh,
+    );
+    // The prefix probe: this terminal's stored result decides whether it runs.
+    let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
+    let terminal = crate::core::probe::terminal_key(
+        env::var("TERM_PROGRAM").ok().as_deref(),
+        env::var_os("WT_SESSION").is_some(),
+        env::var("TERM").ok().as_deref(),
+    );
+    let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
+    app = app.with_probe(terminal, stored, start_args.check_prefix);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
     let listing_cache = Arc::new(ai_detect::ListingCache::new(Arc::new(Instant::now)));
+    // Tool support of the Ollama models, by digest, for the same life.
+    let show_cache = Arc::new(ai_detect::ShowCache::default());
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
@@ -405,6 +449,28 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
+    // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+    // `<data>/run`. Without a private folder every turn runs as text.
+    let socket_dirs = mcp::candidate_dirs(
+        env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        store_dir.as_deref(),
+    );
+    // The runs of orchestrating panes (D1): worker turns go through the chat's
+    // runner, prompt overrides and socket folders. Their events go to the app
+    // on their own channel, because a worker can outlive a turn.
+    let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
+    let orchestra = Arc::new(
+        RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
+            .with_tools(tool_host.clone(), socket_dirs.clone())
+            .with_run_floor({
+                let path = store_path.clone();
+                move || match path.as_deref() {
+                    Some(path) => chat_store::highest_run(path).map_err(|why| why.to_string()),
+                    None => Ok(0),
+                }
+            }),
+    );
     tokio::spawn({
         let live = live.clone();
         async move {
@@ -425,6 +491,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
         .with_config_path(config_path)
+        .with_probe_dir(probe_dir)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let live = live.clone();
@@ -434,6 +501,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     ai_tx.clone(),
                     detect_env.clone(),
                     Arc::clone(&listing_cache),
+                    Arc::clone(&show_cache),
                     force,
                     live.ports(),
                     Arc::clone(&model_dirs),
@@ -505,6 +573,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                 });
             }
         }))
+        // A copy through the tool comes back as `AppEvent::Clipboard`; a
+        // worker that is gone answers with an error at once.
+        .with_clipboard(Box::new(move |seq, text| {
+            if let Some(clipboard) = &clipboard
+                && let Err(reason) = clipboard.copy(seq, text)
+            {
+                let _ = clipboard_tx.try_send((seq, Err(reason)));
+            }
+        }))
         // An opener that fails comes back as `AppEvent::OpenFailed`: the
         // app copies the link instead.
         .with_opener(Box::new(move |url| {
@@ -557,29 +634,19 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             );
         }))
         .with_chats(
-            Chats::new(
-                chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
-                chat_tx,
-            )
-            .with_live(live.clone())
-            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
-            // `<data>/run`. Without a private folder every turn runs as text.
-            .with_tools(
-                tool_host,
-                mcp::candidate_dirs(
-                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
-                    store_dir.as_deref(),
+            Chats::new(runner, chat_tx)
+                .with_live(live.clone())
+                .with_tools(tool_host, socket_dirs)
+                .with_orchestra(orchestra)
+                // The user's servers, started only by a turn with tools on. They
+                // need a home to run in: without `$HOME` none is started.
+                .with_servers(
+                    servers_home
+                        .as_ref()
+                        .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
+                    servers_home.clone().unwrap_or_default(),
+                    chat::wires_for(cli_env.clone()),
                 ),
-            )
-            // The user's servers, started only by a turn with tools on. They
-            // need a home to run in: without `$HOME` none is started.
-            .with_servers(
-                servers_home
-                    .as_ref()
-                    .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
-                servers_home.clone().unwrap_or_default(),
-                chat::wires_for(cli_env.clone()),
-            ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
         // The picker's Hugging Face screens: curl from the same PATH as the
@@ -643,9 +710,11 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
+        clipboard: clipboard_rx,
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
+        orchestra: orchestra_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -875,12 +944,16 @@ struct Inbox {
     issue: mpsc::Receiver<SendReply>,
     /// A link the opener failed to open.
     open_failed: mpsc::Receiver<String>,
+    /// How a local clipboard copy went: its number and the outcome.
+    clipboard: mpsc::Receiver<(u64, Result<(), String>)>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
     shared: mpsc::Receiver<()>,
     /// The Hub's replies and the progress and end of a download.
     hub: mpsc::Receiver<AppEvent>,
+    /// What the run manager says about the runs of orchestrating panes.
+    orchestra: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
 }
 
 async fn event_loop(
@@ -928,9 +1001,11 @@ async fn run_loop(
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
+        clipboard: mut clipboard_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
+        orchestra: mut orchestra_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -943,10 +1018,13 @@ async fn run_loop(
     let mut anim = anim::Animation::new();
     // Armed only while a chat awaits a memory reply: no wait lasts for ever.
     let mut memory_watch = anim::Animation::every(anim::MEMORY_PERIOD);
+    // Armed only while the first-run prefix probe waits for a key.
+    let mut probe_watch = anim::Animation::every(anim::PROBE_PERIOD);
 
     loop {
         anim.sync(app.animating());
         memory_watch.sync(app.memory_waiting());
+        probe_watch.sync(app.probe_waiting());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -1054,6 +1132,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some((seq, result)) = clipboard_rx.recv() => {
+                if step(&mut app, AppEvent::Clipboard { seq, result }, panes) {
+                    return Ok(());
+                }
+            }
             Some(url) = open_failed_rx.recv() => {
                 if step(&mut app, AppEvent::OpenFailed(url), panes) {
                     return Ok(());
@@ -1075,6 +1158,14 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // The run manager lives in `panes.chats`, and so its sender, for
+            // the whole loop. A run's events keep their order: its rows, then
+            // its failure or its `Ended`, nothing after.
+            Some((pane, event)) = orchestra_rx.recv() => {
+                if step(&mut app, AppEvent::Orchestra(pane, event), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -1089,6 +1180,11 @@ async fn run_loop(
             }
             () = memory_watch.tick() => {
                 if step(&mut app, AppEvent::MemoryTick, panes) {
+                    return Ok(());
+                }
+            }
+            () = probe_watch.tick() => {
+                if step(&mut app, AppEvent::ProbeTick, panes) {
                     return Ok(());
                 }
             }
@@ -1223,6 +1319,9 @@ struct Panes {
     reapers: Vec<JoinHandle<()>>,
     /// Where `SaveConfig` writes; `None` when no config path could be resolved.
     config_path: Option<PathBuf>,
+    /// The folder `SaveProbe` writes `terminals.json` in; `None` when no
+    /// state folder could be resolved.
+    probe_dir: Option<PathBuf>,
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
@@ -1249,6 +1348,10 @@ struct Panes {
     /// Starts the host's opener on a link, without waiting for it. Does
     /// nothing unless `with_opener` installs the production one.
     open_url: Box<dyn FnMut(&str)>,
+    /// Starts one local clipboard copy (its number and text) without
+    /// waiting; the outcome comes back on its channel. Does nothing unless
+    /// `with_clipboard` installs the production one.
+    copy_local: Box<dyn FnMut(u64, String)>,
     /// Starts sending the Feedback issue with `gh`, without waiting; the
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
@@ -1308,6 +1411,7 @@ impl Panes {
             spawn,
             reapers: Vec::new(),
             config_path: None,
+            probe_dir: None,
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
@@ -1316,6 +1420,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             open_url: Box::new(|_| {}),
+            copy_local: Box::new(|_, _| {}),
             send_issue: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
@@ -1436,9 +1541,21 @@ impl Panes {
         self
     }
 
+    /// Sets the folder the prefix probe results are kept in.
+    fn with_probe_dir(mut self, probe_dir: Option<PathBuf>) -> Self {
+        self.probe_dir = probe_dir;
+        self
+    }
+
     /// Sets what opens a link in the browser.
     fn with_opener(mut self, open: Box<dyn FnMut(&str)>) -> Self {
         self.open_url = open;
+        self
+    }
+
+    /// Sets what starts a local clipboard copy.
+    fn with_clipboard(mut self, copy: Box<dyn FnMut(u64, String)>) -> Self {
+        self.copy_local = copy;
         self
     }
 
@@ -1564,7 +1681,17 @@ impl Panes {
                         Err(message) => AppEvent::ConfigSaveFailed(message),
                     });
                 }
+                // Synchronous like `SaveConfig`: the file is tiny. Only a
+                // failure is answered, so the user sees the notice.
+                Effect::SaveProbe { key, outcome } => {
+                    if let Err(reason) = probe_store::save(self.probe_dir.as_deref(), &key, outcome)
+                    {
+                        feedback.push(AppEvent::ProbeSaveFailed(reason));
+                    }
+                }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
+                // Returns at once: the tool runs on the clipboard worker.
+                Effect::CopyLocal { seq, text } => (self.copy_local)(seq, text),
                 // Returns at once: the opener is reaped on its own thread.
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
@@ -1583,6 +1710,16 @@ impl Panes {
                 } => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.send(pane, turn, request);
+                    }
+                }
+                Effect::OrchestrateSend {
+                    pane,
+                    turn,
+                    request,
+                    orch,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_orchestrated(pane, turn, request, *orch);
                     }
                 }
                 Effect::ChatCompact {
@@ -1604,16 +1741,44 @@ impl Panes {
                         chats.cancel(pane);
                     }
                 }
+                // Returns at once: a run that is not halted any more ignores it.
+                Effect::OrchDecide { pane, run, choice } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.decide_run(pane, run, choice);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
+                Effect::OrchCancelWorker { pane, run, worker } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.cancel_worker(pane, run, worker);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
                 // Both return at once; the answer lands on a waiting call, or
                 // on nothing when the call is over.
                 Effect::ToolDecision {
                     pane,
+                    worker,
                     turn,
                     call,
                     decision,
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(pane, turn, call, decision);
+                        let session = worker
+                            .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
+                        let sent = decision == crate::core::ai::chat::engine::Decision::Sent;
+                        // A `y` for a worker that ended meanwhile reaches no
+                        // wait: said, never dropped without a word.
+                        if !chats.decide(session, turn, call, decision) && sent && worker.is_some()
+                        {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::AnswerLost));
+                        }
                     }
                 }
                 // The write and the answer are one step: the answer is claimed
@@ -2067,12 +2232,22 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
+/// XTMODKEYS: `CSI > 4 ; 0 m` asks the terminal to turn xterm's
+/// modifyOtherKeys off. A terminal with it on (zutty) sends Alt+Enter as
+/// `CSI 27;3;13~`, a form crossterm 0.29 rejects, so the key would vanish.
+/// A terminal that does not know the sequence ignores it.
+const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
+/// `CSI > 4 m` asks the terminal to return modifyOtherKeys to its initial value.
+const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
+
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles. The mouse capture
 /// is disabled whether or not it was on: the sequence is harmless when the
 /// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    let mouse = out.write_all(CAPTURE_OFF);
+    let mouse = out
+        .write_all(CAPTURE_OFF)
+        .and_then(|()| out.write_all(MODIFY_OTHER_KEYS_DEFAULT));
     let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
@@ -2085,7 +2260,9 @@ fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
 /// paste and focus reporting. [`restore_to`] undoes them.
 fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, EnableBracketedPaste, EnableFocusChange)
+    execute!(out, EnableBracketedPaste, EnableFocusChange)?;
+    out.write_all(MODIFY_OTHER_KEYS_OFF)?;
+    out.flush()
 }
 
 fn restore() {
@@ -2432,7 +2609,37 @@ mod tests {
         assert!(text.contains("\x1b[?1004l"), "{text:?}");
     }
 
-    // The modes are entered with one write and undone by `restore_to`.
+    // zutty sends Alt+Enter as `CSI 27;3;13~` (xterm modifyOtherKeys), which
+    // crossterm 0.29 cannot parse, so the key would be lost. Startup asks the
+    // terminal to stop using that format.
+    #[test]
+    fn startup_turns_modify_other_keys_off() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+        // The mode goes off once the others are on, in the same write.
+        assert!(
+            text.find("\x1b[?1004h").unwrap() < text.find("\x1b[>4;0m").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // Restore hands the terminal back its own default (`CSI > 4 m`).
+    #[test]
+    fn restore_resets_modify_other_keys_to_the_terminal_default() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4m"), "{text:?}");
+        // Written with the mouse reset, ahead of the flushed `execute!` part.
+        assert!(
+            text.find("\x1b[>4m").unwrap() < text.find("\x1b[?2004l").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // The modes are entered together and undone by `restore_to`.
     #[test]
     fn startup_enables_focus_reporting_next_to_bracketed_paste() {
         let mut out = Vec::new();
@@ -2660,6 +2867,58 @@ mod tests {
             self.flushes += 1;
             Ok(())
         }
+    }
+
+    // copy-selection: Local tool ran (runtime part): the copy is handed to
+    // the clipboard worker with its number, and `apply` returns at once.
+    #[test]
+    fn copy_local_is_handed_to_the_clipboard_starter() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = std::rc::Rc::clone(&calls);
+        let mut panes = panes.with_clipboard(Box::new(move |seq, text| {
+            seen.borrow_mut().push((seq, text));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::CopyLocal {
+            seq: 4,
+            text: "hello".to_owned(),
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty());
+        assert_eq!(*calls.borrow(), vec![(4, "hello".to_owned())]);
+    }
+
+    // terminal-compatibility: "Remembered probe result" (runtime part).
+    #[test]
+    fn save_probe_writes_the_row_and_answers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_probe_dir(Some(dir.path().to_owned()));
+        let (outcome, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Alias,
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        let stored = probe_store::load(Some(dir.path())).unwrap();
+        assert_eq!(
+            stored.get("kitty"),
+            Some(&crate::core::probe::Outcome::Alias)
+        );
+    }
+
+    #[test]
+    fn a_probe_that_cannot_be_saved_comes_back_as_an_event() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (_, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Pass,
+        }]);
+        assert!(matches!(
+            feedback.as_slice(),
+            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("no usable state folder")
+        ));
     }
 
     // copy-selection: Yank emits OSC 52 (runtime part).
@@ -4628,6 +4887,7 @@ mod tests {
         assert!(session(&panes), "a turn with tools has a session");
         panes.apply(vec![Effect::ToolDecision {
             pane: id(1),
+            worker: None,
             turn: 1,
             call: CallId(99),
             decision: Decision::Sent,
@@ -4685,6 +4945,53 @@ mod tests {
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
         }
+    }
+
+    // No silent no-op: an answer to a failure with no run manager attached
+    // is told to the pane, never dropped without a word.
+    #[tokio::test]
+    async fn an_answer_with_no_run_manager_is_told() {
+        use crate::core::ai::orchestra::{RunId, run::UserChoice};
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let (_, feedback) = panes.apply(vec![Effect::OrchDecide {
+            pane: id(1),
+            run: RunId(1),
+            choice: UserChoice::Retry,
+        }]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::Unavailable)]
+        );
+    }
+
+    // No silent no-op: the user's `y` for a worker's ask that nothing waits
+    // for any more (the worker ended) is told to the pane.
+    #[tokio::test]
+    async fn a_yes_that_reaches_no_worker_wait_is_told() {
+        use crate::core::ai::orchestra::WorkerKey;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let decision = |worker, decision| Effect::ToolDecision {
+            pane: id(1),
+            worker,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(7),
+            decision,
+        };
+        let key = Some(WorkerKey::for_test(1, 1));
+        let (_, feedback) = panes.apply(vec![decision(
+            key,
+            crate::core::ai::chat::engine::Decision::Sent,
+        )]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::AnswerLost)]
+        );
+        // A denial lost, or a chat's own answer lost, changes nothing to say.
+        let (_, quiet) = panes.apply(vec![
+            decision(key, crate::core::ai::chat::engine::Decision::Denied("no")),
+            decision(None, crate::core::ai::chat::engine::Decision::Sent),
+        ]);
+        assert!(quiet.is_empty(), "{quiet:?}");
     }
 
     // The effect writes to the target, not to the chat, and only at a prompt.

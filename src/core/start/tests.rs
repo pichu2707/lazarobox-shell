@@ -8,6 +8,7 @@ fn dir_arg(v: &str) -> StartArgs {
     StartArgs {
         dir: Some(v.into()),
         missing_value: false,
+        check_prefix: false,
     }
 }
 
@@ -27,6 +28,7 @@ fn a_flag_without_a_value_is_flagged_not_fatal() {
     let missing = StartArgs {
         dir: None,
         missing_value: true,
+        check_prefix: false,
     };
     assert_eq!(parse_args(&argv(&["--dir"])), missing);
     assert_eq!(parse_args(&argv(&["--dir="])), missing);
@@ -39,6 +41,25 @@ fn the_flag_after_a_subcommand_is_not_read() {
         parse_args(&argv(&["install-desktop", "--dir", "/a"])),
         StartArgs::default()
     );
+}
+
+#[test]
+fn check_prefix_is_read_among_the_leading_flags() {
+    let on = StartArgs {
+        check_prefix: true,
+        ..StartArgs::default()
+    };
+    assert_eq!(parse_args(&argv(&["--check-prefix"])), on);
+    assert_eq!(
+        parse_args(&argv(&["--force", "--check-prefix", "--dir", "/a"])),
+        StartArgs {
+            check_prefix: true,
+            ..dir_arg("/a")
+        }
+    );
+    assert!(!parse_args(&argv(&["--force"])).check_prefix);
+    // After a subcommand it is not read.
+    assert!(!parse_args(&argv(&["install-desktop", "--check-prefix"])).check_prefix);
 }
 
 fn kinds(path: &Path) -> Kind {
@@ -108,6 +129,7 @@ fn a_file_and_a_missing_value_have_their_own_notice() {
     let args = StartArgs {
         dir: None,
         missing_value: true,
+        check_prefix: false,
     };
     let none = go(&args, Some("/b"));
     assert_eq!(none.path, PathBuf::from("/c"));

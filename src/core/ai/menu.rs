@@ -255,6 +255,32 @@ impl AiMenu {
         (self.draft.approval() != self.original.approval()).then(|| self.draft.approval())
     }
 
+    /// Flips the orchestrator gate of the draft (`[ai.orchestrator] enabled`).
+    pub fn toggle_orchestrator(&mut self) {
+        let next = !self.draft.orchestrator.enabled;
+        self.draft.orchestrator.enabled = next;
+    }
+
+    /// Records the acceptance of the provider notice in the draft; it is
+    /// written with the next save.
+    pub fn accept_notice(&mut self) {
+        self.draft.orchestrator.acknowledged = true;
+    }
+
+    /// The orchestrator flags whose draft differs from the saved ones, as
+    /// `(key, value)` in file order. The timeout is owned but never edited.
+    pub fn changed_orchestrator(&self) -> Vec<(&'static str, bool)> {
+        let (old, new) = (self.original.orchestrator, self.draft.orchestrator);
+        [
+            ("enabled", old.enabled, new.enabled),
+            ("acknowledged", old.acknowledged, new.acknowledged),
+        ]
+        .into_iter()
+        .filter(|(_, old, new)| old != new)
+        .map(|(key, _, new)| (key, new))
+        .collect()
+    }
+
     /// Replaces the detection. The draft is never touched.
     /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {

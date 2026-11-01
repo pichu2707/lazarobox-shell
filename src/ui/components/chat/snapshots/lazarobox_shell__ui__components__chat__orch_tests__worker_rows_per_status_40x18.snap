@@ -1,0 +1,21 @@
+---
+source: src/ui/components/chat/orch_tests.rs
+expression: shot_of(&buf)
+---
+an answer                          ORCH
+
+» review claude>opus queued
+
+» review claude>opus running
+
+» review claude>opus done 12.0s n/a
+
+» review claude>opus failed 12.0s
+
+» review claude>opus cancelled 12.0s
+
+» review claude>opus timed_out 12.0s
+
+» review claude>opus refused 12.0s
+
+» run n/a

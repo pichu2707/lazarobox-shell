@@ -2,6 +2,7 @@
 //! `--version`. The facts are classified by the pure `core::ai::reduce`.
 
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs,
     net::SocketAddr,
@@ -20,15 +21,16 @@ use tokio::{
     time::timeout,
 };
 
-use futures::future::join_all;
+use futures::{StreamExt, future::join_all, stream};
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    Detection, Engine, Kind, Probe, ServerPorts, Status,
+    Detection, Engine, Kind, ModelFacts, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
-    parse::sanitize,
+    marks::Tools,
+    parse::{self, sanitize},
     reduce,
     sanitize::redact_tokens,
     window,
@@ -48,18 +50,50 @@ const VERSION_CAP: usize = 64 * 1024;
 
 /// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
 pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
-    timeout(HTTP_TIMEOUT, exchange(port, path)).await.ok()?
+    let request = format!(
+        "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    timeout(HTTP_TIMEOUT, exchange(port, &request)).await.ok()?
 }
 
-async fn exchange(port: u16, path: &str) -> Option<(u16, Vec<u8>)> {
+/// The only path detection POSTs to, and only on the Ollama port. It is a
+/// constant, never a parameter, so no caller can aim this POST elsewhere.
+const SHOW_PATH: &str = "/api/show";
+
+/// Longest one `/api/show` call may take.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Longest the whole `/api/show` phase may take; the models still unanswered
+/// are `Unknown`.
+const SHOW_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Most `/api/show` calls in flight at once.
+const SHOW_PARALLEL: usize = 4;
+
+/// Most `/api/show` calls of one run (cached models cost none).
+const SHOW_MAX_CALLS: usize = 32;
+
+/// Most digests the cache keeps before it is cleared.
+const SHOW_CACHE_CAP: usize = 256;
+
+/// `POST /api/show` for `model` to `127.0.0.1:port`: the body holds the model
+/// name and nothing else. `None` on any failure or timeout.
+pub async fn http_post_show(port: u16, model: &str) -> Option<(u16, Vec<u8>)> {
+    let body = serde_json::json!({ "model": model }).to_string();
+    let request = format!(
+        "POST {SHOW_PATH} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    timeout(SHOW_TIMEOUT, exchange(port, &request)).await.ok()?
+}
+
+/// Sends `request` (a whole HTTP/1.0 request) to `127.0.0.1:port`.
+async fn exchange(port: u16, request: &str) -> Option<(u16, Vec<u8>)> {
     // HTTP/1.0 with `Connection: close`: the reply ends at EOF. The host is
     // fixed, so no request can leave the machine.
     let mut stream = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)))
         .await
         .ok()?;
-    let request = format!(
-        "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-    );
     stream.write_all(request.as_bytes()).await.ok()?;
     // Headers fit well inside the slack; a longer reply is cut and rejected.
     let mut raw = Vec::new();
@@ -69,6 +103,82 @@ async fn exchange(port: u16, path: &str) -> Option<(u16, Vec<u8>)> {
         .await
         .ok()?;
     parse_response(&raw)
+}
+
+/// Tool support of Ollama models by digest, in memory for the life of the
+/// process (never on disk). Only answers (`Yes`, `No`) are kept: an `Unknown`
+/// is probed again on the next run.
+#[derive(Default)]
+pub struct ShowCache(Mutex<HashMap<String, Tools>>);
+
+impl ShowCache {
+    pub fn get(&self, digest: &str) -> Option<Tools> {
+        let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(digest).copied()
+    }
+
+    pub fn put(&self, digest: &str, tools: Tools) {
+        if tools == Tools::Unknown {
+            return;
+        }
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= SHOW_CACHE_CAP && !map.contains_key(digest) {
+            map.clear();
+        }
+        map.insert(digest.to_owned(), tools);
+    }
+}
+
+/// The model facts of `detection` with their tool support filled in, from the
+/// cache or `POST /api/show`, within the bounds above. A model left
+/// unanswered stays `Unknown`; nothing here changes the engine state or the
+/// model list.
+async fn show_phase(
+    detection: &Detection,
+    ports: &ServerPorts,
+    cache: &ShowCache,
+) -> Vec<ModelFacts> {
+    let mut facts_all = detection.model_facts.clone();
+    let up = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "ollama" && s.status == Status::Available);
+    let Some(port) = ports.port("ollama").filter(|_| up) else {
+        return facts_all;
+    };
+    let mut todo = Vec::new();
+    for (at, facts) in facts_all.iter_mut().enumerate() {
+        match facts.digest.as_deref().and_then(|d| cache.get(d)) {
+            Some(tools) => facts.tools = tools,
+            None => todo.push((at, facts.name.clone())),
+        }
+    }
+    todo.truncate(SHOW_MAX_CALLS);
+    let mut calls = stream::iter(todo)
+        .map(|(at, name)| async move {
+            let reply = http_post_show(port, &name).await;
+            let tools = match reply {
+                Some((200, body)) => parse::show_tools(&body),
+                _ => Tools::Unknown,
+            };
+            (at, tools)
+        })
+        .buffer_unordered(SHOW_PARALLEL);
+    let mut answers = Vec::new();
+    let _ = timeout(SHOW_DEADLINE, async {
+        while let Some(answer) = calls.next().await {
+            answers.push(answer);
+        }
+    })
+    .await;
+    for (at, tools) in answers {
+        let facts = &mut facts_all[at];
+        facts.tools = tools;
+        if let Some(digest) = &facts.digest {
+            cache.put(digest, tools);
+        }
+    }
+    facts_all
 }
 
 /// The first executable regular file called `name` in an absolute `path`
@@ -518,6 +628,7 @@ pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'
 pub async fn detect_all(
     env: &CliEnv,
     cache: &ListingCache,
+    show: &ShowCache,
     force: bool,
     ports: &ServerPorts,
     model_dirs: &[PathBuf],
@@ -531,20 +642,23 @@ pub async fn detect_all(
         .and_then(Path::parent)
         .map(Path::to_path_buf);
     detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
-    // The two do not wait on each other: the model scan is off the executor
-    // and the `/props` probe is on the network.
-    let (models, windows) = tokio::join!(
+    // None waits on another: the model scan is off the executor, the `/props`
+    // probe and the `/api/show` calls (the only POST detection sends, to
+    // Ollama alone) are on the network.
+    let (models, windows, facts) = tokio::join!(
         local_models(&detection, model_dirs),
-        windows(&detection, ports)
+        windows(&detection, ports),
+        show_phase(&detection, ports, show)
     );
     detection.local_models = models;
     detection.windows = windows;
+    detection.model_facts = facts;
     detection
 }
 
 /// The context windows of the servers that are up and say theirs: a running
 /// llama-server's `n_ctx` (`GET /props`). Ollama is left out: its window sits
-/// behind a POST (`/api/show`), which this GET-only probe does not make.
+/// behind a POST (`/api/show`), which only [`show_phase`] sends, for tools.
 async fn windows(detection: &Detection, ports: &ServerPorts) -> Vec<(&'static str, usize)> {
     let up = detection
         .engines
@@ -596,12 +710,13 @@ pub fn spawn_detection(
     tx: mpsc::Sender<Detection>,
     env: CliEnv,
     cache: Arc<ListingCache>,
+    show: Arc<ShowCache>,
     force: bool,
     ports: ServerPorts,
     model_dirs: Arc<[PathBuf]>,
 ) {
     spawn_detection_of(tx, async move {
-        detect_all(&env, &cache, force, &ports, &model_dirs).await
+        detect_all(&env, &cache, &show, force, &ports, &model_dirs).await
     });
 }
 
@@ -1578,7 +1693,15 @@ mod tests {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default(), &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ServerPorts::default(),
+            &[],
+        )
+        .await;
         let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
         assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
     }
@@ -1594,7 +1717,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::Available);
         assert_eq!(llamacpp.models, ["m"]);
@@ -1625,7 +1756,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         assert_eq!(d.window("llamacpp"), Some(8_192));
         assert_eq!(d.window("ollama"), None);
     }
@@ -1638,7 +1777,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         assert_eq!(d.window("llamacpp"), None);
         assert_eq!(requests.lock().unwrap().len(), 1, "only the detection");
     }
@@ -1653,10 +1800,26 @@ mod tests {
         let dirs = [models.path().to_path_buf()];
         let lab = lab();
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &dirs,
+        )
+        .await;
         assert_eq!(d.local_models, Vec::<PathBuf>::new(), "no llama-server");
         write_script(&lab.bin, "llama-server", "exit 0", 0o755);
-        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &dirs,
+        )
+        .await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::NotRunning);
         assert_eq!(d.local_models, [models.path().join("qwen.gguf")]);
@@ -2162,7 +2325,20 @@ mod tests {
             binary: Some(bin.join(state.id)),
             ..state
         };
+        // The fixture's listing has names only: facts with no size or digest.
+        let model_facts = ollama
+            .models
+            .iter()
+            .map(|name| crate::core::ai::ModelFacts {
+                engine: "ollama",
+                name: name.clone(),
+                params: None,
+                digest: None,
+                tools: Tools::Unknown,
+            })
+            .collect();
         Detection {
+            model_facts,
             engines: vec![
                 found(ollama),
                 state("lmstudio", Status::Available, &["gemma-3-4b"], None),
@@ -2225,3 +2401,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod show_tests;

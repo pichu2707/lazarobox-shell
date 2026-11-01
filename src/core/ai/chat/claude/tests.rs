@@ -740,6 +740,36 @@ fn a_field_one_model_lacks_is_a_gap_not_a_partial_turn() {
     );
 }
 
+fn failed_text(events: &[StreamEvent]) -> String {
+    match events {
+        [StreamEvent::Error(ChatError::Failed(text))] => text.clone(),
+        other => panic!("expected one failure, got {other:?}"),
+    }
+}
+
+/// A `result` line that fails the turn.
+fn error_line(result: &str) -> String {
+    format!(
+        "{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"{result}\"}}\n"
+    )
+}
+
+fn limit_event(status: &str, kind: &str) -> String {
+    format!(
+        "{{\"type\":\"rate_limit_event\",\"rate_limit_info\":{{\"status\":\"{status}\",\"rateLimitType\":\"{kind}\"}}}}\n"
+    )
+}
+
+#[test]
+fn a_rejected_rate_limit_event_is_kept_as_text_on_the_failure() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str(&error_line("Claude AI usage limit reached"));
+    assert_eq!(
+        failed_text(&whole(&text)),
+        "Claude AI usage limit reached (limit window: five_hour)"
+    );
+}
+
 #[test]
 fn more_than_one_model_is_flagged_and_gets_no_model_name() {
     let extra = r#","modelUsage":{"a":{"inputTokens":1},"b":{"inputTokens":2}}"#;
@@ -747,4 +777,54 @@ fn more_than_one_model_is_flagged_and_gets_no_model_name() {
     assert_eq!((got[0].model.clone(), got[0].multi_model), (None, true));
     let single = usages(&whole(PLAIN));
     assert!(!single[0].multi_model);
+}
+
+#[test]
+fn an_allowed_rate_limit_event_adds_nothing_to_a_failure() {
+    let mut text = limit_event("allowed", "five_hour");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom");
+}
+
+#[test]
+fn a_rejected_rate_limit_type_is_cleaned_like_any_engine_text() {
+    let mut text = limit_event("rejected", "x\\u001b[31m y");
+    text.push_str(&error_line("boom"));
+    let got = failed_text(&whole(&text));
+    assert!(!got.contains('\u{1b}'), "{got:?}");
+    assert!(got.starts_with("boom (limit window: "), "{got:?}");
+}
+
+#[test]
+fn an_unknown_shape_limit_event_does_not_clear_a_rejected_one() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str("{\"type\":\"rate_limit_event\"}\n");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom (limit window: five_hour)");
+}
+
+#[test]
+fn a_rejected_limit_is_kept_when_the_stream_ends_without_a_result() {
+    let text = limit_event("rejected", "five_hour");
+    let got = failed_text(&whole(&text));
+    assert!(got.ends_with("(limit window: five_hour)"), "{got}");
+}
+
+#[test]
+fn the_limit_suffix_survives_a_long_message_within_the_cap() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str(&error_line(&"x".repeat(500)));
+    let got = failed_text(&whole(&text));
+    assert!(got.ends_with("(limit window: five_hour)"), "{got}");
+    assert!(
+        got.chars().count() <= super::super::stream::ERROR_CAP,
+        "{got}"
+    );
+}
+
+#[test]
+fn an_empty_limit_type_reads_as_rejected() {
+    let mut text = limit_event("rejected", "");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom (limit window: rejected)");
 }

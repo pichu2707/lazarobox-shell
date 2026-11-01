@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::core::ai::chat::review_view::Move;
+use crate::core::ai::chat::run_trace::Scroll;
 use crate::core::mouse::{PaneFacts, WHEEL_STEP, WheelAction, WheelDir, route_wheel};
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
@@ -95,6 +96,15 @@ impl App {
         else {
             return Vec::new();
         };
+        // A worker's transcript covers the conversation: the wheel scrolls it.
+        if self.run_view_open(id) {
+            let by = match dir {
+                WheelDir::Up => Scroll::Up(WHEEL_STEP),
+                WheelDir::Down => Scroll::Down(WHEEL_STEP),
+            };
+            self.scroll_run_view(id, by);
+            return Vec::new();
+        }
         // A review covers the pane: the wheel reads it, nothing is hidden
         // under it to scroll and no other mouse event reaches it.
         if self.batch_pending(id) {

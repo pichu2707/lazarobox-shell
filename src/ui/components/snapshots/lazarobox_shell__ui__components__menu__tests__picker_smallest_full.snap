@@ -6,10 +6,12 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &picker))"
 │ Settings │ AI        │
 │ Engine for code      │
 │ (default · use gener…│
-│  available · 8 models│
-│  available · 2.1.302…│
+│ ollama available · 8…│
+│ claude avail… tools ●│
 │ lmstudio not running │
-│ llamac… not installed│
+│ llamacpp not install…│
+│                      │
+│                      │
 │                      │
 │                      │
 │                      │
