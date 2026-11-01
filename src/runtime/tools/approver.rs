@@ -23,6 +23,7 @@ use crate::core::{
         approval::ApprovalAsk,
         engine::{Answer, CallId, Decision},
     },
+    ai::orchestra::{SessionKey, WorkerKey},
     ai::tools::report::RunReport,
     layout::PaneId,
 };
@@ -34,7 +35,7 @@ pub const ENDED: &str = "the chat ended before the user answered";
 /// started was still running: the command did run.
 pub const RAN_ENDED: &str = "the command was typed and run, but the turn ended before it finished";
 
-type Key = (PaneId, u64, CallId);
+type Key = (SessionKey, u64, CallId);
 
 /// The calls waiting for the user's answer, for every chat of the app.
 #[derive(Default)]
@@ -52,6 +53,24 @@ struct Ended {
     /// The calls whose command was written and whose wait is parked, so an
     /// end tells them the truth (`RAN_ENDED`) and not `ENDED`.
     parked: HashSet<Key>,
+    /// Worker sessions that ended: a late ask of theirs is denied.
+    sessions: HashSet<SessionKey>,
+    /// The attempt of each worker session that may ask (set by `for_worker`):
+    /// the approver of an earlier attempt is denied. Attempts count from 1.
+    current: HashMap<SessionKey, u64>,
+    attempts: u64,
+}
+
+impl Ended {
+    /// Whether `attempt` of worker session `session` may no longer ask: the
+    /// worker ended, or a retry replaced that attempt.
+    fn over(&self, session: SessionKey, attempt: u64) -> bool {
+        self.sessions.contains(&session)
+            || self
+                .current
+                .get(&session)
+                .is_some_and(|now| *now != attempt)
+    }
 }
 
 impl Waits {
@@ -67,13 +86,14 @@ impl Waits {
     /// `pending` while it waits.
     pub fn approver(
         self: &Arc<Self>,
-        pane: PaneId,
+        session: impl Into<SessionKey>,
         turn: u64,
         pending: Pending,
     ) -> Arc<dyn Approver> {
         Arc::new(ForTurn {
             waits: self.clone(),
-            pane,
+            session: session.into(),
+            attempt: 0,
             turn,
             pending,
         })
@@ -82,8 +102,14 @@ impl Waits {
     /// Delivers the user's answer to the call that waits for it. `false` when
     /// nothing waits under that key: the call ended, was answered already, or
     /// belongs to another turn.
-    pub fn decide(&self, pane: PaneId, turn: u64, call: CallId, decision: Decision) -> bool {
-        match self.map().remove(&(pane, turn, call)) {
+    pub fn decide(
+        &self,
+        session: impl Into<SessionKey>,
+        turn: u64,
+        call: CallId,
+        decision: Decision,
+    ) -> bool {
+        match self.map().remove(&(session.into(), turn, call)) {
             Some(wait) => wait.send(decision.into()).is_ok(),
             None => false,
         }
@@ -98,11 +124,13 @@ impl Waits {
     /// dropped call cannot slip in between the check and the insert.
     pub fn park(
         &self,
-        pane: PaneId,
+        session: impl Into<SessionKey>,
         turn: u64,
         call: CallId,
         wait: oneshot::Sender<Answer>,
     ) -> bool {
+        let session = session.into();
+        let pane = session.pane();
         let mut waiting = self.map();
         let dead = {
             let ended = self.ended();
@@ -115,16 +143,23 @@ impl Waits {
             let _ = wait.send(Decision::Denied(RAN_ENDED).into());
             return false;
         }
-        self.ended().parked.insert((pane, turn, call));
-        waiting.insert((pane, turn, call), wait);
+        self.ended().parked.insert((session, turn, call));
+        waiting.insert((session, turn, call), wait);
         true
     }
 
     /// Ends a parked call with the report of its run. `false` when nothing is
     /// parked under the key (the turn ended, the call was dropped).
-    pub fn finish(&self, pane: PaneId, turn: u64, call: CallId, report: Box<RunReport>) -> bool {
-        let wait = self.map().remove(&(pane, turn, call));
-        self.ended().parked.remove(&(pane, turn, call));
+    pub fn finish(
+        &self,
+        session: impl Into<SessionKey>,
+        turn: u64,
+        call: CallId,
+        report: Box<RunReport>,
+    ) -> bool {
+        let key = (session.into(), turn, call);
+        let wait = self.map().remove(&key);
+        self.ended().parked.remove(&key);
         match wait {
             Some(wait) => wait.send(Answer::Ran(report)).is_ok(),
             None => false,
@@ -135,8 +170,13 @@ impl Waits {
     /// can answer it now. `None` when nothing waits (the turn ended, the call
     /// was cancelled or answered). An effect that must happen only if the call
     /// is still owed an answer takes the wait first and sends on the result.
-    pub fn take(&self, pane: PaneId, turn: u64, call: CallId) -> Option<oneshot::Sender<Answer>> {
-        self.map().remove(&(pane, turn, call))
+    pub fn take(
+        &self,
+        session: impl Into<SessionKey>,
+        turn: u64,
+        call: CallId,
+    ) -> Option<oneshot::Sender<Answer>> {
+        self.map().remove(&(session.into(), turn, call))
     }
 
     fn ended(&self) -> MutexGuard<'_, Ended> {
@@ -161,14 +201,30 @@ impl Waits {
 
     /// Denies every call of `pane`: its chat closed.
     pub fn end_pane(&self, pane: PaneId) {
-        self.end_where(|key| key.0 == pane);
+        self.end_where(|key| key.0.pane() == pane);
         self.ended().panes.insert(pane);
     }
 
     /// Denies every call of one turn: the turn is over.
     pub fn end_turn(&self, pane: PaneId, turn: u64) {
-        self.end_where(|key| (key.0, key.1) == (pane, turn));
+        self.end_where(|key| (key.0.pane(), key.1) == (pane, turn));
         self.ended().turns.insert((pane, turn));
+    }
+
+    /// Denies every ask of one worker, pending or queued in the app, and
+    /// refuses the asks it makes later: the worker was cancelled or ended.
+    /// The asks of the other workers, and of the pane, are untouched.
+    pub fn end_worker(&self, pane: PaneId, worker: WorkerKey) {
+        let session = SessionKey::Worker(pane, worker);
+        self.end_where(|key| key.0 == session);
+        self.ended().sessions.insert(session);
+    }
+
+    /// How many waits are registered (a test waits for its call to ask). Its
+    /// only caller, a host test that writes, runs on Linux.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn registered(&self) -> usize {
+        self.len()
     }
 
     #[cfg(test)]
@@ -179,7 +235,10 @@ impl Waits {
 
 struct ForTurn {
     waits: Arc<Waits>,
-    pane: PaneId,
+    session: SessionKey,
+    /// The attempt of a worker session this approver was made for; `0` for
+    /// one made without (a pane, or a test).
+    attempt: u64,
     turn: u64,
     pending: Pending,
 }
@@ -198,14 +257,48 @@ impl Drop for Entry {
 }
 
 impl Approver for ForTurn {
+    fn for_worker(&self, key: WorkerKey) -> Option<Arc<dyn Approver>> {
+        let session = SessionKey::Worker(self.session.pane(), key);
+        // A new attempt of a worker that ended (a retry) asks again; the
+        // approvers of earlier attempts never do.
+        let attempt = {
+            let mut ended = self.waits.ended();
+            ended.sessions.remove(&session);
+            ended.attempts += 1;
+            let attempt = ended.attempts;
+            ended.current.insert(session, attempt);
+            attempt
+        };
+        Some(Arc::new(ForTurn {
+            waits: self.waits.clone(),
+            session,
+            attempt,
+            turn: self.turn,
+            pending: self.pending.clone(),
+        }))
+    }
+
+    fn end_worker(&self, key: WorkerKey) {
+        self.waits.end_worker(self.session.pane(), key);
+    }
+
+    fn is_over(&self) -> bool {
+        self.waits.ended().over(self.session, self.attempt)
+    }
+
     fn ask(&self, id: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         let (answer, rx) = oneshot::channel();
-        let key = (self.pane, self.turn, id);
+        let key = (self.session, self.turn, id);
+        let pane = self.session.pane();
         {
             let mut waiting = self.waits.map();
             let mut ended = self.waits.ended();
-            ended.panes.remove(&self.pane);
-            ended.turns.remove(&(self.pane, self.turn));
+            // A worker that ended asks no more: the call is denied unseen.
+            if ended.over(self.session, self.attempt) {
+                return async { Decision::Denied(ENDED).into() }.boxed();
+            }
+            ended.panes.remove(&pane);
+            ended.turns.remove(&(pane, self.turn));
             ended.parked.remove(&key);
             waiting.insert(key, answer);
         }
@@ -315,6 +408,124 @@ mod tests {
         assert!(waits.decide(pane(1), 1, CallId(1), Decision::Sent));
         assert!(!waits.decide(pane(1), 1, CallId(1), Decision::Denied("late")));
         assert_eq!(wait.await, Decision::Sent.into());
+    }
+
+    fn worker(n: u32) -> WorkerKey {
+        WorkerKey::for_test(1, n)
+    }
+
+    fn of_worker(waits: &Arc<Waits>, n: u32) -> Arc<dyn Approver> {
+        waits.approver(SessionKey::Worker(pane(1), worker(n)), 7, Pending::new())
+    }
+
+    // Spec (agent-orchestrator, Cancel denies pending asks; agent-tools,
+    // Sessions keyed by session key): ending worker 2 denies its asks and
+    // leaves worker 1's, and the pane's own, waiting.
+    #[tokio::test]
+    async fn ending_one_worker_denies_only_its_own_asks() {
+        let waits = Waits::new();
+        let (one, two) = (of_worker(&waits, 1), of_worker(&waits, 2));
+        let own = waits.approver(pane(1), 7, Pending::new());
+        let mut kept = one.ask(CallId(1), &read("/a"));
+        let (first, second) = (
+            two.ask(CallId(2), &read("/b")),
+            two.ask(CallId(3), &read("/c")),
+        );
+        let mut pane_ask = own.ask(CallId(4), &read("/d"));
+        waits.end_worker(pane(1), worker(2));
+        assert_eq!(first.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        assert_eq!(second.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        assert!((&mut kept).now_or_never().is_none(), "worker 1 still waits");
+        assert!(
+            (&mut pane_ask).now_or_never().is_none(),
+            "the pane still waits"
+        );
+        assert!(waits.decide(
+            SessionKey::Worker(pane(1), worker(1)),
+            7,
+            CallId(1),
+            Decision::Sent
+        ));
+        assert!(waits.decide(pane(1), 7, CallId(4), Decision::Sent));
+    }
+
+    // Spec (agent-tools, Cross-session call refused): an answer for worker 1
+    // never lands on the same call id of worker 2 or of the pane.
+    #[tokio::test]
+    async fn an_answer_names_its_session() {
+        let waits = Waits::new();
+        let mut wait = of_worker(&waits, 2).ask(CallId(5), &read("/a"));
+        assert!(!waits.decide(
+            SessionKey::Worker(pane(1), worker(1)),
+            7,
+            CallId(5),
+            Decision::Sent
+        ));
+        assert!(!waits.decide(pane(1), 7, CallId(5), Decision::Sent));
+        assert!((&mut wait).now_or_never().is_none(), "still waiting");
+        assert!(waits.decide(
+            SessionKey::Worker(pane(1), worker(2)),
+            7,
+            CallId(5),
+            Decision::Sent
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_ended_worker_is_denied_its_later_asks() {
+        let waits = Waits::new();
+        waits.end_worker(pane(1), worker(2));
+        let late = of_worker(&waits, 2).ask(CallId(1), &read("/a"));
+        assert_eq!(late.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        assert_eq!(waits.len(), 0);
+    }
+
+    // A failed worker retried keeps its key: its next attempt opens a fresh
+    // session, whose asks wait again.
+    #[tokio::test]
+    async fn a_retried_worker_asks_again_after_its_first_attempt_ended() {
+        let waits = Waits::new();
+        let turn = waits.approver(pane(1), 7, Pending::new());
+        let first = turn.for_worker(worker(2)).expect("a session approver");
+        waits.end_worker(pane(1), worker(2));
+        let late = first.ask(CallId(1), &read("/a"));
+        assert_eq!(late.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        let second = turn.for_worker(worker(2)).expect("a session approver");
+        let mut wait = second.ask(CallId(2), &read("/a"));
+        assert!(
+            (&mut wait).now_or_never().is_none(),
+            "it waits for the user"
+        );
+        let session = SessionKey::Worker(pane(1), worker(2));
+        assert!(waits.decide(session, 7, CallId(2), Decision::Sent));
+    }
+
+    // Only the current attempt of a worker may ask: the approver of an earlier
+    // attempt, still held by a stale call, is denied unseen after a retry.
+    #[tokio::test]
+    async fn the_approver_of_an_earlier_attempt_cannot_ask_after_a_retry() {
+        let waits = Waits::new();
+        let turn = waits.approver(pane(1), 7, Pending::new());
+        let first = turn.for_worker(worker(2)).expect("a session approver");
+        waits.end_worker(pane(1), worker(2));
+        let second = turn.for_worker(worker(2)).expect("a session approver");
+        let stale = first.ask(CallId(1), &read("/a"));
+        assert_eq!(stale.now_or_never(), Some(Decision::Denied(ENDED).into()));
+        assert_eq!(waits.len(), 0, "nothing registered for the stale attempt");
+        let mut current = second.ask(CallId(2), &read("/a"));
+        assert!(
+            (&mut current).now_or_never().is_none(),
+            "the new attempt waits"
+        );
+    }
+
+    // The pane closing or the turn ending takes its workers' asks too.
+    #[tokio::test]
+    async fn a_closed_pane_denies_its_workers_asks_as_well() {
+        let waits = Waits::new();
+        let wait = of_worker(&waits, 1).ask(CallId(1), &read("/a"));
+        waits.end_pane(pane(1));
+        assert_eq!(wait.now_or_never(), Some(Decision::Denied(ENDED).into()));
     }
 
     #[tokio::test]

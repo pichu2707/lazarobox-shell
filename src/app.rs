@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
             folder::{Probed, Purpose as FolderPurpose, Refusal},
             folder_picker::{Completion, Source as PickerSource},
             list::fit,
@@ -31,6 +31,7 @@ use crate::core::{
             port::{MemCmd, MemReply, Reason},
         },
         ollama_lib::{self, Pull},
+        orchestra::{RunId, WorkerKey, event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
@@ -57,14 +58,19 @@ mod chat_copy;
 mod compact;
 mod context;
 mod folder;
+mod handoff;
 mod history;
 mod hub;
 mod install;
 mod notes;
 mod offer;
+mod orchestra;
 mod picker;
 mod review;
 mod run;
+mod run_resume;
+mod run_store;
+mod run_view;
 mod scroll;
 mod summary;
 mod tags;
@@ -221,6 +227,9 @@ pub enum AppEvent {
     MemoryTick,
     /// What the runtime found out about a run in pane `.0` (design D21).
     Run(PaneId, RunEvent),
+    /// What the run manager said about the orchestrator run of chat `.0`
+    /// (agent-orchestrator D1): a worker row, a failure, the run's end.
+    Orchestra(PaneId, OrchestraEvent),
     /// The terminal window gained (`true`) or lost (`false`) the focus, as
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
@@ -318,6 +327,16 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start one orchestrator turn for a pane (agent-orchestrator D5): a chat
+    /// turn on the `orchestrate` engine whose session offers the
+    /// orchestration tools, with the run it starts. Only an orchestrating
+    /// pane sends it; every other turn is a `ChatSend`.
+    OrchestrateSend {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+        orch: Box<OrchSend>,
+    },
     /// Start a background compaction run for a pane: not a turn of the chat,
     /// so it touches neither the pane's tool session nor its servers.
     ChatCompact {
@@ -330,11 +349,29 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// The user's answer to the failure alert of the run of chat `pane`
+    /// (agent-orchestrator, Failure stops the run), for run `run`. A run that
+    /// ended, was replaced or is not halted any more drops it, and says so.
+    OrchDecide {
+        pane: PaneId,
+        run: RunId,
+        choice: UserChoice,
+    },
+    /// Ctrl+C with a worker row selected (S3): cancels that worker of run
+    /// `run` and nothing else. A worker that ended meanwhile is a no-op; its
+    /// row events (and `withdraw_worker`) do the rest.
+    OrchCancelWorker {
+        pane: PaneId,
+        run: RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+    },
     /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
     /// (the approval overlay, or a check that failed on `y`). A call that
     /// ended meanwhile ignores it.
     ToolDecision {
         pane: PaneId,
+        /// The worker session the call belongs to; `None` for the chat's own.
+        worker: Option<WorkerKey>,
         turn: u64,
         call: CallId,
         decision: Decision,
@@ -526,6 +563,22 @@ const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
+/// A short line for why a turn failed, or `None` for a clean end or a cut-off
+/// stream (the shape of a turn cap, which a continuation exists for).
+fn turn_failure(event: &StreamEvent) -> Option<String> {
+    use crate::core::ai::chat::engine::ChatError;
+    let StreamEvent::Error(error) = event else {
+        return None;
+    };
+    let text = match error {
+        ChatError::Interrupted => return None,
+        ChatError::Truncated => "the answer was too long",
+        ChatError::Failed(text) | ChatError::Jail(text) => text,
+    };
+    let line = text.lines().next().unwrap_or_default();
+    Some(line.chars().filter(|c| !c.is_control()).take(120).collect())
+}
+
 fn pane_size(cols: u16, rows: u16) -> PaneSize {
     PaneSize {
         rows: rows.saturating_sub(1).max(1),
@@ -780,6 +833,14 @@ pub struct App {
     summary_notice_shown: bool,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
+    /// The saves of the live orchestrator runs' handoffs.
+    run_stores: HashMap<RunId, handoff::RunStore>,
+    /// Runs that ended or lost their pane: they store nothing more.
+    ended_runs: HashSet<RunId>,
+    /// The runs saved to the local store, and what is said about it (S9).
+    run_keep: run_store::RunKeep,
+    /// Run saves whose wait ran out: their late answer is dropped.
+    lost_saves: HashSet<(PaneId, crate::core::ai::memory::port::SaveId)>,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -888,6 +949,12 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// The chat showing the provider notice of the orchestrator, until it is
+    /// accepted or dismissed (agent-orchestrator D12).
+    orch_notice: Option<PaneId>,
+    /// Config writes of an accepted notice still unanswered: their results
+    /// are the notice's, never the menu's (they come back in order).
+    orch_saves: usize,
     /// Why no server can be offered (no usable `engram` on the PATH), as the
     /// worker said once: it names the cause of every `engram is not running`.
     no_server: Option<Reason>,
@@ -924,6 +991,10 @@ impl App {
             config_path: None,
             summary_notice_shown: false,
             summary_failure_shown: false,
+            run_stores: HashMap::new(),
+            ended_runs: HashSet::new(),
+            run_keep: run_store::RunKeep::default(),
+            lost_saves: HashSet::new(),
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -973,6 +1044,8 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            orch_notice: None,
+            orch_saves: 0,
             no_server: None,
             history: false,
             download: None,
@@ -1783,6 +1856,7 @@ impl App {
                 purpose,
                 result,
             } => self.on_folder_probed(pane, purpose, result),
+            AppEvent::Orchestra(id, event) => self.on_orchestra(id, event),
             AppEvent::FoldersProbed {
                 pane,
                 id,
@@ -1805,6 +1879,11 @@ impl App {
                 effects
             }
             AppEvent::SpawnFailed(..) => Vec::new(),
+            // The write of an accepted notice is answered to the notice.
+            AppEvent::ConfigSaved if self.orch_saves > 0 => self.on_notice_saved(None),
+            AppEvent::ConfigSaveFailed(message) if self.orch_saves > 0 => {
+                self.on_notice_saved(Some(message))
+            }
             // Results of a save are stale when the menu is gone.
             AppEvent::ConfigSaved if self.menu.is_some() => {
                 self.dirty = true;
@@ -1844,6 +1923,7 @@ impl App {
             AppEvent::Store(reply) => {
                 let mut effects = self.on_history_reply(&reply);
                 effects.extend(self.on_store_reply(&reply));
+                self.on_runs_reply(&reply);
                 effects
             }
             // What was just installed is not news any more.
@@ -2304,6 +2384,9 @@ impl App {
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
+                | PrefixAction::ViewWorker
+                | PrefixAction::ResumeRun
+                | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
@@ -2343,6 +2426,15 @@ impl App {
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
+            // They would replace the transcript of a worker.
+            Step::Run(
+                PrefixAction::EditTags
+                | PrefixAction::SaveNote
+                | PrefixAction::Summarize
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleMemory
+                | PrefixAction::ToggleApproval,
+            ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
                 PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
@@ -2378,6 +2470,9 @@ impl App {
                 self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
+            Step::Run(PrefixAction::ViewWorker) => self.view_worker(),
+            Step::Run(PrefixAction::ResumeRun) => self.resume_run(),
+            Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -2495,9 +2590,12 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         let leaves = self.tabs.remove(index).tree.leaves();
         let mut effects = self.end_effects(&leaves);
+        effects.extend(self.close_run_effects(&leaves));
         effects.extend(self.deny_closing_runs(&leaves));
         for id in leaves {
             self.panes.remove(&id);
+            self.drop_pane_stores(id);
+            effects.extend(self.keep_pane_closed(id));
             self.drop_parked_send(id);
             self.drop_note_choices(id);
             self.drop_folder_state(id);
@@ -2651,8 +2749,19 @@ impl App {
                 event,
                 StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
             );
+        let failure = turn_failure(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
+        if finished {
+            chat.set_turn_failure(failure);
+        }
+        // A start that failed leaves no run to give its goal to.
+        if finished && how == Ended::Error && chat.orch_run().is_none() {
+            self.forget_goal(id);
+        } else if finished && chat.orch_run().is_none() {
+            // A turn that ended with no run never gave a resumed one a worker.
+            self.resume_not_started(id);
+        }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
         let mut effects = self.store_effects(id);
@@ -2669,6 +2778,16 @@ impl App {
         }
         if llamacpp_failed {
             effects.extend(self.request_detection());
+        }
+        // A continuation that came before this turn's end starts now (S4).
+        if finished
+            && let Some(next) = self
+                .panes
+                .get_mut(&id)
+                .and_then(PaneState::chat_mut)
+                .and_then(ChatState::take_continue)
+        {
+            effects.extend(self.start_continuation(id, next));
         }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
@@ -2712,8 +2831,11 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 let mut ends = self.end_effects(&[id]);
+                ends.extend(self.close_run_effects(&[id]));
                 ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
+                self.drop_pane_stores(id);
+                ends.extend(self.keep_pane_closed(id));
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
                 self.drop_folder_state(id);
@@ -8250,6 +8372,27 @@ mod app_tests {
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
+
+    /// Selecting a worker row and the escalating Ctrl+C (S3).
+    mod orchestra_cancel;
+    mod orchestra_consent;
+    /// The handoffs of a run in engram, and the degraded mode.
+    mod orchestra_handoffs;
+    /// The one-time provider notice of an orchestrating pane.
+    mod orchestra_notice;
+    /// The run-scoped override picked from a failure alert.
+    mod orchestra_override;
+    /// Resuming or discarding an interrupted run (S9 9.1c).
+    mod orchestra_resume;
+    /// The failure alert of a run, its keys and the run's events.
+    mod orchestra_run;
+    mod orchestra_send;
+    /// The runs the local store keeps and shows after a restart (S9).
+    mod orchestra_store;
+    /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
+    mod orchestra_toggle;
+    /// The full-pane transcript of a worker (S9).
+    mod orchestra_view;
 
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;

@@ -1,4 +1,4 @@
-use super::super::engine::{ChatError, Finish};
+use super::super::engine::{ChatError, Finish, Usage};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
 
@@ -44,16 +44,30 @@ fn message_line(text: &str) -> String {
 }
 
 fn completed_line() -> &'static str {
-    "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}\n"
+    "{\"type\":\"turn.completed\"}\n"
 }
 
 fn turn_failed_line(message: &str) -> String {
     format!("{{\"type\":\"turn.failed\",\"error\":{{\"message\":\"{message}\"}}}}\n")
 }
 
+fn usage(input: u64, output: u64) -> StreamEvent {
+    StreamEvent::Usage(Usage {
+        input,
+        output,
+        cost_micros: None,
+    })
+}
+
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
+    assert_eq!(whole(PLAIN), [delta("ok"), usage(19076, 5), done()]);
+}
+
+#[test]
+fn a_turn_completed_without_usage_emits_no_usage_event() {
+    let text = format!("{}{}", message_line("a"), "{\"type\":\"turn.completed\"}\n");
+    assert_eq!(whole(&text), [delta("a"), done()]);
 }
 
 #[test]
@@ -62,7 +76,7 @@ fn the_recorded_run_that_spent_reasoning_tokens_exposes_no_reasoning() {
     // pinned flags no event carries reasoning text, so none is produced.
     assert!(NO_REASONING.contains("\"reasoning_output_tokens\":23"));
     assert!(!NO_REASONING.contains("\"reasoning\""));
-    assert_eq!(whole(NO_REASONING), [delta("9"), done()]);
+    assert_eq!(whole(NO_REASONING), [delta("9"), usage(19095, 30), done()]);
 }
 
 #[test]
@@ -79,7 +93,7 @@ fn a_reasoning_item_is_not_assumed_to_be_shown() {
 #[test]
 fn messages_of_one_turn_are_separated_by_a_blank_line() {
     let events = whole(PREAMBLE);
-    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!(events.len(), 4, "{events:?}");
     let StreamEvent::Delta(first) = &events[0] else {
         panic!("{events:?}");
     };
@@ -91,7 +105,8 @@ fn messages_of_one_turn_are_separated_by_a_blank_line() {
         second.starts_with("\n\n1. Read `~/.ssh/config`"),
         "{second}"
     );
-    assert_eq!(events[2], done());
+    assert!(matches!(events[2], StreamEvent::Usage(_)));
+    assert_eq!(events[3], done());
 }
 
 #[test]
@@ -426,5 +441,14 @@ fn a_wired_turn_still_refuses_every_other_tool_and_unknown_item() {
 fn a_text_only_turn_refuses_our_mcp_tool_call_too() {
     for event in ["item.started", "item.updated", "item.completed"] {
         assert_eq!(whole(&ours(event)), [failed(TOOL_REFUSED)], "{event}");
+    }
+}
+
+#[test]
+fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
+    for counts in ["{\"input_tokens\":7}", "{\"output_tokens\":3}"] {
+        let end = format!("{{\"type\":\"turn.completed\",\"usage\":{counts}}}\n");
+        let text = format!("{}{end}", message_line("a"));
+        assert_eq!(whole(&text), [delta("a"), done()], "{counts}");
     }
 }

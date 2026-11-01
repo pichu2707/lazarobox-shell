@@ -757,3 +757,207 @@ async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
     assert!(!badges.contains_key(&pane(1)), "{badges:?}");
     assert_eq!(badges.len(), 1);
 }
+
+// agent-orchestrator / Unusable orchestrator engine: the run does not start,
+// so the turn ends at once with the engine guidance and no engine is
+// contacted.
+#[tokio::test]
+async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
+    use crate::core::ai::{
+        chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+        config::{Profile, Task},
+        orchestra::run::Roster,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let manager = RunManager::new(idle(), None, tokio::sync::mpsc::unbounded_channel().0);
+    let mut chats = chats.with_orchestra(Arc::new(manager));
+    let unusable = Availability::Undetected {
+        engine: "codex".into(),
+        status: "not installed".into(),
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, unusable)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    match event {
+        StreamEvent::Error(ChatError::Failed(reason)) => {
+            assert!(reason.contains("codex"), "the guidance: {reason}");
+        }
+        other => panic!("the run's refusal: {other:?}"),
+    }
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}
+
+// An orchestrator turn whose tool session cannot open could not orchestrate:
+// its run ends with it and the turn ends with the reason, untouched by any
+// engine.
+#[tokio::test]
+async fn an_orchestrator_turn_without_a_session_ends_its_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    // A plain file where the socket folder should be: no hub can start.
+    let blocked = lab.dir.path().join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = Chats::new(capturing(seen.clone()), tx)
+        .with_tools(lab.host.clone(), vec![blocked])
+        .with_orchestra(manager);
+    let ready = Availability::Ready {
+        engine: "claude".into(),
+        model: None,
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, ready)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    assert_eq!(
+        event,
+        StreamEvent::Error(ChatError::Failed(NO_SESSION.into()))
+    );
+    let ended = std::iter::from_fn(|| ended.try_recv().ok())
+        .any(|(at, event)| at == pane(1) && matches!(event, OrchestraEvent::Ended { .. }));
+    assert!(ended, "the run ends with the turn");
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}
+
+// S9 (user decision, 2026-10-29): when an orchestrator turn that spawned
+// nothing ends, its run ends by itself.
+#[tokio::test]
+async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, OrchSend},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = chats.with_orchestra(manager.clone());
+    let orch = OrchSend {
+        roster: Roster::new(vec![(
+            Task::Orchestrate,
+            Availability::Ready {
+                engine: "claude".into(),
+                model: None,
+            },
+        )]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    assert!(manager.scope(pane(1)).is_some(), "the run started");
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends")
+        .expect("an event");
+    assert_eq!((at, turn, event), (pane(1), 1, done()));
+    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+        .await
+        .expect("the run ends with its turn")
+        .expect("an event");
+    assert_eq!(at, pane(1));
+    assert!(matches!(event, OrchestraEvent::Ended { .. }), "{event:?}");
+    assert!(manager.scope(pane(1)).is_none());
+}
+
+// agent-orchestrator / No prompt at run start, Refused origin gives no root:
+// an orchestrator turn starts its run at once with the chat origin as the
+// run's read-scope root; a refused origin (here `$HOME`) gives no root and
+// its reason is kept.
+#[tokio::test]
+async fn an_orchestrator_run_scopes_its_reads_to_the_chat_origin() {
+    use crate::core::ai::{
+        chat::engine::{Availability, OrchSend},
+        config::{Profile, Task},
+        orchestra::{
+            run::Roster,
+            scope::{Dropped, TOO_BROAD},
+        },
+    };
+    let lab = lab();
+    let app = lab.home.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    for (origin, roots, dropped) in [
+        (app.clone(), vec![app.clone()], vec![]),
+        (
+            lab.home.clone(),
+            vec![],
+            vec![Dropped {
+                root: lab.home.display().to_string(),
+                reason: TOO_BROAD,
+            }],
+        ),
+    ] {
+        let (chats, _rx) = tooled(&lab, idle());
+        let events = tokio::sync::mpsc::unbounded_channel().0;
+        let manager = Arc::new(
+            RunManager::new(idle(), None, events)
+                .with_tools(lab.host.clone(), vec![lab.dir.path().join("wrun")])
+                // The lab lives under `/tmp`, a scratch folder of the jail.
+                .with_scratch(|_| false),
+        );
+        let mut chats = chats.with_orchestra(manager.clone());
+        let orch = OrchSend {
+            roster: Roster::new(vec![(
+                Task::Orchestrate,
+                Availability::Ready {
+                    engine: "claude".into(),
+                    model: None,
+                },
+            )]),
+            profile: Profile::default(),
+            deadline: Duration::from_secs(30),
+            limits: crate::core::ai::orchestra::run::RunLimits::default(),
+            goal: String::new(),
+            attach: None,
+        };
+        let mut req = with_tools(&lab);
+        if let Tools::On { origin: o, .. } = &mut req.tools {
+            *o = Some(origin.clone());
+        }
+        chats.send_orchestrated(pane(1), 1, req, orch);
+        let got = manager.scope(pane(1)).expect("the run started at once");
+        assert_eq!(got, (roots, dropped), "{origin:?}");
+        manager.cancel(pane(1));
+    }
+}

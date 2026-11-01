@@ -4,11 +4,12 @@
 use std::{cell::RefCell, sync::Arc};
 
 use super::{
-    ChatState, Entry, ReasoningState,
+    ChatState, Entry, ReasoningState, WorkerRow,
     engine::{Role, ToolStatus},
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
+use crate::core::ai::orchestra::worker::WorkerStatus;
 
 /// What a transcript line is, which decides its style.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -95,7 +96,16 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
         .flatten();
     for (index, entry) in chat.entries().iter().enumerate() {
         let mut rows = Vec::new();
-        entry_rows(entry, width, hinted == Some(index), &mut rows);
+        let marked = chat.is_selected(entry);
+        entry_rows(
+            entry,
+            width,
+            Marks {
+                hint: hinted == Some(index),
+                selected: marked,
+            },
+            &mut rows,
+        );
         if rows.is_empty() {
             starts.push(out.len());
             continue;
@@ -119,6 +129,39 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
     (out, starts)
 }
 
+/// A worker as its row and its alert name it: `review codex>gpt-5`.
+pub fn worker_label(row: &WorkerRow) -> String {
+    let engine = match (row.engine.as_str(), &row.model) {
+        ("", _) => "no engine".to_owned(),
+        (engine, Some(model)) => format!("{engine}>{model}"),
+        (engine, None) => engine.to_owned(),
+    };
+    format!("{} {engine}", row.kind.id())
+}
+
+/// A worker row as text: `review codex>gpt-5 running`, then how long it ran
+/// once it ended (`done 12.3s`).
+pub(super) fn worker_line(row: &WorkerRow) -> String {
+    let marker = if row.overridden { " (override)" } else { "" };
+    let mut line = format!("{}{marker} {}", worker_label(row), row.status.label());
+    if let Some(elapsed) = row.elapsed {
+        line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
+    }
+    // A done worker whose engine reported nothing says so; the number is
+    // never estimated.
+    match (row.usage, row.status) {
+        (Some(usage), _) => line.push_str(&format!(" {}{}", usage.label(), partial(row.partial))),
+        (None, WorkerStatus::Done) => line.push_str(" n/a"),
+        (None, _) => {}
+    }
+    line
+}
+
+/// The marker of a sum that misses a report.
+fn partial(is: bool) -> &'static str {
+    if is { " (partial)" } else { "" }
+}
+
 fn blank() -> Line {
     Line {
         kind: LineKind::Blank,
@@ -129,7 +172,20 @@ fn blank() -> Line {
 }
 
 /// The rows of one entry.
-fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
+/// What the transcript marks on an entry beyond its text.
+#[derive(Clone, Copy)]
+struct Marks {
+    /// The run hint goes under it.
+    hint: bool,
+    /// It is the selected worker row.
+    selected: bool,
+}
+
+/// The prefix of the selected worker row.
+const SELECTED_PREFIX: &str = "> ";
+
+fn entry_rows(entry: &Entry, width: usize, marks: Marks, out: &mut Vec<Line>) {
+    let hint = marks.hint;
     match entry {
         Entry::System(text) => {
             push_wrapped(out, LineKind::System, SYSTEM_PREFIX, "  ", text, width);
@@ -172,6 +228,39 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
                 };
                 push_wrapped(out, kind, "  ", "    ", &text, width);
             }
+        }
+        // Plain text, so yank and COPY carry it like a tool row; a worker
+        // that ended badly is drawn like a tool result that failed.
+        Entry::Worker(row) => {
+            let kind = match row.status {
+                WorkerStatus::Failed | WorkerStatus::TimedOut | WorkerStatus::Refused => {
+                    LineKind::ToolAlert
+                }
+                WorkerStatus::Queued
+                | WorkerStatus::Running
+                | WorkerStatus::Done
+                | WorkerStatus::Cancelled => LineKind::Tool,
+            };
+            let prefix = if marks.selected {
+                SELECTED_PREFIX
+            } else {
+                TOOL_PREFIX
+            };
+            push_wrapped(out, kind, prefix, "  ", &worker_line(row), width);
+        }
+        Entry::RunUsage(row) => {
+            let usage = row.usage.map_or_else(
+                || "n/a".to_owned(),
+                |u| format!("{}{}", u.label(), partial(row.partial)),
+            );
+            push_wrapped(
+                out,
+                LineKind::Tool,
+                TOOL_PREFIX,
+                "  ",
+                &format!("run {usage}"),
+                width,
+            );
         }
         Entry::Reasoning(block) => {
             let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());
@@ -240,7 +329,7 @@ pub(super) fn is_fence(line: &str, in_code: bool) -> bool {
 
 /// Wraps every line of `text` to `width` columns less the prefix. `first`
 /// leads the first row, `rest` every other one.
-fn push_wrapped(
+pub(super) fn push_wrapped(
     out: &mut Vec<Line>,
     kind: LineKind,
     first: &str,

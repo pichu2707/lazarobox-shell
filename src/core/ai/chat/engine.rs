@@ -2,7 +2,7 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use super::{
     adapters::{self, adapter_for},
@@ -11,8 +11,12 @@ use super::{
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
-    config::{AiConfig, Task},
+    config::{AiConfig, Profile, Task},
     jail::JailSupport,
+    orchestra::{
+        RunId,
+        run::{Roster, RunLimits},
+    },
     status_text,
     tools::{
         Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
@@ -53,6 +57,25 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+}
+
+/// What an orchestrator turn hands the runtime beside its request (D5): the
+/// availability of every task as the app resolved it from the menu, and what
+/// the run's workers need. The runtime never reads the configuration.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchSend {
+    pub roster: Roster,
+    /// The conversation's profile: the workers' prompts come from it.
+    pub profile: Profile,
+    /// Each worker's deadline (`worker_timeout_secs`).
+    pub deadline: Duration,
+    /// How many workers run at once, how many a run may spawn and how long it
+    /// may last.
+    pub limits: RunLimits,
+    /// What the user asked, verbatim: kept for the run's ledger (S4).
+    pub goal: String,
+    /// The open run this turn continues (S4, D8) instead of starting one.
+    pub attach: Option<RunId>,
 }
 
 /// Whether a turn offers tools.
@@ -191,6 +214,63 @@ pub fn locality(engine: &str) -> Option<Locality> {
         .map(|e| e.kind.locality())
 }
 
+/// A token count as a row shows it: exact below a thousand, then `12.3k`,
+/// then `1.2M` (where `k` would round up to `1000.0k`).
+fn tokens(count: u64) -> String {
+    match count {
+        0..1000 => count.to_string(),
+        1000..999_950 => format!("{:.1}k", count as f64 / 1000.0),
+        _ => format!("{:.1}M", count as f64 / 1e6),
+    }
+}
+
+/// What a turn used, as the CLI or server reported it. Never estimated: an
+/// engine that reports nothing emits no `Usage` at all.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Usage {
+    /// Prompt tokens, cached ones included.
+    pub input: u64,
+    pub output: u64,
+    /// The cost in millionths of a US dollar, when the CLI reports one.
+    pub cost_micros: Option<u64>,
+}
+
+impl Usage {
+    /// The sum of two reports. The cost is known only when both reports
+    /// carry one: a missing cost is never counted as zero, and a partial sum
+    /// would read as the whole.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cost_micros: self
+                .cost_micros
+                .zip(other.cost_micros)
+                .map(|(a, b)| a.saturating_add(b)),
+        }
+    }
+
+    /// The report as a row shows it: `12.3k in 450 out $0.0049`. The cost is
+    /// left out when the engine did not report one.
+    pub fn label(&self) -> String {
+        let mut text = format!("{} in {} out", tokens(self.input), tokens(self.output));
+        if let Some(micros) = self.cost_micros {
+            // Under half a unit of the fourth decimal it would read `$0.0000`.
+            if (1..50).contains(&micros) {
+                text.push_str(" <$0.0001");
+            } else {
+                text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+            }
+        }
+        text
+    }
+
+    /// `cost_micros` of a cost in dollars, when it is a usable number.
+    pub fn micros(dollars: f64) -> Option<u64> {
+        (dollars.is_finite() && dollars >= 0.0).then(|| (dollars * 1e6).round() as u64)
+    }
+}
+
 /// What an adapter task reports about one turn.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum StreamEvent {
@@ -218,6 +298,9 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
+    /// What the turn used, once, just before `Done`. Absent when the engine
+    /// reports nothing.
+    Usage(Usage),
     Done(Finish),
     Error(ChatError),
 }
@@ -276,17 +359,19 @@ pub fn availability(
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
+    availability_for(Task::Chat, cfg, detection, jail)
 }
 
-/// [`availability`] for the engine another task resolves to.
+/// Resolves the engine of any task through its effective assignment (its
+/// own, else `general`). Same rules as chat, and still pure: an unusable
+/// engine is reported, never replaced by another.
 pub fn availability_for(
     task: Task,
     cfg: &AiConfig,
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_of(task, cfg, detection, jail, GATED_OFF, &has_adapter)
+    availability_for_with(task, cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
@@ -305,10 +390,11 @@ pub fn availability_with(
     gated_off: &[&str],
     adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
-    availability_of(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
+    availability_for_with(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
 }
 
-fn availability_of(
+/// `availability_for` with the explicit gate list and adapter test.
+pub fn availability_for_with(
     task: Task,
     cfg: &AiConfig,
     detection: Option<&Detection>,
@@ -480,3 +566,5 @@ mod availability_tests;
 mod history_tests;
 #[cfg(test)]
 mod tools_tests;
+#[cfg(test)]
+mod usage_tests;

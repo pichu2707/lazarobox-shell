@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_notice.rs
+expression: shown
+---
+                                       │› plan it                          ORCH
+                                       │
+                                       │waiting for the model…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │Providers recommend API keys for
+                                       │automation; consumer-account logins
+                                       │carry risk. Enter accept · Esc dismiss
+                                       │
+ ◐ CHAT  /launch                      ⠋ thinking opus 1s  ollama › llama3:8b

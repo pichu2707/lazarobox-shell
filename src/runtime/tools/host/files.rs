@@ -21,16 +21,23 @@ use crate::{
             approval::Reach,
             review::{BatchReview, ReviewDoc, TOO_LARGE},
         },
+        orchestra::{
+            WorkerKey,
+            changes::{Change, diff_hash},
+        },
         tools::{
             Call, ToolError,
             mcp::refusal_text,
             paths::{PathVerdict, REFUSED, SecretRoots, resolve, resolve_write},
             registry::Family,
-            stage::{BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey},
+            stage::{
+                BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey, Staged,
+            },
+            summary::clip,
         },
     },
     runtime::tools::{
-        ToolEnv,
+        ToolEnv, WorkerScope,
         approver::ENDED,
         fs::{Within, load_roots},
         stage::{StageFailed, Stages, Unreadable, disk_bytes},
@@ -49,6 +56,9 @@ use crate::{
 pub(super) struct Sealed {
     id: BatchId,
     reviewable: bool,
+    /// The paths of the batch as a worker's ledger names them
+    /// ([`ledger_path`]): what an apply marks applied.
+    paths: Vec<String>,
     stages: Arc<Mutex<Stages>>,
     /// The ask is open: dropping now leaves the batch as an orphan.
     keep: bool,
@@ -125,7 +135,20 @@ pub(super) async fn seal(
         .stage_key
         .ok_or(refusal_text(ToolError::UnknownTool))?;
     let stages = host.stages.clone();
-    tokio::task::spawn_blocking(move || seal_in(stages, key))
+    // A worker's batch is headed by its label in the review (S7).
+    let label = match scope.read_scope.as_ref() {
+        None => None,
+        Some(worker) => {
+            // The receipt line of the review that covers the set being
+            // sealed (S7b); a set that cannot be read has no line.
+            let current = host.staged_changes(key, &scope.origin).await;
+            let receipt =
+                current.and_then(|set| worker.handle.receipt_line(worker.run, worker.worker, &set));
+            Some((worker.ask_label(), worker.key(), receipt))
+        }
+    };
+    let env = host.env(&scope.origin);
+    tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await
         .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))
 }
@@ -133,6 +156,8 @@ pub(super) async fn seal(
 fn seal_in(
     shared: Arc<Mutex<Stages>>,
     key: StageKey,
+    label: Option<(String, WorkerKey, Option<String>)>,
+    env: &ToolEnv,
 ) -> Result<(Sealed, Arc<BatchReview>), String> {
     let mut stages = lock(&shared);
     let id = stages
@@ -141,13 +166,23 @@ fn seal_in(
         .ok_or(StageError::Empty.to_string())?;
     stages.seal(id).map_err(|why| why.to_string())?;
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
-    let review = Arc::new(BatchReview::new(ReviewDoc::build(batch)));
+    let doc = ReviewDoc::build(batch);
+    let review = Arc::new(match label {
+        Some((label, key, receipt)) => BatchReview::labelled(doc, label, key).with_receipt(receipt),
+        None => BatchReview::new(doc),
+    });
     let reviewable = review.doc().reviewable();
+    let paths = batch
+        .entries()
+        .iter()
+        .map(|staged| ledger_path(env, &staged.target.real))
+        .collect();
     drop(stages);
     Ok((
         Sealed {
             id,
             reviewable,
+            paths,
             stages: shared,
             keep: false,
         },
@@ -176,7 +211,10 @@ pub(super) async fn run_within(
     let env = host.env(&scope.origin);
     if let (true, Some(key)) = (call.is_write(), scope.stage_key) {
         let stages = host.stages.clone();
-        let done = tokio::task::spawn_blocking(move || stage(&stages, key, &env, &call)).await;
+        let worker = scope.read_scope.clone();
+        let done =
+            tokio::task::spawn_blocking(move || stage(&stages, key, &env, &call, worker.as_ref()))
+                .await;
         return match done {
             Ok(Ok(text)) => ended(ToolStatus::Ok, text.clone(), &text),
             Ok(Err(why)) => ended(ToolStatus::Error, why.clone(), &why),
@@ -184,9 +222,10 @@ pub(super) async fn run_within(
         };
     }
     // The view whenever the family is on, so the marker cannot be forged.
+    // A read-only review worker of a run sees the staged view too (S7b).
     let view = match scope
         .stage_key
-        .filter(|_| scope.families.contains(Family::Write))
+        .filter(|_| scope.families.contains(Family::Write) || scope.read_scope.is_some())
     {
         None => None,
         Some(key) => {
@@ -382,17 +421,26 @@ fn failed<E: Display>(why: StageFailed<E>) -> String {
     }
 }
 
-/// Stages one call. Blocking: it reads the disk to see what is there.
+/// Stages one call. Blocking: it reads the disk to see what is there. A
+/// worker's write must also stay in its run's read scope, and what it staged
+/// goes to its change ledger (S7).
 fn stage(
     stages: &Mutex<Stages>,
     key: StageKey,
     env: &ToolEnv,
     call: &Call,
+    worker: Option<&WorkerScope>,
 ) -> Result<String, String> {
-    stage_with_probe(stages, key, env, call, disk_bytes)
+    let (text, change) = stage_as(stages, key, env, call, worker, disk_bytes)?;
+    if let Some(worker) = worker {
+        worker.handle.staged(worker.run, worker.worker, change);
+    }
+    Ok(text)
 }
 
-/// [`stage`] with the disk read given, so a test can watch when it happens.
+/// [`stage`] of a chat, with the disk read given, so a test can watch when it
+/// happens. Only the Linux and macOS test uses it.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn stage_with_probe(
     stages: &Mutex<Stages>,
     key: StageKey,
@@ -400,6 +448,109 @@ pub(super) fn stage_with_probe(
     call: &Call,
     probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<String, String> {
+    stage_as(stages, key, env, call, None, probe).map(|(text, _)| text)
+}
+
+/// The path a ledger names: relative to the chat's real root, one sanitized
+/// line; the real path itself (sanitized) when it is not under the root.
+fn ledger_path(env: &ToolEnv, real: &Path) -> String {
+    let root = env.origin.canonicalize().ok();
+    let rel = root
+        .as_deref()
+        .and_then(|root| real.strip_prefix(root).ok());
+    match rel {
+        Some(rel) if rel.as_os_str().is_empty() => ".".to_owned(),
+        Some(rel) => clip(&rel.to_string_lossy()),
+        None => clip(&real.to_string_lossy()),
+    }
+}
+
+/// What a worker's ledger records of a staged path: its size and diff hash.
+fn ledger_change(env: &ToolEnv, staged: &Staged) -> Change {
+    let (size, hash) = match &staged.entry {
+        Entry::Dir => (None, diff_hash(None, "")),
+        Entry::File { text, base } => (Some(text.len() as u64), diff_hash(base.as_deref(), text)),
+    };
+    Change {
+        path: ledger_path(env, &staged.target.real),
+        size,
+        hash,
+        applied: false,
+    }
+}
+
+/// What a review worker's read of a path came to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ReviewRead {
+    Allowed,
+    /// Refused, and not a file of the staged set: a probe (`.git`, a path
+    /// outside the scope, an absolute path).
+    Refused,
+    /// Refused although it is a file of the staged set: the review cannot
+    /// have read what it was asked to review.
+    RefusedStaged,
+}
+
+/// Whether a review worker may read `input` through the staged view: its
+/// write target (which exists on disk or only in the batch) resolves inside
+/// the chat's root and under one of the run's scope roots, and no secret rule
+/// refuses it. The read itself is kept in the chat root by the caller.
+pub(super) async fn review_reach(host: &ToolHost, scope: &TurnScope, input: &str) -> ReviewRead {
+    let Some(worker) = scope.read_scope.clone() else {
+        return ReviewRead::Refused;
+    };
+    let (env, input) = (host.env(&scope.origin), input.to_owned());
+    let (stages, key) = (host.stages.clone(), scope.stage_key);
+    let check = tokio::task::spawn_blocking(move || {
+        let roots = load_roots(&env).ok()?;
+        let target = resolve_write(&roots, &env.origin, &input)?;
+        if worker
+            .handle
+            .allows_write(worker.run, worker.worker, &target.real)
+        {
+            return Some(ReviewRead::Allowed);
+        }
+        let staged = key.is_some_and(|key| {
+            lock(&stages).batch(key).is_some_and(|batch| {
+                batch
+                    .entries()
+                    .iter()
+                    .any(|staged| staged.target.real == target.real)
+            })
+        });
+        Some(if staged {
+            ReviewRead::RefusedStaged
+        } else {
+            ReviewRead::Refused
+        })
+    });
+    check.await.ok().flatten().unwrap_or(ReviewRead::Refused)
+}
+
+/// The change set of the batch of `key`, as a worker's ledger names it.
+pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEnv) -> Vec<Change> {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return Vec::new();
+    };
+    batch
+        .entries()
+        .iter()
+        .map(|staged| ledger_change(env, staged))
+        .collect()
+}
+
+/// [`stage`] with the disk read given: the text for the model and the change
+/// staged. A worker's write outside its run's read scope is refused with the
+/// one refusal text, before the disk is read.
+fn stage_as(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+    call: &Call,
+    worker: Option<&WorkerScope>,
+    probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
+) -> Result<(String, Change), String> {
     let refused = || refused_in(env);
     let roots = load_roots(env).map_err(|_| refused())?;
     if let Some(broad) = broad_folder(env, &roots) {
@@ -412,6 +563,14 @@ pub(super) fn stage_with_probe(
         _ => return Err(refusal_text(ToolError::UnknownTool).to_owned()),
     };
     let target = resolve_write(&roots, &env.origin, path).ok_or_else(refused)?;
+    // No scope pre-approves a write, but none outside the scope is staged.
+    if let Some(worker) = worker
+        && !worker
+            .handle
+            .allows_write(worker.run, worker.worker, &target.real)
+    {
+        return Err(refused());
+    }
     // The disk is read before the lock is taken: the lock covers memory only.
     let probed = probe(&roots, &target.real);
     let mut stages = lock(stages);
@@ -439,11 +598,18 @@ pub(super) fn stage_with_probe(
         _ => return Err(refusal_text(ToolError::UnknownTool).to_owned()),
     }?;
     let batch = stages.batch(key).ok_or_else(refused)?;
-    Ok(format!(
+    let staged = batch
+        .entries()
+        .iter()
+        .find(|staged| staged.target.real == target.real)
+        .ok_or_else(refused)?;
+    let change = ledger_change(env, staged);
+    let text = format!(
         "staged {path} (batch: {} of {MAX_ENTRIES} entries, {} of {MAX_BYTES} bytes)",
         batch.entries().len(),
         batch.bytes()
-    ))
+    );
+    Ok((text, change))
 }
 
 /// Ends the call of `propose_batch` with the user's answer. Only `Sent` on a
@@ -463,6 +629,7 @@ pub(super) async fn answered(
     // except an answer that is no user's: the turn ended with the ask open.
     sealed.keep = matches!(decision, Decision::Denied(ENDED));
     let (id, reviewable) = (sealed.id, sealed.reviewable);
+    let paths = std::mem::take(&mut sealed.paths);
     // `sealed` discards the batch when it goes out of scope.
     let denied = |reason: &str| ended(ToolStatus::Denied, format!("denied: {reason}"), reason);
     match decision {
@@ -490,6 +657,10 @@ pub(super) async fn answered(
         Err(_) => return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT),
     };
     let mut text = result.summary();
+    // Only what the user approved and the apply wrote counts as applied.
+    if let (true, Some(worker)) = (result.applied(), &scope.read_scope) {
+        worker.handle.applied(worker.run, worker.worker, &paths);
+    }
     let status = if result.applied() {
         text = format!("{text}\n{CONTINUE}");
         ToolStatus::Ok

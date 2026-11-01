@@ -632,3 +632,35 @@ fn a_held_g_does_not_jump_to_the_top() {
     a.update(code(KeyCode::Char('G'), KeyModifiers::SHIFT));
     assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
 }
+
+// chat-copy: the quiet Ctrl+O hint (gate on, idle, ready engine) is not
+// guidance that replaces the transcript, so an empty chat behaves with the
+// gate on as it does with the gate off; real guidance still refuses, with
+// a notice.
+#[test]
+fn the_ctrl_o_hint_does_not_change_copy_on_an_empty_chat() {
+    let off = {
+        let mut ai = super::orchestra_send::orch_ai();
+        ai.orchestrator.enabled = false;
+        super::orchestra_send::orch_app_with(ai)
+    };
+    let on = super::orchestra_send::orch_app();
+    assert_eq!(
+        on.chat_guidance(chat_id()).as_deref(),
+        Some("Ctrl+O: orchestrate this pane")
+    );
+    assert_eq!(off.chat_guidance(chat_id()), None);
+    let (mut off, mut on) = (off, on);
+    press(&mut off, "[");
+    press(&mut on, "[");
+    assert_eq!(in_chat_copy(&on), in_chat_copy(&off));
+}
+
+#[test]
+fn real_guidance_on_an_empty_chat_still_refuses_with_a_notice() {
+    let mut a = launched(80, 25);
+    a.open_chat(None);
+    a.ai.orchestrator.enabled = true;
+    assert!(a.chat_guidance(chat_id()).is_some());
+    refused(a);
+}

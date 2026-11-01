@@ -10,6 +10,90 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Agent orchestrator (experimental, off by default). One coordinator model
+  splits a job across workers, each running on the engine and model the menu
+  assigns to its task, and every step is recorded. Turn it on with the
+  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
+  row picks the coordinator's engine (it falls back to `general`, and Ollama
+  is marked `not recommended`). Workers run in parallel (`max_parallel`,
+  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
+  the chat folder without asking and ask for anything outside it; a `code`
+  worker only stages files, which reach the disk through your batch review. A
+  high-risk change asks your consent first and then gets a lens review and a
+  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
+  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
+  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
+  named after a restart and resumed or discarded with `Ctrl+Space r r` and
+  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
+  recommend API keys for automation and consumer-account logins carry risk; no
+  key is required. Known limit: workers cannot run commands or tests yet, so
+  the coordinator asks you to run them (test-first evidence is planned for
+  1.2). See the README, "Orquestador de agentes".
+
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+  The `handoff` tool also closes an ODD step (`step` instead of `id`): steps
+  close in order, each with its handoff, and a goal authorized `read_only`
+  refuses `code` workers. A large goal gets a feature document (the user's
+  requirements in their own words, tasks and a log that starts with the goal),
+  saved to engram under one key per run and kept in the run ledger; a
+  correction appends to the log and rewrites one requirement. The
+  `orchestrate` prompts gain a playbook per step. A risk tier for staged
+  changes (S7b): build, CI, dependency, lock, config and secret
+  paths are `high`, and the orchestrator can only raise it with the new `raise`
+  tool. The review of a `high` change (S7b): a `code` worker's `propose_batch`
+  asks an inline consent first; on `y` read-only lens workers and a refuter
+  look at the staged change and at most one correction worker fixes the
+  blockers that survived, all under the run limits; on `n` the change goes on
+  to your batch review marked not reviewed. Nothing approves the batch. Each
+  review leaves a receipt (tier, consent, lenses, findings, outcome, paths not
+  reviewed), saved to engram, and a one-line note in the batch review header.
+  Runs are stored locally (S9, first part): a run is saved in the chat database as
+  its workers change, and after a restart a run that was live is marked
+  interrupted and named in the pane the first time ORCH is turned on; nothing
+  runs again on its own. Run ids start above the highest one stored. With a
+  worker selected (Alt+Up/Down), `Ctrl+Space W` opens a full-pane, read-only
+  transcript of it (its output and tool rows, the last 128 KiB, cleaned of
+  control characters); Esc or `q` close it and it follows new output.
+  An interrupted run is named again at each start until you answer it, in the
+  folder it started in only (runs of other folders are counted, never shown):
+  `Ctrl+Space r r` starts a new run from its goal, with its read scope set again
+  from the chat folder and the orchestrator told to relaunch no worker until you
+  say so, and `Ctrl+Space r d` discards it. The old run closes when the new one
+  has a worker; one older than 30 days is closed unseen. An approval refused
+  between two orchestrator turns now says so in the pane.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
+- Agent orchestrator multiple workers (S3, same gate): read grants belong to
+  one worker, worker approvals queue one prompt at a time, each worker has its
+  own session, and `[ai.orchestrator]` `max_parallel`, `max_workers` and
+  `run_timeout_mins` bound the run. With a worker row selected (Alt+Down,
+  Alt+Up) the first Ctrl+C cancels only that worker and a second one within
+  two seconds cancels the run.
+- Agent orchestrator handoffs (S4, same gate): the orchestrator records each
+  finished worker with a `handoff` (verdict, reason, done, left, decisions)
+  and ends the run with `finish`; an `off_course` or `blocked` verdict shows
+  in the transcript. Missing handoffs are filled in by lazarobox, never from
+  worker text. Each handoff and the closed run ledger are saved to engram
+  under `orchestra/<run>/...` keys; with memory off the run turns it on for
+  itself only (`memory on for this run`), and when engram cannot be used the
+  run goes on with `handoffs not persisted`, said once.
+
 ## [1.0.1] - 2026-10-31
 
 ### Changed

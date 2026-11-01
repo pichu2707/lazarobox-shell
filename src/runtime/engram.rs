@@ -24,6 +24,9 @@ mod fake_engram;
 pub struct Memory {
     start: Option<Box<dyn FnOnce() -> MemoryLink>>,
     link: Option<MemoryLink>,
+    /// The start of an inactive memory, kept for a run that turns memory on
+    /// for its own handoffs (`MemCmd::EnableForRun`).
+    on_demand: Option<Box<dyn FnOnce() -> MemoryLink>>,
     /// Where an inactive memory tells a pane its command was not run.
     declined: Option<mpsc::Sender<MemReply>>,
 }
@@ -34,6 +37,7 @@ impl Memory {
         Self {
             start: None,
             link: None,
+            on_demand: None,
             declined: None,
         }
     }
@@ -56,13 +60,18 @@ impl Memory {
         config: &MemoryConfig,
         start: impl FnOnce(u16) -> MemoryLink + 'static,
     ) -> Self {
-        if !config.active() {
-            return Self::off();
-        }
         let port = config.port;
+        let start: Box<dyn FnOnce() -> MemoryLink> = Box::new(move || start(port));
+        if !config.active() {
+            return Self {
+                on_demand: Some(start),
+                ..Self::off()
+            };
+        }
         Self {
-            start: Some(Box::new(move || start(port))),
+            start: Some(start),
             link: None,
+            on_demand: None,
             declined: None,
         }
     }
@@ -72,6 +81,14 @@ impl Memory {
     pub fn send(&mut self, cmd: MemCmd) {
         // Quitting never starts a worker; the runtime calls `shutdown`.
         if cmd == MemCmd::Quit {
+            return;
+        }
+        if cmd == MemCmd::EnableForRun {
+            if self.link.is_none()
+                && let Some(start) = self.start.take().or_else(|| self.on_demand.take())
+            {
+                self.link = Some(start());
+            }
             return;
         }
         if self.link.is_none()
@@ -89,6 +106,7 @@ impl Memory {
     /// Flushes what is queued and stops the worker, waiting at most `bound`.
     pub async fn shutdown(&mut self, bound: Duration) {
         self.start = None;
+        self.on_demand = None;
         self.declined = None;
         if let Some(link) = self.link.take() {
             link.shutdown(bound).await;
@@ -198,6 +216,21 @@ mod tests {
             );
             assert!(rig.rx.try_recv().is_err(), "{cfg:?}: no reply");
         }
+    }
+
+    // D13: a run turns memory on for its own handoffs. Nothing starts before
+    // the run asks, and the config port is the one used.
+    #[tokio::test]
+    async fn a_run_starts_the_worker_of_an_inactive_memory_on_the_configured_port() {
+        let mut rig = memory_of(config(false, false, 9123));
+        rig.memory.send(MemCmd::EnableForRun);
+        rig.memory.send(MemCmd::EnableForRun);
+        assert_eq!(rig.started.get(), 1, "once");
+        assert_eq!(rig.port.get(), 9123);
+        rig.memory.send(resolve());
+        rig.rx.recv().await.expect("the worker answers");
+        assert_eq!(rig.transport.0.load(Ordering::SeqCst), 1, "one probe");
+        rig.memory.shutdown(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]

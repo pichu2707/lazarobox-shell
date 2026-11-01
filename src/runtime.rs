@@ -43,6 +43,7 @@ pub mod mcp;
 pub mod notify;
 pub mod ollama_lib;
 pub mod opener;
+pub mod orchestra;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]
@@ -64,6 +65,7 @@ use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
+use orchestra::{OrchestraEvent, RunManager};
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -94,6 +96,7 @@ use crate::{
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
+            orchestra::SessionKey,
         },
         config::{Config, config_path},
         layout::PaneId,
@@ -405,6 +408,28 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
+    // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+    // `<data>/run`. Without a private folder every turn runs as text.
+    let socket_dirs = mcp::candidate_dirs(
+        env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        store_dir.as_deref(),
+    );
+    // The runs of orchestrating panes (D1): worker turns go through the chat's
+    // runner, prompt overrides and socket folders. Their events go to the app
+    // on their own channel, because a worker can outlive a turn.
+    let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
+    let orchestra = Arc::new(
+        RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
+            .with_tools(tool_host.clone(), socket_dirs.clone())
+            .with_run_floor({
+                let path = store_path.clone();
+                move || match path.as_deref() {
+                    Some(path) => chat_store::highest_run(path).map_err(|why| why.to_string()),
+                    None => Ok(0),
+                }
+            }),
+    );
     tokio::spawn({
         let live = live.clone();
         async move {
@@ -557,29 +582,19 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             );
         }))
         .with_chats(
-            Chats::new(
-                chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
-                chat_tx,
-            )
-            .with_live(live.clone())
-            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
-            // `<data>/run`. Without a private folder every turn runs as text.
-            .with_tools(
-                tool_host,
-                mcp::candidate_dirs(
-                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
-                    store_dir.as_deref(),
+            Chats::new(runner, chat_tx)
+                .with_live(live.clone())
+                .with_tools(tool_host, socket_dirs)
+                .with_orchestra(orchestra)
+                // The user's servers, started only by a turn with tools on. They
+                // need a home to run in: without `$HOME` none is started.
+                .with_servers(
+                    servers_home
+                        .as_ref()
+                        .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
+                    servers_home.clone().unwrap_or_default(),
+                    chat::wires_for(cli_env.clone()),
                 ),
-            )
-            // The user's servers, started only by a turn with tools on. They
-            // need a home to run in: without `$HOME` none is started.
-            .with_servers(
-                servers_home
-                    .as_ref()
-                    .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
-                servers_home.clone().unwrap_or_default(),
-                chat::wires_for(cli_env.clone()),
-            ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
         // The picker's Hugging Face screens: curl from the same PATH as the
@@ -646,6 +661,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
+        orchestra: orchestra_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -881,6 +897,8 @@ struct Inbox {
     shared: mpsc::Receiver<()>,
     /// The Hub's replies and the progress and end of a download.
     hub: mpsc::Receiver<AppEvent>,
+    /// What the run manager says about the runs of orchestrating panes.
+    orchestra: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
 }
 
 async fn event_loop(
@@ -931,6 +949,7 @@ async fn run_loop(
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
+        orchestra: mut orchestra_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -1072,6 +1091,14 @@ async fn run_loop(
             // `panes` keeps the worker, and so a sender, for the whole loop.
             Some(event) = hub_rx.recv() => {
                 if step(&mut app, event, panes) {
+                    return Ok(());
+                }
+            }
+            // The run manager lives in `panes.chats`, and so its sender, for
+            // the whole loop. A run's events keep their order: its rows, then
+            // its failure or its `Ended`, nothing after.
+            Some((pane, event)) = orchestra_rx.recv() => {
+                if step(&mut app, AppEvent::Orchestra(pane, event), panes) {
                     return Ok(());
                 }
             }
@@ -1585,6 +1612,16 @@ impl Panes {
                         chats.send(pane, turn, request);
                     }
                 }
+                Effect::OrchestrateSend {
+                    pane,
+                    turn,
+                    request,
+                    orch,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_orchestrated(pane, turn, request, *orch);
+                    }
+                }
                 Effect::ChatCompact {
                     pane,
                     turn,
@@ -1604,16 +1641,44 @@ impl Panes {
                         chats.cancel(pane);
                     }
                 }
+                // Returns at once: a run that is not halted any more ignores it.
+                Effect::OrchDecide { pane, run, choice } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.decide_run(pane, run, choice);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
+                Effect::OrchCancelWorker { pane, run, worker } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.cancel_worker(pane, run, worker);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
                 // Both return at once; the answer lands on a waiting call, or
                 // on nothing when the call is over.
                 Effect::ToolDecision {
                     pane,
+                    worker,
                     turn,
                     call,
                     decision,
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(pane, turn, call, decision);
+                        let session = worker
+                            .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
+                        let sent = decision == crate::core::ai::chat::engine::Decision::Sent;
+                        // A `y` for a worker that ended meanwhile reaches no
+                        // wait: said, never dropped without a word.
+                        if !chats.decide(session, turn, call, decision) && sent && worker.is_some()
+                        {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::AnswerLost));
+                        }
                     }
                 }
                 // The write and the answer are one step: the answer is claimed
@@ -4589,6 +4654,7 @@ mod tests {
         assert!(session(&panes), "a turn with tools has a session");
         panes.apply(vec![Effect::ToolDecision {
             pane: id(1),
+            worker: None,
             turn: 1,
             call: CallId(99),
             decision: Decision::Sent,
@@ -4646,6 +4712,53 @@ mod tests {
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
         }
+    }
+
+    // No silent no-op: an answer to a failure with no run manager attached
+    // is told to the pane, never dropped without a word.
+    #[tokio::test]
+    async fn an_answer_with_no_run_manager_is_told() {
+        use crate::core::ai::orchestra::{RunId, run::UserChoice};
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let (_, feedback) = panes.apply(vec![Effect::OrchDecide {
+            pane: id(1),
+            run: RunId(1),
+            choice: UserChoice::Retry,
+        }]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::Unavailable)]
+        );
+    }
+
+    // No silent no-op: the user's `y` for a worker's ask that nothing waits
+    // for any more (the worker ended) is told to the pane.
+    #[tokio::test]
+    async fn a_yes_that_reaches_no_worker_wait_is_told() {
+        use crate::core::ai::orchestra::WorkerKey;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let decision = |worker, decision| Effect::ToolDecision {
+            pane: id(1),
+            worker,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(7),
+            decision,
+        };
+        let key = Some(WorkerKey::for_test(1, 1));
+        let (_, feedback) = panes.apply(vec![decision(
+            key,
+            crate::core::ai::chat::engine::Decision::Sent,
+        )]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::AnswerLost)]
+        );
+        // A denial lost, or a chat's own answer lost, changes nothing to say.
+        let (_, quiet) = panes.apply(vec![
+            decision(key, crate::core::ai::chat::engine::Decision::Denied("no")),
+            decision(None, crate::core::ai::chat::engine::Decision::Sent),
+        ]);
+        assert!(quiet.is_empty(), "{quiet:?}");
     }
 
     // The effect writes to the target, not to the chat, and only at a prompt.

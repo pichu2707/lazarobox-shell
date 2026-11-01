@@ -284,7 +284,8 @@ pub fn execute_within(
         Call::Grep { pattern, dir } => {
             super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
-        // A user tool runs on its own server, never here.
+        // A user tool runs on its own server and an orchestration call goes
+        // to the run manager: neither runs here.
         Call::RunInPane { .. }
         | Call::External { .. }
         | Call::CreateDir { .. }
@@ -296,7 +297,8 @@ pub fn execute_within(
         | Call::GitLog { .. }
         | Call::GitAdd { .. }
         | Call::GitCommit { .. }
-        | Call::ProposeBatch => Err(Failure::NotReadTool),
+        | Call::ProposeBatch
+        | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }
 
@@ -398,11 +400,29 @@ fn read_file(
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
-    // Judged on the real path, so a link to it is refused too.
-    if is_git_config(&real) || !inside(&real) {
+    // Kept in the root: judged on the real path, which the open proves.
+    if !inside(&real) {
         return Err(Failure::Refused);
     }
-    let file = std::fs::File::from(open_checked(roots, &real, false)?);
+    read_real(roots, &real, window, limits)
+}
+
+/// Reads the file at `real`, a path already resolved and judged with
+/// `roots`: opened with no link followed, proven to be that path and judged
+/// again ([`open_checked`]), and paged by `window` like any read. A worker
+/// read inside its run's scope comes here with the path the scope returned,
+/// so the request is never resolved again.
+pub(crate) fn read_real(
+    roots: &SecretRoots,
+    real: &Path,
+    window: Option<Lines>,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    // Judged on the real path, so a link to it is refused too.
+    if is_git_config(real) {
+        return Err(Failure::Refused);
+    }
+    let file = std::fs::File::from(open_checked(roots, real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
     if !meta.is_file() {

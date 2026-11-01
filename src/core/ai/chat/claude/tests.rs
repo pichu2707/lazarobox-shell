@@ -1,4 +1,4 @@
-use super::super::engine::{ChatError, Finish};
+use super::super::engine::{ChatError, Finish, Usage};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
 
@@ -61,9 +61,48 @@ fn result_line(result: &str, extra: &str) -> String {
     )
 }
 
+fn usage(input: u64, output: u64, cost_micros: Option<u64>) -> StreamEvent {
+    StreamEvent::Usage(Usage {
+        input,
+        output,
+        cost_micros,
+    })
+}
+
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
+    // 2 fresh + 606 cache-creation + 0 cache-read prompt tokens, $0.004936.
+    assert_eq!(
+        whole(PLAIN),
+        [delta("ok"), usage(608, 4, Some(4936)), done()]
+    );
+}
+
+#[test]
+fn a_result_without_usage_emits_no_usage_event() {
+    let text = result_line("fine", "");
+    assert_eq!(whole(&text), [delta("fine"), done()]);
+}
+
+#[test]
+fn a_result_with_usage_but_no_cost_leaves_the_cost_unknown() {
+    let text = result_line("x", ",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}");
+    assert_eq!(whole(&text), [delta("x"), usage(7, 3, None), done()]);
+}
+
+#[test]
+fn a_failed_result_emits_no_usage_event() {
+    let events = whole(MODEL_ERROR);
+    assert!(
+        events.iter().all(|e| !matches!(e, StreamEvent::Usage(_))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_usage_object_with_no_counts_emits_nothing() {
+    let text = result_line("x", ",\"usage\":{},\"total_cost_usd\":0.5");
+    assert_eq!(whole(&text), [delta("x"), done()]);
 }
 
 #[test]
@@ -554,4 +593,96 @@ fn a_subagent_tool_use_is_judged_like_any_other() {
 fn text_that_mentions_a_tool_use_is_just_text() {
     let line = text_line("{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Bash\\\"}");
     assert!(answer(&whole(&format!("{line}{}", result_line("x", "")))).contains("tool_use"));
+}
+
+#[test]
+fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
+    for counts in [
+        "{\"input_tokens\":7}",
+        "{\"output_tokens\":3}",
+        "{\"cache_read_input_tokens\":9,\"output_tokens\":3}",
+    ] {
+        let text = result_line("x", &format!(",\"usage\":{counts},\"total_cost_usd\":0.5"));
+        assert_eq!(whole(&text), [delta("x"), done()], "{counts}");
+    }
+}
+
+fn failed_text(events: &[StreamEvent]) -> String {
+    match events {
+        [StreamEvent::Error(ChatError::Failed(text))] => text.clone(),
+        other => panic!("expected one failure, got {other:?}"),
+    }
+}
+
+/// A `result` line that fails the turn.
+fn error_line(result: &str) -> String {
+    format!(
+        "{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"{result}\"}}\n"
+    )
+}
+
+fn limit_event(status: &str, kind: &str) -> String {
+    format!(
+        "{{\"type\":\"rate_limit_event\",\"rate_limit_info\":{{\"status\":\"{status}\",\"rateLimitType\":\"{kind}\"}}}}\n"
+    )
+}
+
+#[test]
+fn a_rejected_rate_limit_event_is_kept_as_text_on_the_failure() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str(&error_line("Claude AI usage limit reached"));
+    assert_eq!(
+        failed_text(&whole(&text)),
+        "Claude AI usage limit reached (limit window: five_hour)"
+    );
+}
+
+#[test]
+fn an_allowed_rate_limit_event_adds_nothing_to_a_failure() {
+    let mut text = limit_event("allowed", "five_hour");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom");
+}
+
+#[test]
+fn a_rejected_rate_limit_type_is_cleaned_like_any_engine_text() {
+    let mut text = limit_event("rejected", "x\\u001b[31m y");
+    text.push_str(&error_line("boom"));
+    let got = failed_text(&whole(&text));
+    assert!(!got.contains('\u{1b}'), "{got:?}");
+    assert!(got.starts_with("boom (limit window: "), "{got:?}");
+}
+
+#[test]
+fn an_unknown_shape_limit_event_does_not_clear_a_rejected_one() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str("{\"type\":\"rate_limit_event\"}\n");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom (limit window: five_hour)");
+}
+
+#[test]
+fn a_rejected_limit_is_kept_when_the_stream_ends_without_a_result() {
+    let text = limit_event("rejected", "five_hour");
+    let got = failed_text(&whole(&text));
+    assert!(got.ends_with("(limit window: five_hour)"), "{got}");
+}
+
+#[test]
+fn the_limit_suffix_survives_a_long_message_within_the_cap() {
+    let mut text = limit_event("rejected", "five_hour");
+    text.push_str(&error_line(&"x".repeat(500)));
+    let got = failed_text(&whole(&text));
+    assert!(got.ends_with("(limit window: five_hour)"), "{got}");
+    assert!(
+        got.chars().count() <= super::super::stream::ERROR_CAP,
+        "{got}"
+    );
+}
+
+#[test]
+fn an_empty_limit_type_reads_as_rejected() {
+    let mut text = limit_event("rejected", "");
+    text.push_str(&error_line("boom"));
+    assert_eq!(failed_text(&whole(&text)), "boom (limit window: rejected)");
 }

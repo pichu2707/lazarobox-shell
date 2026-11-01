@@ -54,11 +54,16 @@ pub fn topic_key(kind: MemKind, title: &str) -> String {
 /// The longest caller-supplied topic key, in characters.
 pub const TOPIC_KEY_CAP: usize = 200;
 
+/// The namespace of the handoffs of an orchestrator run (agent-orchestrator
+/// D13), apart from the chat notes.
+pub const ORCHESTRA_PREFIX: &str = "orchestra/";
+
 /// Whether `key` may be used as a caller-supplied topic key: inside the
-/// `chat/` namespace lazarobox owns, at most `TOPIC_KEY_CAP` characters, no
+/// `chat/` or `orchestra/` namespaces lazarobox owns, at most `TOPIC_KEY_CAP` characters, no
 /// control or format characters.
 pub fn valid_topic_key(key: &str) -> bool {
     key.strip_prefix("chat/")
+        .or_else(|| key.strip_prefix(ORCHESTRA_PREFIX))
         .is_some_and(|rest| !rest.trim().is_empty())
         && key.chars().count() <= TOPIC_KEY_CAP
         && !key.chars().any(|c| c.is_control() || is_format(c))
@@ -97,6 +102,20 @@ mod tests {
             assert!(!valid_topic_key(outside), "{outside:?}");
         }
         assert!(valid_topic_key("chat/12-1000/summary"));
+    }
+
+    #[test]
+    fn the_orchestra_namespace_is_a_caller_key_too() {
+        assert!(valid_topic_key("orchestra/3/worker/2"));
+        assert!(valid_topic_key("orchestra/3/ledger"));
+        for bad in [
+            "orchestra/",
+            "orchestra/ \t",
+            "orchestrator/3",
+            "Orchestra/3/x",
+        ] {
+            assert!(!valid_topic_key(bad), "{bad:?}");
+        }
     }
 
     #[test]

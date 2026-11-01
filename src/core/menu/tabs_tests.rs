@@ -17,13 +17,14 @@ const SETTINGS: [&str; 8] = [
     "Feedback",
 ];
 
-const AI: [&str; 17] = [
+const AI: [&str; 19] = [
     "Set all tasks",
     "general",
     "code",
     "chat",
     "review",
     "summarize",
+    "orchestrate",
     "Profile",
     "Context",
     "Memory",
@@ -34,6 +35,7 @@ const AI: [&str; 17] = [
     "Git",
     "Git write",
     "Approval",
+    "Orchestrator",
     "Hugging Face",
 ];
 
@@ -445,7 +447,7 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 19);
+    assert_eq!(MENU_BODY, 21);
 }
 
 #[test]
@@ -455,13 +457,13 @@ fn the_warning_has_warning_rows_lines() {
 }
 
 #[test]
-fn the_warning_fits_from_24_by_22() {
+fn the_warning_fits_from_24_by_24() {
     let mut m = warned();
-    m.set_term(MIN_WIDTH, 22);
+    m.set_term(MIN_WIDTH, 24);
     assert!(m.fits_warning());
-    m.set_term(MIN_WIDTH, 21);
+    m.set_term(MIN_WIDTH, 23);
     assert!(!m.fits_warning());
-    m.set_term(MIN_WIDTH - 1, 22);
+    m.set_term(MIN_WIDTH - 1, 24);
     assert!(!m.fits_warning());
 }
 

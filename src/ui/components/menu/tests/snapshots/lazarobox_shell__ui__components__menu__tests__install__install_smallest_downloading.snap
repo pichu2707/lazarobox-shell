@@ -22,5 +22,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
 │                      │
 │                      │
 │                      │
+│                      │
+│                      │
 │ Esc cancel the downl…│
 └──────────────────────┘

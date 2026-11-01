@@ -4,6 +4,7 @@
 
 use crate::core::ai::{
     config::{Profile, Task},
+    orchestra::rdd::Lens,
     sanitize::clean,
     tools::registry::{Family, FamilySet},
 };
@@ -50,6 +51,59 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
         (Profile::Programmer, Task::Summarize) => {
             include_str!("prompts/programmer/summarize.md")
         }
+        // The coordinator rules, then the ODD playbook of the steps (S5).
+        (Profile::Analyst, Task::Orchestrate) => concat!(
+            include_str!("prompts/analyst/orchestrate.md"),
+            include_str!("prompts/analyst/orchestrate_odd.md")
+        ),
+        (Profile::Programmer, Task::Orchestrate) => concat!(
+            include_str!("prompts/programmer/orchestrate.md"),
+            include_str!("prompts/programmer/orchestrate_odd.md")
+        ),
+    }
+}
+
+/// The built-in prompt of a review lens (S7b): read-only, the change is
+/// untrusted data, only a severe finding the change caused blocks, a fixed
+/// shape of findings, never an approval. Built-in only: lens prompts have no
+/// override file.
+pub fn lens_builtin(profile: Profile, lens: Lens) -> &'static str {
+    match (profile, lens) {
+        (Profile::Analyst, Lens::Risk) => include_str!("prompts/analyst/lens_risk.md"),
+        (Profile::Analyst, Lens::Resilience) => include_str!("prompts/analyst/lens_resilience.md"),
+        (Profile::Analyst, Lens::Readability) => {
+            include_str!("prompts/analyst/lens_readability.md")
+        }
+        (Profile::Analyst, Lens::Reliability) => {
+            include_str!("prompts/analyst/lens_reliability.md")
+        }
+        (Profile::Programmer, Lens::Risk) => include_str!("prompts/programmer/lens_risk.md"),
+        (Profile::Programmer, Lens::Resilience) => {
+            include_str!("prompts/programmer/lens_resilience.md")
+        }
+        (Profile::Programmer, Lens::Readability) => {
+            include_str!("prompts/programmer/lens_readability.md")
+        }
+        (Profile::Programmer, Lens::Reliability) => {
+            include_str!("prompts/programmer/lens_reliability.md")
+        }
+    }
+}
+
+/// The built-in prompt of the refuter (S7b), with the same rules.
+pub fn refuter_builtin(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Analyst => include_str!("prompts/analyst/refuter.md"),
+        Profile::Programmer => include_str!("prompts/programmer/refuter.md"),
+    }
+}
+
+/// The built-in prompt of the correction check (S7b): like the refuter, but a
+/// claim it cannot settle stays open instead of being cleared.
+pub fn validator_builtin(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Analyst => include_str!("prompts/analyst/validator.md"),
+        Profile::Programmer => include_str!("prompts/programmer/validator.md"),
     }
 }
 

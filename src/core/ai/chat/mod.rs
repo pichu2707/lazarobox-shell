@@ -30,6 +30,7 @@ pub mod notify;
 pub mod prompts;
 pub mod review;
 pub mod review_view;
+pub mod run_trace;
 pub mod store;
 pub mod stream;
 pub mod streams;
@@ -50,7 +51,13 @@ use std::{
 
 use crate::core::{
     ai::{
-        config::{ApprovalMode, Profile},
+        config::{ApprovalMode, Assignment, Profile, Task},
+        orchestra::{
+            RunId, WorkerId, WorkerKey,
+            event::{Continuation, WorkerRow},
+            overrides::{FailurePicker, RunOverrides},
+            worker::{ErrorClass, WorkerStatus},
+        },
         tools::stage::BatchId,
     },
     layout::PaneId,
@@ -59,6 +66,24 @@ use composer::Composer;
 use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
+
+/// A worker failure that halted the pane's run, until the user answers it
+/// (agent-orchestrator, Failure stops the run): the error as it came, only
+/// sanitized and capped by the pipe, never replaced by a generic text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchAlert {
+    pub run: RunId,
+    pub worker: WorkerId,
+    pub class: ErrorClass,
+    pub text: String,
+}
+
+/// Why the last answer to the alert did not go through.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OrchNote {
+    /// A retry the run manager declined: the alert says `retry failed`.
+    RetryFailed(String),
+}
 
 /// Columns the batch badge leaves free on the right of the pane: the widest
 /// mode badge (` AUTO `) and a gap.
@@ -158,6 +183,22 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// A worker of the pane's orchestrator run, updated in place as its
+    /// status changes: shown, never stored, never sent as history.
+    Worker(WorkerRow),
+    /// What the pane's run used, summed over its workers: kept last as the
+    /// rows change, shown, never stored, never sent as history.
+    RunUsage(RunUsage),
+}
+
+/// The per-run usage row. `usage` is `None` when no worker reported any.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RunUsage {
+    pub run: RunId,
+    pub usage: Option<engine::Usage>,
+    /// The sum misses something: a worker still running or one that
+    /// reported nothing. The cost is then left out.
+    pub partial: bool,
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -358,6 +399,49 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
+    /// The pane's ORCH mode (agent-orchestrator D2): off for a new pane, kept
+    /// in memory only, never saved or restored.
+    orch: bool,
+    /// The turn that went out as an orchestrator turn, while it is the last
+    /// one sent.
+    orch_turn: Option<u64>,
+    /// The pane's run, from its first event until its `Ended`.
+    orch_run: Option<RunId>,
+    /// What the workers of the run streamed, and the view open on one (S9).
+    traces: run_trace::Traces,
+    run_view: Option<run_trace::RunView>,
+    /// The transcript rows the last frame drew for the view: the keys and
+    /// the wheel page by what is on screen.
+    run_view_drawn: std::cell::Cell<Option<usize>>,
+    /// A continuation turn that came before the turn it follows was over
+    /// (S4): it starts when that turn ends. One slot is enough: turns are
+    /// serial, so a run has at most one turn to follow at a time.
+    orch_continue: Option<Continuation>,
+    /// The run the user cancelled with Esc or Ctrl+C: a continuation the
+    /// manager sent before it heard of the cancel must not start.
+    orch_cancelled: Option<RunId>,
+    /// Why the last turn ended in failure (a short line); `None` when it
+    /// ended cleanly or was cut off. A failed orchestrator turn is not
+    /// continued.
+    turn_failure: Option<String>,
+    /// Workers seen over (a terminal row) and not running again: an ask of
+    /// theirs that arrives late is refused. Dropped with the run.
+    ended_workers: std::collections::HashSet<WorkerKey>,
+    /// The worker row the user selected (S3), of the pane's run.
+    selected: Option<WorkerId>,
+    /// A Ctrl+C cancelled a worker: until then a second one cancels the run.
+    cancel_armed: Option<Instant>,
+    /// The failure the run waits on, until the user answers it or the run
+    /// ends.
+    orch_alert: Option<OrchAlert>,
+    /// Why the last answer to the alert did not go through.
+    orch_note: Option<OrchNote>,
+    /// The detached picker opened from the alert (`m`, `p`).
+    orch_picker: Option<FailurePicker>,
+    /// What the user picked from an alert, for the run it was picked in.
+    orch_overrides: Option<(RunId, RunOverrides)>,
+    /// The overrides before the last pick, until the run manager answers it.
+    orch_undo: Option<Option<(RunId, RunOverrides)>>,
     /// The last turn ended with `Done`, until the poll sees the batch it left
     /// behind (local-model-writes D1). A new turn or a cancel clears it; a
     /// compaction run after the `Done` does not.
@@ -412,8 +496,288 @@ impl ChatState {
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
+            orch: false,
+            orch_turn: None,
+            orch_run: None,
+            traces: Default::default(),
+            run_view: None,
+            run_view_drawn: Default::default(),
+            orch_continue: None,
+            orch_cancelled: None,
+            turn_failure: None,
+            ended_workers: Default::default(),
+            selected: None,
+            cancel_armed: None,
+            orch_alert: None,
+            orch_note: None,
+            orch_picker: None,
+            orch_overrides: None,
+            orch_undo: None,
             clean_end: false,
         }
+    }
+
+    /// The pane's ORCH mode, whatever the global gate says.
+    pub fn orch(&self) -> bool {
+        self.orch
+    }
+
+    pub fn set_orch(&mut self, on: bool) {
+        self.orch = on;
+    }
+
+    /// Turn `turn`, just sent, is an orchestrator turn.
+    pub fn set_orch_turn(&mut self, turn: u64) {
+        self.orch_turn = Some(turn);
+    }
+
+    /// Whether an orchestrator turn of this chat is still in flight.
+    pub fn orch_turn_in_flight(&self) -> bool {
+        self.phase != Phase::Idle && self.orch_turn == Some(self.turn)
+    }
+
+    /// The pane's run, from its first event until its `Ended`.
+    pub fn orch_run(&self) -> Option<RunId> {
+        self.orch_run
+    }
+
+    pub fn set_orch_run(&mut self, run: Option<RunId>) {
+        // The selection and an armed second Ctrl+C belong to the old run.
+        if self.orch_run != run {
+            self.selected = None;
+            self.cancel_armed = None;
+        }
+        self.orch_run = run;
+        self.prune_traces();
+    }
+
+    /// The failure alert shown in the pane, until it is answered.
+    pub fn orch_alert(&self) -> Option<&OrchAlert> {
+        self.orch_alert.as_ref()
+    }
+
+    pub fn set_orch_alert(&mut self, alert: Option<OrchAlert>) {
+        self.orch_alert = alert;
+    }
+
+    /// The alert is answered, replaced or gone: its picker and note go too.
+    pub fn drop_orch_alert(&mut self) {
+        self.orch_alert = None;
+        self.orch_picker = None;
+        self.orch_note = None;
+    }
+
+    pub fn orch_note(&self) -> Option<&OrchNote> {
+        self.orch_note.as_ref()
+    }
+
+    pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
+        self.orch_note = note;
+    }
+
+    pub fn orch_picker(&self) -> Option<&FailurePicker> {
+        self.orch_picker.as_ref()
+    }
+
+    pub fn orch_picker_mut(&mut self) -> Option<&mut FailurePicker> {
+        self.orch_picker.as_mut()
+    }
+
+    pub fn set_orch_picker(&mut self, picker: Option<FailurePicker>) {
+        self.orch_picker = picker;
+    }
+
+    /// The overrides of the pane's current run; none once it has ended.
+    pub fn orch_overrides(&self) -> Option<&RunOverrides> {
+        let (run, overrides) = self.orch_overrides.as_ref()?;
+        (self.orch_run == Some(*run)).then_some(overrides)
+    }
+
+    /// Records the choice for `task` in `run`'s overrides (a new run starts
+    /// from none).
+    pub fn override_task(&mut self, run: RunId, task: Task, assignment: Assignment) {
+        self.orch_undo = Some(self.orch_overrides.clone());
+        let kept = self
+            .orch_overrides
+            .take()
+            .filter(|(known, _)| *known == run);
+        let mut overrides = kept.map_or_else(RunOverrides::default, |(_, o)| o);
+        overrides.set(task, assignment);
+        self.orch_overrides = Some((run, overrides));
+    }
+
+    /// The run manager answered the last pick (a row or a halt of the run).
+    pub fn keep_override(&mut self) {
+        self.orch_undo = None;
+    }
+
+    /// The last pick was dropped by the run manager: it never reached the
+    /// run, so the overrides go back to what they were.
+    pub fn undo_override(&mut self) {
+        if let Some(before) = self.orch_undo.take() {
+            self.orch_overrides = before;
+        }
+    }
+
+    /// Holds a continuation until the turn it follows is over.
+    pub fn park_continue(&mut self, next: Continuation) {
+        self.orch_continue = Some(next);
+    }
+
+    pub fn set_turn_failure(&mut self, why: Option<String>) {
+        self.turn_failure = why;
+    }
+
+    pub fn turn_failure(&self) -> Option<&str> {
+        self.turn_failure.as_deref()
+    }
+
+    /// The user cancelled `run`: its parked continuation goes, and a later one
+    /// is refused.
+    pub fn cancel_run(&mut self, run: RunId) {
+        self.orch_continue = None;
+        self.orch_cancelled = Some(run);
+    }
+
+    pub fn run_cancelled(&self, run: RunId) -> bool {
+        self.orch_cancelled == Some(run)
+    }
+
+    pub fn take_continue(&mut self) -> Option<Continuation> {
+        self.orch_continue.take()
+    }
+
+    /// `run` is over: its overrides, picker and notes go with it when it is
+    /// the pane's run, whether its alert is still up or not.
+    pub fn end_orch_run(&mut self, run: RunId) {
+        if self.orch_continue.as_ref().is_some_and(|c| c.run == run) {
+            self.orch_continue = None;
+        }
+        self.ended_workers.retain(|key| key.run != run);
+        if self.orch_run == Some(run) {
+            self.selected = None;
+            self.cancel_armed = None;
+        }
+        self.prune_traces();
+        let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
+        if self.orch_run != Some(run) && !alerted {
+            return;
+        }
+        if self.orch_overrides.as_ref().is_some_and(|(r, _)| *r == run) {
+            self.orch_overrides = None;
+        }
+        self.drop_orch_alert();
+    }
+
+    /// The selected worker row.
+    pub fn selected_worker(&self) -> Option<WorkerId> {
+        self.selected
+    }
+
+    pub fn select_worker(&mut self, worker: Option<WorkerId>) {
+        if self.selected != worker {
+            self.selected = worker;
+            self.generation += 1;
+        }
+    }
+
+    /// Whether `entry` is the selected worker row.
+    pub(crate) fn is_selected(&self, entry: &Entry) -> bool {
+        matches!(entry, Entry::Worker(row)
+            if self.selected == Some(row.id) && self.orch_run == Some(row.run))
+    }
+
+    /// The workers of the pane's run that are queued or running, in order.
+    pub fn live_workers(&self) -> Vec<WorkerId> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Worker(row)
+                    if self.orch_run == Some(row.run)
+                        && matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running) =>
+                {
+                    Some(row.id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Arms the second-Ctrl+C escalation until `until`.
+    pub fn arm_cancel(&mut self, until: Option<Instant>) {
+        self.cancel_armed = until;
+    }
+
+    /// Whether a Ctrl+C that cancelled a worker is still recent at `now`.
+    pub fn cancel_is_armed(&self, now: Instant) -> bool {
+        self.cancel_armed.is_some_and(|until| now < until)
+    }
+
+    /// Notes that `worker` is over (`true`) or runs again (`false`).
+    pub fn set_worker_over(&mut self, worker: WorkerKey, over: bool) {
+        if over {
+            self.ended_workers.insert(worker);
+        } else {
+            self.ended_workers.remove(&worker);
+        }
+    }
+
+    /// Whether `worker` was seen over and has not run since.
+    pub fn worker_is_over(&self, worker: WorkerKey) -> bool {
+        self.ended_workers.contains(&worker)
+    }
+
+    /// A worker's status changed: its row, keyed by run and worker, shows the
+    /// new state in place; a worker seen for the first time gets a row at
+    /// the end of the transcript.
+    pub fn worker_row(&mut self, row: WorkerRow) {
+        let run = row.run;
+        let shown = self.entries.iter_mut().find_map(|e| match e {
+            Entry::Worker(shown) if (shown.run, shown.id) == (row.run, row.id) => Some(shown),
+            _ => None,
+        });
+        match shown {
+            Some(shown) => *shown = row,
+            None => self.entries.push(Entry::Worker(row)),
+        }
+        self.run_usage(run);
+        self.generation += 1;
+    }
+
+    /// Refreshes the usage row of `run`, once one of its workers is done:
+    /// the sum of the workers that reported, `None` when none did. The row
+    /// moves to the end, so it stays below the rows it sums.
+    fn run_usage(&mut self, run: RunId) {
+        let rows = || {
+            self.entries.iter().filter_map(move |e| match e {
+                Entry::Worker(row) if row.run == run => Some(row),
+                _ => None,
+            })
+        };
+        if !rows().any(|row| row.status == WorkerStatus::Done) {
+            return;
+        }
+        // A worker misses a report while it runs, or when it ended having
+        // reported nothing (a refused one never ran).
+        let partial = rows().any(|row| match row.status {
+            WorkerStatus::Queued | WorkerStatus::Running => true,
+            WorkerStatus::Refused => false,
+            _ => row.usage.is_none() || row.partial,
+        });
+        let usage = rows()
+            .filter_map(|row| row.usage)
+            .reduce(engine::Usage::plus)
+            .map(|sum| engine::Usage {
+                cost_micros: sum.cost_micros.filter(|_| !partial),
+                ..sum
+            });
+        self.entries
+            .retain(|e| !matches!(e, Entry::RunUsage(shown) if shown.run == run));
+        self.entries.push(Entry::RunUsage(RunUsage {
+            run,
+            usage,
+            partial,
+        }));
     }
 
     /// The context window of the engine the next turns go to, in tokens.
@@ -677,7 +1041,12 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 
@@ -1005,7 +1374,10 @@ impl ChatState {
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
-            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+            StreamEvent::Slow
+                | StreamEvent::Notice(_)
+                | StreamEvent::Usage(_)
+                | StreamEvent::Error(_)
         ) {
             self.told_sent.clear();
         }
@@ -1024,6 +1396,8 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
+            // The chat pane shows no usage; the orchestrator's rows do.
+            StreamEvent::Usage(_) => Follow::Nothing,
             StreamEvent::ToolCall {
                 id, name, summary, ..
             } => {
@@ -1175,7 +1549,12 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 
@@ -1257,6 +1636,8 @@ mod note_tests;
 #[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]
+mod run_trace_tests;
+#[cfg(test)]
 mod state_tests;
 #[cfg(test)]
 mod stream_tests;
@@ -1270,3 +1651,5 @@ mod tool_tests;
 mod wait_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_row_tests;

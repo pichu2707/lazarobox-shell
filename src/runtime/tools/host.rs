@@ -15,6 +15,11 @@
 //! read also tells its ask where it leads (inside the chat's root or not), and
 //! a local read that leads outside the root asks too; the host never applies
 //! the approval mode, the app does (`approval::answers_itself`).
+//! A call the turn does not offer (its role's toolset, D7) is refused first,
+//! as an unknown tool, and an orchestration call goes to the turn's run
+//! manager (D3). A worker's read runs unasked inside its run's read scope;
+//! outside it, it asks as the same chat read would, with the worker's label
+//! (D6).
 //!
 //! A panic in a call is caught by the MCP session, which exempts the panic
 //! hook around each poll (`mcp::scoped`); the Ollama loop will poll the
@@ -29,22 +34,28 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, ToolEnv, fs::Within, stage::Stages};
+use super::{Limits, OrchHandle, ToolEnv, WorkerScope, fs::Within, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
             approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
+        orchestra::{
+            WorkerKey,
+            tools::{OrchCall, WAIT_MAX_SECS},
+        },
         tools::{
-            Call, Locality, command,
+            Call, Locality, ToolError, command,
             edit::EditError,
             label,
+            mcp::refusal_text,
             paths::{REFUSED, display_target},
             registry::FamilySet,
             report::{self, RunReport},
@@ -72,6 +83,23 @@ pub const NOT_APPROVED: &str = "the user did not approve it";
 /// when the future is first polled could miss it.
 pub trait Approver: Send + Sync {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer>;
+
+    /// The approver of one worker of this turn's run, whose asks wait under
+    /// the worker's own session. `None` when the approver keeps no sessions:
+    /// the worker then asks through this one.
+    fn for_worker(&self, _key: WorkerKey) -> Option<Arc<dyn Approver>> {
+        None
+    }
+
+    /// The worker ended or was cancelled: its asks are denied, the other
+    /// workers' are not touched.
+    fn end_worker(&self, _key: WorkerKey) {}
+
+    /// Whether this approver's worker session is over (cancelled, or replaced
+    /// by a retry): its asks are denied unseen and must not be announced.
+    fn is_over(&self) -> bool {
+        false
+    }
 }
 
 /// The approver of a turn that has none: it denies every call. A turn that
@@ -99,7 +127,9 @@ pub struct TurnScope {
     /// The user's MCP servers this turn may call. Empty until the turn has
     /// started them: a server tool is then refused even after `y`.
     pub external: Slot,
-    /// The families this turn was offered. The write family is checked again
+    /// The built-in families this turn offers, and so may call: the same set
+    /// as its tool list (D7). A chat's is its request's; a worker's or the
+    /// orchestrator's is its `Toolset`'s. The write family is checked again
     /// here: a call the parse should have refused is refused as unknown.
     pub families: FamilySet,
     /// Whose batch the write tools fill, and whose staged changes the read
@@ -108,10 +138,17 @@ pub struct TurnScope {
     /// The paths (as shown) the user allowed a read or an edit of in this
     /// turn: a later `edit_file` of one does not ask again.
     pub allowed: Mutex<HashSet<String>>,
+    /// The run manager of an orchestrator turn. Without it an orchestration
+    /// call is an unknown tool (D3).
+    pub orchestra: Option<OrchHandle>,
+    /// Set for a worker turn only: the run whose read scope its reads are
+    /// judged against, and the label of its asks.
+    pub read_scope: Option<WorkerScope>,
 }
 
 impl TurnScope {
-    /// A scope whose calls that need the user are denied.
+    /// A chat scope whose calls that need the user are denied: the 0.18.0
+    /// tools, no run manager and no read scope.
     pub fn new(events: mpsc::Sender<StreamEvent>, locality: Locality, origin: PathBuf) -> Self {
         Self {
             events,
@@ -122,6 +159,34 @@ impl TurnScope {
             families: FamilySet::LEGACY,
             stage_key: None,
             allowed: Mutex::default(),
+            orchestra: None,
+            read_scope: None,
+        }
+    }
+
+    /// Whether this is a read-only review worker with a batch to look at: it
+    /// reads the staged view, not the disk alone (S7b).
+    fn sees_stage(&self) -> bool {
+        self.read_scope.is_some()
+            && self.stage_key.is_some()
+            && !self
+                .families
+                .contains(crate::core::ai::tools::registry::Family::Write)
+    }
+
+    /// Whether this turn may call `call` (D7, the filter's second place after
+    /// the tool list): an orchestration call has a run manager to go to (D3);
+    /// a worker's or the orchestrator's call has its family in the turn's
+    /// families, and a user server tool is a chat's or the orchestrator's
+    /// (asked `y` as in a chat, user decision 2026-10-29), never a worker's.
+    /// A chat turn's families are checked where they always were: the write
+    /// and exec gate (`files::gate`).
+    fn offers(&self, call: &Call) -> bool {
+        let orchestrated = self.orchestra.is_some() || self.read_scope.is_some();
+        match (call, call.family()) {
+            (Call::Orchestra(_), _) if self.orchestra.is_none() => false,
+            (_, Some(family)) => !orchestrated || self.families.contains(family),
+            (_, None) => self.read_scope.is_none(),
         }
     }
 }
@@ -168,13 +233,26 @@ impl ToolHost {
     }
 
     /// What a call may see, for the chat whose origin directory is `origin`.
-    fn env(&self, origin: &Path) -> ToolEnv {
+    pub(crate) fn env(&self, origin: &Path) -> ToolEnv {
         ToolEnv {
             home: self.home.clone(),
             xdg_config_home: self.xdg_config_home.clone(),
             xdg_data_home: self.xdg_data_home.clone(),
             origin: origin.to_path_buf(),
         }
+    }
+
+    /// The change set staged in the batch of `key`, as a worker's ledger
+    /// names it (S7b: the run manager re-reads it after a correction). `None`
+    /// when the read itself failed.
+    pub(crate) async fn staged_changes(
+        &self,
+        key: StageKey,
+        origin: &Path,
+    ) -> Option<Vec<crate::core::ai::orchestra::changes::Change>> {
+        let (stages, env) = (self.stages.clone(), self.env(origin));
+        let taken = tokio::task::spawn_blocking(move || files::staged_changes(&stages, key, &env));
+        review::joined(taken.await)
     }
 
     /// The dispatch of one turn.
@@ -273,6 +351,12 @@ impl Unprompted {
     }
 }
 
+/// What a review worker is told when it reads outside the run's scope.
+const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the review cannot read it";
+
+/// What a correction worker is told when it proposes the batch.
+const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
+
 /// What the model is told when its command was typed.
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
                           the user runs it themselves.";
@@ -332,10 +416,41 @@ async fn call_external(
     )
 }
 
+/// What a `wait` the run manager holds past [`WAIT_MAX_SECS`] answers: the
+/// run is waiting for the user (an unresolved failure).
+const AWAITING_USER: &str = "awaiting_user";
+
+/// Runs an orchestration call on the run manager: its text for the model,
+/// and the row. A `wait` ends within [`WAIT_MAX_SECS`] even when the run
+/// manager holds it, so no call nears the MCP timeout.
+async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatus, String) {
+    let bounded = matches!(call, OrchCall::Wait { .. });
+    let answer = handle.call(call);
+    let outcome = if bounded {
+        let bound = Duration::from_secs(u64::from(WAIT_MAX_SECS));
+        tokio::time::timeout(bound, answer)
+            .await
+            .unwrap_or_else(|_| Outcome {
+                text: AWAITING_USER.to_owned(),
+                is_error: false,
+            })
+    } else {
+        answer.await
+    };
+    let (status, summary) = if outcome.is_error {
+        (ToolStatus::Error, clip(&outcome.text))
+    } else {
+        (ToolStatus::Ok, format!("{} bytes", outcome.text.len()))
+    };
+    (outcome, status, summary)
+}
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
     let mut checked: Result<Call, Cow<'static, str>> = match &call {
+        // What the turn does not offer is refused as the parse refuses it.
+        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
@@ -346,6 +461,9 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             .map_err(Cow::from),
     };
     let mut ask = None;
+    // A worker read inside its run's scope: the real path to open and the
+    // secret roots that judged it.
+    let mut scoped = None;
     let mut sealed = None;
     let mut approves = None;
     let mut pinned = None;
@@ -354,91 +472,142 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // ask carried allow.
     let mut unprompted = Unprompted::Never;
     if let Ok(valid) = &checked {
-        match (valid, scope.locality) {
-            // A read asks with the path as it will be opened: resolved, and
-            // only when the display shows it unchanged. The ask carries where
-            // the read leads, for the approval mode. A cloud read always asks;
-            // a local one only when it leads outside the root.
-            (Call::ReadFile { path, .. }, locality) => {
-                let reach = files::reach(&host, &scope, path).await;
+        let home = host.home.as_deref().map(Path::new);
+        let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
+        match (valid, scope.locality, &scope.read_scope) {
+            // A worker read runs unasked inside its run's scope (D6). Outside
+            // it, or when the scope grants nothing, it asks as the same chat
+            // read would (D6, user decision 2026-10-29), labelled with the
+            // worker, so the approval mode answers it alike. A read asks with
+            // the path as it will be opened: resolved, and only when the
+            // display shows it unchanged. The ask carries where the read
+            // leads, for the approval mode. A cloud read always asks; a local
+            // one only when it leads outside the root.
+            // A review worker never asks: its reads stay inside the run's
+            // scope, staged-only files included, or are refused and told to
+            // its review (S7b).
+            (Call::ReadFile { path, .. }, _, Some(worker)) if scope.sees_stage() => {
+                match files::review_reach(&host, &scope, path).await {
+                    files::ReviewRead::Allowed => {}
+                    // A probe is refused with its reason and counts for nothing.
+                    files::ReviewRead::Refused => checked = Err(OUT_OF_REVIEW_SCOPE.into()),
+                    files::ReviewRead::RefusedStaged => {
+                        worker.handle.unread(worker.run, worker.worker, path);
+                        checked = Err(OUT_OF_REVIEW_SCOPE.into());
+                    }
+                }
+            }
+            (Call::ReadFile { path, .. }, locality, worker) => {
+                if let Some(worker) = worker {
+                    let env = host.env(&scope.origin);
+                    scoped = super::in_scope(worker, env, path, &host.limits).await;
+                }
+                let label = worker
+                    .as_ref()
+                    .map(|worker| (worker.ask_label(), worker.key()));
+                let read = |path: String, reach: Reach, cloud: bool| match &label {
+                    Some((label, key)) => ApprovalAsk::WorkerRead {
+                        path,
+                        label: label.clone(),
+                        worker: *key,
+                        reach,
+                        cloud,
+                    },
+                    None => ApprovalAsk::Read { path, reach, cloud },
+                };
+                let reach = if scoped.is_some() {
+                    Reach::Root
+                } else {
+                    files::reach(&host, &scope, path).await
+                };
                 let cloud = locality == Locality::Cloud;
-                if cloud || reach == Reach::Other {
-                    let home = host.home.as_deref().map(Path::new);
-                    match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                if scoped.is_none() && (cloud || reach == Reach::Other) {
+                    match shown(path) {
                         Some(shown) => {
                             if cloud {
                                 approves = Some(shown.clone());
                             }
                             unprompted = Unprompted::of_read(reach, cloud);
-                            ask = Some(ApprovalAsk::Read {
-                                path: shown,
-                                reach,
-                                cloud,
-                            });
+                            ask = Some(read(shown, reach, cloud));
                         }
                         // A local read ran free before `run` asked for it:
                         // the app decides, with nothing shown.
                         None if !cloud => {
                             unprompted = Unprompted::of_read(reach, cloud);
-                            ask = Some(ApprovalAsk::Read {
-                                path: String::new(),
-                                reach: Reach::Unshowable,
-                                cloud,
-                            });
+                            ask = Some(read(String::new(), Reach::Unshowable, cloud));
                         }
                         None => checked = Err(UNSHOWABLE.into()),
                     }
                 }
             }
+            // A worker's staging call asks nothing (S7): staging keeps it in
+            // its run's read scope, where its reads run unasked, and refuses
+            // it outside; only the user's batch review writes it.
+            (
+                Call::CreateDir { .. } | Call::WriteFile { .. } | Call::EditFile { .. },
+                _,
+                Some(_),
+            ) => {}
             // An edit that can only fail is refused before it asks. A missing
             // or ambiguous `old` still asks: it too tells whether a text occurs.
-            (Call::EditFile { old, .. }, Locality::Cloud) if old.is_empty() => {
+            (Call::EditFile { old, .. }, Locality::Cloud, _) if old.is_empty() => {
                 checked = Err(EditError::EmptyOld.to_string().into());
             }
             // An edit of a file asks like a read of it, once per file per turn.
-            (Call::EditFile { path, .. }, Locality::Cloud) => {
-                let home = host.home.as_deref().map(Path::new);
-                match home.and_then(|home| display_target(home, &scope.origin, path)) {
-                    Some(shown) => {
-                        if !files::lock_set(&scope.allowed).contains(&shown) {
-                            ask = Some(ApprovalAsk::read(shown.clone()));
-                        }
-                        approves = Some(shown);
+            (Call::EditFile { path, .. }, Locality::Cloud, _) => match shown(path) {
+                Some(shown) => {
+                    if !files::lock_set(&scope.allowed).contains(&shown) {
+                        ask = Some(ApprovalAsk::read(shown.clone()));
                     }
-                    None => checked = Err(UNSHOWABLE.into()),
+                    approves = Some(shown);
+                }
+                None => checked = Err(UNSHOWABLE.into()),
+            },
+            // A command is judged before it asks: a refusal never opens a prompt.
+            (Call::RunCommand { .. }, locality, _) => {
+                match exec::plan(&host, &scope, valid).await {
+                    Ok(plan) => {
+                        ask = ask_for(valid, locality);
+                        if let Some(ask) = ask.as_mut() {
+                            exec::fill(&host, &plan, ask);
+                        }
+                        pinned = plan.pin;
+                    }
+                    Err(why) => checked = Err(why.into()),
                 }
             }
-            // A command is judged before it asks: a refusal never opens a prompt.
-            (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
-                Ok(plan) => {
-                    ask = ask_for(valid, locality);
-                    if let Some(ask) = ask.as_mut() {
-                        exec::fill(&host, &plan, ask);
-                    }
-                    pinned = plan.pin;
-                }
-                Err(why) => checked = Err(why.into()),
-            },
             // A git verb is judged before it asks: a refusal opens no prompt. An
             // add or a commit builds its own ask (a commit keeps it to compare).
-            (call, locality) if call.uses_git() => match git::plan(&host, &scope, call).await {
+            (call, locality, _) if call.uses_git() => match git::plan(&host, &scope, call).await {
                 Ok(planned) => {
                     reviewed = planned.clone();
                     ask = planned.or_else(|| ask_for(call, locality));
                 }
                 Err(why) => checked = Err(why.into()),
             },
-            // A batch is sealed before the ask: the user reviews what was sealed.
-            (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
-                Ok((batch, review)) => {
-                    ask = Some(ApprovalAsk::Batch(review));
-                    sealed = Some(batch);
+            // The correction of a review only stages: the worker whose change
+            // is under review proposes the batch.
+            (Call::ProposeBatch, _, Some(worker))
+                if worker.handle.corrects(worker.run, worker.worker) =>
+            {
+                checked = Err(CORRECTION_PROPOSES.into());
+            }
+            // A batch is sealed before the ask: the user reviews what was
+            // sealed. A high-risk change is reviewed first, with the user's
+            // consent (S7b); the batch review follows whatever it found.
+            (Call::ProposeBatch, _, _) => {
+                review::before_batch(&host, &scope).await;
+                match files::seal(&host, &scope).await {
+                    Ok((batch, review)) => {
+                        ask = Some(ApprovalAsk::Batch(review));
+                        sealed = Some(batch);
+                    }
+                    Err(why) => checked = Err(why.into()),
                 }
-                Err(why) => checked = Err(why.into()),
-            },
+            }
             // A search asks with how concrete the root it walks is: the
             // approval mode lets only the search of a concrete root go.
-            (Call::Grep { .. }, Locality::Cloud) => {
+            (Call::Grep { .. }, Locality::Cloud, _) => {
                 let found = files::search_reach(&host, &scope).await;
                 ask = ask_for(valid, Locality::Cloud);
                 if let Some(ApprovalAsk::Search { reach, .. }) = ask.as_mut() {
@@ -448,7 +617,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     unprompted = Unprompted::AsIs;
                 }
             }
-            (valid, locality) => ask = ask_for(valid, locality),
+            (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
     // Asked before the announcement: `Approver::ask` registers the wait at
@@ -471,6 +640,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let Ok(slot) = scope.events.clone().reserve_owned().await else {
         return gone();
     };
+    // The worker's session ended while the slot was awaited (a cancel): the
+    // wait is already denied, so nothing is announced that the user could be
+    // shown and never answer. The slot drops unused.
+    if pending.is_some() && scope.approver.is_over() {
+        return gone();
+    }
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),
@@ -568,6 +743,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
+                // `offers` let it through only with a run manager to go to.
+                (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
+                    Some(handle) => orchestrate(handle, call).await,
+                    None => {
+                        let reason = refusal_text(ToolError::UnknownTool);
+                        ended(ToolStatus::Error, reason.to_owned(), reason)
+                    }
+                },
                 // Only after `y`: the sandbox starts here and nowhere else.
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
                     exec::run(&host, &scope, &call, pinned.take()).await
@@ -601,9 +784,32 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     format!("denied: {NOT_APPROVED}"),
                     NOT_APPROVED,
                 ),
-                (Decision::Sent | Decision::Typed(_), call) => {
-                    files::run(&host, &scope, call).await
-                }
+                (Decision::Sent | Decision::Typed(_), call) => match (scoped, &call) {
+                    // Exactly what the scope allowed, paged like any read:
+                    // resolving the request again would reopen the race it
+                    // closed.
+                    //
+                    // A review worker (read-only, with the pane's batch to
+                    // look at, S7b) reads through the staged view instead,
+                    // kept in the root: the staged text is not on disk.
+                    (_, Call::ReadFile { .. }) if scope.sees_stage() => {
+                        files::run_within(&host, &scope, call, Within::Root).await
+                    }
+                    (Some((roots, real)), Call::ReadFile { lines, .. }) => {
+                        let limits = host.limits.clone();
+                        match super::read_in_scope(roots, real, *lines, limits).await {
+                            Ok(text) => {
+                                let summary = format!("{} bytes", text.len());
+                                ended(ToolStatus::Ok, text, &summary)
+                            }
+                            Err(failure) => {
+                                let reason = failure.message();
+                                ended(ToolStatus::Error, reason.to_owned(), reason)
+                            }
+                        }
+                    }
+                    _ => files::run(&host, &scope, call).await,
+                },
             }
         }
     };
@@ -616,6 +822,7 @@ mod files;
 mod gate;
 mod git;
 mod orphan;
+mod review;
 
 #[cfg(test)]
 mod exec_tests;
@@ -627,5 +834,7 @@ mod files_tests;
 mod gate_tests;
 #[cfg(test)]
 mod git_tests;
+#[cfg(test)]
+mod orchestra_tests;
 #[cfg(test)]
 mod tests;
