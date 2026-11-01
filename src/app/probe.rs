@@ -26,7 +26,7 @@ impl App {
                 return self;
             }
         };
-        let probe = Probe::new(key, stored, rerun, (self.clock)());
+        let probe = Probe::new(key, stored, rerun);
         let probe = if self.notice.is_some() && !rerun {
             probe.deferred()
         } else {
@@ -62,13 +62,36 @@ impl App {
             .probe
             .as_mut()
             .and_then(|probe| probe.on_key(Seen::of(key)));
+        // Any key clears the notice; while the probe still waits (the user
+        // typed) the question must stay in view.
+        if outcome.is_none() && self.probe_waiting() && self.notice.is_none() {
+            self.notice = Some(CHECK_NOTICE.to_owned());
+        }
         self.probe_done(outcome)
     }
 
     pub(super) fn on_probe_tick(&mut self) -> Vec<Effect> {
         let now = (self.clock)();
+        let was_waiting = self.probe_waiting();
         let outcome = self.probe.as_mut().and_then(|probe| probe.on_tick(now));
+        if was_waiting && !self.probe_waiting() {
+            // The window passed with no deciding key: nothing is stored and
+            // nothing is offered; the probe runs again on the next start.
+            self.drop_check_notice();
+            self.dirty = true;
+        }
         self.probe_done(outcome)
+    }
+
+    /// Removes the "Checking…" part of the notice and keeps what was joined
+    /// to it.
+    fn drop_check_notice(&mut self) {
+        let joined = format!("; {CHECK_NOTICE}");
+        self.notice = match self.notice.take() {
+            Some(shown) if shown == CHECK_NOTICE => None,
+            Some(shown) => Some(shown.strip_suffix(&joined).unwrap_or(&shown).to_owned()),
+            None => None,
+        };
     }
 
     pub(super) fn on_probe_save_failed(&mut self, reason: &str) -> Vec<Effect> {
@@ -84,7 +107,8 @@ impl App {
         };
         let key = probe.key().to_owned();
         if outcome == ProbeOutcome::Missed {
-            self.notice = Some(OFFER_NOTICE.to_owned());
+            self.drop_check_notice();
+            self.add_notice(OFFER_NOTICE);
         }
         self.dirty = true;
         vec![Effect::SaveProbe { key, outcome }]

@@ -2793,7 +2793,7 @@ mod tests {
         }]);
         assert!(matches!(
             feedback.as_slice(),
-            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("HOME")
+            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("no usable state folder")
         ));
     }
 
