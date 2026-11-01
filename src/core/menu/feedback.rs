@@ -263,6 +263,13 @@ pub fn engines(detection: &Detection) -> Vec<String> {
 /// The longest shell or terminal name attached.
 const NAME_CAP: usize = 40;
 
+/// Whether this is WSL: `$WSL_DISTRO_NAME` is set, or the kernel release
+/// (`/proc/sys/kernel/osrelease`) names Microsoft.
+pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
+    distro.is_some_and(|v| !v.is_empty())
+        || osrelease.is_some_and(|r| r.to_ascii_lowercase().contains("microsoft"))
+}
+
 /// The facts of this host, from `var` (the environment) and `osrelease`
 /// (`/proc/sys/kernel/osrelease`, when there is one). The engines are added
 /// by whoever knows them.
@@ -272,8 +279,7 @@ pub fn host(
     var: impl Fn(&str) -> Option<String>,
     osrelease: Option<&str>,
 ) -> Facts {
-    let wsl = var("WSL_DISTRO_NAME").is_some_and(|v| !v.is_empty())
-        || osrelease.is_some_and(|r| r.to_ascii_lowercase().contains("microsoft"));
+    let wsl = is_wsl(var("WSL_DISTRO_NAME").as_deref(), osrelease);
     let shell = var("SHELL").and_then(|path| name(path.rsplit('/').next().unwrap_or("")));
     let terminal = var("TERM_PROGRAM")
         .and_then(|t| name(&t))

@@ -95,19 +95,19 @@ Spec: terminal-compatibility "First-run prefix probe" and "Remembered probe resu
 
 Spec: desktop-launcher. Independent of S1 and S2. Merge gate: task 3.8.
 
-- [ ] 3.1 RED: record-aware notice tests: `kitty` in `RECORDED_TERMINALS` gives "has a record"; an unrecorded name gives `<name> has no test record yet; see docs/terminals/`; the text never contains `tested in Kitty` and never refuses launch.
-- [ ] 3.2 RED: `RECORDED_TERMINALS == ["kitty"]`, and a test checks every entry has a `docs/terminals/<name>/` folder (fails until S4 adds the Kitty folder; create an empty `docs/terminals/kitty/` placeholder with the record in S4, or land the folder first). WezTerm is added only in the follow-up that brings its record.
-- [ ] 3.3 RED: `plan_install` with `wsl = true` writes the same Linux entry, names its path, and adds the WSL notes: the entry may not appear in the Start menu, WSLg runs it as a Linux GUI app so a Linux GUI terminal must be installed in the distro, and how to launch it otherwise. `wsl = false` output is unchanged.
-- [ ] 3.4 RED: install twice leaves one entry and says so; unwritable target gives a non-zero exit with the reason (existing behaviour, assert it still holds).
-- [ ] 3.5 GREEN: `NON_KITTY_NOTICE` becomes the record-aware note, `RECORDED_TERMINALS`, WSL notes in `core/desktop.rs`; pass `wsl` into the plan in `runtime/desktop.rs`.
-- [ ] 3.5a RED: `picker_choices` table tests (spec "Interactive terminal picker", design D16): only installed terminals; `$TERMINAL` and the `x-terminal-emulator` target added and deduplicated against PATH entries; `tested` set from `RECORDED_TERMINALS`; default equals today's automatic choice; empty installed list gives no choices.
-- [ ] 3.5b RED: `parse_choice` table tests: empty gives the default; `2` gives the second entry; `0`, `9`, `abc`, whitespace-only-with-text give `Retry` with a notice; EOF gives `Cancel`.
-- [ ] 3.5c GREEN: implement `Choice`, `picker_choices`, `parse_choice` pure in `core/desktop.rs`.
-- [ ] 3.5d RED: runtime tests with injected reader and writer (no real TTY): Enter writes the default entry; a number picks that terminal; invalid input prints the notice and asks again; EOF writes nothing, says cancelled, exits non-zero; no prompt when `--terminal` is passed or when not a TTY (output equals today's); a fake terminal binary on PATH is never executed (marker file stays absent).
-- [ ] 3.5e GREEN: thin IO in `runtime/desktop.rs`: `is_terminal()` on stdin and stdout, skip with `--terminal`, PATH lookup only for candidates, print list with the tested mark, read lines.
-- [ ] 3.5f REFACTOR: reuse the existing automatic-choice function for the default, no second copy of the candidate list.
-- [ ] 3.6 Gate. Target 100-170 production lines. If the PR passes 400, split the picker into S3b after S3.
-- [ ] 3.7 Docs: doc comments on the WSL assumptions (see design Risks) and on the picker rules (TTY only, no probes).
+- [x] 3.1 RED: record-aware notice tests: `kitty` in `RECORDED_TERMINALS` gives "has a record"; an unrecorded name gives `<name> has no test record yet; see docs/terminals/`; the text never contains `tested in Kitty` and never refuses launch.
+- [x] 3.2 RED: `RECORDED_TERMINALS == ["kitty"]`, and a test checks every entry has a `docs/terminals/<name>/` folder (fails until S4 adds the Kitty folder; create an empty `docs/terminals/kitty/` placeholder with the record in S4, or land the folder first). WezTerm is added only in the follow-up that brings its record.
+- [x] 3.3 RED: `plan_install` with `wsl = true` writes the same Linux entry, names its path, and adds the WSL notes: the entry may not appear in the Start menu, WSLg runs it as a Linux GUI app so a Linux GUI terminal must be installed in the distro, and how to launch it otherwise. `wsl = false` output is unchanged.
+- [x] 3.4 RED: install twice leaves one entry and says so; unwritable target gives a non-zero exit with the reason (existing behaviour, assert it still holds).
+- [x] 3.5 GREEN: `NON_KITTY_NOTICE` becomes the record-aware note, `RECORDED_TERMINALS`, WSL notes in `core/desktop.rs`; pass `wsl` into the plan in `runtime/desktop.rs`.
+- [x] 3.5a RED: `picker_choices` table tests (spec "Interactive terminal picker", design D16): only installed terminals; `$TERMINAL` and the `x-terminal-emulator` target added and deduplicated against PATH entries; `tested` set from `RECORDED_TERMINALS`; default equals today's automatic choice; empty installed list gives no choices.
+- [x] 3.5b RED: `parse_choice` table tests: empty gives the default; `2` gives the second entry; `0`, `9`, `abc`, whitespace-only-with-text give `Retry` with a notice; EOF gives `Cancel`.
+- [x] 3.5c GREEN: implement `Choice`, `picker_choices`, `parse_choice` pure in `core/desktop.rs`.
+- [x] 3.5d RED: runtime tests with injected reader and writer (no real TTY): Enter writes the default entry; a number picks that terminal; invalid input prints the notice and asks again; EOF writes nothing, says cancelled, exits non-zero; no prompt when `--terminal` is passed or when not a TTY (output equals today's); a fake terminal binary on PATH is never executed (marker file stays absent).
+- [x] 3.5e GREEN: thin IO in `runtime/desktop.rs`: `is_terminal()` on stdin and stdout, skip with `--terminal`, PATH lookup only for candidates, print list with the tested mark, read lines.
+- [x] 3.5f REFACTOR: reuse the existing automatic-choice function for the default, no second copy of the candidate list.
+- [x] 3.6 Gate. Target 100-170 production lines. If the PR passes 400, split the picker into S3b after S3.
+- [x] 3.7 Docs: doc comments on the WSL assumptions (see design Risks) and on the picker rules (TTY only, no probes).
 - [ ] 3.8 [manual, merge gate] On a WSL machine with a Linux GUI terminal in the distro: run `install-desktop`, check whether the entry in `~/.local/share/applications` appears in the Windows Start menu, and launch from it in one step. Record the result in the Windows Terminal (WSL) record (task 4.7). If user entries are not listed, S3 keeps the "may not appear" note and a follow-up is opened (Windows Terminal fragment or `.exe`), outside this change.
 
 ## S4: Docs, records, README (no production lines)
