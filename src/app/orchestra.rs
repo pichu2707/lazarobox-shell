@@ -45,6 +45,13 @@ const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not 
 const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";
 const MOVED_ON: &str = "an earlier run already moved on: your answer was not applied";
 
+/// The footer hint of the ORCH toggle (modal-input, ORCH toggle key): what
+/// Ctrl+O does now, or why it does nothing while a run is active.
+const HINT_ON: &str = "Ctrl+O: orchestrate this pane";
+const HINT_OFF: &str = "Ctrl+O: stop orchestrating";
+pub(super) const HINT_RUN: &str =
+    "A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode";
+
 /// Said by the first Ctrl+C of a selected worker.
 const CANCEL_AGAIN: &str = "Ctrl+C again cancels the run";
 const NO_WORKER: &str = "No worker to select";
@@ -599,7 +606,10 @@ impl App {
         });
         match (notice, alert) {
             (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
-            (notice, alert) => notice.or(alert).or_else(|| self.worker_keys(chat)),
+            (notice, alert) => notice
+                .or(alert)
+                .or_else(|| self.worker_keys(chat))
+                .or_else(|| self.run_hint(id)),
         }
     }
 
@@ -620,6 +630,29 @@ impl App {
             ),
             None => "Alt+Up/Down select a worker \u{b7} Ctrl+C cancels the run".to_owned(),
         })
+    }
+
+    /// The hint of a pane whose run is active: the mode cannot change.
+    fn run_hint(&self, id: PaneId) -> Option<String> {
+        (self.orch_hint(id) == Some(OrchHint::CancelRunFirst)).then(|| HINT_RUN.to_owned())
+    }
+
+    /// The footer hint of an idle, ready pane while the gate is on: what
+    /// Ctrl+O does. `None` with the gate off.
+    pub(super) fn toggle_hint(&self, id: PaneId) -> Option<String> {
+        (self.orch_hint(id)? == OrchHint::Toggle).then(|| {
+            let on =
+                (self.panes.get(&id).and_then(PaneState::chat_state)).is_some_and(ChatState::orch);
+            (if on { HINT_OFF } else { HINT_ON }).to_owned()
+        })
+    }
+
+    /// Whether what pane `id` shows above its composer is only the quiet
+    /// Ctrl+O hint: it names a key, it is not a problem to fix, so it is
+    /// drawn muted and does not stand in for the transcript.
+    pub fn guidance_is_hint(&self, id: PaneId) -> bool {
+        self.toggle_hint(id)
+            .is_some_and(|hint| self.chat_guidance(id).as_deref() == Some(hint.as_str()))
     }
 
     /// Whether the provider notice is shown in pane `id`.
@@ -703,7 +736,12 @@ impl App {
     /// nothing, like any unbound key, and while a run is active the mode
     /// stays (the hint says to cancel the run first).
     pub(super) fn chat_toggle_orch(&mut self, id: PaneId) -> Vec<Effect> {
-        if !self.orch_gate() || self.orch_run_active(id) {
+        if !self.orch_gate() {
+            return Vec::new();
+        }
+        if self.orch_run_active(id) {
+            self.notice = Some(HINT_RUN.to_owned());
+            self.dirty = true;
             return Vec::new();
         }
         let mut now_on = false;

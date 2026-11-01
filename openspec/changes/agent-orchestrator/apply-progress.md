@@ -795,3 +795,17 @@ Strict TDD, tests first with an observed RED each (commands run before the fix):
 - Spec delta: "re-asks the read scope" and "resume asks the scope again" now say the new run sets its scope again from the chat folder without asking (2026-10-29 decision), matching the Read scope requirement and the code.
 - Resume race: the stream `Done` (`AppEvent::Chat`) and the run manager's `Worker` rows (`AppEvent::Orchestra`, sent on the manager's own unbounded channel, `runtime/orchestra.rs` `send`) are different channels, so no causal order exists. RED: `a_worker_arriving_after_the_turns_done_still_closes_the_old_run` failed (no `supersedes`, the run offered again). Fix: `RunKeep.resume_of[pane]` survives the put-back; the first worker still carries `supersedes` and withdraws the run from the list. It is cleared at the pane's next turn (`keep_goal`), so an unrelated later run never closes it (`a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned`, written with the fix: passed at once after a test correction, no separate RED).
 - `STALE_AFTER` doc comment moved onto its own item.
+
+## S10: docs and acceptance (branch feat/agent-orchestrator-s10, on S9c)
+
+Decision (user, 2026-10-31): the orchestrator ships in 1.1.0 WITHOUT S8. Merged into this file; earlier sections untouched.
+
+| Item | Result |
+|------|--------|
+| S8 deferral | tasks (S8 heading, 8.1 unticked, S10 dependency, graph), design (slice table, row 7 and 8, open item), proposal (S8 row, S10 dependency, Dependencies), specs (agent-orchestrator: tags, product goal, S8 requirement and scenarios marked deferred, S10 requirements amended; prompt-profiles S8 sentence). `coding-tools` Z.2 ticked |
+| Discovery | coding-tools M3 `run_command` is NOT "not started": it shipped in 0.28.0 for chat panes (Exec family). The real gap is that no worker toolset has `Exec` (`Toolset::families`); S8 needs its own worker-exec design. Docs state this |
+| Missing dependency (automated) | strict TDD. RED observed: `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests` failed (`No worker can run commands or tests` absent). GREEN: one line in both `orchestrate.md` prompts. The existing prompt tests cover "no false claims" |
+| 10.1 | README section `### Orquestador de agentes (experimental)` (Spanish, like the README) plus key-table rows and the AI-menu paragraph; CHANGELOG `Added` entry |
+| 10.2 | `manual-tests.md`: 53 orchestrator tests (T01-T53) and 15 board passes (P01-P15). NOT ticked: waits for the user |
+
+Finding fixed afterwards: `App::orch_hint` (Ctrl+O footer hint, spec modal-input) had no UI consumer. It is now drawn on the guidance line above the composer (`Ctrl+O: orchestrate this pane` / `Ctrl+O: stop orchestrating` / run-active text, plus a notice on Ctrl+O during a run); gate off draws nothing. Tests `the_footer_hint_*` in `orchestra_toggle.rs`, RED observed first. `code` workers get write tools regardless of `[ai.tools] write`. The Zellij Ctrl+O claim comes from design notes, never checked on a live Zellij.

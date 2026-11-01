@@ -26,7 +26,7 @@ Each profile MUST ship a built-in `orchestrate` prompt, resolved like other task
 - THEN it is non-empty and contains the instructions above
 
 ### Requirement: ODD playbooks [S5]
-The `orchestrate` prompt family MUST include playbooks for the ODD steps authorize, explore, resolve, classify, track, implement and close, in that order, with the rule that a step closes only with a handoff, at most one question to the user at a time, and the small or large rule that never counts files or tasks. The playbook text MUST say `implement` is drafts and review only until write tools are offered. [S8] Once `run_command` exists, the playbook requires red evidence before and green evidence after the implementation, or an explicit exception.
+The `orchestrate` prompt family MUST include playbooks for the ODD steps authorize, explore, resolve, classify, track, implement and close, in that order, with the rule that a step closes only with a handoff, at most one question to the user at a time, and the small or large rule that never counts files or tasks. The playbook text MUST say `implement` is drafts and review only until write tools are offered. [S8, deferred to 1.2 (user, 2026-10-31)] Once `run_command` reaches workers, the playbook requires red evidence before and green evidence after the implementation, or an explicit exception. Until then (1.1.0) the `orchestrate` prompt MUST say that no worker can run commands or tests, that the coordinator says so, never claims a test ran or passed, and asks the user to run them.
 
 #### Scenario: Playbook per step [auto]
 - GIVEN the playbooks

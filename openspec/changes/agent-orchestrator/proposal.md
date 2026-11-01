@@ -20,7 +20,7 @@ The user works with strong models through their own CLIs and subscriptions and w
 - **O4 Handoffs in engram** (like apply-progress): what was done, what is left, decisions.
 - **O5 Approvals.** The user approves a read scope at run start; reads inside it are pre-approved. The scope applies the jail deny-lists (agent-tools T5) to both the requested and the resolved path. The orchestrator never approves anything.
 - **O6 Worker failure stops the run** at the moment it happens and shows the concrete provider error (409, 429, auth, any). Inline options: retry, change model, change provider, cancel. Change model/provider opens the menu picker for that task and relaunches the worker. No silent fallback. 429 is a first-class case.
-- **O7 Separate SDDs.** write-tools and a test-runner tool are dependencies with their own SDDs. Until they exist, workers read, plan, review and draft. **Real TDD red-green is impossible without them.** Update 2026-10-27: the write tools shipped as coding-tools M2 (#342, staged batches with a full-pane user review); the test runner is coding-tools M3 (`run_command`), not started.
+- **O7 Separate SDDs.** write-tools and a test-runner tool are dependencies with their own SDDs. Until they exist, workers read, plan, review and draft. **Real TDD red-green is impossible without them.** Update 2026-10-27: the write tools shipped as coding-tools M2 (#342, staged batches with a full-pane user review); the test runner is coding-tools M3 (`run_command`), which shipped in 0.28.0 for chat panes. Update 2026-10-31: S8 (commands and test-first evidence from workers) is deferred to 1.2; 1.1.0 workers cannot run commands or tests.
 - **O8 Defaults.** The orchestrator has no `run_in_pane`; worker results are rows in the chat (live run view later); runs are not resumable after a restart in early slices; cost connects later to the project-17 "Measure AI usage" item.
 - **O9 Activation (2026-10-20).** A global gate `[ai.orchestrator] enabled` (menu row `Orchestrator`, on/off, default off) PLUS a per-pane toggle: key Ctrl+O and an `ORCH` badge in the chat pane, following the AUTO/RUN badge pattern. Only panes with ORCH on run their chat turns on the Orchestrate assignment; other panes keep the Chat assignment. The pane flag is in memory only.
 - **O10 Failure picker is run-scoped (2026-10-20).** Change model / change provider from a failure alert applies until the run ends and is NOT persisted to the menu or config. It applies to the relaunched worker and later workers of that task in the same run, and is shown in the run state and worker rows. After the run the menu value is unchanged.
@@ -45,9 +45,9 @@ The user works with strong models through their own CLIs and subscriptions and w
 | S6 | **Usage.** `StreamEvent::Usage` per adapter; per-worker and per-run rows where the CLI reports them | S1 |
 | S7 | **Write integration.** Code workers get the coding-tools write tools; their changes are staged and reach the disk only through the user's batch review; per-worker change ledger ("files changed") | **coding-tools M2** (merged, #342) |
 | S7b | **Receipt-driven review (RDD).** Risk assessment of a worker change; for a high-risk change, per-change user consent, up to four lens reviews by `review` workers, a refuter, at most one bounded correction, and a receipt handoff (O12) | S7, S4 |
-| S8 | **ODD test-first evidence.** For a task with a runnable deterministic test, the run requires failing evidence before the implementation and passing evidence after, both from `run_command`; a task without one records an explicit exception | **coding-tools M3** (`run_command`), S7 |
+| S8 | **DEFERRED to 1.2 (user, 2026-10-31).** **ODD test-first evidence.** For a task with a runnable deterministic test, the run requires failing evidence before the implementation and passing evidence after, both from `run_command`; a task without one records an explicit exception | **coding-tools M3** (`run_command`), S7 |
 | S9 | **Run view and persistence.** Full-pane worker transcript; runs stored and resumable after restart | S4 |
-| S10 | **Final docs and end-to-end acceptance.** The only slice that edits the README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"); CHANGELOG; manual acceptance of "build a programming project from the chat, without an IDE" (plan, failing test, implementation, passing test, review) | S1 to S9 and S7b, **coding-tools M2**, **coding-tools M3** |
+| S10 | **Final docs and end-to-end acceptance.** The only slice that edits the README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"); CHANGELOG; manual acceptance of "build a programming project from the chat, without an IDE" (plan, failing test, implementation, passing test, review) | S1 to S7b and S9, **coding-tools M2** (S8 and M3 for workers deferred to 1.2) |
 
 ### Out of Scope (non-goals)
 
@@ -125,7 +125,7 @@ Exploration approach C: async `spawn_agent` / `wait` / `collect` / `cancel` over
 
 ## Dependencies
 
-- coding-tools M2 write tools (S7, merged in #342) and coding-tools M3 `run_command` (S8, not started).
+- coding-tools M2 write tools (S7, merged in #342). coding-tools M3 `run_command` shipped in 0.28.0 for chat panes; S8, which would give it to workers, is deferred to 1.2 (user decision, 2026-10-31).
 - Engram running with chat memory on, for persisted handoffs (S4).
 - Project-17 "Measure AI usage" for cost semantics (S6).
 

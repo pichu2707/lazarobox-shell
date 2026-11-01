@@ -320,6 +320,7 @@ impl App {
         }
         self.orch_refusal(id)
             .or_else(|| guidance(&self.turn_availability(id)))
+            .or_else(|| self.toggle_hint(id))
     }
 
     /// Enter: sends the composer text to the engine, checked again now. With

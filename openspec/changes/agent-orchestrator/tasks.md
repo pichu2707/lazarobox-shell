@@ -28,6 +28,7 @@ Decisions (user, 2026-10-21):
 - S1e-1 is split into S1e-1a -> S1e-1b -> S1e-1c. DECIDED.
 - S1e-2 is NOT split: one PR (~600) with `size:exception: approved`.
 - Scope of S1 is unchanged.
+- Scope change (user, 2026-10-31): the orchestrator ships in 1.1.0 WITHOUT S8 (test-first evidence from `run_command`). S8 is deferred to 1.2 and its task stays unticked under its own heading; S10 documents the limit. Specs mark the S8 requirement and scenarios as deferred (not deleted).
 - Result: S1 = 12 chained PRs (S1a, S1b, S1b-2, S1c-1, S1c-2, S1d-1, S1d-2, S1d-3, S1e-1a, S1e-1b, S1e-1c, S1e-2), a linear chain, each based on the previous branch. Later slices S2+ (and S3/S4/S9) must be re-asked at their own apply time.
 
 ### Calibration (real vs estimate, lines changed excluding `.snap` and `openspec/`)
@@ -326,8 +327,11 @@ Decision (user, 2026-10-29): "El worker propone su lote". A `code` worker stages
 - [x] 7b.2 `ConsentAsk` inline, decline goes on `not reviewed`, lens workers over the staged view (candidate wrapped), refuter batch, at most one correction, lens and refuter prompts. Spec: agent-orchestrator / Consent first, Declined goes on unreviewed, One correction at most; prompt-profiles / Lens prompts exist.
 - [x] 7b.3 Receipt handoff and its line in the batch review; a receipt never approves. Spec: agent-orchestrator / A receipt never approves; orchestrator-handoffs / Declined consent still leaves a receipt.
 
-### S8: ODD test-first evidence (1 PR, ~400, risk Medium) EXTERNAL DEPENDENCY: coding-tools M3 `run_command` (not started) plus S7
-- [ ] 8.1 `Evidence{command, exit, digest}` from `run_command`, failing then passing, or an explicit exception with its reason. Spec: agent-orchestrator / Green without red refused, Exception recorded.
+### S8: ODD test-first evidence (1 PR, ~400, risk Medium) DEFERRED to 1.2 (user decision, 2026-10-31): the orchestrator ships in 1.1.0 without S8
+Why deferred. coding-tools M3 shipped (`run_command`, 0.28.0; see `coding-tools/tasks.md` M3), but only for a chat pane: a worker's toolset has no `Exec` family (`Toolset::families` gives `ReadOnly` the read family, `Code` read plus write, the orchestrator read plus orchestra). S8 therefore is not a matter of waiting for M3; it needs its own design for running a command from a worker (the per-command ask routed through the orchestrator turn's approver, the `RunGate` key per worker, the jail and its network notice, the evidence record, and gates on `implement` and `close`). That work did not fit 1.1.0.
+What 1.1.0 does without it. No worker and no orchestrator turn can run a command or a test; the `orchestrate` prompts say so, forbid claiming a test ran or passed, and have the orchestrator ask the user to run the command (spec: agent-orchestrator / Missing dependency, automated by `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests`). `implement` produces staged changes the user approves in the batch review, `close` reports tests as not run, and RDD (S7b) reviews by reading, so it does not depend on S8. The user can run the tests in a chat pane with ORCH off and the Exec toggle on, or in a shell pane.
+Kept unticked on purpose; it is not abandoned.
+- [ ] 8.1 (deferred to 1.2) `Evidence{command, exit, digest}` from `run_command`, failing then passing, or an explicit exception with its reason. Spec: agent-orchestrator / Green without red refused, Exception recorded.
 
 ### S9: run view and persistence (3 PRs, ~900, risk High, decision: Yes) depends on S4
 - [x] 9.1 `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume. Spec: agent-orchestrator / Restart shows an interrupted run. Delivered as three chained PRs:
@@ -336,13 +340,13 @@ Decision (user, 2026-10-29): "El worker propone su lote". A `code` worker stages
   - [x] 9.1c Resume choice for an interrupted run (unfinished workers relaunch from scratch only on the user's choice, the read scope is asked again) plus the two S4b between-turn gaps (engram `orchestra/s9-between-turn-gaps`): a notice for an ask denied between turns and, if it fits the budget, atomic ask registration plus announce in the host.
 - Note (S1d-2 review): run ids are wall-clock microseconds kept above the last one issued, which holds within one process only; once runs are stored, persist the highest id issued and start above it, so a clock set back across a restart cannot reuse an id.
 
-### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S9 and S7b plus coding-tools M2 and M3
-- [ ] 10.1 README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"), CHANGELOG. Spec: agent-orchestrator / README written once [manual].
-- [ ] 10.2 Manual acceptance: build a small project from the chat; missing-dependency path automated. Spec: agent-orchestrator / Small task from the chat [manual], Missing dependency.
+### S10: docs and acceptance (1 PR, ~150, risk Low) depends on S1..S7b and S9; coding-tools M2 (write tools, merged #342) is used; S8 and coding-tools M3 `run_command` for workers are NOT part of 1.1.0 (see S8)
+- [x] 10.1 README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended", keys, config keys, memory and privacy, persistence, known limits), CHANGELOG. Spec: agent-orchestrator / README written once [manual]. Done: one README section (`### Orquestador de agentes (experimental)`) plus the key-reference rows; every claim traced to code (see apply-progress S10). The [manual] part, that the earlier slices' diffs held no README change for this feature, holds: the README did not change in any slice before this one.
+- [ ] 10.2 Manual acceptance. Automated part DONE: the missing-dependency path (the orchestrate prompts say no worker can run commands or tests, never claim a test ran, and ask the user to run them; strict TDD, RED observed). Manual part PENDING THE USER: run `manual-tests.md` (this change) in one sitting and tick it. Stays unticked until the user has run it. Scope for 1.1.0: plan, implementation staged and applied through the batch review, review; the failing-test and passing-test legs of "Small task from the chat" are deferred with S8. Spec: agent-orchestrator / Small task from the chat [manual] (amended), Missing dependency.
 
 ## Dependency graph
 
-S1a -> S1b -> S1b-2 -> S1c-1 -> S1c-2 -> S1d-1 -> S1d-2 -> S1d-3 -> S1e-1a -> S1e-1b -> S1e-1c -> S1e-2 (12 PRs, sequential, no parallel work inside the chain; each PR's base is the previous branch; decided by the user 2026-10-21). Then S7 (S7-1 -> S7-2) right after S1e-2: it needs only S1 and coding-tools M2 (merged) (plan change, user 2026-10-29). Then S2, S3, S6 depend only on S1 (sequential in the chain, parallelizable in analysis). S4 after S3; S5 after S4; S9 after S4; S7b needs S7 and S4; S8 needs coding-tools M3 and S7; S10 last.
+S1a -> S1b -> S1b-2 -> S1c-1 -> S1c-2 -> S1d-1 -> S1d-2 -> S1d-3 -> S1e-1a -> S1e-1b -> S1e-1c -> S1e-2 (12 PRs, sequential, no parallel work inside the chain; each PR's base is the previous branch; decided by the user 2026-10-21). Then S7 (S7-1 -> S7-2) right after S1e-2: it needs only S1 and coding-tools M2 (merged) (plan change, user 2026-10-29). Then S2, S3, S6 depend only on S1 (sequential in the chain, parallelizable in analysis). S4 after S3; S5 after S4; S9 after S4; S7b needs S7 and S4; S8 is deferred to 1.2 (user, 2026-10-31); S10 last.
 
 Merge to main (plan change, user 2026-10-29): the chain merges into `main` behind the `Orchestrator` gate (`[ai.orchestrator] enabled`, off by default) before S10, starting with S1 plus S7; README stays untouched until S10 (D14).
 

@@ -10,6 +10,29 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Agent orchestrator (experimental, off by default). One coordinator model
+  splits a job across workers, each running on the engine and model the menu
+  assigns to its task, and every step is recorded. Turn it on with the
+  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
+  row picks the coordinator's engine (it falls back to `general`, and Ollama
+  is marked `not recommended`). Workers run in parallel (`max_parallel`,
+  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
+  the chat folder without asking and ask for anything outside it; a `code`
+  worker only stages files, which reach the disk through your batch review. A
+  high-risk change asks your consent first and then gets a lens review and a
+  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
+  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
+  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
+  named after a restart and resumed or discarded with `Ctrl+Space r r` and
+  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
+  recommend API keys for automation and consumer-account logins carry risk; no
+  key is required. Known limit: workers cannot run commands or tests yet, so
+  the coordinator asks you to run them (test-first evidence is planned for
+  1.2). See the README, "Orquestador de agentes".
+
 ### Internal
 
 - Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`

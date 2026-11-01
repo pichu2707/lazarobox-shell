@@ -242,3 +242,38 @@ fn the_toggle_is_blocked_while_a_run_is_active() {
         "with the run over the key works again"
     );
 }
+
+// modal-input / ORCH toggle key: the key is shown in the chat footer hint
+// while the gate is on, and only then.
+#[test]
+fn the_footer_hint_names_ctrl_o_only_with_the_gate_on() {
+    let mut a = orch_app();
+    let hint = |a: &App| a.chat_guidance(chat_id());
+    assert_eq!(hint(&a).as_deref(), Some("Ctrl+O: orchestrate this pane"));
+    toggle(&mut a);
+    assert_eq!(hint(&a).as_deref(), Some("Ctrl+O: stop orchestrating"));
+    assert!(screen(&a).contains("Ctrl+O: stop"), "{}", screen(&a));
+    a.ai.orchestrator.enabled = false;
+    assert_eq!(hint(&a), None);
+    assert!(!screen(&a).contains("Ctrl+O"), "gate off:\n{}", screen(&a));
+}
+
+// chat-pane / Toggle blocked during a run: the footer hint says to cancel
+// the run first, and so does a notice when the key is pressed.
+#[test]
+fn the_footer_hint_says_to_cancel_the_run_first() {
+    let mut a = orch_app();
+    toggle(&mut a);
+    ask(&mut a, "plan it");
+    // The provider notice comes first; the hint is what is left under it.
+    a.orch_notice = None;
+    let hint = a.chat_guidance(chat_id()).expect("a hint");
+    assert!(hint.contains("cancel the run first"), "{hint}");
+    toggle(&mut a);
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("cancel the run first")),
+        "{:?}",
+        a.notice()
+    );
+}
