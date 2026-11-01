@@ -51,3 +51,45 @@ fn no_tools_unknown_or_unknown_size_gives_no_mark() {
     assert_eq!(tool_mark(Tools::Unknown, Some(8_000_000_000)), None);
     assert_eq!(tool_mark(Tools::Yes, None), None);
 }
+
+#[test]
+fn the_linux_console_gets_text() {
+    assert_eq!(tool_glyph(Some("linux"), true), ToolGlyph::Text);
+}
+
+#[test]
+fn a_non_utf8_locale_gets_text() {
+    assert_eq!(tool_glyph(Some("xterm-256color"), false), ToolGlyph::Text);
+    assert_eq!(tool_glyph(None, false), ToolGlyph::Text);
+}
+
+#[test]
+fn a_utf8_terminal_gets_the_emoji() {
+    assert_eq!(tool_glyph(Some("xterm-256color"), true), ToolGlyph::Emoji);
+    assert_eq!(tool_glyph(None, true), ToolGlyph::Emoji);
+}
+
+#[test]
+fn the_default_glyph_is_text() {
+    assert_eq!(ToolGlyph::default(), ToolGlyph::Text);
+}
+
+#[test]
+fn the_wrench_is_two_cells_wide() {
+    use unicode_width::UnicodeWidthStr;
+    assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Emoji).width(), 2);
+}
+
+#[test]
+fn badge_text_maps_both_marks_in_both_modes() {
+    assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Emoji), "🔧");
+    assert_eq!(badge_text(ToolMark::Capable, ToolGlyph::Text), "tools");
+    assert_eq!(
+        badge_text(ToolMark::Unreliable, ToolGlyph::Emoji),
+        "tools: unreliable"
+    );
+    assert_eq!(
+        badge_text(ToolMark::Unreliable, ToolGlyph::Text),
+        "tools: unreliable"
+    );
+}

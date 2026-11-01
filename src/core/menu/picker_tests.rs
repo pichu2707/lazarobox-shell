@@ -26,6 +26,7 @@ pub(super) fn pick(label: &str, mark: Mark, selected: bool, current: bool) -> Ro
         selected,
         enabled: true,
         current,
+        tools: None,
     }
 }
 

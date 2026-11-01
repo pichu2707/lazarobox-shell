@@ -12,6 +12,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::catalog::{cli_models, curated, same_model};
 use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
+use super::marks::{ToolMark, tool_mark};
 use super::parse::sanitize;
 use super::sanitize::is_format;
 use super::{
@@ -113,6 +114,8 @@ pub struct PickRow {
     pub enabled: bool,
     /// Whether this row is the current assignment of the target (`●`).
     pub current: bool,
+    /// The tool mark of an installed model, shown beside `mark`.
+    pub tools: Option<ToolMark>,
 }
 
 /// The assignment shared by every task a target writes to (as resolved, like
@@ -216,6 +219,7 @@ pub fn engine_rows(
         mark: Mark::Plain,
         enabled: true,
         current: current.as_ref().is_some_and(|a| a.engine.is_none()),
+        tools: None,
     }];
     let mut push = |id: &str, mark: Mark, enabled: bool| {
         rows.push(PickRow {
@@ -224,6 +228,7 @@ pub fn engine_rows(
             mark,
             enabled,
             current: current_engine == Some(id),
+            tools: None,
         });
     };
     for engine in CATALOG {
@@ -305,6 +310,7 @@ pub fn model_rows(
             },
             enabled: true,
             current: false,
+            tools: None,
         });
     }
     // Last, while the Ollama server answers: the pull goes through it.
@@ -315,6 +321,7 @@ pub fn model_rows(
             mark: Mark::Plain,
             enabled: true,
             current: false,
+            tools: None,
         });
     }
     rows
@@ -342,6 +349,7 @@ fn listed_models(
         mark,
         enabled,
         current: is_current(name),
+        tools: None,
     };
     let row = |name: &str, mark: Mark, enabled: bool| labeled(name, name, mark, enabled);
     let info = |label: &str, mark: Mark| PickRow {
@@ -350,6 +358,7 @@ fn listed_models(
         mark,
         enabled: false,
         current: false,
+        tools: None,
     };
     // Every model assigned to this engine anywhere in the draft, once.
     let mut assigned: Vec<&str> = Vec::new();
@@ -411,6 +420,7 @@ fn listed_models(
             mark: Mark::Plain,
             enabled: true,
             current: false,
+            tools: None,
         });
         return rows;
     }
@@ -497,7 +507,11 @@ fn listed_models(
     for m in &state.models {
         if !listed.iter().any(|l| same_model(engine, l, m)) {
             listed.push(m);
-            rows.push(row(m, Mark::Downloaded, true));
+            let mut installed = row(m, Mark::Downloaded, true);
+            installed.tools = detection
+                .facts(engine, m)
+                .and_then(|f| tool_mark(f.tools, f.params));
+            rows.push(installed);
         }
     }
     let missing = assigned.iter().chain(curated(engine).iter());
@@ -528,6 +542,7 @@ fn note_rows(text: &str) -> impl Iterator<Item = PickRow> + '_ {
             mark: Mark::Plain,
             enabled: false,
             current: false,
+            tools: None,
         })
 }
 
@@ -1052,6 +1067,8 @@ mod machine_tests;
 #[cfg(test)]
 mod manage_tests;
 #[cfg(test)]
+mod marks_tests;
+#[cfg(test)]
 mod note_tests;
 #[cfg(test)]
 mod ollama_tests;
@@ -1101,6 +1118,7 @@ mod tests {
             mark,
             enabled,
             current,
+            tools: None,
         }
     }
 
@@ -1724,6 +1742,7 @@ mod tests {
                     mark: Mark::Status(MANAGED_MARK.to_owned()),
                     enabled: true,
                     current: false,
+                    tools: None,
                 },
                 model("old", Mark::Plain, true, true),
                 hf_entry(),
@@ -1853,6 +1872,7 @@ mod tests {
             mark: Mark::Status(MANAGED_MARK.to_owned()),
             enabled: true,
             current,
+            tools: None,
         }
     }
 
@@ -1984,6 +2004,7 @@ mod tests {
                     mark: Mark::Plain,
                     enabled: false,
                     current: false,
+                    tools: None,
                 }),
         );
         want.push(hf_entry());

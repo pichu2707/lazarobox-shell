@@ -155,7 +155,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
 
     // The menu popup goes over everything else.
     if let Some(menu) = app.menu() {
-        let popup = MenuPopup::new(menu, app.config(), theme);
+        let popup = MenuPopup::new(menu, app.config(), theme).with_glyph(app.tool_glyph());
         frame.render_widget(popup, frame.area());
     }
 }

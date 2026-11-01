@@ -10,7 +10,10 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
-        ai::picker::{Mark, NOT_IN_LIST},
+        ai::{
+            marks::{ToolGlyph, badge_text},
+            picker::{Mark, NOT_IN_LIST},
+        },
         config::Config,
         menu::{CAUTION_ROWS, Footer, MenuState, NOTE_ROWS, Row, popup_layout},
     },
@@ -22,6 +25,7 @@ pub struct MenuPopup<'a> {
     menu: &'a MenuState,
     config: &'a Config,
     theme: &'a LazaroboxTheme,
+    glyph: ToolGlyph,
 }
 
 impl<'a> MenuPopup<'a> {
@@ -30,7 +34,14 @@ impl<'a> MenuPopup<'a> {
             menu,
             config,
             theme,
+            glyph: ToolGlyph::default(),
         }
+    }
+
+    /// How the tool badge is drawn; decided once by the runtime.
+    pub fn with_glyph(mut self, glyph: ToolGlyph) -> Self {
+        self.glyph = glyph;
+        self
     }
 }
 
@@ -91,6 +102,7 @@ impl MenuPopup<'_> {
                 selected,
                 enabled,
                 current,
+                tools,
             } => {
                 // A long mark (an engine status with a reason) gives way to
                 // the label, but never below half of the row, and the `●`
@@ -98,19 +110,31 @@ impl MenuPopup<'_> {
                 // old rule: the label gives way and the mark stays whole.
                 let dot = if *current { " ●" } else { "" };
                 let mark = mark_text(mark);
+                let badge = tools.map_or("", |t| badge_text(t, self.glyph));
+                let badge_cells = if badge.is_empty() {
+                    0
+                } else {
+                    cells(badge) + 1
+                };
                 let mark_cap = width
-                    .saturating_sub(cells(label) + 1 + cells(dot) + 1)
+                    .saturating_sub(cells(label) + 1 + badge_cells + cells(dot) + 1)
                     .max(width / 2);
                 let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
                     clip(mark, mark_cap)
                 } else {
                     mark.to_owned()
                 };
-                let tail = match (mark.as_str(), current) {
-                    ("", false) => String::new(),
-                    ("", true) => dot.to_owned(),
-                    (mark, _) => format!(" {mark}{dot}"),
+                let badge = if badge.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {badge}")
                 };
+                let mark = if mark.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {mark}")
+                };
+                let tail = format!("{mark}{badge}{dot}");
                 let room = width.saturating_sub(cells(&tail) + 1);
                 let label = if cells(label) > room {
                     clip(label, room)
@@ -687,6 +711,7 @@ mod tests {
     }
 
     mod install;
+    mod tool_badge;
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
