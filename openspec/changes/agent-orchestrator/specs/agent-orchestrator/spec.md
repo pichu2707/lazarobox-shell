@@ -4,9 +4,9 @@
 
 Defines the orchestrator: one coordinator agent that splits a multi-step job across worker agents, each running on the engine and model the AI menu assigns to its task. It covers the run lifecycle, the orchestration tools, the worker contract, limits, the run-start read scope, approvals, failure alerts and relaunch, the provider notice, the ODD flow and the receipt-driven review (RDD). Handoff persistence is in orchestrator-handoffs. The menu is the single source of truth: lazarobox never picks an engine or a model.
 
-Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] ODD flow, read-only until S7; [S6] usage; [S7] write integration (needs coding-tools M2, merged); [S7b] receipt-driven review (RDD); [S8] ODD test-first evidence (needs coding-tools M3 and S7); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
+Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] ODD flow, read-only until S7; [S6] usage; [S7] write integration (needs coding-tools M2, merged); [S7b] receipt-driven review (RDD); [S8] ODD test-first evidence (DEFERRED to 1.2, see its requirement); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
 
-Product goal: the finished feature MUST let the user build a programming project entirely from the lazarobox chat, without opening an IDE: plan, write code, run tests and review. That end state depends on the coding-tools write tools (M2) and `run_command` (M3) and is accepted only by the end-to-end requirement tagged [S10]. [S10] is the final slice: user-facing documentation and end-to-end acceptance, after S1..S9. Slices before S10 MUST NOT change the README; the feature stays off by default and undocumented there until S10. Internal docs (openspec, CHANGELOG Internal entries) may change in any slice.
+Product goal: the finished feature MUST let the user build a programming project entirely from the lazarobox chat, without opening an IDE: plan, write code, run tests and review. That end state depends on the coding-tools write tools (M2) and on `run_command` reaching workers (S8). Delta (user decision, 2026-10-31): 1.1.0 ships WITHOUT S8, so the goal is met in 1.1.0 up to plan, staged implementation applied through the batch review, and review; running tests stays with the user until S8 (1.2). coding-tools M3 `run_command` itself shipped in 0.28.0 for chat panes, but no worker toolset has the `Exec` family. The goal is accepted by the end-to-end requirement tagged [S10], as amended below. [S10] is the final slice: user-facing documentation and end-to-end acceptance, after S1..S9. Slices before S10 MUST NOT change the README; the feature stays off by default and undocumented there until S10. Internal docs (openspec, CHANGELOG Internal entries) may change in any slice.
 
 Terms: a *run* is one orchestrated job started from an orchestrator turn; a *worker* is one stateless CLI (or loopback) turn started by the run for a task kind; a *kind* is one of `general`, `code`, `chat`, `review`, `summarize`.
 
@@ -449,15 +449,17 @@ Until S7, `implement` MUST produce only drafts and review findings, and the orch
 - WHEN it completes
 - THEN its result is labelled a draft and no file in the workspace changed
 
-### Requirement: ODD test-first evidence [S8]
+### Requirement: ODD test-first evidence [S8] (DEFERRED to 1.2)
+Delta note (user decision, 2026-10-31): this requirement and its two scenarios are NOT part of 1.1.0 and are kept, not deleted, for 1.2. In 1.1.0 no worker and no orchestrator turn is offered `run_command`; `implement` yields staged changes and drafts, `close` reports every test as not run, the `orchestrate` prompts forbid claiming a test ran or passed and ask the user to run it, and RDD (S7b) reviews by reading and does not depend on evidence. Nothing below is implemented or tested yet.
+
 Once `run_command` exists, for a task with a runnable deterministic test the run MUST require failing evidence before the implementation is accepted and passing evidence after it. Evidence MUST come from the `run_command` result, never from worker text alone. A task without a runnable test MUST record an explicit exception with its reason, and is then checked by a review worker instead.
 
-#### Scenario: Green without red refused [S8, auto]
+#### Scenario: Green without red refused [S8, auto, deferred to 1.2]
 - GIVEN an implementation result with passing evidence and no earlier failing evidence
 - WHEN the task is closed
 - THEN it is refused as missing red evidence
 
-#### Scenario: Exception recorded [S8, auto]
+#### Scenario: Exception recorded [S8, auto, deferred to 1.2]
 - GIVEN a documentation-only task
 - WHEN it is closed without evidence
 - THEN its handoff holds the exception and its reason, and the close is accepted
@@ -542,7 +544,7 @@ A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally 
 Note (S9 9.1c, what enforces "unfinished workers relaunch only on the user's choice"). Resume starts a NEW run whose seed message names the unfinished workers and tells the orchestrator to relaunch none until the user says so. That instruction is the only thing tying a relaunch to the user's word: it is a model instruction, not a hard gate. Traced spawn path (`Run::spawn`): it refuses only a paused or ended run, a `code` worker in a read-only step, and more than `max_workers`; by user decision (chat-pane, "Worker starts without a prompt") a worker starts with no approval, so nothing in code blocks a spawn after resume. Every worker is announced by its row, and what a worker can do is bounded by the existing per-tool gates: reads outside the run's scope follow the pane approval mode, a `code` worker's writes are staged for the batch review, and the jail and the `max_parallel`/`max_workers`/turn/time limits apply. The read scope is not asked (user decision 2026-10-29): it is set again for the new run from the chat folder (Read scope of a run), and nothing of the old grant is stored or reused.
 
 ### Requirement: Final documentation [S10]
-The README MUST be updated once, in the final slice, with: how to enable and use the orchestrator (the `Orchestrator` menu gate and the per-pane Ctrl+O toggle), the Orchestrate menu row, the provider-terms statement (providers recommend API keys for automation, consumer logins carry risk, no key required) and the Ollama "not recommended" note. No earlier slice MUST edit the README for this feature.
+The README MUST be updated once, in the final slice, with: how to enable and use the orchestrator (the `Orchestrator` menu gate and the per-pane Ctrl+O toggle), the Orchestrate menu row, the provider-terms statement (providers recommend API keys for automation, consumer logins carry risk, no key required) and the Ollama "not recommended" note. Delta (2026-10-31): it also states the keys, the config keys, the memory and privacy gate, the persistence of runs and the known limits, among them that workers cannot run commands or tests in 1.1.0 (S8 deferred). No earlier slice MUST edit the README for this feature.
 
 #### Scenario: README written once [manual]
 - GIVEN the final slice is merged
@@ -550,17 +552,19 @@ The README MUST be updated once, in the final slice, with: how to enable and use
 - THEN it documents the orchestrator, the menu row and the provider note, and the earlier slices' diffs contain no README change for this feature
 
 ### Requirement: Build a project from the chat, end to end [S10]
-With coding-tools M2 and M3 built and S1..S9 and S7b merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, failing test, implementation, passing test and review: the orchestrator drives the ODD steps, a `code` worker stages files (applied only through the user's batch review and listed in `files changed`), tests run only through `run_command` with red evidence before and green evidence after, a high-risk change gets a receipt-driven review, and handoffs record each step. If either dependency is missing the requirement is not accepted and the feature is described as drafts only.
+With coding-tools M2 built and S1..S7b and S9 merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, implementation and review: the orchestrator drives the ODD steps, a `code` worker stages files (applied only through the user's batch review and listed in `files changed`), a high-risk change gets a receipt-driven review, and handoffs record each step. Tests are NOT run by the run in 1.1.0: the orchestrator says so, never claims a test ran or passed, and asks the user to run them. The legs "failing test" and "passing test", with red evidence before and green evidence after from `run_command`, belong to S8 and are deferred to 1.2 (user decision, 2026-10-31). If the write tools are missing the requirement is not accepted and the feature is described as drafts only.
 
 #### Scenario: Small task from the chat [S10, manual]
 - GIVEN the gate on, a chat pane with ORCH on, a scratch project, and `orchestrate`, `code` and `review` assigned to available engines
-- WHEN the user asks for a function with tests in the chat and approves the scope and the batch
-- THEN a failing test run is recorded, the files are written, a passing run is recorded, a review result is returned, handoffs exist for each ODD step, and the user never left the chat
+- WHEN the user asks for a function with tests in the chat and approves the batch
+- THEN the files (function and tests) are written only after the batch review, a review result is returned, handoffs exist for each ODD step, the orchestrator says it did not run the tests, and the user never left the chat
+- AND (amended 2026-10-31) the user then runs the tests themselves; the recorded failing and passing runs of the original scenario are S8 and deferred to 1.2
 
 #### Scenario: Missing dependency [S10, auto]
-- GIVEN no write tool or `run_command` tool is registered
+- GIVEN no write tool or `run_command` tool is registered (in 1.1.0 workers never have `run_command`)
 - WHEN the end-to-end flow is requested
 - THEN the orchestrator states it can only produce drafts and does not claim code was written or tests passed
+- Covered by `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests`, `the_orchestrate_prompts_say_only_an_applied_file_was_written` and `the_orchestrate_prompts_hold_the_coordinator_rules` (src/core/ai/chat/prompts/tests.rs); the toolsets themselves are pinned by the `Worker toolsets` tests.
 
 ### Requirement: No content in logs [S1]
 Worker prompts, worker output, provider error text and paths MUST NOT be written to logs or error values that outlive the screen; logs may carry ids, kinds, statuses and error classes.

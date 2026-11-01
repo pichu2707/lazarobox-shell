@@ -90,8 +90,8 @@ S4: turn ends, run Open → ledger continuation turn (lists pending handoffs); f
 | 5 | **coding-tools M2** (merged, #342): `create_dir`/`write_file`/`edit_file`/`propose_batch`, staged batches, a full-pane batch review, writes confined to the chat origin | coding-tools |
 | 6 | S7 Code workers get `Toolset::Code` and a per-worker `ChangeLedger` over their staged changes | this SDD (needs 5) |
 | 6b | S7b receipt-driven review of high-risk staged changes (D16) | this SDD (needs 6, S4) |
-| 7 | **coding-tools M3** (not started): a captured, non-pane `run_command` with a timeout, output caps, a jail/profile for toolchains (cargo/npm/pytest; dependency fetch needs the network) | coding-tools |
-| 8 | S8 ODD test-first: `Evidence{command, exit, digest}`, failing then passing, or an explicit exception | this SDD (needs 7, 6) |
+| 7 | **coding-tools M3** (shipped in 0.28.0 for chat panes; not offered to workers, which is why S8 is deferred to 1.2): a captured, non-pane `run_command` with a timeout, output caps, a jail/profile for toolchains (cargo/npm/pytest; dependency fetch needs the network) | coding-tools |
+| 8 | S8 ODD test-first: `Evidence{command, exit, digest}`, failing then passing, or an explicit exception. DEFERRED to 1.2 (user, 2026-10-31) | this SDD (needs 7, 6, and a worker Exec design) |
 | 9 | S5 ODD playbooks become real (classify → track → implement → close, with writes and evidence) | this SDD |
 | 10 | S9 run view, persistence; S10 README | this SDD |
 
@@ -119,7 +119,7 @@ The tracker branch is `feat/agent-orchestrator`; only it merges to `main`, after
 | **S6** usage | `StreamEvent::Usage` in 3 decoders and Ollama, per-worker/per-run rows | ~450 | 1-2 |
 | **S7** writes (needs coding-tools M2) | `Toolset::Code`, `ChangeLedger` over staged changes, collect "files changed" | ~500 | 2 |
 | **S7b** RDD | `core/ai/orchestra/review.rs` (`assess`, `Tier`, `Review`), lens and refuter prompts, `ConsentAsk`, receipt handoff, the receipt line in the batch review (D16) | ~900 | 3 |
-| **S8** test-first (needs coding-tools M3) | `Evidence`, the exception record, orchestrator gates, prompts | ~400 | 1 |
+| **S8** test-first (DEFERRED to 1.2, user 2026-10-31; coding-tools M3 shipped for the chat, but a worker has no `Exec` family) | `Evidence`, the exception record, orchestrator gates, prompts | ~400 | 1 |
 | **S9** run view and persistence | `app/run_view.rs`, `ui/components/run_view.rs`, `runtime/chat_store` runs table, resume | ~900 | 3 |
 | **S10** docs and end-to-end acceptance | `README.md` (usage, `Orchestrator` gate and Ctrl+O, menu row, provider-terms notice, Ollama "not recommended"), CHANGELOG, the manual "build a project from the chat" acceptance run | ~150 | 1 |
 
@@ -147,5 +147,5 @@ No data migration. Older builds ignore `[ai.orchestrator]` and `[ai.tasks.orches
 - [ ] D6 TOCTOU: the scope decides only the ask. The read itself re-resolves under the deny-list, so a swapped link can at most read an allowed file without an ask.
 - [ ] D4 shares the orchestrator's (pane, turn) for worker asks. In S1 a second simultaneous ask is denied `another approval is pending` (acceptable with one worker); S3 removes this (S3a: worker asks queue FIFO in `Approvals`; a chat's own ask is still refused).
 - [ ] S1 runs end with the orchestrator turn (15 min); a long worker is cut there until S4.
-- [ ] coding-tools M3 (`run_command`) is not started; it gates S8 and the product goal.
+- [ ] S8 is deferred to 1.2 (user, 2026-10-31). coding-tools M3 `run_command` shipped (0.28.0) for chat panes, but no worker toolset has the `Exec` family, so 1.1.0 workers cannot run commands or tests. The product goal ("build a project from the chat") is met in 1.1.0 up to plan, staged implementation, batch review and receipt review; test-first evidence waits for S8.
 - [x] D16 follows the user's choices P1-P4 (proposal, Decisions (O12)), all (a), confirmed 2026-10-27.

@@ -45,9 +45,9 @@ The user works with strong models through their own CLIs and subscriptions and w
 | S6 | **Usage.** `StreamEvent::Usage` per adapter; per-worker and per-run rows where the CLI reports them | S1 |
 | S7 | **Write integration.** Code workers get the coding-tools write tools; their changes are staged and reach the disk only through the user's batch review; per-worker change ledger ("files changed") | **coding-tools M2** (merged, #342) |
 | S7b | **Receipt-driven review (RDD).** Risk assessment of a worker change; for a high-risk change, per-change user consent, up to four lens reviews by `review` workers, a refuter, at most one bounded correction, and a receipt handoff (O12) | S7, S4 |
-| S8 | **ODD test-first evidence.** For a task with a runnable deterministic test, the run requires failing evidence before the implementation and passing evidence after, both from `run_command`; a task without one records an explicit exception | **coding-tools M3** (`run_command`), S7 |
+| S8 | **DEFERRED to 1.2 (user, 2026-10-31).** **ODD test-first evidence.** For a task with a runnable deterministic test, the run requires failing evidence before the implementation and passing evidence after, both from `run_command`; a task without one records an explicit exception | **coding-tools M3** (`run_command`), S7 |
 | S9 | **Run view and persistence.** Full-pane worker transcript; runs stored and resumable after restart | S4 |
-| S10 | **Final docs and end-to-end acceptance.** The only slice that edits the README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"); CHANGELOG; manual acceptance of "build a programming project from the chat, without an IDE" (plan, failing test, implementation, passing test, review) | S1 to S9 and S7b, **coding-tools M2**, **coding-tools M3** |
+| S10 | **Final docs and end-to-end acceptance.** The only slice that edits the README (usage, `Orchestrator` gate and Ctrl+O, Orchestrate row, provider-terms note, Ollama "not recommended"); CHANGELOG; manual acceptance of "build a programming project from the chat, without an IDE" (plan, failing test, implementation, passing test, review) | S1 to S7b and S9, **coding-tools M2** (S8 and M3 for workers deferred to 1.2) |
 
 ### Out of Scope (non-goals)
 
@@ -125,7 +125,7 @@ Exploration approach C: async `spawn_agent` / `wait` / `collect` / `cancel` over
 
 ## Dependencies
 
-- coding-tools M2 write tools (S7, merged in #342) and coding-tools M3 `run_command` (S8, not started).
+- coding-tools M2 write tools (S7, merged in #342). coding-tools M3 `run_command` shipped in 0.28.0 for chat panes; S8, which would give it to workers, is deferred to 1.2 (user decision, 2026-10-31).
 - Engram running with chat memory on, for persisted handoffs (S4).
 - Project-17 "Measure AI usage" for cost semantics (S6).
 
