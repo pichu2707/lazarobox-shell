@@ -9,6 +9,7 @@
 //! issue or link is made; a change stays in the form, so the user sees what
 //! was masked before pressing Ctrl+S again.
 
+use crate::core::desktop::is_wsl;
 use std::borrow::Cow;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -262,13 +263,6 @@ pub fn engines(detection: &Detection) -> Vec<String> {
 
 /// The longest shell or terminal name attached.
 const NAME_CAP: usize = 40;
-
-/// Whether this is WSL: `$WSL_DISTRO_NAME` is set, or the kernel release
-/// (`/proc/sys/kernel/osrelease`) names Microsoft.
-pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
-    distro.is_some_and(|v| !v.is_empty())
-        || osrelease.is_some_and(|r| r.to_ascii_lowercase().contains("microsoft"))
-}
 
 /// The facts of this host, from `var` (the environment) and `osrelease`
 /// (`/proc/sys/kernel/osrelease`, when there is one). The engines are added

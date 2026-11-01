@@ -428,7 +428,7 @@ fn eof_cancels_without_writing_and_says_so() {
     assert!(!fx.target().exists());
     assert!(!out.contains("Installed"), "{out}");
     // EOF after an invalid answer cancels too.
-    let (result, _) = fx.run_with(&install(None), &["kitty"], Some("x\n"), false);
+    let (result, _) = fx.run_with(&install(None), &["kitty", "foot"], Some("x\n"), false);
     assert!(result.unwrap_err().contains("cancelled"));
     assert!(!fx.target().exists());
 }
@@ -550,7 +550,13 @@ fn installing_twice_leaves_one_entry_and_says_so() {
     assert!(!first.contains("already"), "{first}");
     let (result, second) = fx.run_with(&install(None), &["kitty"], None, false);
     result.unwrap();
-    assert!(second.contains("already installed"), "{second}");
+    assert!(
+        second.contains(&format!(
+            "Updated {} (already installed)",
+            fx.target().display()
+        )),
+        "{second}"
+    );
     assert_eq!(
         fs::read_dir(fx.target().parent().unwrap()).unwrap().count(),
         1
@@ -567,4 +573,61 @@ fn an_unwritable_target_fails_with_the_reason() {
     let why = result.unwrap_err();
     assert!(why.contains("cannot write"), "{why}");
     assert!(!out.contains("Installed"), "{out}");
+}
+
+#[test]
+fn a_single_default_terminal_is_not_asked_about() {
+    let fx = Fixture::new();
+    let (result, out) = fx.run_with(&install(None), &["kitty"], Some("2\n"), false);
+    result.unwrap();
+    assert!(!out.contains("Choose") && !out.contains("1)"), "{out}");
+    assert!(written(&fx).contains("Exec=/usr/bin/kitty "));
+}
+
+#[test]
+fn the_list_explains_tested_with_the_records_link() {
+    let fx = Fixture::new();
+    let (_, out) = fx.run_with(&install(None), &["kitty", "foot"], Some("\n"), false);
+    assert!(
+        out.contains(&format!(
+            "(tested) = has a record: {}",
+            crate::core::desktop::RECORDS_URL
+        )),
+        "{out}"
+    );
+}
+
+struct Broken;
+impl std::io::Read for Broken {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("boom"))
+    }
+}
+
+#[test]
+fn a_failing_reader_is_reported_and_writes_nothing() {
+    let fx = Fixture::new();
+    let lookup = |cmd: &str| {
+        ["kitty", "foot"]
+            .contains(&cmd)
+            .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
+    };
+    let refresh = |_: &Path| {};
+    let ctx = Context {
+        env_terminal: None,
+        xdg_data_home: None,
+        home: Some(fx.home.path().as_os_str().to_owned()),
+        exe: PathBuf::from(EXE),
+        cwd: fx.home.path().to_path_buf(),
+        wsl: false,
+        lookup: &lookup,
+        refresh_db: &refresh,
+    };
+    let mut reader = std::io::BufReader::new(Broken);
+    let why = execute(&install(None), &ctx, Some(&mut reader), &mut Vec::new()).unwrap_err();
+    assert!(
+        why.contains("cannot read the answer") && why.contains("boom"),
+        "{why}"
+    );
+    assert!(!fx.target().exists());
 }

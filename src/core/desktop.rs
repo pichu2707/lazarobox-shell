@@ -34,6 +34,18 @@ const TEMPLATE: &str = include_str!("desktop/lazarobox.desktop");
 pub const USAGE: &str =
     "usage: lazarobox-shell install-desktop [--terminal <cmd>] [--dir <folder>] [--uninstall]";
 
+/// Where the terminal records live; a cargo-installed user has no
+/// `docs/terminals/` folder on disk.
+pub const RECORDS_URL: &str =
+    "https://github.com/pichu2707/lazarobox-shell/tree/main/docs/terminals";
+
+/// Whether this is WSL: `$WSL_DISTRO_NAME` is set, or the kernel release
+/// (`/proc/sys/kernel/osrelease`) names Microsoft.
+pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
+    distro.is_some_and(|v| !v.is_empty())
+        || osrelease.is_some_and(|r| r.to_ascii_lowercase().contains("microsoft"))
+}
+
 /// Terminals that have a record under `docs/terminals/<name>/`.
 pub const RECORDED_TERMINALS: [&str; 1] = ["kitty"];
 
@@ -42,10 +54,10 @@ pub const RECORDED_TERMINALS: [&str; 1] = ["kitty"];
 pub fn terminal_notice(name: Option<&str>) -> String {
     match name {
         Some(name) if RECORDED_TERMINALS.contains(&name) => {
-            format!("{name} has a record under docs/terminals/.")
+            format!("{name} has a record: {RECORDS_URL}")
         }
         _ => format!(
-            "{} has no test record yet; see docs/terminals/. Some keys or the OSC 52 clipboard may not work.",
+            "{} has no test record yet; see {RECORDS_URL}. Some keys or the OSC 52 clipboard may not work.",
             name.unwrap_or("the terminal your desktop picks")
         ),
     }
@@ -104,6 +116,8 @@ pub fn picker_choices(
         .chain(["xdg-terminal-exec"])
         .chain(KNOWN_TERMINALS)
         .filter_map(|cmd| Some((base_name(cmd), lookup(cmd)?)))
+        // A path that cannot go into `Exec` would be offered but never work.
+        .filter(|(_, path)| validate_path(path).is_ok())
         .chain(resolved_alternative.and_then(|path| {
             let name = base_name(path.to_str()?);
             exec_syntax(&name).map(|_| (name, path))

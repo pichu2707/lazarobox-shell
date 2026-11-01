@@ -13,10 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::core::desktop::{
-    Entry, FILE_NAME, Options, Parsed, USAGE, applications_dir, choose_terminal, data_home,
-    parse_args, parse_choice, picker_choices, plan_install,
+    Entry, FILE_NAME, Options, Parsed, RECORDS_URL, USAGE, applications_dir, choose_terminal,
+    data_home, is_wsl, parse_args, parse_choice, picker_choices, plan_install,
 };
-use crate::core::menu::feedback::is_wsl;
 
 /// Everything `execute` reads from the outside world.
 pub struct Context<'a> {
@@ -153,12 +152,9 @@ pub fn execute(
             write_atomically(&apps_dir, &target, &plan.contents)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
             (ctx.refresh_db)(&apps_dir);
-            let verb = if existed {
-                "Updated (it was already installed; one entry remains)"
-            } else {
-                "Installed"
-            };
-            writeln!(out, "{verb} {}", target.display()).map_err(io_error)?;
+            let verb = if existed { "Updated" } else { "Installed" };
+            let again = if existed { " (already installed)" } else { "" };
+            writeln!(out, "{verb} {}{again}", target.display()).map_err(io_error)?;
             writeln!(out, "  Exec: {}", plan.exec).map_err(io_error)?;
             for note in notes {
                 writeln!(out, "  note: {note}").map_err(io_error)?;
@@ -176,7 +172,8 @@ fn ask<'e>(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<Option<&'e Entry>, String> {
-    if entries.is_empty() {
+    // Nothing to choose from, or only the terminal Enter would pick anyway.
+    if entries.is_empty() || matches!(entries, [only] if only.default) {
         return Ok(None);
     }
     writeln!(out, "Choose the terminal that runs lazarobox:").map_err(io_error)?;
@@ -185,6 +182,7 @@ fn ask<'e>(
         let default = if e.default { " [default]" } else { "" };
         writeln!(out, "  {}) {}{tested}{default}", i + 1, e.name).map_err(io_error)?;
     }
+    writeln!(out, "(tested) = has a record: {RECORDS_URL}").map_err(io_error)?;
     loop {
         write!(out, "Number, or Enter for the default: ").map_err(io_error)?;
         out.flush().map_err(io_error)?;

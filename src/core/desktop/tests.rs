@@ -227,18 +227,24 @@ fn a_recorded_terminal_says_it_has_a_record() {
     let notes = plan_for("kitty").notes;
     assert_eq!(notes, vec![terminal_notice(Some("kitty"))]);
     assert!(notes[0].contains("kitty has a record"), "{notes:?}");
+    assert!(notes[0].contains(RECORDS_URL), "{notes:?}");
+    assert!(
+        RECORDS_URL
+            .starts_with("https://github.com/pichu2707/lazarobox-shell/tree/main/docs/terminals")
+    );
+    assert!(!notes[0].contains("under docs/terminals/"), "{notes:?}");
 }
 
 #[test]
 fn an_unrecorded_terminal_is_untested_and_still_launches() {
     let plan = plan_for("foot");
     let note = terminal_notice(Some("foot"));
-    assert!(note.contains("foot has no test record yet; see docs/terminals/"));
+    assert!(note.contains(&format!("foot has no test record yet; see {RECORDS_URL}")));
     assert!(plan.notes.contains(&note));
     assert!(plan.contents.contains("Exec=/usr/bin/foot "));
     let fallback = plan_install(&Choice::Fallback, Path::new(BIN), None, false).unwrap();
     assert!(fallback.notes.contains(&terminal_notice(None)));
-    assert!(terminal_notice(None).contains("no test record yet; see docs/terminals/"));
+    assert!(terminal_notice(None).contains(&format!("no test record yet; see {RECORDS_URL}")));
 }
 
 #[test]
@@ -608,4 +614,24 @@ fn a_non_utf8_dir_value_has_its_own_message() {
 #[test]
 fn dir_before_uninstall_is_refused_too() {
     assert!(parse_args(&os(&["--dir", "/w", "--uninstall"])).is_err());
+}
+
+#[test]
+fn picker_skips_entries_that_cannot_be_written_to_exec() {
+    let lookup = |cmd: &str| match cmd {
+        "kitty" => Some(PathBuf::from("/opt/my apps/kitty")),
+        "foot" => Some(PathBuf::from("/usr/bin/foot")),
+        _ => None,
+    };
+    let automatic = pick(None, None, &["foot"]);
+    let list = picker_choices(None, &lookup, None, &automatic);
+    assert_eq!(entry_names(&list), ["foot"]);
+    assert!(list[0].default);
+}
+
+#[test]
+fn is_wsl_lives_next_to_the_launcher() {
+    assert!(is_wsl(Some("Ubuntu"), None));
+    assert!(is_wsl(None, Some("5.15-microsoft-standard-WSL2")));
+    assert!(!is_wsl(None, Some("6.8.0-generic")));
 }

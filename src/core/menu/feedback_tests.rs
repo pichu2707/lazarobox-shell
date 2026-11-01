@@ -4,7 +4,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::feedback::{
     DESCRIPTION_REQUIRED, Facts, Feedback, Field, Issue, Kind, NO_GH_TOO_LONG, Outcome, REDACTED,
-    SENDING, TITLE_REQUIRED, TOO_LONG, gh_message, host, is_wsl, issue_url,
+    SENDING, TITLE_REQUIRED, TOO_LONG, gh_message, host, issue_url,
 };
 
 const ISSUES: &str = "https://github.com/pichu2707/lazarobox-shell/issues/new";
@@ -423,12 +423,4 @@ fn only_an_issue_link_of_the_repository_is_accepted() {
     ] {
         assert_eq!(issue_url(bad, repo), None, "{bad:?}");
     }
-}
-
-#[test]
-fn wsl_is_the_distro_variable_or_a_microsoft_kernel() {
-    assert!(is_wsl(Some("Ubuntu"), None));
-    assert!(is_wsl(None, Some("5.15.153.1-Microsoft-standard-WSL2")));
-    assert!(!is_wsl(Some(""), Some("6.8.0-45-generic")));
-    assert!(!is_wsl(None, None));
 }
