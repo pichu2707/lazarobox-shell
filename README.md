@@ -61,7 +61,7 @@ Compatibilidad de plataformas:
 
 - **Linux:** soportado. Es la única plataforma probada.
 - **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente en la 1.0. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
-- **Windows:** no soportado.
+- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
 
@@ -90,7 +90,9 @@ La terminal se elige en este orden:
 4. La primera encontrada en el `PATH`: `kitty`, `ghostty`, `wezterm`, `alacritty`, `foot`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `x-terminal-emulator`.
 5. Si no hay ninguna, el lanzador usa `Terminal=true` y el escritorio decide qué terminal abrir.
 
-Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Lazarobox está probado en Kitty: en otras terminales algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
+Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Solo las terminales con un registro en [docs/terminals](docs/terminals/README.md) cuentan como probadas (hoy, Kitty, con el registro por rellenar); en las demás algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar sin negarse nunca a instalar.
+
+Sin `--terminal`, y solo si la entrada y la salida son una terminal (TTY), `install-desktop` pregunta cuál usar: lista las terminales instaladas, marca las que tienen registro, `Enter` mantiene la elección automática de arriba y `Ctrl+D` cancela sin escribir nada. Con `--terminal` o en un script no pregunta. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
 
 Con `--dir <carpeta>` el lanzador incluye `Path=<carpeta>` y también `--dir=<carpeta>` en `Exec`, para que la carpeta se respete aunque la terminal ignore `Path=`. La ruta puede ser relativa o empezar por `~`; se resuelve al instalar y debe ser una carpeta que exista (si no, el comando falla con una línea en stderr y no escribe nada). No se admiten espacios al principio o al final de la ruta. Volver a ejecutar `install-desktop` sin `--dir` quita ambas cosas.
 
@@ -177,6 +179,11 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 | `q`                       | Sale de lazarobox (pide confirmación)                               |
 | `?`                       | Reservada para el futuro visor de órdenes; hoy no hace nada          |
 | `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
+| `Ctrl+]` (alias)          | Hace lo mismo que `Ctrl+Espacio`; dos veces mandan al programa el byte 0x1D |
+
+**Alias `Ctrl+]`.** Si tu terminal se traga `Ctrl+Espacio`, usa `Ctrl+]` (o `Ctrl+5`, que muchas terminales mandan como el mismo byte) como prefijo: todo el árbol de teclas de arriba funciona igual. Consecuencia: **una sola pulsación de `Ctrl+]` o `Ctrl+5` ya no llega al programa del panel**; hacen falta dos (`Ctrl+]` `Ctrl+]` manda 0x1D). Afecta al salto de etiquetas de vim y al escape de telnet.
+
+**Comprobación del prefijo.** La primera vez que arranca en una terminal, lazarobox espera hasta 10 s a que pulses `Ctrl+Espacio` y guarda el resultado por terminal; si no llega, avisa de que uses `Ctrl+]`. Escribir con normalidad no cuenta ni se bloquea. `lazarobox-shell --check-prefix` repite la comprobación.
 
 **Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
 
@@ -184,7 +191,7 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 
 ### Referencia de teclas por vista
 
-Esta sección y la tabla del prefijo de arriba son la **referencia única** de teclas; las demás secciones del README la enlazan en lugar de repetirla. El prefijo `Ctrl+Espacio` **no se puede configurar**. Salvo que se diga otra cosa, las teclas se pulsan sin modificadores (`y` es la minúscula; `Y` no cuenta).
+Esta sección y la tabla del prefijo de arriba son la **referencia única** de teclas; las demás secciones del README la enlazan en lugar de repetirla. El prefijo `Ctrl+Espacio` y su alias `Ctrl+]` **no se pueden configurar**. Salvo que se diga otra cosa, las teclas se pulsan sin modificadores (`y` es la minúscula; `Y` no cuenta).
 
 **Chat, conversación**
 
@@ -324,6 +331,8 @@ Con `Ctrl+Espacio` y `[` se entra en modo COPY. Mueve el cursor con `h` `j` `k` 
 En un panel de chat de IA funciona igual y copia texto limpio: sin los prefijos de dibujo (`›`, `┊`, `•` y la sangría), con las líneas partidas por el ancho unidas de nuevo y sin las pistas de teclas. Dentro del modo COPY del chat, `Ctrl+Y` copia la última respuesta y `Ctrl+B` su último bloque de código, sin salir del modo.
 
 ![Modo COPY: seleccionar líneas con V y copiarlas con y en un panel de shell](docs/assets/copy-mode.gif)
+
+**Cadena de copia.** Al copiar, lazarobox manda siempre OSC 52 a la terminal y, además, usa una herramienta local si la encuentra: `wl-copy` (Wayland), `xclip` o `xsel` (X11) y `clip.exe` (WSL; recibe UTF-16LE con marca de orden de bytes). Por SSH no se usa ninguna herramienta local, porque el portapapeles que importa es el de tu máquina. El aviso dice lo que pasó de verdad: `Copied (xclip)` si la herramienta terminó bien; `xclip failed (...); sent to the terminal (OSC 52)` si falló; y `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip` si solo se mandó OSC 52, porque nada confirma que haya llegado. Una selección demasiado grande para OSC 52 solo se copia con una herramienta local, y si esta falla lo dice.
 
 Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
