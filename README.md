@@ -1097,6 +1097,25 @@ La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats 
 
 **Historial desactivado.** El uso se guarda en `chat.db` solo con el historial activado. Con él desactivado no se guarda nada y `/cost` muestra únicamente la sesión actual, leída de la memoria, con la línea `chat history is off: showing this session only`.
 
+#### Línea de uso bajo cada respuesta y barra de estado (alfa)
+
+Al terminar un turno, el chat añade bajo la respuesta una línea tenue con lo que el motor informó, por ejemplo `usage: in 2 · out 4 · $0.0049 list-price equivalent`. Tras `in` y `out` aparecen, solo si el motor los informa, `cached`, `reasoning` y los dólares, y al final `partial` si el turno quedó cortado o le faltó alguna petición. Un turno cuyo motor no informó de nada dice `usage: no data` (nunca 0). Tras una cancelación o un error, la línea solo sale si el turno llegó a informar de algún uso. Es una línea de vista: no se guarda, no se envía al motor, no entra en un `yank` de la respuesta y no vuelve al retomar la conversación.
+
+Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 tok`: los tokens de hoy (día local) de todos tus chats y motores, borrados incluidos, sumando entrada y salida de los registros que tienen ambas. Si hoy no hay ningún total conocido, dice `today: no data`. Se refresca cuando se guarda un registro, y no aparece hasta que el historial haya respondido una vez (con el historial desactivado no hay registros que sumar). Solo los motores en modo `per-token` suman dólares al segmento (` · $0.42`); los de `subscription` y los locales nunca. Si la barra va justa, este segmento es lo primero que se oculta, antes que el estado de la memoria, el texto del motor o el indicador de pensamiento.
+
+Ambas cosas vienen activadas y se configuran en `config.toml` (las filas del menú de IA llegan después):
+
+```toml
+[ai.usage]
+line = true         # línea bajo cada respuesta
+statusline = true   # segmento "today: N tok" en la barra de estado
+
+[ai.usage.billing]  # solo claude, codex y gemini; por defecto "subscription"
+claude = "per-token"
+```
+
+`billing` solo cambia cómo se etiqueta una cifra en dólares que el motor ya informó: `"subscription"` la muestra como `list-price equivalent` (precio de lista, no una factura) y `"per-token"` como gasto (`$0.0049`). No cambia ningún recuento ni lo guardado, y se aplica al mostrar, así que cambiarlo reetiqueta también los registros pasados. Una clave de un motor local, o cualquier clave desconocida, se ignora. Un valor inválido se sustituye por el de por defecto y avisa al arrancar con el texto exacto del problema (por ejemplo `ai.usage.line: expected true or false` o `ai.usage.billing.codex: expected "subscription" or "per-token"`).
+
 ### Memoria del proyecto (engram)
 
 El chat puede actuar como cliente de [engram](https://github.com/Gentleman-Programming/engram) y compartir la memoria del proyecto con Claude Code, opencode y otros agentes: al abrir el chat lee el contexto del proyecto, puedes guardar **notas** durante la conversación y generar un **resumen** de la sesión. Es opcional y está **desactivada** por defecto.
