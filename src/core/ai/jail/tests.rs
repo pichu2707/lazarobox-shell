@@ -1574,18 +1574,19 @@ fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
     }
 }
 
-fn writable(paths: &[&str], yours: bool, cause: WriteCause) -> Untrusted {
+/// `foreign` are the offenders the user does not own.
+fn writable(paths: &[&str], foreign: &[&str], cause: WriteCause) -> Untrusted {
     Untrusted::Writable {
         paths: paths.iter().map(|path| p(path)).collect(),
-        yours,
+        foreign: foreign.iter().map(|path| p(path)).collect(),
         cause,
     }
 }
 
-fn shim_hint(offenders: &[&str], yours: bool, cause: WriteCause) -> String {
+fn shim_hint(offenders: &[&str], foreign: &[&str], cause: WriteCause) -> String {
     JailRefusal::UntrustedInterpreter {
         path: p("/home/u/.cargo/bin/lazarobox-shell"),
-        why: writable(offenders, yours, cause),
+        why: writable(offenders, foreign, cause),
     }
     .hint(home())
 }
@@ -1596,21 +1597,21 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
     assert_eq!(
         shim_hint(
             &["/home/u/.cargo/bin", "/home/u/.cargo/bin/lazarobox-shell"],
-            true,
+            &[],
             WriteCause::Group
         ),
         "~/.cargo/bin and ~/.cargo/bin/lazarobox-shell are writable by its group; \
          run: chmod g-w ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell'"
     );
     assert_eq!(
-        shim_hint(&["/home/u/.cargo/bin"], true, WriteCause::Others),
+        shim_hint(&["/home/u/.cargo/bin"], &[], WriteCause::Others),
         "~/.cargo/bin is writable by others, so ~/.cargo/bin/lazarobox-shell is not \
          trusted; run: chmod o-w ~/'.cargo/bin'"
     );
     assert_eq!(
         shim_hint(
             &["/home/u/.cargo/bin/lazarobox-shell"],
-            true,
+            &[],
             WriteCause::GroupAndOthers
         ),
         "~/.cargo/bin/lazarobox-shell is writable by its group or others; \
@@ -1619,7 +1620,7 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
     // Outside $HOME the path is quoted whole.
     let outside = JailRefusal::UntrustedInterpreter {
         path: p("/opt/it's/bin/node"),
-        why: writable(&["/opt/it's/bin"], true, WriteCause::Group),
+        why: writable(&["/opt/it's/bin"], &[], WriteCause::Group),
     };
     assert_eq!(
         outside.hint(home()),
@@ -1635,7 +1636,7 @@ fn a_writable_path_that_is_not_yours_is_for_its_owner_to_fix() {
         WriteCause::Others,
         WriteCause::GroupAndOthers,
     ] {
-        let hint = shim_hint(&["/usr/local/bin"], false, cause);
+        let hint = shim_hint(&["/usr/local/bin"], &["/usr/local/bin"], cause);
         assert!(hint.contains("/usr/local/bin is writable by"), "{hint}");
         assert!(
             hint.ends_with("it is not yours, so its owner must fix it (sudo)"),
@@ -1654,7 +1655,7 @@ fn a_path_that_cannot_be_pasted_exactly_falls_back_to_words() {
             path: bad.to_path_buf(),
             why: Untrusted::Writable {
                 paths: vec![bad.to_path_buf()],
-                yours: true,
+                foreign: vec![],
                 cause: WriteCause::Group,
             },
         };
@@ -1662,7 +1663,7 @@ fn a_path_that_cannot_be_pasted_exactly_falls_back_to_words() {
         assert!(!hint.contains("chmod"), "{hint:?}");
         assert!(!hint.chars().any(char::is_control), "{hint:?}");
         assert!(
-            hint.ends_with("remove the group and other write permissions"),
+            hint.ends_with("remove the group write permission"),
             "{hint:?}"
         );
     }
@@ -2876,4 +2877,107 @@ fn helper_args_refuse_an_arg0_that_is_a_path_or_empty() {
         let err = parse_args(&given).unwrap_err();
         assert!(ARG_REASONS.contains(&err.0), "{bad:?}: {err:?}");
     }
+}
+
+#[test]
+fn the_fallback_wording_follows_the_cause() {
+    let raw = "/home/u/x\u{1b}[2J";
+    for (cause, words) in [
+        (WriteCause::Group, "remove the group write permission"),
+        (WriteCause::Others, "remove the write permission of others"),
+        (
+            WriteCause::GroupAndOthers,
+            "remove the group and other write permissions",
+        ),
+    ] {
+        let hint = shim_hint(&[raw], &[], cause);
+        assert!(hint.ends_with(words), "{hint:?}");
+    }
+}
+
+#[test]
+fn the_causes_of_several_paths_add_up() {
+    use WriteCause::{Group, GroupAndOthers, Others};
+    assert_eq!(WriteCause::union([Group, Others]), GroupAndOthers);
+    assert_eq!(WriteCause::union([Others, Group]), GroupAndOthers);
+    assert_eq!(WriteCause::union([Group, Group]), Group);
+    assert_eq!(WriteCause::union([Others]), Others);
+    assert_eq!(WriteCause::union([Group, GroupAndOthers]), GroupAndOthers);
+    assert_eq!(WriteCause::of_mode(0o775), Group);
+    assert_eq!(WriteCause::of_mode(0o757), Others);
+    assert_eq!(WriteCause::of_mode(0o777), GroupAndOthers);
+    // A folder 775 and a file 757 together: one `go-w` for both.
+    let hint = shim_hint(
+        &["/home/u/.cargo/bin", "/home/u/.cargo/bin/lazarobox-shell"],
+        &[],
+        WriteCause::union([Group, Others]),
+    );
+    assert!(hint.contains("writable by its group or others"), "{hint}");
+    assert!(hint.contains("; run: chmod go-w "), "{hint}");
+}
+
+#[test]
+fn with_mixed_owners_the_chmod_covers_only_what_the_user_owns() {
+    let hint = shim_hint(
+        &["/usr/local/bin", "/home/u/.cargo/bin/lazarobox-shell"],
+        &["/usr/local/bin"],
+        WriteCause::Group,
+    );
+    assert_eq!(
+        hint,
+        "/usr/local/bin and ~/.cargo/bin/lazarobox-shell are writable by its group; \
+         run: chmod g-w ~/'.cargo/bin/lazarobox-shell'; /usr/local/bin is not yours, \
+         so its owner must fix it (sudo)"
+    );
+    let two = shim_hint(
+        &["/a", "/b", "/home/u/m"],
+        &["/a", "/b"],
+        WriteCause::Others,
+    );
+    assert!(
+        two.ends_with(
+            "run: chmod o-w ~/'m'; /a and /b are not yours, so their owner must fix them (sudo)"
+        ),
+        "{two}"
+    );
+}
+
+#[test]
+fn shell_word_round_trips_hostile_names_through_a_real_shell() {
+    let home_dir = Path::new("/home/u");
+    for name in [
+        "$HOME",
+        "`id`",
+        "$(id)",
+        "-rf",
+        "it's",
+        "say \"hi\"",
+        "a;b|c&d",
+        "*?[x]",
+        "a b",
+        "!x",
+        "back\\slash",
+        "~",
+        "{a,b}",
+        "#c",
+    ] {
+        for base in ["/home/u/proj", "/opt/proj", "/home/u"] {
+            let path = Path::new(base).join(name);
+            let word = shell_word(&path, Some(home_dir)).unwrap();
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("cd /; HOME=/home/u; printf %s {word}"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                path.to_str().unwrap(),
+                "{word}"
+            );
+        }
+    }
+    assert_eq!(
+        shell_word(Path::new("/home/u"), Some(home_dir)).unwrap(),
+        "~"
+    );
 }

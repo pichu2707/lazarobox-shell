@@ -126,7 +126,7 @@ The shim MUST run inside the CLI's jail without widening it: the jail spec gains
 #### Scenario: The shim's trust check names its cause and its fix [auto]
 - GIVEN tools on and a shim binary (or its loader) that the trust check refuses because it or its folder is writable by its group or others, as after `cargo install` under umask 002 (issue #496)
 - WHEN a turn starts
-- THEN the turn runs as text and the notice is `tools are off: <paths> are writable by its group; run: chmod g-w <paths>` (or `by others` / `o-w`, or `by its group or others` / `go-w`), naming every offending path in one command, with `~` for `$HOME` and each path quoted; if the user does not own them it says the owner must fix it, never only the generic `tools are off for this turn: they could not be set up`
+- THEN the turn runs as text and the notice is `tools are off: <paths> are writable by its group; run: chmod g-w <paths>` (or `by others` / `o-w`, or `by its group or others` / `go-w`), naming every offending path in one command, with `~` for `$HOME` and each path quoted; if the user does not own all of them, the chmod covers only the ones they own and the notice says the rest belong to someone else and need their owner (sudo), never only the generic `tools are off for this turn: they could not be set up`
 - AND a path that cannot be inspected gives `tools are off: cannot check <path>: permission denied` (or `not found`), never `writable`
 - AND the trust rule is unchanged: any group or other write bit refuses
 

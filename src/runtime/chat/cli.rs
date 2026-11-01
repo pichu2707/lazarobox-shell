@@ -637,7 +637,11 @@ fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
         }
         Err(Untrusted::Writable {
             paths: vec![p.to_path_buf()],
-            yours: owner.user_is_me,
+            foreign: if owner.user_is_me {
+                Vec::new()
+            } else {
+                vec![p.to_path_buf()]
+            },
             cause: WriteCause::of_mode(stat.mode),
         })
     };
@@ -647,10 +651,10 @@ fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
     let mut note = |result: Result<(), Untrusted>| match result {
         Err(Untrusted::Writable {
             paths,
-            yours,
+            foreign,
             cause,
         }) if matches!(rule, Rule::Jail) => {
-            offenders.push((paths, yours, cause));
+            offenders.push((paths, foreign, cause));
             Ok(())
         }
         other => other,
@@ -670,16 +674,16 @@ fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
         seen += 1;
     }
     if !offenders.is_empty() {
-        let yours = offenders.iter().all(|(_, yours, _)| *yours);
         let cause = WriteCause::union(offenders.iter().map(|(_, _, cause)| *cause));
         // The folder first, then the file.
+        let foreign: Vec<PathBuf> = offenders.iter().flat_map(|(_, f, _)| f.clone()).collect();
         let mut paths: Vec<PathBuf> = offenders.into_iter().flat_map(|(p, _, _)| p).collect();
         paths.sort_by_key(|path| path.components().count());
         return Err((
             real,
             Untrusted::Writable {
                 paths,
-                yours,
+                foreign,
                 cause,
             },
         ));

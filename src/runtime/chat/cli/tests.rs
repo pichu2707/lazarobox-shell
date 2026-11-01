@@ -1483,7 +1483,7 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
     let real = fs::canonicalize(&ok).unwrap();
     let writable = Untrusted::Writable {
         paths: vec![real.clone()],
-        yours: true,
+        foreign: vec![],
         cause: WriteCause::Others,
     };
     assert_eq!(interpreter_trust(&ok), Err((real, writable)));
@@ -1502,7 +1502,7 @@ fn a_umask_002_install_is_refused_naming_both_paths_and_the_group() {
     let dir = real.parent().unwrap().to_owned();
     let writable = Untrusted::Writable {
         paths: vec![dir, real.clone()],
-        yours: true,
+        foreign: vec![],
         cause: WriteCause::Group,
     };
     assert_eq!(interpreter_trust(&file), Err((real.clone(), writable)));
@@ -1710,7 +1710,7 @@ fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing()
             path: fs::canonicalize(sibling_dir.join("fakenode")).unwrap(),
             why: Untrusted::Writable {
                 paths: vec![fs::canonicalize(&sibling_dir).unwrap()],
-                yours: true,
+                foreign: vec![],
                 cause: WriteCause::GroupAndOthers,
             },
         })

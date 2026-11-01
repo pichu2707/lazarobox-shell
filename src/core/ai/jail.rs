@@ -455,11 +455,11 @@ pub enum Untrusted {
     /// It lives under a scratch folder (see [`SCRATCH`]).
     Scratch,
     /// Every real file or folder in `paths` (the folder first) failed the
-    /// check: `cause` says who can write them, `yours` that the user owns all
-    /// of them and so can fix them.
+    /// check: `cause` says who can write them; `foreign` are those the user does
+    /// not own (a subset of `paths`), which only their owner can fix.
     Writable {
         paths: Vec<PathBuf>,
-        yours: bool,
+        foreign: Vec<PathBuf>,
         cause: WriteCause,
     },
     /// The file or folder at `path` could not be inspected (`kind` says why):
@@ -605,7 +605,7 @@ impl JailRefusal {
                 why:
                     Untrusted::Writable {
                         paths,
-                        yours,
+                        foreign,
                         cause,
                     },
             } => {
@@ -625,19 +625,48 @@ impl JailRefusal {
                 } else {
                     format!("{list} writable by {who}, so {} is not trusted", at(path))
                 };
-                if !yours {
-                    return format!("{head}; it is not yours, so its owner must fix it (sudo)");
-                }
                 let flags = match cause {
                     WriteCause::Group => "g-w",
                     WriteCause::Others => "o-w",
                     WriteCause::GroupAndOthers => "go-w",
                 };
-                let words: Option<Vec<String>> =
-                    paths.iter().map(|p| shell_word(p, home)).collect();
-                match words {
-                    Some(words) => format!("{head}; run: chmod {flags} {}", words.join(" ")),
-                    None => format!("{head}; remove the group and other write permissions"),
+                // Not the user's: only the owner can fix them.
+                let theirs = |foreign: &[PathBuf]| {
+                    let names: Vec<String> = foreign.iter().map(|p| at(p)).collect();
+                    match names.as_slice() {
+                        [one] => format!("{one} is not yours, so its owner must fix it (sudo)"),
+                        [init @ .., last] => format!(
+                            "{} and {last} are not yours, so their owner must fix them (sudo)",
+                            init.join(", ")
+                        ),
+                        [] => String::new(),
+                    }
+                };
+                let mine: Vec<&PathBuf> = paths.iter().filter(|p| !foreign.contains(p)).collect();
+                if mine.is_empty() {
+                    return match paths.len() {
+                        1 => format!("{head}; it is not yours, so its owner must fix it (sudo)"),
+                        _ => format!(
+                            "{head}; they are not yours, so their owner must fix them (sudo)"
+                        ),
+                    };
+                }
+                let words: Option<Vec<String>> = mine.iter().map(|p| shell_word(p, home)).collect();
+                let fix = match words {
+                    Some(words) => format!("run: chmod {flags} {}", words.join(" ")),
+                    None => match cause {
+                        WriteCause::Group => "remove the group write permission",
+                        WriteCause::Others => "remove the write permission of others",
+                        WriteCause::GroupAndOthers => {
+                            "remove the group and other write permissions"
+                        }
+                    }
+                    .to_owned(),
+                };
+                if foreign.is_empty() {
+                    format!("{head}; {fix}")
+                } else {
+                    format!("{head}; {fix}; {}", theirs(foreign))
                 }
             }
             Self::RootTooBroad(path) => format!(
