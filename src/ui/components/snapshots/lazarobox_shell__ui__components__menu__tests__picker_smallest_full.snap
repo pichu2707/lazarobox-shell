@@ -3,22 +3,13 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &picker))"
 ---
 ┌ Menu ────────────────┐
-│ Settings │ AI        │
+│ ‹ Models ›           │
 │ Engine for code      │
 │ (default · use gener…│
 │ ollama available · 8…│
 │ claude avail… tools ●│
 │ lmstudio not running │
 │ llamacpp not install…│
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
 │                      │
 │                      │
 │                      │

@@ -1,4 +1,4 @@
-# The AI menu: open it (Ctrl+Space m), switch to the AI tab, browse the task
+# The AI menu: open it (Ctrl+Space m), jump to the Models tab, browse the task
 # rows, open a task's engine and model picker, then leave without saving.
 # Nothing is chosen, saved, downloaded or installed.
 # Needs the demo folder and launchers from ~/.cache/lazarobox-gif-demo/
@@ -24,8 +24,8 @@ Ctrl+Space
 Sleep 400ms
 Type "m"
 Sleep 2s
-# AI tab
-Tab
+# Models tab
+Type "2"
 Sleep 2s
 # browse the rows
 Type@500ms "jjjjjj"

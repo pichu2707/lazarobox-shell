@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 ---
 ┌ Menu ────────────────┐
-│ Settings │ AI  ⇥ Tab │
+│ ‹ Settings ›         │
 │ Statusline position  │
 │ Tab bar position  t… │
 │ Mouse             on │
@@ -12,15 +12,6 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │ llama-server idle  … │
 │ Updates       0.15.3 │
 │ Feedback  bug repor… │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
 │                      │
 │                      │
 │                      │

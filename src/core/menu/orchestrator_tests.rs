@@ -30,13 +30,14 @@ fn the_orchestrate_and_gate_rows_read_their_defaults() {
     let m = menu(Some("claude"), Some("sonnet"), Some(machine()));
     assert_eq!(value_of(&m, "orchestrate"), "(default)");
     assert_eq!(value_of(&m, "Orchestrator"), "off");
-    let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
+    let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
     let at = labels.iter().position(|l| *l == "orchestrate").unwrap();
     assert_eq!(labels[at - 1], "summarize");
-    assert_eq!(labels[at + 1], "Profile");
+    assert_eq!(labels[at + 1], "Hugging Face");
+    let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let gate = labels.iter().position(|l| *l == "Orchestrator").unwrap();
     assert_eq!(labels[gate - 1], "Approval");
-    assert_eq!(labels.last(), Some(&"Hugging Face"));
+    assert_eq!(labels.last(), Some(&"Orchestrator"));
 }
 
 // Spec (config-menu): Orchestrator row is the global gate.

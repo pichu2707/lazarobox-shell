@@ -3,26 +3,17 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                        ⇥ Tab │
-│ Set all tasks                                    (not set) │
-│ general                                          (not set) │
-│ code                                             (default) │
-│ chat                                             (default) │
-│ review                                           (default) │
-│ summarize                                        (default) │
-│ orchestrate                                      (default) │
+│ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
 │ Profile                                         programmer │
 │ Context                                                off │
 │ Memory                                                 off │
-│ Tools                                                   on │
-│ Search                                                 off │
-│ Write                                                  off │
-│ Exec                                                   off │
-│ Git                                                    off │
-│ Git write                                              off │
-│ Approval                                               ask │
-│ Orchestrator                                           off │
-│ Hugging Face                                 not connected │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
 │                                                            │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │

@@ -45,7 +45,8 @@ fn every_task_row_shows_the_task_hint() {
         assert_eq!(hint(&m), TASK, "{label}");
         press(&mut m, 'j');
     }
-    assert_eq!(hint(&m), SETTINGS, "wrapped to the first Settings row");
+    assert_eq!(selected_label(&m), "Hugging Face");
+    assert_eq!(hint(&m), "Enter connect · j/k move · s save · Esc cancel");
 }
 
 // Spec: Footer hints in the picker.

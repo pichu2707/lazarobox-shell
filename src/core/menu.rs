@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection, REFUSED,
-        config::{AiConfig, NotifyMode, Task, ToolToggle},
+        config::{AiConfig, ApprovalMode, NotifyMode, Profile, Task, ToolToggle, cycled_idle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
         menu::AiMenu,
@@ -22,59 +22,223 @@ use super::{
             OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
         },
     },
-    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
+    config::{
+        BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE, ORCHESTRATOR_TABLE,
+        TOOLS_TABLE,
+    },
     layout::Rect,
 };
 
 /// A setting that cycles through an ordered list of values. The value string
 /// is both the display text and the TOML value.
-pub struct Choice {
+pub struct Choice<T = Config> {
     pub table: &'static str,
     pub key: &'static str,
     pub values: &'static [&'static str],
-    pub get: fn(&Config) -> usize,
-    pub set: fn(&mut Config, usize),
+    pub get: fn(&T) -> usize,
+    pub set: fn(&mut T, usize),
+}
+
+/// What a draft row edits.
+pub enum DraftValue {
+    /// An `off`/`on` flag of the AI draft, written as a TOML boolean.
+    Flag(Choice<AiConfig>),
+    /// A value from a list of ids, written as the id string.
+    List(Choice<AiConfig>),
+    /// A whole number of minutes that may sit between the steps (`0` is
+    /// `never`), written as a TOML integer. `step` moves it either way.
+    Minutes {
+        table: &'static str,
+        key: &'static str,
+        get: fn(&AiConfig) -> u32,
+        set: fn(&mut AiConfig, u32),
+        step: fn(u32, bool) -> u32,
+    },
+}
+
+impl DraftValue {
+    fn table(&self) -> &'static str {
+        match self {
+            Self::Flag(c) | Self::List(c) => c.table,
+            Self::Minutes { table, .. } => table,
+        }
+    }
+
+    fn key(&self) -> &'static str {
+        match self {
+            Self::Flag(c) | Self::List(c) => c.key,
+            Self::Minutes { key, .. } => key,
+        }
+    }
+
+    /// The text of the row for the draft `ai`.
+    fn shown(&self, ai: &AiConfig) -> Cow<'static, str> {
+        match self {
+            Self::Flag(c) | Self::List(c) => Cow::Borrowed(c.values[(c.get)(ai)]),
+            Self::Minutes { get, .. } => match get(ai) {
+                0 => Cow::Borrowed("never"),
+                minutes => Cow::Owned(format!("{minutes} min")),
+            },
+        }
+    }
+
+    /// Moves the draft to the next (or previous) value, wrapping.
+    /// Used by `AiMenu::step_draft`, outside this module.
+    pub(crate) fn step(&self, ai: &mut AiConfig, forward: bool) {
+        match self {
+            Self::Flag(c) | Self::List(c) => {
+                let len = c.values.len();
+                let now = (c.get)(ai);
+                (c.set)(ai, if forward { now + 1 } else { now + len - 1 } % len);
+            }
+            Self::Minutes { get, set, step, .. } => set(ai, step(get(ai), forward)),
+        }
+    }
+
+    /// The TOML value to write when `now` differs from `was`.
+    fn written(&self, now: &AiConfig, was: &AiConfig) -> Option<Cow<'static, str>> {
+        match self {
+            Self::Flag(c) => ((c.get)(now) != (c.get)(was))
+                .then(|| Cow::Borrowed(if (c.get)(now) == 1 { "true" } else { "false" })),
+            Self::List(c) => {
+                ((c.get)(now) != (c.get)(was)).then(|| Cow::Borrowed(c.values[(c.get)(now)]))
+            }
+            Self::Minutes { get, .. } => {
+                (get(now) != get(was)).then(|| Cow::Owned(get(now).to_string()))
+            }
+        }
+    }
+}
+
+/// A mark a draft row can wear next to its value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Badge {
+    /// `on` says it needs the Linux sandbox when the system has none.
+    NeedsSandbox,
+}
+
+/// A row of the AI draft, declared in one place: its value, where it sits in
+/// the save order (`rank`, unique) and the optional fields.
+pub struct AiChoice {
+    pub value: DraftValue,
+    pub rank: u8,
+    /// The row can change files or run code: the caution line shows.
+    pub caution: bool,
+    pub badge: Option<Badge>,
+    /// `t` tests the notification settings on this row.
+    pub test: bool,
+    /// A second key written with the first (`acknowledged`).
+    pub second: Option<Second>,
+}
+
+/// The second key of a row. A row whose second key `warn`s shows `on` only
+/// when both keys are true; turning it on without the second key opens the
+/// privacy warning, and accepting sets both. Without `warn` the row shows its
+/// own key and the second one is set elsewhere (the chat notice).
+pub struct Second {
+    pub key: &'static str,
+    pub get: fn(&AiConfig) -> bool,
+    pub set: fn(&mut AiConfig, bool),
+    pub warn: bool,
+}
+
+impl AiChoice {
+    fn table(&self) -> &'static str {
+        self.value.table()
+    }
+
+    fn key(&self) -> &'static str {
+        self.value.key()
+    }
+
+    /// The warned second key is missing: the row reads `off`.
+    fn unacknowledged(&self, ai: &AiConfig) -> bool {
+        self.second.as_ref().is_some_and(|s| s.warn && !(s.get)(ai))
+    }
+
+    fn shown(&self, ai: &AiConfig) -> Cow<'static, str> {
+        if self.unacknowledged(ai) {
+            return Cow::Borrowed("off");
+        }
+        self.value.shown(ai)
+    }
+
+    /// Steps the row. Returns `true` when the privacy warning must open
+    /// instead, and then the draft is untouched.
+    pub(crate) fn step(&self, ai: &mut AiConfig, forward: bool) -> bool {
+        if self.unacknowledged(ai) {
+            return true;
+        }
+        self.value.step(ai, forward);
+        false
+    }
+
+    /// Accepting the warning: the row is on and its second key is set.
+    pub(crate) fn accept(&self, ai: &mut AiConfig) {
+        debug_assert!(
+            self.second.as_ref().is_some_and(|s| s.warn),
+            "only a warned row opens the warning"
+        );
+        if let DraftValue::Flag(flag) = &self.value {
+            (flag.set)(ai, 1);
+        }
+        if let Some(second) = &self.second {
+            (second.set)(ai, true);
+        }
+    }
+
+    /// The edits of the row against the open config: the key, then the
+    /// second key, each only when it changed.
+    fn edits(&self, now: &AiConfig, was: &AiConfig) -> Vec<ConfigEdit> {
+        let table = self.table();
+        let first = self.value.written(now, was).map(|value| ConfigEdit {
+            table,
+            key: self.key(),
+            value,
+        });
+        let second = self.second.as_ref().and_then(|s| {
+            ((s.get)(now) != (s.get)(was)).then(|| ConfigEdit {
+                table,
+                key: s.key,
+                value: Cow::Borrowed(if (s.get)(now) { "true" } else { "false" }),
+            })
+        });
+        first.into_iter().chain(second).collect()
+    }
+}
+
+/// A draft flag row of the Tools tab: the five coding families.
+macro_rules! family {
+    ($label:literal, $toggle:ident, $key:literal, $rank:literal, $caution:literal, $badge:expr) => {
+        Item {
+            label: $label,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: TOOLS_TABLE,
+                    key: $key,
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.toggle(ToolToggle::$toggle)),
+                    set: |c, i| c.set_toggle(ToolToggle::$toggle, i == 1),
+                }),
+                rank: $rank,
+                caution: $caution,
+                badge: $badge,
+                test: false,
+                second: None,
+            }),
+        }
+    };
 }
 
 pub enum ItemKind {
     Choice(Choice),
+    /// A row of the AI draft declared by one [`AiChoice`].
+    Draft(AiChoice),
     /// An `off`/`on` setting persisted as a TOML boolean (`on` is written
     /// `true`), with an empty table for a root key.
     Toggle(Choice),
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
-    /// The AI profile: a static choice (`ai.profile`) that lives in the AI
-    /// draft, not in the live [`Config`].
-    Profile,
-    /// The workspace context flag (`ai.context`): an on/off row that lives in
-    /// the AI draft, like [`ItemKind::Profile`].
-    Context,
-    /// The memory opt-in row: a static `off`/`on` item over the AI draft.
-    /// Turning it on without the acknowledgement opens the privacy warning.
-    Memory(MemoryRow),
-    /// The chat notify mode (`ai.notify`): a Settings row that cycles
-    /// auto, desktop, bell and off.
-    Notify,
-    /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
-    /// the AI draft, like [`ItemKind::Notify`].
-    Tools,
-    /// One coding-tools family switch (`ai.tools.<key>`): an on/off row over
-    /// the AI draft, found by its toggle and never by position.
-    Family(ToolToggle),
-    /// The approval mode of the model's commands (`ai.tools.approval`): an
-    /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
-    /// and conversation switches, never an open chat or a pending approval.
-    Approval,
-    /// The notification sound flag (`ai.notify_sound`): an on/off row over
-    /// the AI draft.
-    NotifySound,
-    /// The orchestrator gate (`ai.orchestrator.enabled`): an on/off row over
-    /// the AI draft. Each chat pane still opts in on its own.
-    Orchestrator,
-    /// The idle stop of the managed llama-server
-    /// (`ai.servers.llamacpp.idle_minutes`): 5, 15, 30 min or never over the
-    /// AI draft; a value of the config between them is shown as it is.
-    ManagedIdle,
     /// The running version, and the newer one when the update check found it.
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
@@ -94,17 +258,10 @@ const RUNNING_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 const RUNNING_VERSION: &str = "0.15.3";
 
-/// The descriptor of the `Memory` row; the value is the `enabled` key.
-pub struct MemoryRow {
-    pub table: &'static str,
-    pub key: &'static str,
-    pub values: &'static [&'static str],
-}
-
 impl ItemKind {
     /// Whether the row edits the AI draft, so it needs the AI section.
     const fn needs_ai(&self) -> bool {
-        matches!(self, Self::Notify | Self::NotifySound | Self::ManagedIdle)
+        matches!(self, Self::Draft(_) | Self::Assign(_) | Self::HfAccount)
     }
 }
 
@@ -168,15 +325,54 @@ pub static SECTIONS: &[Section] = &[Section {
         },
         Item {
             label: "Notify",
-            kind: ItemKind::Notify,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::List(Choice {
+                    table: "ai",
+                    key: "notify",
+                    values: &["auto", "desktop", "bell", "off"],
+                    get: |c| c.notify() as usize,
+                    set: |c, i| c.set_notify(NotifyMode::ALL[i]),
+                }),
+                rank: 40,
+                caution: false,
+                badge: None,
+                test: true,
+                second: None,
+            }),
         },
         Item {
             label: "Sound",
-            kind: ItemKind::NotifySound,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: "ai",
+                    key: "notify_sound",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.notify_sound()),
+                    set: |c, i| c.set_notify_sound(i == 1),
+                }),
+                rank: 50,
+                caution: false,
+                badge: None,
+                test: true,
+                second: None,
+            }),
         },
         Item {
             label: "llama-server idle",
-            kind: ItemKind::ManagedIdle,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Minutes {
+                    table: LLAMACPP_TABLE,
+                    key: "idle_minutes",
+                    get: |c| c.managed_options().idle_minutes,
+                    set: |c, minutes| c.set_idle_minutes(minutes),
+                    step: cycled_idle,
+                },
+                rank: 90,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
+            }),
         },
         Item {
             label: "Updates",
@@ -189,13 +385,10 @@ pub static SECTIONS: &[Section] = &[Section {
     ],
 }];
 
-/// The AI section, attached only by [`MenuState::with_ai`]. The labels of
-/// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
-/// family switches, `Approval`, the `Orchestrator` gate and `Hugging Face`, in that
-/// order. `Notify`, `Sound` and `llama-server idle` live in the Settings section.
-pub static AI_SECTION: Section = Section {
-    title: "AI",
+/// The Models tab: the task rows (their labels are the task ids; their key
+/// path is `Task::table`) and the `Hugging Face` account.
+pub static MODELS_SECTION: Section = Section {
+    title: "Models",
     items: &[
         Item {
             label: "Set all tasks",
@@ -226,56 +419,140 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Orchestrate)),
         },
         Item {
-            label: "Profile",
-            kind: ItemKind::Profile,
+            label: "Hugging Face",
+            kind: ItemKind::HfAccount,
         },
+    ],
+};
+
+/// The Tools tab: the tools switch, the five family switches, `Approval` and
+/// the `Orchestrator` gate.
+pub static TOOLS_SECTION: Section = Section {
+    title: "Tools",
+    items: &[
         Item {
-            label: "Context",
-            kind: ItemKind::Context,
+            label: "Tools",
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: TOOLS_TABLE,
+                    key: "enabled",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.tools_enabled()),
+                    set: |c, i| c.set_tools_enabled(i == 1),
+                }),
+                rank: 60,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
+            }),
         },
+        family!("Search", Search, "search", 61, false, None),
+        family!("Write", Write, "write", 62, true, None),
+        family!("Exec", Exec, "exec", 63, true, Some(Badge::NeedsSandbox)),
+        family!("Git", Git, "git", 64, false, None),
+        family!("Git write", GitWrite, "git_write", 65, true, None),
         Item {
-            label: "Memory",
-            kind: ItemKind::Memory(MemoryRow {
-                table: MEMORY_TABLE,
-                key: "enabled",
-                values: &["off", "on"],
+            label: "Approval",
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::List(Choice {
+                    table: TOOLS_TABLE,
+                    key: "approval",
+                    values: &["ask", "auto", "run"],
+                    get: |c| c.approval() as usize,
+                    set: |c, i| c.set_approval(ApprovalMode::ALL[i]),
+                }),
+                rank: 70,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
             }),
         },
         Item {
-            label: "Tools",
-            kind: ItemKind::Tools,
-        },
-        Item {
-            label: "Search",
-            kind: ItemKind::Family(ToolToggle::Search),
-        },
-        Item {
-            label: "Write",
-            kind: ItemKind::Family(ToolToggle::Write),
-        },
-        Item {
-            label: "Exec",
-            kind: ItemKind::Family(ToolToggle::Exec),
-        },
-        Item {
-            label: "Git",
-            kind: ItemKind::Family(ToolToggle::Git),
-        },
-        Item {
-            label: "Git write",
-            kind: ItemKind::Family(ToolToggle::GitWrite),
-        },
-        Item {
-            label: "Approval",
-            kind: ItemKind::Approval,
-        },
-        Item {
             label: "Orchestrator",
-            kind: ItemKind::Orchestrator,
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: ORCHESTRATOR_TABLE,
+                    key: "enabled",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.orchestrator.enabled),
+                    set: |c, i| c.orchestrator.enabled = i == 1,
+                }),
+                rank: 80,
+                caution: false,
+                badge: None,
+                test: false,
+                second: Some(Second {
+                    key: "acknowledged",
+                    get: |c| c.orchestrator.acknowledged,
+                    set: |c, on| c.orchestrator.acknowledged = on,
+                    warn: false,
+                }),
+            }),
+        },
+    ],
+};
+
+/// The Chat tab: `Profile`, `Context` and `Memory`.
+pub static CHAT_SECTION: Section = Section {
+    title: "Chat",
+    items: &[
+        Item {
+            label: "Profile",
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::List(Choice {
+                    table: "ai",
+                    key: "profile",
+                    values: &["analyst", "programmer"],
+                    get: |c| c.profile() as usize,
+                    set: |c, i| c.set_profile(Profile::ALL[i]),
+                }),
+                rank: 10,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
+            }),
         },
         Item {
-            label: "Hugging Face",
-            kind: ItemKind::HfAccount,
+            label: "Context",
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: "ai",
+                    key: "context",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.context()),
+                    set: |c, i| c.set_context(i == 1),
+                }),
+                rank: 20,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
+            }),
+        },
+        Item {
+            label: "Memory",
+            kind: ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(Choice {
+                    table: MEMORY_TABLE,
+                    key: "enabled",
+                    values: &["off", "on"],
+                    get: |c| usize::from(c.memory.enabled),
+                    set: |c, i| c.memory.enabled = i == 1,
+                }),
+                rank: 30,
+                caution: false,
+                badge: None,
+                test: false,
+                second: Some(Second {
+                    key: "acknowledged",
+                    get: |c| c.memory.acknowledged,
+                    set: |c, on| c.memory.acknowledged = on,
+                    warn: true,
+                }),
+            }),
         },
     ],
 };
@@ -294,11 +571,12 @@ pub struct Tab {
 }
 
 /// Number of entries of [`TABS`].
-pub const TAB_COUNT: usize = 2;
+pub const TAB_COUNT: usize = 5;
 
-/// The tabs of the menu, in bar order: Settings first, then AI. A new tab is
-/// one entry here plus a bump of [`TAB_COUNT`]; the compiler enforces the
-/// pair.
+/// The tabs of the menu, in bar order. Their place here is their number for
+/// the jump keys (`1` to `5`). A tab with no rows is hidden, so Connectors
+/// stays out of the bar until MCP gives it rows. A new tab is one entry here
+/// plus a bump of [`TAB_COUNT`]; the compiler enforces the pair.
 pub static TABS: [Tab; TAB_COUNT] = [
     Tab {
         label: "Settings",
@@ -308,13 +586,67 @@ pub static TABS: [Tab; TAB_COUNT] = [
         caution: false,
     },
     Tab {
-        label: "AI",
-        sections: std::slice::from_ref(&AI_SECTION),
+        label: "Models",
+        sections: std::slice::from_ref(&MODELS_SECTION),
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
+    Tab {
+        label: "Tools",
+        sections: std::slice::from_ref(&TOOLS_SECTION),
         needs_ai: true,
         note: false,
         caution: true,
     },
+    Tab {
+        label: "Connectors",
+        sections: &[],
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
+    Tab {
+        label: "Chat",
+        sections: std::slice::from_ref(&CHAT_SECTION),
+        needs_ai: true,
+        note: false,
+        caution: false,
+    },
 ];
+
+#[cfg(test)]
+thread_local! {
+    /// A tab table a test swaps in, for the tabs that have no rows yet.
+    static TEST_TABS: std::cell::Cell<Option<&'static [Tab]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The tab table in force: [`TABS`], or a test table.
+fn table() -> &'static [Tab] {
+    #[cfg(test)]
+    if let Some(tabs) = TEST_TABS.with(std::cell::Cell::get) {
+        return tabs;
+    }
+    &TABS
+}
+
+/// Whether the row shows: the AI-only rows need the AI section.
+fn row_shown(item: &Item, has_ai: bool) -> bool {
+    has_ai || !item.kind.needs_ai()
+}
+
+/// Whether a tab is visible: it has the AI section it needs and at least one
+/// row to show. A tab with no rows (Connectors today) stays out of the bar
+/// and out of reach of Tab, and appears by itself with its first row.
+fn tab_shown(tab: &Tab, has_ai: bool) -> bool {
+    (has_ai || !tab.needs_ai)
+        && tab
+            .sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .any(|item| row_shown(item, has_ai))
+}
 
 /// The selectable settings, in table order.
 fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
@@ -324,16 +656,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) | ItemKind::Toggle(choice) => Some((item, choice)),
             ItemKind::Assign(_)
-            | ItemKind::Profile
-            | ItemKind::Context
-            | ItemKind::Memory(_)
-            | ItemKind::Notify
-            | ItemKind::Tools
-            | ItemKind::Family(_)
-            | ItemKind::Approval
-            | ItemKind::NotifySound
-            | ItemKind::Orchestrator
-            | ItemKind::ManagedIdle
+            | ItemKind::Draft(_)
             | ItemKind::Updates
             | ItemKind::HfAccount
             | ItemKind::Feedback => None,
@@ -344,9 +667,9 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 pub const CHROME: u16 = 4;
 /// The tab bar takes one row at the top of the body when the menu is tabbed.
 pub const TAB_BAR: usize = 1;
-/// The caution under the AI tab for a family that can change files or run code.
+/// The caution under the Tools tab for a family that can change files or run code.
 const CAUTION: &str = "Can change files or run code";
-/// Lines of the caution, reserved at the foot of the AI tab so the popup
+/// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;
 /// Lines of the update note (see [`MenuState::update_note`]).
@@ -530,6 +853,13 @@ pub enum MenuCommand {
     SendIssue(Box<feedback::Issue>),
 }
 
+/// Footer notices of the tab keys: a refused key always says why.
+const NOTICE_RANGE: &str = "Tabs are 1-5";
+const NOTICE_ONE_TAB: &str = "No other tabs";
+/// The field opened late for a refused token.
+const NOTICE_TOKEN_REFUSED: &str = "Hugging Face token refused";
+const NOTICE_NO_AI: &str = "No AI section";
+
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
@@ -605,8 +935,14 @@ pub enum Row {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MenuState {
     selected: Option<usize>,
+    /// The active tab, as its position in [`TABS`] (hidden tabs count), so a
+    /// digit and a cursor memory mean the same tab whatever is visible.
     tab: usize,
+    /// The remembered cursor of each tab, by its position in [`TABS`].
     tab_cursor: [usize; TAB_COUNT],
+    /// Why the last tab key did nothing; shown in the footer until the next
+    /// press.
+    notice: Option<String>,
     original: Config,
     error: Option<String>,
     /// What the last copy did, shown in the footer until the next press.
@@ -630,7 +966,7 @@ pub struct MenuState {
     /// The version an install in this run put on disk; the running binary is
     /// still the old one, so the row says so until the restart.
     installed: Option<String>,
-    /// The `Hugging Face` row of the AI tab.
+    /// The `Hugging Face` row of the Models tab.
     account: account::Account,
     /// What the Feedback form attaches.
     facts: feedback::Facts,
@@ -643,6 +979,19 @@ pub struct MenuState {
     /// The system has no Landlock jail, so commands will be refused (D18).
     /// Unknown counts as fine: only the app, which probed, says otherwise.
     no_sandbox: bool,
+}
+
+/// The view that replaces the rows while it is open. One `sub_view()` picks
+/// it, and `rows`, `on_key`, `footer`, `on_paste` and `in_sub_level` each
+/// `match` it exhaustively, so a new view is one variant and the compiler lists
+/// the sites. The Hugging Face `y/n` prompt is not a view: it is a footer over
+/// the normal rows and stays a pre-check.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SubView {
+    Warning,
+    Picker,
+    AccountField,
+    Feedback,
 }
 
 /// What became of the Feedback form.
@@ -667,6 +1016,7 @@ impl MenuState {
             selected: (SECTIONS.iter().any(|s| !s.items.is_empty())).then_some(0),
             tab: 0,
             tab_cursor: [0; TAB_COUNT],
+            notice: None,
             original: *original,
             error: None,
             test_report: None,
@@ -840,7 +1190,8 @@ impl MenuState {
     /// What the runtime found for an account request of the `Hugging Face`
     /// row; a failure it waited for becomes the footer error.
     pub fn account_reply(&mut self, reply: AccountReply) {
-        if let Some(message) = self.account.reply(reply) {
+        let free = matches!(self.sub_view(), None | Some(SubView::AccountField));
+        if let Some(message) = self.account.reply(reply, free) {
             self.error = Some(message);
         }
     }
@@ -971,7 +1322,7 @@ impl MenuState {
     /// pickers, which have their own full-height views.
     pub fn update_note(&self) -> Option<[String; NOTE_ROWS]> {
         let latest = self.update.as_deref()?;
-        let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
+        let on_note_tab = table().get(self.tab).is_some_and(|tab| tab.note);
         (on_note_tab && !self.in_sub_level()).then(|| match self.command_shown {
             Some(why) => crate::core::update::fallback_lines(why),
             None => crate::core::update::menu_lines(latest),
@@ -985,9 +1336,7 @@ impl MenuState {
             return None;
         }
         match self.selected_kind()? {
-            ItemKind::Family(ToolToggle::Write | ToolToggle::Exec | ToolToggle::GitWrite) => {
-                Some(CAUTION)
-            }
+            ItemKind::Draft(choice) if choice.caution => Some(CAUTION),
             _ => None,
         }
     }
@@ -1039,12 +1388,10 @@ impl MenuState {
     /// The link drawn on body row `index`, if that row is one: the token
     /// field's link to create a token, or a sent Feedback issue's link.
     fn link_at(&self, config: &Config, index: usize) -> Option<String> {
-        let link = if self.account.field().is_some() {
-            account::TOKEN_URL
-        } else if let Some(Done::Sent(url)) = &self.feedback_done {
-            url
-        } else {
-            return None;
+        let link = match (self.sub_view(), &self.feedback_done) {
+            (Some(SubView::AccountField), _) => account::TOKEN_URL,
+            (Some(SubView::Feedback), Some(Done::Sent(url))) => url,
+            _ => return None,
         };
         let on_link = matches!(
             self.rows(config).get(index),
@@ -1181,11 +1528,11 @@ impl MenuState {
             .unwrap_or_default()
     }
 
-    /// The tabs this menu shows, in table order. The AI tab needs the AI
-    /// section.
+    /// The tabs this menu shows, in table order: the ones that pass
+    /// [`tab_shown`].
     pub fn tabs(&self) -> impl Iterator<Item = &'static Tab> + use<> {
         let has_ai = self.ai.is_some();
-        TABS.iter().filter(move |tab| has_ai || !tab.needs_ai)
+        table().iter().filter(move |tab| tab_shown(tab, has_ai))
     }
 
     /// The labels of the tab bar. The tab with the update note wears a `*`
@@ -1203,19 +1550,27 @@ impl MenuState {
             .collect()
     }
 
-    /// The index of the active tab among [`MenuState::tabs`].
+    /// The index of the active tab among [`MenuState::tabs`] (its place in
+    /// the bar, which is not its place in [`TABS`] while a tab is hidden).
     pub fn active_tab(&self) -> usize {
-        self.tab
+        let has_ai = self.ai.is_some();
+        table()
+            .iter()
+            .take(self.tab)
+            .filter(|tab| tab_shown(tab, has_ai))
+            .count()
     }
 
     /// Whether the menu is in a view that replaces the rows: the privacy
     /// warning, a picker level or the custom field. The tab keys are inert
     /// there.
     pub fn in_sub_level(&self) -> bool {
-        self.in_warning()
-            || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
-            || self.account.field().is_some()
-            || self.feedback_open()
+        match self.sub_view() {
+            Some(
+                SubView::Warning | SubView::Picker | SubView::AccountField | SubView::Feedback,
+            ) => true,
+            None => false,
+        }
     }
 
     /// Whether the menu has an AI section.
@@ -1227,12 +1582,12 @@ impl MenuState {
     /// the AI draft, so a menu without an AI section has none of them.
     fn tab_items(&self) -> impl Iterator<Item = &'static Item> + use<> {
         let has_ai = self.ai.is_some();
-        self.tabs()
-            .nth(self.tab)
+        table()
+            .get(self.tab)
             .into_iter()
             .flat_map(|tab| tab.sections.iter())
             .flat_map(|section| section.items.iter())
-            .filter(move |item| has_ai || !item.kind.needs_ai())
+            .filter(move |item| row_shown(item, has_ai))
     }
 
     /// The descriptor kind under the selection, in the active tab. Rows are
@@ -1251,29 +1606,12 @@ impl MenuState {
     /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools`, a family switch
     /// or `Approval`.
     fn on_draft_row(&self) -> bool {
-        matches!(
-            self.selected_kind(),
-            Some(
-                ItemKind::Profile
-                    | ItemKind::Context
-                    | ItemKind::Memory(_)
-                    | ItemKind::Notify
-                    | ItemKind::Tools
-                    | ItemKind::Family(_)
-                    | ItemKind::Approval
-                    | ItemKind::NotifySound
-                    | ItemKind::Orchestrator
-                    | ItemKind::ManagedIdle
-            )
-        )
+        matches!(self.selected_kind(), Some(ItemKind::Draft(_)))
     }
 
     /// Whether the selection is on the Notify or the Sound row.
     fn on_notify_row(&self) -> bool {
-        matches!(
-            self.selected_kind(),
-            Some(ItemKind::Notify | ItemKind::NotifySound)
-        )
+        matches!(self.selected_kind(), Some(ItemKind::Draft(choice)) if choice.test)
     }
 
     fn test_notify(&self) -> MenuCommand {
@@ -1283,6 +1621,24 @@ impl MenuState {
                 sound: ai.draft().notify_sound(),
             },
             None => MenuCommand::None,
+        }
+    }
+
+    /// The view that is open over the rows. The views are not always exclusive
+    /// (a late Hugging Face reply could open the token field over another
+    /// view), so the order below is the priority, and the late reply waits
+    /// instead of opening the field.
+    fn sub_view(&self) -> Option<SubView> {
+        if self.in_warning() {
+            Some(SubView::Warning)
+        } else if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
+            Some(SubView::Picker)
+        } else if self.account.field().is_some() {
+            Some(SubView::AccountField)
+        } else if self.feedback_open() {
+            Some(SubView::Feedback)
+        } else {
+            None
         }
     }
 
@@ -1311,8 +1667,12 @@ impl MenuState {
         }
         let accept =
             self.fits_warning() && key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        let choice = match self.selected_kind() {
+            Some(ItemKind::Draft(choice)) => Some(choice),
+            _ => None,
+        };
         if let Some(ai) = &mut self.ai {
-            ai.answer_warning(accept);
+            ai.answer_warning(accept, choice);
         }
         MenuCommand::None
     }
@@ -1374,16 +1734,7 @@ impl MenuState {
             ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
             ItemKind::Choice(_)
             | ItemKind::Toggle(_)
-            | ItemKind::Profile
-            | ItemKind::Context
-            | ItemKind::Memory(_)
-            | ItemKind::Notify
-            | ItemKind::Tools
-            | ItemKind::Family(_)
-            | ItemKind::Approval
-            | ItemKind::NotifySound
-            | ItemKind::Orchestrator
-            | ItemKind::ManagedIdle
+            | ItemKind::Draft(_)
             | ItemKind::Updates
             | ItemKind::HfAccount
             | ItemKind::Feedback => None,
@@ -1409,16 +1760,14 @@ impl MenuState {
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
-        if self.in_warning() {
-            return Self::warning_rows();
-        }
-        if let Some(rows) = self.picker_rows() {
-            return rows;
-        }
-        if let Some(rows) = self.account_rows() {
-            return rows;
-        }
-        if let Some(rows) = self.feedback_rows() {
+        let view = match self.sub_view() {
+            Some(SubView::Warning) => Some(Self::warning_rows()),
+            Some(SubView::Picker) => self.picker_rows(),
+            Some(SubView::AccountField) => self.account_rows(),
+            Some(SubView::Feedback) => self.feedback_rows(),
+            None => None,
+        };
+        if let Some(rows) = view {
             return rows;
         }
         let mut rows = Vec::new();
@@ -1426,10 +1775,7 @@ impl MenuState {
         // With tabs the bar names the section; a title only stays when the
         // menu has a single tab (no bar is drawn then).
         let titled = self.tabs().count() == 1;
-        let sections = self
-            .tabs()
-            .nth(self.tab)
-            .map_or(&[][..], |tab| tab.sections);
+        let sections = table().get(self.tab).map_or(&[][..], |tab| tab.sections);
         for section in sections {
             if titled {
                 rows.push(Row::Title(Cow::Borrowed(section.title)));
@@ -1450,146 +1796,22 @@ impl MenuState {
                         index += 1;
                         row
                     }
-                    ItemKind::Profile => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self
-                                .ai
-                                .as_ref()
-                                .map(|ai| Cow::Borrowed(ai.draft().profile().id())),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Context => {
+                    ItemKind::Draft(choice) => {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().context() { "on" } else { "off" })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Memory(memory) => {
-                        let on = self
-                            .ai
-                            .as_ref()
-                            .is_some_and(|ai| ai.draft().memory.active());
-                        let row = Row::Item {
-                            label: item.label,
-                            value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::NotifySound => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().notify_sound() {
-                                    "on"
-                                } else {
-                                    "off"
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Tools => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().tools_enabled() {
-                                    "on"
-                                } else {
-                                    "off"
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Family(toggle) => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(match (ai.draft().toggle(*toggle), toggle) {
-                                    (false, _) => "off",
-                                    (true, ToolToggle::Exec) if self.no_sandbox => {
-                                        "on · needs Linux sandbox"
+                                let text = choice.shown(ai.draft());
+                                let on = matches!(
+                                    &choice.value,
+                                    DraftValue::Flag(flag) if (flag.get)(ai.draft()) == 1
+                                );
+                                match choice.badge {
+                                    Some(Badge::NeedsSandbox) if self.no_sandbox && on => {
+                                        Cow::Borrowed("on · needs Linux sandbox")
                                     }
-                                    (true, _) => "on",
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::ManagedIdle => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                match ai.draft().managed_options().idle_minutes {
-                                    0 => Cow::Borrowed("never"),
-                                    minutes => Cow::Owned(format!("{minutes} min")),
+                                    _ => text,
                                 }
                             }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Approval => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self
-                                .ai
-                                .as_ref()
-                                .map(|ai| Cow::Borrowed(ai.draft().approval().id())),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Orchestrator => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().orchestrator.enabled {
-                                    "on"
-                                } else {
-                                    "off"
-                                })
-                            }),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Notify => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self
-                                .ai
-                                .as_ref()
-                                .map(|ai| Cow::Borrowed(ai.draft().notify().id())),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -1641,12 +1863,22 @@ impl MenuState {
     /// never saves or cancels; a pending error is cleared by the next press.
     /// Ctrl+H is Backspace in every text field.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
+        let command = self.handle_key(key, repeat, config);
+        // A refused token waited for the view that was open to close.
+        if self.sub_view().is_none() && self.account.open_pending() {
+            self.notice = Some(NOTICE_TOKEN_REFUSED.to_owned());
+        }
+        command
+    }
+
+    fn handle_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
         let key = &crate::core::keys::backspace_alias(*key);
         if key.kind == KeyEventKind::Release {
             return MenuCommand::None;
         }
         if !repeat {
             self.error = None;
+            self.notice = None;
             self.copied = None;
             self.test_report = None;
             // Enter and `y` on the row copy the shown command; any other
@@ -1658,20 +1890,18 @@ impl MenuState {
                 self.command_shown = None;
             }
         }
-        if self.in_warning() {
+        let view = self.sub_view();
+        if view == Some(SubView::Warning) {
             return self.on_warning_key(key, repeat);
         }
         if self.account.prompt().is_some() {
             return self.on_account_prompt_key(key, repeat);
         }
-        if self.account.field().is_some() {
-            return self.on_account_key(key, repeat);
-        }
-        if self.feedback_open() {
-            return self.on_feedback_key(key, repeat);
-        }
-        if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
-            return self.on_picker_key(key, repeat);
+        match view {
+            Some(SubView::AccountField) => return self.on_account_key(key, repeat),
+            Some(SubView::Feedback) => return self.on_feedback_key(key, repeat),
+            Some(SubView::Picker) => return self.on_picker_key(key, repeat),
+            Some(SubView::Warning) | None => {}
         }
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             return MenuCommand::None;
@@ -1680,6 +1910,7 @@ impl MenuState {
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.step_tab(false),
             KeyCode::Tab => self.step_tab(true),
             KeyCode::BackTab => self.step_tab(false),
+            KeyCode::Char(digit @ '0'..='9') if key.modifiers.is_empty() => self.jump_tab(digit),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
@@ -1937,22 +2168,58 @@ impl MenuState {
         }
     }
 
-    /// Moves to the next (or previous) tab, wrapping. Each tab remembers its
-    /// own cursor; the active tab's lives in `selected`, so it is saved on
-    /// the way out and loaded on the way in. A single tab does nothing.
+    /// Moves to the next (or previous) visible tab, wrapping. Each tab
+    /// remembers its own cursor. A single tab says so in the footer.
     fn step_tab(&mut self, forward: bool) -> MenuCommand {
-        let count = self.tabs().count();
-        if count < 2 {
+        let has_ai = self.ai.is_some();
+        let shown: Vec<usize> = (0..table().len())
+            .filter(|&index| tab_shown(&table()[index], has_ai))
+            .collect();
+        if shown.len() < 2 {
+            self.notice = Some(NOTICE_ONE_TAB.to_owned());
             return MenuCommand::None;
         }
+        let at = shown.iter().position(|&index| index == self.tab);
+        let target = match (at, forward) {
+            (Some(at), true) => shown[(at + 1) % shown.len()],
+            (Some(at), false) => shown[(at + shown.len() - 1) % shown.len()],
+            (None, _) => shown[0],
+        };
+        self.go_to_tab(target)
+    }
+
+    /// The jump keys: `1` to `5` go to that place of [`TABS`], whatever is
+    /// visible. A tab that is not there says why in the footer, and so does a
+    /// digit outside the table.
+    fn jump_tab(&mut self, digit: char) -> MenuCommand {
+        let target = (digit as usize).wrapping_sub('1' as usize);
+        let Some(tab) = table().get(target) else {
+            self.notice = Some(NOTICE_RANGE.to_owned());
+            return MenuCommand::None;
+        };
+        if target == self.tab {
+            self.notice = Some(format!("Already on {}", tab.label));
+            return MenuCommand::None;
+        }
+        let has_ai = self.ai.is_some();
+        if !tab_shown(tab, has_ai) {
+            self.notice = Some(if tab.needs_ai && !has_ai {
+                NOTICE_NO_AI.to_owned()
+            } else {
+                format!("No {} yet", tab.label.to_lowercase())
+            });
+            return MenuCommand::None;
+        }
+        self.go_to_tab(target)
+    }
+
+    /// Leaves the active tab saving its cursor and loads the one of `target`.
+    /// The active tab's cursor lives in `selected`.
+    fn go_to_tab(&mut self, target: usize) -> MenuCommand {
         if let Some(selected) = self.selected {
             self.tab_cursor[self.tab] = selected;
         }
-        self.tab = if forward {
-            (self.tab + 1) % count
-        } else {
-            (self.tab + count - 1) % count
-        };
+        self.tab = target;
         let rows = self.selectable();
         self.selected = (rows > 0).then(|| self.tab_cursor[self.tab].min(rows - 1));
         MenuCommand::None
@@ -1979,22 +2246,11 @@ impl MenuState {
             return MenuCommand::None;
         }
         if self.on_draft_row() {
-            // The draft rows only change prompts or the memory opt-in: no
-            // relayout, no other effect.
+            // A draft row only changes the AI draft: no relayout and no other
+            // effect until the save.
             let kind = self.selected_kind();
-            if let Some(ai) = &mut self.ai {
-                match kind {
-                    Some(ItemKind::Profile) => ai.cycle_profile(forward),
-                    Some(ItemKind::Memory(_)) => ai.toggle_memory(),
-                    Some(ItemKind::Tools) => ai.toggle_tools(),
-                    Some(ItemKind::Family(toggle)) => ai.toggle_family(*toggle),
-                    Some(ItemKind::Approval) => ai.cycle_approval(forward),
-                    Some(ItemKind::Notify) => ai.cycle_notify(forward),
-                    Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
-                    Some(ItemKind::Orchestrator) => ai.toggle_orchestrator(),
-                    Some(ItemKind::ManagedIdle) => ai.cycle_idle(forward),
-                    _ => ai.toggle_context(),
-                }
+            if let (Some(ai), Some(ItemKind::Draft(choice))) = (&mut self.ai, kind) {
+                ai.step_draft(choice, forward);
             }
             return MenuCommand::None;
         }
@@ -2046,76 +2302,20 @@ impl MenuState {
                     },
                 ]
             });
-        let profile = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_profile)
-            .map(|profile| ConfigEdit {
-                table: "ai",
-                key: "profile",
-                value: Cow::Borrowed(profile.id()),
-            });
-        let context = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_context)
-            .map(|on| ConfigEdit {
-                table: "ai",
-                key: "context",
-                value: Cow::Borrowed(if on { "true" } else { "false" }),
-            });
-        let memory = self.ai.iter().flat_map(|ai| {
-            ai.changed_memory()
-                .into_iter()
-                .map(|(key, on)| ConfigEdit::memory_flag(key, on))
+        let drafts = self.ai.iter().flat_map(|ai| {
+            table()
+                .iter()
+                .flat_map(|tab| tab.sections.iter())
+                .flat_map(|section| section.items.iter())
+                .filter_map(|item| match &item.kind {
+                    ItemKind::Draft(choice) => Some(choice),
+                    _ => None,
+                })
+                .flat_map(|choice| {
+                    let edits = choice.edits(ai.draft(), ai.original());
+                    edits.into_iter().map(|edit| (choice.rank, edit))
+                })
         });
-        let notify = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_notify)
-            .map(|mode| ConfigEdit {
-                table: "ai",
-                key: "notify",
-                value: Cow::Borrowed(mode.id()),
-            });
-        let sound = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_notify_sound)
-            .map(|on| ConfigEdit {
-                table: "ai",
-                key: "notify_sound",
-                value: Cow::Borrowed(if on { "true" } else { "false" }),
-            });
-        let tools = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_tools)
-            .map(ConfigEdit::tools_flag);
-        let families = self
-            .ai
-            .iter()
-            .flat_map(AiMenu::changed_toggles)
-            .map(|(toggle, on)| ConfigEdit::toggle(toggle, on));
-        let approval = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_approval)
-            .map(ConfigEdit::approval);
-        let orchestrator = self.ai.iter().flat_map(|ai| {
-            ai.changed_orchestrator()
-                .into_iter()
-                .map(|(key, on)| ConfigEdit::orchestrator_flag(key, on))
-        });
-        let idle = self
-            .ai
-            .as_ref()
-            .and_then(AiMenu::changed_idle)
-            .map(|minutes| ConfigEdit {
-                table: LLAMACPP_TABLE,
-                key: "idle_minutes",
-                value: Cow::Owned(minutes.to_string()),
-            });
         let managed = self
             .ai
             .as_ref()
@@ -2135,18 +2335,12 @@ impl MenuState {
                     },
                 ]
             });
+        // The save order is the rank.
+        let mut ranked: Vec<(u8, ConfigEdit)> = drafts.collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
         settings
             .chain(tasks)
-            .chain(profile)
-            .chain(context)
-            .chain(memory)
-            .chain(notify)
-            .chain(sound)
-            .chain(tools)
-            .chain(families)
-            .chain(approval)
-            .chain(orchestrator)
-            .chain(idle)
+            .chain(ranked.into_iter().map(|(_, edit)| edit))
             .chain(managed)
             .collect()
     }
@@ -2154,16 +2348,19 @@ impl MenuState {
     /// A paste: goes to the custom field or the Hugging Face search when
     /// one is focused, else ignored.
     pub fn on_paste(&mut self, text: &str) {
-        if let Some(form) = &mut self.feedback {
-            form.paste(text);
-            return;
-        }
-        if self.account.field().is_some() {
-            self.account.paste(text);
-            return;
-        }
-        if let Some(ai) = &mut self.ai {
-            ai.edit(|p| p.paste(text));
+        match self.sub_view() {
+            Some(SubView::Feedback) => {
+                if let Some(form) = &mut self.feedback {
+                    form.paste(text);
+                }
+            }
+            Some(SubView::AccountField) => self.account.paste(text),
+            Some(SubView::Picker) => {
+                if let Some(ai) = &mut self.ai {
+                    ai.edit(|p| p.paste(text));
+                }
+            }
+            Some(SubView::Warning) | None => {}
         }
     }
 
@@ -2177,35 +2374,45 @@ impl MenuState {
         if let Some(error) = self.error() {
             return Footer::Error(error);
         }
-        if self.in_warning() {
+        if let Some(notice) = &self.notice {
+            return Footer::Hint(Cow::Owned(notice.clone()));
+        }
+        let view = self.sub_view();
+        if view == Some(SubView::Warning) {
             return Footer::Hint(Cow::Borrowed(HINT_WARNING));
         }
         if let Some(prompt) = self.account.prompt() {
             return Footer::Hint(Cow::Owned(prompt));
         }
-        if self.account.asking() && (self.account.field().is_some() || self.on_account_row()) {
+        if self.account.asking() && (view == Some(SubView::AccountField) || self.on_account_row()) {
             return Footer::Hint(Cow::Borrowed(HINT_ASKING));
         }
-        if self.account.field().is_some() {
-            return Footer::Hint(match (&self.copied, self.opener) {
-                (Some(copied), _) => Cow::Owned(copied.clone()),
-                (None, true) => Cow::Borrowed(account::HINT_TOKEN),
-                (None, false) => Cow::Borrowed(account::HINT_TOKEN_COPY),
-            });
-        }
-        if let Some(done) = &self.feedback_done {
-            return Footer::Hint(match (&self.copied, done, self.opener) {
-                (Some(copied), _, _) => Cow::Owned(copied.clone()),
-                (None, Done::Sent(_), true) => Cow::Borrowed(feedback::HINT_SENT),
-                (None, Done::Sent(_), false) => Cow::Borrowed(feedback::HINT_SENT_COPY),
-                (None, _, _) => Cow::Borrowed(feedback::HINT_DONE),
-            });
-        }
-        if let Some(form) = &self.feedback {
-            return match form.error() {
-                Some(error) => Footer::Error(error),
-                None => Footer::Hint(Cow::Borrowed(form.hint())),
-            };
+        match view {
+            Some(SubView::AccountField) => {
+                return Footer::Hint(match (&self.copied, self.opener) {
+                    (Some(copied), _) => Cow::Owned(copied.clone()),
+                    (None, true) => Cow::Borrowed(account::HINT_TOKEN),
+                    (None, false) => Cow::Borrowed(account::HINT_TOKEN_COPY),
+                });
+            }
+            Some(SubView::Feedback) => {
+                if let Some(done) = &self.feedback_done {
+                    return Footer::Hint(match (&self.copied, done, self.opener) {
+                        (Some(copied), _, _) => Cow::Owned(copied.clone()),
+                        (None, Done::Sent(_), true) => Cow::Borrowed(feedback::HINT_SENT),
+                        (None, Done::Sent(_), false) => Cow::Borrowed(feedback::HINT_SENT_COPY),
+                        (None, _, _) => Cow::Borrowed(feedback::HINT_DONE),
+                    });
+                }
+                if let Some(form) = &self.feedback {
+                    return match form.error() {
+                        Some(error) => Footer::Error(error),
+                        None => Footer::Hint(Cow::Borrowed(form.hint())),
+                    };
+                }
+            }
+            // The picker's footers follow below, with its cursor row.
+            Some(SubView::Picker) | Some(SubView::Warning) | None => {}
         }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
@@ -2751,5 +2958,7 @@ mod account_tests;
 #[cfg(test)]
 mod feedback_tests;
 
+#[cfg(test)]
+mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;

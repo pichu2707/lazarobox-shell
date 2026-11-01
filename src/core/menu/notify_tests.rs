@@ -63,19 +63,26 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Feedback"
         ]
     );
-    assert!(matches!(items[3].kind, ItemKind::Notify));
-    assert!(matches!(items[4].kind, ItemKind::NotifySound));
+    assert!(matches!(&items[3].kind, ItemKind::Draft(c) if c.key() == "notify"));
+    assert!(matches!(&items[4].kind, ItemKind::Draft(c) if c.test));
     assert!(
-        AI_SECTION
-            .items
+        [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
             .iter()
-            .all(|i| !matches!(i.kind, ItemKind::Notify | ItemKind::NotifySound))
+            .flat_map(|s| s.items.iter())
+            .all(
+                |i| !matches!(&i.kind, ItemKind::Draft(c) if c.key() == "notify")
+                    && !matches!(&i.kind, ItemKind::Draft(c) if c.test)
+            )
     );
 }
 
 #[test]
 fn the_tabs_hold_eight_settings_rows_and_nineteen_ai_rows() {
-    assert_eq!(AI_SECTION.items.len(), 19);
+    let ai: usize = [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
+        .iter()
+        .map(|s| s.items.len())
+        .sum();
+    assert_eq!(ai, 19);
     assert_eq!(SECTIONS[0].items.len(), 8);
 }
 

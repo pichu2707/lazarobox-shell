@@ -12,10 +12,18 @@ baseline.
 
 ### Added
 
+- The menu's AI tab is split into the tabs Models, Tools, Connectors and
+  Chat after Settings, so the popup is 16 rows high instead of 25. `Tab` and
+  `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight to
+  a tab by its fixed number (`2` Models, `3` Tools, `5` Chat). Connectors stays
+  hidden until it has rows, so `4` says there are no connectors yet. The bar
+  hint reads `⇥ Tab · 1-5`. A digit or `Tab` that cannot switch tabs now shows
+  a notice in the footer (`Tabs are 1-5`, `No other tabs`) instead of doing
+  nothing. Nothing changes in `config.toml`.
 - Agent orchestrator (experimental, off by default). One coordinator model
   splits a job across workers, each running on the engine and model the menu
   assigns to its task, and every step is recorded. Turn it on with the
-  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Orchestrator` row of the Tools tab (`[ai.orchestrator] enabled`), then press
   `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
   row picks the coordinator's engine (it falls back to `general`, and Ollama
   is marked `not recommended`). Workers run in parallel (`max_parallel`,

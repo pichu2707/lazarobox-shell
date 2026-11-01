@@ -3,21 +3,12 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&confirm_download())
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Install llama-server: download                             │
 │ download llama.cpp b9000                                   │
 │ file: llama-b9000-bin-ubuntu-x64.tar.gz (41 MB)            │
 │ from: github.com/ggml-org/llama.cpp                        │
 │ the archive is checked against its SHA-256 digest          │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

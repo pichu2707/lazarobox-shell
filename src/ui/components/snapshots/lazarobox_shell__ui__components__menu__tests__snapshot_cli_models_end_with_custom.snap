@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Model for general (claude)                                 │
 │ default (CLI picks)                                        │
 │ Opus 5.5                                                   │
@@ -11,15 +11,6 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Haiku 5.5                                                  │
 │ Fable 5.1                                                  │
 │ custom…                                                    │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │
