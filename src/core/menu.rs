@@ -80,7 +80,8 @@ impl DraftValue {
     }
 
     /// Moves the draft to the next (or previous) value, wrapping.
-    pub(super) fn step(&self, ai: &mut AiConfig, forward: bool) {
+    /// Used by `AiMenu::step_draft`, outside this module.
+    pub(crate) fn step(&self, ai: &mut AiConfig, forward: bool) {
         match self {
             Self::Flag(c) | Self::List(c) => {
                 let len = c.values.len();
@@ -1684,10 +1685,12 @@ impl MenuState {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
                                 let text = choice.value.shown(ai.draft());
+                                let on = matches!(
+                                    &choice.value,
+                                    DraftValue::Flag(flag) if (flag.get)(ai.draft()) == 1
+                                );
                                 match choice.badge {
-                                    Some(Badge::NeedsSandbox)
-                                        if self.no_sandbox && text == "on" =>
-                                    {
+                                    Some(Badge::NeedsSandbox) if self.no_sandbox && on => {
                                         Cow::Borrowed("on · needs Linux sandbox")
                                     }
                                     _ => text,
@@ -2150,8 +2153,8 @@ impl MenuState {
             return MenuCommand::None;
         }
         if self.on_draft_row() {
-            // The draft rows only change prompts or the memory opt-in: no
-            // relayout, no other effect.
+            // A draft row only changes the AI draft: no relayout and no other
+            // effect until the save.
             let kind = self.selected_kind();
             if let Some(ai) = &mut self.ai {
                 match kind {

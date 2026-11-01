@@ -277,3 +277,56 @@ fn draft_ranks_never_collide_with_the_literal_ranks() {
     all.dedup();
     assert_eq!(all.len(), count, "{all:?}");
 }
+
+#[test]
+fn a_list_row_changed_and_changed_back_writes_nothing() {
+    for label in ["Notify", "Profile", "Approval"] {
+        let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+        let press = |m: &mut MenuState, c: char| {
+            m.on_key(
+                &KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                false,
+                &mut Config::default(),
+            );
+        };
+        m.goto(label);
+        press(&mut m, 'l');
+        assert!(!m.edits(&Config::default()).is_empty(), "{label} changed");
+        press(&mut m, 'h');
+        assert_eq!(m.edits(&Config::default()), vec![], "{label} back");
+    }
+}
+
+#[test]
+fn the_idle_row_stepped_away_and_back_from_an_on_list_value_writes_nothing() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+    m.goto("llama-server idle");
+    for c in ['l', 'h'] {
+        m.on_key(
+            &KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            false,
+            &mut Config::default(),
+        );
+    }
+    assert_eq!(m.edits(&Config::default()), vec![]);
+}
+
+#[test]
+fn the_sandbox_badge_follows_the_flag_value_not_its_text() {
+    let mut ai = AiConfig::default();
+    ai.set_toggle(ToolToggle::Exec, true);
+    let m = MenuState::open(&Config::default())
+        .with_ai(ai, None)
+        .with_sandbox(false);
+    let shown = m.all_rows(&Config::default());
+    let value = |label: &str| {
+        shown.iter().find_map(|r| match r {
+            Row::Item {
+                label: l, value, ..
+            } if *l == label => value.clone(),
+            _ => None,
+        })
+    };
+    assert_eq!(value("Exec").as_deref(), Some("on · needs Linux sandbox"));
+    assert_eq!(value("Git").as_deref(), Some("off"));
+}
