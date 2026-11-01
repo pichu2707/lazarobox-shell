@@ -413,14 +413,61 @@ pub enum JailRefusal {
     Overlap(PathBuf),
 }
 
+/// Who can write a path the trust check refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WriteCause {
+    /// Its group (and not others).
+    Group,
+    /// Others (and not its group).
+    Others,
+    /// Both its group and others.
+    GroupAndOthers,
+}
+
+impl WriteCause {
+    /// The cause a `mode` shows (group bit `0o020`, others bit `0o002`).
+    pub fn of_mode(mode: u32) -> Self {
+        match (mode & 0o020 != 0, mode & 0o002 != 0) {
+            (true, false) | (false, false) => Self::Group,
+            (false, true) => Self::Others,
+            (true, true) => Self::GroupAndOthers,
+        }
+    }
+
+    /// The cause of several paths together.
+    pub fn union(causes: impl IntoIterator<Item = Self>) -> Self {
+        let (mut group, mut others) = (false, false);
+        for cause in causes {
+            group |= cause != Self::Others;
+            others |= cause != Self::Group;
+        }
+        match (group, others) {
+            (_, false) => Self::Group,
+            (false, true) => Self::Others,
+            (true, true) => Self::GroupAndOthers,
+        }
+    }
+}
+
 /// Why an interpreter is not trusted.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Untrusted {
     /// It lives under a scratch folder (see [`SCRATCH`]).
     Scratch,
-    /// The file or folder at `path` (the real one that failed the check) is
-    /// writable by group or others; `yours` says the user owns it.
-    Writable { path: PathBuf, yours: bool },
+    /// Every real file or folder in `paths` (the folder first) failed the
+    /// check: `cause` says who can write them, `yours` that the user owns all
+    /// of them and so can fix them.
+    Writable {
+        paths: Vec<PathBuf>,
+        yours: bool,
+        cause: WriteCause,
+    },
+    /// The file or folder at `path` could not be inspected (`kind` says why):
+    /// it is not known to be writable, only not known to be safe.
+    Unchecked {
+        path: PathBuf,
+        kind: std::io::ErrorKind,
+    },
     /// Its real path cannot be resolved.
     Unresolvable,
 }
@@ -441,6 +488,17 @@ impl From<SpecError> for JailRefusal {
 fn quoted(path: &Path) -> Option<String> {
     let text = path.to_str()?;
     (one_line(text) == text).then(|| format!("'{}'", text.replace('\'', r"'\''")))
+}
+
+/// `path` as one shell word to paste into a command: `~/'rest'` under `home`
+/// (the `~` must stay unquoted to expand), else [`quoted`] whole. `None` when
+/// it cannot be exact.
+fn shell_word(path: &Path, home: Option<&Path>) -> Option<String> {
+    match home.and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => Some("~".to_owned()),
+        Some(rest) => quoted(rest).map(|rest| format!("~/{rest}")),
+        None => quoted(path),
+    }
 }
 
 /// Longest path a menu row shows whole.
@@ -532,25 +590,54 @@ impl JailRefusal {
                 at(path)
             ),
             Self::UntrustedInterpreter {
-                path,
-                why: Untrusted::Writable { path: bad, yours },
+                why: Untrusted::Unchecked { path: bad, kind },
+                ..
             } => {
-                let head = if bad == path {
-                    format!("{} is writable by group or others", at(bad))
+                let reason = match kind {
+                    std::io::ErrorKind::PermissionDenied => "permission denied",
+                    std::io::ErrorKind::NotFound => "not found",
+                    _ => "input/output error",
+                };
+                format!("cannot check {}: {reason}", at(bad))
+            }
+            Self::UntrustedInterpreter {
+                path,
+                why:
+                    Untrusted::Writable {
+                        paths,
+                        yours,
+                        cause,
+                    },
+            } => {
+                let who = match cause {
+                    WriteCause::Group => "its group",
+                    WriteCause::Others => "others",
+                    WriteCause::GroupAndOthers => "its group or others",
+                };
+                let names: Vec<String> = paths.iter().map(|p| at(p)).collect();
+                let list = match names.as_slice() {
+                    [one] => format!("{one} is"),
+                    [init @ .., last] => format!("{} and {last} are", init.join(", ")),
+                    [] => String::new(),
+                };
+                let head = if paths.contains(path) {
+                    format!("{list} writable by {who}")
                 } else {
-                    format!(
-                        "{} is writable by group or others, so {} is not trusted",
-                        at(bad),
-                        at(path)
-                    )
+                    format!("{list} writable by {who}, so {} is not trusted", at(path))
                 };
                 if !yours {
-                    format!("{head}; it is not yours, so its owner must fix it (sudo)")
-                } else {
-                    match quoted(bad) {
-                        Some(arg) => format!("{head}; run: chmod go-w -- {arg}"),
-                        None => format!("{head}; remove the group and other write permissions"),
-                    }
+                    return format!("{head}; it is not yours, so its owner must fix it (sudo)");
+                }
+                let flags = match cause {
+                    WriteCause::Group => "g-w",
+                    WriteCause::Others => "o-w",
+                    WriteCause::GroupAndOthers => "go-w",
+                };
+                let words: Option<Vec<String>> =
+                    paths.iter().map(|p| shell_word(p, home)).collect();
+                match words {
+                    Some(words) => format!("{head}; run: chmod {flags} {}", words.join(" ")),
+                    None => format!("{head}; remove the group and other write permissions"),
                 }
             }
             Self::RootTooBroad(path) => format!(

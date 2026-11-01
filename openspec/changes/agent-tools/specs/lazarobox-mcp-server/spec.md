@@ -123,6 +123,13 @@ A `run_in_pane` call through the shim MUST block until the user answers or the w
 ### Requirement: Jail and process rights
 The shim MUST run inside the CLI's jail without widening it: the jail spec gains only the minimal grants: read-and-execute on the exact shim binary, the rule for the session socket file, and the shim's ELF loader when it differs from the CLI's own loader (no directory-wide grant, no `$HOME`, no `/tmp`, no new execute right for any other program). If the shim cannot execute or connect inside the jail on a CLI, that CLI MUST ship without tools (text only, plus pane-commands) rather than widen the jail.
 
+#### Scenario: The shim's trust check names its cause and its fix [auto]
+- GIVEN tools on and a shim binary (or its loader) that the trust check refuses because it or its folder is writable by its group or others, as after `cargo install` under umask 002 (issue #496)
+- WHEN a turn starts
+- THEN the turn runs as text and the notice is `tools are off: <paths> are writable by its group; run: chmod g-w <paths>` (or `by others` / `o-w`, or `by its group or others` / `go-w`), naming every offending path in one command, with `~` for `$HOME` and each path quoted; if the user does not own them it says the owner must fix it, never only the generic `tools are off for this turn: they could not be set up`
+- AND a path that cannot be inspected gives `tools are off: cannot check <path>: permission denied` (or `not found`), never `writable`
+- AND the trust rule is unchanged: any group or other write bit refuses
+
 #### Scenario: Jail spec delta [auto]
 - GIVEN the jail spec of a CLI with tools on, and without
 - WHEN both are built

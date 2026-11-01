@@ -72,6 +72,15 @@ baseline.
   startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
   asks it to return to its initial value. zutty then sends ESC LF, which the
   chat now treats as a newline (Alt+Ctrl+J).
+- When the jail refuses the tools shim (or an interpreter) because it or its
+  folder is writable, the notice now names the cause and the fix instead of the
+  generic "they could not be set up": `tools are off: ~/.cargo/bin and
+  ~/.cargo/bin/lazarobox-shell are writable by its group; run: chmod g-w
+  ~/.cargo/bin ~/.cargo/bin/lazarobox-shell`. With umask 002 (Ubuntu, Debian,
+  Parrot) `cargo install` leaves those at 775, so a default install needs that
+  one chmod (#496). A path that cannot be inspected says `cannot check <path>:
+  permission denied` instead of being called writable. The trust rule itself is
+  unchanged.
 - A cloud read of a path the path guard refuses (`.env` in any spelling, or a
   path that does not exist, such as the same name under a worker's own cwd) no
   longer opens an approval prompt in `ask` and `auto` mode, in a plain chat or
