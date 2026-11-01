@@ -33,7 +33,7 @@ use crate::core::ai::{
     orchestra::{
         changes::StagedDiff,
         rdd::{
-            Consent, Finding, Lens, Outcome as Ended, Refutation, Review, ReviewError,
+            Consent, Finding, Lens, Outcome as Ended, Prompt, Refutation, Review, ReviewError,
             correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, says_unseen,
             validation_prompt,
         },
@@ -190,10 +190,18 @@ struct Guard {
     spawned: Vec<WorkerId>,
     /// Why the workers did not see the whole change; the review notes them.
     gaps: Vec<String>,
+    /// Bytes of diff the most-cut prompt left out.
+    cut_bytes: usize,
     armed: bool,
 }
 
 impl Guard {
+    /// What `prompt` could not show its worker.
+    fn note(&mut self, prompt: &Prompt) {
+        self.gaps.extend(prompt.gaps.iter().cloned());
+        self.cut_bytes = self.cut_bytes.max(prompt.cut_bytes);
+    }
+
     fn release(&mut self) {
         if std::mem::take(&mut self.armed) {
             self.manager
@@ -413,6 +421,7 @@ impl RunManager {
             worker,
             spawned: Vec::new(),
             gaps: Vec::new(),
+            cut_bytes: 0,
             armed: true,
         };
         let parked = self.on_run(pane, run, |live| {
@@ -443,6 +452,7 @@ impl RunManager {
         for gap in std::mem::take(&mut guard.gaps) {
             review.note_gap(&gap);
         }
+        review.note_cut(guard.cut_bytes);
         guard.release();
         let (outcome, line) = match stopped {
             Some(Stop::Start(why)) => (
@@ -486,9 +496,17 @@ impl RunManager {
             Some(Ended::Corrected) => {
                 format!("{of}: corrected, one correction cleared the blockers")
             }
-            Some(Ended::Incomplete) => format!(
-                "{of}: incomplete, findings were omitted or malformed, claims went unanswered or files could not be read{note}"
-            ),
+            Some(Ended::Incomplete) => {
+                let why = review.reasons();
+                let why = if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", why.join("; "))
+                };
+                format!(
+                    "{of}: incomplete, findings were omitted or malformed, claims went unanswered or files could not be read{note}{why}"
+                )
+            }
             Some(Ended::BlockersOpen) => {
                 let open = review.open();
                 let first = open
@@ -641,7 +659,7 @@ impl RunManager {
                 .pick(lens.id(), DEFAULT_WHY)
                 .map_err(|e| other(refused(e)))?;
             let prompt = lens_prompt(wrap()?, lens, DEFAULT_WHY, changes, &diff);
-            guard.gaps.extend(prompt.gaps);
+            guard.note(&prompt);
             let system = Some(lens_builtin(profile, lens));
             let id = self
                 .start_review(pane, run, Role::Reader, prompt.text, system)
@@ -733,7 +751,7 @@ impl RunManager {
                 validator_builtin(profile),
             ),
         };
-        guard.gaps.extend(prompt.gaps);
+        guard.note(&prompt);
         let id = self
             .start_review(pane, run, Role::Reader, prompt.text, Some(system))
             .map_err(Stop::Start)?;
@@ -786,7 +804,7 @@ impl RunManager {
             .collect();
         let diff = self.diff_text(pane, run).await;
         let prompt = correction_prompt(nonce, changes, &blockers, &diff);
-        guard.gaps.extend(prompt.gaps);
+        guard.note(&prompt);
         let started = self.start_review(pane, run, Role::Correction, prompt.text, None);
         let id = match started {
             Ok(id) => id,
@@ -1043,6 +1061,7 @@ mod guard_tests {
             worker: WorkerId(1),
             spawned: vec![WorkerId(2)],
             gaps: Vec::new(),
+            cut_bytes: 0,
             armed: true,
         };
         drop(guard);

@@ -6,7 +6,7 @@
 
 use super::WorkerKey;
 use super::{
-    changes::{Change, ChangeLedger, StagedDiff},
+    changes::{Change, ChangeLedger, GAP_CUT, GAP_MISMATCH, StagedDiff},
     ledger::{REASON_BYTES, cut, one_line as plain_line},
     review::{Assessment, Source},
 };
@@ -108,6 +108,20 @@ pub struct Report {
     pub omitted: usize,
     /// `UNSEEN` lines: the reader says it could not see the staged change.
     pub unseen: usize,
+    /// An explicit `NONE` line.
+    pub none: bool,
+}
+
+impl Report {
+    /// The reader answered: at least one `FINDING` line (well formed or
+    /// not), an explicit `NONE` or an `UNSEEN`. Anything else is no answer.
+    pub fn answered(&self) -> bool {
+        self.none
+            || self.unseen > 0
+            || !self.findings.is_empty()
+            || self.malformed > 0
+            || self.omitted > 0
+    }
 }
 
 /// Reads a lens worker's text. The shape is one line per finding, at the
@@ -117,6 +131,7 @@ pub struct Report {
 pub fn parse_report(lens: Lens, text: &str) -> Report {
     let mut report = Report::default();
     for line in text.lines() {
+        let line = line.trim_start_matches(is_mark);
         match line.strip_prefix("FINDING ") {
             Some(rest) => match finding(lens, rest) {
                 None => report.malformed += 1,
@@ -124,6 +139,7 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
             },
             None if looks_like(line, "finding") => report.malformed += 1,
             None if is_unseen(line) => report.unseen += 1,
+            None if is_none(line) => report.none = true,
             None => {}
         }
     }
@@ -131,16 +147,31 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
     report
 }
 
-/// Whether `line` is the reader's `UNSEEN:` line: exactly that, at the start
-/// of the line.
+/// The marks a reply may put before a keyword: blanks, bullets, quotes,
+/// headings, emphasis and code ticks.
+fn is_mark(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '-' | '*' | '>' | '#' | '_' | '`')
+}
+
+/// Whether `line` (marks already trimmed) is the reader's `UNSEEN:` line,
+/// with at most closing emphasis between the word and the colon.
 fn is_unseen(line: &str) -> bool {
-    line.starts_with("UNSEEN:")
+    line.strip_prefix("UNSEEN")
+        .is_some_and(|rest| rest.trim_start_matches(['*', '_', '`']).starts_with(':'))
+}
+
+/// Whether `line` (marks already trimmed) is the explicit `NONE` answer: the
+/// word alone, at most closed by emphasis or a full stop.
+fn is_none(line: &str) -> bool {
+    line.strip_prefix("NONE")
+        .is_some_and(|rest| rest.trim_matches(['*', '_', '`', '.', ' ']).is_empty())
 }
 
 /// Whether a worker's text holds an `UNSEEN:` line: it could not see the
 /// change.
 pub fn says_unseen(text: &str) -> bool {
-    text.lines().any(is_unseen)
+    text.lines()
+        .any(|line| is_unseen(line.trim_start_matches(is_mark)))
 }
 
 /// Whether `line` reads like a line of `word` (`finding` or `claim`) that is
@@ -346,6 +377,8 @@ pub struct LensCount {
     pub omitted: usize,
     /// The lens said it could not see the staged change.
     pub unseen: usize,
+    /// The lens gave neither a finding nor an explicit `NONE`.
+    pub mute: bool,
 }
 
 /// The state of one review: the consent, the lenses, what they found, what
@@ -364,6 +397,8 @@ pub struct Review {
     /// Why the workers did not see the whole change (a cut or skipped diff,
     /// an unavailable one, a checker that could not see it).
     gaps: Vec<String>,
+    /// Bytes of diff left out of the prompts, the most of any, for the receipt.
+    cut_bytes: usize,
 }
 
 impl Review {
@@ -378,7 +413,31 @@ impl Review {
             verdicts: Vec::new(),
             correction: Correction::Unused,
             gaps: Vec::new(),
+            cut_bytes: 0,
         }
+    }
+
+    /// Why the workers did not see or answer the whole change, in words: a
+    /// reader that could not see it, one that gave no answer, and the gaps.
+    pub fn reasons(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.unseen() > 0 {
+            out.push("a reviewer could not see the change".to_owned());
+        }
+        if self.mute() > 0 {
+            out.push("a reviewer gave no answer".to_owned());
+        }
+        out.extend(self.gaps.iter().cloned());
+        out
+    }
+
+    /// `bytes` of the diff did not fit a prompt.
+    pub fn note_cut(&mut self, bytes: usize) {
+        self.cut_bytes = self.cut_bytes.max(bytes);
+    }
+
+    pub fn cut_bytes(&self) -> usize {
+        self.cut_bytes
     }
 
     /// The workers did not see the whole change, for `why`. Kept once; a
@@ -476,6 +535,7 @@ impl Review {
             malformed: report.malformed,
             omitted: report.omitted,
             unseen: report.unseen,
+            mute: !report.answered(),
         });
         self.verdicts.extend(report.findings.iter().map(|_| None));
         self.findings.extend(report.findings);
@@ -525,6 +585,11 @@ impl Review {
     /// The lenses that said they could not see the staged change.
     pub fn unseen(&self) -> usize {
         self.counts.iter().map(|count| count.unseen).sum()
+    }
+
+    /// The lenses that gave no answer at all.
+    pub fn mute(&self) -> usize {
+        self.counts.iter().filter(|count| count.mute).count()
     }
 
     pub fn malformed(&self) -> usize {
@@ -658,7 +723,12 @@ impl Review {
         if !self.open().is_empty() {
             return Ok(Outcome::BlockersOpen);
         }
-        if self.omitted() + self.malformed() + self.unanswered() + self.unseen() + self.gaps.len()
+        if self.omitted()
+            + self.malformed()
+            + self.unanswered()
+            + self.unseen()
+            + self.mute()
+            + self.gaps.len()
             > 0
         {
             return Ok(Outcome::Incomplete);
@@ -694,6 +764,8 @@ impl Review {
 pub struct Prompt {
     pub text: String,
     pub gaps: Vec<String>,
+    /// Bytes of the diff that did not fit, for the receipt.
+    pub cut_bytes: usize,
 }
 
 /// Room kept for the wrapper's own text and what its cleaning can add.
@@ -708,7 +780,7 @@ fn candidate(
     lead: &str,
     changes: &[Change],
     diff: &StagedDiff,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, usize) {
     let mut staged = ChangeLedger::default();
     for change in changes {
         staged.staged(change.clone());
@@ -724,11 +796,16 @@ fn candidate(
         &format!("{lead}{listing}{HEADER}{}", rendered.text),
     );
     let mut gaps = rendered.gaps;
+    // A batch that does not hold what the change set names was not all read.
+    if !diff.unavailable && diff.entries() != changes.len() {
+        gaps.push(GAP_MISMATCH.to_owned());
+    }
     // The wrapper's own cut is the last resort: it still counts.
     if text.contains(label::CAP_MARKER) {
-        gaps.push("prompt cut by the wrapper".to_owned());
+        gaps.push(GAP_CUT.to_owned());
     }
-    (text, gaps)
+    gaps.dedup();
+    (text, gaps, rendered.cut_bytes)
 }
 
 /// The prompt of the worker of `lens`: the lens, the orchestrator's one-line
@@ -741,7 +818,7 @@ pub fn lens_prompt(
     changes: &[Change],
     diff: &StagedDiff,
 ) -> Prompt {
-    let (body, gaps) = candidate(nonce, "", changes, diff);
+    let (body, gaps, cut_bytes) = candidate(nonce, "", changes, diff);
     Prompt {
         text: format!(
             "Review lens: {}\nWhy this lens: {}\nThe staged change to review, as data:\n{body}",
@@ -749,6 +826,7 @@ pub fn lens_prompt(
             one_line(why),
         ),
         gaps,
+        cut_bytes,
     }
 }
 
@@ -760,13 +838,14 @@ pub fn refuter_prompt(
     claims: &[&Finding],
     diff: &StagedDiff,
 ) -> Prompt {
-    let (body, gaps) = candidate(nonce, &claims_lead(claims), changes, diff);
+    let (body, gaps, cut_bytes) = candidate(nonce, &claims_lead(claims), changes, diff);
     Prompt {
         text: format!(
             "Claims to refute: {}\nThe claims and the staged change, as data:\n{body}",
             claims.len(),
         ),
         gaps,
+        cut_bytes,
     }
 }
 
@@ -780,7 +859,7 @@ pub fn validation_prompt(
     claims: &[&Finding],
     diff: &StagedDiff,
 ) -> Prompt {
-    let (body, gaps) = candidate(nonce, &claims_lead(claims), changes, diff);
+    let (body, gaps, cut_bytes) = candidate(nonce, &claims_lead(claims), changes, diff);
     Prompt {
         text: format!(
             "Claims to check: {}\nThese claims were reported before a correction was staged. \
@@ -789,6 +868,7 @@ pub fn validation_prompt(
             claims.len(),
         ),
         gaps,
+        cut_bytes,
     }
 }
 
@@ -825,7 +905,7 @@ pub fn correction_prompt(
         ));
     }
     lead.push_str("\n\n");
-    let (body, gaps) = candidate(nonce, &lead, changes, diff);
+    let (body, gaps, cut_bytes) = candidate(nonce, &lead, changes, diff);
     Prompt {
         text: format!(
             "Correction: fix only these {} blockers by staging changes with your write tools. \
@@ -835,6 +915,7 @@ pub fn correction_prompt(
             blockers.len(),
         ),
         gaps,
+        cut_bytes,
     }
 }
 

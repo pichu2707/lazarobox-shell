@@ -3566,6 +3566,7 @@ async fn reviewed_with(
     let lab = lab_with(Script::By(by), |m, home| RunManager {
         scratch: |_| false,
         restage,
+        diff: Some(staged_text),
         ..tooled(m, home)
     });
     let scope = OrchScope {
@@ -3690,6 +3691,27 @@ async fn a_refuter_that_could_not_see_the_change_is_a_gap() {
         kept[0].review.gaps().iter().any(|g| g.contains("checker")),
         "{:?}",
         kept[0].review.gaps()
+    );
+}
+
+fn chatty(request: &ChatRequest) -> Option<&'static str> {
+    is_lens(request).then_some("Looks fine to me, nothing to report.")
+}
+
+// D4: a lens that answers in free form (no FINDING, no NONE) gave no answer;
+// the review is incomplete and its line says why.
+#[tokio::test]
+async fn a_free_form_lens_reply_is_no_answer_and_the_line_says_why() {
+    let (mut lab, run, _handle) = reviewed_diff(chatty, staged_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    let lines = review_lines(&mut lab);
+    assert!(lines.iter().all(|l| !l.contains(": clean")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("a reviewer gave no answer")),
+        "{lines:?}"
     );
 }
 

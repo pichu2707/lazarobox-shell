@@ -5,6 +5,7 @@
 //! answer the batch review, whose keys and default stay the user's.
 
 use super::WorkerId;
+use super::changes::GAP_CUT;
 use super::ledger::{FIELD_BYTES, Judgement, NONE, Verdict, cut, one_line};
 use super::rdd::{Basis, Consent, Outcome, Review, Severity};
 use super::review::Source;
@@ -59,11 +60,8 @@ fn outcome_word(ev: &Evidence) -> String {
         Some(Outcome::Clean) => "clean".to_owned(),
         Some(Outcome::Corrected) => "corrected".to_owned(),
         Some(Outcome::BlockersOpen) => "blockers open".to_owned(),
-        Some(Outcome::Incomplete) if ev.review.unseen() > 0 => {
-            "incomplete (a reviewer could not see the change)".to_owned()
-        }
-        Some(Outcome::Incomplete) if !ev.review.gaps().is_empty() => {
-            format!("incomplete ({})", clip(&ev.review.gaps().join("; ")))
+        Some(Outcome::Incomplete) if !ev.review.reasons().is_empty() => {
+            format!("incomplete ({})", clip(&ev.review.reasons().join("; ")))
         }
         Some(Outcome::Incomplete) => "incomplete".to_owned(),
         Some(Outcome::NotReviewed) | None => "not reviewed".to_owned(),
@@ -204,12 +202,18 @@ fn left(ev: &Evidence) -> String {
         lines.push(format!("could not read: {}", list(ev.unread)));
     }
     for gap in review.gaps() {
-        lines.push(format!("not whole: {}", clip(gap)));
+        let bytes = review.cut_bytes();
+        if gap == GAP_CUT && bytes > 0 {
+            lines.push(format!("not whole: {gap} ({bytes} byte(s) missing)"));
+        } else {
+            lines.push(format!("not whole: {}", clip(gap)));
+        }
     }
     for (what, n) in [
         ("omitted", review.omitted()),
         ("malformed", review.malformed()),
         ("reviewers that could not see the change", review.unseen()),
+        ("reviewers that gave no answer", review.mute()),
         ("unanswered", review.unanswered()),
     ] {
         if n > 0 {

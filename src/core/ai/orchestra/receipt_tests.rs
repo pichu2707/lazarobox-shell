@@ -2,7 +2,7 @@
 //! the line the batch review shows.
 
 use super::WorkerId;
-use super::changes::Change;
+use super::changes::{Change, GAP_CUT};
 use super::ledger::{FIELD_BYTES, Verdict};
 use super::rdd::{Consent, Lens, Outcome, Refutation, Review};
 use super::receipt::{Evidence, fit, judgement, line, summary};
@@ -433,15 +433,20 @@ fn a_diff_gap_is_named_and_never_called_clean() {
     review.consent(Consent::Granted).unwrap();
     review.pick("risk", "touches the lockfile").unwrap();
     review.report(Lens::Risk, "NONE").unwrap();
-    review.note_gap("diff cut at 24 KiB");
+    review.note_gap(GAP_CUT);
+    review.note_cut(2048);
     let outcome = review.conclude().ok();
     let held = Held::of(review, outcome);
     let text = line(&held.evidence());
     assert!(!text.contains("clean"), "{text}");
-    assert!(text.contains("incomplete (diff cut at 24 KiB)"), "{text}");
+    assert!(
+        text.contains("incomplete (diff cut to fit the prompt)"),
+        "{text}"
+    );
     let note = judgement(&held.evidence());
     assert!(
-        note.left.contains("not whole: diff cut at 24 KiB"),
+        note.left
+            .contains("not whole: diff cut to fit the prompt (2048 byte(s) missing)"),
         "{}",
         note.left
     );

@@ -128,9 +128,11 @@ const CUT_NOTE: usize = 160;
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StagedDiff {
     pub files: Vec<StagedText>,
-    /// Staged paths with nothing for a review to read: out of its scope,
-    /// guarded by the secret rules, or a folder.
+    /// Staged files a review may not read: out of its scope or guarded by the
+    /// secret rules.
     pub skipped: Vec<String>,
+    /// Staged folders: there is no text to read, and nothing is missing.
+    pub dirs: Vec<String>,
     /// The batch could not be read.
     pub unavailable: bool,
 }
@@ -139,11 +141,28 @@ pub struct StagedDiff {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Rendered {
     pub text: String,
-    /// Why the review did not see the whole change; empty when it did.
+    /// Why the review did not see the whole change; empty when it did. The
+    /// texts are constants, so the same cause is one gap.
     pub gaps: Vec<String>,
+    /// Bytes of the diff left out, for the receipt.
+    pub cut_bytes: usize,
 }
 
+/// The gap of a diff that did not fit the prompt.
+pub const GAP_CUT: &str = "diff cut to fit the prompt";
+/// The gap of a diff that could not be read.
+pub const GAP_UNAVAILABLE: &str = "diff unavailable";
+/// The gap of files a review may not read.
+pub const GAP_UNREADABLE: &str = "files not readable by a review";
+/// The gap of a batch that does not match the change set.
+pub const GAP_MISMATCH: &str = "staged batch does not match the change set";
+
 impl StagedDiff {
+    /// How many staged entries this holds, whatever became of each.
+    pub fn entries(&self) -> usize {
+        self.files.len() + self.skipped.len() + self.dirs.len()
+    }
+
     pub fn unavailable() -> Self {
         Self {
             unavailable: true,
@@ -160,7 +179,8 @@ impl StagedDiff {
             return Rendered {
                 text: "staged text: not included (it could not be read); read it with your read tools\n"
                     .to_owned(),
-                gaps: vec!["diff unavailable".to_owned()],
+                gaps: vec![GAP_UNAVAILABLE.to_owned()],
+                cut_bytes: 0,
             };
         }
         let mut gaps = Vec::new();
@@ -180,14 +200,25 @@ impl StagedDiff {
                 notes.push_str(&format!(", +{} more", self.skipped.len() - SKIPPED_SHOWN));
             }
             notes.push('\n');
-            gaps.push(format!(
-                "{} file(s) not readable by a review",
-                self.skipped.len()
-            ));
+            gaps.push(GAP_UNREADABLE.to_owned());
+        }
+        if !self.dirs.is_empty() {
+            let shown: Vec<&str> = self
+                .dirs
+                .iter()
+                .take(SKIPPED_SHOWN)
+                .map(String::as_str)
+                .collect();
+            notes.push_str(&format!("created dir: {}", shown.join(", ")));
+            if self.dirs.len() > SKIPPED_SHOWN {
+                notes.push_str(&format!(", +{} more", self.dirs.len() - SKIPPED_SHOWN));
+            }
+            notes.push('\n');
         }
         let room = budget.saturating_sub(notes.len() + CUT_NOTE);
         let mut body = String::new();
         let mut cut = None;
+        let mut cut_bytes = 0;
         for (at, file) in self.files.iter().enumerate() {
             let mut block = format!("diff of {}\n", file.path);
             block.push_str(&diff(file.base.as_deref(), &file.text).to_string());
@@ -212,11 +243,13 @@ impl StagedDiff {
             notes.push_str(&format!(
                 "[diff cut: {bytes} byte(s) of {path} and {more} more file(s) are not shown]\n"
             ));
-            gaps.push(format!("diff cut at {} KiB", budget / 1024));
+            gaps.push(GAP_CUT.to_owned());
+            cut_bytes = bytes;
         }
         Rendered {
             text: format!("{notes}{body}"),
             gaps,
+            cut_bytes,
         }
     }
 }
@@ -237,7 +270,7 @@ mod diff_tests {
         StagedDiff {
             files,
             skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
-            unavailable: false,
+            ..StagedDiff::default()
         }
     }
 
@@ -270,7 +303,8 @@ mod diff_tests {
         let note = out.text.find("[diff cut:").expect("the cut is said");
         assert!(note < out.text.find("diff of big.txt").unwrap());
         assert!(out.text.contains("1 more file(s)"));
-        assert_eq!(out.gaps, ["diff cut at 24 KiB"]);
+        assert_eq!(out.gaps, [GAP_CUT]);
+        assert!(out.cut_bytes > 0);
     }
 
     #[test]
@@ -279,7 +313,7 @@ mod diff_tests {
         let note = out.text.find("not shown").unwrap();
         assert!(note < out.text.find("diff of a.txt").unwrap());
         assert!(out.text.contains(".env"));
-        assert_eq!(out.gaps, ["1 file(s) not readable by a review"]);
+        assert_eq!(out.gaps, [GAP_UNREADABLE]);
     }
 
     #[test]
@@ -295,6 +329,18 @@ mod diff_tests {
     fn an_unavailable_diff_says_so_and_is_a_gap() {
         let out = StagedDiff::unavailable().render(8192);
         assert!(out.text.contains("not included"));
-        assert_eq!(out.gaps, ["diff unavailable"]);
+        assert_eq!(out.gaps, [GAP_UNAVAILABLE]);
+    }
+
+    // A staged folder has no text: it is listed and is no gap.
+    #[test]
+    fn a_staged_folder_is_listed_and_is_not_a_gap() {
+        let out = StagedDiff {
+            dirs: vec!["src/new".to_owned()],
+            ..StagedDiff::default()
+        }
+        .render(8192);
+        assert!(out.text.contains("created dir: src/new"), "{}", out.text);
+        assert!(out.gaps.is_empty());
     }
 }

@@ -1,7 +1,9 @@
 //! The receipt-driven review of one change (agent-orchestrator S7b, D16).
 
 use super::WorkerKey;
-use super::changes::{Change, StagedDiff, StagedText};
+use super::changes::{
+    Change, GAP_CUT, GAP_MISMATCH, GAP_UNAVAILABLE, GAP_UNREADABLE, StagedDiff, StagedText,
+};
 use super::rdd::{
     Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
     correction_prompt, lens_prompt, parse_report, parse_verdicts, refuter_prompt,
@@ -512,8 +514,10 @@ fn look_alike_finding_lines_are_counted_as_malformed() {
         the finding of the audit is that nothing broke\n\
         NONE";
     let got = parse_report(Lens::Risk, text);
-    assert_eq!(got.findings.len(), 1);
-    assert_eq!(got.malformed, 5);
+    // A bullet or indent before an exact `FINDING` line is only a mark; the
+    // other spellings are counted, never dropped.
+    assert_eq!(got.findings.len(), 3);
+    assert_eq!(got.malformed, 3);
 }
 
 #[test]
@@ -695,7 +699,7 @@ fn a_prompt_reports_every_way_the_diff_is_not_whole() {
         ..makefile_diff()
     };
     let p = lens_prompt(NONCE, Lens::Risk, "why", &[change("Makefile")], &skipped);
-    assert_eq!(p.gaps, ["1 file(s) not readable by a review"]);
+    assert!(p.gaps.iter().any(|g| g == GAP_UNREADABLE), "{:?}", p.gaps);
     let p = lens_prompt(
         NONCE,
         Lens::Risk,
@@ -703,7 +707,7 @@ fn a_prompt_reports_every_way_the_diff_is_not_whole() {
         &[change("a")],
         &StagedDiff::unavailable(),
     );
-    assert_eq!(p.gaps, ["diff unavailable"]);
+    assert_eq!(p.gaps, [GAP_UNAVAILABLE]);
 }
 
 // D4: a long listing (and claims) leave the notes uncut: the diff gets what
@@ -749,11 +753,13 @@ fn a_lens_that_could_not_see_the_change_makes_the_review_incomplete() {
 }
 
 #[test]
-fn only_an_exact_unseen_line_is_counted() {
+fn only_an_unseen_line_is_counted() {
     assert_eq!(parse_report(Lens::Risk, "NONE").unseen, 0);
     assert_eq!(parse_report(Lens::Risk, "UNSEEN: no diff").unseen, 1);
-    // Only the exact `UNSEEN:` line counts, not any line that starts alike.
-    assert_eq!(parse_report(Lens::Risk, "- **UNSEEN**: no diff").unseen, 0);
+    // Leading blanks and emphasis are marks, not part of the word.
+    assert_eq!(parse_report(Lens::Risk, "- **UNSEEN**: no diff").unseen, 1);
+    assert_eq!(parse_report(Lens::Risk, "  `UNSEEN:` no diff").unseen, 1);
+    // Another line that starts alike is not it.
     assert_eq!(
         parse_report(Lens::Risk, "unseen - nothing to read").unseen,
         0
@@ -764,14 +770,56 @@ fn only_an_exact_unseen_line_is_counted() {
     );
 }
 
+// D4: a lens answered only with a FINDING line, an explicit NONE or an
+// UNSEEN; any other text is no answer, and the review is incomplete.
+#[test]
+fn a_reply_with_no_finding_and_no_none_is_no_answer() {
+    for text in [
+        "",
+        "Looks fine to me.",
+        "No issues found",
+        "NONES",
+        "none of it",
+    ] {
+        assert!(!parse_report(Lens::Risk, text).answered(), "{text:?}");
+    }
+    for text in [
+        "NONE",
+        "  **NONE**",
+        "- NONE.",
+        "FINDING minor existing observed: x",
+    ] {
+        assert!(parse_report(Lens::Risk, text).answered(), "{text:?}");
+    }
+    let mut review = consented(&[Lens::Risk]);
+    review.report(Lens::Risk, "Looks fine to me.").unwrap();
+    assert_eq!(review.mute(), 1);
+    assert_eq!(review.conclude(), Ok(Outcome::Incomplete));
+    assert!(review.reasons().iter().any(|r| r.contains("no answer")));
+}
+
 // D4: a gap in what the workers saw keeps a review from being clean.
 #[test]
 fn a_gap_makes_the_review_incomplete_and_is_kept_once() {
     let mut review = consented(&[Lens::Risk]);
     review.report(Lens::Risk, "NONE").unwrap();
     assert_eq!(review.conclude(), Ok(Outcome::Clean));
-    review.note_gap("diff cut at 24 KiB");
-    review.note_gap("diff cut at 24 KiB");
+    review.note_gap(GAP_CUT);
+    review.note_gap(GAP_CUT);
     assert_eq!(review.gaps().len(), 1);
     assert_eq!(review.conclude(), Ok(Outcome::Incomplete));
+}
+
+// D4: a batch that holds fewer entries than the change set (or more) is a
+// gap; a folder counts as an entry and is no gap.
+#[test]
+fn a_batch_that_does_not_match_the_change_set_is_a_gap() {
+    let changes = [change("Makefile"), change("src")];
+    let mut diff = makefile_diff();
+    let p = lens_prompt(NONCE, Lens::Risk, "why", &changes, &diff);
+    assert!(p.gaps.iter().any(|g| g == GAP_MISMATCH), "{:?}", p.gaps);
+    diff.dirs.push("src".to_owned());
+    let p = lens_prompt(NONCE, Lens::Risk, "why", &changes, &diff);
+    assert!(p.gaps.is_empty(), "{:?}", p.gaps);
+    assert!(p.text.contains("created dir: src"));
 }

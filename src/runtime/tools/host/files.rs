@@ -558,6 +558,7 @@ pub(super) fn staged_diff(
     for staged in batch.entries() {
         let path = ledger_path(env, &staged.target.real);
         match &staged.entry {
+            Entry::Dir => out.dirs.push(path),
             Entry::File { text, base } if allow(&staged.target.real) => {
                 out.files.push(StagedText {
                     path,
@@ -565,7 +566,7 @@ pub(super) fn staged_diff(
                     text: text.clone(),
                 });
             }
-            _ => out.skipped.push(path),
+            Entry::File { .. } => out.skipped.push(path),
         }
     }
     out
