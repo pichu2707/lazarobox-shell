@@ -73,6 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 let chat_view = ChatView::new(chat, theme)
                     .now(app.now())
                     .guidance(guidance.as_deref())
+                    .quiet_guidance(app.guidance_is_hint(id))
                     .approval(approval.as_ref())
                     .orchestrating(app.orchestrating(id))
                     .copy(marks);

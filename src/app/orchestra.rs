@@ -647,6 +647,14 @@ impl App {
         })
     }
 
+    /// Whether what pane `id` shows above its composer is only the quiet
+    /// Ctrl+O hint: it names a key, it is not a problem to fix, so it is
+    /// drawn muted and does not stand in for the transcript.
+    pub fn guidance_is_hint(&self, id: PaneId) -> bool {
+        self.toggle_hint(id)
+            .is_some_and(|hint| self.chat_guidance(id).as_deref() == Some(hint.as_str()))
+    }
+
     /// Whether the provider notice is shown in pane `id`.
     pub fn orch_notice(&self, id: PaneId) -> bool {
         self.orch_notice == Some(id)

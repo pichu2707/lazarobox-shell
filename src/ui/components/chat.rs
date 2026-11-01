@@ -49,6 +49,7 @@ pub struct ChatView<'a> {
     now: Option<Instant>,
     copy: Option<ChatMarks>,
     orchestrating: bool,
+    quiet_guidance: bool,
 }
 
 impl<'a> ChatView<'a> {
@@ -57,6 +58,7 @@ impl<'a> ChatView<'a> {
             chat,
             theme,
             guidance: None,
+            quiet_guidance: false,
             approval: None,
             now: None,
             copy: None,
@@ -87,6 +89,12 @@ impl<'a> ChatView<'a> {
     /// The pending run-in-pane confirm, drawn over the composer.
     pub fn approval(mut self, approval: Option<&'a ApprovalPrompt>) -> Self {
         self.approval = approval;
+        self
+    }
+
+    /// Draws the guidance as a quiet hint (muted) instead of a warning.
+    pub fn quiet_guidance(mut self, quiet: bool) -> Self {
+        self.quiet_guidance = quiet;
         self
     }
 
@@ -392,9 +400,12 @@ impl ChatView<'_> {
             // The guidance takes the rows just above the composer.
             let rows = wrap_words(text, usize::from(transcript.width));
             let taken = layout.transcript.height - transcript.height;
-            let style = Style::default()
-                .fg(self.theme.warning_orange)
-                .bg(self.theme.bg_base);
+            let tone = if self.quiet_guidance {
+                self.theme.text_muted
+            } else {
+                self.theme.warning_orange
+            };
+            let style = Style::default().fg(tone).bg(self.theme.bg_base);
             for (n, text) in rows.iter().take(usize::from(taken)).enumerate() {
                 let y = transcript.y + transcript.height + u16::try_from(n).unwrap_or(0);
                 buf.set_stringn(transcript.x, y, text, usize::from(transcript.width), style);

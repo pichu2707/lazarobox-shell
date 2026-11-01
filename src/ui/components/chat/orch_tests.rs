@@ -218,3 +218,25 @@ fn a_worker_row_per_status_is_drawn_in_the_tool_colour_or_the_alert_colour() {
     }
     insta::assert_snapshot!("worker_rows_per_status_40x18", shot_of(&buf));
 }
+
+// modal-input / ORCH toggle key: the permanent Ctrl+O hint is quiet (muted),
+// where a guidance that needs attention stays warning orange.
+#[test]
+fn the_quiet_hint_is_muted_and_guidance_stays_orange() {
+    let chat = answered();
+    let find = |quiet: bool| {
+        let area = Rect::new(0, 0, 60, 12);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&chat, &theme())
+            .guidance(Some("Ctrl+O: orchestrate this pane"))
+            .quiet_guidance(quiet)
+            .render(area, &mut buf);
+        let y = (0..area.height)
+            .find(|y| row(&buf, *y).contains("Ctrl+O"))
+            .expect("the hint row");
+        let x = row(&buf, y).find("Ctrl+O").unwrap() as u16;
+        buf[(x, y)].fg
+    };
+    assert_eq!(find(true), theme().text_muted);
+    assert_eq!(find(false), theme().warning_orange);
+}
