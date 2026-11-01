@@ -162,8 +162,9 @@ These parts passed automated tests but have not been tried by hand yet.
 Reports are welcome.
 
 - Terminals: WSL and WezTerm have no manual record yet (#490).
-- Orchestrator, Kitty: paste refusal, `run_in_pane` in auto mode, and the
-  checks P01, P02 and P07 have only been run under tmux.
+- Kitty: keys, paste refusal, and typing commands in bash and zsh (including
+  auto mode) were checked. fish, launching from rofi and the desktop entry
+  `Path=` in other terminals were not.
 - Orchestrator, MCP: a hand-started session against the lazarobox MCP server
   (P04, P05) has not been checked.
 - Orchestrator, model-dependent steps: classification, the feature document
