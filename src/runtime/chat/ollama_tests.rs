@@ -1404,3 +1404,43 @@ async fn an_error_after_a_round_reports_the_usage_before_the_error() {
     assert!(matches!(events[n - 2], StreamEvent::Usage(_)), "{events:?}");
     assert!(matches!(events[n - 1], StreamEvent::Error(_)));
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_that_omits_the_prompt_count_is_a_field_gap_not_a_partial_turn() {
+    // Ollama leaves `prompt_eval_count` out when the prompt was cached.
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text_with("Found it", json!({"eval_count": 30})),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(100), Some(50), false)
+    );
+}
+
+#[tokio::test]
+async fn the_request_the_server_rejected_is_not_a_round_of_the_usage() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text_with(
+            "plain answer",
+            json!({"prompt_eval_count": 12, "eval_count": 34}),
+        ),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(12), Some(34), false)
+    );
+}

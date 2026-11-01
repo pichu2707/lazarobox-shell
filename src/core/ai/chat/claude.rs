@@ -108,47 +108,50 @@ fn started_foreign_tool(value: &Value, wired: bool) -> bool {
 /// top-level `usage` leaves out, so it wins; `usage` is the fallback. The
 /// dollars are the CLI's own `total_cost_usd`, a list price.
 fn usage(value: &Value) -> Option<TurnUsage> {
-    let models = value["modelUsage"].as_object().filter(|m| !m.is_empty());
-    let mut sum = match models {
-        Some(models) => {
-            let mut sum = TurnUsage::default();
-            for entry in models.values() {
-                sum.merge(&TurnUsage {
-                    input: count(&entry["inputTokens"]),
-                    output: count(&entry["outputTokens"]),
-                    cache_read: count(&entry["cacheReadInputTokens"]),
-                    cache_write: count(&entry["cacheCreationInputTokens"]),
-                    reasoning: count(&entry["thinkingTokens"]),
-                    cost_micros: micros(&entry["costUSD"]),
-                    ..TurnUsage::default()
-                });
-            }
-            // One report of one turn: a model that lacks a field is not a
-            // second request that failed to report.
-            sum.partial = false;
-            if models.len() == 1 {
-                sum.model = models.keys().next().and_then(|k| model_id(k));
-            }
-            sum
-        }
-        None => {
-            let usage = &value["usage"];
-            TurnUsage {
-                input: count(&usage["input_tokens"]),
-                output: count(&usage["output_tokens"]),
-                cache_read: count(&usage["cache_read_input_tokens"]),
-                cache_write: count(&usage["cache_creation_input_tokens"]),
-                reasoning: count(&usage["output_tokens_details"]["thinking_tokens"]),
-                ..TurnUsage::default()
-            }
-        }
-    };
+    let mut sum = models_usage(value).or_else(|| top_level_usage(value))?;
     if let Some(total) = micros(&value["total_cost_usd"]) {
         sum.cost_micros = Some(total);
     }
     sum.cost_source = sum.cost_micros.map(|_| CostSource::EngineList);
     sum.duration_ms = count(&value["duration_api_ms"]);
+    Some(sum)
+}
+
+/// The sum of `modelUsage`, if any entry reports something.
+fn models_usage(value: &Value) -> Option<TurnUsage> {
+    let models = value["modelUsage"].as_object()?;
+    let mut sum = TurnUsage::default();
+    for entry in models.values() {
+        sum.merge(&TurnUsage {
+            input: count(&entry["inputTokens"]),
+            output: count(&entry["outputTokens"]),
+            cache_read: count(&entry["cacheReadInputTokens"]),
+            cache_write: count(&entry["cacheCreationInputTokens"]),
+            reasoning: count(&entry["thinkingTokens"]),
+            cost_micros: micros(&entry["costUSD"]),
+            ..TurnUsage::default()
+        });
+    }
+    if models.len() == 1 {
+        sum.model = models.keys().next().and_then(|k| model_id(k));
+    } else {
+        sum.multi_model = true;
+    }
     sum.reported()
+}
+
+/// The top-level `usage`, which leaves out sub-agents and side models.
+fn top_level_usage(value: &Value) -> Option<TurnUsage> {
+    let usage = &value["usage"];
+    TurnUsage {
+        input: count(&usage["input_tokens"]),
+        output: count(&usage["output_tokens"]),
+        cache_read: count(&usage["cache_read_input_tokens"]),
+        cache_write: count(&usage["cache_creation_input_tokens"]),
+        reasoning: count(&usage["output_tokens_details"]["thinking_tokens"]),
+        ..TurnUsage::default()
+    }
+    .reported()
 }
 
 /// Decodes the stream-json output of the claude CLI.

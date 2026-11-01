@@ -36,8 +36,12 @@ pub struct TurnUsage {
     pub duration_ms: Option<u64>,
     /// A sanitized model id.
     pub model: Option<String>,
-    /// Some of the turn is not in the sums.
+    /// Some of the turn is not in the sums: a request of it reported no
+    /// usage, or the turn ended before its end.
     pub partial: bool,
+    /// The engine reported more than one model (sub-agents, side models), so
+    /// `model` names none of them.
+    pub multi_model: bool,
 }
 
 /// Adds two optional counts: `None` only when neither side has one.
@@ -49,18 +53,12 @@ fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 }
 
 impl TurnUsage {
-    /// Adds the usage of another request of the same turn. A field one side
-    /// reported and the other did not keeps its value and marks the sum as
-    /// partial: it is a floor, not the whole.
+    /// Adds the usage of another request of the same turn. A field only one
+    /// side reported keeps its value; a field neither reported stays `None`.
+    /// A field gap is no data, not a partial turn: `partial` is about whole
+    /// requests (see [`UsageFold`]).
     pub fn merge(&mut self, other: &TurnUsage) {
-        let mismatch = |a: Option<u64>, b: Option<u64>| a.is_some() != b.is_some();
-        self.partial |= other.partial
-            || mismatch(self.input, other.input)
-            || mismatch(self.output, other.output)
-            || mismatch(self.cache_read, other.cache_read)
-            || mismatch(self.cache_write, other.cache_write)
-            || mismatch(self.reasoning, other.reasoning)
-            || mismatch(self.cost_micros, other.cost_micros);
+        self.partial |= other.partial;
         self.input = add(self.input, other.input);
         self.output = add(self.output, other.output);
         self.cache_read = add(self.cache_read, other.cache_read);
@@ -69,7 +67,11 @@ impl TurnUsage {
         self.cost_micros = add(self.cost_micros, other.cost_micros);
         self.duration_ms = add(self.duration_ms, other.duration_ms);
         self.cost_source = self.cost_source.or(other.cost_source);
-        if self.model.is_none() {
+        self.multi_model |= other.multi_model
+            || matches!((&self.model, &other.model), (Some(a), Some(b)) if a != b);
+        if self.multi_model {
+            self.model = None;
+        } else if self.model.is_none() {
             self.model.clone_from(&other.model);
         }
     }

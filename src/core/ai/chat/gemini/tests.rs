@@ -496,3 +496,27 @@ fn without_usage(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
         .filter(|e| !matches!(e, StreamEvent::Usage(_)))
         .collect()
 }
+
+#[test]
+fn a_net_input_field_wins_over_the_difference() {
+    let stats = r#"{"input_tokens":100,"input":37,"output_tokens":3,"cached":60}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.input, got.cache_read), (Some(37), Some(60)));
+}
+
+#[test]
+fn a_malformed_cached_count_makes_the_input_unknown() {
+    let stats = r#"{"input_tokens":100,"output_tokens":3,"cached":"x"}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!(
+        (got.input, got.cache_read, got.output),
+        (None, None, Some(3))
+    );
+}
+
+#[test]
+fn more_than_one_model_is_flagged_and_gets_no_model_name() {
+    let stats = r#"{"input_tokens":5,"output_tokens":1,"models":{"a":{},"b":{}}}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.model.clone(), got.multi_model), (None, true));
+}

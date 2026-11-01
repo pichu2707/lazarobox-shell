@@ -138,9 +138,16 @@ impl GeminiDecoder {
 /// count, or is not an object, is no data and never an error.
 fn usage(stats: &Value) -> Option<TurnUsage> {
     let cached = count(&stats["cached"]);
+    // A `cached` that is there but unreadable leaves the fresh input unknown.
+    let cache_unreadable = !stats["cached"].is_null() && cached.is_none();
+    let input = count(&stats["input"]).or_else(|| {
+        (!cache_unreadable)
+            .then(|| net_input(count(&stats["input_tokens"]), cached))
+            .flatten()
+    });
     let models = stats["models"].as_object();
     TurnUsage {
-        input: net_input(count(&stats["input_tokens"]), cached),
+        input,
         output: count(&stats["output_tokens"]),
         cache_read: cached,
         duration_ms: count(&stats["duration_ms"]),
@@ -148,6 +155,7 @@ fn usage(stats: &Value) -> Option<TurnUsage> {
             .filter(|m| m.len() == 1)
             .and_then(|m| m.keys().next())
             .and_then(|k| model_id(k)),
+        multi_model: models.is_some_and(|m| m.len() > 1),
         ..TurnUsage::default()
     }
     .reported()

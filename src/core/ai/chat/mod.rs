@@ -1040,7 +1040,7 @@ impl ChatState {
             }
             StreamEvent::Usage(usage) => {
                 let mut usage = *usage;
-                if usage.model.is_none() && !self.request_model.is_empty() {
+                if usage.model.is_none() && !usage.multi_model && !self.request_model.is_empty() {
                     usage.model = usage::model_id(&self.request_model);
                 }
                 match self.turn_usage.as_mut() {
@@ -1214,6 +1214,12 @@ impl ChatState {
             let mut lines = std::mem::take(&mut self.told_sent);
             lines.append(&mut self.told);
             self.told = lines;
+        }
+        // A turn that did not end well used more than the engine reported.
+        if status != MsgStatus::Complete
+            && let Some(usage) = self.turn_usage.as_mut()
+        {
+            usage.partial = true;
         }
         self.collapse_reasoning(now);
         self.settle_tool_rows();

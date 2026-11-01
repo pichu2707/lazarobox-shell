@@ -294,6 +294,7 @@ impl ChatState {
             StreamEvent::Slow
             | StreamEvent::Notice(_)
             | StreamEvent::ThinkingDelta(_)
+            // Not recorded yet: the compaction's own usage lands with 1b.4.
             | StreamEvent::Usage(_)
             | StreamEvent::ToolCall { .. }
             | StreamEvent::ToolResult { .. } => {}

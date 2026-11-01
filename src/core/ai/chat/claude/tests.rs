@@ -83,6 +83,7 @@ fn plain_usage() -> TurnUsage {
         duration_ms: Some(1321),
         model: Some("claude-opus-5-5".into()),
         partial: false,
+        multi_model: false,
     }
 }
 
@@ -123,6 +124,7 @@ fn model_usage_of_the_main_model_and_a_subagent_is_summed() {
             duration_ms: Some(900),
             model: None,
             partial: false,
+            multi_model: true,
         }]
     );
 }
@@ -701,4 +703,48 @@ fn a_failed_request_that_used_nothing_reports_no_usage() {
         matches!(events.as_slice(), [StreamEvent::Error(_)]),
         "{events:?}"
     );
+}
+
+#[test]
+fn empty_or_wrong_typed_model_entries_fall_back_to_the_top_level_usage() {
+    for models in [
+        r#"{"x":{}}"#,
+        r#"{"x":{"inputTokens":"many","outputTokens":-1}}"#,
+        r#"{"x":5,"y":"z"}"#,
+    ] {
+        let extra =
+            format!(r#","modelUsage":{models},"usage":{{"input_tokens":7,"output_tokens":8}}"#);
+        let got = usages(&whole(&result_line("ok", &extra)));
+        assert_eq!(got.len(), 1, "{models}");
+        assert_eq!(
+            (got[0].input, got[0].output),
+            (Some(7), Some(8)),
+            "{models}"
+        );
+    }
+}
+
+#[test]
+fn model_entries_with_nothing_and_no_top_level_usage_give_no_record() {
+    let events = whole(&result_line("ok", r#","modelUsage":{"x":{}}"#));
+    assert_eq!(events, [delta("ok"), done()]);
+}
+
+#[test]
+fn a_field_one_model_lacks_is_a_gap_not_a_partial_turn() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1,"outputTokens":2,"thinkingTokens":3},"b":{"inputTokens":4,"outputTokens":5}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(
+        (got[0].input, got[0].reasoning, got[0].partial),
+        (Some(5), Some(3), false)
+    );
+}
+
+#[test]
+fn more_than_one_model_is_flagged_and_gets_no_model_name() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1},"b":{"inputTokens":2}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!((got[0].model.clone(), got[0].multi_model), (None, true));
+    let single = usages(&whole(PLAIN));
+    assert!(!single[0].multi_model);
 }

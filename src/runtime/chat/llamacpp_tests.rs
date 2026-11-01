@@ -707,3 +707,64 @@ async fn a_server_without_timings_or_usage_gives_no_usage_event() {
     let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
     assert_eq!(events, [StreamEvent::Delta("hi".into()), done()]);
 }
+
+fn sse_call_with(finish_extra: Value) -> Step {
+    let call = json!({"index": 0, "id": "c1", "type": "function",
+        "function": {"name": "find_dir", "arguments": "{\"query\":\"curso\"}"}});
+    let mut finish = chunk(json!({}), Some("tool_calls"));
+    finish
+        .as_object_mut()
+        .unwrap()
+        .extend(finish_extra.as_object().unwrap().clone());
+    sse(&[chunk(json!({"tool_calls": [call]}), None), finish])
+}
+
+fn sse_text_with(finish_extra: Value) -> Step {
+    let mut finish = chunk(json!({}), Some("stop"));
+    finish
+        .as_object_mut()
+        .unwrap()
+        .extend(finish_extra.as_object().unwrap().clone());
+    sse(&[chunk(json!({"content": "Found it"}), None), finish])
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn timings_of_one_round_and_a_usage_object_of_the_next_are_summed() {
+    let fake = fake(vec![
+        sse_call_with(json!({"timings": {"prompt_n": 10, "cache_n": 4, "predicted_n": 20}})),
+        sse_text_with(json!({"usage": {"prompt_tokens": 5, "completion_tokens": 6}})),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Usage(u) => Some((**u).clone()),
+            _ => None,
+        })
+        .expect("a usage event");
+    assert_eq!(
+        (usage.input, usage.output, usage.cache_read),
+        (Some(15), Some(26), Some(4))
+    );
+    assert!(!usage.partial);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_with_neither_timings_nor_usage_makes_the_turn_partial() {
+    let fake = fake(vec![
+        sse_call_with(json!({"timings": {"prompt_n": 10, "predicted_n": 20}})),
+        sse_text("Found it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let partial = events.iter().find_map(|e| match e {
+        StreamEvent::Usage(u) => Some(u.partial),
+        _ => None,
+    });
+    assert_eq!(partial, Some(true), "{events:?}");
+}

@@ -555,4 +555,85 @@ mod usage_tests {
         state.apply(turn, usage(1, 1));
         assert_eq!((state.generation(), state.entries().len()), before);
     }
+
+    fn ended_with(end: impl FnOnce(&mut ChatState, u64)) -> Option<TurnUsage> {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        end(&mut state, turn);
+        state.turn_usage().cloned()
+    }
+
+    #[test]
+    fn a_clean_end_keeps_the_turn_whole() {
+        let got = ended_with(|s, t| {
+            s.apply(t, StreamEvent::Done(Finish::Stop));
+        });
+        assert!(!got.expect("usage").partial);
+    }
+
+    #[test]
+    fn every_unclean_end_after_reported_usage_marks_it_partial() {
+        let ends: [fn(&mut ChatState, u64); 5] = [
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Failed("boom".into())));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Interrupted));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Truncated));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Jail("no".into())));
+            },
+            |s, _| {
+                s.cancel();
+            },
+        ];
+        for (i, end) in ends.into_iter().enumerate() {
+            let got = ended_with(end).unwrap_or_else(|| panic!("end {i} lost the usage"));
+            assert!(got.partial, "end {i}");
+        }
+    }
+
+    #[test]
+    fn an_error_with_no_reported_usage_leaves_no_record() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, StreamEvent::Error(ChatError::Interrupted));
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn a_failed_process_exit_after_the_result_is_partial_too() {
+        use crate::core::ai::chat::cli::{Exit, verdict};
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(5, 5));
+        let last = verdict(
+            "claude",
+            Some(StreamEvent::Done(Finish::Stop)),
+            true,
+            Some(Exit { code: Some(1) }),
+            "",
+        );
+        assert!(matches!(last, StreamEvent::Error(_)), "{last:?}");
+        state.apply(turn, last);
+        assert!(state.turn_usage().expect("usage").partial);
+    }
+
+    #[test]
+    fn a_mixed_model_report_is_not_labelled_with_the_request_model() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(
+            turn,
+            StreamEvent::usage(TurnUsage {
+                multi_model: true,
+                ..TurnUsage::default()
+            }),
+        );
+        assert_eq!(state.turn_usage().and_then(|u| u.model.as_deref()), None);
+    }
 }

@@ -44,7 +44,7 @@ fn merge_sums_every_field_present_on_both_sides() {
 }
 
 #[test]
-fn merge_keeps_a_field_only_one_side_reported_and_marks_partial() {
+fn merge_keeps_a_field_only_one_side_reported_and_is_not_partial() {
     let mut sum = usage(Some(100), Some(20));
     let next = TurnUsage {
         cache_read: Some(9),
@@ -53,7 +53,7 @@ fn merge_keeps_a_field_only_one_side_reported_and_marks_partial() {
     sum.merge(&next);
     assert_eq!(sum.cache_read, Some(9));
     assert_eq!(sum.input, Some(101));
-    assert!(sum.partial);
+    assert!(!sum.partial, "a field gap is no data, not a partial turn");
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn merge_saturates_instead_of_wrapping() {
 }
 
 #[test]
-fn merge_keeps_the_first_model_and_source_and_ors_partial() {
+fn merge_keeps_the_source_and_ors_partial() {
     let mut sum = TurnUsage {
         model: Some("a".into()),
         cost_source: Some(CostSource::EngineList),
@@ -98,9 +98,26 @@ fn merge_keeps_the_first_model_and_source_and_ors_partial() {
         ..usage(Some(1), Some(1))
     };
     sum.merge(&next);
-    assert_eq!(sum.model.as_deref(), Some("a"));
     assert_eq!(sum.cost_source, Some(CostSource::EngineList));
     assert!(sum.partial);
+}
+
+#[test]
+fn merge_flags_a_second_model_instead_of_picking_one() {
+    let named = |m: &str| TurnUsage {
+        model: Some(m.into()),
+        ..usage(Some(1), Some(1))
+    };
+    let mut same = named("a");
+    same.merge(&named("a"));
+    assert!(!same.multi_model);
+    let mut mixed = named("a");
+    mixed.merge(&named("b"));
+    assert!(mixed.multi_model);
+    // Once mixed, a further merge keeps the flag.
+    mixed.merge(&named("a"));
+    assert!(mixed.multi_model);
+    assert_eq!(mixed.model, None, "a mixed turn names no single model");
 }
 
 #[test]

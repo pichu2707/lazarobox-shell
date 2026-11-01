@@ -296,6 +296,7 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::ThinkingDelta(_)
+            // Not recorded yet: the summary's own usage lands with 1b.4.
             | StreamEvent::Usage(_)
             | StreamEvent::Notice(_)
             | StreamEvent::ToolCall { .. }

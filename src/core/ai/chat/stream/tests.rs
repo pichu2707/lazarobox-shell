@@ -1378,4 +1378,23 @@ mod usage_tests {
             assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "{extra}");
         }
     }
+
+    #[test]
+    fn a_finish_chunk_with_usage_then_done_gives_one_of_each() {
+        let text = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\ndata: [DONE]\n\n";
+        let events = sse(&[text.as_bytes()]);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(events[0], StreamEvent::Usage(_)));
+        assert_eq!(events[1], StreamEvent::Done(Finish::Stop));
+    }
+
+    #[test]
+    fn a_usage_chunk_after_the_finish_chunk_is_lost_and_done_stays_single() {
+        let text = concat!(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(sse(&[text.as_bytes()]), [StreamEvent::Done(Finish::Stop)]);
+    }
 }
