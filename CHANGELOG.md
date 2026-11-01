@@ -10,6 +10,32 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
+  `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
+  happened: `Copied (<tool>)`, a failure with the OSC 52 fallback, or
+  `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or
+  xclip`.
+- `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
+- First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
+  use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
+  again.
+- `install-desktop` asks which terminal to use when run on a TTY without
+  `--terminal`, marks terminals with a test record, and prints notes for WSL.
+- `docs/terminals/` holds the support policy, the checklist and the record
+  templates. A terminal is supported only with a filled record.
+
+### Changed
+
+- A single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane: it is
+  the prefix alias now and takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This
+  affects vim tag jump and the telnet escape.
+- `install-desktop` no longer says lazarobox is "tested in Kitty"; it says
+  whether the terminal has a test record, and never refuses to install.
+- README: Windows is described as WSL only, and the terminal record policy is
+  linked.
+
 ## [1.0.1] - 2026-10-31
 
 ### Changed

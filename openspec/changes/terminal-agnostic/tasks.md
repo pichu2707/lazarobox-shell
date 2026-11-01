@@ -114,17 +114,17 @@ Spec: desktop-launcher. Independent of S1 and S2. Merge gate: task 3.8.
 
 Spec: terminal-compatibility "Support policy by records" and "Shared checklist and record format". Starts when S1, S2a, S2b and S3 are built.
 
-- [ ] 4.1 Create `docs/terminals/README.md`: shared checklist (prefix `Ctrl+Space`, alias `Ctrl+]`, `Alt+Enter`, `Ctrl+J`, `Ctrl+O`, `Ctrl+S`, `Ctrl+Y`, `Ctrl+B`, `Ctrl+R`, `Ctrl+G`, `Ctrl+D`, `Ctrl+U`, `Ctrl+C`, `Alt+Up/Down` when present, mouse, paste, focus, truecolor, clipboard) and the record template: header table (terminal, version, OS, lazarobox version, date, tester) then `item | pass/fail/n.a. | note`.
-- [ ] 4.2 README: remove "tested in Kitty" (line ~93, Spanish text) and replace with a record-aware sentence.
-- [ ] 4.3 README: platform list (lines ~60-64): replace "Windows: no soportado" with WSL as a supported path once its record exists, plus the WSLg Start menu caveat from task 3.8.
-- [ ] 4.4 README: add a "Supported terminals" section listing only folders under `docs/terminals/`, each linking its newest record; everything else "untested". Update the prefix table (lines ~146-187): row `Ctrl+Espacio` / `Ctrl+]` sends its own byte (NUL / 0x1D); line ~146 says the prefix keys are fixed. Update the copy section (lines ~322-335): fallback chain, the notices, SSH skips local tools, `--check-prefix`.
-- [ ] 4.4b README and CHANGELOG: state the behaviour change that a single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane; it takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This affects vim tag jump and the telnet escape.
-- [ ] 4.4a README: in the `install-desktop` text (line ~93) describe the picker: it asks only on a TTY without `--terminal`, lists installed terminals, marks tested ones, Enter keeps the automatic choice, Ctrl+D cancels.
-- [ ] 4.5 Check: grep README and `src/` for `tested in Kitty` and `Windows: no soportado` returns nothing.
+- [x] 4.1 Create `docs/terminals/README.md`: shared checklist (prefix `Ctrl+Space`, alias `Ctrl+]`, `Alt+Enter`, `Ctrl+J`, `Ctrl+O`, `Ctrl+S`, `Ctrl+Y`, `Ctrl+B`, `Ctrl+R`, `Ctrl+G`, `Ctrl+D`, `Ctrl+U`, `Ctrl+C`, `Alt+Up/Down` when present, mouse, paste, focus, truecolor, clipboard) and the record template: header table (terminal, version, OS, lazarobox version, date, tester) then `item | pass/fail/n.a. | note`.
+- [x] 4.2 README: remove "tested in Kitty" (line ~93, Spanish text) and replace with a record-aware sentence.
+- [x] 4.3 README: platform list (lines ~60-64): replace "Windows: no soportado" with WSL as a supported path once its record exists, plus the WSLg Start menu caveat from task 3.8.
+- [x] 4.4 README: add a "Supported terminals" section listing only folders under `docs/terminals/`, each linking its newest record; everything else "untested". Update the prefix table (lines ~146-187): row `Ctrl+Espacio` / `Ctrl+]` sends its own byte (NUL / 0x1D); line ~146 says the prefix keys are fixed. Update the copy section (lines ~322-335): fallback chain, the notices, SSH skips local tools, `--check-prefix`.
+- [x] 4.4b README and CHANGELOG: state the behaviour change that a single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane; it takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This affects vim tag jump and the telnet escape.
+- [x] 4.4a README: in the `install-desktop` text (line ~93) describe the picker: it asks only on a TTY without `--terminal`, lists installed terminals, marks tested ones, Enter keeps the automatic choice, Ctrl+D cancels.
+- [x] 4.5 Check: grep README and `src/` for `tested in Kitty` and `Windows: no soportado` returns nothing.
 - [ ] 4.6 [manual] Kitty: fill `docs/terminals/kitty/<version>-<date>.md` from the template (user). Include the S1 clipboard check (1.13), the SSH yank scenario, and the paste scenarios from copy-selection.
-- [ ] 4.7 [manual] Windows Terminal (WSL): fill `docs/terminals/windows-terminal-wsl/<version>-<date>.md` (user). Include the one-step launch result (3.8), the probe result, `clip.exe` UTF-16LE check (if wrong, change `payload` to UTF-8 in a fix commit), and the alias.
+- [ ] 4.7 [manual] Windows Terminal (WSL): fill `docs/terminals/windows-terminal/<version>-<date>.md` (user). Include the one-step launch result (3.8), the probe result, `clip.exe` UTF-16LE check (if wrong, change `payload` to UTF-8 in a fix commit), and the alias.
 - [ ] 4.8 [deferred, non-blocking] WezTerm record: the user fills `docs/terminals/wezterm/<version>-<date>.md` on their other PC. The follow-up PR that brings the record also adds `wezterm` to `RECORDED_TERMINALS` and to the README list. The success criterion "three records" is met in that follow-up.
-- [ ] 4.9 Task 3.2 passes (the `kitty` folder exists).
+- [x] 4.9 Task 3.2 passes (the `kitty` folder exists).
 
 ## Follow-ups outside this change's PRs
 
