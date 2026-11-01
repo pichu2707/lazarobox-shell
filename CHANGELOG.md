@@ -156,6 +156,15 @@ baseline.
   itself only (`memory on for this run`), and when engram cannot be used the
   run goes on with `handoffs not persisted`, said once.
 
+### Known limits
+
+- Chat with `codex` and `gemini` is not fully isolated from the user's own
+  setup: they still load the global instruction files (`~/.codex/AGENTS.md`,
+  `~/.gemini/GEMINI.md`) and, for gemini, the user's skills in
+  `~/.gemini/skills/`. That text reaches the provider and can change
+  answers. `claude` is isolated. It predates 1.1.0 and is planned for 1.1.1
+  (#519).
+
 ### Not yet checked by hand
 
 These parts passed automated tests but have not been tried by hand yet.
