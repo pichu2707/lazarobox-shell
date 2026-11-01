@@ -503,3 +503,94 @@ fn the_incomplete_hint_joins_the_other_hints() {
         .expect("hint");
     assert_eq!(hint, format!("1 secret redacted · {STREAM_CUT}"));
 }
+
+// ai-cost 1b.4: the summary run is a row with its role ------------------------
+
+mod usage_rows {
+    use super::*;
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    use crate::core::layout::PaneId;
+
+    fn used(output: u64) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    fn summary_rows(state: &mut ChatState) -> Vec<(String, bool, Option<u64>)> {
+        state
+            .store_cmds(PaneId::FIRST, &[])
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                StoreCmd::RecordUsage { role, usage, .. } if role == "summary" => {
+                    Some((role, usage.partial, usage.output))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_summary_run_that_reported_usage_is_a_summary_row() {
+        let mut state = talked();
+        let turn = started(&mut state);
+        state.apply(turn, used(30));
+        state.apply(turn, StreamEvent::Delta("text".into()));
+        state.apply(turn, StreamEvent::Done(Finish::Stop));
+        assert_eq!(
+            summary_rows(&mut state),
+            vec![("summary".into(), false, Some(30))]
+        );
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_summary_run_is_partial_and_no_usage_is_no_row() {
+        let mut state = talked();
+        let turn = started(&mut state);
+        state.apply(turn, used(5));
+        state.apply(turn, StreamEvent::Error(ChatError::Interrupted));
+        assert_eq!(
+            summary_rows(&mut state),
+            vec![("summary".into(), true, Some(5))]
+        );
+
+        let mut state = talked();
+        let turn = started(&mut state);
+        state.apply(turn, used(6));
+        state.cancel();
+        assert_eq!(
+            summary_rows(&mut state),
+            vec![("summary".into(), true, Some(6))]
+        );
+
+        let mut state = talked();
+        summarized(&mut state, "text");
+        assert!(summary_rows(&mut state).is_empty());
+    }
+}
+
+#[test]
+fn a_resume_during_a_run_records_the_reported_usage_as_partial() {
+    use crate::core::ai::chat::{store::StoreCmd, tags::Tags, usage::TurnUsage};
+    use crate::core::{ai::config::Profile, layout::PaneId};
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(
+        turn,
+        StreamEvent::usage(TurnUsage {
+            output: Some(4),
+            ..TurnUsage::default()
+        }),
+    );
+    state.resume_into(7, Profile::Programmer, Tags::default(), Vec::new());
+    let partial: Vec<bool> = state
+        .store_cmds(PaneId::FIRST, &[])
+        .into_iter()
+        .filter_map(|c| match c {
+            StoreCmd::RecordUsage { role, usage, .. } if role == "summary" => Some(usage.partial),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(partial, vec![true]);
+}

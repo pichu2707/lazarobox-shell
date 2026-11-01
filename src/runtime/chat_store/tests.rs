@@ -327,7 +327,8 @@ fn a_fresh_store_gets_schema_v3() {
             "memory_notes",
             "memory_sessions",
             "messages",
-            "tags"
+            "tags",
+            "turn_usage"
         ]
     );
     let indexes = names(&conn, "index");
@@ -410,7 +411,7 @@ fn an_empty_database_at_version_zero_is_migrated() {
     drop(Connection::open(&db).unwrap());
     let conn = open_as(&db, me()).unwrap();
     assert_eq!(pragma_text(&conn, "user_version"), "3");
-    assert_eq!(names(&conn, "table").len(), 5);
+    assert_eq!(names(&conn, "table").len(), 6);
 }
 
 #[test]
@@ -1064,4 +1065,96 @@ fn a_migrated_store_shrinks_back_and_stays_private() {
     for suffix in ["-journal", "-wal", "-shm"] {
         assert!(!side(&db, suffix).exists());
     }
+}
+
+// ---- usage table (ai-cost 1b.1) --------------------------------------------
+
+fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+        .unwrap();
+    stmt.query_map([table], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_v3_file_gains_the_usage_table_without_a_version_bump() {
+    let dir = TempDir::new().unwrap();
+    let db = from_fixture(&dir, FIXTURE_V2);
+    drop(open_as(&db, me()).unwrap());
+    // Back to a file as a v3 build left it: no usage table.
+    let raw = Connection::open(&db).unwrap();
+    raw.execute_batch("DROP TABLE turn_usage").unwrap();
+    drop(raw);
+    let conn = open_as(&db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
+    assert!(names(&conn, "table").contains(&"turn_usage".to_owned()));
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    // The same file stays open to a build that only knows v3.
+    drop(conn);
+    assert!(open_with(&db, me(), 3).is_ok());
+}
+
+#[test]
+fn the_usage_table_holds_only_counts_ids_and_timestamps() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    assert_eq!(
+        table_columns(&conn, "turn_usage"),
+        [
+            "id",
+            "ts",
+            "conversation_id",
+            "engine",
+            "model",
+            "role",
+            "worker",
+            "input",
+            "output",
+            "cache_read",
+            "cache_write",
+            "reasoning",
+            "cost_micros",
+            "cost_source",
+            "duration_ms",
+            "partial"
+        ]
+    );
+}
+
+#[test]
+fn deleting_a_conversation_keeps_its_usage_with_the_link_cleared() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    conversation(&conn, 1);
+    for ts in [10, 20, 30] {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, conversation_id, engine, output) VALUES (?1, 1, 'ollama', 5)",
+            [ts],
+        )
+        .unwrap();
+    }
+    conn.execute("DELETE FROM conversations WHERE id = 1", [])
+        .unwrap();
+    let kept: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(conversation_id), SUM(output) FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (3, 0, 15));
+}
+
+#[test]
+fn a_v2_build_still_refuses_and_a_usage_table_does_not_move_the_version() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    assert_eq!(open_with(&db, me(), 2).err(), Some(StoreError::Newer(3)));
 }

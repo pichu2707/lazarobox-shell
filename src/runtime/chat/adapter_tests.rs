@@ -397,7 +397,7 @@ async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answ
                     output: Some(4),
                     cache_read: Some(5),
                     duration_ms: Some(215),
-                    model: Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into()),
+                    model: Some("qwen2.5-0.5b-instruct-q4_k_m".into()),
                     ..Default::default()
                 }),
                 StreamEvent::Done(Finish::Stop)

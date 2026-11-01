@@ -778,6 +778,8 @@ pub struct App {
     config_path: Option<PathBuf>,
     /// The privacy notice of the rolling summary was shown in this run.
     summary_notice_shown: bool,
+    /// The `Usage not saved` notice was shown in this run.
+    usage_notice_shown: bool,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
@@ -923,6 +925,7 @@ impl App {
             notice: None,
             config_path: None,
             summary_notice_shown: false,
+            usage_notice_shown: false,
             summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
@@ -2633,7 +2636,10 @@ impl App {
         };
         // A compaction run is not a turn: the pane stays idle meanwhile.
         if chat.is_compaction_turn(turn) {
-            return self.on_compaction(id, event);
+            let mut effects = self.on_compaction(id, event);
+            // The run's own usage is a row of its own.
+            effects.extend(self.store_effects(id));
+            return effects;
         }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
@@ -8295,6 +8301,9 @@ mod app_tests {
 
     /// Rolling compaction of the history (chat-memory S3, S4, S8).
     mod chat_compact;
+
+    /// Usage rows and the notice for a lost one (ai-cost 1b).
+    mod chat_usage;
 
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;

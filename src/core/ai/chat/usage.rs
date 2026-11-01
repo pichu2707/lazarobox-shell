@@ -20,6 +20,16 @@ pub enum CostSource {
     Gateway,
 }
 
+impl CostSource {
+    /// The id the store keeps.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::EngineList => "engine_list",
+            Self::Gateway => "gateway",
+        }
+    }
+}
+
 /// The usage of one turn, or of one request of it. Token buckets are
 /// disjoint: `input` is the fresh prompt only, the cache has its own buckets
 /// and `reasoning` is part of `output`.
@@ -108,6 +118,59 @@ impl TurnUsage {
     }
 }
 
+/// The usage of one run, waiting for the store. `role` says what ran: `chat`,
+/// `compaction` or `summary`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Pending {
+    pub role: &'static str,
+    pub engine: String,
+    pub usage: TurnUsage,
+}
+
+/// What a compaction or summary run used so far. Their model calls are real
+/// spend the chat turns do not show, so each ends as a row of its own.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SideRun {
+    role: &'static str,
+    engine: String,
+    model: Option<String>,
+    usage: Option<TurnUsage>,
+}
+
+impl SideRun {
+    pub fn new(role: &'static str, engine: &str, model: Option<&str>) -> Self {
+        Self {
+            role,
+            engine: engine.to_owned(),
+            model: model.and_then(model_id),
+            usage: None,
+        }
+    }
+
+    /// A `Usage` event of the run.
+    pub fn add(&mut self, mut usage: TurnUsage) {
+        if usage.model.is_none() && !usage.multi_model {
+            usage.model.clone_from(&self.model);
+        }
+        match self.usage.as_mut() {
+            Some(sum) => sum.merge(&usage),
+            None => self.usage = Some(usage),
+        }
+    }
+
+    /// The run ended; `cut` when it did not end well. `None` when it reported
+    /// no usage: no data writes no row.
+    pub fn end(self, cut: bool) -> Option<Pending> {
+        let mut usage = self.usage?;
+        usage.partial |= cut;
+        Some(Pending {
+            role: self.role,
+            engine: self.engine,
+            usage,
+        })
+    }
+}
+
 /// Folds the requests of one turn into one value.
 #[derive(Default)]
 pub struct UsageFold {
@@ -159,6 +222,14 @@ pub fn micros(value: &Value) -> Option<u64> {
 
 /// A model id as one safe, short token. Empty is no data.
 pub fn model_id(raw: &str) -> Option<String> {
+    // A managed llama-server is named by its model file: keep the file stem,
+    // never a path from the user's disk.
+    let raw = if raw.starts_with(['/', '~']) || raw.contains('\\') || raw.ends_with(".gguf") {
+        let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+        name.strip_suffix(".gguf").unwrap_or(name)
+    } else {
+        raw
+    };
     let id: String = clean(raw).trim().chars().take(MODEL_CAP).collect();
     (!id.is_empty()).then_some(id)
 }
