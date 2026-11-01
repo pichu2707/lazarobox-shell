@@ -1,0 +1,165 @@
+//! What a turn used. Engine-reported only: counts, a timing and, when the
+//! engine says so, dollars. A value the engine did not report is `None`,
+//! never 0. No message text lives here.
+
+use serde_json::Value;
+
+use crate::core::ai::sanitize::clean;
+
+/// Longest model id kept, in characters.
+const MODEL_CAP: usize = 80;
+/// Millionths of a dollar in a dollar.
+const MICROS: f64 = 1_000_000.0;
+
+/// Where a dollar figure comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CostSource {
+    /// The engine's own list price for the turn.
+    EngineList,
+    /// A gateway that bills (reserved).
+    Gateway,
+}
+
+/// The usage of one turn, or of one request of it. Token buckets are
+/// disjoint: `input` is the fresh prompt only, the cache has its own buckets
+/// and `reasoning` is part of `output`.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct TurnUsage {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub reasoning: Option<u64>,
+    /// Millionths of a dollar, as the engine reported them.
+    pub cost_micros: Option<u64>,
+    pub cost_source: Option<CostSource>,
+    pub duration_ms: Option<u64>,
+    /// A sanitized model id.
+    pub model: Option<String>,
+    /// Some of the turn is not in the sums.
+    pub partial: bool,
+}
+
+/// Adds two optional counts: `None` only when neither side has one.
+fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+    }
+}
+
+impl TurnUsage {
+    /// Adds the usage of another request of the same turn. A field one side
+    /// reported and the other did not keeps its value and marks the sum as
+    /// partial: it is a floor, not the whole.
+    pub fn merge(&mut self, other: &TurnUsage) {
+        let mismatch = |a: Option<u64>, b: Option<u64>| a.is_some() != b.is_some();
+        self.partial |= other.partial
+            || mismatch(self.input, other.input)
+            || mismatch(self.output, other.output)
+            || mismatch(self.cache_read, other.cache_read)
+            || mismatch(self.cache_write, other.cache_write)
+            || mismatch(self.reasoning, other.reasoning)
+            || mismatch(self.cost_micros, other.cost_micros);
+        self.input = add(self.input, other.input);
+        self.output = add(self.output, other.output);
+        self.cache_read = add(self.cache_read, other.cache_read);
+        self.cache_write = add(self.cache_write, other.cache_write);
+        self.reasoning = add(self.reasoning, other.reasoning);
+        self.cost_micros = add(self.cost_micros, other.cost_micros);
+        self.duration_ms = add(self.duration_ms, other.duration_ms);
+        self.cost_source = self.cost_source.or(other.cost_source);
+        if self.model.is_none() {
+            self.model.clone_from(&other.model);
+        }
+    }
+
+    /// Nothing was used: every count and the cost are 0 or missing. A failed
+    /// request reports this, and it is not a turn worth a record.
+    pub fn idle(&self) -> bool {
+        [
+            self.input,
+            self.output,
+            self.cache_read,
+            self.cache_write,
+            self.reasoning,
+            self.cost_micros,
+        ]
+        .iter()
+        .all(|v| v.unwrap_or(0) == 0)
+    }
+
+    /// This usage if it holds any count or cost, else `None`: an object with
+    /// nothing reported is no data, not a record of `None`s.
+    pub fn reported(self) -> Option<Self> {
+        let any = [
+            self.input,
+            self.output,
+            self.cache_read,
+            self.cache_write,
+            self.reasoning,
+            self.cost_micros,
+        ]
+        .iter()
+        .any(Option::is_some);
+        any.then_some(self)
+    }
+}
+
+/// Folds the requests of one turn into one value.
+#[derive(Default)]
+pub struct UsageFold {
+    requests: usize,
+    reported: usize,
+    sum: Option<TurnUsage>,
+}
+
+impl UsageFold {
+    /// One request ended, with its usage if it reported any.
+    pub fn add(&mut self, usage: Option<TurnUsage>) {
+        self.requests += 1;
+        let Some(usage) = usage else { return };
+        self.reported += 1;
+        match self.sum.as_mut() {
+            Some(sum) => sum.merge(&usage),
+            None => self.sum = Some(usage),
+        }
+    }
+
+    /// The turn's usage: `None` when no request reported any. It is partial
+    /// when a request reported nothing, or when the turn was `cut` (an error
+    /// or the tool limit) after usage had been reported.
+    pub fn finish(self, cut: bool) -> Option<TurnUsage> {
+        let mut sum = self.sum?;
+        sum.partial |= cut || self.reported < self.requests;
+        Some(sum)
+    }
+}
+
+/// A whole, non-negative count. Anything else is no data.
+pub fn count(value: &Value) -> Option<u64> {
+    value.as_u64()
+}
+
+/// The fresh part of a prompt count that includes cached tokens. Saturating:
+/// a cached count over the total is the engine's inconsistency, not a debt.
+pub fn net_input(total: Option<u64>, cached: Option<u64>) -> Option<u64> {
+    total.map(|t| t.saturating_sub(cached.unwrap_or(0)))
+}
+
+/// A dollar figure as millionths, rounded. Negative, non-finite, non-number
+/// and out-of-range values are no data.
+pub fn micros(value: &Value) -> Option<u64> {
+    let usd = value.as_f64().filter(|v| v.is_finite() && *v >= 0.0)?;
+    let scaled = (usd * MICROS).round();
+    (scaled < u64::MAX as f64).then_some(scaled as u64)
+}
+
+/// A model id as one safe, short token. Empty is no data.
+pub fn model_id(raw: &str) -> Option<String> {
+    let id: String = clean(raw).trim().chars().take(MODEL_CAP).collect();
+    (!id.is_empty()).then_some(id)
+}
+
+#[cfg(test)]
+mod tests;

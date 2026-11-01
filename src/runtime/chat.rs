@@ -218,6 +218,7 @@ impl Pipe {
             }],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
+            StreamEvent::Usage(_) => Vec::new(),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
             StreamEvent::Error(ChatError::Failed(text)) => {
                 self.end(StreamEvent::Error(ChatError::Failed(error_text(&text))))

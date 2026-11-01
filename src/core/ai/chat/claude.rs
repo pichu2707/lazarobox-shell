@@ -26,6 +26,7 @@ use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
 };
+use super::usage::{CostSource, TurnUsage, count, micros, model_id};
 use crate::core::ai::tools::wiring::CLAUDE_TOOL_PREFIX;
 
 /// The failure of a turn in which claude started a tool that is not ours.
@@ -100,6 +101,54 @@ fn started_foreign_tool(value: &Value, wired: bool) -> bool {
         _ => return false,
     };
     blocks.into_iter().any(|block| foreign_block(block, wired))
+}
+
+/// What a `result` line reports a turn used, if anything. `modelUsage` has
+/// one entry per model and counts sub-agents and side models, which the
+/// top-level `usage` leaves out, so it wins; `usage` is the fallback. The
+/// dollars are the CLI's own `total_cost_usd`, a list price.
+fn usage(value: &Value) -> Option<TurnUsage> {
+    let models = value["modelUsage"].as_object().filter(|m| !m.is_empty());
+    let mut sum = match models {
+        Some(models) => {
+            let mut sum = TurnUsage::default();
+            for entry in models.values() {
+                sum.merge(&TurnUsage {
+                    input: count(&entry["inputTokens"]),
+                    output: count(&entry["outputTokens"]),
+                    cache_read: count(&entry["cacheReadInputTokens"]),
+                    cache_write: count(&entry["cacheCreationInputTokens"]),
+                    reasoning: count(&entry["thinkingTokens"]),
+                    cost_micros: micros(&entry["costUSD"]),
+                    ..TurnUsage::default()
+                });
+            }
+            // One report of one turn: a model that lacks a field is not a
+            // second request that failed to report.
+            sum.partial = false;
+            if models.len() == 1 {
+                sum.model = models.keys().next().and_then(|k| model_id(k));
+            }
+            sum
+        }
+        None => {
+            let usage = &value["usage"];
+            TurnUsage {
+                input: count(&usage["input_tokens"]),
+                output: count(&usage["output_tokens"]),
+                cache_read: count(&usage["cache_read_input_tokens"]),
+                cache_write: count(&usage["cache_creation_input_tokens"]),
+                reasoning: count(&usage["output_tokens_details"]["thinking_tokens"]),
+                ..TurnUsage::default()
+            }
+        }
+    };
+    if let Some(total) = micros(&value["total_cost_usd"]) {
+        sum.cost_micros = Some(total);
+    }
+    sum.cost_source = sum.cost_micros.map(|_| CostSource::EngineList);
+    sum.duration_ms = count(&value["duration_api_ms"]);
+    sum.reported()
 }
 
 /// Decodes the stream-json output of the claude CLI.
@@ -185,9 +234,13 @@ impl ClaudeDecoder {
             || value["subtype"]
                 .as_str()
                 .is_some_and(|s| s.starts_with("error"));
+        let usage = usage(value);
         if failed {
-            return vec![StreamEvent::Error(ChatError::Failed(error_message(text)))];
+            let error = StreamEvent::Error(ChatError::Failed(error_message(text)));
+            let spent = usage.filter(|u| !u.idle()).map(StreamEvent::Usage);
+            return spent.into_iter().chain([error]).collect();
         }
+        let usage = usage.map(StreamEvent::Usage);
         let mut events = Vec::new();
         // Without partial messages the result is the only copy of the answer.
         if !self.streamed && !text.is_empty() {
@@ -198,6 +251,7 @@ impl ClaudeDecoder {
         } else {
             Finish::Stop
         };
+        events.extend(usage);
         events.push(StreamEvent::Done(finish));
         events
     }

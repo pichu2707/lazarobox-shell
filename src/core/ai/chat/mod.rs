@@ -39,6 +39,7 @@ pub mod tags;
 pub mod text_call;
 pub mod tool;
 pub mod transcript;
+pub mod usage;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
@@ -1023,6 +1024,7 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Usage(_) => Follow::Nothing,
             StreamEvent::Delta(text) => self.push_delta(&text, now),
             StreamEvent::ToolCall {
                 id, name, summary, ..

@@ -39,6 +39,7 @@ use super::stream::{
     CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
     malformed, too_long,
 };
+use super::usage::{TurnUsage, count, net_input};
 use crate::core::ai::tools::wiring::SERVER;
 
 /// The failure of a turn in which codex started a tool.
@@ -97,7 +98,11 @@ impl CodexDecoder {
         match value["type"].as_str() {
             Some("item.started" | "item.updated") => self.tool_check(&value),
             Some("item.completed") => self.completed(&value),
-            Some("turn.completed") => vec![StreamEvent::Done(Finish::Stop)],
+            Some("turn.completed") => usage(&value["usage"])
+                .map(StreamEvent::Usage)
+                .into_iter()
+                .chain([StreamEvent::Done(Finish::Stop)])
+                .collect(),
             Some("turn.failed") => vec![StreamEvent::Error(ChatError::Failed(failure(&value)))],
             _ => vec![],
         }
@@ -142,6 +147,21 @@ impl CodexDecoder {
         }
         out
     }
+}
+
+/// What `turn.completed.usage` says the turn used. Codex counts the cache
+/// inside `input_tokens` and the reasoning inside `output_tokens`; there are
+/// no dollars. A usage that holds no count is no data.
+fn usage(usage: &Value) -> Option<TurnUsage> {
+    let cached = count(&usage["cached_input_tokens"]);
+    TurnUsage {
+        input: net_input(count(&usage["input_tokens"]), cached),
+        output: count(&usage["output_tokens"]),
+        cache_read: cached,
+        reasoning: count(&usage["reasoning_output_tokens"]),
+        ..TurnUsage::default()
+    }
+    .reported()
 }
 
 /// The text of a `turn.failed`: the `error.message` inside the API's JSON
