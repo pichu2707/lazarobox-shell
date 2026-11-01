@@ -15,8 +15,7 @@ baseline.
 - Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
   `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
   happened: `Copied (<tool>)`, a failure with the OSC 52 fallback, or
-  `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or
-  xclip`.
+  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
 - `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
 - First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
   use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
@@ -31,6 +30,9 @@ baseline.
 - Alt+Enter is no longer lost in terminals that use xterm modifyOtherKeys
   (zutty sends `CSI 27;3;13~`, which the input library cannot parse): startup
   turns that mode off (`CSI > 4 ; 0 m`) and exit restores the default.
+- Copy notices are shorter and keep the action first (`No paste? Install
+  wl-copy or xclip (OSC 52 sent)`, `<tool> failed; sent via OSC 52 (<reason>)`),
+  so the tool names stay visible in an 80-column statusline.
 
 ### Changed
 

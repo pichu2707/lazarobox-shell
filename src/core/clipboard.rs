@@ -111,31 +111,27 @@ pub fn copied(tool: Tool) -> String {
     format!("Copied ({})", tool.name())
 }
 
-/// The notice when a local tool failed; OSC 52 was still sent.
+/// The notice when a local tool failed; OSC 52 was still sent. The reason
+/// goes last: it is the part that varies in length, so it is what gets clipped.
 pub fn failed(tool: Tool, reason: &str) -> String {
-    format!(
-        "{} failed ({reason}); sent to the terminal (OSC 52)",
-        tool.name()
-    )
+    format!("{} failed; sent via OSC 52 ({reason})", tool.name())
 }
 
 /// The notice when a local tool failed on a text too large for OSC 52:
-/// nothing was sent to the terminal either.
+/// nothing was sent to the terminal either. Reason last, as in [`failed`].
 pub fn failed_too_large(tool: Tool, reason: &str) -> String {
-    format!(
-        "{} failed ({reason}); selection too large for OSC 52",
-        tool.name()
-    )
+    format!("{} failed; too large for OSC 52 ({reason})", tool.name())
 }
 
-/// The notice when only OSC 52 was sent: nothing confirms it arrived.
+/// The notice when only OSC 52 was sent: nothing confirms it arrived. The
+/// action comes first and the notice is short, so the statusline (about 60
+/// columns for a notice at 80) never clips it.
 pub fn osc52_only(ssh: bool) -> String {
-    let advice = if ssh {
-        "enable OSC 52 in your terminal"
+    if ssh {
+        "No paste? Enable OSC 52 in your terminal (sent)".to_owned()
     } else {
-        "install wl-copy or xclip"
-    };
-    format!("Sent to the terminal (OSC 52); if it does not paste, {advice}")
+        "No paste? Install wl-copy or xclip (OSC 52 sent)".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -176,10 +172,7 @@ mod tests {
     #[test]
     fn a_failure_on_a_text_too_large_for_osc52_does_not_claim_it_was_sent() {
         let text = failed_too_large(Tool::WlCopy, "timed out");
-        assert_eq!(
-            text,
-            "wl-copy failed (timed out); selection too large for OSC 52"
-        );
+        assert_eq!(text, "wl-copy failed; too large for OSC 52 (timed out)");
         assert!(!text.contains("sent to the terminal"));
     }
 
@@ -256,7 +249,7 @@ mod tests {
         assert_eq!(copied(Tool::Xclip), "Copied (xclip)");
         assert_eq!(
             failed(Tool::WlCopy, "exit code 1"),
-            "wl-copy failed (exit code 1); sent to the terminal (OSC 52)"
+            "wl-copy failed; sent via OSC 52 (exit code 1)"
         );
         assert!(!failed(Tool::Xsel, "timed out").starts_with("Copied"));
     }
@@ -265,11 +258,41 @@ mod tests {
     fn osc52_only_has_a_local_and_an_ssh_text() {
         assert_eq!(
             osc52_only(false),
-            "Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip"
+            "No paste? Install wl-copy or xclip (OSC 52 sent)"
         );
         assert_eq!(
             osc52_only(true),
-            "Sent to the terminal (OSC 52); if it does not paste, enable OSC 52 in your terminal"
+            "No paste? Enable OSC 52 in your terminal (sent)"
         );
+    }
+
+    /// Columns the statusline gives the notice at 80 columns: measured on a
+    /// drawn frame (mode block, pane name chip and padding taken out), less a
+    /// margin for a longer pane name.
+    const ROOM_AT_80: usize = 58;
+
+    #[test]
+    fn every_notice_keeps_its_action_visible_at_80_columns() {
+        // The reason comes last, so a long one is what gets clipped.
+        let reason = "killed by a signal";
+        let notices = [
+            osc52_only(false),
+            osc52_only(true),
+            failed(Tool::ClipExe, reason),
+            failed_too_large(Tool::ClipExe, reason),
+            failed(Tool::Xclip, "exit code 255"),
+            copying(Tool::Xsel),
+            copied(Tool::Xsel),
+        ];
+        for notice in notices {
+            assert!(notice.chars().count() <= ROOM_AT_80, "{notice:?}");
+        }
+        // Even a long reason leaves the action before it in view.
+        let long = failed(Tool::ClipExe, &"x".repeat(80));
+        let shown: String = long.chars().take(ROOM_AT_80).collect();
+        assert!(shown.contains("sent via OSC 52"), "{shown:?}");
+        let long = failed_too_large(Tool::ClipExe, &"x".repeat(80));
+        let shown: String = long.chars().take(ROOM_AT_80).collect();
+        assert!(shown.contains("too large for OSC 52"), "{shown:?}");
     }
 }

@@ -36,7 +36,7 @@ lazarobox is tested only in Kitty. In other terminals, and in the WSL console, t
 
 - One clipboard dispatcher in the runtime, behind the existing `SetClipboard` effect. All callers (COPY, chat copy, feedback, update) gain fallback for free.
 - The terminal never confirms OSC 52. So the dispatcher always sends OSC 52, then also runs a local tool when one fits the session. Over SSH it skips local tools.
-- Notice text: "Copied (wl-copy)" (tool name varies) when a local tool ran; "Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip" when only OSC 52 was sent; a failure notice when the tool fails.
+- Notice text: "Copied (wl-copy)" (tool name varies) when a local tool ran; "No paste? Install wl-copy or xclip (OSC 52 sent)" when only OSC 52 was sent; a failure notice when the tool fails.
 - Alias is one more entry in the data-driven prefix table.
 - Probe: a small first-run state with a timeout tick. The result is stored outside `config.toml` (design picks the file).
 - Records are docs only.
@@ -100,5 +100,5 @@ Answered by the user on 2026-11-01:
 
 1. Alias: `Ctrl+]` (0x1D). It is a 1.x commitment.
 2. Detection: first-run probe only. The app asks for `Ctrl+Space`; if another key or nothing arrives within a few seconds, it shows a notice and offers `Ctrl+]`. The result is remembered. No environment heuristic.
-3. Copy notice on every copy, honest: "Copied (wl-copy)" when a local tool ran; "Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip" when only OSC 52 was sent. Local tools are skipped when `SSH_CONNECTION` is set.
+3. Copy notice on every copy, honest: "Copied (wl-copy)" when a local tool ran; "No paste? Install wl-copy or xclip (OSC 52 sent)" when only OSC 52 was sent. Local tools are skipped when `SSH_CONNECTION` is set.
 4. Records in this change: Kitty, WezTerm, Windows Terminal (WSL). The user runs them.

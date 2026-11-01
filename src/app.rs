@@ -4512,7 +4512,7 @@ mod app_tests {
         assert_eq!(a.notice(), Some(clipboard::osc52_only(false).as_str()));
         assert!(
             a.notice()
-                .is_some_and(|n| n.ends_with("install wl-copy or xclip"))
+                .is_some_and(|n| n.contains("Install wl-copy or xclip"))
         );
     }
 
@@ -4523,7 +4523,7 @@ mod app_tests {
         assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
         assert!(
             a.notice()
-                .is_some_and(|n| n.ends_with("enable OSC 52 in your terminal"))
+                .is_some_and(|n| n.contains("Enable OSC 52 in your terminal"))
         );
     }
 
@@ -4538,7 +4538,7 @@ mod app_tests {
         });
         assert_eq!(
             a.notice(),
-            Some("wl-copy failed (exit code 1); selection too large for OSC 52")
+            Some("wl-copy failed; too large for OSC 52 (exit code 1)")
         );
     }
 
@@ -4578,7 +4578,7 @@ mod app_tests {
         });
         assert_eq!(
             b.notice(),
-            Some("wl-copy failed (exit code 1); sent to the terminal (OSC 52)")
+            Some("wl-copy failed; sent via OSC 52 (exit code 1)")
         );
     }
 
