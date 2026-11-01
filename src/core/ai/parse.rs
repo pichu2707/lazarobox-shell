@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use super::sanitize::clean;
+use super::{ModelFacts, marks::Tools, sanitize::clean};
 
 /// `clean` for one-line text: newlines and tabs go too.
 pub(crate) fn sanitize(text: &str) -> String {
@@ -12,6 +12,48 @@ pub(crate) fn sanitize(text: &str) -> String {
 /// Models of a valid Ollama `/api/tags` body, or `None` for a foreign one.
 pub fn ollama_tags(body: &[u8]) -> Option<Vec<String>> {
     Some(model_names(&array_field(body, "models")?, "name"))
+}
+
+/// Name, size and digest of each model of a valid Ollama `/api/tags` body;
+/// tool support starts `Unknown`. Same names, in the same order, as
+/// [`ollama_tags`].
+pub fn ollama_tag_facts(body: &[u8]) -> Option<Vec<ModelFacts>> {
+    let items = array_field(body, "models")?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let name = model_names(std::slice::from_ref(item), "name").pop()?;
+                let params = item
+                    .pointer("/details/parameter_size")
+                    .and_then(Value::as_str)
+                    .and_then(super::marks::params_of);
+                let digest = string_field(std::slice::from_ref(item), "digest")
+                    .pop()
+                    .filter(|digest| !digest.is_empty());
+                Some(ModelFacts {
+                    engine: "ollama",
+                    name,
+                    params,
+                    digest,
+                    tools: Tools::Unknown,
+                })
+            })
+            .take(MAX_MODELS)
+            .collect(),
+    )
+}
+
+/// Tool support from the `capabilities` of a `POST /api/show` reply.
+pub fn show_tools(body: &[u8]) -> Tools {
+    let Some(capabilities) = array_field(body, "capabilities") else {
+        return Tools::Unknown;
+    };
+    if capabilities.iter().any(|c| c.as_str() == Some("tools")) {
+        Tools::Yes
+    } else {
+        Tools::No
+    }
 }
 
 /// The array under `key` of a JSON object body.
@@ -529,5 +571,71 @@ mod tests {
         for line in ["", "version unknown", "claude", "2.1", "a.b.c", "1.2.x"] {
             assert_eq!(version_triplet(line), None, "{line:?}");
         }
+    }
+
+    const TAGS: &[u8] = include_bytes!("../../../tests/fixtures/ollama/api-tags.json");
+    const SHOW_TOOLS: &[u8] =
+        include_bytes!("../../../tests/fixtures/ollama/api-show-llama3.2-3b-ctx.json");
+    const SHOW_DEEPSEEK: &[u8] =
+        include_bytes!("../../../tests/fixtures/ollama/api-show-deepseek-r1-70b.json");
+    const SHOW_EMBED: &[u8] =
+        include_bytes!("../../../tests/fixtures/ollama/api-show-nomic-embed-text-latest.json");
+    const SHOW_OLD: &[u8] = include_bytes!("../../../tests/fixtures/ollama/api-show-old.json");
+
+    #[test]
+    fn show_tools_reads_the_recorded_replies() {
+        assert_eq!(show_tools(SHOW_TOOLS), Tools::Yes);
+        // The tags of this model omit `tools`; show is the source of truth.
+        assert_eq!(show_tools(SHOW_DEEPSEEK), Tools::Yes);
+        assert_eq!(show_tools(SHOW_EMBED), Tools::No);
+    }
+
+    #[test]
+    fn show_tools_is_unknown_when_nothing_was_read() {
+        assert_eq!(show_tools(SHOW_OLD), Tools::Unknown);
+        assert_eq!(show_tools(b"not json"), Tools::Unknown);
+        assert_eq!(show_tools(b"[]"), Tools::Unknown);
+        assert_eq!(show_tools(br#"{"capabilities":"tools"}"#), Tools::Unknown);
+        assert_eq!(show_tools(b""), Tools::Unknown);
+    }
+
+    #[test]
+    fn tag_facts_carry_name_size_and_digest() {
+        let facts = ollama_tag_facts(TAGS).unwrap();
+        let names: Vec<_> = facts.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "deepseek-r1:70b",
+                "llama3.2:3b-ctx",
+                "nomic-embed-text:latest"
+            ]
+        );
+        assert_eq!(names, ollama_tags(TAGS).unwrap());
+        assert_eq!(facts[0].params, Some(70_600_000_000));
+        assert_eq!(facts[1].params, Some(3_200_000_000));
+        assert_eq!(facts[2].params, Some(137_000_000));
+        assert!(facts[0].digest.as_deref().unwrap().starts_with("d37b54d0"));
+        assert!(
+            facts
+                .iter()
+                .all(|f| f.engine == "ollama" && f.tools == Tools::Unknown)
+        );
+    }
+
+    #[test]
+    fn tag_facts_without_a_size_have_no_params() {
+        let body = br#"{"models":[{"name":"a:1","digest":"x"},{"name":"b:1","details":{"parameter_size":"junk"}}]}"#;
+        let facts = ollama_tag_facts(body).unwrap();
+        assert_eq!(facts[0].params, None);
+        assert_eq!(facts[0].digest.as_deref(), Some("x"));
+        assert_eq!(facts[1].params, None);
+        assert_eq!(facts[1].digest, None);
+    }
+
+    #[test]
+    fn tag_facts_of_a_foreign_body_are_none() {
+        assert_eq!(ollama_tag_facts(b"{}"), None);
+        assert_eq!(ollama_tag_facts(b"nope"), None);
     }
 }
