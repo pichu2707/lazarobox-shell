@@ -65,14 +65,14 @@ Spec: copy-selection "Yank to the clipboard via OSC 52" (all scenarios tagged [a
 
 Spec: modal-input "Prefix key". Independent of S1.
 
-- [ ] 2a.1 RED: key tests: `Char(']')+CONTROL` and `Char('5')+CONTROL` (crossterm's legacy parse of 0x1D, D6) both enter PREFIX with no `WritePty`. Add a unit test on crossterm parsing of byte 0x1D if reachable.
-- [ ] 2a.2 RED: `Ctrl+]` then `Ctrl+]` emits `WritePty [0x1D]` and returns to TERMINAL; `Ctrl+Space` then `Ctrl+Space` still emits `[0x00]`; `Ctrl+]` then `Ctrl+Space` emits `[0x00]`; `Ctrl+Space` then `Ctrl+]` emits `[0x1D]` (second key's own byte, D7).
-- [ ] 2a.3 RED: chat pane focused: either prefix key repeated writes nothing, returns to TERMINAL and shows a notice. In a group, the alias cancels like the prefix.
-- [ ] 2a.4 RED: `Ctrl+]`, `w`, `v` splits right (alias drives the whole tree).
-- [ ] 2a.5 GREEN: alias chords in `core/prefix.rs`, `is_prefix()`, `PrefixAction::SendAliasLiteral`, hooks in `app.rs` `on_terminal_key` (`~2255`) and `on_pending_key` (`~2329`); `core/ai/chat/copy.rs:~126` uses `is_prefix()`.
-- [ ] 2a.6 REFACTOR: no hard-coded prefix branch left; the prefix table row text matches the spec row.
-- [ ] 2a.7 Gate. Target 30-50 production lines.
-- [ ] 2a.8 Docs: doc comment on the alias commitment (fixed, 1.x, not configurable).
+- [x] 2a.1 RED: key tests: `Char(']')+CONTROL` and `Char('5')+CONTROL` (crossterm's legacy parse of 0x1D, D6) both enter PREFIX with no `WritePty`. Add a unit test on crossterm parsing of byte 0x1D if reachable.
+- [x] 2a.2 RED: `Ctrl+]` then `Ctrl+]` emits `WritePty [0x1D]` and returns to TERMINAL; `Ctrl+Space` then `Ctrl+Space` still emits `[0x00]`; `Ctrl+]` then `Ctrl+Space` emits `[0x00]`; `Ctrl+Space` then `Ctrl+]` emits `[0x1D]` (second key's own byte, D7).
+- [x] 2a.3 RED: chat pane focused: either prefix key repeated writes nothing, returns to TERMINAL and shows a notice. In a group, the alias cancels like the prefix.
+- [x] 2a.4 RED: `Ctrl+]`, `w`, `v` splits right (alias drives the whole tree).
+- [x] 2a.5 GREEN: alias chords in `core/prefix.rs`, `is_prefix()`, `PrefixAction::SendAliasLiteral`, hooks in `app.rs` `on_terminal_key` (`~2255`) and `on_pending_key` (`~2329`); `core/ai/chat/copy.rs:~126` uses `is_prefix()`.
+- [x] 2a.6 REFACTOR: no hard-coded prefix branch left; the prefix table row text matches the spec row.
+- [x] 2a.7 Gate. Target 30-50 production lines.
+- [x] 2a.8 Docs: doc comment on the alias commitment (fixed, 1.x, not configurable).
 
 ## S2b: First-run probe (`src/core/probe.rs`, `src/runtime/probe_store.rs`, `src/core/start.rs`, `src/app.rs`, `src/runtime.rs`)
 
@@ -118,6 +118,7 @@ Spec: terminal-compatibility "Support policy by records" and "Shared checklist a
 - [ ] 4.2 README: remove "tested in Kitty" (line ~93, Spanish text) and replace with a record-aware sentence.
 - [ ] 4.3 README: platform list (lines ~60-64): replace "Windows: no soportado" with WSL as a supported path once its record exists, plus the WSLg Start menu caveat from task 3.8.
 - [ ] 4.4 README: add a "Supported terminals" section listing only folders under `docs/terminals/`, each linking its newest record; everything else "untested". Update the prefix table (lines ~146-187): row `Ctrl+Espacio` / `Ctrl+]` sends its own byte (NUL / 0x1D); line ~146 says the prefix keys are fixed. Update the copy section (lines ~322-335): fallback chain, the notices, SSH skips local tools, `--check-prefix`.
+- [ ] 4.4b README and CHANGELOG: state the behaviour change that a single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane; it takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This affects vim tag jump and the telnet escape.
 - [ ] 4.4a README: in the `install-desktop` text (line ~93) describe the picker: it asks only on a TTY without `--terminal`, lists installed terminals, marks tested ones, Enter keeps the automatic choice, Ctrl+D cancels.
 - [ ] 4.5 Check: grep README and `src/` for `tested in Kitty` and `Windows: no soportado` returns nothing.
 - [ ] 4.6 [manual] Kitty: fill `docs/terminals/kitty/<version>-<date>.md` from the template (user). Include the S1 clipboard check (1.13), the SSH yank scenario, and the paste scenarios from copy-selection.

@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::transcript::Scroll;
 use crate::core::{
     copy::{CopyCommand, CopyMotion, CopyState, Geometry, LineSpan, Point},
-    prefix::PREFIX_KEY,
+    prefix::is_prefix,
 };
 
 /// What a key does in chat COPY.
@@ -123,7 +123,7 @@ impl ChatCopy {
             }
         };
         let command = match key.code {
-            _ if PREFIX_KEY.matches(key) => ChatCopyCommand::Prefix,
+            _ if is_prefix(key) => ChatCopyCommand::Prefix,
             // A held g or G must not jump: only a fresh press moves to an end.
             KeyCode::Char('g' | 'G') if repeat => ChatCopyCommand::Ignore,
             KeyCode::Char('y') if ctrl => own(ChatCopyCommand::Answer),
