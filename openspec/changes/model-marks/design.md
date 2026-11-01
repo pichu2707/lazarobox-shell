@@ -39,7 +39,7 @@ Exploration approach A. Detection keeps what `/api/tags` already sends (size, di
     picker listed_models (:500) ─→ tool_mark() ─→ PickRow.tools
     core/menu.rs:1343 ─→ Row::Pick.tools ─→ ui menu.rs tail: " ✓ 🔧 ●"
 
-Render (`ui/components/menu.rs:88-124`): tail = mark + badge + dot. The badge is never clipped, like `●`; `mark_cap` subtracts its cells. Badge text: `Capable` → `🔧` or `tools`; `Unreliable` → `tools: unreliable` in both modes.
+Render (`ui/components/menu.rs:88-124`): tail = mark + badge + dot. The badge is never clipped, like `●`; `mark_cap` subtracts its cells. A `Status` mark next to a label of at most half the row has no floor (the engine name, badge and dot stay whole, the status is clipped); every other mark keeps a floor of half the row. Badge text: `Capable` → `🔧` or `tools`; `Unreliable` → `tools: unreliable` in both modes.
 
 ## Interfaces
 

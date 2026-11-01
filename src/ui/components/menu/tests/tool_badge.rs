@@ -93,3 +93,92 @@ fn at_the_ai_popup_width_the_label_gives_way_before_the_badge_and_dot() {
     assert!(shown.contains('…'), "{shown}");
     assert_eq!(cells(&shown), usize::from(inner));
 }
+
+fn engine_row(name: &str, status: &str, current: bool) -> Row {
+    pick(
+        name,
+        Mark::Status(status.to_owned()),
+        current,
+        Some(ToolMark::Capable),
+    )
+}
+
+#[test]
+fn a_narrow_engine_row_keeps_name_badge_and_dot_and_clips_the_status() {
+    let rows = [
+        (
+            "claude",
+            "available · 2.1.316 (Claude Code) · npm global install",
+        ),
+        (
+            "codex",
+            "available · codex-cli 0.162.1 · npm global install in ~/.local",
+        ),
+    ];
+    for glyph in [ToolGlyph::Emoji, ToolGlyph::Text] {
+        let badge = if glyph == ToolGlyph::Emoji {
+            "🔧"
+        } else {
+            "tools"
+        };
+        for width in [35, 39, 40, 49, 50, 51, 62] {
+            for (name, status) in rows {
+                for current in [false, true] {
+                    let shown = line(&engine_row(name, status, current), glyph, width);
+                    let dot = if current { " ●" } else { "" };
+                    assert!(shown.starts_with(&format!(" {name} available")), "{shown}");
+                    assert!(shown.ends_with(&format!("{badge}{dot}")), "{width} {shown}");
+                    assert!(cells(&shown) <= usize::from(width), "{width} {shown}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_required_download_mark_survives_next_to_the_unreliable_badge() {
+    for len in [20, 28, 30] {
+        let label = "m".repeat(len);
+        let row = pick(
+            &label,
+            Mark::DownloadRequired,
+            true,
+            Some(ToolMark::Unreliable),
+        );
+        let shown = line(&row, ToolGlyph::Emoji, 60);
+        assert!(shown.contains("download required"), "{len} {shown}");
+        assert!(shown.ends_with("tools: unreliable ●"), "{len} {shown}");
+    }
+}
+
+#[test]
+fn model_marks_keep_their_badge_and_dot_at_widths_40_to_62() {
+    let marks = [Mark::Downloaded, Mark::DownloadRequired];
+    for width in 40..=62 {
+        for mark in &marks {
+            for tools in [ToolMark::Capable, ToolMark::Unreliable] {
+                let row = pick("llama3:8b", mark.clone(), true, Some(tools));
+                let shown = line(&row, ToolGlyph::Emoji, width);
+                assert!(shown.ends_with(" ●"), "{width} {shown}");
+                assert!(
+                    shown.contains("🔧") || shown.contains("unreliable"),
+                    "{shown}"
+                );
+                assert!(cells(&shown) <= usize::from(width), "{width} {shown}");
+            }
+        }
+    }
+}
+
+#[test]
+fn no_width_panics() {
+    let status = Mark::Status("available · 2.1.316 (Claude Code) · npm".to_owned());
+    for width in 0..=80 {
+        for glyph in [ToolGlyph::Emoji, ToolGlyph::Text] {
+            for mark in [status.clone(), Mark::DownloadRequired, Mark::Downloaded] {
+                let row = pick("claude", mark, true, Some(ToolMark::Unreliable));
+                let _ = line(&row, glyph, width);
+            }
+        }
+    }
+}

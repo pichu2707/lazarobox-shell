@@ -104,11 +104,13 @@ impl MenuPopup<'_> {
                 current,
                 tools,
             } => {
-                // A long mark (an engine status with a reason) gives way to
-                // the label, but never below half of the row, and the `●`
-                // of the current row stays. A very narrow popup keeps the
-                // old rule: the label gives way and the mark stays whole.
+                // A long engine status gives way to a short label (an engine
+                // name stays whole, with its badge and `●`). Any other
+                // mark, or a status next to a label over half of the row, keeps
+                // half of the row at least; below
+                // CLIP_MARK_FROM only a status is clipped, other marks stay whole.
                 let dot = if *current { " ●" } else { "" };
+                let raw_mark = mark;
                 let mark = mark_text(mark);
                 let badge = tools.map_or("", |t| badge_text(t, self.glyph));
                 let badge_cells = if badge.is_empty() {
@@ -116,10 +118,16 @@ impl MenuPopup<'_> {
                 } else {
                     cells(badge) + 1
                 };
-                let mark_cap = width
-                    .saturating_sub(cells(label) + 1 + badge_cells + cells(dot) + 1)
-                    .max(width / 2);
-                let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
+                let mark_cap =
+                    width.saturating_sub(cells(label) + 1 + badge_cells + cells(dot) + 1);
+                let is_status = matches!(raw_mark, Mark::Status(_));
+                let mark_cap = if is_status && cells(label) <= width / 2 {
+                    mark_cap
+                } else {
+                    mark_cap.max(width / 2)
+                };
+                let clips = width >= CLIP_MARK_FROM || is_status;
+                let mark = if clips && cells(mark) > mark_cap {
                     clip(mark, mark_cap)
                 } else {
                     mark.to_owned()
