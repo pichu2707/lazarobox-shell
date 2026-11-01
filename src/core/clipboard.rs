@@ -84,15 +84,20 @@ impl Tool {
 pub fn candidates(session: Session) -> Vec<Tool> {
     use Tool::{ClipExe, WlCopy, Xclip, Xsel};
     if session.ssh {
-        Vec::new()
-    } else if session.wsl {
-        vec![ClipExe, WlCopy, Xclip, Xsel]
-    } else if session.wayland {
+        return Vec::new();
+    }
+    // The Linux tools need a display, in WSL too; `clip.exe` does not.
+    let linux = if session.wayland {
         vec![WlCopy, Xclip, Xsel]
     } else if session.display {
         vec![Xclip, Xsel]
     } else {
         Vec::new()
+    };
+    if session.wsl {
+        [vec![ClipExe], linux].concat()
+    } else {
+        linux
     }
 }
 
@@ -110,6 +115,15 @@ pub fn copied(tool: Tool) -> String {
 pub fn failed(tool: Tool, reason: &str) -> String {
     format!(
         "{} failed ({reason}); sent to the terminal (OSC 52)",
+        tool.name()
+    )
+}
+
+/// The notice when a local tool failed on a text too large for OSC 52:
+/// nothing was sent to the terminal either.
+pub fn failed_too_large(tool: Tool, reason: &str) -> String {
+    format!(
+        "{} failed ({reason}); selection too large for OSC 52",
         tool.name()
     )
 }
@@ -144,11 +158,29 @@ mod tests {
     }
 
     #[test]
-    fn wsl_prefers_the_windows_clipboard_then_the_linux_tools() {
+    fn wsl_offers_the_windows_clipboard_then_the_tools_its_display_fits() {
         assert_eq!(
             candidates(session(false, true, false, false)),
+            vec![Tool::ClipExe]
+        );
+        assert_eq!(
+            candidates(session(false, true, true, true)),
             vec![Tool::ClipExe, Tool::WlCopy, Tool::Xclip, Tool::Xsel]
         );
+        assert_eq!(
+            candidates(session(false, true, false, true)),
+            vec![Tool::ClipExe, Tool::Xclip, Tool::Xsel]
+        );
+    }
+
+    #[test]
+    fn a_failure_on_a_text_too_large_for_osc52_does_not_claim_it_was_sent() {
+        let text = failed_too_large(Tool::WlCopy, "timed out");
+        assert_eq!(
+            text,
+            "wl-copy failed (timed out); selection too large for OSC 52"
+        );
+        assert!(!text.contains("sent to the terminal"));
     }
 
     #[test]

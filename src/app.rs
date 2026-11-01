@@ -875,6 +875,12 @@ pub struct App {
     /// The number of the last `Effect::CopyLocal`; an answer to an older
     /// one is dropped (latest copy wins).
     clip_seq: u64,
+    /// OSC 52 went out with the last `CopyLocal` (false when the text was
+    /// too large for it).
+    clip_osc52: bool,
+    /// The last copy was the link a failed browser open fell back to: the
+    /// menu footer keeps that context.
+    clip_link: bool,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -983,6 +989,8 @@ impl App {
             clipboard: None,
             ssh: false,
             clip_seq: 0,
+            clip_osc52: false,
+            clip_link: false,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -2224,7 +2232,13 @@ impl App {
         if !effects.is_empty()
             && let Some(menu) = self.menu.as_mut()
         {
-            menu.set_copied("The browser did not open: link copied".to_owned());
+            self.clip_link = self.clipboard.is_some();
+            let said = if self.clip_link {
+                "copying link"
+            } else {
+                "link copied"
+            };
+            menu.set_copied(format!("The browser did not open: {said}"));
         }
         effects
     }
@@ -2266,6 +2280,8 @@ impl App {
             (Ok(_), None) => self.notice = Some(clipboard::osc52_only(self.ssh)),
             (_, Some(tool)) => {
                 self.clip_seq += 1;
+                self.clip_osc52 = sequence.is_ok();
+                self.clip_link = false;
                 self.notice = Some(clipboard::copying(tool));
             }
         }
@@ -2289,10 +2305,14 @@ impl App {
         };
         let said = match result {
             Ok(()) => clipboard::copied(tool),
-            Err(reason) => clipboard::failed(tool, &reason),
+            Err(reason) if self.clip_osc52 => clipboard::failed(tool, &reason),
+            Err(reason) => clipboard::failed_too_large(tool, &reason),
         };
         if let Some(menu) = self.menu.as_mut() {
-            menu.set_copied(said.clone());
+            menu.set_copied(match self.clip_link {
+                true => format!("The browser did not open: {said}"),
+                false => said.clone(),
+            });
         }
         self.notice = Some(said);
         self.dirty = true;
@@ -4411,6 +4431,21 @@ mod app_tests {
         assert!(
             a.notice()
                 .is_some_and(|n| n.ends_with("enable OSC 52 in your terminal"))
+        );
+    }
+
+    #[test]
+    fn a_tool_failure_on_an_oversized_selection_does_not_claim_osc52_went_out() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        big_selection(&mut a, 76);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Err("exit code 1".to_owned()),
+        });
+        assert_eq!(
+            a.notice(),
+            Some("wl-copy failed (exit code 1); selection too large for OSC 52")
         );
     }
 

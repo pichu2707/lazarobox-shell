@@ -1620,9 +1620,9 @@ impl Panes {
                     });
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
-                // Returns at once: the opener is reaped on its own thread.
                 // Returns at once: the tool runs on the clipboard worker.
                 Effect::CopyLocal { seq, text } => (self.copy_local)(seq, text),
+                // Returns at once: the opener is reaped on its own thread.
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
                 Effect::SendIssue(issue) => (self.send_issue)(*issue),

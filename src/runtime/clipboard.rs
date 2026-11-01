@@ -125,7 +125,11 @@ fn run(tool: Tool, program: &Path, text: &str, timeout: Duration) -> Result<(), 
                 return Err("timed out".to_owned());
             }
             Ok(None) => thread::sleep(POLL),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.to_string());
+            }
         }
     }
 }
@@ -247,16 +251,22 @@ mod tests {
             "wl-copy",
             &format!("echo $$ > '{}'\nexec sleep 30", pid.display()),
         );
-        let (clip, rx) = worker(program, Duration::from_millis(150));
+        let (clip, rx) = worker(program, Duration::from_secs(1));
         clip.copy(2, "x".to_owned()).unwrap();
         assert_eq!(answer(&rx), (2, Err("timed out".to_owned())));
         let pid = wait_for(&pid);
-        assert!(
-            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
-            "the child is still there"
-        );
+        // `kill -0` succeeds only while the process exists.
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the child is still there");
     }
 
+    /// Reads `/proc`, so Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_tool_gets_null_stdout_and_stderr() {
         let dir = tempfile::tempdir().unwrap();
@@ -280,13 +290,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = dir.path().join("started");
         let log = dir.path().join("log");
+        let release = dir.path().join("release");
         let program = script(
             dir.path(),
             "wl-copy",
             &format!(
-                "echo go > '{}'\ncat >> '{}'\necho >> '{1}'\nsleep 0.3",
+                "echo go > '{}'\ncat >> '{}'\necho >> '{1}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done",
                 started.display(),
-                log.display()
+                log.display(),
+                release.display()
             ),
         );
         let (clip, rx) = worker(program, CLIP_TIMEOUT);
@@ -294,6 +306,7 @@ mod tests {
         wait_for(&started);
         clip.copy(2, "second".to_owned()).unwrap();
         clip.copy(3, "third".to_owned()).unwrap();
+        fs::write(&release, "go").unwrap();
         assert_eq!(answer(&rx), (1, Ok(())));
         assert_eq!(answer(&rx), (3, Ok(())));
         assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
