@@ -2418,11 +2418,11 @@ fn a_write_prunes_rows_older_than_ninety_days() {
 }
 
 #[test]
-fn pruning_keeps_the_ninetieth_day_and_rows_from_the_future() {
+fn pruning_keeps_the_ninetieth_day() {
     let (_dir, _worker, conn) = fixture();
     let mut conn = conn;
     let at = now();
-    for ts in [at - 91 * DAY, at - 90 * DAY, at - 89 * DAY, at + DAY] {
+    for ts in [at - 91 * DAY, at - 90 * DAY, at - 89 * DAY] {
         conn.execute(
             "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
             [ts],
@@ -2430,7 +2430,7 @@ fn pruning_keeps_the_ninetieth_day_and_rows_from_the_future() {
         .unwrap();
     }
     assert_eq!(prune_usage(&mut conn, at).unwrap(), 1);
-    assert_eq!(usage_count(&conn), 3);
+    assert_eq!(usage_count(&conn), 2);
     // A clock before every row removes nothing.
     assert_eq!(prune_usage(&mut conn, at - 1_000 * DAY).unwrap(), 0);
 }
@@ -2525,4 +2525,77 @@ fn a_usage_table_that_cannot_be_made_is_reported() {
     let (today, problem) = usage_reply(worker.handle(record(None, tokens(1, 1))));
     assert_eq!(today, None);
     assert!(problem.is_some());
+}
+
+// ---- usage review fixes ----------------------------------------------------
+
+#[test]
+fn a_clock_behind_the_newest_row_prunes_nothing_even_for_old_rows() {
+    let (_dir, _worker, mut conn) = fixture();
+    let at = now();
+    old_row(&conn, 200 * DAY);
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+        [at + DAY],
+    )
+    .unwrap();
+    assert_eq!(prune_usage(&mut conn, at).unwrap(), 0);
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_resumed_pane_stops_pointing_at_its_created_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    let created = created_id(worker.handle(create(user("one"), vec![])));
+    let other = created_id(worker.handle(StoreCmd::Create {
+        pane: PaneId::for_test(3),
+        profile: "programmer".into(),
+        tag: None,
+        extras: vec![],
+        first: user("two"),
+        origin: None,
+        folder: None,
+        open: vec![],
+    }));
+    assert!(matches!(
+        worker.handle(resume(other)),
+        Some(StoreReply::Resumed { .. })
+    ));
+    // The pane left `created`; a detached pane now stores unlinked.
+    worker.handle(record(None, tokens(1, 1)));
+    let link: Option<i64> = conn
+        .query_row("SELECT conversation_id FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(link, None, "not linked to {created}");
+}
+
+#[test]
+fn a_panic_while_recording_usage_shows_a_fixed_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(record(None, tokens(1, 1)), |_, _| {
+        panic!("ZZ-MARKER-ZZ /home/secret")
+    });
+    let (today, problem) = usage_reply(reply);
+    assert_eq!((today, problem.as_deref()), (None, Some("internal error")));
+}
+
+#[test]
+fn huge_counts_are_clamped_so_the_day_total_cannot_overflow() {
+    let (_dir, mut worker, conn) = fixture();
+    let big = TurnUsage {
+        input: Some(u64::MAX),
+        output: Some(u64::MAX),
+        ..TurnUsage::default()
+    };
+    for _ in 0..3 {
+        let (today, problem) = usage_reply(worker.handle(record(None, big.clone())));
+        assert!(
+            today.is_some() && problem.is_none(),
+            "{today:?} {problem:?}"
+        );
+    }
+    let max: i64 = conn
+        .query_row("SELECT MAX(input) FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(max, 1_000_000_000_000_000);
 }

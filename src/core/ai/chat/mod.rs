@@ -932,7 +932,7 @@ impl ChatState {
             summarized = true;
         }
         self.compaction.cancel();
-        self.side_run = None;
+        self.end_side_run(true);
         self.compaction.sent(room);
         let memory_text = memory.as_deref().unwrap_or_default();
         self.fill = budget::fill(

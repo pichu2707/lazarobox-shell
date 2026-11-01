@@ -262,7 +262,7 @@ impl Worker {
                 Some(match saved {
                     Ok((today, pruned)) => StoreReply::UsageRecorded {
                         pane,
-                        today: Some(today),
+                        today,
                         problem: pruned.or(earlier),
                     },
                     Err(reason) => StoreReply::UsageRecorded {
@@ -307,17 +307,22 @@ impl Worker {
                         session,
                         folder,
                         skipped,
-                    }) => StoreReply::Resumed {
-                        pane,
-                        conversation,
-                        profile,
-                        tag,
-                        extras,
-                        messages,
-                        session,
-                        folder,
-                        skipped,
-                    },
+                    }) => {
+                        // The pane now follows another conversation: what it
+                        // created before must not link its later usage.
+                        self.created.remove(&pane);
+                        StoreReply::Resumed {
+                            pane,
+                            conversation,
+                            profile,
+                            tag,
+                            extras,
+                            messages,
+                            session,
+                            folder,
+                            skipped,
+                        }
+                    }
                     None => StoreReply::ResumeFailed { pane },
                 })
             }
@@ -409,10 +414,11 @@ impl Worker {
                         pane,
                         folders: Vec::new(),
                     },
+                    // A fixed reason: panic text can quote anything.
                     Panicked::Usage => StoreReply::UsageRecorded {
                         pane,
                         today: None,
-                        problem: Some(reason),
+                        problem: Some("internal error".to_owned()),
                     },
                 })
             }
@@ -478,24 +484,31 @@ fn usage_reason(err: &rusqlite::Error) -> &'static str {
 /// stamped after `at` (a clock set back). Returns how many rows went.
 fn prune_usage(conn: &mut Connection, at: i64) -> Result<usize, rusqlite::Error> {
     ensure_usage(conn)?;
+    // A clock behind the newest row cannot be trusted: nothing goes then. A
+    // clock that jumped forward can still prune early.
     conn.execute(
-        "DELETE FROM turn_usage WHERE ts < ?1",
-        [at.saturating_sub(USAGE_DAYS * 86_400)],
+        "DELETE FROM turn_usage WHERE ts < ?1
+         AND (SELECT COALESCE(MAX(ts), 0) FROM turn_usage) <= ?2",
+        [at.saturating_sub(USAGE_DAYS * 86_400), at],
     )
 }
 
+/// The most one stored count can hold, so a day's SUM cannot overflow.
+const COUNT_CAP: u64 = 1_000_000_000_000_000;
+
 fn count_of(n: Option<u64>) -> Option<i64> {
-    n.map(|n| i64::try_from(n).unwrap_or(i64::MAX))
+    n.map(|n| i64::try_from(n.min(COUNT_CAP)).unwrap_or(i64::MAX))
 }
 
 /// Stores one usage row, prunes, and returns the known tokens of the local
-/// day plus the reason a prune failed, if it did (the row is kept then).
+/// day (`None` when that read failed: the row is stored all the same) plus the
+/// reason a prune failed, if it did (the row is kept then).
 fn record_usage(
     conn: &mut Connection,
     conversation: Option<i64>,
     (engine, role): (&str, &str),
     usage: &TurnUsage,
-) -> Result<(u64, Option<String>), String> {
+) -> Result<(Option<u64>, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
     // The subselect leaves the link NULL for a conversation that is gone.
@@ -525,7 +538,7 @@ fn record_usage(
     let pruned = prune_usage(conn, at)
         .err()
         .map(|err| usage_reason(&err).to_owned());
-    let today: i64 = conn
+    let today: Option<i64> = conn
         .query_row(
             "SELECT COALESCE(SUM(COALESCE(input, 0) + COALESCE(output, 0)
                  + COALESCE(cache_read, 0) + COALESCE(cache_write, 0)), 0)
@@ -534,8 +547,8 @@ fn record_usage(
             [at],
             |r| r.get(0),
         )
-        .map_err(|err| usage_reason(&err).to_owned())?;
-    Ok((u64::try_from(today).unwrap_or(0), pruned))
+        .ok();
+    Ok((today.and_then(|t| u64::try_from(t).ok()), pruned))
 }
 
 /// The first non-empty line of the first message, cut to `TITLE_MAX` characters.

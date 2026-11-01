@@ -252,7 +252,7 @@ impl ChatState {
             self.turn += 1;
         }
         self.compaction.reset();
-        self.side_run = None;
+        self.end_side_run(true);
         self.store = super::store::PaneStore::open(conversation);
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

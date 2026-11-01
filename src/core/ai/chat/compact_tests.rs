@@ -556,3 +556,33 @@ mod usage_rows {
         assert!(rows(&mut state).is_empty());
     }
 }
+
+mod cancelled_runs {
+    use super::*;
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    use crate::core::layout::PaneId;
+
+    #[test]
+    fn a_run_superseded_by_a_send_records_its_reported_usage_as_partial() {
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(
+            turn,
+            StreamEvent::usage(TurnUsage {
+                output: Some(8),
+                ..TurnUsage::default()
+            }),
+        );
+        exchange(&mut state, 10);
+        let rows: Vec<_> = state
+            .store_cmds(PaneId::FIRST, &[])
+            .into_iter()
+            .filter_map(|c| match c {
+                StoreCmd::RecordUsage { role, usage, .. } => Some((role, usage.partial)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, vec![("compaction".to_owned(), true)]);
+    }
+}

@@ -569,3 +569,28 @@ mod usage_rows {
         assert!(summary_rows(&mut state).is_empty());
     }
 }
+
+#[test]
+fn a_resume_during_a_run_records_the_reported_usage_as_partial() {
+    use crate::core::ai::chat::{store::StoreCmd, tags::Tags, usage::TurnUsage};
+    use crate::core::{ai::config::Profile, layout::PaneId};
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(
+        turn,
+        StreamEvent::usage(TurnUsage {
+            output: Some(4),
+            ..TurnUsage::default()
+        }),
+    );
+    state.resume_into(7, Profile::Programmer, Tags::default(), Vec::new());
+    let partial: Vec<bool> = state
+        .store_cmds(PaneId::FIRST, &[])
+        .into_iter()
+        .filter_map(|c| match c {
+            StoreCmd::RecordUsage { role, usage, .. } if role == "summary" => Some(usage.partial),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(partial, vec![true]);
+}

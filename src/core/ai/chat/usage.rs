@@ -222,6 +222,14 @@ pub fn micros(value: &Value) -> Option<u64> {
 
 /// A model id as one safe, short token. Empty is no data.
 pub fn model_id(raw: &str) -> Option<String> {
+    // A managed llama-server is named by its model file: keep the file stem,
+    // never a path from the user's disk.
+    let raw = if raw.starts_with(['/', '~']) || raw.contains('\\') || raw.ends_with(".gguf") {
+        let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+        name.strip_suffix(".gguf").unwrap_or(name)
+    } else {
+        raw
+    };
     let id: String = clean(raw).trim().chars().take(MODEL_CAP).collect();
     (!id.is_empty()).then_some(id)
 }

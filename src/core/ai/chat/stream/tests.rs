@@ -360,7 +360,7 @@ fn llamacpp_usage() -> crate::core::ai::chat::usage::TurnUsage {
         output: Some(4),
         cache_read: Some(5),
         duration_ms: Some(215),
-        model: Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into()),
+        model: Some("qwen2.5-0.5b-instruct-q4_k_m".into()),
         ..Default::default()
     }
 }

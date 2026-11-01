@@ -262,3 +262,14 @@ fn net_input_takes_the_cache_out_and_saturates() {
     assert_eq!(net_input(Some(12), None), Some(12));
     assert_eq!(net_input(None, Some(3)), None);
 }
+
+#[test]
+fn a_model_path_keeps_only_the_file_stem() {
+    assert_eq!(
+        model_id("/home/u/models/qwen-7b-q4.gguf").as_deref(),
+        Some("qwen-7b-q4")
+    );
+    assert_eq!(model_id("C:\\m\\x.gguf").as_deref(), Some("x"));
+    // An org/name id is not a path.
+    assert_eq!(model_id("org/name").as_deref(), Some("org/name"));
+}
