@@ -8,6 +8,8 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
         model: Some(model.into()),
         in_chat: false,
         turns: 1,
+        records: 1,
+        costed: 0,
         input: Some(100),
         output: Some(20),
         cache_read: None,
@@ -18,7 +20,7 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
 }
 
 fn view(rows: &[UsageRow]) -> Vec<String> {
-    report_lines(rows, &[], &default_billing)
+    report_lines(rows, &Session::default(), &default_billing)
 }
 
 #[test]
@@ -57,9 +59,11 @@ fn an_empty_store_says_so_under_the_alpha_header() {
 #[test]
 fn the_header_is_the_first_line_in_every_view() {
     assert_eq!(view(&[row(0, "claude", "s")])[0], "AI usage (alpha)");
-    assert_eq!(session_lines(&[], &default_billing)[0], "AI usage (alpha)");
+    assert_eq!(
+        session_lines(&Session::default(), &default_billing)[0],
+        "AI usage (alpha)"
+    );
     assert_eq!(UNAVAILABLE_LINE, "usage history is not available");
-    assert_eq!(READING_LINE, "reading usage…");
 }
 
 #[test]
@@ -81,7 +85,7 @@ fn an_unknown_total_is_no_data_never_zero() {
     only_output.total = None;
     only_output.partial = true;
     let lines = view(&[only_output]);
-    assert_eq!(lines[1], "today: no data · 1 turns");
+    assert_eq!(lines[1], "today: no data · 1 turns · partial");
     assert_eq!(
         lines[4],
         "  ollama › llama3:8b: in no data · out 20 · partial"
@@ -93,6 +97,7 @@ fn pairs_are_sorted_by_total_and_dollars_follow_the_billing_mode() {
     let mut claude = row(1, "claude", "sonnet");
     claude.total = Some(3_000);
     claude.cost_micros = Some(500_000);
+    claude.costed = 1;
     claude.cache_read = Some(0);
     let mut local = row(1, "ollama", "llama3:8b");
     local.total = Some(5_000);
@@ -104,13 +109,16 @@ fn pairs_are_sorted_by_total_and_dollars_follow_the_billing_mode() {
         lines[5],
         "  claude › sonnet: in 100 · out 20 · cached 0 · $0.5000 list-price equivalent"
     );
-    let per_token = report_lines(&[row_with_cost()], &[], &|_| Some(Billing::PerToken));
+    let per_token = report_lines(&[row_with_cost()], &Session::default(), &|_| {
+        Some(Billing::PerToken)
+    });
     assert!(per_token[4].ends_with("· $0.0049"), "{per_token:?}");
 }
 
 fn row_with_cost() -> UsageRow {
     let mut r = row(0, "claude", "sonnet");
     r.cost_micros = Some(4_936);
+    r.costed = 1;
     r
 }
 
@@ -142,6 +150,7 @@ fn a_session_adds_its_own_line_after_the_chat_line() {
     let mut session = Session::default();
     session.add(
         "ollama",
+        Run::Chat,
         &TurnUsage {
             input: Some(10),
             output: Some(5),
@@ -149,7 +158,7 @@ fn a_session_adds_its_own_line_after_the_chat_line() {
             ..TurnUsage::default()
         },
     );
-    let lines = report_lines(&[row(0, "claude", "s")], session.rows(), &default_billing);
+    let lines = report_lines(&[row(0, "claude", "s")], &session, &default_billing);
     assert_eq!(lines.last().unwrap(), "this session: 15 tokens · 1 turns");
 }
 
@@ -162,8 +171,8 @@ fn a_session_folds_turns_per_engine_and_model_with_none_not_zero() {
         model: Some("m".into()),
         ..TurnUsage::default()
     };
-    session.add("ollama", &turn(Some(10), Some(5)));
-    session.add("ollama", &turn(None, Some(7)));
+    session.add("ollama", Run::Chat, &turn(Some(10), Some(5)));
+    session.add("ollama", Run::Chat, &turn(None, Some(7)));
     let rows = session.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].turns, 2);
@@ -175,7 +184,7 @@ fn a_session_folds_turns_per_engine_and_model_with_none_not_zero() {
 
 #[test]
 fn history_off_shows_the_session_only_with_the_explaining_line() {
-    let lines = session_lines(&[], &default_billing);
+    let lines = session_lines(&Session::default(), &default_billing);
     assert_eq!(
         lines,
         vec![HEADER, HISTORY_OFF_LINE, EMPTY_LINE],
@@ -188,6 +197,7 @@ fn history_off_shows_the_session_only_with_the_explaining_line() {
     let mut session = Session::default();
     session.add(
         "claude",
+        Run::Chat,
         &TurnUsage {
             input: Some(2),
             output: Some(4),
@@ -196,7 +206,7 @@ fn history_off_shows_the_session_only_with_the_explaining_line() {
             ..TurnUsage::default()
         },
     );
-    let lines = session_lines(session.rows(), &default_billing);
+    let lines = session_lines(&session, &default_billing);
     assert_eq!(lines[2], "this session: 6 tokens · 1 turns");
     assert_eq!(lines[3], "by engine and model:");
     assert_eq!(
@@ -212,4 +222,99 @@ fn control_characters_in_ids_never_reach_a_line() {
     for line in view(&[r]) {
         assert!(!line.contains(['\u{1b}', '\u{7}', '\n']), "{line:?}");
     }
+}
+
+#[test]
+fn summary_lines_carry_partial_when_any_record_is_partial_or_lacks_a_count() {
+    let mut cut = row(0, "claude", "s");
+    cut.partial = true;
+    let lines = view(&[cut, row(1, "claude", "s")]);
+    assert_eq!(lines[1], "today: 120 tokens · 1 turns · partial");
+    assert_eq!(lines[2], "last 7 days: 240 tokens · 2 turns · partial");
+    let mut mine = row(0, "claude", "s");
+    mine.in_chat = true;
+    mine.input = None;
+    assert!(view(&[mine]).last().unwrap().ends_with("· partial"));
+    assert_eq!(
+        view(&[row(0, "claude", "s")])[2],
+        "last 7 days: 120 tokens · 1 turns"
+    );
+}
+
+#[test]
+fn a_session_summary_is_partial_too() {
+    let mut session = Session::default();
+    session.add(
+        "ollama",
+        Run::Chat,
+        &TurnUsage {
+            output: Some(5),
+            model: Some("m".into()),
+            ..TurnUsage::default()
+        },
+    );
+    let lines = session_lines(&session, &default_billing);
+    assert_eq!(lines[2], "this session: no data · 1 turns · partial");
+}
+
+#[test]
+fn a_cost_gap_in_a_pair_marks_its_dollar_figure_partial() {
+    let mut a = row(0, "claude", "sonnet");
+    a.cost_micros = Some(4_936);
+    a.records = 2;
+    a.costed = 1;
+    let lines = view(&[a]);
+    assert!(
+        lines[4].ends_with("· $0.0049 list-price equivalent · partial"),
+        "{lines:?}"
+    );
+    // The gap shows across days too.
+    let mut with = row(0, "claude", "sonnet");
+    with.cost_micros = Some(10);
+    with.costed = 1;
+    let without = row(1, "claude", "sonnet");
+    assert!(view(&[with, without])[4].ends_with("· partial"));
+    // A pair that never had dollars has no gap.
+    assert!(!view(&[row(0, "codex", "g")])[4].contains("partial"));
+}
+
+#[test]
+fn only_chat_runs_count_as_turns_and_every_run_counts_as_tokens() {
+    let mut session = Session::default();
+    let usage = tokens(10, 5);
+    session.add("ollama", Run::Chat, &usage);
+    session.add("ollama", Run::Side, &usage);
+    assert_eq!(session.rows()[0].turns, 1);
+    assert_eq!(session.rows()[0].records, 2);
+    assert_eq!(session.rows()[0].total, Some(30));
+}
+
+fn tokens(input: u64, output: u64) -> TurnUsage {
+    TurnUsage {
+        input: Some(input),
+        output: Some(output),
+        model: Some("m".into()),
+        ..TurnUsage::default()
+    }
+}
+
+#[test]
+fn a_full_session_says_so_instead_of_dropping_silently() {
+    let mut session = Session::default();
+    for n in 0..70 {
+        let usage = TurnUsage {
+            model: Some(format!("m{n}")),
+            ..tokens(1, 1)
+        };
+        session.add("ollama", Run::Chat, &usage);
+    }
+    assert!(session.full());
+    let shown = session_lines(&session, &default_billing);
+    assert!(shown.contains(&SESSION_FULL_LINE.to_owned()), "{shown:?}");
+    let report = report_lines(&[row(0, "claude", "s")], &session, &default_billing);
+    assert!(report.contains(&SESSION_FULL_LINE.to_owned()));
+    assert!(
+        !session_lines(&Session::default(), &default_billing)
+            .contains(&SESSION_FULL_LINE.to_owned())
+    );
 }

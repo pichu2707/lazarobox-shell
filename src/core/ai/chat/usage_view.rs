@@ -5,8 +5,6 @@
 
 use std::collections::BTreeMap;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
-
 use super::usage::TurnUsage;
 use crate::core::ai::sanitize::clean;
 
@@ -16,12 +14,11 @@ pub const HEADER: &str = "AI usage (alpha)";
 pub const EMPTY_LINE: &str = "no usage recorded yet";
 /// The whole view when the store cannot be read.
 pub const UNAVAILABLE_LINE: &str = "usage history is not available";
-/// Shown while the store thread reads.
-pub const READING_LINE: &str = "reading usage…";
 /// Shown when history is off: only this session can be told.
 pub const HISTORY_OFF_LINE: &str = "chat history is off: showing this session only";
-/// The notice for `/cost` followed by text.
-pub const NO_ARGUMENTS: &str = "/cost takes no arguments";
+/// Shown when the session held more engine and model pairs than it keeps.
+pub const SESSION_FULL_LINE: &str =
+    "session list is full: later engines and models are not counted";
 
 /// The days a window of "last 7 days" covers, today included.
 const WINDOW_DAYS: u32 = 7;
@@ -69,7 +66,12 @@ pub struct UsageRow {
     pub model: Option<String>,
     /// The records are linked to the conversation that asked.
     pub in_chat: bool,
+    /// Chat turns; compaction and summary runs are not turns.
     pub turns: u64,
+    /// Every record of the row, whatever its role.
+    pub records: u64,
+    /// How many of those reported a dollar figure.
+    pub costed: u64,
     pub input: Option<u64>,
     pub output: Option<u64>,
     pub cache_read: Option<u64>,
@@ -88,11 +90,21 @@ fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// Which kind of run a usage record belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Run {
+    /// A chat turn.
+    Chat,
+    /// A compaction or summary run: tokens count, but it is not a turn.
+    Side,
+}
+
 /// What this session used, kept in memory so `/cost` can tell it with the
 /// history off. One row per engine and model.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Session {
     rows: Vec<UsageRow>,
+    full: bool,
 }
 
 impl Session {
@@ -100,7 +112,7 @@ impl Session {
     const CAP: usize = 64;
 
     /// Folds the usage of one finished run in.
-    pub fn add(&mut self, engine: &str, usage: &TurnUsage) {
+    pub fn add(&mut self, engine: &str, run: Run, usage: &TurnUsage) {
         let model = usage.model.clone();
         let total = usage
             .input
@@ -120,6 +132,8 @@ impl Session {
                     model,
                     in_chat: true,
                     turns: 0,
+                    records: 0,
+                    costed: 0,
                     input: None,
                     output: None,
                     cache_read: None,
@@ -129,9 +143,14 @@ impl Session {
                 });
                 self.rows.last_mut().expect("just pushed")
             }
-            None => return,
+            None => {
+                self.full = true;
+                return;
+            }
         };
-        row.turns += 1;
+        row.turns += u64::from(run == Run::Chat);
+        row.records += 1;
+        row.costed += u64::from(usage.cost_micros.is_some());
         row.input = add(row.input, usage.input);
         row.output = add(row.output, usage.output);
         row.cache_read = add(row.cache_read, usage.cache_read);
@@ -143,6 +162,11 @@ impl Session {
     pub fn rows(&self) -> &[UsageRow] {
         &self.rows
     }
+
+    /// The session held more pairs than it keeps.
+    pub fn full(&self) -> bool {
+        self.full
+    }
 }
 
 /// `<N> tokens` or `no data`.
@@ -150,12 +174,22 @@ fn tokens(total: Option<u64>) -> String {
     total.map_or_else(|| "no data".to_owned(), |n| format!("{n} tokens"))
 }
 
-/// `<T> · <K> turns` for the rows picked.
+/// A row has a record that was cut or lacks its input or output.
+fn incomplete(r: &UsageRow) -> bool {
+    r.partial || r.input.is_none() || r.output.is_none()
+}
+
+/// `<T> · <K> turns`, marked `partial` when any row is, for the rows picked.
 fn summary<'a>(rows: impl Iterator<Item = &'a UsageRow>) -> String {
-    let (total, turns) = rows.fold((None, 0u64), |(total, turns), r| {
-        (add(total, r.total), turns + r.turns)
+    let (total, turns, partial) = rows.fold((None, 0u64, false), |(total, turns, partial), r| {
+        (
+            add(total, r.total),
+            turns + r.turns,
+            partial || incomplete(r),
+        )
     });
-    format!("{} · {turns} turns", tokens(total))
+    let mark = if partial { " · partial" } else { "" };
+    format!("{} · {turns} turns{mark}", tokens(total))
 }
 
 /// An engine or model id as one line of plain text.
@@ -180,6 +214,8 @@ fn pair_lines<'a>(
         );
         let p = pairs.entry(key).or_insert_with(|| UsageRow {
             turns: 0,
+            records: 0,
+            costed: 0,
             input: None,
             output: None,
             cache_read: None,
@@ -189,12 +225,14 @@ fn pair_lines<'a>(
             ..r.clone()
         });
         p.turns += r.turns;
+        p.records += r.records;
+        p.costed += r.costed;
         p.input = add(p.input, r.input);
         p.output = add(p.output, r.output);
         p.cache_read = add(p.cache_read, r.cache_read);
         p.cost_micros = add(p.cost_micros, r.cost_micros);
         p.total = add(p.total, r.total);
-        p.partial |= r.partial || r.input.is_none() || r.output.is_none();
+        p.partial |= incomplete(r);
     }
     let mut pairs: Vec<_> = pairs.into_iter().collect();
     // Biggest first; unknown totals last.
@@ -211,10 +249,14 @@ fn pair_lines<'a>(
             if let Some(cached) = p.cache_read {
                 line.push_str(&format!(" · cached {cached}"));
             }
+            let mut gap = false;
             if let (Some(micros), Some(mode)) = (p.cost_micros, billing(&engine)) {
                 line.push_str(&format!(" · {}", dollar_part(micros, mode)));
+                // Some records of the pair reported no dollars: the figure
+                // is a floor.
+                gap = p.costed < p.records;
             }
-            if p.partial {
+            if p.partial || gap {
                 line.push_str(" · partial");
             }
             line
@@ -225,7 +267,7 @@ fn pair_lines<'a>(
 /// The `/cost` view of the store's rows. `session` is what this pane used.
 pub fn report_lines(
     rows: &[UsageRow],
-    session: &[UsageRow],
+    session: &Session,
     billing: &dyn Fn(&str) -> Option<Billing>,
 ) -> Vec<String> {
     if rows.is_empty() {
@@ -248,75 +290,30 @@ pub fn report_lines(
     } else {
         "this chat: no data".to_owned()
     });
-    if !session.is_empty() {
-        lines.push(format!("this session: {}", summary(session.iter())));
+    if !session.rows().is_empty() {
+        lines.push(format!("this session: {}", summary(session.rows().iter())));
+        if session.full() {
+            lines.push(SESSION_FULL_LINE.to_owned());
+        }
     }
     lines
 }
 
 /// The `/cost` view with the history off: this session, from memory.
-pub fn session_lines(
-    session: &[UsageRow],
-    billing: &dyn Fn(&str) -> Option<Billing>,
-) -> Vec<String> {
+pub fn session_lines(session: &Session, billing: &dyn Fn(&str) -> Option<Billing>) -> Vec<String> {
     let mut lines = vec![HEADER.to_owned(), HISTORY_OFF_LINE.to_owned()];
-    if session.is_empty() {
+    if session.rows().is_empty() {
         lines.push(EMPTY_LINE.to_owned());
         return lines;
     }
-    lines.push(format!("this session: {}", summary(session.iter())));
+    lines.push(format!("this session: {}", summary(session.rows().iter())));
+    if session.full() {
+        lines.push(SESSION_FULL_LINE.to_owned());
+    }
     lines.push("by engine and model:".to_owned());
-    lines.extend(pair_lines(session.iter(), billing));
+    lines.extend(pair_lines(session.rows().iter(), billing));
     lines
 }
-
-/// The `/cost` overlay of a chat pane: the lines, and how far they scroll.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct CostView {
-    lines: Vec<String>,
-    scroll: usize,
-}
-
-impl CostView {
-    /// The view while the store thread reads.
-    pub fn reading() -> Self {
-        Self::with(vec![HEADER.to_owned(), READING_LINE.to_owned()])
-    }
-
-    pub fn with(lines: Vec<String>) -> Self {
-        Self { lines, scroll: 0 }
-    }
-
-    /// Replaces the lines (the store answered), keeping the scroll.
-    pub fn set_lines(&mut self, lines: Vec<String>) {
-        self.lines = lines;
-    }
-
-    pub fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    pub fn scroll(&self) -> usize {
-        self.scroll
-    }
-
-    /// A key on the view: `true` when it closes.
-    pub fn on_key(&mut self, key: &KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc => return true,
-            KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll += 1,
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(PAGE),
-            KeyCode::PageDown => self.scroll += PAGE,
-            _ => {}
-        }
-        self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
-        false
-    }
-}
-
-/// Rows a page key scrolls.
-const PAGE: usize = 10;
 
 #[cfg(test)]
 mod tests;
