@@ -159,7 +159,7 @@ impl<'a> ChatView<'a> {
             LineKind::Code => Style::default().fg(theme.success_green).bg(theme.bg_panel),
             LineKind::System => base.fg(theme.warning_orange),
             LineKind::Waiting => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
-            LineKind::Mark | LineKind::Reasoning => base.fg(theme.text_muted),
+            LineKind::Mark | LineKind::Reasoning | LineKind::Usage => base.fg(theme.text_muted),
             LineKind::ReasoningHead => base.fg(theme.ai_purple),
             LineKind::Tool => base.fg(theme.info_blue),
             LineKind::ToolAlert => base.fg(theme.warning_orange),

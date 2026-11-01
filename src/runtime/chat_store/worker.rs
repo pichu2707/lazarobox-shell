@@ -261,14 +261,16 @@ impl Worker {
                     Err(reason) => Err(reason),
                 };
                 Some(match saved {
-                    Ok((today, pruned)) => StoreReply::UsageRecorded {
+                    Ok(((today, cost), pruned)) => StoreReply::UsageRecorded {
                         pane,
                         today,
+                        cost,
                         problem: pruned.or(earlier),
                     },
                     Err(reason) => StoreReply::UsageRecorded {
                         pane,
                         today: None,
+                        cost: Vec::new(),
                         problem: Some(reason),
                     },
                 })
@@ -430,6 +432,7 @@ impl Worker {
                     Panicked::Usage => StoreReply::UsageRecorded {
                         pane,
                         today: None,
+                        cost: Vec::new(),
                         problem: Some("internal error".to_owned()),
                     },
                 })
@@ -513,15 +516,19 @@ fn count_of(n: Option<u64>) -> Option<i64> {
     n.map(|n| i64::try_from(n.min(COUNT_CAP)).unwrap_or(i64::MAX))
 }
 
-/// Stores one usage row, prunes, and returns the known tokens of the local
-/// day (`None` when that read failed: the row is stored all the same) plus the
-/// reason a prune failed, if it did (the row is kept then).
+/// Today's figures: the known tokens (input plus output of the records that
+/// have both; `None` when there are none) and the dollars per engine.
+type DayFigures = (Option<u64>, Vec<(String, u64)>);
+
+/// Stores one usage row, prunes, and returns today's figures (empty when that
+/// read failed: the row is stored all the same) plus the reason a prune
+/// failed, if it did (the row is kept then).
 fn record_usage(
     conn: &mut Connection,
     conversation: Option<i64>,
     (engine, role): (&str, &str),
     usage: &TurnUsage,
-) -> Result<(Option<u64>, Option<String>), String> {
+) -> Result<(DayFigures, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
     // The subselect leaves the link NULL for a conversation that is gone.
@@ -551,17 +558,36 @@ fn record_usage(
     let pruned = prune_usage(conn, at)
         .err()
         .map(|err| usage_reason(&err).to_owned());
-    let today: Option<i64> = conn
+    Ok((day_figures(conn, at), pruned))
+}
+
+/// The figures of the local day of `at`. A read that fails gives no figures.
+fn day_figures(conn: &Connection, at: i64) -> DayFigures {
+    const SAME_DAY: &str =
+        "date(ts, 'unixepoch', 'localtime') = date(?1, 'unixepoch', 'localtime')";
+    let today = conn
         .query_row(
-            "SELECT COALESCE(SUM(COALESCE(input, 0) + COALESCE(output, 0)
-                 + COALESCE(cache_read, 0) + COALESCE(cache_write, 0)), 0)
-             FROM turn_usage
-             WHERE date(ts, 'unixepoch', 'localtime') = date(?1, 'unixepoch', 'localtime')",
+            &format!("SELECT SUM(input + output) FROM turn_usage WHERE {SAME_DAY}"),
             [at],
-            |r| r.get(0),
+            |r| r.get::<_, Option<i64>>(0),
         )
-        .ok();
-    Ok((today.and_then(|t| u64::try_from(t).ok()), pruned))
+        .ok()
+        .flatten();
+    let cost = conn
+        .prepare(&format!(
+            "SELECT engine, SUM(cost_micros) FROM turn_usage
+             WHERE cost_micros IS NOT NULL AND {SAME_DAY} GROUP BY engine ORDER BY engine"
+        ))
+        .and_then(|mut q| {
+            q.query_map([at], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    let cost = cost
+        .into_iter()
+        .filter_map(|(engine, micros)| Some((engine, u64::try_from(micros).ok()?)))
+        .collect();
+    (today.and_then(|t| u64::try_from(t).ok()), cost)
 }
 
 /// The usage records folded for `/cost`: by local day (days before `at`),
@@ -1085,6 +1111,7 @@ impl StoreHandle {
             StoreCmd::RecordUsage { pane, .. } => StoreReply::UsageRecorded {
                 pane,
                 today: None,
+                cost: Vec::new(),
                 problem: Some(reason),
             },
             StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },

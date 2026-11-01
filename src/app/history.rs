@@ -2,6 +2,7 @@
 //! on, what is saved and when, resume and delete. The store thread does the
 //! IO; this side only builds its commands and applies its replies.
 
+use super::chat::UsageToday;
 use super::*;
 use crate::core::ai::chat::{
     list::{
@@ -382,7 +383,21 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
-            StoreReply::UsageRecorded { pane, problem, .. } => {
+            StoreReply::UsageRecorded {
+                pane,
+                today,
+                cost,
+                problem,
+            } => {
+                // A write that failed keeps the last figures: it says nothing
+                // about the day.
+                if problem.is_none() || today.is_some() {
+                    self.usage_today = Some(UsageToday {
+                        tokens: *today,
+                        cost: cost.clone(),
+                    });
+                    self.dirty = true;
+                }
                 self.on_usage_reply(*pane, problem.as_deref());
                 Vec::new()
             }

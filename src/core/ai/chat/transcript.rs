@@ -33,6 +33,8 @@ pub enum LineKind {
     /// The line under the last shell block that names the run binding. It is
     /// drawn, never stored, yanked or sent.
     Hint,
+    /// The usage line under an answer: dim, not a warning.
+    Usage,
     Blank,
 }
 
@@ -149,6 +151,9 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
             if line.expanded() {
                 push_wrapped(out, LineKind::Reasoning, GUTTER, GUTTER, line.text(), width);
             }
+        }
+        Entry::Usage(text) => {
+            push_wrapped(out, LineKind::Usage, SYSTEM_PREFIX, "  ", text, width);
         }
         Entry::Tool(row) => {
             let call = format!("{} {}", row.name(), row.summary());

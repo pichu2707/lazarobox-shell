@@ -63,10 +63,10 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 2a: Display (PR 2a)
 
-- [ ] 2a.1 RED+GREEN `core/ai/config.rs` parse `[ai.usage]`, `[ai.usage.billing]`; local-engine key = config problem.
-- [ ] 2a.2 RED+GREEN `Entry::Usage` render (not stored, not sent); `usage: no data`, `(partial)`, billing labels.
-- [ ] 2a.3 RED+GREEN `statusline.rs` ` · today N tok` from UsageRecorded, first segment dropped.
-- [ ] 2a.4 Docs: README documents the per-answer usage line, the status-bar segment (on by default) and the `[ai.usage]` / `[ai.usage.billing]` keys; CHANGELOG entry.
+- [x] 2a.1 RED+GREEN `core/ai/config.rs` parse `[ai.usage]`, `[ai.usage.billing]`; a local-engine billing key (and any unknown key) is ignored, as the configuration spec says; thresholds of 0 or less are off.
+- [x] 2a.2 RED+GREEN `Entry::Usage` render (not stored, not sent); `usage: no data`, `(partial)`, billing labels.
+- [x] 2a.3 RED+GREEN `statusline.rs` ` · today N tok` from UsageRecorded, first segment dropped.
+- [x] 2a.4 Docs: README documents the per-answer usage line, the status-bar segment (on by default) and the `[ai.usage]` / `[ai.usage.billing]` keys; CHANGELOG entry.
 
 ## Slice 2b: Menu (PR 2b)
 

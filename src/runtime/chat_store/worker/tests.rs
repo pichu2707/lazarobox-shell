@@ -2270,6 +2270,24 @@ fn usage_reply(reply: Option<StoreReply>) -> (Option<u64>, Option<String>) {
     }
 }
 
+/// The per-engine dollars of a usage reply.
+fn cost_reply(reply: Option<StoreReply>) -> Vec<(String, u64)> {
+    match reply {
+        Some(StoreReply::UsageRecorded { cost, .. }) => cost,
+        other => panic!("expected UsageRecorded, got {other:?}"),
+    }
+}
+
+fn record_for(engine: &str, usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: engine.into(),
+        role: "chat".into(),
+        usage: Box::new(usage),
+    }
+}
+
 fn usage_count(conn: &Connection) -> i64 {
     count(conn, "turn_usage")
 }
@@ -2803,4 +2821,46 @@ fn a_report_that_cannot_be_read_says_unavailable() {
             rows: None
         })
     );
+}
+
+// ---- the status segment's figures (ai-cost 2a.3) ----------------------------
+
+#[test]
+fn the_day_total_is_input_plus_output_and_skips_unknown_totals_and_the_cache() {
+    let (_dir, mut worker, _conn) = fixture();
+    // Output only: the total is unknown, so the day has no known total yet.
+    let only_output = TurnUsage {
+        output: Some(9),
+        ..TurnUsage::default()
+    };
+    assert_eq!(
+        usage_reply(worker.handle(record(None, only_output))).0,
+        None
+    );
+    // Cache counts are not part of the total.
+    let cached = TurnUsage {
+        cache_read: Some(1000),
+        cache_write: Some(1000),
+        ..tokens(1, 1)
+    };
+    assert_eq!(usage_reply(worker.handle(record(None, cached))).0, Some(2));
+}
+
+#[test]
+fn the_reply_sums_todays_dollars_per_engine_and_leaves_other_days_out() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output, cost_micros) VALUES (?1, 'claude', 1, 777)",
+        [now() - 2 * DAY],
+    )
+    .unwrap();
+    let dollars = |micros| TurnUsage {
+        cost_micros: Some(micros),
+        ..tokens(1, 1)
+    };
+    cost_reply(worker.handle(record_for("claude", dollars(400))));
+    cost_reply(worker.handle(record_for("ollama", tokens(1, 1))));
+    cost_reply(worker.handle(record_for("codex", dollars(50))));
+    let last = cost_reply(worker.handle(record_for("claude", dollars(100))));
+    assert_eq!(last, [("claude".to_owned(), 500), ("codex".to_owned(), 50)]);
 }

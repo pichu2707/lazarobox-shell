@@ -49,7 +49,11 @@ pub(super) fn systems(state: &ChatState) -> Vec<&str> {
         .iter()
         .filter_map(|e| match e {
             Entry::System(s) => Some(s.as_str()),
-            Entry::Message(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::Message(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_) => None,
         })
         .collect()
 }
@@ -635,5 +639,168 @@ mod usage_tests {
             }),
         );
         assert_eq!(state.turn_usage().and_then(|u| u.model.as_deref()), None);
+    }
+}
+
+mod usage_line_tests {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    fn lines(state: &ChatState) -> Vec<&str> {
+        state
+            .entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Usage(line) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn claude() -> Availability {
+        Availability::Ready {
+            engine: "claude".into(),
+            model: Some("sonnet".into()),
+        }
+    }
+
+    fn reported(input: u64, output: u64, cost: Option<u64>) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            input: Some(input),
+            output: Some(output),
+            cost_micros: cost,
+            ..TurnUsage::default()
+        })
+    }
+
+    fn config(text: &str) -> crate::core::ai::config::UsageConfig {
+        let table: toml::Table = text.parse().unwrap();
+        crate::core::ai::config::read_with_port_env(&table, &mut Vec::new(), None)
+            .usage()
+            .clone()
+    }
+
+    fn turn(state: &mut ChatState, engine: &Availability, events: Vec<StreamEvent>) {
+        let SendOutcome::Sent { turn, .. } = state.send("hi", engine, SYSTEM) else {
+            panic!("refused");
+        };
+        for event in events {
+            state.apply(turn, event);
+        }
+    }
+
+    #[test]
+    fn a_subscription_turn_gets_the_list_price_label_below_the_answer() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &claude(),
+            vec![
+                StreamEvent::Delta("ok".into()),
+                reported(2, 4, Some(4_936)),
+                StreamEvent::Done(Finish::Stop),
+            ],
+        );
+        assert_eq!(
+            lines(&state),
+            ["usage: in 2 · out 4 · $0.0049 list-price equivalent"]
+        );
+        assert!(matches!(state.entries().last(), Some(Entry::Usage(_))));
+    }
+
+    #[test]
+    fn the_configured_billing_mode_labels_the_dollars() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage.billing]\nclaude = \"per-token\"\n"));
+        turn(
+            &mut state,
+            &claude(),
+            vec![reported(2, 4, Some(4_936)), StreamEvent::Done(Finish::Stop)],
+        );
+        assert_eq!(lines(&state), ["usage: in 2 · out 4 · $0.0049"]);
+    }
+
+    #[test]
+    fn a_local_engine_never_shows_dollars() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(12, 34, Some(9)), StreamEvent::Done(Finish::Stop)],
+        );
+        assert_eq!(lines(&state), ["usage: in 12 · out 34"]);
+    }
+
+    #[test]
+    fn a_clean_turn_with_no_record_says_no_data() {
+        let mut state = chat();
+        turn(&mut state, &ready(), vec![StreamEvent::Done(Finish::Stop)]);
+        assert_eq!(lines(&state), ["usage: no data"]);
+    }
+
+    #[test]
+    fn the_line_follows_the_error_text_of_a_turn_with_a_record() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![
+                reported(5, 5, None),
+                StreamEvent::Error(ChatError::Failed("boom".into())),
+            ],
+        );
+        assert_eq!(lines(&state), ["usage: in 5 · out 5 · partial"]);
+    }
+
+    #[test]
+    fn an_unclean_end_without_a_record_has_no_line() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![StreamEvent::Error(ChatError::Interrupted)],
+        );
+        assert!(lines(&state).is_empty());
+        let mut state = chat();
+        turn(&mut state, &ready(), vec![]);
+        state.cancel();
+        assert!(lines(&state).is_empty());
+    }
+
+    #[test]
+    fn turned_off_adds_no_line_and_changes_nothing_else() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nline = false\n"));
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(1, 1, None), StreamEvent::Done(Finish::Stop)],
+        );
+        assert!(lines(&state).is_empty());
+        assert!(state.turn_usage().is_some(), "the record is still kept");
+    }
+
+    #[test]
+    fn the_line_is_not_a_message_and_never_reaches_the_next_request() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![
+                StreamEvent::Delta("answer".into()),
+                reported(1, 1, None),
+                StreamEvent::Done(Finish::Stop),
+            ],
+        );
+        let (_, request) = sent(&mut state, "next");
+        assert!(
+            request
+                .messages
+                .iter()
+                .all(|m| !m.content.contains("usage:")),
+            "{:?}",
+            request.messages
+        );
+        assert_eq!(state.messages().count(), 3);
     }
 }

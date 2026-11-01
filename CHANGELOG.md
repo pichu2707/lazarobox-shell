@@ -21,6 +21,20 @@ baseline.
   reads `no data` (never 0) and dollars appear only when the engine reports
   them, labelled `list-price equivalent` by default. With chat history off it
   shows this session only, from memory, and says so.
+- A dim usage line under each chat answer (`usage: in 2 · out 4 · $0.0049
+  list-price equivalent`), on by default. A turn the engine reported nothing
+  for reads `usage: no data`; a cut or failed turn gets the line only if it
+  has a record, marked `partial`. It is not stored, not sent to the engine,
+  not part of a yank and not shown after a resume.
+- The status bar of a focused chat shows ` · today: N tok` (all chats and
+  engines, today), on by default. Dollars are added only for engines in
+  `per-token` mode (`$0.42`, `<$0.01` below half a cent, nothing for a zero
+  sum). It is the first segment dropped when the bar is narrow.
+- `[ai.usage]` (`line`, `statusline`, and the thresholds `turn_tokens`,
+  `day_tokens`, `day_usd`, which are read but do nothing yet) and
+  `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
+  default, or `per-token`). A wrong value falls back to its default and is
+  reported at startup; a threshold of 0 or less is off.
 
 ## [1.0.1] - 2026-10-31
 

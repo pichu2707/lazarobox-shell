@@ -31,12 +31,6 @@ pub enum Billing {
     PerToken,
 }
 
-/// The default billing mode of `engine`: `subscription` for the CLI engines,
-/// none for the local ones (they never show dollars).
-pub fn default_billing(engine: &str) -> Option<Billing> {
-    matches!(engine, "claude" | "codex" | "gemini").then_some(Billing::Subscription)
-}
-
 /// `$` and the figure: 4 decimals below one dollar, 2 from one dollar up.
 pub fn format_usd(micros: u64) -> String {
     if micros < 1_000_000 {
@@ -54,6 +48,48 @@ pub fn dollar_part(micros: u64, billing: Billing) -> String {
         Billing::PerToken => format_usd(micros),
         Billing::Subscription => format!("{} list-price equivalent", format_usd(micros)),
     }
+}
+
+/// The usage line under an answer (`None`: no record). Dollars are labelled
+/// by `billing`, and a local engine (`None`) never shows them.
+pub fn usage_line(usage: Option<&TurnUsage>, billing: Option<Billing>) -> String {
+    let Some(usage) = usage else {
+        return "usage: no data".to_owned();
+    };
+    let n = |v: Option<u64>| v.map_or_else(|| "no data".to_owned(), |n| n.to_string());
+    let mut line = format!("usage: in {} · out {}", n(usage.input), n(usage.output));
+    if let Some(cached) = usage.cache_read {
+        line.push_str(&format!(" · cached {cached}"));
+    }
+    if let Some(reasoning) = usage.reasoning {
+        line.push_str(&format!(" · reasoning {reasoning}"));
+    }
+    if let (Some(micros), Some(mode)) = (usage.cost_micros, billing) {
+        line.push_str(&format!(" · {}", dollar_part(micros, mode)));
+    }
+    if usage.partial {
+        line.push_str(" · partial");
+    }
+    line
+}
+
+/// The status-bar segment: today's known tokens (`no data` when none) and,
+/// when there is any, the spend of the per-token engines.
+pub fn today_segment(tokens: Option<u64>, spend_micros: Option<u64>) -> String {
+    let mut text = tokens.map_or_else(
+        || "today: no data".to_owned(),
+        |n| format!("today: {n} tok"),
+    );
+    // A zero sum is no figure; a sub-cent one is not rounded down to $0.00.
+    match spend_micros {
+        None | Some(0) => {}
+        Some(micros) if micros < 5_000 => text.push_str(" · <$0.01"),
+        Some(micros) => {
+            let cents = micros.saturating_add(5_000) / 10_000;
+            text.push_str(&format!(" · ${}.{:02}", cents / 100, cents % 100));
+        }
+    }
+    text
 }
 
 /// The records of one engine and model on one local day, folded by the store

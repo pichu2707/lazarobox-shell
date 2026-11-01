@@ -5,7 +5,7 @@
 use super::*;
 use crate::core::ai::chat::{
     cost_view::{CostView, NO_ARGUMENTS},
-    usage_view::{UNAVAILABLE_LINE, UsageRow, default_billing, report_lines, session_lines},
+    usage_view::{UNAVAILABLE_LINE, UsageRow, report_lines, session_lines},
 };
 
 impl App {
@@ -38,7 +38,7 @@ impl App {
         chat.composer_mut().clear();
         self.dirty = true;
         if !history {
-            let lines = session_lines(chat.session_usage(), &default_billing);
+            let lines = session_lines(chat.session_usage(), &|e| self.ai.usage().billing(e));
             chat.open_cost(CostView::with(lines));
         } else {
             // A detached store answers `None` itself: the reply decides.
@@ -71,7 +71,7 @@ impl App {
             return;
         };
         let lines = match rows {
-            Some(rows) => report_lines(rows, chat.session_usage(), &default_billing),
+            Some(rows) => report_lines(rows, chat.session_usage(), &|e| self.ai.usage().billing(e)),
             None => vec![UNAVAILABLE_LINE.to_owned()],
         };
         if let Some(view) = chat.cost_mut() {
