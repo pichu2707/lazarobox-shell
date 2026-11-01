@@ -25,7 +25,7 @@ use futures::{StreamExt, future::join_all, stream};
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    Detection, Engine, Kind, Probe, ServerPorts, Status,
+    Detection, Engine, Kind, ModelFacts, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
@@ -129,19 +129,25 @@ impl ShowCache {
     }
 }
 
-/// Fills the tool support of the Ollama models in `detection`, from the cache
-/// or `POST /api/show`, within the bounds above. A model left unanswered stays
-/// `Unknown`; nothing here changes the engine state or the model list.
-async fn show_phase(detection: &mut Detection, ports: &ServerPorts, cache: &ShowCache) {
+/// The model facts of `detection` with their tool support filled in, from the
+/// cache or `POST /api/show`, within the bounds above. A model left
+/// unanswered stays `Unknown`; nothing here changes the engine state or the
+/// model list.
+async fn show_phase(
+    detection: &Detection,
+    ports: &ServerPorts,
+    cache: &ShowCache,
+) -> Vec<ModelFacts> {
+    let mut facts_all = detection.model_facts.clone();
     let up = detection
         .engines
         .iter()
         .any(|s| s.id == "ollama" && s.status == Status::Available);
     let Some(port) = ports.port("ollama").filter(|_| up) else {
-        return;
+        return facts_all;
     };
     let mut todo = Vec::new();
-    for (at, facts) in detection.model_facts.iter_mut().enumerate() {
+    for (at, facts) in facts_all.iter_mut().enumerate() {
         match facts.digest.as_deref().and_then(|d| cache.get(d)) {
             Some(tools) => facts.tools = tools,
             None => todo.push((at, facts.name.clone())),
@@ -166,12 +172,13 @@ async fn show_phase(detection: &mut Detection, ports: &ServerPorts, cache: &Show
     })
     .await;
     for (at, tools) in answers {
-        let facts = &mut detection.model_facts[at];
+        let facts = &mut facts_all[at];
         facts.tools = tools;
         if let Some(digest) = &facts.digest {
             cache.put(digest, tools);
         }
     }
+    facts_all
 }
 
 /// The first executable regular file called `name` in an absolute `path`
@@ -635,16 +642,17 @@ pub async fn detect_all(
         .and_then(Path::parent)
         .map(Path::to_path_buf);
     detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
-    // The two do not wait on each other: the model scan is off the executor
-    // and the `/props` probe is on the network.
-    let (models, windows) = tokio::join!(
+    // None waits on another: the model scan is off the executor, the `/props`
+    // probe and the `/api/show` calls (the only POST detection sends, to
+    // Ollama alone) are on the network.
+    let (models, windows, facts) = tokio::join!(
         local_models(&detection, model_dirs),
-        windows(&detection, ports)
+        windows(&detection, ports),
+        show_phase(&detection, ports, show)
     );
     detection.local_models = models;
     detection.windows = windows;
-    // After the listing: the only POST detection sends, to Ollama alone.
-    show_phase(&mut detection, ports, show).await;
+    detection.model_facts = facts;
     detection
 }
 
