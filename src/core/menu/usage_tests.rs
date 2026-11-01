@@ -123,9 +123,9 @@ fn the_view_lists_the_toggles_then_one_billing_row_per_cli_engine() {
             ("claude billing", "subscription".to_owned()),
             ("codex billing", "subscription".to_owned()),
             ("gemini billing", "subscription".to_owned()),
-            ("Turn limit (tokens)", "off".to_owned()),
-            ("Day limit (tokens)", "off".to_owned()),
-            ("Day limit ($)", "off".to_owned()),
+            ("Turn tokens", "off".to_owned()),
+            ("Day tokens", "off".to_owned()),
+            ("Day $", "off".to_owned()),
         ]
     );
 }
@@ -171,7 +171,7 @@ fn enter_and_space_cycle_but_an_enter_repeat_is_ignored() {
 fn the_cursor_wraps_in_the_view() {
     let mut m = opened();
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Day limit ($)");
+    assert_eq!(selected_label(&m), "Day $");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Usage line");
 }

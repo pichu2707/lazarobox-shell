@@ -6,8 +6,11 @@ use std::borrow::Cow;
 
 mod account;
 pub mod feedback;
+mod limit;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use self::limit::{HINT_LIMIT, NOTICE_LIMIT_ENTER, limit_text};
 
 use super::{
     ai::{
@@ -127,72 +130,6 @@ impl DraftValue {
                 })
             }),
         }
-    }
-}
-
-/// Most digits a limit takes.
-const LIMIT_DIGITS: usize = 12;
-/// Most decimals of a dollar limit.
-const LIMIT_DECIMALS: usize = 2;
-/// Millionths in a dollar.
-const MICROS: u64 = 1_000_000;
-
-/// A limit as shown and as written: `off`, whole tokens, or dollars with the
-/// decimals it has.
-fn limit_text(limit: Option<u64>, usd: bool) -> String {
-    match limit {
-        None => "off".to_owned(),
-        Some(n) if !usd => n.to_string(),
-        Some(n) if n % MICROS == 0 => (n / MICROS).to_string(),
-        Some(n) => format!("{}.{:06}", n / MICROS, n % MICROS)
-            .trim_end_matches('0')
-            .to_owned(),
-    }
-}
-
-/// The limit a field holds: `Ok(None)` for empty or 0 (off), `Err` for a
-/// field that is no number (a lone `.`).
-fn parse_limit(field: &str, usd: bool) -> Result<Option<u64>, ()> {
-    let (whole, frac) = field.split_once('.').unwrap_or((field, ""));
-    if whole.is_empty() && frac.is_empty() && !field.is_empty() {
-        return Err(());
-    }
-    let digits = |t: &str| {
-        if t.is_empty() {
-            Ok(0)
-        } else {
-            t.parse::<u64>().map_err(drop)
-        }
-    };
-    let n = if usd {
-        // Cents, then millionths: `5` after the point is 50 cents.
-        let cents = format!("{frac:0<2}");
-        (digits(whole)? * 100 + digits(&cents)?) * (MICROS / 100)
-    } else {
-        digits(whole)?
-    };
-    Ok((n > 0).then_some(n))
-}
-
-/// Adds `c` to the field of a limit, or says why it cannot.
-fn push_limit_char(field: &mut String, c: char, usd: bool) -> Option<&'static str> {
-    let digits = field.chars().filter(char::is_ascii_digit).count();
-    match c {
-        '0'..='9' if digits >= LIMIT_DIGITS => Some(NOTICE_LIMIT_LONG),
-        '0'..='9'
-            if usd
-                && field
-                    .split_once('.')
-                    .is_some_and(|(_, d)| d.len() >= LIMIT_DECIMALS) =>
-        {
-            Some(NOTICE_LIMIT_DECIMALS)
-        }
-        '.' if usd && field.contains('.') => Some(NOTICE_LIMIT_POINT),
-        '0'..='9' | '.' if c != '.' || usd => {
-            field.push(c);
-            None
-        }
-        _ => Some(NOTICE_LIMIT_KEY),
     }
 }
 
@@ -578,7 +515,7 @@ pub static USAGE_SECTION: Section = Section {
         billing_row!("codex billing", "codex", 1, 103),
         billing_row!("gemini billing", "gemini", 2, 104),
         limit_row!(
-            "Turn limit (tokens)",
+            "Turn tokens",
             "turn_tokens",
             turn_tokens,
             set_turn_tokens,
@@ -586,7 +523,7 @@ pub static USAGE_SECTION: Section = Section {
             105
         ),
         limit_row!(
-            "Day limit (tokens)",
+            "Day tokens",
             "day_tokens",
             day_tokens,
             set_day_tokens,
@@ -594,7 +531,7 @@ pub static USAGE_SECTION: Section = Section {
             106
         ),
         limit_row!(
-            "Day limit ($)",
+            "Day $",
             "day_usd",
             day_usd_micros,
             set_day_usd_micros,
@@ -1089,13 +1026,6 @@ const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
 const NOTICE_USAGE_KEY: &str = "Esc first to leave Usage";
 const HINT_USAGE: &str = "j/k move · h/l change · Enter edit · s save · Esc back";
-const HINT_LIMIT: &str = "type digits · Enter ok · Esc cancel";
-const NOTICE_LIMIT_KEY: &str = "Digits only";
-const NOTICE_LIMIT_ENTER: &str = "Enter edits this limit";
-const NOTICE_LIMIT_EMPTY: &str = "Type a number, Esc cancels";
-const NOTICE_LIMIT_LONG: &str = "At most 12 digits";
-const NOTICE_LIMIT_DECIMALS: &str = "At most 2 decimals";
-const NOTICE_LIMIT_POINT: &str = "One decimal point only";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
@@ -2232,8 +2162,11 @@ impl MenuState {
             let ItemKind::Draft(choice) = &item.kind else {
                 continue;
             };
+            // While a limit is typed its value comes first: the label gives
+            // way to a short one so the digits and the cursor stay visible.
+            let editing = at == cursor && self.limit_edit.is_some();
             rows.push(Row::Item {
-                label: item.label,
+                label: if editing { "Edit" } else { item.label },
                 value: Some(match (&self.limit_edit, at == cursor) {
                     (Some(field), true) => Cow::Owned(format!("{field}_")),
                     _ => choice.shown(ai.draft()),
@@ -2276,86 +2209,6 @@ impl MenuState {
             _ => self.notice = Some(NOTICE_USAGE_KEY.to_owned()),
         }
         MenuCommand::None
-    }
-
-    /// The limit row at `cursor`: whether it counts dollars.
-    fn limit_at(&self, cursor: usize) -> Option<bool> {
-        match USAGE_SECTION.items.get(cursor)?.kind {
-            ItemKind::Draft(AiChoice {
-                value: DraftValue::Limit { usd, .. },
-                ..
-            }) => Some(usd),
-            _ => None,
-        }
-    }
-
-    /// Opens the field of the limit at `cursor` with its current value.
-    fn start_limit(&mut self, cursor: usize) {
-        if let (
-            Some(ai),
-            Some(Item {
-                kind: ItemKind::Draft(choice),
-                ..
-            }),
-        ) = (&self.ai, USAGE_SECTION.items.get(cursor))
-        {
-            let shown = choice.shown(ai.draft());
-            self.limit_edit = Some(if shown == "off" {
-                String::new()
-            } else {
-                shown.into_owned()
-            });
-        }
-    }
-
-    /// Keys while a limit is typed: digits (and one `.` for dollars), Backspace,
-    /// Enter to keep it and Esc to drop the edit. Any other key says so.
-    fn on_limit_key(&mut self, key: &KeyEvent, repeat: bool) {
-        let Some(cursor) = self.usage else { return };
-        let usd = self.limit_at(cursor).unwrap_or(false);
-        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        let Some(field) = self.limit_edit.as_mut() else {
-            return;
-        };
-        let refused = match key.code {
-            KeyCode::Esc | KeyCode::Enter if repeat => return,
-            KeyCode::Esc if plain => {
-                self.limit_edit = None;
-                return;
-            }
-            KeyCode::Enter if plain => {
-                match parse_limit(field, usd) {
-                    Ok(limit) => self.commit_limit(cursor, limit),
-                    Err(()) => self.notice = Some(NOTICE_LIMIT_EMPTY.to_owned()),
-                }
-                return;
-            }
-            KeyCode::Backspace if plain => {
-                field.pop();
-                return;
-            }
-            KeyCode::Char(c) if plain => push_limit_char(field, c, usd),
-            _ => Some(NOTICE_LIMIT_KEY),
-        };
-        self.notice = refused.map(str::to_owned);
-    }
-
-    fn commit_limit(&mut self, cursor: usize, limit: Option<u64>) {
-        self.limit_edit = None;
-        if let (
-            Some(ai),
-            Some(Item {
-                kind:
-                    ItemKind::Draft(AiChoice {
-                        value: DraftValue::Limit { set, .. },
-                        ..
-                    }),
-                ..
-            }),
-        ) = (&mut self.ai, USAGE_SECTION.items.get(cursor))
-        {
-            ai.set_draft(*set, limit);
-        }
     }
 
     fn step_usage(&mut self, cursor: usize, forward: bool) {
@@ -2783,7 +2636,8 @@ impl MenuState {
                     ai.edit(|p| p.paste(text));
                 }
             }
-            Some(SubView::Warning | SubView::Usage) | None => {}
+            Some(SubView::Usage) => self.paste_limit(text),
+            Some(SubView::Warning) | None => {}
         }
     }
 

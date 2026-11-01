@@ -1554,6 +1554,36 @@ mod tests {
         insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view())));
     }
 
+    // The edit keeps its value, the cursor and the `Esc` of the hint visible
+    // at the smallest popup.
+    #[test]
+    fn snapshot_usage_limit_edit_at_the_smallest_popup() {
+        let mut menu = usage_view();
+        goto_usage_row(&mut menu, "Turn tokens");
+        press(&mut menu, &[KeyCode::Enter]);
+        for c in "123456789012".chars() {
+            press(&mut menu, &[KeyCode::Char(c)]);
+        }
+        let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+        assert!(shown.contains("123456789012_"), "{shown}");
+        assert!(shown.contains("Esc"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    fn goto_usage_row(menu: &mut MenuState, label: &str) {
+        for _ in 0..8 {
+            let on = menu
+                .rows(&Config::default())
+                .into_iter()
+                .any(|r| matches!(r, Row::Item { label: l, selected: true, .. } if l == label));
+            if on {
+                return;
+            }
+            press(menu, &[KeyCode::Char('j')]);
+        }
+        panic!("no row {label}");
+    }
+
     #[test]
     fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
         for menu in [mixed(), ai_tab()] {

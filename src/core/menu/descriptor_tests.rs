@@ -64,9 +64,9 @@ fn the_migrated_rows_are_drafts_in_tab_then_row_order() {
             "claude billing",
             "codex billing",
             "gemini billing",
-            "Turn limit (tokens)",
-            "Day limit (tokens)",
-            "Day limit ($)"
+            "Turn tokens",
+            "Day tokens",
+            "Day $"
         ]
     );
 }

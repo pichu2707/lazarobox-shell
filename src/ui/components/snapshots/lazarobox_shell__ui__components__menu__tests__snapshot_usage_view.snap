@@ -10,9 +10,9 @@ expression: shown
 │ claude billing                                subscription │
 │ codex billing                                 subscription │
 │ gemini billing                                subscription │
-│ Turn limit (tokens)                                    off │
-│ Day limit (tokens)                                     off │
-│ Day limit ($)                                          off │
+│ Turn tokens                                            off │
+│ Day tokens                                             off │
+│ Day $                                                  off │
 │                                                            │
 │                                                            │
 │                                                            │

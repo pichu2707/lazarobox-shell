@@ -10,9 +10,9 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view()))"
 │ claude billing  sub… │
 │ codex billing  subs… │
 │ gemini billing  sub… │
-│ Turn limit (tokens)  │
-│ Day limit (tokens)   │
-│ Day limit ($)    off │
+│ Turn tokens      off │
+│ Day tokens       off │
+│ Day $            off │
 │                      │
 │                      │
 │                      │
