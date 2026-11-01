@@ -661,6 +661,14 @@ mod tests {
             assert!(!once[i + 1..].contains(a), "duplicate action {a:?}");
         }
         assert_eq!(all.len() - once.len(), 2);
+        for chord in [ALIAS_KEY, ALIAS_KEY_LEGACY] {
+            assert_eq!(
+                lookup(PREFIX_TREE, &event(chord)),
+                Step::Run(PrefixAction::SendAliasLiteral),
+                "{}",
+                chord.label()
+            );
+        }
         // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
         assert_eq!(once.len(), 34);
     }

@@ -118,6 +118,7 @@ Spec: terminal-compatibility "Support policy by records" and "Shared checklist a
 - [ ] 4.2 README: remove "tested in Kitty" (line ~93, Spanish text) and replace with a record-aware sentence.
 - [ ] 4.3 README: platform list (lines ~60-64): replace "Windows: no soportado" with WSL as a supported path once its record exists, plus the WSLg Start menu caveat from task 3.8.
 - [ ] 4.4 README: add a "Supported terminals" section listing only folders under `docs/terminals/`, each linking its newest record; everything else "untested". Update the prefix table (lines ~146-187): row `Ctrl+Espacio` / `Ctrl+]` sends its own byte (NUL / 0x1D); line ~146 says the prefix keys are fixed. Update the copy section (lines ~322-335): fallback chain, the notices, SSH skips local tools, `--check-prefix`.
+- [ ] 4.4b README and CHANGELOG: state the behaviour change that a single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane; it takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This affects vim tag jump and the telnet escape.
 - [ ] 4.4a README: in the `install-desktop` text (line ~93) describe the picker: it asks only on a TTY without `--terminal`, lists installed terminals, marks tested ones, Enter keeps the automatic choice, Ctrl+D cancels.
 - [ ] 4.5 Check: grep README and `src/` for `tested in Kitty` and `Windows: no soportado` returns nothing.
 - [ ] 4.6 [manual] Kitty: fill `docs/terminals/kitty/<version>-<date>.md` from the template (user). Include the S1 clipboard check (1.13), the SSH yank scenario, and the paste scenarios from copy-selection.

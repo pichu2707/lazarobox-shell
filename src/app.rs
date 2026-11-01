@@ -2355,8 +2355,6 @@ impl App {
         vec![Effect::WritePty(self.tab().focus, bytes)]
     }
 
-    /// Resolve a key against the pending table (the root or an open group).
-    /// `ShowCommands` is a no-op until the command viewer lands.
     /// The byte of the prefix key just pressed, for the focused shell pane.
     /// A pane that is not a shell has no program to receive it: a notice.
     fn send_prefix_literal(&mut self, alias: bool) -> Vec<Effect> {
@@ -2371,6 +2369,8 @@ impl App {
         vec![Effect::WritePty(self.tab().focus, vec![byte])]
     }
 
+    /// Resolve a key against the pending table (the root or an open group).
+    /// `ShowCommands` is a no-op until the command viewer lands.
     fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
         let step = prefix::lookup(table, key);
         self.input = match step {
@@ -3258,6 +3258,12 @@ mod app_tests {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
     }
 
+    /// Every spelling of a prefix key: Ctrl+Space, Ctrl+] and Ctrl+5.
+    fn prefix_keys() -> [AppEvent; 3] {
+        let [bracket, five] = alias_keys();
+        [ctrl_space(), bracket, five]
+    }
+
     /// Ctrl+] as a terminal without enhancement flags reports it: 0x1D parses
     /// to Ctrl+5 (design D6), so a key test must cover both spellings.
     fn alias_keys() -> [AppEvent; 2] {
@@ -3525,11 +3531,7 @@ mod app_tests {
 
     #[test]
     fn alias_twice_sends_its_own_byte_and_the_keys_mix_by_second_byte() {
-        let keys = [
-            ctrl_space(),
-            alias_keys()[0].clone(),
-            alias_keys()[1].clone(),
-        ];
+        let keys = prefix_keys();
         for first in &keys {
             for second in &keys {
                 let mut a = app();
@@ -3547,13 +3549,13 @@ mod app_tests {
 
     #[test]
     fn alias_drives_the_whole_tree() {
-        let mut a = app();
-        for ev in alias_keys().into_iter().take(1) {
-            a.update(ev);
+        for ev in alias_keys() {
+            let mut a = app();
+            a.update(ev.clone());
+            a.update(key('w'));
+            a.update(key('v'));
+            assert_eq!(a.tab_panes(), 2, "{ev:?}");
         }
-        a.update(key('w'));
-        a.update(key('v'));
-        assert_eq!(a.tab_panes(), 2);
     }
 
     #[test]
@@ -8845,11 +8847,7 @@ mod app_tests {
 
         #[test]
         fn a_second_prefix_key_on_a_chat_shows_a_notice_and_writes_nothing() {
-            let keys = [
-                ctrl_space(),
-                alias_keys()[0].clone(),
-                alias_keys()[1].clone(),
-            ];
+            let keys = prefix_keys();
             for first in keys.clone() {
                 for second in keys.clone() {
                     let mut a = launched(80, 25);
