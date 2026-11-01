@@ -130,6 +130,24 @@ fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
     }
 }
 
+// Spec (agent-orchestrator, Missing dependency [S10, auto]): no worker is
+// offered `run_command` in this release, so the coordinator says it cannot
+// run tests, never claims they passed, and leaves running them to the user.
+#[test]
+fn the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "No worker can run commands or tests",
+            "say so",
+            "run them themselves",
+            "never claim a test ran",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
 // Spec (prompt-profiles): Reply in the user's language.
 #[test]
 fn every_prompt_asks_for_the_users_language() {
