@@ -188,7 +188,33 @@ fn without_gh_the_prefilled_page_opens_instead() {
         "{effects:?}"
     );
     assert_eq!(texts(&a)[0], "gh is not installed or not logged in: link");
-    assert!(a.notice().is_some_and(|n| n.starts_with("Copied ")));
+    assert_eq!(
+        a.notice(),
+        Some(crate::core::clipboard::osc52_only(false).as_str())
+    );
+}
+
+// copy-selection: Other callers get the same notice (feedback link).
+#[test]
+fn the_copied_link_goes_through_the_local_tool_and_the_menu_footer_follows() {
+    use crate::core::clipboard::Tool;
+    let mut a = sending(false).with_clipboard(Some(Tool::Xclip), false);
+    let effects = a.update(AppEvent::IssueSent(SendReply::NoGh));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::SetClipboard(_), Effect::CopyLocal { seq: 1, .. }]
+        ),
+        "{effects:?}"
+    );
+    assert_eq!(a.notice(), Some("Copying (xclip)"));
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Err("timed out".to_owned()),
+    });
+    let expected = "xclip failed (timed out); sent to the terminal (OSC 52)";
+    assert_eq!(a.notice(), Some(expected));
+    assert_eq!(a.menu().unwrap().footer(), Footer::Hint(expected.into()));
 }
 
 // Spec (open-links S7): an answer after the menu closed is dropped.

@@ -34,6 +34,7 @@ use crate::core::{
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
+    clipboard::{self, Tool},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -271,6 +272,12 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
+    /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
+    /// the short reason.
+    Clipboard {
+        seq: u64,
+        result: Result<(), String>,
+    },
 }
 
 /// How the menu closed.
@@ -296,6 +303,13 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Put `text` on the clipboard with the local tool the app was given
+    /// (see [`App::with_clipboard`]). The runtime answers with one
+    /// `AppEvent::Clipboard` carrying the same `seq`.
+    CopyLocal {
+        seq: u64,
+        text: String,
+    },
     /// Open this link in the browser through the host's opener. Only emitted
     /// when the runtime said it has one (see [`App::with_opener`]).
     OpenUrl(String),
@@ -854,6 +868,13 @@ pub struct App {
     host: crate::core::menu::feedback::Facts,
     /// The host has a program that opens links in the browser.
     opener: bool,
+    /// The local clipboard tool, if one fits this session.
+    clipboard: Option<Tool>,
+    /// Running over SSH: the notices point at the terminal's OSC 52.
+    ssh: bool,
+    /// The number of the last `Effect::CopyLocal`; an answer to an older
+    /// one is dropped (latest copy wins).
+    clip_seq: u64,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -959,6 +980,9 @@ impl App {
                 ..Default::default()
             },
             opener: false,
+            clipboard: None,
+            ssh: false,
+            clip_seq: 0,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -1085,6 +1109,14 @@ impl App {
     /// browser; without one the menu copies its links instead.
     pub fn with_opener(mut self, opener: bool) -> Self {
         self.opener = opener;
+        self
+    }
+
+    /// Injects the local clipboard tool the runtime found (none when no tool
+    /// fits) and whether the session is SSH. Over SSH no tool is used.
+    pub fn with_clipboard(mut self, tool: Option<Tool>, ssh: bool) -> Self {
+        self.clipboard = tool.filter(|_| !ssh);
+        self.ssh = ssh;
         self
     }
 
@@ -1895,6 +1927,7 @@ impl App {
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
                 Some(menu) => {
                     let command = menu.feedback_reply(reply);
@@ -2216,23 +2249,54 @@ impl App {
         effects
     }
 
-    /// Puts `text` on the host clipboard (OSC 52) and says so in the notice:
-    /// `Copied N characters`, or `Selection too large to copy` and nothing
-    /// sent when it does not fit in one sequence.
+    /// Puts `text` on the host clipboard and says what happened in the
+    /// notice. OSC 52 always goes out when `text` fits in one sequence; a
+    /// local tool, when one fits the session, gets the text too and its
+    /// outcome comes back as `AppEvent::Clipboard`. A tool is the only proof
+    /// of a copy, so without one the notice says OSC 52 was only sent. A
+    /// text too large for OSC 52 is refused unless a tool can take it.
     pub(super) fn copy_to_clipboard(&mut self, text: &str) -> Vec<Effect> {
-        match osc52(text) {
-            Ok(sequence) => {
-                self.notice = Some(match text.chars().count() {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
+        let sequence = osc52(text);
+        let mut effects = Vec::new();
+        match (&sequence, self.clipboard) {
+            (Err(TooLarge), None) => {
                 self.notice = Some("Selection too large to copy".to_string());
-                Vec::new()
+                return effects;
+            }
+            (Ok(_), None) => self.notice = Some(clipboard::osc52_only(self.ssh)),
+            (_, Some(tool)) => {
+                self.clip_seq += 1;
+                self.notice = Some(clipboard::copying(tool));
             }
         }
+        if let Ok(sequence) = sequence {
+            effects.push(Effect::SetClipboard(sequence));
+        }
+        if self.clipboard.is_some() {
+            effects.push(Effect::CopyLocal {
+                seq: self.clip_seq,
+                text: text.to_owned(),
+            });
+        }
+        effects
+    }
+
+    /// The local tool of copy `seq` finished. An answer to an older copy is
+    /// dropped. The notice and an open menu footer say how it went.
+    fn on_clipboard(&mut self, seq: u64, result: Result<(), String>) -> Vec<Effect> {
+        let Some(tool) = self.clipboard.filter(|_| seq == self.clip_seq) else {
+            return Vec::new();
+        };
+        let said = match result {
+            Ok(()) => clipboard::copied(tool),
+            Err(reason) => clipboard::failed(tool, &reason),
+        };
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_copied(said.clone());
+        }
+        self.notice = Some(said);
+        self.dirty = true;
+        Vec::new()
     }
 
     /// An unchanged draft has nothing to save and closes at once. A changed
@@ -3136,6 +3200,7 @@ mod app_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use crate::core::{
+        clipboard::osc52_only,
         copy::{CopyState, Point, SelectionKind},
         menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
@@ -4210,7 +4275,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
         );
-        assert_eq!(a.notice(), Some("Copied 8 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Multi-row line selection.
@@ -4225,7 +4290,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc("foo\nbar"))]
         );
-        assert_eq!(a.notice(), Some("Copied 7 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Wide character once.
@@ -4237,7 +4302,7 @@ mod app_tests {
         a.update(key('v'));
         a.update(key('$'));
         assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("a漢b"))]);
-        assert_eq!(a.notice(), Some("Copied 3 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Selection spans scrollback (app part: offset restored).
@@ -4295,16 +4360,129 @@ mod app_tests {
         assert_eq!(a.notice(), Some("Selection too large to copy"));
     }
 
+    /// `hello` selected in COPY mode, ready for `y`.
+    fn hello_selected(a: &mut App) {
+        copy_after(a, b"hello");
+        a.update(key('0'));
+        a.update(key('v'));
+        press_n(a, 'l', 4);
+    }
+
+    // copy-selection: Local tool ran, Tool order.
+    #[test]
+    fn a_yank_with_a_tool_also_asks_the_runtime_to_copy_locally() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        assert_eq!(
+            a.update(key('y')),
+            vec![
+                Effect::SetClipboard(osc("hello")),
+                Effect::CopyLocal {
+                    seq: 1,
+                    text: "hello".to_owned()
+                }
+            ]
+        );
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        let mut b = app().with_clipboard(Some(Tool::Xclip), false);
+        hello_selected(&mut b);
+        b.update(key('y'));
+        assert_eq!(b.notice(), Some("Copying (xclip)"));
+    }
+
+    // copy-selection: Only OSC 52 sent, SSH skips local tools.
+    #[test]
+    fn without_a_tool_only_osc52_goes_out_and_the_notice_says_so() {
+        let mut a = app().with_clipboard(None, false);
+        hello_selected(&mut a);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
+        assert_eq!(a.notice(), Some(clipboard::osc52_only(false).as_str()));
+        assert!(
+            a.notice()
+                .is_some_and(|n| n.ends_with("install wl-copy or xclip"))
+        );
+    }
+
+    #[test]
+    fn over_ssh_no_tool_runs_even_if_one_is_given() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), true);
+        hello_selected(&mut a);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
+        assert!(
+            a.notice()
+                .is_some_and(|n| n.ends_with("enable OSC 52 in your terminal"))
+        );
+    }
+
+    // Design D5: too large for OSC 52.
+    #[test]
+    fn an_oversized_selection_still_reaches_a_local_tool() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        big_selection(&mut a, 76);
+        let effects = a.update(key('y'));
+        assert!(
+            matches!(effects.as_slice(), [Effect::CopyLocal { seq: 1, text }] if text.len() == 75_001),
+            "{:?}",
+            effects.len()
+        );
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // copy-selection: Local tool ran, Tool fails.
+    #[test]
+    fn the_runtime_answer_replaces_the_notice() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+        assert!(a.take_dirty());
+        let mut b = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut b);
+        b.update(key('y'));
+        b.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Err("exit code 1".to_owned()),
+        });
+        assert_eq!(
+            b.notice(),
+            Some("wl-copy failed (exit code 1); sent to the terminal (OSC 52)")
+        );
+    }
+
+    #[test]
+    fn an_answer_to_an_older_copy_is_dropped() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        a.update(key('y'));
+        hello_selected(&mut a);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        a.update(AppEvent::Clipboard {
+            seq: 2,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+    }
+
     // statusline: Copied notice, Singular notice, Notice cleared by next key.
     #[test]
-    fn the_copied_notice_counts_characters_and_clears_on_the_next_key() {
+    fn the_copy_notice_is_honest_and_clears_on_the_next_key() {
         let mut a = app();
         copy_after(&mut a, b"x");
         a.update(key('0'));
         a.update(key('v'));
         a.update(key('y'));
-        assert_eq!(a.notice(), Some("Copied 1 character"));
-        assert_eq!(a.status_path(40), "Copied 1 character");
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.status_path(40), osc52_only(false));
         assert_eq!(a.input(), InputMode::Terminal);
         a.update(key('z'));
         assert_eq!(a.notice(), None);
@@ -4404,7 +4582,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.update(repeat('y')), vec![]);
         // The drop must not eat the yank notice.
-        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     #[test]
@@ -4511,7 +4689,7 @@ mod app_tests {
         for ms in [400, 433, 466] {
             assert_eq!(at(&mut a, ms, key('y')), vec![], "y at {ms}");
         }
-        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     #[test]
