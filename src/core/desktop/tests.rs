@@ -256,8 +256,8 @@ fn no_notice_says_tested_in_kitty() {
 }
 
 #[test]
-fn recorded_terminals_start_with_kitty_and_each_has_a_folder() {
-    assert_eq!(RECORDED_TERMINALS, ["kitty"]);
+fn recorded_terminals_are_kitty_and_zutty_and_each_has_a_folder() {
+    assert_eq!(RECORDED_TERMINALS, ["kitty", "zutty"]);
     let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/terminals");
     for name in RECORDED_TERMINALS {
         assert!(docs.join(name).is_dir(), "missing docs/terminals/{name}/");

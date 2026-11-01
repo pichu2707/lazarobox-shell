@@ -25,6 +25,8 @@ baseline.
   `--terminal`, marks terminals with a test record, and prints notes for WSL.
 - `docs/terminals/` holds the support policy, the checklist and the record
   templates. A terminal is supported only with a filled record.
+- Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
+  known issues they found; `zutty` joins `RECORDED_TERMINALS`.
 
 ### Changed
 
