@@ -700,7 +700,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         id,
         name: call.name().to_owned(),
         summary: if rehomed.get() {
-            clip(&format!("{} (from cli-cwd path)", call.argument()))
+            // Clipped first, so the note is never the part that is cut.
+            format!("{} (from cli-cwd path)", clip(&call.argument()))
         } else {
             clip(&call.argument())
         },

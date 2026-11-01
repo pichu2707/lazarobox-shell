@@ -1770,3 +1770,24 @@ async fn only_a_cli_turn_has_its_cli_cwd_paths_rewritten_and_the_row_says_so() {
         assert_eq!(row.ends_with("(from cli-cwd path)"), cli, "{row}");
     }
 }
+
+// D8: the note on the row is never cut, whatever the path's length.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_cli_cwd_note_survives_a_long_path() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let long = format!("{}/{}.rs", cwd.display(), "d".repeat(400));
+    let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    scope.cli = true;
+    host.dispatch(scope).call(read(&long)).await;
+    let row = events(&mut rx).iter().find_map(|e| match e {
+        StreamEvent::ToolCall { summary, .. } => Some(summary.clone()),
+        _ => None,
+    });
+    assert!(row.expect("a row").ends_with("(from cli-cwd path)"));
+}

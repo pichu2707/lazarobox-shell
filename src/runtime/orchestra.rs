@@ -51,7 +51,7 @@ use crate::core::{
     ai::{
         chat::{
             INTERRUPTED,
-            adapters::{Adapter, adapter_for},
+            adapters::{Adapter, adapter_for, is_cli_engine},
             approval::{ApprovalAsk, worker_label},
             engine::{
                 Answer, CallId, ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role,
@@ -1548,10 +1548,7 @@ impl RunManager {
                 worker: key.worker,
                 label: worker_label(spec.task, &spec.engine, model),
             }),
-            cli: !matches!(
-                adapter_for(&request.engine),
-                Some(Adapter::Ollama | Adapter::Llamacpp)
-            ),
+            cli: is_cli_engine(&request.engine),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(
