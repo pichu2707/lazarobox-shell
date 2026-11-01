@@ -78,18 +78,18 @@ Spec: modal-input "Prefix key". Independent of S1.
 
 Spec: terminal-compatibility "First-run prefix probe" and "Remembered probe result". Needs S2a merged.
 
-- [ ] 2b.1 RED: `terminal_key` table: `TERM_PROGRAM` wins; else `Windows Terminal` when `WT_SESSION`; else `TERM`; else `unknown`.
-- [ ] 2b.2 RED: JSON parse/render of `terminal key -> "pass" | "alias" | "missed"`; unknown value, bad JSON and empty file give a typed error, not a panic.
+- [x] 2b.1 RED: `terminal_key` table: `TERM_PROGRAM` wins; else `Windows Terminal` when `WT_SESSION`; else `TERM`; else `unknown`.
+- [x] 2b.2 RED: JSON parse/render of `terminal key -> "pass" | "alias" | "missed"`; unknown value, bad JSON and empty file give a typed error, not a panic.
 - [x] 2b.3 RED: `Probe` transitions with the app clock: `Ctrl+Space` gives `pass`, PREFIX, no offer; `Ctrl+]` gives `alias`, PREFIX, no offer (D8); a plain space or a non-printable or modified key gives `missed`, offer notice, key goes to the pane; an unmodified printable key other than space keeps waiting (user decision); `PROBE_WINDOW` (10 s) opens at the first tick and ends the probe with nothing stored and no offer; each result emits one `Effect::SaveProbe`.
-- [ ] 2b.4 RED: no probe when a stored result exists for this key; probe runs for a different terminal key; a startup notice wins and the probe is deferred with nothing stored (D13); `Ctrl+]` still works after any stored result.
-- [ ] 2b.5 RED: `--check-prefix` parsed in `StartArgs`; it starts the probe even with a stored result and shows `Checking the prefix key: press Ctrl+Space`.
-- [ ] 2b.6 RED: self-heal: stored `missed` plus later `Ctrl+Space` gives one `SaveProbe` with `pass`; stored `pass` plus `Ctrl+Space` emits no `SaveProbe`.
-- [ ] 2b.7 RED: store integration tests in temp dirs: missing file gives "probe once"; write is temp + rename; read error and write error each give an `AppEvent` that shows a notice and the app still starts; state dir resolves `$XDG_STATE_HOME/lazarobox/` then `~/.local/state/lazarobox/`.
-- [ ] 2b.8 GREEN: `core/probe.rs`, `runtime/probe_store.rs` (bounded read via `runtime/bounded_read.rs`, reuse `state_dir`), `Effect::SaveProbe`, `ProbeTick` (1 s, armed only while waiting, like `memory_watch`), `ProbeStore*` events, `App::with_probe`, `on_key` hook (`~1980`), `--check-prefix`, `runtime.rs` wiring (`~299`, `~510`, `apply` arm).
+- [x] 2b.4 RED: no probe when a stored result exists for this key; probe runs for a different terminal key; a startup notice wins and the probe is deferred with nothing stored (D13); `Ctrl+]` still works after any stored result.
+- [x] 2b.5 RED: `--check-prefix` parsed in `StartArgs`; it starts the probe even with a stored result and shows `Checking the prefix key: press Ctrl+Space`.
+- [x] 2b.6 RED: self-heal: stored `missed` plus later `Ctrl+Space` gives one `SaveProbe` with `pass`; stored `pass` plus `Ctrl+Space` emits no `SaveProbe`.
+- [x] 2b.7 RED: store integration tests in temp dirs: missing file gives "probe once"; write is temp + rename; read error and write error each give an `AppEvent` that shows a notice and the app still starts; state dir resolves `$XDG_STATE_HOME/lazarobox/` then `~/.local/state/lazarobox/`.
+- [x] 2b.8 GREEN: `core/probe.rs`, `runtime/probe_store.rs` (bounded read via `runtime/bounded_read.rs`, reuse `state_dir`), `Effect::SaveProbe`, `ProbeTick` (1 s, armed only while waiting, like `memory_watch`), `ProbeStore*` events, `App::with_probe`, `on_key` hook (`~1980`), `--check-prefix`, `runtime.rs` wiring (`~299`, `~510`, `apply` arm).
 - [ ] 2b.9 REFACTOR: share the notice builder with the clipboard notices only if it removes duplication.
 - [ ] 2b.10 Gate. Re-measure (target 150-200). If above 400 production lines in the PR, split off `--check-prefix` and self-heal into 2b-ii.
-- [ ] 2b.11 Docs: doc comments on `Probe`, `Outcome`, the file format and `PROBE_WINDOW`.
-- [ ] 2b.12 [manual] In a terminal that swallows `Ctrl+Space` the offer appears once; restart shows no probe; `--check-prefix` reruns it. Result goes in that terminal's record (task 4.6).
+- [x] 2b.11 Docs: doc comments on `Probe`, `Outcome`, the file format and `PROBE_WINDOW`.
+- [x] 2b.12 [manual] In a terminal that swallows `Ctrl+Space` the offer appears once; restart shows no probe; `--check-prefix` reruns it. Result goes in that terminal's record (task 4.6). (simulated with a plain space, Kitty; see the Kitty record)
 
 ## S3: Desktop launcher WSL notes, record-aware notice and terminal picker (`src/core/desktop.rs`, `src/runtime/desktop.rs`)
 
@@ -121,7 +121,7 @@ Spec: terminal-compatibility "Support policy by records" and "Shared checklist a
 - [x] 4.4b README and CHANGELOG: state the behaviour change that a single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane; it takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This affects vim tag jump and the telnet escape.
 - [x] 4.4a README: in the `install-desktop` text (line ~93) describe the picker: it asks only on a TTY without `--terminal`, lists installed terminals, marks tested ones, Enter keeps the automatic choice, Ctrl+D cancels.
 - [x] 4.5 Check: grep README and `src/` for `tested in Kitty` and `Windows: no soportado` returns nothing.
-- [ ] 4.6 [manual] Kitty: fill `docs/terminals/kitty/<version>-<date>.md` from the template (user). Include the S1 clipboard check (1.13), the SSH yank scenario, and the paste scenarios from copy-selection.
+- [ ] 4.6 [manual] Kitty: fill `docs/terminals/kitty/<version>-<date>.md` from the template (user). Include the S1 clipboard check (1.13), the SSH yank scenario, and the paste scenarios from copy-selection. (all but the SSH yank and mouse click done; see issue #490)
 - [ ] 4.7 [manual] Windows Terminal (WSL): fill `docs/terminals/windows-terminal/<version>-<date>.md` (user). Include the one-step launch result (3.8), the probe result, `clip.exe` UTF-16LE check (if wrong, change `payload` to UTF-8 in a fix commit), and the alias.
 - [ ] 4.8 [deferred, non-blocking] WezTerm record: the user fills `docs/terminals/wezterm/<version>-<date>.md` on their other PC. The follow-up PR that brings the record also adds `wezterm` to `RECORDED_TERMINALS` and to the README list. The success criterion "three records" is met in that follow-up.
 - [x] 4.9 Task 3.2 passes (the `kitty` folder exists).
