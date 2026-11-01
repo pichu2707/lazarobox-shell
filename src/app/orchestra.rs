@@ -750,6 +750,8 @@ impl App {
             now_on = chat.orch();
             self.dirty = true;
         }
+        // A reply to a resumed run is an ORCH turn: toggling gives it back.
+        self.release_wait(id);
         // The first ORCH of a start asks which runs a restart interrupted.
         if now_on {
             return self.recover_runs(id);
@@ -804,6 +806,8 @@ impl App {
         attach: Option<RunId>,
     ) -> Effect {
         if !self.orchestrating(id) {
+            // A plain send is not the reply a resumed run waits for.
+            self.release_wait(id);
             return Effect::ChatSend {
                 pane: id,
                 turn,

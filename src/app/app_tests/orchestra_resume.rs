@@ -375,8 +375,8 @@ fn a_resume_turn_cancelled_before_any_worker_leaves_the_run_offered() {
     still_offered(&mut a);
 }
 
-#[test]
-fn a_resume_turn_that_ends_with_no_worker_leaves_the_run_offered() {
+/// The resume turn of the interrupted app, ended normally with no worker.
+fn resumed_and_waiting() -> App {
     use crate::core::ai::chat::engine::{Finish, StreamEvent};
     let mut a = interrupted_app();
     let effects = keys(&mut a, "rr");
@@ -392,7 +392,88 @@ fn a_resume_turn_that_ends_with_no_worker_leaves_the_run_offered() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    still_offered(&mut a);
+    a
+}
+
+// D6: the coordinator waits for the user's reply: the pane says the run waits
+// (not that it is "still interrupted"), and `r r` does not resume it twice.
+#[test]
+fn a_resume_turn_that_ends_with_no_worker_waits_for_the_reply() {
+    let mut a = resumed_and_waiting();
+    let said = system(&a);
+    assert!(
+        said.iter().any(|l| l.contains("run 9 waits for your reply")
+            && l.contains("closes when a worker starts")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .all(|l| !l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_none(), "not resumed twice");
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("waits for your reply")),
+        "{:?}",
+        a.notice()
+    );
+}
+
+// D6: toggling ORCH in the pane gives the run back to the list, said.
+#[test]
+fn toggling_orch_while_the_run_waits_offers_it_again() {
+    let mut a = resumed_and_waiting();
+    toggle(&mut a);
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("run 9 is still interrupted") && l.contains("Ctrl+Space r r")),
+        "{said:?}"
+    );
+    toggle(&mut a);
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_some(), "offered again");
+}
+
+// D6: a reply that starts no worker gives the run back; one that starts a
+// worker closes it.
+#[test]
+fn a_reply_that_starts_no_worker_offers_the_run_again() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let reply = super::chat_live::ask(&mut a, "what is left?");
+    let turn = reply
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("the reply is a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
+}
+
+// D6: the run a pane waits on is not offered to a second pane of the same
+// folder.
+#[test]
+fn a_second_pane_is_not_offered_the_run_another_pane_waits_on() {
+    let mut a = resumed_and_waiting();
+    keys(&mut a, "c");
+    assert_eq!(a.focused(), super::chat_history::second_chat());
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
 
 // Re-review W2: the stream's `Done` and the run manager's worker rows travel

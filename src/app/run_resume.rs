@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::run_store::Awaiting;
 use super::*;
 use crate::core::ai::{
     chat::engine::Availability,
@@ -41,6 +42,9 @@ const NOT_IDLE: &str =
     "Finish the current answer and clear the composer first, then resume the run";
 /// Said before the engine or the conversation's prompt is ready.
 const NOT_READY: &str = "The engine is not ready yet; try again in a moment";
+/// Said when the pane's resumed run waits for the user's reply.
+const WAITS: &str =
+    "This pane's resumed run waits for your reply; send it, or toggle ORCH to get the run back";
 /// Said when the turn did not go and no other reason is known.
 const NOT_SENT: &str = "The run was not resumed; try again";
 
@@ -82,6 +86,9 @@ impl App {
         if !self.focused_is_chat() {
             return Err(CHAT_ONLY);
         }
+        if self.run_keep.awaiting.contains_key(&self.tab().focus) {
+            return Err(WAITS);
+        }
         let here = self.chat_folder(self.tab().focus);
         let runs = &self.run_keep.interrupted;
         (runs.iter())
@@ -122,7 +129,6 @@ impl App {
         }
         // Off the list while it starts; the first worker closes it in the store.
         self.run_keep.interrupted.remove(at);
-        self.run_keep.awaiting_reply.remove(&id);
         self.run_keep.resuming.insert(id, run);
         effects
     }
@@ -130,28 +136,61 @@ impl App {
     /// The resume of pane `id` got no worker (its turn failed, was cancelled
     /// or ended): the run is offered again and the pane says so.
     pub(super) fn resume_not_started(&mut self, id: PaneId) {
-        self.resume_ended(id, false);
+        let Some(run) = self.run_keep.resuming.remove(&id) else {
+            return;
+        };
+        self.run_keep.resume_of.insert(id, run.id);
+        self.say_offered_again(id, run);
     }
 
     /// The resume turn of pane `id` ended normally with no worker: the
     /// coordinator waits for the user, whose reply may relaunch the worker.
+    /// The run leaves the list while the pane waits, and the pane says so.
     pub(super) fn resume_awaits_reply(&mut self, id: PaneId) {
-        self.resume_ended(id, true);
-    }
-
-    fn resume_ended(&mut self, id: PaneId, answered: bool) {
         let Some(run) = self.run_keep.resuming.remove(&id) else {
             return;
         };
         let line = format!(
+            "run {} waits for your reply; it closes when a worker starts",
+            run.id
+        );
+        self.run_keep.awaiting.insert(
+            id,
+            Awaiting {
+                run,
+                replied: false,
+            },
+        );
+        self.say_in_pane(id, line);
+    }
+
+    /// The reply of pane `id` to a resumed run ended with no worker: the run
+    /// is offered again.
+    pub(super) fn reply_ended(&mut self, id: PaneId) {
+        if self.run_keep.awaiting.get(&id).is_some_and(|w| w.replied) {
+            self.release_wait(id);
+        }
+    }
+
+    /// Pane `id` stops waiting for a reply (it sent something else, ORCH was
+    /// toggled, its reply got no worker, it closed): the run is still
+    /// interrupted and goes back on the list, and the pane says so.
+    pub(super) fn release_wait(&mut self, id: PaneId) {
+        if let Some(waiting) = self.run_keep.awaiting.remove(&id) {
+            self.say_offered_again(id, waiting.run);
+        }
+    }
+
+    fn say_offered_again(&mut self, id: PaneId, run: RunRecord) {
+        let line = format!(
             "run {} is still interrupted; resume it again with Ctrl+Space r r",
             run.id
         );
-        self.run_keep.resume_of.insert(id, run.id);
-        if answered {
-            self.run_keep.awaiting_reply.insert(id, run.id);
-        }
         self.run_keep.offer_again(run);
+        self.say_in_pane(id, line);
+    }
+
+    fn say_in_pane(&mut self, id: PaneId, line: String) {
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(line);
             self.dirty = true;

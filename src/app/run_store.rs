@@ -55,9 +55,11 @@ pub(super) struct RunKeep {
     /// goes at the pane's next turn.
     pub(super) resume_of: HashMap<PaneId, u64>,
     /// The run whose resume turn ended with the coordinator waiting for the
-    /// user (no worker started): the user's reply is the next turn, and the
-    /// run that reply starts closes it. The link then lasts that turn only.
-    pub(super) awaiting_reply: HashMap<PaneId, u64>,
+    /// user (no worker started), per pane: off the offer list, because the
+    /// pane is handling it. The run the user's reply starts closes it; the
+    /// link lasts that one reply, and any other use of the pane gives the run
+    /// back to the list.
+    pub(super) awaiting: HashMap<PaneId, Awaiting>,
     /// The goal the next fresh turn of a pane records and shows instead of
     /// the message it sends (a resume's seed).
     pub(super) resume_goal: Option<String>,
@@ -65,6 +67,14 @@ pub(super) struct RunKeep {
     asked: bool,
     save_failure_said: bool,
     read_failure_said: bool,
+}
+
+/// A resumed run waiting for the user's reply.
+pub(super) struct Awaiting {
+    pub(super) run: RunRecord,
+    /// The reply was sent: the turn it started is the one that may close
+    /// the run.
+    pub(super) replied: bool,
 }
 
 impl RunKeep {
@@ -101,8 +111,12 @@ impl App {
     /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
         self.run_keep.resume_of.remove(&id);
-        if let Some(run) = self.run_keep.awaiting_reply.remove(&id) {
-            self.run_keep.resume_of.insert(id, run);
+        // The first fresh turn after the resume is the user's reply; a second
+        // one is not, and gives the run back.
+        match self.run_keep.awaiting.get_mut(&id) {
+            Some(waiting) if !waiting.replied => waiting.replied = true,
+            Some(_) => self.release_wait(id),
+            None => {}
         }
         self.run_keep.goals.insert(id, RunRecord::stored_goal(goal));
     }
@@ -130,11 +144,16 @@ impl App {
             workers: BTreeMap::new(),
             resend: false,
             folder,
-            supersedes: keep.resuming.remove(&id).map(|run| run.id).or_else(|| {
-                let late = keep.resume_of.remove(&id)?;
-                keep.interrupted.retain(|run| run.id != late);
-                Some(late)
-            }),
+            supersedes: keep
+                .resuming
+                .remove(&id)
+                .map(|run| run.id)
+                .or_else(|| keep.awaiting.remove(&id).map(|waiting| waiting.run.id))
+                .or_else(|| {
+                    let late = keep.resume_of.remove(&id)?;
+                    keep.interrupted.retain(|run| run.id != late);
+                    Some(late)
+                }),
         });
         let worker = WorkerRecord {
             id: row.id.0,
@@ -184,7 +203,7 @@ impl App {
     /// waiting goal goes. The run manager's own `Ended` saves nothing more.
     pub(super) fn keep_pane_closed(&mut self, id: PaneId) -> Vec<Effect> {
         self.run_keep.goals.remove(&id);
-        self.run_keep.awaiting_reply.remove(&id);
+        self.release_wait(id);
         self.run_keep.resume_goal = None;
         // A resume that never started leaves its run offered (to the other
         // panes of this folder).

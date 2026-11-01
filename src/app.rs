@@ -2894,6 +2894,7 @@ impl App {
             // A turn that ended with no run never gave a resumed one a worker;
             // one that ended normally left the coordinator waiting for the
             // user, whose reply can still relaunch it.
+            self.reply_ended(id);
             if how == Ended::Done {
                 self.resume_awaits_reply(id);
             } else {
