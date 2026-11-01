@@ -6,8 +6,11 @@ use std::borrow::Cow;
 
 mod account;
 pub mod feedback;
+mod limit;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use self::limit::{HINT_LIMIT, NOTICE_LIMIT_ENTER, limit_text};
 
 use super::{
     ai::{
@@ -55,20 +58,30 @@ pub enum DraftValue {
         set: fn(&mut AiConfig, u32),
         step: fn(u32, bool) -> u32,
     },
+    /// A usage limit edited as text; `None` is `off`, and `0` or an empty
+    /// field means `off`. A dollar limit counts millionths (`usd`). It is
+    /// written as a TOML number, and removed from the file when it is off.
+    Limit {
+        table: &'static str,
+        key: &'static str,
+        get: fn(&AiConfig) -> Option<u64>,
+        set: fn(&mut AiConfig, Option<u64>),
+        usd: bool,
+    },
 }
 
 impl DraftValue {
     fn table(&self) -> &'static str {
         match self {
             Self::Flag(c) | Self::List(c) => c.table,
-            Self::Minutes { table, .. } => table,
+            Self::Minutes { table, .. } | Self::Limit { table, .. } => table,
         }
     }
 
     fn key(&self) -> &'static str {
         match self {
             Self::Flag(c) | Self::List(c) => c.key,
-            Self::Minutes { key, .. } => key,
+            Self::Minutes { key, .. } | Self::Limit { key, .. } => key,
         }
     }
 
@@ -80,6 +93,7 @@ impl DraftValue {
                 0 => Cow::Borrowed("never"),
                 minutes => Cow::Owned(format!("{minutes} min")),
             },
+            Self::Limit { get, usd, .. } => Cow::Owned(limit_text(get(ai), *usd)),
         }
     }
 
@@ -93,6 +107,8 @@ impl DraftValue {
                 (c.set)(ai, if forward { now + 1 } else { now + len - 1 } % len);
             }
             Self::Minutes { get, set, step, .. } => set(ai, step(get(ai), forward)),
+            // A limit is typed, not stepped.
+            Self::Limit { .. } => {}
         }
     }
 
@@ -107,6 +123,12 @@ impl DraftValue {
             Self::Minutes { get, .. } => {
                 (get(now) != get(was)).then(|| Cow::Owned(get(now).to_string()))
             }
+            Self::Limit { get, usd, .. } => (get(now) != get(was)).then(|| {
+                Cow::Owned(match get(now) {
+                    None => String::new(),
+                    some => limit_text(some, *usd),
+                })
+            }),
         }
     }
 }
@@ -444,8 +466,25 @@ macro_rules! billing_row {
     };
 }
 
-/// The usage view: what is shown and how each CLI engine is billed. The
-/// thresholds are set in the config file. The rows are not in a tab: the
+/// A limit row of the usage view (`usd`: dollars, else tokens).
+macro_rules! limit_row {
+    ($label:literal, $key:literal, $get:ident, $set:ident, $usd:literal, $rank:literal) => {
+        usage_row!(
+            $label,
+            DraftValue::Limit {
+                table: USAGE_TABLE,
+                key: $key,
+                get: |c| c.usage().$get(),
+                set: |c, limit| c.usage_mut().$set(limit),
+                usd: $usd,
+            },
+            $rank
+        )
+    };
+}
+
+/// The usage view: what is shown, how each CLI engine is billed and the
+/// limits that add a note. The rows are not in a tab: the
 /// `Usage (alpha)` row of Settings opens them.
 pub static USAGE_SECTION: Section = Section {
     title: USAGE_LABEL,
@@ -475,6 +514,30 @@ pub static USAGE_SECTION: Section = Section {
         billing_row!("claude billing", "claude", 0, 102),
         billing_row!("codex billing", "codex", 1, 103),
         billing_row!("gemini billing", "gemini", 2, 104),
+        limit_row!(
+            "Turn tokens",
+            "turn_tokens",
+            turn_tokens,
+            set_turn_tokens,
+            false,
+            105
+        ),
+        limit_row!(
+            "Day tokens",
+            "day_tokens",
+            day_tokens,
+            set_day_tokens,
+            false,
+            106
+        ),
+        limit_row!(
+            "Day $",
+            "day_usd",
+            day_usd_micros,
+            set_day_usd_micros,
+            true,
+            107
+        ),
     ],
 };
 
@@ -962,7 +1025,7 @@ const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
 const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
 const NOTICE_USAGE_KEY: &str = "Esc first to leave Usage";
-const HINT_USAGE: &str = "j/k move · h/l change · s save · Esc back";
+const HINT_USAGE: &str = "j/k move · h/l change · Enter edit · s save · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
@@ -1070,6 +1133,8 @@ pub struct MenuState {
     feedback: Option<feedback::Feedback>,
     /// The cursor row of the usage view, while it is open.
     usage: Option<usize>,
+    /// The text of the limit being edited in the usage view.
+    limit_edit: Option<String>,
     /// The form is done: the view says what became of it until Esc.
     feedback_done: Option<Done>,
     /// The host has a program that opens links in the browser.
@@ -1135,6 +1200,7 @@ impl MenuState {
             },
             feedback: None,
             usage: None,
+            limit_edit: None,
             feedback_done: None,
             opener: false,
             no_sandbox: false,
@@ -2096,9 +2162,15 @@ impl MenuState {
             let ItemKind::Draft(choice) = &item.kind else {
                 continue;
             };
+            // While a limit is typed its value comes first: the label gives
+            // way to a short one so the digits and the cursor stay visible.
+            let editing = at == cursor && self.limit_edit.is_some();
             rows.push(Row::Item {
-                label: item.label,
-                value: Some(choice.shown(ai.draft())),
+                label: if editing { "Edit" } else { item.label },
+                value: Some(match (&self.limit_edit, at == cursor) {
+                    (Some(field), true) => Cow::Owned(format!("{field}_")),
+                    _ => choice.shown(ai.draft()),
+                }),
                 selected: at == cursor,
                 enabled: true,
             });
@@ -2109,6 +2181,10 @@ impl MenuState {
     /// Keys in the usage view: the rows cycle like any draft row, Esc goes
     /// back to Settings keeping the draft, and `s` saves as it does there.
     fn on_usage_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if self.limit_edit.is_some() {
+            self.on_limit_key(key, repeat);
+            return MenuCommand::None;
+        }
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             self.notice = Some(NOTICE_USAGE_KEY.to_owned());
             return MenuCommand::None;
@@ -2122,6 +2198,9 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.usage = Some((cursor + count - 1) % count),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.step_usage(cursor, true),
             KeyCode::Char('h') | KeyCode::Left => self.step_usage(cursor, false),
+            KeyCode::Enter if !repeat && self.limit_at(cursor).is_some() => {
+                self.start_limit(cursor);
+            }
             KeyCode::Enter if !repeat => self.step_usage(cursor, true),
             KeyCode::Char('s') if !repeat => return MenuCommand::Save,
             KeyCode::Esc if !repeat => self.usage = None,
@@ -2133,6 +2212,10 @@ impl MenuState {
     }
 
     fn step_usage(&mut self, cursor: usize, forward: bool) {
+        if self.limit_at(cursor).is_some() {
+            self.notice = Some(NOTICE_LIMIT_ENTER.to_owned());
+            return;
+        }
         if let (
             Some(ai),
             Some(Item {
@@ -2553,7 +2636,8 @@ impl MenuState {
                     ai.edit(|p| p.paste(text));
                 }
             }
-            Some(SubView::Warning | SubView::Usage) | None => {}
+            Some(SubView::Usage) => self.paste_limit(text),
+            Some(SubView::Warning) | None => {}
         }
     }
 
@@ -2604,7 +2688,14 @@ impl MenuState {
                     };
                 }
             }
-            Some(SubView::Usage) => return Footer::Hint(Cow::Borrowed(HINT_USAGE)),
+            Some(SubView::Usage) => {
+                let hint = if self.limit_edit.is_some() {
+                    HINT_LIMIT
+                } else {
+                    HINT_USAGE
+                };
+                return Footer::Hint(Cow::Borrowed(hint));
+            }
             // The picker's footers follow below, with its cursor row.
             Some(SubView::Picker) | Some(SubView::Warning) | None => {}
         }
@@ -3090,6 +3181,8 @@ mod family_tests;
 mod approval_tests;
 #[cfg(test)]
 mod idle_tests;
+#[cfg(test)]
+mod usage_limit_tests;
 #[cfg(test)]
 mod usage_tests;
 

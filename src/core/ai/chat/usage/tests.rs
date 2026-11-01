@@ -273,3 +273,56 @@ fn a_model_path_keeps_only_the_file_stem() {
     // An org/name id is not a path.
     assert_eq!(model_id("org/name").as_deref(), Some("org/name"));
 }
+
+#[test]
+fn the_total_is_input_plus_output_and_unknown_when_either_is_missing() {
+    assert_eq!(usage(Some(900), Some(300)).total(), Some(1_200));
+    assert_eq!(usage(None, Some(300)).total(), None);
+    assert_eq!(usage(Some(900), None).total(), None);
+}
+
+// Spec (ai-usage, Thresholds): the per-turn note.
+#[test]
+fn the_turn_note_needs_a_known_total_over_the_limit() {
+    let note = |u: &TurnUsage, limit| turn_note(u, limit);
+    assert_eq!(
+        note(&usage(Some(900), Some(300)), Some(1_000)).as_deref(),
+        Some("turn used 1200 tokens (limit 1000)")
+    );
+    assert_eq!(note(&usage(Some(400), Some(100)), Some(1_000)), None);
+    assert_eq!(
+        note(&usage(Some(900), Some(100)), Some(1_000)),
+        None,
+        "at the limit"
+    );
+    assert_eq!(note(&usage(None, Some(5)), Some(1)), None, "unknown total");
+    assert_eq!(note(&usage(Some(900), Some(300)), None), None, "off");
+}
+
+// Spec (ai-usage, Thresholds): the per-day notes.
+#[test]
+fn the_day_token_note_fires_when_the_limit_is_reached() {
+    assert_eq!(
+        day_tokens_note(Some(5_200), Some(5_000)).as_deref(),
+        Some("today's usage reached 5200 tokens (limit 5000)")
+    );
+    assert!(
+        day_tokens_note(Some(5_000), Some(5_000)).is_some(),
+        "reaches"
+    );
+    assert_eq!(day_tokens_note(Some(4_999), Some(5_000)), None);
+    assert_eq!(day_tokens_note(None, Some(1)), None, "no known total");
+    assert_eq!(day_tokens_note(Some(9), None), None, "off");
+}
+
+#[test]
+fn the_day_spend_note_shows_dollars_and_never_fires_on_nothing() {
+    assert_eq!(
+        day_spend_note(Some(5_010_000), Some(1_000_000)).as_deref(),
+        Some("today's spend reached $5.01 (limit $1.00)")
+    );
+    assert_eq!(day_spend_note(Some(999_999), Some(1_000_000)), None);
+    assert_eq!(day_spend_note(None, Some(1)), None, "no per-token spend");
+    assert_eq!(day_spend_note(Some(0), Some(1)), None);
+    assert_eq!(day_spend_note(Some(5), None), None, "off");
+}

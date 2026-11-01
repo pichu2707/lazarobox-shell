@@ -76,10 +76,10 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 3: Thresholds (PR 3)
 
-- [ ] 3.0 RED+GREEN limit rows in the Usage view (`Turn limit (tokens)`, `Day limit (tokens)`, `Day limit ($)`: digit editing, `0` or empty is `off`, `Esc` restores) and `Enter edit` in the view footer; the config-menu delta scenarios marked "slice 3". Needs a float write path for `day_usd` in `config_edit.rs`.
-- [ ] 3.1 RED+GREEN checks in `usage.rs`: turn_tokens, day_tokens, day_usd (per-token engines only; list-price never counts).
-- [ ] 3.2 RED+GREEN app notes once per day key per run; never block a send.
-- [ ] 3.3 Docs: README documents the thresholds (`turn_tokens`, `day_tokens`, `day_usd`; spend-only; passive notes); CHANGELOG entry.
+- [x] 3.0 RED+GREEN limit rows in the Usage view (`Turn tokens`, `Day tokens`, `Day $`: digit editing, `0` or empty is `off`, `Esc` restores) and `Enter edit` in the view footer; the config-menu delta scenarios marked "slice 3". Needs a float write path for `day_usd` in `config_edit.rs`.
+- [x] 3.1 RED+GREEN checks in `usage.rs`: turn_tokens, day_tokens, day_usd (per-token engines only; list-price never counts).
+- [x] 3.2 RED+GREEN app notes once per day key per run; never block a send.
+- [x] 3.3 Docs: README documents the thresholds (`turn_tokens`, `day_tokens`, `day_usd`; spend-only; passive notes); CHANGELOG entry.
 
 ## Slice 4: Charts (PR 4)
 

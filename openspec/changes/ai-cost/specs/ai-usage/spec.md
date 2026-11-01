@@ -190,7 +190,7 @@ Three optional thresholds MUST exist: per turn (total tokens, `turn_tokens`), pe
 - Per turn: when a finished turn's total tokens are known and exceed `turn_tokens`, the pane shows the system line `turn used <N> tokens (limit <L>)`. A turn whose total is `None` never triggers it.
 - Per day, tokens: after a record is stored, when the sum of the total tokens of the day's records (records with `None` total are skipped) reaches `day_tokens`, the pane shows `today's usage reached <N> tokens (limit <L>)`.
 - Per day, dollars: when the sum of `cost_usd` of the day's records of engines in `per-token` mode reaches `day_usd`, the pane shows `today's spend reached $<N> (limit $<L>)`. Records of `subscription` engines and local engines never count toward it.
-The two per-day notes MUST appear once per threshold per local day per app run (crossing again later the same day does not repeat them); the per-turn note appears on every turn that exceeds it. Notes are system lines: not stored, not sent to any engine.
+The notes are evaluated on every store answer that carries the day's figures, so the first status read of the day MAY show a per-day note at startup when the day is already over the limit (in the pane that read it). The key of a per-day note includes the limit, so raising the limit the same day arms it again. The two per-day notes MUST appear once per threshold per local day per app run (crossing again later the same day does not repeat them); the per-turn note appears on every turn that exceeds it. Notes are system lines: not stored, not sent to any engine.
 
 #### Scenario: Per-turn note [auto]
 - GIVEN `turn_tokens` 1000 and a turn with 900 in and 300 out

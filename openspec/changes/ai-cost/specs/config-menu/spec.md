@@ -9,8 +9,8 @@ The Settings tab MUST hold a static row `Usage (alpha)` after `llama-server idle
 1. `Usage line` (`ai.usage.line`, `on`/`off`);
 2. `Usage in bar` (`ai.usage.statusline`, `on`/`off`);
 3. `claude billing`, `codex billing`, `gemini billing` (`ai.usage.billing.<id>`, values `subscription`, `per-token`);
-4. (Slice 3, not shipped in slice 2b: the thresholds stay in the config file until then.) `Turn limit (tokens)` (`ai.usage.turn_tokens`), `Day limit (tokens)` (`ai.usage.day_tokens`), `Day limit ($)` (`ai.usage.day_usd`).
-Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an Enter repeat is ignored). `s` saves from inside the view. Any other key (Tab, digits, letters) shows the notice `Esc first to leave Usage` and does nothing else. Limit rows (slice 3) show `off` when empty. `Enter` on a limit row starts editing: digits are accepted (and one `.` for `Day limit ($)`, at most 2 decimals), Backspace deletes, `Enter` confirms, `Esc` cancels the edit and restores the previous value; any other character is ignored. A limit is at most 12 digits; `0` or an empty value means `off`. There is no row for local engines. The footer is `j/k move · h/l change · s save · Esc back`; slice 3 adds `Enter edit` once limit rows exist (and while editing a limit `type digits · Enter ok · Esc cancel`). Esc at the view's top level returns to Settings keeping the draft; the AI draft is saved or reverted with the menu as for other AI rows (`s` saves, Esc at the top level restores). Changing a draft MUST have no live effect on open chat panes until a successful save; after a save the usage line, the status segment and the labels take effect at the next frame. The descriptor integrity rules extend to the view's rows (no duplicated key path).
+4. (Slice 3, not shipped in slice 2b: the thresholds stay in the config file until then.) `Turn tokens` (`ai.usage.turn_tokens`), `Day tokens` (`ai.usage.day_tokens`), `Day $` (`ai.usage.day_usd`).
+Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an Enter repeat is ignored). `s` saves from inside the view. Any other key (Tab, digits, letters) shows the notice `Esc first to leave Usage` and does nothing else. Limit rows (slice 3) show `off` when empty. `Enter` on a limit row starts editing: digits are accepted (and one `.` for `Day $`, at most 2 decimals), Backspace deletes, `Enter` confirms, `Esc` cancels the edit and restores the previous value; any other character is ignored. A limit is at most 12 digits; `0` or an empty value means `off`. There is no row for local engines. The footer is `j/k move · h/l change · s save · Esc back`; slice 3 adds `Enter edit` once limit rows exist (and while editing a limit `type digits · Enter ok · Esc cancel`). Esc at the view's top level returns to Settings keeping the draft; the AI draft is saved or reverted with the menu as for other AI rows (`s` saves, Esc at the top level restores). Changing a draft MUST have no live effect on open chat panes until a successful save; after a save the usage line, the status segment and the labels take effect at the next frame. The descriptor integrity rules extend to the view's rows (no duplicated key path).
 
 #### Scenario: Row and summary [auto, TestBackend + insta]
 - GIVEN the Settings tab with the defaults
@@ -33,7 +33,7 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 - THEN it shows `per-token`, and there is no billing row for `ollama`
 
 #### Scenario: Edit a limit [auto, slice 3]
-- GIVEN `Turn limit (tokens)` showing `off`
+- GIVEN `Turn tokens` showing `off`
 - WHEN `Enter`, `4`, `0`, `a`, `0`, `0` and `Enter` are pressed
 - THEN the row shows `4000` (the `a` was ignored)
 
@@ -48,7 +48,7 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 - THEN it shows `off` both times
 
 #### Scenario: Dollar limit decimals [auto, slice 3]
-- GIVEN `Day limit ($)` in edit
+- GIVEN `Day $` in edit
 - WHEN `2`, `.`, `5`, `0`, `9` are typed
 - THEN the field reads `2.50` or `2.5` and the extra digit is ignored
 
@@ -84,5 +84,5 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 
 #### Scenario: Usage settings in Kitty [manual, Kitty, limit part in slice 3]
 - GIVEN the menu in Kitty
-- WHEN `Usage line` is turned off and `Turn limit (tokens)` set to 1000 and saved, and a chat answers
+- WHEN `Usage line` is turned off and `Turn tokens` set to 1000 and saved, and a chat answers
 - THEN no usage line appears, the turn note `turn used <N> tokens (limit 1000)` appears when exceeded and the file holds `line = false` and `turn_tokens = 1000` under `[ai.usage]`

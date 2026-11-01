@@ -10,12 +10,12 @@ expression: shown
 │ claude billing                                subscription │
 │ codex billing                                 subscription │
 │ gemini billing                                subscription │
+│ Turn tokens                                            off │
+│ Day tokens                                             off │
+│ Day $                                                  off │
 │                                                            │
 │                                                            │
 │                                                            │
 │                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│ j/k move · h/l change · s save · Esc back                  │
+│ j/k move · h/l change · Enter edit · s save · Esc back     │
 └────────────────────────────────────────────────────────────┘
