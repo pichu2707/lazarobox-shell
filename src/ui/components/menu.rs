@@ -105,8 +105,9 @@ impl MenuPopup<'_> {
                 tools,
             } => {
                 // A long engine status gives way to a short label (an engine
-                // name stays whole, with its badge and `●`). A label over half
-                // of the row keeps the mark at half at least; below
+                // name stays whole, with its badge and `●`). Any other
+                // mark, or a status next to a label over half of the row, keeps
+                // half of the row at least; below
                 // CLIP_MARK_FROM only a status is clipped, other marks stay whole.
                 let dot = if *current { " ●" } else { "" };
                 let raw_mark = mark;
@@ -119,12 +120,13 @@ impl MenuPopup<'_> {
                 };
                 let mark_cap =
                     width.saturating_sub(cells(label) + 1 + badge_cells + cells(dot) + 1);
-                let mark_cap = if cells(label) > width / 2 {
-                    mark_cap.max(width / 2)
-                } else {
+                let is_status = matches!(raw_mark, Mark::Status(_));
+                let mark_cap = if is_status && cells(label) <= width / 2 {
                     mark_cap
+                } else {
+                    mark_cap.max(width / 2)
                 };
-                let clips = width >= CLIP_MARK_FROM || matches!(raw_mark, Mark::Status(_));
+                let clips = width >= CLIP_MARK_FROM || is_status;
                 let mark = if clips && cells(mark) > mark_cap {
                     clip(mark, mark_cap)
                 } else {
