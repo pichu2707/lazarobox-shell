@@ -9,7 +9,12 @@ use crate::core::ai::config::{ApprovalMode, NotifyMode, Profile};
 fn drafts() -> Vec<(&'static Item, &'static AiChoice)> {
     SECTIONS
         .iter()
-        .chain([&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION])
+        .chain([
+            &MODELS_SECTION,
+            &TOOLS_SECTION,
+            &CHAT_SECTION,
+            &USAGE_SECTION,
+        ])
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Draft(choice) => Some((item, choice)),
@@ -53,7 +58,12 @@ fn the_migrated_rows_are_drafts_in_tab_then_row_order() {
             "Orchestrator",
             "Profile",
             "Context",
-            "Memory"
+            "Memory",
+            "Usage line",
+            "Usage in bar",
+            "claude billing",
+            "codex billing",
+            "gemini billing"
         ]
     );
 }
@@ -123,6 +133,11 @@ fn the_key_paths_are_the_ones_the_config_has_always_used() {
             ("ai", "profile"),
             ("ai", "context"),
             ("ai.memory", "enabled"),
+            ("ai.usage", "line"),
+            ("ai.usage", "statusline"),
+            ("ai.usage.billing", "claude"),
+            ("ai.usage.billing", "codex"),
+            ("ai.usage.billing", "gemini"),
         ]
     );
     let mut unique = paths.clone();
@@ -168,6 +183,7 @@ fn every_ai_only_kind_needs_the_ai_section() {
     for kind in [&ItemKind::Assign(None), &ItemKind::HfAccount] {
         assert!(kind.needs_ai());
     }
+    assert!(ItemKind::Usage.needs_ai());
     assert!(!ItemKind::Feedback.needs_ai());
     assert!(!ItemKind::Updates.needs_ai());
 }

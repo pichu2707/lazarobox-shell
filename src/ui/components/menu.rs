@@ -1543,7 +1543,7 @@ mod tests {
     fn snapshot_usage_view() {
         let shown = text(&draw(62, POPUP_H, &usage_view()));
         assert!(
-            shown.contains("j/k move · h/l change · Esc back"),
+            shown.contains("j/k move · h/l change · s save · Esc back"),
             "{shown}"
         );
         insta::assert_snapshot!(shown);

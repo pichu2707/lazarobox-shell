@@ -2,10 +2,12 @@
 //! config-menu "Usage row and view"): the two toggles and the billing mode of
 //! the three CLI engines. The thresholds stay in the config file.
 
+use super::account_tests::SAVED;
 use super::ai_tests::{machine, menu, press, selected_label};
 use super::picker_tests::{key, send};
 use super::*;
-use crate::core::config_edit::apply_edit;
+use crate::core::ai::hf::{AccountAsk, AccountReply, REJECTED};
+use crate::core::config_edit::{EditError, apply_edit};
 
 const ROW: &str = "Usage (alpha)";
 
@@ -76,7 +78,14 @@ fn a_menu_without_the_ai_section_has_no_usage_row() {
 
 #[test]
 fn enter_l_and_right_open_the_view_and_esc_returns_with_the_draft() {
-    for open in [KeyCode::Enter, KeyCode::Char('l'), KeyCode::Right] {
+    for open in [
+        KeyCode::Enter,
+        KeyCode::Char('l'),
+        KeyCode::Right,
+        KeyCode::Char(' '),
+        KeyCode::Char('h'),
+        KeyCode::Left,
+    ] {
         let mut m = on_usage();
         assert_eq!(send(&mut m, key(open)), MenuCommand::None);
         assert!(m.in_sub_level(), "{open:?}");
@@ -110,7 +119,7 @@ fn the_view_lists_the_toggles_then_one_billing_row_per_cli_engine() {
         labels,
         [
             ("Usage line", "on".to_owned()),
-            ("Usage in status bar", "on".to_owned()),
+            ("Usage in bar", "on".to_owned()),
             ("claude billing", "subscription".to_owned()),
             ("codex billing", "subscription".to_owned()),
             ("gemini billing", "subscription".to_owned()),
@@ -202,7 +211,7 @@ fn esc_at_the_top_level_cancels_the_menu_and_the_view_never_does() {
 
 #[test]
 fn the_footer_names_the_keys_of_the_view() {
-    assert_eq!(hint(&opened()), "j/k move · h/l change · Esc back");
+    assert_eq!(hint(&opened()), "j/k move · h/l change · s save · Esc back");
 }
 
 #[test]
@@ -259,4 +268,52 @@ fn the_view_rows_have_unique_key_paths_and_ranks_apart_from_the_tabs() {
     ranks.sort_unstable();
     ranks.dedup();
     assert_eq!(ranks.len(), count);
+}
+
+#[test]
+fn a_key_the_view_does_not_use_says_so_and_changes_nothing() {
+    for code in [
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Char('3'),
+        KeyCode::Char('x'),
+    ] {
+        let mut m = opened();
+        let tab = m.tab;
+        assert_eq!(send(&mut m, key(code)), MenuCommand::None);
+        assert!(m.in_sub_level(), "{code:?}");
+        assert_eq!(m.tab, tab, "{code:?}");
+        assert_eq!(hint(&m), "Esc first to leave Usage", "{code:?}");
+        // The next press clears the notice.
+        press(&mut m, 'j');
+        assert_eq!(hint(&m), "j/k move · h/l change · s save · Esc back");
+    }
+}
+
+#[test]
+fn a_refused_token_waits_for_the_usage_view_to_close() {
+    let mut m = MenuState::open(&Config::default())
+        .with_ai(AiConfig::default(), Some(machine()))
+        .with_hf(SAVED, None);
+    m.goto("Hugging Face");
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::HfAccount(AccountAsk::Check)
+    );
+    m.goto(ROW);
+    send(&mut m, key(KeyCode::Enter));
+    m.account_reply(AccountReply::Checked(Err(REJECTED.to_owned())));
+    assert_eq!(m.sub_view(), Some(SubView::Usage), "the view stays");
+    assert!(m.account.field().is_none(), "the field did not open");
+    send(&mut m, key(KeyCode::Esc));
+    assert_eq!(m.sub_view(), Some(SubView::AccountField), "now it opens");
+}
+
+#[test]
+fn a_billing_key_that_is_not_a_table_refuses_the_save() {
+    let refused = apply_edit(
+        Some("[ai.usage]\nbilling = 1\n"),
+        &[edit("ai.usage.billing", "claude", "per-token")],
+    );
+    assert_eq!(refused, Err(EditError::NotATable("ai.usage.billing")));
 }

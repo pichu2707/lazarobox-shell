@@ -6,7 +6,7 @@ expression: shown
 │ Settings │ Models │ Tools │ Chat                           │
 │ Usage (alpha)                                              │
 │ Usage line                                              on │
-│ Usage in status bar                                     on │
+│ Usage in bar                                            on │
 │ claude billing                                subscription │
 │ codex billing                                 subscription │
 │ gemini billing                                subscription │
@@ -17,5 +17,5 @@ expression: shown
 │                                                            │
 │                                                            │
 │                                                            │
-│ j/k move · h/l change · Esc back                           │
+│ j/k move · h/l change · s save · Esc back                  │
 └────────────────────────────────────────────────────────────┘

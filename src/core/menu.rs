@@ -462,7 +462,7 @@ pub static USAGE_SECTION: Section = Section {
             100
         ),
         usage_row!(
-            "Usage in status bar",
+            "Usage in bar",
             DraftValue::Flag(Choice {
                 table: USAGE_TABLE,
                 key: "statusline",
@@ -961,7 +961,8 @@ const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · 
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
 const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
-const HINT_USAGE: &str = "j/k move · h/l change · Esc back";
+const NOTICE_USAGE_KEY: &str = "Esc first to leave Usage";
+const HINT_USAGE: &str = "j/k move · h/l change · s save · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
@@ -2034,7 +2035,9 @@ impl MenuState {
             KeyCode::Char(digit @ '0'..='9') if key.modifiers.is_empty() => self.jump_tab(digit),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if self.on_usage_row() => {
+            KeyCode::Enter | KeyCode::Char('l' | 'h' | ' ') | KeyCode::Right | KeyCode::Left
+                if self.on_usage_row() =>
+            {
                 if !repeat {
                     self.usage = Some(0);
                 }
@@ -2107,6 +2110,7 @@ impl MenuState {
     /// back to Settings keeping the draft, and `s` saves as it does there.
     fn on_usage_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            self.notice = Some(NOTICE_USAGE_KEY.to_owned());
             return MenuCommand::None;
         }
         let Some(cursor) = self.usage else {
@@ -2121,7 +2125,9 @@ impl MenuState {
             KeyCode::Enter if !repeat => self.step_usage(cursor, true),
             KeyCode::Char('s') if !repeat => return MenuCommand::Save,
             KeyCode::Esc if !repeat => self.usage = None,
-            _ => {}
+            // A held key repeats without saying anything twice.
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('s') => {}
+            _ => self.notice = Some(NOTICE_USAGE_KEY.to_owned()),
         }
         MenuCommand::None
     }

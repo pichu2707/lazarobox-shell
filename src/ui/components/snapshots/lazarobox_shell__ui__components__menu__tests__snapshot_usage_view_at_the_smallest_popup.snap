@@ -6,7 +6,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view()))"
 │ ‹ Settings ›         │
 │ Usage (alpha)        │
 │ Usage line        on │
-│ Usage in status bar  │
+│ Usage in bar      on │
 │ claude billing  sub… │
 │ codex billing  subs… │
 │ gemini billing  sub… │
