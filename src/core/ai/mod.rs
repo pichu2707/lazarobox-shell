@@ -13,6 +13,7 @@ pub mod hf;
 pub mod http;
 pub mod install;
 pub mod jail;
+pub mod marks;
 pub mod memory;
 pub mod menu;
 pub mod ollama_lib;
@@ -268,9 +269,32 @@ pub struct Detection {
     /// The context window in tokens of the engines that report one (a
     /// running llama-server), by engine id.
     pub windows: Vec<(&'static str, usize)>,
+    /// Size, digest and tool support of the models an engine lists (Ollama
+    /// today), in listing order.
+    pub model_facts: Vec<ModelFacts>,
+}
+
+/// What detection knows about one listed model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModelFacts {
+    pub engine: &'static str,
+    pub name: String,
+    /// Parameters, from the listing's `parameter_size`; `None` when missing
+    /// or unparsable.
+    pub params: Option<u64>,
+    /// The listing's digest: the key of the tool-support cache.
+    pub digest: Option<String>,
+    pub tools: marks::Tools,
 }
 
 impl Detection {
+    /// The facts of model `name` of engine `engine`.
+    pub fn facts(&self, engine: &str, name: &str) -> Option<&ModelFacts> {
+        self.model_facts
+            .iter()
+            .find(|f| f.engine == engine && f.name == name)
+    }
+
     /// The context window of engine `id` in tokens, when it reported one.
     pub fn window(&self, id: &str) -> Option<usize> {
         self.windows
@@ -344,8 +368,20 @@ pub fn reduce(probes: &[Probe]) -> Detection {
             }
         })
         .collect();
+    let model_facts = probes
+        .iter()
+        .find_map(|probe| match probe {
+            Probe::Server {
+                id: "ollama",
+                reply: Some((200, body)),
+                ..
+            } if body.len() <= http::MAX_BODY => parse::ollama_tag_facts(body),
+            _ => None,
+        })
+        .unwrap_or_default();
     Detection {
         engines,
+        model_facts,
         ..Default::default()
     }
 }
@@ -632,6 +668,40 @@ mod tests {
     }
 
     const OLLAMA_OK: &str = r#"{"models":[{"name":"llama3:8b"},{"name":"qwen2.5:7b"}]}"#;
+    #[test]
+    fn reduce_leaves_facts_empty_without_a_probe() {
+        assert!(reduce(&[]).model_facts.is_empty());
+    }
+
+    #[test]
+    fn reduce_fills_the_facts_of_the_ollama_models() {
+        let body = include_str!("../../../tests/fixtures/ollama/api-tags.json");
+        let d = reduce(&[server("ollama", true, Some((200, body)))]);
+        assert_eq!(d.model_facts.len(), 3);
+        let f = d.facts("ollama", "deepseek-r1:70b").unwrap();
+        assert_eq!(f.params, Some(70_600_000_000));
+        assert_eq!(f.tools, marks::Tools::Unknown);
+        assert_eq!(d.facts("ollama", "nope"), None);
+        assert_eq!(d.facts("lmstudio", "deepseek-r1:70b"), None);
+        // The engine state is what it was before facts existed.
+        assert_eq!(
+            get(&d, "ollama").unwrap().models,
+            [
+                "deepseek-r1:70b",
+                "llama3.2:3b-ctx",
+                "nomic-embed-text:latest"
+            ]
+        );
+    }
+
+    #[test]
+    fn reduce_gives_no_facts_for_a_foreign_ollama_reply_or_other_engines() {
+        let d = reduce(&[server("ollama", true, Some((200, "{}")))]);
+        assert!(d.model_facts.is_empty());
+        let d = reduce(&[server("llamacpp", true, Some((200, LLAMA_OK)))]);
+        assert!(d.model_facts.is_empty());
+    }
+
     const LLAMA_OK: &str = r#"{"data":[{"id":"m.gguf","owned_by":"llamacpp"}]}"#;
 
     fn server(id: &'static str, on_path: bool, reply: Option<(u16, &str)>) -> Probe {

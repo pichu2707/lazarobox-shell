@@ -7,7 +7,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
 │ Model for code (llam…│
 │ llama-server not ins…│
 │ install llama-server…│
-│  needs llama-server …│
+│ download… needs llam…│
 │                      │
 │                      │
 │                      │

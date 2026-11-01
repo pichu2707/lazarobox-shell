@@ -23,6 +23,7 @@ fn hf_row(label: &str) -> PickRow {
         mark: Mark::Plain,
         enabled: true,
         current: false,
+        tools: None,
     }
 }
 

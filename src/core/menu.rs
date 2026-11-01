@@ -14,6 +14,7 @@ use super::{
         Detection, REFUSED,
         config::{AiConfig, NotifyMode, Task, ToolToggle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
+        marks::ToolMark,
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
@@ -590,6 +591,7 @@ pub enum Row {
     Pick {
         label: String,
         mark: Mark,
+        tools: Option<ToolMark>,
         selected: bool,
         enabled: bool,
         current: bool,
@@ -1359,6 +1361,7 @@ impl MenuState {
                 selected: index == picker.cursor(),
                 enabled: pick.enabled,
                 current: pick.current,
+                tools: pick.tools,
             });
         }
         Some(rows)

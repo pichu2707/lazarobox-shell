@@ -32,6 +32,22 @@ baseline.
   key is required. Known limit: workers cannot run commands or tests yet, so
   the coordinator asks you to run them (test-first evidence is planned for
   1.2). See the README, "Orquestador de agentes".
+- Installed Ollama models in the model picker show a tool mark: `🔧` beside
+  `✓` for a model of 3B parameters or more that declares tool support, and
+  `tools: unreliable` for a smaller one. A model without tool support, or with
+  unknown support or size, shows no mark. The mark is informational (the model
+  stays selectable) and shows even with `[ai.tools] enabled = false`. On
+  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
+  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
+  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
+  detected and CLI model rows carry none.
+- The Ollama download screens mark models that declare tools: a Popular row
+  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
+  fits this PC, and each Sizes row by its own tag. No new request is made.
+- Ollama detection now sends one `POST /api/show` per installed model to the
+  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
+  2 seconds in total, cached by digest) to read whether it declares tools.
 
 ### Internal
 
