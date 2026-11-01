@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role, tags::Tags};
+use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
 /// The most conversations the store keeps.
@@ -134,6 +134,18 @@ pub enum StoreCmd {
     /// with `Deleted` (carrying the note rows the delete took with it), or
     /// `DeleteFailed`.
     Delete { pane: PaneId, conversation: i64 },
+    /// Stores the usage of one turn (or one compaction or summary run, named
+    /// by `role`). `conversation` is `None` while the pane does not know its
+    /// id yet (as for `Append`); a conversation that is gone stores the row
+    /// unlinked. Counts, ids and a timestamp only: never text. Answered with
+    /// `UsageRecorded`, always: a lost row is never silent.
+    RecordUsage {
+        pane: PaneId,
+        conversation: Option<i64>,
+        engine: String,
+        role: String,
+        usage: Box<TurnUsage>,
+    },
     /// Finish what is queued and stop.
     Quit,
 }
@@ -273,6 +285,14 @@ pub enum StoreReply {
     },
     TagsFailed {
         pane: PaneId,
+    },
+    /// The answer to `RecordUsage`. `today` is the known tokens of the local
+    /// day, `None` when the row was not stored. `problem` is a short reason,
+    /// free of text and paths, for a write, migration or prune that failed.
+    UsageRecorded {
+        pane: PaneId,
+        today: Option<u64>,
+        problem: Option<String>,
     },
     /// The answer to `RecentFolders`: each folder once, newest first.
     RecentFolders {

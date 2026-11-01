@@ -20,6 +20,16 @@ pub enum CostSource {
     Gateway,
 }
 
+impl CostSource {
+    /// The id the store keeps.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::EngineList => "engine_list",
+            Self::Gateway => "gateway",
+        }
+    }
+}
+
 /// The usage of one turn, or of one request of it. Token buckets are
 /// disjoint: `input` is the fresh prompt only, the cache has its own buckets
 /// and `reasoning` is part of `output`.

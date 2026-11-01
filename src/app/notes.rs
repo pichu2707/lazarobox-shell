@@ -424,6 +424,7 @@ impl App {
             | StoreReply::DeleteFailed { .. }
             | StoreReply::TagsSaved { .. }
             | StoreReply::TagsFailed { .. }
+            | StoreReply::UsageRecorded { .. }
             | StoreReply::RecentFolders { .. } => Vec::new(),
         }
     }

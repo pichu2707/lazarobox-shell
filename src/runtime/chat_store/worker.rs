@@ -14,7 +14,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
-use super::{StoreError, open};
+use super::{StoreError, ensure_usage, open};
 use crate::core::{
     ai::{
         chat::{
@@ -25,6 +25,7 @@ use crate::core::{
                 StoredMessage, bounded_error,
             },
             tags::Tags,
+            usage::TurnUsage,
         },
         config::Profile,
         sanitize::clean,
@@ -41,6 +42,9 @@ pub const THREAD_NAME: &str = "chat-store";
 /// The longest conversation title, in characters.
 const TITLE_MAX: usize = 80;
 
+/// Usage rows older than this many days are removed.
+const USAGE_DAYS: i64 = 90;
+
 /// The longest note title kept in a link row, in characters (the engram client
 /// accepts 120).
 const NOTE_TITLE_MAX: usize = 120;
@@ -55,6 +59,8 @@ pub(crate) struct Worker {
     /// The conversation each pane created, so an append that names only its
     /// pane lands in the right place. Pane ids are never reused.
     created: HashMap<PaneId, i64>,
+    /// Why the prune on open failed, until the next usage reply says so.
+    usage_problem: Option<String>,
 }
 
 impl Worker {
@@ -66,6 +72,7 @@ impl Worker {
             conn: None,
             failing: false,
             created: HashMap::new(),
+            usage_problem: None,
         }
     }
 
@@ -73,7 +80,16 @@ impl Worker {
     fn conn(&mut self) -> Result<&mut Connection, String> {
         if self.conn.is_none() {
             let opened = match self.opener.take() {
-                Some(open) => open().map_err(|err| bounded_error(&err.to_string())),
+                Some(open) => open()
+                    .map(|mut conn| {
+                        // Old usage goes when the store opens; a failure waits
+                        // for the next usage reply.
+                        if let Err(err) = prune_usage(&mut conn, now()) {
+                            self.usage_problem = Some(usage_reason(&err).to_owned());
+                        }
+                        conn
+                    })
+                    .map_err(|err| bounded_error(&err.to_string())),
                 None => Err(bounded_error("store not available")),
             };
             self.conn = Some(opened);
@@ -230,6 +246,32 @@ impl Worker {
                 }
                 None
             }
+            StoreCmd::RecordUsage {
+                pane,
+                conversation,
+                engine,
+                role,
+                usage,
+            } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied());
+                let earlier = self.usage_problem.take();
+                let saved = match self.conn() {
+                    Ok(conn) => record_usage(conn, conversation, (&engine, &role), &usage),
+                    Err(reason) => Err(reason),
+                };
+                Some(match saved {
+                    Ok((today, pruned)) => StoreReply::UsageRecorded {
+                        pane,
+                        today: Some(today),
+                        problem: pruned.or(earlier),
+                    },
+                    Err(reason) => StoreReply::UsageRecorded {
+                        pane,
+                        today: None,
+                        problem: Some(reason),
+                    },
+                })
+            }
             StoreCmd::RecentFolders { pane, limit } => Some(StoreReply::RecentFolders {
                 pane,
                 // A store that cannot be read has no recent folders.
@@ -329,6 +371,7 @@ impl Worker {
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
+            StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -347,6 +390,7 @@ impl Worker {
                         | Panicked::SetTags
                         | Panicked::SetFolder
                         | Panicked::Recent
+                        | Panicked::Usage
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -364,6 +408,11 @@ impl Worker {
                     Panicked::Recent => StoreReply::RecentFolders {
                         pane,
                         folders: Vec::new(),
+                    },
+                    Panicked::Usage => StoreReply::UsageRecorded {
+                        pane,
+                        today: None,
+                        problem: Some(reason),
                     },
                 })
             }
@@ -388,6 +437,7 @@ enum Panicked {
     SetTags,
     SetFolder,
     Recent,
+    Usage,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -404,6 +454,88 @@ fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// A short reason for a failed usage statement. It names the kind of failure
+/// and never quotes the raw error, which can hold text or a path.
+fn usage_reason(err: &rusqlite::Error) -> &'static str {
+    use rusqlite::ErrorCode::{
+        DatabaseBusy, DatabaseCorrupt, DatabaseLocked, DiskFull, NotADatabase, PermissionDenied,
+        ReadOnly, SystemIoFailure,
+    };
+    match err.sqlite_error_code() {
+        Some(DatabaseBusy | DatabaseLocked) => "database busy",
+        Some(DiskFull) => "disk full",
+        Some(ReadOnly | PermissionDenied) => "database read-only",
+        Some(DatabaseCorrupt | NotADatabase) => "database damaged",
+        Some(SystemIoFailure) => "disk error",
+        _ => "database error",
+    }
+}
+
+/// Removes usage rows older than [`USAGE_DAYS`] days: a range delete on the
+/// timestamp index. Conversations are not touched, and neither is a row
+/// stamped after `at` (a clock set back). Returns how many rows went.
+fn prune_usage(conn: &mut Connection, at: i64) -> Result<usize, rusqlite::Error> {
+    ensure_usage(conn)?;
+    conn.execute(
+        "DELETE FROM turn_usage WHERE ts < ?1",
+        [at.saturating_sub(USAGE_DAYS * 86_400)],
+    )
+}
+
+fn count_of(n: Option<u64>) -> Option<i64> {
+    n.map(|n| i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// Stores one usage row, prunes, and returns the known tokens of the local
+/// day plus the reason a prune failed, if it did (the row is kept then).
+fn record_usage(
+    conn: &mut Connection,
+    conversation: Option<i64>,
+    (engine, role): (&str, &str),
+    usage: &TurnUsage,
+) -> Result<(u64, Option<String>), String> {
+    let at = now();
+    ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
+    // The subselect leaves the link NULL for a conversation that is gone.
+    conn.execute(
+        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, input, output,
+             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial)
+         VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+             ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            at,
+            conversation,
+            engine,
+            usage.model,
+            role,
+            count_of(usage.input),
+            count_of(usage.output),
+            count_of(usage.cache_read),
+            count_of(usage.cache_write),
+            count_of(usage.reasoning),
+            count_of(usage.cost_micros),
+            usage.cost_source.map(|c| c.id()),
+            count_of(usage.duration_ms),
+            usage.partial,
+        ],
+    )
+    .map_err(|err| usage_reason(&err).to_owned())?;
+    let pruned = prune_usage(conn, at)
+        .err()
+        .map(|err| usage_reason(&err).to_owned());
+    let today: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(COALESCE(input, 0) + COALESCE(output, 0)
+                 + COALESCE(cache_read, 0) + COALESCE(cache_write, 0)), 0)
+             FROM turn_usage
+             WHERE date(ts, 'unixepoch', 'localtime') = date(?1, 'unixepoch', 'localtime')",
+            [at],
+            |r| r.get(0),
+        )
+        .map_err(|err| usage_reason(&err).to_owned())?;
+    Ok((u64::try_from(today).unwrap_or(0), pruned))
 }
 
 /// The first non-empty line of the first message, cut to `TITLE_MAX` characters.
@@ -873,6 +1005,11 @@ impl StoreHandle {
             StoreCmd::RecentFolders { pane, .. } => StoreReply::RecentFolders {
                 pane,
                 folders: Vec::new(),
+            },
+            StoreCmd::RecordUsage { pane, .. } => StoreReply::UsageRecorded {
+                pane,
+                today: None,
+                problem: Some(reason),
             },
             _ => return,
         };

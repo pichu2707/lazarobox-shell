@@ -380,7 +380,9 @@ impl App {
                 self.on_tags_reply(reply);
                 Vec::new()
             }
-            StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::SessionLinked { .. }
+            | StoreReply::LinkFailed { .. }
+            | StoreReply::UsageRecorded { .. } => Vec::new(),
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())
             }

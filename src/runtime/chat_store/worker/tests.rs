@@ -2236,3 +2236,292 @@ fn recent_folders_answer_after_a_v2_store_migrates_to_v3() {
         "{folders:?}"
     );
 }
+
+// ---- usage (ai-cost 1b.2) --------------------------------------------------
+
+use crate::core::ai::chat::usage::TurnUsage;
+
+const DAY: i64 = 86_400;
+
+fn record(conversation: Option<i64>, usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation,
+        engine: "ollama".into(),
+        role: "chat".into(),
+        usage: Box::new(usage),
+    }
+}
+
+fn tokens(input: u64, output: u64) -> TurnUsage {
+    TurnUsage {
+        input: Some(input),
+        output: Some(output),
+        model: Some("llama3".into()),
+        ..TurnUsage::default()
+    }
+}
+
+/// The `today` and `problem` of a usage reply.
+fn usage_reply(reply: Option<StoreReply>) -> (Option<u64>, Option<String>) {
+    match reply {
+        Some(StoreReply::UsageRecorded { today, problem, .. }) => (today, problem),
+        other => panic!("expected UsageRecorded, got {other:?}"),
+    }
+}
+
+fn usage_count(conn: &Connection) -> i64 {
+    count(conn, "turn_usage")
+}
+
+fn old_row(conn: &Connection, age_secs: i64) {
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+        [now() - age_secs],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_usage_row_is_stored_and_the_reply_carries_the_day_total() {
+    let (_dir, mut worker, conn) = fixture();
+    let first = usage_reply(worker.handle(record(None, tokens(100, 20))));
+    let second = usage_reply(worker.handle(record(None, tokens(0, 5))));
+    assert_eq!(first, (Some(120), None));
+    assert_eq!(second, (Some(125), None));
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_count_the_engine_did_not_report_stays_null() {
+    let (_dir, mut worker, conn) = fixture();
+    let only_output = TurnUsage {
+        output: Some(5),
+        ..TurnUsage::default()
+    };
+    worker.handle(record(None, only_output));
+    let row: (
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT input, output, cache_read, cost_micros, model FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (None, Some(5), None, None, None));
+}
+
+#[test]
+fn a_row_keeps_its_role_and_flags() {
+    let (_dir, mut worker, conn) = fixture();
+    let mut usage = tokens(1, 2);
+    usage.partial = true;
+    usage.cost_micros = Some(4_900);
+    usage.cost_source = Some(crate::core::ai::chat::usage::CostSource::EngineList);
+    let cmd = StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: "claude".into(),
+        role: "compaction".into(),
+        usage: Box::new(usage),
+    };
+    worker.handle(cmd);
+    let row: (String, String, i64, i64, String) = conn
+        .query_row(
+            "SELECT engine, role, partial, cost_micros, cost_source FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "claude".into(),
+            "compaction".into(),
+            1,
+            4_900,
+            "engine_list".into()
+        )
+    );
+}
+
+#[test]
+fn a_row_links_to_the_conversation_of_its_pane_or_to_none() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    worker.handle(record(None, tokens(1, 1)));
+    worker.handle(record(Some(id), tokens(1, 1)));
+    // A conversation another pane deleted: the row is kept, unlinked.
+    worker.handle(record(Some(9_999), tokens(1, 1)));
+    let links: Vec<Option<i64>> = conn
+        .prepare("SELECT conversation_id FROM turn_usage ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(links, vec![Some(id), Some(id), None]);
+}
+
+#[test]
+fn deleting_a_conversation_through_the_store_keeps_its_usage() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("ZZ-MARKER-ZZ"), vec![])));
+    for _ in 0..3 {
+        worker.handle(record(Some(id), tokens(2, 3)));
+    }
+    assert!(matches!(
+        worker.handle(delete(id)),
+        Some(StoreReply::Deleted { .. })
+    ));
+    let kept: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(conversation_id), SUM(output) FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (3, 0, 9));
+}
+
+#[test]
+fn no_usage_row_holds_message_text() {
+    let (dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("ZZ-MARKER-ZZ"), vec![])));
+    worker.handle(record(Some(id), tokens(2, 3)));
+    let text: String = conn
+        .query_row(
+            "SELECT quote(engine) || quote(model) || quote(role) || quote(worker)
+             FROM turn_usage",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!text.contains("ZZ-MARKER-ZZ"), "{text}");
+    drop(dir);
+}
+
+#[test]
+fn a_write_prunes_rows_older_than_ninety_days() {
+    let (_dir, mut worker, conn) = fixture();
+    old_row(&conn, 91 * DAY);
+    old_row(&conn, 89 * DAY);
+    worker.handle(record(None, tokens(1, 1)));
+    // The 91-day row went; the 89-day row and the new one stay.
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn pruning_keeps_the_ninetieth_day_and_rows_from_the_future() {
+    let (_dir, _worker, conn) = fixture();
+    let mut conn = conn;
+    let at = now();
+    for ts in [at - 91 * DAY, at - 90 * DAY, at - 89 * DAY, at + DAY] {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+            [ts],
+        )
+        .unwrap();
+    }
+    assert_eq!(prune_usage(&mut conn, at).unwrap(), 1);
+    assert_eq!(usage_count(&conn), 3);
+    // A clock before every row removes nothing.
+    assert_eq!(prune_usage(&mut conn, at - 1_000 * DAY).unwrap(), 0);
+}
+
+#[test]
+fn opening_the_store_prunes_old_rows_and_leaves_conversations() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    {
+        let conn = open_as(&db, me()).unwrap();
+        seed(&conn, 1);
+        conn.execute("UPDATE conversations SET updated_at = 1", [])
+            .unwrap();
+        old_row(&conn, 200 * DAY);
+        old_row(&conn, 10 * DAY);
+    }
+    let mut worker = worker_at(&db);
+    recent(&mut worker, 5);
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(usage_count(&conn), 1);
+    assert_eq!(count(&conn, "conversations"), 1);
+}
+
+/// A store whose usage inserts (or deletes) fail with a raw error that holds a
+/// marker and a path.
+fn failing_worker(dir: &TempDir, trigger: &str) -> Worker {
+    let db = db_path(dir);
+    let trigger = trigger.to_owned();
+    Worker::new(move || {
+        let conn = open_as(&db, me())?;
+        conn.execute_batch(&trigger).unwrap();
+        Ok(conn)
+    })
+}
+
+const FAIL_INSERT: &str = "CREATE TRIGGER boom BEFORE INSERT ON turn_usage BEGIN
+    SELECT RAISE(ABORT, 'ZZ-MARKER-ZZ /home/secret/chat.db'); END;";
+const FAIL_PRUNE: &str = "CREATE TRIGGER boom BEFORE DELETE ON turn_usage BEGIN
+    SELECT RAISE(ABORT, 'ZZ-MARKER-ZZ /home/secret/chat.db'); END;";
+
+#[test]
+fn a_failed_usage_insert_is_reported_without_text_and_conversations_still_save() {
+    let dir = TempDir::new().unwrap();
+    let mut worker = failing_worker(&dir, FAIL_INSERT);
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    let (today, problem) = usage_reply(worker.handle(record(Some(id), tokens(1, 1))));
+    let reason = problem.expect("a failed insert is reported");
+    assert_eq!(today, None);
+    assert!(
+        !reason.contains("ZZ-MARKER-ZZ") && !reason.contains("/home"),
+        "{reason}"
+    );
+    assert!(!reason.is_empty() && reason.chars().count() <= ERROR_MAX);
+    assert!(
+        worker
+            .handle(append(id, reply_msg("ok", MsgStatus::Complete)))
+            .is_none()
+    );
+    let conn = Connection::open(db_path(&dir)).unwrap();
+    assert_eq!(rows(&conn, id).len(), 2);
+}
+
+#[test]
+fn a_failed_prune_is_reported_and_the_new_row_is_kept() {
+    let dir = TempDir::new().unwrap();
+    {
+        let conn = open_as(&db_path(&dir), me()).unwrap();
+        old_row(&conn, 200 * DAY);
+    }
+    let mut worker = failing_worker(&dir, FAIL_PRUNE);
+    let (today, problem) = usage_reply(worker.handle(record(None, tokens(1, 1))));
+    let reason = problem.expect("a failed prune is reported");
+    assert!(
+        !reason.contains("ZZ-MARKER-ZZ") && !reason.contains("/home"),
+        "{reason}"
+    );
+    assert_eq!(today, Some(2));
+    let conn = Connection::open(db_path(&dir)).unwrap();
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_usage_table_that_cannot_be_made_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    {
+        let conn = open_as(&db, me()).unwrap();
+        conn.execute_batch("DROP TABLE turn_usage; CREATE VIEW turn_usage AS SELECT 1 AS ts;")
+            .unwrap();
+    }
+    let mut worker = worker_at(&db);
+    let (today, problem) = usage_reply(worker.handle(record(None, tokens(1, 1))));
+    assert_eq!(today, None);
+    assert!(problem.is_some());
+}
