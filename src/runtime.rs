@@ -26,6 +26,7 @@ mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
+pub mod clipboard;
 mod config_write;
 pub mod desktop;
 pub mod engram;
@@ -44,6 +45,7 @@ pub mod notify;
 pub mod ollama_lib;
 pub mod opener;
 pub mod orchestra;
+pub mod probe_store;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]
@@ -143,6 +145,8 @@ const PROMPT_CHANNEL: usize = 16;
 /// Capacity of the Hugging Face channel: the replies, and a download's
 /// progress about every 250 ms (dropped while the loop is behind).
 const HUB_CHANNEL: usize = 16;
+/// Capacity of the channel the clipboard worker reports on.
+const CLIPBOARD_CHANNEL: usize = 8;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -304,6 +308,38 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
+    // The local clipboard tool of this session, looked up once on the same
+    // PATH; none over SSH, where the terminal's clipboard is the one that
+    // matters.
+    let session = crate::core::clipboard::Session::from_env(
+        |name| env::var(name).ok(),
+        feedback::host_facts().wsl,
+    );
+    let (clipboard_tx, clipboard_rx) = mpsc::channel(CLIPBOARD_CHANNEL);
+    let clipboard = clipboard::Clipboard::find(&cli_env.path, session).map(|(tool, program)| {
+        let tx = clipboard_tx.clone();
+        clipboard::Clipboard::start(
+            tool,
+            program,
+            clipboard::CLIP_TIMEOUT,
+            Box::new(move |seq, result| {
+                let _ = tx.blocking_send((seq, result));
+            }),
+        )
+    });
+    app = app.with_clipboard(
+        clipboard.as_ref().map(clipboard::Clipboard::tool),
+        session.ssh,
+    );
+    // The prefix probe: this terminal's stored result decides whether it runs.
+    let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
+    let terminal = crate::core::probe::terminal_key(
+        env::var("TERM_PROGRAM").ok().as_deref(),
+        env::var_os("WT_SESSION").is_some(),
+        env::var("TERM").ok().as_deref(),
+    );
+    let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
+    app = app.with_probe(terminal, stored, start_args.check_prefix);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
@@ -455,6 +491,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
         .with_config_path(config_path)
+        .with_probe_dir(probe_dir)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let live = live.clone();
@@ -534,6 +571,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     busy: Arc::clone(&busy),
                     plan: plan.clone(),
                 });
+            }
+        }))
+        // A copy through the tool comes back as `AppEvent::Clipboard`; a
+        // worker that is gone answers with an error at once.
+        .with_clipboard(Box::new(move |seq, text| {
+            if let Some(clipboard) = &clipboard
+                && let Err(reason) = clipboard.copy(seq, text)
+            {
+                let _ = clipboard_tx.try_send((seq, Err(reason)));
             }
         }))
         // An opener that fails comes back as `AppEvent::OpenFailed`: the
@@ -664,6 +710,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
+        clipboard: clipboard_rx,
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
@@ -897,6 +944,8 @@ struct Inbox {
     issue: mpsc::Receiver<SendReply>,
     /// A link the opener failed to open.
     open_failed: mpsc::Receiver<String>,
+    /// How a local clipboard copy went: its number and the outcome.
+    clipboard: mpsc::Receiver<(u64, Result<(), String>)>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
@@ -952,6 +1001,7 @@ async fn run_loop(
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
+        clipboard: mut clipboard_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
@@ -968,10 +1018,13 @@ async fn run_loop(
     let mut anim = anim::Animation::new();
     // Armed only while a chat awaits a memory reply: no wait lasts for ever.
     let mut memory_watch = anim::Animation::every(anim::MEMORY_PERIOD);
+    // Armed only while the first-run prefix probe waits for a key.
+    let mut probe_watch = anim::Animation::every(anim::PROBE_PERIOD);
 
     loop {
         anim.sync(app.animating());
         memory_watch.sync(app.memory_waiting());
+        probe_watch.sync(app.probe_waiting());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -1079,6 +1132,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some((seq, result)) = clipboard_rx.recv() => {
+                if step(&mut app, AppEvent::Clipboard { seq, result }, panes) {
+                    return Ok(());
+                }
+            }
             Some(url) = open_failed_rx.recv() => {
                 if step(&mut app, AppEvent::OpenFailed(url), panes) {
                     return Ok(());
@@ -1122,6 +1180,11 @@ async fn run_loop(
             }
             () = memory_watch.tick() => {
                 if step(&mut app, AppEvent::MemoryTick, panes) {
+                    return Ok(());
+                }
+            }
+            () = probe_watch.tick() => {
+                if step(&mut app, AppEvent::ProbeTick, panes) {
                     return Ok(());
                 }
             }
@@ -1256,6 +1319,9 @@ struct Panes {
     reapers: Vec<JoinHandle<()>>,
     /// Where `SaveConfig` writes; `None` when no config path could be resolved.
     config_path: Option<PathBuf>,
+    /// The folder `SaveProbe` writes `terminals.json` in; `None` when no
+    /// state folder could be resolved.
+    probe_dir: Option<PathBuf>,
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
@@ -1282,6 +1348,10 @@ struct Panes {
     /// Starts the host's opener on a link, without waiting for it. Does
     /// nothing unless `with_opener` installs the production one.
     open_url: Box<dyn FnMut(&str)>,
+    /// Starts one local clipboard copy (its number and text) without
+    /// waiting; the outcome comes back on its channel. Does nothing unless
+    /// `with_clipboard` installs the production one.
+    copy_local: Box<dyn FnMut(u64, String)>,
     /// Starts sending the Feedback issue with `gh`, without waiting; the
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
@@ -1341,6 +1411,7 @@ impl Panes {
             spawn,
             reapers: Vec::new(),
             config_path: None,
+            probe_dir: None,
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
@@ -1349,6 +1420,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             open_url: Box::new(|_| {}),
+            copy_local: Box::new(|_, _| {}),
             send_issue: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
@@ -1469,9 +1541,21 @@ impl Panes {
         self
     }
 
+    /// Sets the folder the prefix probe results are kept in.
+    fn with_probe_dir(mut self, probe_dir: Option<PathBuf>) -> Self {
+        self.probe_dir = probe_dir;
+        self
+    }
+
     /// Sets what opens a link in the browser.
     fn with_opener(mut self, open: Box<dyn FnMut(&str)>) -> Self {
         self.open_url = open;
+        self
+    }
+
+    /// Sets what starts a local clipboard copy.
+    fn with_clipboard(mut self, copy: Box<dyn FnMut(u64, String)>) -> Self {
+        self.copy_local = copy;
         self
     }
 
@@ -1597,7 +1681,17 @@ impl Panes {
                         Err(message) => AppEvent::ConfigSaveFailed(message),
                     });
                 }
+                // Synchronous like `SaveConfig`: the file is tiny. Only a
+                // failure is answered, so the user sees the notice.
+                Effect::SaveProbe { key, outcome } => {
+                    if let Err(reason) = probe_store::save(self.probe_dir.as_deref(), &key, outcome)
+                    {
+                        feedback.push(AppEvent::ProbeSaveFailed(reason));
+                    }
+                }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
+                // Returns at once: the tool runs on the clipboard worker.
+                Effect::CopyLocal { seq, text } => (self.copy_local)(seq, text),
                 // Returns at once: the opener is reaped on its own thread.
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
@@ -2127,12 +2221,22 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
+/// XTMODKEYS: `CSI > 4 ; 0 m` asks the terminal to turn xterm's
+/// modifyOtherKeys off. A terminal with it on (zutty) sends Alt+Enter as
+/// `CSI 27;3;13~`, a form crossterm 0.29 rejects, so the key would vanish.
+/// A terminal that does not know the sequence ignores it.
+const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
+/// `CSI > 4 m` asks the terminal to return modifyOtherKeys to its initial value.
+const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
+
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles. The mouse capture
 /// is disabled whether or not it was on: the sequence is harmless when the
 /// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    let mouse = out.write_all(CAPTURE_OFF);
+    let mouse = out
+        .write_all(CAPTURE_OFF)
+        .and_then(|()| out.write_all(MODIFY_OTHER_KEYS_DEFAULT));
     let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
@@ -2145,7 +2249,9 @@ fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
 /// paste and focus reporting. [`restore_to`] undoes them.
 fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, EnableBracketedPaste, EnableFocusChange)
+    execute!(out, EnableBracketedPaste, EnableFocusChange)?;
+    out.write_all(MODIFY_OTHER_KEYS_OFF)?;
+    out.flush()
 }
 
 fn restore() {
@@ -2492,7 +2598,37 @@ mod tests {
         assert!(text.contains("\x1b[?1004l"), "{text:?}");
     }
 
-    // The modes are entered with one write and undone by `restore_to`.
+    // zutty sends Alt+Enter as `CSI 27;3;13~` (xterm modifyOtherKeys), which
+    // crossterm 0.29 cannot parse, so the key would be lost. Startup asks the
+    // terminal to stop using that format.
+    #[test]
+    fn startup_turns_modify_other_keys_off() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+        // The mode goes off once the others are on, in the same write.
+        assert!(
+            text.find("\x1b[?1004h").unwrap() < text.find("\x1b[>4;0m").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // Restore hands the terminal back its own default (`CSI > 4 m`).
+    #[test]
+    fn restore_resets_modify_other_keys_to_the_terminal_default() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4m"), "{text:?}");
+        // Written with the mouse reset, ahead of the flushed `execute!` part.
+        assert!(
+            text.find("\x1b[>4m").unwrap() < text.find("\x1b[?2004l").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // The modes are entered together and undone by `restore_to`.
     #[test]
     fn startup_enables_focus_reporting_next_to_bracketed_paste() {
         let mut out = Vec::new();
@@ -2720,6 +2856,58 @@ mod tests {
             self.flushes += 1;
             Ok(())
         }
+    }
+
+    // copy-selection: Local tool ran (runtime part): the copy is handed to
+    // the clipboard worker with its number, and `apply` returns at once.
+    #[test]
+    fn copy_local_is_handed_to_the_clipboard_starter() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = std::rc::Rc::clone(&calls);
+        let mut panes = panes.with_clipboard(Box::new(move |seq, text| {
+            seen.borrow_mut().push((seq, text));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::CopyLocal {
+            seq: 4,
+            text: "hello".to_owned(),
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty());
+        assert_eq!(*calls.borrow(), vec![(4, "hello".to_owned())]);
+    }
+
+    // terminal-compatibility: "Remembered probe result" (runtime part).
+    #[test]
+    fn save_probe_writes_the_row_and_answers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_probe_dir(Some(dir.path().to_owned()));
+        let (outcome, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Alias,
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        let stored = probe_store::load(Some(dir.path())).unwrap();
+        assert_eq!(
+            stored.get("kitty"),
+            Some(&crate::core::probe::Outcome::Alias)
+        );
+    }
+
+    #[test]
+    fn a_probe_that_cannot_be_saved_comes_back_as_an_event() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (_, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Pass,
+        }]);
+        assert!(matches!(
+            feedback.as_slice(),
+            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("no usable state folder")
+        ));
     }
 
     // copy-selection: Yank emits OSC 52 (runtime part).

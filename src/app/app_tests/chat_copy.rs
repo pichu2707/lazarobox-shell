@@ -16,6 +16,7 @@ use crate::core::{
         tag_editor::TagTarget,
         transcript::Scroll,
     },
+    clipboard::osc52_only,
     copy::{Point, osc52},
 };
 
@@ -358,6 +359,17 @@ fn ctrl_space_inside_chat_copy_gives_prefix() {
     assert_eq!(a.input(), InputMode::Prefix);
 }
 
+#[test]
+fn the_alias_inside_chat_copy_gives_prefix() {
+    for c in [']', '5'] {
+        let mut a = long();
+        enter(&mut a);
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(a.update(AppEvent::Key(key)), vec![], "{c}");
+        assert_eq!(a.input(), InputMode::Prefix, "{c}");
+    }
+}
+
 // Selecting and copying ---------------------------------------------------------
 
 #[test]
@@ -369,7 +381,7 @@ fn v_a_motion_and_y_copy_the_clean_text_and_leave_to_terminal() {
     assert_eq!(a.copy_selection_kind(), Some(SelectionKind::Char));
     let effects = a.update(key('y'));
     assert_eq!(effects, clipboard("beta\ngamma"));
-    assert_eq!(a.notice(), Some("Copied 10 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert_eq!(a.input(), InputMode::Terminal);
     assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
     assert_eq!(composer(&a), "hi", "nothing reaches the composer");
@@ -382,7 +394,7 @@ fn capital_v_copies_whole_rows_without_their_prefix() {
     keys(&mut a, "ggV");
     assert_eq!(a.copy_selection_kind(), Some(SelectionKind::Line));
     assert_eq!(a.update(key('y')), clipboard("q"), "the user row less `› `");
-    assert_eq!(a.notice(), Some("Copied 1 character"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 }
 
 #[test]
@@ -437,10 +449,10 @@ fn ctrl_y_and_ctrl_b_copy_the_answer_and_its_code_block_inside_copy() {
     enter(&mut a);
     let answer = "run this:\n```sh\nls -la\n```";
     assert_eq!(a.update(ctrl('y')), clipboard(answer));
-    assert_eq!(a.notice(), Some("Copied 26 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert!(in_chat_copy(&a), "Ctrl+Y does not leave COPY");
     assert_eq!(a.update(ctrl('b')), clipboard("ls -la"));
-    assert_eq!(a.notice(), Some("Copied 6 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert!(in_chat_copy(&a));
     // Held, they do not copy again.
     assert_eq!(
@@ -470,14 +482,14 @@ fn the_shell_y_and_the_chat_ctrl_y_and_ctrl_b_notices_are_unchanged() {
     copy_after(&mut a, b"hello");
     keys(&mut a, "0vllll");
     assert_eq!(a.update(key('y')), clipboard("hello"));
-    assert_eq!(a.notice(), Some("Copied 5 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert_eq!(a.input(), InputMode::Terminal);
 
     let mut a = answered("x\n```\nls\n```");
     assert_eq!(a.update(ctrl('y')), clipboard("x\n```\nls\n```"));
-    assert_eq!(a.notice(), Some("Copied 12 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert_eq!(a.update(ctrl('b')), clipboard("ls"));
-    assert_eq!(a.notice(), Some("Copied 2 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 
     let mut a = answered(&"a".repeat(80_000));
     assert_eq!(a.update(ctrl('y')), vec![]);
