@@ -1,0 +1,20 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view()))"
+---
+┌ Menu ────────────────┐
+│ ‹ Settings ›         │
+│ Usage (alpha)        │
+│ Usage line        on │
+│ Usage in bar      on │
+│ claude billing  sub… │
+│ codex billing  subs… │
+│ gemini billing  sub… │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│                      │
+│ j/k move · h/l chang…│
+└──────────────────────┘

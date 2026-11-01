@@ -21,7 +21,7 @@ fn on_row(facts: TokenFacts, name: Option<&str>) -> MenuState {
     m
 }
 
-const SAVED: TokenFacts = TokenFacts {
+pub(super) const SAVED: TokenFacts = TokenFacts {
     env: false,
     saved: true,
 };

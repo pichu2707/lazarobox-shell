@@ -13,7 +13,7 @@ baseline.
 ### Added
 
 - The menu's AI tab is split into the tabs Models, Tools, Connectors and
-  Chat after Settings, so the popup is 16 rows high instead of 25. `Tab` and
+  Chat after Settings, so the popup is 17 rows high instead of 25 (24x16 at least; the Usage row of Settings takes the 17th). `Tab` and
   `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight to
   a tab by its fixed number (`2` Models, `3` Tools, `5` Chat). Connectors stays
   hidden until it has rows, so `4` says there are no connectors yet. The bar
@@ -99,6 +99,16 @@ baseline.
   `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
   default, or `per-token`). A wrong value falls back to its default and is
   reported at startup; a threshold of 0 or less is off.
+- AI usage settings in the menu (alpha). A new `Usage (alpha)` row in Settings,
+  after `llama-server idle`, reads `line on · bar on` and opens a view with
+  `Usage line` and `Usage in bar` (`[ai.usage] line` and `statusline`)
+  and `claude billing`, `codex billing` and `gemini billing`
+  (`[ai.usage.billing]`: `subscription` or `per-token`); local engines have no
+  row. Changes are a draft until `s` saves, only the changed keys are written,
+  and `Esc` goes back keeping the draft; any other key inside the view says
+  `Esc first to leave Usage`. The thresholds stay in the config file. The
+  README now says what the usage history stores: numbers only, never message
+  text, pruned after 90 days.
 
 ### Fixed
 

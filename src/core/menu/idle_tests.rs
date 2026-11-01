@@ -48,7 +48,7 @@ fn the_row_follows_sound_and_shows_the_default() {
         .iter()
         .position(|l| *l == ROW)
         .expect("the row exists");
-    assert_eq!((labels[at - 1], labels[at + 1]), ("Sound", "Updates"));
+    assert_eq!((labels[at - 1], labels[at + 1]), ("Sound", "Usage (alpha)"));
     let m = on_idle(None);
     assert_eq!(selected_label(&m), ROW);
     assert_eq!(value(&m), "15 min");

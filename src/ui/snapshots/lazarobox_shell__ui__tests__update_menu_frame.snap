@@ -15,6 +15,7 @@ expression: frame
          │ Notify                                                 off │
          │ Sound                                                   on │
          │ llama-server idle                                   15 min │
+         │ Usage (alpha)                             line on · bar on │
          │ * Updates                                 0.16.0 available │
          │ Feedback                                bug report or idea │
          │                                                            │
@@ -23,7 +24,6 @@ expression: frame
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
-
 
 
 

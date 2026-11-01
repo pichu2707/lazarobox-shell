@@ -10,6 +10,7 @@ expression: "text(&draw(62, POPUP_H, &mixed()))"
 │ Notify                                                 off │
 │ Sound                                                   on │
 │ llama-server idle                                   15 min │
+│ Usage (alpha)                             line on · bar on │
 │ Updates                                             0.15.3 │
 │ Feedback                                bug report or idea │
 │                                                            │

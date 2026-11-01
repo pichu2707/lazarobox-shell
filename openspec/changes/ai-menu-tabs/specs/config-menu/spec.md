@@ -149,7 +149,7 @@ In MENU every key not listed above MUST be swallowed with no effect. The listed 
 - THEN no save is requested and the menu is unchanged
 
 ### Requirement: Tiny terminals
-The menu MUST never panic at any terminal size down to 0x0, on every visible tab and in every picker view. The popup width is 62 with the AI section (51 without) and its height is the fixed popup height (see Popup height is fixed: `MENU_BODY` 12 plus `CHROME` 4 rows of chrome: two borders, the blank row and the footer, so 16). The full popup needs at least 24 columns by 15 rows, the smallest full popup (the blank row is the first thing dropped); adding a row to the tallest view grows these numbers. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), `s` still saves, and Tab, Shift+Tab and the jump keys still switch tabs. Content that does not fit MUST be clipped, including the menu tab bar, which narrows by the steps of Menu tab bar.
+The menu MUST never panic at any terminal size down to 0x0, on every visible tab and in every picker view. The popup width is 62 with the AI section (51 without) and its height is the fixed popup height (see Popup height is fixed: `MENU_BODY` 12 plus `CHROME` 4 rows of chrome: two borders, the blank row and the footer, so 16; 17 once the ai-cost `Usage (alpha)` row lands). The full popup needs at least 24 columns by 15 rows (16 with the Usage row), the smallest full popup (the blank row is the first thing dropped); adding a row to the tallest view grows these numbers. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), `s` still saves, and Tab, Shift+Tab and the jump keys still switch tabs. Content that does not fit MUST be clipped, including the menu tab bar, which narrows by the steps of Menu tab bar.
 (Previously: scenarios named the `AI` tab; the bar degraded only as far as the hint)
 
 #### Scenario: No panic at any size [auto]
@@ -178,7 +178,7 @@ The menu MUST never panic at any terminal size down to 0x0, on every visible tab
 - THEN the one-line fallback is shown, then the task list view is the current view
 
 #### Scenario: Smallest full popup [auto, TestBackend + insta]
-- GIVEN a terminal of exactly the minimum size (24 columns by 15 rows)
+- GIVEN a terminal of exactly the minimum size (24 columns by 16 rows)
 - WHEN the Settings, Models, Tools and Chat tabs and the picker are rendered
 - THEN the full popup is drawn (not the fallback), clipped, without panic, with the bar reduced to the active tab
 
@@ -374,7 +374,7 @@ The popup MUST draw a one-line menu tab bar as the first body row whenever there
 - THEN 49 columns draws the bar and the hint, 48 columns the bar without hint, 36 columns (W = 34) the bar without hint, and 35 columns (W = 33) only the active tab
 
 #### Scenario: Bar at 24 columns [auto, TestBackend + insta]
-- GIVEN the AI section attached, a terminal 24 columns wide and 15 rows high
+- GIVEN the AI section attached, a terminal 24 columns wide and 16 rows high
 - WHEN rendered
 - THEN the full popup is drawn with the bar reduced to ` ‹ Settings › `, clipped inside the popup, and Tab changes the label
 
@@ -428,13 +428,13 @@ While a sub-level is open (privacy warning, picker level 1 or 2 and its screens,
 - THEN the warning closes, the draft stays `off`, nothing is acknowledged, and the active tab is still `Chat`
 
 ### Requirement: Popup height is fixed
-The popup body height MUST be the maximum over every view: each visible tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 12 rows: a 1-row bar plus 11 rows for the tallest view (`VIEW_BODY`). The chrome stays 4 rows, so the popup is 16 rows (it was 25 with the 19-row `AI` tab). The views need: the picker 11 (title plus its 10-row viewport), the Settings tab 11 (eight rows, one gap, the two-line note), the Tools tab 9 (eight rows and the reserved caution line), the privacy warning 10, the Models tab 8, the Chat tab 3 and the custom entry 2; the picker and the Settings tab are the binding 11, so the minimum stays 24 columns by 15 rows. Adding one row to the Settings tab (the ai-cost `Usage (alpha)` row) makes the Settings tab 12 and the popup 17 rows. The single-tab (no-AI) layout keeps its previous size.
+The popup body height MUST be the maximum over every view: each visible tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 12 rows: a 1-row bar plus 11 rows for the tallest view (`VIEW_BODY`). The chrome stays 4 rows, so the popup is 16 rows (it was 25 with the 19-row `AI` tab). The views need: the picker 11 (title plus its 10-row viewport), the Settings tab 11 (eight rows, one gap, the two-line note), the Tools tab 9 (eight rows and the reserved caution line), the privacy warning 10, the Models tab 8, the Chat tab 3 and the custom entry 2; the picker and the Settings tab are the binding 11, so the minimum was 24 columns by 15 rows. Adding one row to the Settings tab (the ai-cost `Usage (alpha)` row) makes the Settings tab 12 and the popup 17 rows, and the minimum 24 columns by 16 rows. The single-tab (no-AI) layout keeps its previous size.
 (Previously: `AI` tab of 19 rows plus the caution made the body 21 and the popup 25)
 
 #### Scenario: Same height across views [auto, TestBackend + insta]
 - GIVEN a normal terminal
 - WHEN the Settings, Models, Tools and Chat tabs, a picker level 1 and 2, the custom field and the warning are rendered
-- THEN the popup border spans 16 rows in all of them
+- THEN the popup border spans 17 rows in all of them (16 before the ai-cost `Usage (alpha)` row; that row takes the extra one)
 
 #### Scenario: Adding a row grows only the tallest view [auto]
 - GIVEN the height is derived from the tables, with the picker and the Settings tab both at 11
@@ -500,7 +500,7 @@ The Tools tab MUST hold a static row `Tools` as its first row, before the family
 - THEN the menu closes, the file holds `enabled = false` under `[ai.tools]` and tools are off
 
 #### Scenario: Popup size and fallback [auto, TestBackend + insta]
-- GIVEN a terminal at exactly the minimum (24 columns by 15 rows), and one column or one row less
+- GIVEN a terminal at exactly the minimum (24 columns by 16 rows), and one column or one row less
 - WHEN the Tools tab and the picker are rendered
 - THEN the first shows the full popup (clipped, no panic) and the second shows the one-line fallback
 
@@ -549,7 +549,7 @@ The Tools tab MUST hold five static rows, one per family toggle (Search, Write, 
 - THEN the five rows exist with distinct key paths and values `off`, `on`
 
 ### Requirement: Approval row
-The Tools tab MUST hold a static row `Approval` after the family rows and before `Orchestrator` (key path `ai.tools.approval`, values `ask`, `auto`, `run`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft `ask`, `auto`, `run`, `ask` (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Entering `run` needs no confirmation. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs, and the value is written explicitly even when it equals the default. The row is shown whatever the `Tools` draft. The popup keeps its 16 rows and its 24x15 minimum (see Popup height is fixed); the descriptor integrity rules extend to the row.
+The Tools tab MUST hold a static row `Approval` after the family rows and before `Orchestrator` (key path `ai.tools.approval`, values `ask`, `auto`, `run`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft `ask`, `auto`, `run`, `ask` (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Entering `run` needs no confirmation. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs, and the value is written explicitly even when it equals the default. The row is shown whatever the `Tools` draft. The popup keeps its size (16 rows and a 24x15 minimum then, 17 and 24x16 with the Usage row; see Popup height is fixed); the descriptor integrity rules extend to the row.
 (Previously: the last row of the AI tab; "With it the AI tab has 11 rows")
 
 Note: when the file holds a bad value (for example `approval = "AUTO"`), the row opens on `ask` and choosing `ask` writes nothing, so the bad value stays in the file until `auto` or `run` is saved. `Tools` behaves the same way. This is accepted (design D18); no force flag exists.
@@ -585,9 +585,9 @@ Note: when the file holds a bad value (for example `approval = "AUTO"`), the row
 - THEN the row value reads `run` and no other row or the popup height changes
 
 #### Scenario: Popup size is unchanged [auto, TestBackend + insta]
-- GIVEN the Tools tab, a terminal of 80x24 and one of exactly 24x15
+- GIVEN the Tools tab, a terminal of 80x24 and one of exactly 24x16
 - WHEN rendered
-- THEN both show the full popup of 16 rows (the 24x15 one clipped, without panic), and one column or one row less shows the one-line fallback
+- THEN both show the full popup of 17 rows (the 24x16 one clipped, without panic; it was 16 rows and 24x15 before the Usage row, which takes the extra one), and one column or one row less shows the one-line fallback
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor table

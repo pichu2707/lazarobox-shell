@@ -16,5 +16,6 @@ expression: show(&confirm_install())
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
 │ y continue · n back                                        │
 └────────────────────────────────────────────────────────────┘

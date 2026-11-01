@@ -16,5 +16,6 @@ expression: show(&downloading())
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
 │ Esc cancel the download                                    │
 └────────────────────────────────────────────────────────────┘

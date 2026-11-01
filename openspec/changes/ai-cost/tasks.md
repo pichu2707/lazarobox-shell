@@ -70,12 +70,13 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 2b: Menu (PR 2b)
 
-- [ ] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity.
-- [ ] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
-- [ ] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
+- [x] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity. (Done in `core/menu.rs`: row in Settings after `llama-server idle`, popup 17 rows, minimum 24x16; limit rows deferred to slice 3.)
+- [x] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
+- [x] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
 
 ## Slice 3: Thresholds (PR 3)
 
+- [ ] 3.0 RED+GREEN limit rows in the Usage view (`Turn limit (tokens)`, `Day limit (tokens)`, `Day limit ($)`: digit editing, `0` or empty is `off`, `Esc` restores) and `Enter edit` in the view footer; the config-menu delta scenarios marked "slice 3". Needs a float write path for `day_usd` in `config_edit.rs`.
 - [ ] 3.1 RED+GREEN checks in `usage.rs`: turn_tokens, day_tokens, day_usd (per-token engines only; list-price never counts).
 - [ ] 3.2 RED+GREEN app notes once per day key per run; never block a send.
 - [ ] 3.3 Docs: README documents the thresholds (`turn_tokens`, `day_tokens`, `day_usd`; spend-only; passive notes); CHANGELOG entry.

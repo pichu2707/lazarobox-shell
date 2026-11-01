@@ -57,6 +57,23 @@ impl UsageConfig {
         self.statusline
     }
 
+    pub fn set_line(&mut self, on: bool) {
+        self.line = on;
+    }
+
+    pub fn set_statusline(&mut self, on: bool) {
+        self.statusline = on;
+    }
+
+    /// The billing mode of the `at`-th CLI engine (claude, codex, gemini).
+    pub fn billing_at(&self, at: usize) -> Billing {
+        self.billing[at]
+    }
+
+    pub fn set_billing_at(&mut self, at: usize, mode: Billing) {
+        self.billing[at] = mode;
+    }
+
     pub fn turn_tokens(&self) -> Option<u64> {
         self.turn_tokens
     }

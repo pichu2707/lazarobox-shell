@@ -365,6 +365,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
+| `Usage (alpha)` | Abre la vista de uso de IA: línea de uso, segmento de la barra de estado y facturación de claude, codex y gemini (ver «Uso de IA»); muestra `line on · bar on` | `[ai.usage]`, `[ai.usage.billing]` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
 | `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
@@ -1119,6 +1120,8 @@ La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats 
 
 **Dólares.** Solo aparecen si el motor los informa (hoy, claude), con 4 decimales por debajo de un dólar y 2 a partir de él. Por defecto claude, codex y gemini se tratan como `subscription`, así que la cifra se etiqueta `list-price equivalent`: es el precio de lista del motor, no una factura. Los motores locales (ollama, lmstudio, llama.cpp y vllm) enseñan tokens y nunca dólares.
 
+**Privacidad del uso.** Lo que se guarda en `chat.db` son solo cifras: la hora, el motor, el modelo, el rol del turno (`chat`, `compaction`, `summary`…) y el worker si lo hay, los recuentos de tokens, el coste informado, la duración y si quedó cortado. Nunca se guarda texto de mensajes, ni de prompts, ni de respuestas, ni rutas. Los registros de más de 90 días se borran solos, y borrar una conversación deja sus cifras sin enlace a ella pero no las borra. Ninguna cifra sale de tu máquina: ni se envía al motor ni a ningún otro sitio. Con el historial desactivado no se guarda nada.
+
 **Historial desactivado.** El uso se guarda en `chat.db` solo con el historial activado. Con él desactivado no se guarda nada y `/cost` muestra únicamente la sesión actual, leída de la memoria, con la línea `chat history is off: showing this session only`.
 
 #### Línea de uso bajo cada respuesta y barra de estado (alfa)
@@ -1127,7 +1130,11 @@ Al terminar un turno, el chat añade bajo la respuesta una línea tenue con lo q
 
 Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 tok`: los tokens de hoy (día local) de todos tus chats y motores, borrados incluidos, sumando entrada y salida de los registros que tienen ambas. Si hoy no hay ningún total conocido, dice `today: no data`. Se lee del historial al abrir el primer chat enfocado (en el hilo del almacén, nunca en el de la interfaz), se refresca cuando se guarda un registro y se vuelve a leer al cambiar el día local: nunca se muestra la cifra de ayer, y hasta la primera lectura el segmento no aparece. Si la lectura falla, se conserva la última cifra, se avisa con `Usage not read: <motivo>` (de nuevo solo si vuelve a fallar tras una lectura buena) y se reintenta al cabo de un minuto; mientras no haya una cifra válida por ese fallo, el segmento dice `today: ?`. Una lectura sin respuesta se da por perdida a los 30 s, y un salto del reloj de más de una hora vuelve a leer. Con el historial desactivado no hay registros que sumar y el segmento no aparece. Solo los motores en modo `per-token` suman dólares al segmento (` · $0.42`); los de `subscription` y los locales nunca. Si la barra va justa, este segmento es lo primero que se oculta, antes que el estado de la memoria, el texto del motor o el indicador de pensamiento.
 
-Ambas cosas vienen activadas y se configuran en `config.toml` (las filas del menú de IA llegan después):
+Ambas cosas vienen activadas. Se cambian desde el menú (`Ctrl+Espacio` y `m`, pestaña **Settings**, fila `Usage (alpha)`) o a mano en `config.toml`.
+
+**Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con cinco filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado) y `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor; `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Los umbrales (`turn_tokens`, `day_tokens`, `day_usd`) solo se pueden poner en `config.toml`. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
+
+Las claves, en `config.toml`:
 
 ```toml
 [ai.usage]

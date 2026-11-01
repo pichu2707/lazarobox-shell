@@ -1520,7 +1520,38 @@ mod tests {
     }
 
     fn sub_levels() -> Vec<MenuState> {
-        vec![picker_of("code", 0), models_view(), custom_view(), warned()]
+        vec![
+            picker_of("code", 0),
+            models_view(),
+            custom_view(),
+            warned(),
+            usage_view(),
+        ]
+    }
+
+    /// The usage view, opened from its row of Settings.
+    fn usage_view() -> MenuState {
+        let mut menu = ai_tab();
+        goto(&mut menu, "Usage (alpha)");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    // Spec (ai-cost config-menu): the view keeps the fixed popup, names its
+    // keys in the footer and shows the toggles and the three CLI billings.
+    #[test]
+    fn snapshot_usage_view() {
+        let shown = text(&draw(62, POPUP_H, &usage_view()));
+        assert!(
+            shown.contains("j/k move · h/l change · s save · Esc back"),
+            "{shown}"
+        );
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn snapshot_usage_view_at_the_smallest_popup() {
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view())));
     }
 
     #[test]
@@ -1619,8 +1650,8 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_is_sixteen_rows_on_every_tab_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 16);
+    fn the_popup_is_seventeen_rows_on_every_tab_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 17);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         for digit in ['3', '5'] {
             let mut menu = mixed();
@@ -1634,7 +1665,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 16);
+            assert_eq!(border[1] - border[0] + 1, 17);
         }
     }
 
@@ -1642,21 +1673,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[11].contains("lazarobox 0.16.0 is available."),
-            "{}",
-            l[11]
-        );
-        assert!(
-            l[12].contains("Go to Updates and press Enter."),
+            l[12].contains("lazarobox 0.16.0 is available."),
             "{}",
             l[12]
         );
+        assert!(
+            l[13].contains("Go to Updates and press Enter."),
+            "{}",
+            l[13]
+        );
         assert_eq!(
-            l[13].trim_matches(|c| c == '│' || c == ' '),
+            l[14].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[14].contains("s save"), "footer: {}", l[14]);
+        assert!(l[15].contains("s save"), "footer: {}", l[15]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1675,10 +1706,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[12]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[13]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[15]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1690,10 +1721,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[12]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[13]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[15]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1785,8 +1816,8 @@ mod tests {
     }
 
     #[test]
-    fn the_smallest_full_popup_is_24_by_15_and_the_zero_size_is_empty() {
-        assert_eq!(MIN_HEIGHT, 15);
+    fn the_smallest_full_popup_is_24_by_16_and_the_zero_size_is_empty() {
+        assert_eq!(MIN_HEIGHT, 16);
         for digit in ['1', '2', '3', '5'] {
             let mut menu = mixed();
             press(&mut menu, &[KeyCode::Char(digit)]);

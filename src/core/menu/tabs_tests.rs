@@ -6,13 +6,14 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 8] = [
+const SETTINGS: [&str; 9] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
     "llama-server idle",
+    "Usage (alpha)",
     "Updates",
     "Feedback",
 ];
@@ -633,23 +634,23 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
         Some(VIEW_BODY),
         "{heights:?}"
     );
-    assert_eq!(VIEW_BODY, 11, "the picker and the Settings tab bind");
+    assert_eq!(VIEW_BODY, 12, "the Settings tab binds");
     assert_eq!(
         VIEW_BODY,
         SECTIONS[0].items.len() + 1 + NOTE_ROWS,
         "Settings with its note"
     );
     assert_eq!(
-        VIEW_BODY,
         1 + crate::core::ai::picker::VIEW,
-        "the picker window"
+        VIEW_BODY - 1,
+        "the picker window is one row under"
     );
 }
 
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 12);
+    assert_eq!(MENU_BODY, 13);
 }
 
 #[test]

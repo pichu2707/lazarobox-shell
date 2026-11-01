@@ -565,6 +565,10 @@ impl AiConfig {
         self.usage = usage;
     }
 
+    pub fn usage_mut(&mut self) -> &mut UsageConfig {
+        &mut self.usage
+    }
+
     /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
     /// On by default: nothing is written without the user's `y` anyway.
     pub fn tools_enabled(&self) -> bool {

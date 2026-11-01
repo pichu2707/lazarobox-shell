@@ -112,13 +112,14 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const SETTINGS_ORDER: [&str; 8] = [
+const SETTINGS_ORDER: [&str; 9] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
     "llama-server idle",
+    "Usage (alpha)",
     "Updates",
     "Feedback",
 ];
