@@ -805,4 +805,75 @@ mod usage_line_tests {
         );
         assert_eq!(state.messages().count(), 3);
     }
+
+    fn notes(state: &ChatState) -> Vec<&str> {
+        state
+            .entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::System(line) if line.starts_with("turn used") => Some(line.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Spec (chat-pane, Threshold notes): after the usage line, whether or not
+    // the line is on, and the next send is accepted.
+    #[test]
+    fn a_turn_over_the_limit_adds_a_note_after_the_usage_line_and_never_blocks() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nturn_tokens = 1000\n"));
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(900, 300, None), StreamEvent::Done(Finish::Stop)],
+        );
+        let tail: Vec<_> = state.entries().iter().rev().take(2).collect();
+        assert!(matches!(tail[0], Entry::System(l) if l == "turn used 1200 tokens (limit 1000)"));
+        assert!(matches!(tail[1], Entry::Usage(_)));
+        assert!(matches!(
+            state.send("again", &ready(), SYSTEM),
+            SendOutcome::Sent { .. }
+        ));
+    }
+
+    #[test]
+    fn the_turn_note_shows_with_the_usage_line_off_and_repeats_every_turn() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nline = false\nturn_tokens = 10\n"));
+        for _ in 0..2 {
+            turn(
+                &mut state,
+                &ready(),
+                vec![reported(9, 9, None), StreamEvent::Done(Finish::Stop)],
+            );
+        }
+        assert!(lines(&state).is_empty());
+        assert_eq!(notes(&state).len(), 2);
+    }
+
+    #[test]
+    fn no_note_under_the_limit_with_an_unknown_total_or_with_the_limit_off() {
+        for (setting, events) in [
+            (
+                "[ai.usage]\nturn_tokens = 1000\n",
+                vec![reported(400, 100, None)],
+            ),
+            (
+                "[ai.usage]\nturn_tokens = 1\n",
+                vec![StreamEvent::usage(TurnUsage {
+                    output: Some(50),
+                    ..TurnUsage::default()
+                })],
+            ),
+            ("", vec![reported(9_000, 9_000, None)]),
+        ] {
+            let mut state = chat();
+            state.set_usage_config(config(setting));
+            let mut events = events;
+            events.push(StreamEvent::Done(Finish::Stop));
+            turn(&mut state, &ready(), events);
+            assert!(notes(&state).is_empty(), "{setting:?}");
+        }
+    }
 }

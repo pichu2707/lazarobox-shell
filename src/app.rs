@@ -877,6 +877,8 @@ pub struct App {
     summary_notice_shown: bool,
     /// The `Usage not saved` notice was shown in this run.
     usage_notice_shown: bool,
+    /// The day notes already shown this run: the note and the end of its day.
+    day_noted: Vec<(chat::DayNote, i64)>,
     /// Today's figures, as the store last answered; none until it has.
     usage_today: Option<chat::UsageToday>,
     /// When and how today's figures are read.
@@ -1060,6 +1062,7 @@ impl App {
             config_path: None,
             summary_notice_shown: false,
             usage_notice_shown: false,
+            day_noted: Vec::new(),
             usage_today: None,
             usage_read: chat::UsageRead::default(),
             wall: system_secs,

@@ -26,6 +26,26 @@ pub(super) struct UsageToday {
     pub(super) until: i64,
 }
 
+/// The day thresholds that show a note (usage limits).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DayNote {
+    Tokens,
+    Spend,
+}
+
+/// Millionths of a dollar the engines in `per-token` mode reported; none for
+/// subscription and local engines, which never count toward a limit.
+pub(super) fn per_token_spend(
+    usage: &crate::core::ai::config::UsageConfig,
+    cost: &[(String, u64)],
+) -> Option<u64> {
+    cost.iter()
+        .filter(|(engine, _)| usage.billing(engine) == Some(Billing::PerToken))
+        .map(|(_, micros)| *micros)
+        .reduce(u64::saturating_add)
+        .filter(|micros| *micros > 0)
+}
+
 /// A read in flight that nobody answers is given up on after this long.
 const READ_TIMEOUT_SECS: i64 = 30;
 /// A failed read, or an answer already out of date, waits this long.
@@ -180,14 +200,10 @@ impl App {
         else {
             return self.usage_read.failed.then(|| "today: ?".to_owned());
         };
-        let spend = today
-            .cost
-            .iter()
-            .filter(|(engine, _)| usage.billing(engine) == Some(Billing::PerToken))
-            .map(|(_, micros)| *micros)
-            .reduce(u64::saturating_add)
-            .filter(|micros| *micros > 0);
-        Some(today_segment(today.tokens, spend))
+        Some(today_segment(
+            today.tokens,
+            per_token_spend(usage, &today.cost),
+        ))
     }
 
     /// Asks the store thread for today's figures when they are missing or no

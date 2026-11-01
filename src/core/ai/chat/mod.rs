@@ -1658,6 +1658,11 @@ impl ChatState {
         }
         // Read before the engine is handed to the saved answer below.
         let usage_line = self.usage_line_for(status);
+        // A passive note, shown whether or not the usage line is on.
+        let limit_note = self
+            .turn_usage
+            .as_ref()
+            .and_then(|usage| usage::turn_note(usage, self.usage_config.turn_tokens()));
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
@@ -1680,6 +1685,9 @@ impl ChatState {
         }
         if let Some(line) = usage_line {
             self.entries.push(Entry::Usage(line));
+        }
+        if let Some(note) = limit_note {
+            self.entries.push(Entry::System(note));
         }
         self.phase = Phase::Idle;
         self.started = None;

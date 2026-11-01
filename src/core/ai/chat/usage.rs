@@ -86,6 +86,12 @@ impl TurnUsage {
         }
     }
 
+    /// Input plus output: `None` when either is missing (cache and reasoning
+    /// are never added).
+    pub fn total(&self) -> Option<u64> {
+        Some(self.input?.saturating_add(self.output?))
+    }
+
     /// Nothing was used: every count and the cost are 0 or missing. A failed
     /// request reports this, and it is not a turn worth a record.
     pub fn idle(&self) -> bool {
@@ -210,6 +216,33 @@ pub fn count(value: &Value) -> Option<u64> {
 /// a cached count over the total is the engine's inconsistency, not a debt.
 pub fn net_input(total: Option<u64>, cached: Option<u64>) -> Option<u64> {
     total.map(|t| t.saturating_sub(cached.unwrap_or(0)))
+}
+
+/// The note of a turn whose known total went over `limit` (thresholds, per
+/// turn). A turn with no known total never triggers it.
+pub fn turn_note(usage: &TurnUsage, limit: Option<u64>) -> Option<String> {
+    let (total, limit) = (usage.total()?, limit?);
+    (total > limit).then(|| format!("turn used {total} tokens (limit {limit})"))
+}
+
+/// The note of a day whose known tokens reached `limit`.
+pub fn day_tokens_note(today: Option<u64>, limit: Option<u64>) -> Option<String> {
+    let (today, limit) = (today?, limit?);
+    (today >= limit).then(|| format!("today's usage reached {today} tokens (limit {limit})"))
+}
+
+/// The note of a day whose spend (millionths of a dollar, per-token engines
+/// only: the caller sums them) reached `limit`. No spend never triggers it.
+pub fn day_spend_note(spend: Option<u64>, limit: Option<u64>) -> Option<String> {
+    let (spend, limit) = (spend.filter(|s| *s > 0)?, limit?);
+    (spend >= limit).then(|| {
+        let usd = super::usage_view::format_usd;
+        format!(
+            "today's spend reached {} (limit {})",
+            usd(spend),
+            usd(limit)
+        )
+    })
 }
 
 /// A dollar figure as millionths, rounded. Negative, non-finite, non-number

@@ -95,7 +95,7 @@ baseline.
   figure, and a read that fails keeps the last figure, is told as `Usage not read: <reason>`, shows `today: ?` when no valid figure is left, and is retried after a minute. It
   is the first segment dropped when the bar is narrow.
 - `[ai.usage]` (`line`, `statusline`, and the thresholds `turn_tokens`,
-  `day_tokens`, `day_usd`, which are read but do nothing yet) and
+  `day_tokens`, `day_usd`) and
   `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
   default, or `per-token`). A wrong value falls back to its default and is
   reported at startup; a threshold of 0 or less is off.
@@ -106,9 +106,20 @@ baseline.
   (`[ai.usage.billing]`: `subscription` or `per-token`); local engines have no
   row. Changes are a draft until `s` saves, only the changed keys are written,
   and `Esc` goes back keeping the draft; any other key inside the view says
-  `Esc first to leave Usage`. The thresholds stay in the config file. The
-  README now says what the usage history stores: numbers only, never message
-  text, pruned after 90 days.
+  `Esc first to leave Usage`. The README now says what the usage history
+  stores: numbers only, never message text, pruned after 90 days.
+- Usage limits (alpha). Three optional limits add a passive note and never
+  block, delay or cancel a send: `turn_tokens` (a finished turn used more
+  tokens than the limit: `turn used 1200 tokens (limit 1000)`), `day_tokens`
+  (`today's usage reached 5200 tokens (limit 5000)`) and `day_usd`
+  (`today's spend reached $5.01 (limit $1.00)`, counting only the engines in
+  `per-token` mode; list-price equivalents and local engines never count).
+  The turn note shows on every turn over the limit; the two day notes show
+  once per local day per run. The Usage view gets the rows `Turn limit
+  (tokens)`, `Day limit (tokens)` and `Day limit ($)`: `Enter` edits, digits
+  type (one `.` and two decimals for dollars, at most 12 digits), `Enter` keeps
+  it, `Esc` cancels, and `0` or an empty field is `off` (the key is removed from
+  `config.toml`). A key that cannot be typed shows a footer notice.
 
 ### Fixed
 

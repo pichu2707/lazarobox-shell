@@ -2,7 +2,7 @@
 //! on, what is saved and when, resume and delete. The store thread does the
 //! IO; this side only builds its commands and applies its replies.
 
-use super::chat::UsageToday;
+use super::chat::{DayNote, UsageToday, per_token_spend};
 use super::*;
 use crate::core::ai::chat::{
     list::{
@@ -14,6 +14,7 @@ use crate::core::ai::chat::{
         USAGE_NOT_READ, USAGE_NOT_SAVED, bounded_error, skipped_line,
     },
     tags::Tags,
+    usage,
 };
 
 /// What a confirmed delete does with the notes of its conversation.
@@ -426,6 +427,9 @@ impl App {
         let now = (self.wall)();
         self.usage_read.answered(now, until, read_problem.is_some());
         if let Some(until) = until {
+            self.day_notes(id, (today, cost), until);
+        }
+        if let Some(until) = until {
             self.usage_today = Some(UsageToday {
                 tokens: today,
                 cost: cost.to_vec(),
@@ -437,6 +441,41 @@ impl App {
             && self.usage_read.tell()
         {
             chat.push_system(format!("{USAGE_NOT_READ}{}", bounded_error(reason)));
+        }
+    }
+
+    /// The notes of the day thresholds the figures reached (usage limits):
+    /// tokens, then spend of the per-token engines. Each shows once per local
+    /// day (`until` names it) per run, as a passive line that blocks nothing.
+    fn day_notes(
+        &mut self,
+        id: PaneId,
+        (tokens, cost): (Option<u64>, &[(String, u64)]),
+        until: i64,
+    ) {
+        let usage = self.ai.usage().clone();
+        let spend = per_token_spend(&usage, cost);
+        let notes = [
+            (
+                DayNote::Tokens,
+                usage::day_tokens_note(tokens, usage.day_tokens()),
+            ),
+            (
+                DayNote::Spend,
+                usage::day_spend_note(spend, usage.day_usd_micros()),
+            ),
+        ];
+        for (kind, note) in notes {
+            let Some(note) = note else { continue };
+            if self.day_noted.contains(&(kind, until)) {
+                continue;
+            }
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                self.day_noted.retain(|(_, day)| *day >= until);
+                self.day_noted.push((kind, until));
+                chat.push_system(note);
+                self.dirty = true;
+            }
         }
     }
 

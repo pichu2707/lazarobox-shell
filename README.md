@@ -1132,7 +1132,7 @@ Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 t
 
 Ambas cosas vienen activadas. Se cambian desde el menú (`Ctrl+Espacio` y `m`, pestaña **Settings**, fila `Usage (alpha)`) o a mano en `config.toml`.
 
-**Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con cinco filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado) y `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor; `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Los umbrales (`turn_tokens`, `day_tokens`, `day_usd`) solo se pueden poner en `config.toml`. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
+**Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con ocho filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado), `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`) y los tres límites `Turn limit (tokens)`, `Day limit (tokens)` y `Day limit ($)` (ver «Límites de uso»). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor de los interruptores y la facturación (en un límite, `Enter` lo edita); `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
 
 Las claves, en `config.toml`:
 
@@ -1141,9 +1141,21 @@ Las claves, en `config.toml`:
 line = true         # línea bajo cada respuesta
 statusline = true   # segmento "today: N tok" en la barra de estado
 
+turn_tokens = 4000  # límite por turno, en tokens (opcional)
+day_tokens = 200000 # límite diario, en tokens (opcional)
+day_usd = 2.5       # límite diario, en dólares (opcional)
+
 [ai.usage.billing]  # solo claude, codex y gemini; por defecto "subscription"
 claude = "per-token"
 ```
+
+**Límites de uso (alpha).** Los tres límites son opcionales y, si faltan, están desactivados (`off`). Solo producen una nota tenue en el chat: nunca bloquean, retrasan ni cancelan un envío, y no emiten ningún sonido ni notificación. Aparecen aunque la línea de uso esté desactivada, y son líneas de vista (no se guardan ni se envían al motor).
+
+- `turn_tokens`: si un turno terminado superó el límite (entrada más salida, ambas conocidas), la nota sigue a la línea de uso: `turn used 1200 tokens (limit 1000)`. Sale en cada turno que lo supere; un turno sin total conocido nunca la dispara.
+- `day_tokens`: cuando los tokens conocidos de hoy alcanzan el límite, `today's usage reached 5200 tokens (limit 5000)`.
+- `day_usd`: cuando el gasto de hoy alcanza el límite, `today's spend reached $5.01 (limit $1.00)`. Solo cuenta el gasto de los motores en modo `per-token`; los de `subscription` (precio de lista) y los locales nunca suman.
+
+Las dos notas diarias salen una vez por límite, por día local y por ejecución. Se calculan con las cifras del historial, así que con el historial desactivado no hay notas diarias. En el menú, `Enter` sobre una fila de límite la edita: se aceptan dígitos (y un solo `.` con hasta dos decimales en `Day limit ($)`, con un máximo de 12 dígitos), `Enter` confirma, `Esc` cancela y deja el valor anterior, y `0` o un campo vacío significa `off` (la clave se elimina de `config.toml`). Una tecla que no se puede escribir avisa en el pie en vez de ignorarse. Un valor inválido en el archivo se sustituye por `off` y avisa al arrancar.
 
 `billing` solo cambia cómo se etiqueta una cifra en dólares que el motor ya informó: `"subscription"` la muestra como `list-price equivalent` (precio de lista, no una factura) y `"per-token"` como gasto (`$0.0049`). No cambia ningún recuento ni lo guardado, y se aplica al mostrar, así que cambiarlo reetiqueta también los registros pasados. Una clave de un motor local, o cualquier clave desconocida, se ignora. Un valor inválido se sustituye por el de por defecto y avisa al arrancar con el texto exacto del problema (por ejemplo `ai.usage.line: expected true or false` o `ai.usage.billing.codex: expected "subscription" or "per-token"`).
 

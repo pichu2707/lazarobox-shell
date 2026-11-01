@@ -475,3 +475,84 @@ fn a_wall_clock_jump_of_over_an_hour_either_way_reads_again() {
         assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 1, "{jump}");
     }
 }
+
+// Spec (ai-usage, Thresholds): the per-day notes come from the store's
+// figures, once per threshold per local day per run, and never block a send.
+fn limited(text: &str) -> App {
+    let mut ai = ollama();
+    ai.set_usage(billing_config(text));
+    let mut a = launched(120, 30).with_ai(ai);
+    a.update(AppEvent::EnginesDetected(super::chat_history::detection()));
+    press(&mut a, "c");
+    a.update(prompt_for(chat_id()));
+    a
+}
+
+fn limit_notes(a: &App) -> Vec<String> {
+    systems(chat_of(a))
+        .into_iter()
+        .filter(|l| l.starts_with("today's"))
+        .collect()
+}
+
+fn recorded_until(until: i64, today: Option<u64>, cost: &[(&str, u64)]) -> AppEvent {
+    AppEvent::Store(StoreReply::UsageRecorded {
+        pane: chat_id(),
+        today,
+        cost: cost.iter().map(|(e, m)| ((*e).to_owned(), *m)).collect(),
+        until: Some(until),
+        read_problem: None,
+        problem: None,
+    })
+}
+
+#[test]
+fn the_day_token_note_appears_once_per_day_and_re_arms_on_a_new_day() {
+    let mut a = limited("[ai.usage]\nday_tokens = 5000\n");
+    a.update(recorded_with(Some(4_800), &[]));
+    assert!(limit_notes(&a).is_empty());
+    a.update(recorded_with(Some(5_200), &[]));
+    a.update(recorded_with(Some(5_600), &[]));
+    assert_eq!(
+        limit_notes(&a),
+        ["today's usage reached 5200 tokens (limit 5000)"]
+    );
+    a.update(recorded_until(NOON + 2 * DAY, Some(5_100), &[]));
+    assert_eq!(limit_notes(&a).len(), 2, "a new day re-arms");
+}
+
+#[test]
+fn the_day_spend_note_counts_per_token_engines_only() {
+    let mut a = limited("[ai.usage]\nday_usd = 1.0\n");
+    a.update(recorded_with(Some(10), &[("claude", 5_000_000)]));
+    assert!(limit_notes(&a).is_empty(), "subscription never counts");
+    let mut a = limited("[ai.usage]\nday_usd = 1.0\n[ai.usage.billing]\nclaude = \"per-token\"\n");
+    a.update(recorded_with(
+        Some(10),
+        &[("claude", 5_010_000), ("codex", 9_000_000)],
+    ));
+    assert_eq!(
+        limit_notes(&a),
+        ["today's spend reached $5.01 (limit $1.00)"]
+    );
+}
+
+#[test]
+fn the_day_notes_come_in_order_without_a_limit_and_never_block_a_send() {
+    let mut a = limited(
+        "[ai.usage]\nday_tokens = 1\nday_usd = 0.5\n[ai.usage.billing]\nclaude = \"per-token\"\n",
+    );
+    a.update(recorded_with(Some(9), &[("claude", 600_000)]));
+    assert_eq!(
+        limit_notes(&a),
+        [
+            "today's usage reached 9 tokens (limit 1)",
+            "today's spend reached $0.6000 (limit $0.5000)",
+        ]
+    );
+    let sent = ask(&mut a, "still works");
+    sent_turn(&sent);
+    let mut off = conversation();
+    off.update(recorded_with(Some(9_000), &[("claude", 9_000_000)]));
+    assert!(limit_notes(&off).is_empty(), "no limits, no notes");
+}
