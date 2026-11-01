@@ -3,12 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::core::menu::AiChoice;
+
 use super::{
     Detection, Status,
-    config::{
-        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
-        cycled_idle,
-    },
+    config::{AiConfig, Assignment, ManagedServer, Task},
     hf::{Answer, Ask},
     ollama_lib,
     picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
@@ -56,98 +55,19 @@ impl AiMenu {
             .map(|t| (t, self.draft.get(t)))
     }
 
-    /// Flips the memory draft. Turning it on without the acknowledgement
-    /// opens the privacy warning instead: the draft changes only when the
-    /// user accepts. Nothing is written or requested here.
-    pub fn toggle_memory(&mut self) {
-        let memory = &mut self.draft.memory;
-        if memory.active() {
-            memory.enabled = false;
-        } else if memory.acknowledged {
-            memory.enabled = true;
-        } else {
-            self.warning = true;
-        }
-    }
-
     /// Whether the privacy warning is open.
     pub fn warning(&self) -> bool {
         self.warning
     }
 
-    /// Closes the warning. Accepting sets both drafts (memory on, note
-    /// acknowledged); declining leaves them as they were.
-    pub fn answer_warning(&mut self, accept: bool) {
+    /// Closes the warning. Accepting sets both keys of the warned row;
+    /// declining leaves them as they were.
+    pub fn answer_warning(&mut self, accept: bool, choice: Option<&AiChoice>) {
         self.warning = false;
-        if accept {
-            self.draft.memory.enabled = true;
-            self.draft.memory.acknowledged = true;
+        debug_assert!(choice.is_some(), "the warning belongs to a Draft row");
+        if let (true, Some(choice)) = (accept, choice) {
+            choice.accept(&mut self.draft);
         }
-    }
-
-    /// The memory keys whose draft differs from the saved one, as
-    /// `(key, value)` in file order. The port is owned but never edited.
-    pub fn changed_memory(&self) -> Vec<(&'static str, bool)> {
-        let (old, new) = (self.original.memory, self.draft.memory);
-        [
-            ("enabled", old.enabled, new.enabled),
-            ("acknowledged", old.acknowledged, new.acknowledged),
-        ]
-        .into_iter()
-        .filter(|(_, old, new)| old != new)
-        .map(|(key, _, new)| (key, new))
-        .collect()
-    }
-
-    /// Moves the draft profile to the next (or previous) one, wrapping.
-    pub fn cycle_profile(&mut self, forward: bool) {
-        let next = self.draft.profile().cycled(forward);
-        self.draft.set_profile(next);
-    }
-
-    /// The profile in the draft, and whether it differs from the open one.
-    pub fn changed_profile(&self) -> Option<Profile> {
-        (self.draft.profile() != self.original.profile()).then(|| self.draft.profile())
-    }
-
-    /// Flips the context flag of the draft.
-    pub fn toggle_context(&mut self) {
-        let next = !self.draft.context();
-        self.draft.set_context(next);
-    }
-
-    /// The context flag in the draft, when it differs from the open one.
-    pub fn changed_context(&self) -> Option<bool> {
-        (self.draft.context() != self.original.context()).then(|| self.draft.context())
-    }
-
-    /// Steps the notify mode of the draft.
-    pub fn cycle_notify(&mut self, forward: bool) {
-        let next = self.draft.notify().cycled(forward);
-        self.draft.set_notify(next);
-    }
-
-    /// Flips the notify sound flag of the draft.
-    pub fn toggle_notify_sound(&mut self) {
-        let next = !self.draft.notify_sound();
-        self.draft.set_notify_sound(next);
-    }
-
-    /// The notify sound flag in the draft, when it differs from the open one.
-    pub fn changed_notify_sound(&self) -> Option<bool> {
-        (self.draft.notify_sound() != self.original.notify_sound())
-            .then(|| self.draft.notify_sound())
-    }
-
-    /// The notify mode in the draft, when it differs from the open one.
-    pub fn changed_notify(&self) -> Option<NotifyMode> {
-        (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
-    }
-
-    /// Flips the agent tools flag of the draft.
-    pub fn toggle_tools(&mut self) {
-        let next = !self.draft.tools_enabled();
-        self.draft.set_tools_enabled(next);
     }
 
     /// The model file of `assignment` when it is one lazarobox starts a
@@ -211,48 +131,23 @@ impl AiMenu {
             .flatten()
     }
 
-    /// Flips one family switch of the draft.
-    pub fn toggle_family(&mut self, toggle: ToolToggle) {
-        let next = !self.draft.toggle(toggle);
-        self.draft.set_toggle(toggle, next);
+    /// Steps a draft row to its next (or previous) value. An unacknowledged
+    /// warned row opens the privacy warning instead.
+    pub fn step_draft(&mut self, choice: &AiChoice, forward: bool) {
+        if choice.step(&mut self.draft, forward) {
+            self.warning = true;
+        }
     }
 
-    /// The family switches whose draft differs from the open one, in row
-    /// order, with the draft value.
-    pub fn changed_toggles(&self) -> impl Iterator<Item = (ToolToggle, bool)> + '_ {
-        ToolToggle::ALL
-            .into_iter()
-            .filter(|t| self.draft.toggle(*t) != self.original.toggle(*t))
-            .map(|t| (t, self.draft.toggle(t)))
+    /// The open config, to compare a draft row against.
+    pub fn original(&self) -> &AiConfig {
+        &self.original
     }
 
-    /// The tools flag in the draft, when it differs from the open one.
-    pub fn changed_tools(&self) -> Option<bool> {
-        (self.draft.tools_enabled() != self.original.tools_enabled())
-            .then(|| self.draft.tools_enabled())
-    }
-
-    /// Cycles the approval mode of the draft.
-    pub fn cycle_approval(&mut self, forward: bool) {
-        let next = self.draft.approval().cycled(forward);
-        self.draft.set_approval(next);
-    }
-
-    /// Steps the idle time of the managed llama-server in the draft.
-    pub fn cycle_idle(&mut self, forward: bool) {
-        let minutes = self.draft.managed_options().idle_minutes;
-        self.draft.set_idle_minutes(cycled_idle(minutes, forward));
-    }
-
-    /// The idle minutes in the draft, when they differ from the open ones.
-    pub fn changed_idle(&self) -> Option<u32> {
-        let minutes = self.draft.managed_options().idle_minutes;
-        (minutes != self.original.managed_options().idle_minutes).then_some(minutes)
-    }
-
-    /// The approval mode in the draft, when it differs from the open one.
-    pub fn changed_approval(&self) -> Option<ApprovalMode> {
-        (self.draft.approval() != self.original.approval()).then(|| self.draft.approval())
+    /// Records the acceptance of the provider notice in the draft; it is
+    /// written with the next save.
+    pub fn accept_notice(&mut self) {
+        self.draft.orchestrator.acknowledged = true;
     }
 
     /// Replaces the detection. The draft is never touched.

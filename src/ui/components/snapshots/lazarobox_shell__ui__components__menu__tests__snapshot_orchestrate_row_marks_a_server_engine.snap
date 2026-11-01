@@ -1,0 +1,20 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &orchestrating(\"llama3:8b\")))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
+│ Set all tasks                                claude › opus │
+│ general                       claude (not detected) › opus │
+│ code                                             (default) │
+│ chat                                             (default) │
+│ review                                           (default) │
+│ summarize                                        (default) │
+│ orchestrate           ollama › llama3:8b · not recommended │
+│ Hugging Face                                 not connected │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter pick · r refresh · s save · Esc cancel    │
+└────────────────────────────────────────────────────────────┘

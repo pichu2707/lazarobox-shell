@@ -14,6 +14,10 @@ pub const PERIOD: Duration = Duration::from_millis(100);
 /// is `MEMORY_WAIT`; a tick only has to notice it ran out.
 pub const MEMORY_PERIOD: Duration = Duration::from_millis(500);
 
+/// Time between the ticks that notice the first-run prefix probe ran out of
+/// time (`PROBE_WINDOW` is ten seconds).
+pub const PROBE_PERIOD: Duration = Duration::from_secs(1);
+
 /// One armed-on-demand interval of the event loop.
 pub struct Animation {
     interval: Option<Interval>,

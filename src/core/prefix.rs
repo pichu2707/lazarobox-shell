@@ -46,6 +46,8 @@ impl KeyChord {
 pub enum PrefixAction {
     /// Forward the prefix itself (NUL) to the child.
     SendPrefixLiteral,
+    /// Forward the alias itself (0x1D) to the child.
+    SendAliasLiteral,
     RequestQuit,
     EnterCopy,
     /// Reserved for the future command viewer; no effect yet.
@@ -67,6 +69,13 @@ pub enum PrefixAction {
     EditTags,
     /// Asks the focused chat's engine for the end-of-conversation summary.
     Summarize,
+    /// Opens the full-pane transcript of the selected worker of the focused
+    /// chat's orchestrator run.
+    ViewWorker,
+    /// Starts a new run from the newest interrupted one (agent-orchestrator S9).
+    ResumeRun,
+    /// Drops the newest interrupted run: it is closed and not offered again.
+    DiscardRun,
     /// Opens the confirm to type the last shell block of the focused chat's
     /// last answer into a shell pane. Never runs it.
     RunInPane,
@@ -86,6 +95,27 @@ pub const PREFIX_KEY: KeyChord = KeyChord {
     code: KeyCode::Char(' '),
     mods: KeyModifiers::CONTROL,
 };
+
+/// Ctrl+], the second prefix key, for terminals that eat Ctrl+Space. It is a
+/// fixed commitment of 1.x: not configurable, not removable. Its byte is 0x1D.
+pub const ALIAS_KEY: KeyChord = KeyChord {
+    code: KeyCode::Char(']'),
+    mods: KeyModifiers::CONTROL,
+};
+
+/// Without keyboard enhancement flags crossterm parses 0x1D as Ctrl+5, so the
+/// alias is two chords for one physical key (design D6).
+pub const ALIAS_KEY_LEGACY: KeyChord = KeyChord {
+    code: KeyCode::Char('5'),
+    mods: KeyModifiers::CONTROL,
+};
+
+/// Whether `key` is a prefix key: Ctrl+Space or the Ctrl+] alias.
+pub fn is_prefix(key: &KeyEvent) -> bool {
+    [PREFIX_KEY, ALIAS_KEY, ALIAS_KEY_LEGACY]
+        .iter()
+        .any(|chord| chord.matches(key))
+}
 
 /// A named set of bindings opened by a key; `label` names the pending mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -171,6 +201,14 @@ const GO: Group = Group {
     ],
 };
 
+const RUN: Group = Group {
+    label: "RUN",
+    bindings: &[
+        act('r', "resume interrupted run", PrefixAction::ResumeRun),
+        act('d', "discard interrupted run", PrefixAction::DiscardRun),
+    ],
+};
+
 const BUFFER: Group = Group {
     label: "BUFFER",
     bindings: &[
@@ -219,6 +257,10 @@ pub const PREFIX_TREE: &[Binding] = &[
     )),
     // `t` is the tab group, so the tag editor takes the capital.
     unhinted(act('T', "tags", PrefixAction::EditTags)),
+    // `w` is the window group, so the worker transcript takes the capital.
+    unhinted(act('W', "worker transcript", PrefixAction::ViewWorker)),
+    // Left out of the hint for the same reason: the root hint is full.
+    unhinted(group('r', "run", &RUN)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -226,7 +268,18 @@ pub const PREFIX_TREE: &[Binding] = &[
         target: Target::Action(PrefixAction::SendPrefixLiteral),
         hinted: false,
     },
+    alias(ALIAS_KEY),
+    alias(ALIAS_KEY_LEGACY),
 ];
+
+const fn alias(chord: KeyChord) -> Binding {
+    Binding {
+        chord,
+        description: "send the alias key (0x1D) to the program",
+        target: Target::Action(PrefixAction::SendAliasLiteral),
+        hinted: false,
+    }
+}
 
 /// Outcome of a key pressed while the prefix (or a group) is pending.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -492,6 +545,52 @@ mod tests {
         }
     }
 
+    // Spec: modal-input "Worker transcript key" (S9). `W` (capital, like `T`:
+    // `w` is the window group) is an unhinted root leaf, bound nowhere else.
+    #[test]
+    fn capital_w_is_an_unhinted_root_leaf_that_views_a_worker() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('W')))
+            .expect("W is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::ViewWorker));
+        assert_eq!(binding.description, "worker transcript");
+        assert!(!binding.hinted);
+        assert!(matches!(lookup(PREFIX_TREE, &plain('w')), Step::Enter(_)));
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('W')),
+                Step::Run(PrefixAction::ViewWorker)
+            );
+        }
+        assert!(hint(PREFIX_TREE, 80).ends_with("q quit"));
+    }
+
+    // Spec: Restart shows an interrupted run (S9 9.1c). `r` is an unhinted
+    // root group (the root hint is full): `r r` resumes the newest interrupted
+    // run, `r d` discards it. No unprefixed chat key is involved.
+    #[test]
+    fn r_is_an_unhinted_root_group_that_resumes_or_discards_a_run() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('r')))
+            .expect("r is bound at the root");
+        assert!(!binding.hinted);
+        let Target::Group(group) = binding.target else {
+            panic!("r opens a group");
+        };
+        assert_eq!(
+            lookup(group.bindings, &plain('r')),
+            Step::Run(PrefixAction::ResumeRun)
+        );
+        assert_eq!(
+            lookup(group.bindings, &plain('d')),
+            Step::Run(PrefixAction::DiscardRun)
+        );
+        assert!(group.bindings.iter().all(|b| b.hinted));
+        assert!(hint(PREFIX_TREE, 80).ends_with("q quit"));
+    }
+
     // Spec: modal-input root `o` folds and unfolds the memory line of a chat.
     // It stays out of the hint (the root hint is already 79 columns); no group
     // binds it.
@@ -618,11 +717,25 @@ mod tests {
     #[test]
     fn every_action_is_reachable_exactly_once() {
         let all = actions();
-        for (i, a) in all.iter().enumerate() {
-            assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
+        // The alias is one key with two spellings, so its action appears twice.
+        let once: Vec<_> = all
+            .iter()
+            .filter(|a| **a != PrefixAction::SendAliasLiteral)
+            .collect();
+        for (i, a) in once.iter().enumerate() {
+            assert!(!once[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + summary + run + approval + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 34);
+        assert_eq!(all.len() - once.len(), 2);
+        for chord in [ALIAS_KEY, ALIAS_KEY_LEGACY] {
+            assert_eq!(
+                lookup(PREFIX_TREE, &event(chord)),
+                Step::Run(PrefixAction::SendAliasLiteral),
+                "{}",
+                chord.label()
+            );
+        }
+        // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + tags + worker + resume + discard + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(once.len(), 37);
     }
 
     #[test]

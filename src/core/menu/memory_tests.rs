@@ -100,81 +100,33 @@ fn warned() -> MenuState {
 
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
-fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 9];
+fn the_memory_descriptor_is_well_formed_and_closes_the_chat_tab() {
+    let memory = &CHAT_SECTION.items[CHAT_SECTION.items.len() - 1];
     assert_eq!(memory.label, "Memory");
-    let ItemKind::Memory(row) = &memory.kind else {
+    let ItemKind::Draft(AiChoice {
+        value: DraftValue::Flag(row),
+        ..
+    }) = &memory.kind
+    else {
         panic!("not a memory row");
     };
     assert_eq!((row.table, row.key), ("ai.memory", "enabled"));
     assert_eq!(row.values, ["off", "on"]);
-    let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(
-        labels,
-        [
-            "Set all tasks",
-            "general",
-            "code",
-            "chat",
-            "review",
-            "summarize",
-            "Profile",
-            "Context",
-            "Memory",
-            "Tools",
-            "Search",
-            "Write",
-            "Exec",
-            "Git",
-            "Git write",
-            "Approval",
-            "Hugging Face",
-        ]
-    );
+    let labels: Vec<_> = CHAT_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels, ["Profile", "Context", "Memory"]);
 }
 
 // Spec: Navigation, Task rows in order, Wrap.
 #[test]
-fn navigation_visits_memory_after_summarize_and_wraps() {
+fn navigation_visits_memory_last_on_the_chat_tab_and_wraps() {
     let mut menu = fresh();
-    menu.goto("Set all tasks");
-    for label in [
-        "general",
-        "code",
-        "chat",
-        "review",
-        "summarize",
-        "Profile",
-        "Context",
-        "Memory",
-        "Tools",
-        "Search",
-        "Write",
-        "Exec",
-        "Git",
-        "Git write",
-        "Approval",
-        "Hugging Face",
-        "Set all tasks",
-    ] {
+    menu.goto("Profile");
+    for label in ["Context", "Memory", "Profile"] {
         press(&mut menu, KeyCode::Char('j'));
         assert_eq!(selected_label(&menu), label);
     }
-    press(&mut menu, KeyCode::Char('k'));
-    assert_eq!(selected_label(&menu), "Hugging Face");
-    for label in [
-        "Approval",
-        "Git write",
-        "Git",
-        "Exec",
-        "Write",
-        "Search",
-        "Tools",
-        "Memory",
-    ] {
-        press(&mut menu, KeyCode::Up);
-        assert_eq!(selected_label(&menu), label);
-    }
+    press(&mut menu, KeyCode::Up);
+    assert_eq!(selected_label(&menu), "Memory");
     press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Context");
 }

@@ -40,6 +40,12 @@ fn seconds(left: Duration) -> String {
 
 /// The counter row, and whether it is a warning.
 fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
+    // A worker's batch names the worker first; a chat's batch is unchanged.
+    // The line of its review's receipt (S7b: a note, never a gate) goes last,
+    // so a narrow pane cuts it before the gate or the refusal.
+    let review = view.review();
+    let by = (review.label()).map_or_else(String::new, |label| format!("{label} · "));
+    let note = (review.receipt()).map_or_else(String::new, |line| format!(" · {line}"));
     if !view.reviewable() {
         let text = if view.refused_hint(now) {
             "y can't approve this batch · press n"
@@ -48,7 +54,7 @@ fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
         } else {
             WARN_TRUNCATED
         };
-        return (text.to_owned(), true);
+        return (format!("{by}{text}{note}"), true);
     }
     let (total, remaining) = (view.total(), view.remaining());
     let left = view.arm_left(now);
@@ -71,7 +77,10 @@ fn header(view: &ReviewView, now: Instant, width: usize) -> (String, bool) {
     };
     let counts = view.review().counts();
     (
-        format!("{counts} · seen {}/{total} · {gate}", total - remaining),
+        format!(
+            "{by}{counts} · seen {}/{total} · {gate}{note}",
+            total - remaining
+        ),
         false,
     )
 }
@@ -136,4 +145,115 @@ pub fn render(
         KEYS_LOCKED_NARROW
     };
     put(buf, area.height - 1, keys, base.fg(theme.text_muted));
+}
+
+#[cfg(test)]
+mod label_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::core::ai::chat::{review::BatchReview, review_view::testing::review_of};
+
+    fn header_of(review: Arc<BatchReview>) -> String {
+        let view = ReviewView::new(review, (80, 20));
+        // Long after the arm delay, so the gate reads the same each time.
+        header(&view, Instant::now() + Duration::from_secs(3600), 80).0
+    }
+
+    // Spec (agent-orchestrator, Writes wait for the batch review [S7]): a
+    // worker's batch is labelled with the worker in the review header, and
+    // a chat's own batch keeps its header as it was.
+    #[test]
+    fn a_worker_batch_names_the_worker_and_a_chat_batch_is_unchanged() {
+        let plain = review_of(&[("a.txt", "one\n", false)]);
+        let chat = header_of(plain.clone());
+        assert!(chat.starts_with(&plain.counts()), "{chat}");
+        let doc = plain.doc().clone();
+        let worker = Arc::new(BatchReview::labelled(
+            doc,
+            "code codex>default".into(),
+            crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        ));
+        let shown = header_of(worker);
+        assert_eq!(shown, format!("code codex>default · {chat}"));
+    }
+
+    // Spec (agent-orchestrator, A receipt never approves [S7b]): the receipt's
+    // line sits in a worker's header and nothing more; the gate, the keys and
+    // the answer at any moment are those of a batch with no receipt.
+    #[test]
+    fn a_receipt_line_heads_a_worker_batch_and_never_changes_what_y_does() {
+        let plain = review_of(&[("a.txt", "one\n", false)]);
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        let line = "review: high \u{b7} consent granted \u{b7} clean";
+        let doc = plain.doc().clone();
+        let bare = Arc::new(BatchReview::labelled(doc.clone(), "code x".into(), key));
+        let with = Arc::new(
+            BatchReview::labelled(doc, "code x".into(), key).with_receipt(Some(line.into())),
+        );
+        let counts = header_of(plain.clone());
+        assert_eq!(
+            header_of(with.clone()),
+            format!("code x \u{b7} {counts} \u{b7} {line}")
+        );
+        // A chat's batch ignores a receipt: its header is as it was.
+        let chat = Arc::new(BatchReview::new(plain.doc().clone()).with_receipt(Some(line.into())));
+        assert_eq!(header_of(chat), counts);
+        // The gate is the same: `y` is locked until the lines are seen and
+        // the delay is over, whatever the receipt says.
+        let (mut a, mut b) = (
+            ReviewView::new(bare, (80, 20)),
+            ReviewView::new(with, (80, 20)),
+        );
+        let now = Instant::now();
+        assert!(!b.can_approve(now) && !b.answerable(now));
+        assert_eq!(a.y_pressed(now), b.y_pressed(now));
+        assert_eq!(a.can_approve(now), b.can_approve(now));
+        assert_eq!(a.remaining(), b.remaining());
+        assert_eq!(a.arm_left(now), b.arm_left(now));
+    }
+
+    /// The first row of `view` drawn in a pane `width` wide.
+    fn first_row(view: &ReviewView, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 6);
+        let mut buf = Buffer::empty(area);
+        let later = Instant::now() + Duration::from_secs(3600);
+        render(view, later, &LazaroboxTheme::default(), area, &mut buf);
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_owned())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    // The receipt goes after the gate and the refusal text: a narrow pane cuts
+    // it first, and never the words the user needs to answer.
+    #[test]
+    fn a_narrow_pane_cuts_the_receipt_before_the_gate_or_the_refusal() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        let line = "review: high \u{b7} consent granted \u{b7} blockers open: 2 \u{b7} not reviewed: 3 paths";
+        let worker = |plain: &Arc<BatchReview>, receipt: Option<&str>| {
+            let doc = plain.doc().clone();
+            let review = BatchReview::labelled(doc, "code x".into(), key)
+                .with_receipt(receipt.map(str::to_owned));
+            ReviewView::new(Arc::new(review), (80, 20))
+        };
+        let full = review_of(&[("a.txt", "one\n", false)]);
+        for width in [80_u16, 50] {
+            let bare = first_row(&worker(&full, None), width);
+            let with = first_row(&worker(&full, Some(line)), width);
+            assert!(bare.contains("remaining"), "{width}: {bare}");
+            assert!(with.starts_with(&bare), "{width}: {with}");
+            if width == 50 {
+                assert_eq!(with, bare, "the receipt takes no room from the gate");
+            }
+        }
+        let empty = review_of(&[]);
+        for width in [80_u16, 50] {
+            let bare = first_row(&worker(&empty, None), width);
+            let with = first_row(&worker(&empty, Some(line)), width);
+            assert!(bare.contains("empty batch"), "{width}: {bare}");
+            assert!(with.starts_with(&bare), "{width}: {with}");
+        }
+    }
 }

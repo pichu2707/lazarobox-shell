@@ -70,6 +70,13 @@ fn same_at_every_split(text: &str, want: &[StreamEvent], decode: fn(&[&[u8]]) ->
 }
 
 #[test]
+fn an_ollama_final_line_without_counts_emits_no_usage_event() {
+    // OLLAMA's final line has none (a cached prompt can omit them too).
+    let events = ndjson(&[OLLAMA.as_bytes()]);
+    assert!(events.iter().all(|e| !matches!(e, StreamEvent::Usage(_))));
+}
+
+#[test]
 fn ollama_lines_give_deltas_then_one_final() {
     assert_eq!(ndjson(&[OLLAMA.as_bytes()]), hello());
     let length = "{\"message\":{\"content\":\"a\"}}\n{\"done\":true,\"done_reason\":\"length\"}\n";

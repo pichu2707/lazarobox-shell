@@ -287,3 +287,57 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
     // No absolute path of the machine leaks into the request.
     assert!(!on.to_string().contains(d.path().to_str().unwrap()));
 }
+
+// Spec (prompt-profiles): Worker gets its kind's prompt.
+#[test]
+fn a_worker_loads_the_prompt_of_its_own_kind() {
+    for kind in [
+        Task::General,
+        Task::Code,
+        Task::Review,
+        Task::Summarize,
+        Task::Chat,
+    ] {
+        let got = load_prompt(None, Profile::Programmer, kind);
+        assert_eq!(got.text, builtin(Profile::Programmer, kind).trim_end());
+    }
+    let review = load_prompt(None, Profile::Programmer, Task::Review);
+    assert_ne!(
+        review.text,
+        builtin(Profile::Programmer, Task::Chat).trim_end()
+    );
+}
+
+// Spec (prompt-profiles): Override still untrusted.
+#[test]
+fn a_worker_override_is_read_under_the_untrusted_rules() {
+    let d = dir();
+    put(d.path(), "programmer/code.md", b"my code rules\n");
+    let got = load_prompt(Some(d.path()), Profile::Programmer, Task::Code);
+    assert_eq!(got.text, "my code rules");
+    let d = dir();
+    put(d.path(), "programmer/code.md", &[b'x'; 16 * 1024 + 1]);
+    let got = load_prompt(Some(d.path()), Profile::Programmer, Task::Code);
+    assert_eq!(
+        got.text,
+        builtin(Profile::Programmer, Task::Code).trim_end()
+    );
+    assert_eq!(
+        got.notices,
+        ["prompt override ignored: programmer/code.md larger than 16 KiB"]
+    );
+}
+
+// Spec (prompt-profiles): Orchestrate prompt, resolved like other tasks.
+#[test]
+fn the_orchestrate_prompt_is_its_builtin_or_its_override() {
+    for profile in Profile::ALL {
+        let got = load_prompt(None, profile, Task::Orchestrate);
+        assert_eq!(got.text, builtin(profile, Task::Orchestrate).trim_end());
+        assert_ne!(got.text, builtin(profile, Task::Chat).trim_end());
+    }
+    let d = dir();
+    put(d.path(), "analyst/orchestrate.md", b"plan first\n");
+    let got = load_prompt(Some(d.path()), Profile::Analyst, Task::Orchestrate);
+    assert_eq!(got.text, "plan first");
+}

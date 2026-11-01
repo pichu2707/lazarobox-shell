@@ -1,10 +1,14 @@
 ---
 source: src/ui/mod.rs
-expression: "(0..25).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..27).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
-h┌ Menu ──────────────────────────────────────────────────────┐
- │ Settings │ AI                                        ⇥ Tab │
+hi there
+
+
+
+ ┌ Menu ──────────────────────────────────────────────────────┐
+ │ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
  │ Mouse                                                   on │
@@ -17,13 +21,11 @@ h┌ Menu ───────────────────────�
  │                                                            │
  │                                                            │
  │                                                            │
- │                                                            │
- │                                                            │
- │                                                            │
- │                                                            │
- │                                                            │
- │                                                            │
- │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
+
+
+
+
+
  ◐ MENU                                                   sh

@@ -1,6 +1,7 @@
 //! The live chat pane: opening it, its key table, yank, scrolling and the
 //! engine check before a send.
 
+use super::run_view::CLOSE_FIRST;
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
@@ -92,6 +93,8 @@ impl UsageRead {
         true
     }
 }
+/// Alt and Ctrl together.
+const ALT_CONTROL: KeyModifiers = KeyModifiers::ALT.union(KeyModifiers::CONTROL);
 
 impl App {
     /// `Prefix c`: a chat pane as a right split of the focused pane, opened
@@ -258,6 +261,11 @@ impl App {
         if self.folder_pending(id) {
             return Vec::new();
         }
+        // A worker's transcript is the whole conversation view: it takes the
+        // keys the offer, the notice and the alert would (they are hidden).
+        if self.run_view_open(id) {
+            return self.on_run_view_key(id, &key, repeat);
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides. A held key never answers it.
@@ -277,8 +285,28 @@ impl App {
         {
             return effects;
         }
+        // The provider notice of the orchestrator, likewise, and only while
+        // the composer is empty: a key typed into a message never answers it.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_notice(id, &key, repeat)
+        {
+            return effects;
+        }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
+        // The failure alert of the pane's run, in the conversation view only:
+        // after the debounce, so a held Esc answers it once.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_alert(id, &key, repeat)
+        {
+            return effects;
+        }
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -302,8 +330,13 @@ impl App {
         };
         match (key.code, mods) {
             (KeyCode::Enter, KeyModifiers::NONE) => one_shot(App::chat_submit, self),
-            (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                one_shot(App::chat_cancel_key, self)
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => one_shot(App::chat_ctrl_c, self),
+            (KeyCode::Esc, KeyModifiers::NONE) => one_shot(App::chat_cancel_key, self),
+            (KeyCode::Down, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, true), self)
+            }
+            (KeyCode::Up, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, false), self)
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_yank(false), self)
@@ -315,11 +348,14 @@ impl App {
                 one_shot(|app, _| app.chat_toggle_reasoning(), self)
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => one_shot(App::chat_review_orphan, self),
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => one_shot(App::chat_toggle_orch, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
-            (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.edit_composer(|c| c.newline())
-            }
+            // Alt+Ctrl+J is what crossterm reports for ESC LF, how zutty sends
+            // Alt+Enter once modifyOtherKeys is off.
+            (KeyCode::Enter, KeyModifiers::ALT)
+            | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('j'), ALT_CONTROL) => self.edit_composer(|c| c.newline()),
             (KeyCode::Tab, KeyModifiers::NONE) => one_shot(App::cd_complete, self),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.edit_composer(|c| c.clear()),
             (KeyCode::Char(ch), _) if plain => self.edit_composer(|c| c.insert(ch)),
@@ -343,6 +379,11 @@ impl App {
         }
         if self.picker_open(id) {
             self.picker_paste(id, text);
+            return;
+        }
+        // The composer is hidden under a worker's transcript.
+        if self.run_view_open(id) {
+            self.notice = Some(CLOSE_FIRST.to_owned());
             return;
         }
         // A chat that waits for its folder takes no text either.
@@ -402,19 +443,26 @@ impl App {
     /// cannot be used. `None` while it is ready or the pane is busy.
     pub fn chat_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
-        if let Some(prompt) = self.server_offer_prompt(id) {
-            return Some(prompt);
+        // Everything a key would answer is on screen, in the order the keys
+        // answer: the `engram serve` offer, then the run's notice and alert,
+        // whatever the phase.
+        match (self.server_offer_prompt(id), self.orch_guidance(id)) {
+            (Some(offer), Some(orch)) => return Some(format!("{offer} | {orch}")),
+            (Some(text), None) | (None, Some(text)) => return Some(text),
+            (None, None) => {}
         }
         if chat.phase() != Phase::Idle {
             return None;
         }
-        guidance(&self.chat_availability())
+        self.orch_refusal(id)
+            .or_else(|| guidance(&self.turn_availability(id)))
+            .or_else(|| self.toggle_hint(id))
     }
 
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
     fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
-        let availability = self.chat_availability();
+        let availability = self.turn_availability(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -447,6 +495,23 @@ impl App {
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        self.send_with(id, text, availability, None)
+    }
+
+    /// `send_text`, or with `attach` the continuation turn of that open run
+    /// (S4): the composer holds the user's own draft, so it is left alone.
+    pub(super) fn send_with(
+        &mut self,
+        id: PaneId,
+        text: &str,
+        availability: &Availability,
+        attach: Option<RunId>,
+    ) -> Vec<Effect> {
+        // An orchestrator turn that could not offer its tools does not go;
+        // the pane shows why.
+        if self.orch_refusal(id).is_some() {
+            return Vec::new();
+        }
         // Memory off means no engram text leaves, whatever the chat holds.
         if !self.ai.memory.active() {
             self.forget_memory(id);
@@ -478,16 +543,14 @@ impl App {
         chat.set_tools_offered(tools);
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
-                chat.composer_mut().clear();
+                if attach.is_none() {
+                    chat.composer_mut().clear();
+                }
                 self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(Effect::ChatSend {
-                    pane: id,
-                    turn,
-                    request,
-                });
+                effects.push(self.turn_effect(id, turn, request, attach));
                 effects
             }
             SendOutcome::Refused => Vec::new(),
@@ -497,13 +560,12 @@ impl App {
     /// The first detection or a conversation's prompt arrived: the sends that
     /// waited for them go now, those still missing one of them keep waiting.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
-        let availability = self.chat_availability();
         // A send whose pane is gone is dropped here, not kept.
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting_sends)
             .into_iter()
             .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
-                availability != Availability::Checking
+                self.turn_availability(*id) != Availability::Checking
                     // A note editor or summary draft owns the conversation
                     // until it closes: the send goes then.
                     && !self.memory_view_open(*id)
@@ -516,7 +578,10 @@ impl App {
         self.waiting_sends = waiting;
         ready
             .into_iter()
-            .flat_map(|(id, text)| self.send_text(id, &text, &availability))
+            .flat_map(|(id, text)| {
+                let availability = self.turn_availability(id);
+                self.send_text(id, &text, &availability)
+            })
             .collect()
     }
 
@@ -533,8 +598,8 @@ impl App {
         self.on_prompt_for(id, resolved)
     }
 
-    /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
-    /// when idle.
+    /// Esc and Ctrl+C: stop the stream and drop a parked send, and end the
+    /// pane's orchestrator run; do nothing when idle with no run.
     pub(super) fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_parked_send(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -544,10 +609,19 @@ impl App {
         // save may have changed them since the last event of the turn.
         chat.set_usage_config(self.ai.usage().clone());
         let follow = chat.cancel();
+        // A run outlives its turn: Ctrl+C ends it too, which answers its
+        // failure alert.
+        let run = chat.orch_run().is_some();
+        if let Some(live) = chat.orch_run() {
+            chat.cancel_run(live);
+        }
+        chat.drop_orch_alert();
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             effects.extend(self.cancel_chat(id));
+        } else if run {
+            effects.push(Effect::ChatCancel(id));
         }
         effects
     }

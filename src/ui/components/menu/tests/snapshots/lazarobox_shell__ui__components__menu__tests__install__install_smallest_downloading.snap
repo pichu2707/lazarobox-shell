@@ -3,16 +3,9 @@ source: src/ui/components/menu/tests/install.rs
 expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu))"
 ---
 ┌ Menu ────────────────┐
-│ Settings │ AI        │
+│ ‹ Models ›           │
 │ Install llama-server…│
 │ ↓ 25% llama-b9000-bi…│
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
 │                      │
 │                      │
 │                      │

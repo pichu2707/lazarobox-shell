@@ -3,20 +3,13 @@ source: src/ui/components/menu.rs
 expression: on_note
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Model for general (codex)                                  │
 │ default (CLI picks)                                        │
 │ model list unavailable: jail: no node found to run the CLI │
 │ script; install it next to the CLI or on PATH (looked in   │
 │ /usr/local/bin)                                            │
 │ custom…                                                    │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

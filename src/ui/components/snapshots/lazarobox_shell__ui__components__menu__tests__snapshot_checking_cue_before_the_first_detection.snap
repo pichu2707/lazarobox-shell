@@ -3,24 +3,17 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                        ⇥ Tab │
+│ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
 │ Set all tasks                           ollama › llama3:8b │
 │ general                                 ollama › llama3:8b │
 │ code                                             (default) │
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
-│ Profile                                         programmer │
-│ Context                                                 on │
-│ Memory                                                 off │
-│ Tools                                                   on │
-│ Search                                                 off │
-│ Write                                                  off │
-│ Exec                                                   off │
-│ Git                                                    off │
-│ Git write                                              off │
-│ Approval                                               ask │
+│ orchestrate                    (default) · not recommended │
 │ Hugging Face                                 not connected │
+│                                                            │
+│                                                            │
 │                                                            │
 │                                                            │
 │ checking engines… · s save · Esc cancel                    │

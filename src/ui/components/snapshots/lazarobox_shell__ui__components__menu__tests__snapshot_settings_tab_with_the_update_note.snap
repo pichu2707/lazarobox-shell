@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &with_update()))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings* │ AI                                       ⇥ Tab │
+│ Settings* │ Models │ Tools │ Chat              ⇥ Tab · 1-5 │
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
 │ Mouse                                                   on │
@@ -12,13 +12,6 @@ expression: "text(&draw(62, POPUP_H, &with_update()))"
 │ llama-server idle                                   15 min │
 │ * Updates                                 0.16.0 available │
 │ Feedback                                bug report or idea │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │ lazarobox 0.16.0 is available.                             │
 │ Go to Updates and press Enter.                             │

@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"t"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-5 on tokens per min.\"}}"}}

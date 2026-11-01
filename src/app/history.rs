@@ -402,6 +402,8 @@ impl App {
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())
             }
+            // The runs are `run_store`'s.
+            StoreReply::RunsRecovered { .. } | StoreReply::RunsFailed { .. } => Vec::new(),
         }
     }
 

@@ -64,7 +64,11 @@ impl App {
         let Some(chat) = state.chat_state() else {
             return false;
         };
-        !chat.lines(usize::from(state.size.cols)).is_empty() || self.chat_guidance(id).is_none()
+        // The quiet Ctrl+O hint is no guidance: the empty chat keeps behaving
+        // as it does with the gate off.
+        !chat.lines(usize::from(state.size.cols)).is_empty()
+            || self.chat_guidance(id).is_none()
+            || self.guidance_is_hint(id)
     }
 
     /// The transcript of chat `id` as COPY sees it, and where its view is.

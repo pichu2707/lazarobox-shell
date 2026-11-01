@@ -3,16 +3,9 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&menu)
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Install llama-server: install                              │
 │ installing b9000…                                          │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

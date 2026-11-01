@@ -1,4 +1,4 @@
-//! The `Hugging Face` row of the AI tab (config-menu, Hugging Face account
+//! The `Hugging Face` row of the Models tab (config-menu, Hugging Face account
 //! row; model-download, Connect a Hugging Face account): the requests go out
 //! as effects, the answers come back as events, and the account is known for
 //! the rest of the session.
@@ -166,6 +166,35 @@ fn ctrl_o_in_the_token_field_opens_the_link_in_the_browser() {
     assert!(
         matches!(effects.as_slice(), [Effect::SetClipboard(_)]),
         "{effects:?}"
+    );
+}
+
+// The footer says the link is being copied, then keeps the browser context
+// in the tool's result.
+#[test]
+fn a_failed_open_with_a_tool_keeps_the_browser_context_in_the_result() {
+    let url = "https://huggingface.co/settings/tokens/new?tokenType=read";
+    let mut a = app()
+        .with_opener(true)
+        .with_hf_tokens(no_tokens)
+        .with_clipboard(Some(crate::core::clipboard::Tool::WlCopy), false);
+    a.update(ctrl_space());
+    a.update(key('m'));
+    goto_row(&mut a, "Hugging Face");
+    a.update(enter());
+    let effects = a.update(AppEvent::OpenFailed(url.to_owned()));
+    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert_eq!(
+        a.menu().unwrap().footer(),
+        Footer::Hint("The browser did not open: copying link".into())
+    );
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Ok(()),
+    });
+    assert_eq!(
+        a.menu().unwrap().footer(),
+        Footer::Hint("The browser did not open: Copied (wl-copy)".into())
     );
 }
 

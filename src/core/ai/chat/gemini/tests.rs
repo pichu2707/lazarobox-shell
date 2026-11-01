@@ -51,7 +51,7 @@ fn error_line(message: &str) -> String {
 }
 
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
+fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
     // The echoed user message and the init line are not part of the answer.
     let usage = TurnUsage {
         input: Some(17318),

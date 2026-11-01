@@ -3,17 +3,10 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&confirm_install())
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Install llama-server: install                              │
 │ b9000 downloaded and verified                              │
 │ unpack it into your data folder and activate it            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

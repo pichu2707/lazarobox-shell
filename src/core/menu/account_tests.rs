@@ -1,4 +1,4 @@
-//! Tests of the `Hugging Face` row of the AI tab (config-menu, Hugging Face
+//! Tests of the `Hugging Face` row of the Models tab (config-menu, Hugging Face
 //! account row), at the `MenuState` level.
 
 use super::account::{
@@ -46,15 +46,15 @@ fn pasted() -> MenuState {
     m
 }
 
-// Spec (config-menu): Account row. The row is the last of the AI tab, after
-// the tools rows, and reads `not connected` with no token.
+// Spec (config-menu): Account row. The row is the last of the Models tab,
+// after the task rows, and reads `not connected` with no token.
 #[test]
 fn the_account_row_is_last_and_reads_not_connected_without_a_token() {
-    let items = AI_SECTION.items;
+    let items = MODELS_SECTION.items;
     let last = items.last().unwrap();
     assert_eq!(last.label, "Hugging Face");
     assert!(matches!(last.kind, ItemKind::HfAccount));
-    assert_eq!(items[items.len() - 2].label, "Approval");
+    assert_eq!(items[items.len() - 2].label, "orchestrate");
     let m = open_with(TokenFacts::default(), None);
     assert_eq!(row_value(&m), "not connected");
     let m = on_row(TokenFacts::default(), None);
@@ -325,4 +325,69 @@ fn a_saved_token_the_hub_refuses_opens_the_field_for_another() {
         m.rows(&Config::default())
             .contains(&Row::Field(String::new()))
     );
+}
+
+// ---- A refused saved token that arrives while another view is open ----------
+
+/// The row asked to check the saved token and the user moved on to another view
+/// before the Hub answered.
+fn checking_then(open_view: impl FnOnce(&mut MenuState)) -> MenuState {
+    let mut m = on_row(SAVED, None);
+    assert_eq!(
+        send(&mut m, KeyCode::Enter),
+        MenuCommand::HfAccount(AccountAsk::Check)
+    );
+    open_view(&mut m);
+    assert!(m.in_sub_level());
+    m.account_reply(AccountReply::Checked(Err(REJECTED.to_owned())));
+    m
+}
+
+#[test]
+fn a_refused_token_waits_for_the_picker_to_close_and_says_so() {
+    let mut m = checking_then(|m| {
+        m.goto("code");
+        send(m, KeyCode::Enter);
+    });
+    assert_eq!(m.sub_view(), Some(SubView::Picker), "the picker stays");
+    assert!(m.account.field().is_none(), "the field did not open");
+    assert_eq!(
+        m.footer(),
+        Footer::Error("Hugging Face did not accept the token")
+    );
+    while m.sub_view() == Some(SubView::Picker) {
+        send(&mut m, KeyCode::Esc);
+    }
+    assert_eq!(m.sub_view(), Some(SubView::AccountField), "now it opens");
+    assert_eq!(
+        m.footer(),
+        Footer::Hint("Hugging Face token refused".into())
+    );
+    assert!(
+        m.rows(&Config::default())
+            .contains(&Row::Field(String::new()))
+    );
+}
+
+#[test]
+fn a_refused_token_never_takes_the_paste_from_the_feedback_form() {
+    let mut m = checking_then(|m| {
+        m.goto("Feedback");
+        send(m, KeyCode::Enter);
+    });
+    assert_eq!(m.sub_view(), Some(SubView::Feedback));
+    send(&mut m, KeyCode::Tab);
+    m.on_paste("zzz-note");
+    assert!(format!("{:?}", m.rows(&Config::default())).contains("zzz-note"));
+    assert!(m.account.field().is_none());
+    send(&mut m, KeyCode::Esc);
+    assert_eq!(m.sub_view(), Some(SubView::AccountField));
+}
+
+#[test]
+fn a_refused_token_with_nothing_open_opens_the_field_at_once() {
+    let mut m = on_row(SAVED, None);
+    send(&mut m, KeyCode::Enter);
+    m.account_reply(AccountReply::Checked(Err(REJECTED.to_owned())));
+    assert_eq!(m.sub_view(), Some(SubView::AccountField));
 }

@@ -29,6 +29,7 @@ fn disabled(label: &str, mark: Mark, selected: bool, current: bool) -> Row {
         selected,
         enabled: false,
         current,
+        tools: None,
     }
 }
 

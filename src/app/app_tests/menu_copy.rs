@@ -4,6 +4,7 @@
 use super::*;
 use crate::core::{
     ai::{CATALOG, Detection, Diagnostics, EngineState, Status, config::AiConfig},
+    clipboard::osc52_only,
     copy::osc52,
     menu::Footer,
 };
@@ -65,7 +66,7 @@ fn y_on_an_engine_row_with_a_no_jail_reason_sets_the_clipboard_and_says_so() {
     let Footer::Hint(hint) = hint else {
         panic!("not a hint")
     };
-    assert_eq!(hint, format!("Copied {} characters", WHY.chars().count()));
+    assert_eq!(hint, osc52_only(false));
 }
 
 #[test]

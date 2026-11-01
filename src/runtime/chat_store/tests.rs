@@ -327,6 +327,9 @@ fn a_fresh_store_gets_schema_v3() {
             "memory_notes",
             "memory_sessions",
             "messages",
+            "run_high",
+            "run_workers",
+            "runs",
             "tags",
             "turn_usage"
         ]
@@ -411,7 +414,7 @@ fn an_empty_database_at_version_zero_is_migrated() {
     drop(Connection::open(&db).unwrap());
     let conn = open_as(&db, me()).unwrap();
     assert_eq!(pragma_text(&conn, "user_version"), "3");
-    assert_eq!(names(&conn, "table").len(), 6);
+    assert_eq!(names(&conn, "table").len(), 9);
 }
 
 #[test]

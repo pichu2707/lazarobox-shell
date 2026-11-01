@@ -1870,3 +1870,16 @@ fn a_reminder_round_sends_the_answer_then_the_reminder() {
         );
     }
 }
+
+// D8: only the three CLI engines run in a private cwd.
+#[test]
+fn only_claude_codex_and_gemini_are_cli_engines() {
+    for id in ["claude", "codex", "gemini"] {
+        assert!(is_cli_engine(id), "{id}");
+    }
+    for id in [
+        "ollama", "lmstudio", "llamacpp", "vllm", "opencode", "unknown", "",
+    ] {
+        assert!(!is_cli_engine(id), "{id}");
+    }
+}

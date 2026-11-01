@@ -72,6 +72,10 @@ pub enum MemCmd {
     },
     /// Start `engram serve` after the user confirmed it.
     StartServer,
+    /// An orchestrator run needs memory for its own handoffs while the
+    /// config has it off: the runtime starts the worker (once) without
+    /// touching the config. Never reaches the worker.
+    EnableForRun,
     /// Flush pending work and stop.
     Quit,
 }
@@ -84,7 +88,7 @@ impl MemCmd {
             | MemCmd::Context { pane, .. }
             | MemCmd::Save { pane, .. }
             | MemCmd::Delete { pane, .. } => Some(*pane),
-            MemCmd::End { .. } | MemCmd::StartServer | MemCmd::Quit => None,
+            MemCmd::End { .. } | MemCmd::StartServer | MemCmd::EnableForRun | MemCmd::Quit => None,
         }
     }
 

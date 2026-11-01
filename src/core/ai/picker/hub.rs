@@ -285,6 +285,7 @@ pub(super) fn info(label: String) -> PickRow {
         mark: Mark::Plain,
         enabled: false,
         current: false,
+        tools: None,
     }
 }
 
@@ -296,6 +297,7 @@ pub(super) fn item(index: usize, label: String) -> PickRow {
         mark: Mark::Plain,
         enabled: true,
         current: false,
+        tools: None,
     }
 }
 
