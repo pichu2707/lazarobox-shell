@@ -56,8 +56,8 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 ## Slice 1c: /cost text (PR 1c)
 
 - [ ] 1c.1 RED+GREEN `parse_command`: `/cost`, `//cost` escaped, trailing text gives `usage: /cost`.
-- [ ] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
-- [ ] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
+- [x] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
+- [x] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
 - [ ] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, header `AI usage (alpha)`, Esc closes; history off shows session-only view from memory with the history-off line.
 - [ ] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the history-off line; an "alpha" note in the `/cost` section (figures may be missing or not match the provider's bill depending on engine and account; how to report it via the report skill / GitHub issues); CHANGELOG entry.
 

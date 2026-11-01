@@ -2599,3 +2599,208 @@ fn huge_counts_are_clamped_so_the_day_total_cannot_overflow() {
         .unwrap();
     assert_eq!(max, 1_000_000_000_000_000);
 }
+
+// ---- /cost report (ai-cost 1c.3) -------------------------------------------
+
+use crate::core::ai::chat::usage_view::UsageRow;
+
+fn report(conversation: Option<i64>) -> StoreCmd {
+    StoreCmd::UsageReport {
+        pane: pane(),
+        conversation,
+    }
+}
+
+fn rows_of(reply: Option<StoreReply>) -> Vec<UsageRow> {
+    match reply {
+        Some(StoreReply::UsageReport {
+            rows: Some(rows), ..
+        }) => rows,
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+/// Seconds since the epoch of local 2026-06-15 12:00 moved by `modifiers`
+/// (SQLite date modifiers, read as local time): a fixed "now" and fixed rows,
+/// whatever the machine's zone and clock.
+fn local(conn: &Connection, modifiers: &str) -> i64 {
+    conn.query_row(
+        &format!("SELECT CAST(strftime('%s', '2026-06-15 12:00:00', {modifiers}'utc') AS INTEGER)"),
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+struct Put<'a> {
+    ts: i64,
+    conv: Option<i64>,
+    engine: &'a str,
+    role: &'a str,
+    input: Option<i64>,
+    out: i64,
+    cost: Option<i64>,
+}
+
+fn put(conn: &Connection, p: Put) {
+    conn.execute(
+        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, input, output,
+             cost_micros)
+         VALUES (?1, ?2, ?3, 'm', ?4, ?5, ?6, ?7)",
+        rusqlite::params![p.ts, p.conv, p.engine, p.role, p.input, p.out, p.cost],
+    )
+    .unwrap();
+}
+
+fn at_ts(ts: i64, engine: &str, input: Option<i64>, out: i64) -> Put<'_> {
+    Put {
+        ts,
+        conv: None,
+        engine,
+        role: "chat",
+        input,
+        out,
+        cost: None,
+    }
+}
+
+#[test]
+fn local_days_are_counted_back_from_the_local_day_of_now() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    // (modifiers, expected days_ago): the edges of the 7-day window and the
+    // local midnight either side.
+    let table = [
+        ("'start of day', '+1 minutes', ", 0),
+        ("'start of day', '-1 minutes', ", 1),
+        ("'-6 days', ", 6),
+        ("'-7 days', ", 7),
+        ("'-8 days', ", 8),
+    ];
+    for (modifiers, _) in table {
+        let ts = local(&conn, modifiers);
+        put(&conn, at_ts(ts, &format!("e{ts}"), Some(1), 1));
+    }
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), table.len());
+    for (modifiers, days) in table {
+        let ts = local(&conn, modifiers);
+        let row = rows.iter().find(|r| r.engine == format!("e{ts}")).unwrap();
+        assert_eq!(row.days_ago, days, "{modifiers}");
+    }
+}
+
+#[test]
+fn the_report_sums_per_day_engine_and_model_and_counts_chat_turns_only() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(
+        &conn,
+        Put {
+            cost: Some(100),
+            ..at_ts(now, "claude", Some(10), 5)
+        },
+    );
+    put(
+        &conn,
+        Put {
+            cost: Some(100),
+            ..at_ts(now - 60, "claude", Some(1), 1)
+        },
+    );
+    put(
+        &conn,
+        Put {
+            role: "compaction",
+            ..at_ts(now - 120, "claude", Some(4), 4)
+        },
+    );
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!((r.turns, r.records, r.costed), (2, 3, 2));
+    assert_eq!((r.input, r.output, r.total), (Some(15), Some(10), Some(25)));
+    assert_eq!((r.cost_micros, r.partial), (Some(200), false));
+}
+
+#[test]
+fn a_missing_count_stays_none_and_marks_the_row_partial() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(&conn, at_ts(now, "ollama", None, 9));
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (
+            rows[0].input,
+            rows[0].output,
+            rows[0].total,
+            rows[0].partial
+        ),
+        (None, Some(9), None, true)
+    );
+}
+
+#[test]
+fn rows_of_the_asking_conversation_are_flagged_and_survive_other_chats() {
+    let (_dir, mut worker, conn) = fixture();
+    let mine = created_id(worker.handle(create(user("a"), vec![])));
+    let other = created_id(worker.handle(create(user("b"), vec![])));
+    let now = local(&conn, "");
+    for conv in [Some(mine), Some(other), None] {
+        put(
+            &conn,
+            Put {
+                conv,
+                ..at_ts(now, "claude", Some(1), 1)
+            },
+        );
+    }
+    let rows = usage_report(&conn, Some(mine), now).unwrap();
+    let chat: u64 = rows.iter().filter(|r| r.in_chat).map(|r| r.turns).sum();
+    let all: u64 = rows.iter().map(|r| r.turns).sum();
+    assert_eq!((chat, all), (1, 3));
+    // A pane that does not know its id yet is read as the conversation the
+    // store created for it (the last one here).
+    let pending = rows_of(worker.handle(report(None)));
+    let pending_chat: u64 = pending.iter().filter(|r| r.in_chat).map(|r| r.turns).sum();
+    assert_eq!(pending_chat, 1);
+}
+
+#[test]
+fn a_report_of_an_empty_store_is_an_empty_list_not_a_failure() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert_eq!(rows_of(worker.handle(report(None))), Vec::new());
+}
+
+#[test]
+fn a_report_never_creates_the_table_and_a_missing_one_is_empty() {
+    let (_dir, _worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage").unwrap();
+    assert_eq!(
+        usage_report(&conn, None, local(&conn, "")).unwrap(),
+        Vec::new()
+    );
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turn_usage'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0, "reading must not run DDL");
+}
+
+#[test]
+fn a_report_that_cannot_be_read_says_unavailable() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage; CREATE VIEW turn_usage AS SELECT 1 AS ts;")
+        .unwrap();
+    assert_eq!(
+        worker.handle(report(None)),
+        Some(StoreReply::UsageReport {
+            pane: pane(),
+            rows: None
+        })
+    );
+}

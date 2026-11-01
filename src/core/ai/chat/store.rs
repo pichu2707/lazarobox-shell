@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage};
+use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage, usage_view::UsageRow};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
 /// The most conversations the store keeps.
@@ -147,6 +147,13 @@ pub enum StoreCmd {
         engine: String,
         role: String,
         usage: Box<TurnUsage>,
+    },
+    /// Reads the stored usage for `/cost`: every record, folded by local day,
+    /// engine and model, with the rows of `conversation` flagged. Read-only.
+    /// Answered with `UsageReport`, always.
+    UsageReport {
+        pane: PaneId,
+        conversation: Option<i64>,
     },
     /// Finish what is queued and stop.
     Quit,
@@ -295,6 +302,12 @@ pub enum StoreReply {
         pane: PaneId,
         today: Option<u64>,
         problem: Option<String>,
+    },
+    /// The answer to `UsageReport`. `rows` is `None` when the store could not
+    /// be read.
+    UsageReport {
+        pane: PaneId,
+        rows: Option<Vec<UsageRow>>,
     },
     /// The answer to `RecentFolders`: each folder once, newest first.
     RecentFolders {
