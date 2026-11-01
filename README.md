@@ -175,6 +175,8 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 | `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
 | `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
 | `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `W`                       | En un chat con el orquestador: abre la transcripción del worker seleccionado |
+| `r` `r` / `r` `d`         | En un chat con el orquestador: retoma / descarta la ejecución interrumpida (ver [Orquestador de agentes](#orquestador-de-agentes-experimental)) |
 | `?`                       | Reservada para el futuro visor de órdenes; hoy no hace nada          |
 | `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
 
@@ -198,6 +200,8 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `Ctrl+Y` / `Ctrl+B` | Copia la última respuesta / su último bloque de código (OSC 52) |
 | `PageUp` / `PageDown` | Desplaza la conversación |
 | `Ctrl+G` | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+| `Ctrl+O` | Con el orquestador activado en el menú: activa o desactiva ORCH en este panel (ver [Orquestador de agentes](#orquestador-de-agentes-experimental)) |
+| `Alt+↓` / `Alt+↑` | Con el orquestador activado: selecciona el siguiente / anterior worker en marcha. Con un worker seleccionado, el primer `Ctrl+C` cancela solo ese worker y otro en unos 2 s cancela la ejecución |
 | `←` `→` `Home` `End` `Backspace` `Delete` | Editan el mensaje (`Ctrl+H` borra como `Backspace`) |
 
 **Aprobación de una herramienta o de un comando** (incluida la confirmación de `Ctrl+Espacio` `e`). Mientras espera, el resto de teclas no hacen nada. Un aviso recién abierto no acepta aún `y`, `n` ni `Esc` (por si la tecla era para el mensaje); `Ctrl+C` funciona siempre.
@@ -1125,6 +1129,69 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 **Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
 
 Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
+
+### Orquestador de agentes (experimental)
+
+El orquestador reparte un trabajo de varios pasos entre **workers**: un modelo coordina y cada worker es un turno sin estado del motor que el menú asigna a su tarea (`general`, `code`, `chat`, `review` o `summarize`). lazarobox nunca elige motor ni modelo por ti. Está **desactivado por defecto** y no cambia nada mientras no lo actives.
+
+**Cómo se activa (dos interruptores).**
+
+1. **Interruptor global.** En la pestaña **AI** del menú (`Ctrl+Espacio` `m`), la fila `Orchestrator` (`h`/`l`, o `Enter`; `s` guarda) escribe `[ai.orchestrator] enabled`. Con él apagado no existen ni las herramientas del orquestador, ni la insignia, ni la tecla `Ctrl+O`: los chats son los de siempre.
+2. **Interruptor por panel.** En un panel de chat, `Ctrl+O` activa o desactiva su modo **ORCH** (insignia `ORCH`, junto a `AUTO` y `RUN`). Solo vive en memoria: cada panel nuevo empieza apagado y nada se guarda. Un panel con una ejecución en curso no cambia de modo; cancélala primero (`Ctrl+C`). El cambio vale desde el siguiente mensaje.
+
+Los dos cambios se aplican desde el siguiente mensaje y no tocan un turno que ya corre. Con la configuración por defecto de Zellij, `Ctrl+O` abre su modo Session y no llega a lazarobox: bloquéalo (`Ctrl+G` en Zellij) o reasigna su tecla (no comprobado en un Zellij real). tmux lo deja pasar. El orquestador necesita las herramientas activadas (fila `Tools`) y un motor con herramientas verificadas (`claude`, `codex`, `gemini` u `ollama`); si no, el panel lo dice y no envía nada.
+
+**La fila `orchestrate`.** En la pestaña **AI** hay una fila más de tarea, `orchestrate` (`[ai.tasks.orchestrate]`), que elige el motor y el modelo del coordinador; sin asignar usa el de `general`, y su selector tiene `(default · use general)` como primera entrada. Un panel ORCH usa siempre ese motor, nunca el de `chat` ni otro de reemplazo. Elegir **Ollama** u otro servidor local para esta fila se permite pero lleva la marca **`not recommended`**: un modelo local pequeño no suele saber coordinar, y la marca no bloquea ni cambia nada.
+
+**Cómo corre una ejecución.** Con ORCH activo, tu mensaje es el objetivo de una ejecución:
+
+- **Pasos (ODD).** El coordinador sigue en orden `authorize`, `explore`, `resolve`, `classify`, `track` (solo si el objetivo es grande), `implement` y `close`. Cada paso se cierra únicamente con su acta (handoff). Hace como mucho una pregunta a la vez y espera tu respuesta. Si lo que pides es investigar, explicar o revisar, no arranca workers de tipo `code`. Un objetivo grande recibe un documento de requisitos con tus palabras tal cual, y una corrección tuya reescribe solo el requisito afectado.
+- **Workers en paralelo.** Cada worker aparece como una fila (tipo, `motor>modelo`, estado y tiempo) y arranca sin preguntarte; una fila `run` suma los tokens que los motores informan (`n/a` si no informan; nunca se estiman). Solo corren a la vez `max_parallel` workers; el resto espera en cola.
+- **Lectura y aprobaciones.** La ejecución parte con un alcance de lectura: la carpeta del chat, fijado sin preguntar. Si esa carpeta es `$HOME`, está fuera de `$HOME` o es una ruta secreta, no hay alcance y toda lectura sigue el modo de aprobación. Dentro de él los workers leen sin pedir; fuera, se aplica el modo de aprobación del panel y cada petición pide tu `y`, en una cola de una pregunta visible a la vez y con la etiqueta `worker n/m tipo motor>modelo`. Ninguna tecla del tiempo ni un texto del modelo responde por ti: ni el coordinador ni un worker pueden aprobar nada.
+- **Escritura.** Un worker `code` solo prepara cambios (`create_dir`, `write_file`, `edit_file`) dentro del alcance y los propone él mismo con `propose_batch`; nada llega al disco hasta que apruebas el lote en la revisión de lotes (ver «Escritura: lotes con revisión»), cuya cabecera nombra al worker. Ningún modo de aprobación, tampoco `run`, aprueba un lote. El coordinador solo da por escrito lo que `collect` lista como `applied`; lo demás es un borrador. Los workers `code` usan sus propias herramientas aunque `write` esté en `false` en `[ai.tools]`; los demás workers solo leen.
+- **Revisión de riesgo (RDD).** Un cambio de **riesgo alto** (compilación, CI, dependencias y archivos de bloqueo, formatos de configuración y rutas secretas; el coordinador solo puede subirlo con `raise`, nunca bajarlo) pide **tu consentimiento antes de cualquier revisión** (`y review it · n skip the review`). Con `y`, workers de solo lectura miran el cambio con los criterios que haga falta (`risk`, `resilience`, `readability`, `reliability`), un refutador filtra los bloqueos inferidos y, como mucho, un worker `code` hace una corrección acotada. Con `n`, el cambio pasa a la revisión de lotes marcado **`not reviewed`** y no corre ningún revisor. Todo acaba en un **recibo** (nivel, criterios, hallazgos, corrección, resultado) que se ve en la cabecera de la revisión de lotes. Un recibo nunca aprueba: **la revisión de lotes siempre la decides tú con `y`**.
+- **Fallos.** Si un worker falla, caduca o se rechaza (por ejemplo, motor sin instalar o sin jaula), la ejecución se detiene y se muestra el error del proveedor tal cual, con su clase (`rate_limit`, `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `other`). Los hermanos en marcha terminan su turno y no arranca ninguno nuevo hasta que respondas: `r` reintenta el mismo worker con el error añadido, `m` cambia el modelo, `p` cambia el motor y `c` o `Esc` cancela. `m` y `p` valen solo para esa ejecución: no cambian el menú ni `config.toml`. Nunca hay reintento ni cambio de motor automático.
+- **Final.** La ejecución termina sola cuando acaba el turno del coordinador y no queda ningún worker en cola ni en marcha. El coordinador informa de lo verificado, de cada comprobación fallida, omitida o pendiente y de una línea de riesgo.
+
+**Teclas.** Todas están también en la [referencia de teclas](#referencia-de-teclas-por-vista).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Ctrl+O` | Activa o desactiva ORCH en el panel de chat (solo con el interruptor global activo) |
+| `Alt+↓` / `Alt+↑` | Selecciona el siguiente / anterior worker que no ha terminado |
+| `Ctrl+C` | Con un worker seleccionado, el primero cancela solo ese worker (`Ctrl+C again cancels the run`); otro en unos 2 s cancela el turno y toda la ejecución. Sin worker seleccionado, cancela todo. `Esc` cancela siempre todo |
+| `Ctrl+Espacio` `W` | Abre la transcripción del worker seleccionado: pantalla completa, solo lectura, sin caracteres de control, las últimas 128 KiB. `↑` `↓` `k` `j`, `PageUp` `PageDown`, `Home` `g` y `End` `G` (sigue lo nuevo) la desplazan; `Esc` o `q` la cierran. La rueda la desplaza y pegar texto se rechaza |
+| `Ctrl+Espacio` `r` `r` / `r` `d` | Retoma / descarta la ejecución interrumpida más reciente de la carpeta (ver «Persistencia») |
+
+**Avisos del proveedor.** La primera vez que una ejecución va a arrancar se muestra un aviso en el panel: los proveedores recomiendan **claves de API** para la automatización, y usar el inicio de sesión de una cuenta de consumo para automatizar conlleva riesgo. **No se exige ninguna clave** ni se rechaza ningún motor por ello, y el aviso no bloquea: la ejecución arranca sin esperar. `Enter` lo acepta (se guarda `acknowledged = true` y no vuelve a salir; `y` se escribe en el mensaje como siempre), `Esc` lo descarta y vuelve a salir en la siguiente ejecución. Solo responde con el mensaje vacío. Cada worker es un turno más contra el proveedor que asignaste a su tarea.
+
+**Configuración.** Solo existen estas claves en `[ai.orchestrator]`; un valor incorrecto se sustituye por el predeterminado, con un aviso al arrancar.
+
+```toml
+[ai.orchestrator]
+enabled = false             # interruptor global (fila Orchestrator del menú)
+acknowledged = false        # aviso del proveedor aceptado (lo escribe el menú al aceptarlo)
+worker_timeout_secs = 600   # plazo de cada worker, 30-3600; solo en el archivo
+max_parallel = 2            # workers a la vez, 1-4; solo en el archivo
+max_workers = 8             # workers por ejecución, 1-32; solo en el archivo
+run_timeout_mins = 60       # reloj de una ejecución, 1-480; solo en el archivo
+max_turns = 6               # turnos del coordinador por ejecución, 1-24; solo en el archivo
+```
+
+Superar `max_workers` rechaza el siguiente worker nombrando el límite; al cumplirse `run_timeout_mins` se paran la ejecución y los workers. El tiempo que un worker espera tu revisión de lote cuenta para su plazo: si caduca, no se escribe nada y el lote queda como huérfano (`Ctrl+G`). Un cambio en `config.toml` vale tras reiniciar lazarobox.
+
+**Memoria y privacidad.** Cada worker terminado y cada paso cerrado deja un acta (hecho, pendiente, decisiones y un veredicto de si va por buen camino), y el recibo de una revisión también. Se guardan en engram solo si la memoria está activa o si ya aceptaste antes la nota de privacidad de la memoria: en ese caso la ejecución la activa **solo para sí misma** (`memory on for this run`) y no toca `config.toml`. Sin esa aceptación, o si engram no responde, la ejecución sigue en memoria y lo dice una vez (`handoffs not persisted`). Una ejecución nunca arranca `engram serve`: solo lo hace la oferta confirmada del chat, así que con engram parado la ejecución sigue sin guardar. Lo que devuelve un worker se trata siempre como datos no fiables y se guarda con la redacción de secretos de las notas.
+
+**Persistencia.** Las ejecuciones se guardan **en local**, en `chat.db`, a medida que cambian sus workers (tablas nuevas que un lazarobox más antiguo ignora). Tras reiniciar, una ejecución que seguía viva se marca como **interrumpida** y el panel la nombra (hasta 3, luego un número) la primera vez que activas ORCH; nada corre solo. Solo se ofrecen las de **la carpeta del chat** en que empezaron: las de otras carpetas solo se cuentan. `Ctrl+Espacio` `r` `r` empieza una ejecución **nueva** desde su objetivo (con el alcance de lectura fijado otra vez desde la carpeta del chat; nada de la concesión anterior se reutiliza) y avisa al coordinador de qué workers quedaron sin terminar y de que no relance ninguno hasta que se lo digas; `r` `d` la descarta. Una interrumpida más vieja de 30 días se cierra sin mostrarse. El objetivo guardado oculta los tokens que hubieras pegado.
+
+**Límites conocidos de esta versión.**
+
+- **Los workers no pueden ejecutar comandos ni tests** (ni el coordinador): `run_command` es solo del chat normal y no se ofrece dentro de una ejecución. El coordinador lo dice, no afirma que un test se haya ejecutado o pasado y te pide que lo ejecutes tú (en un chat con ORCH apagado y `exec = true`, o en un panel de shell). El «test primero» con evidencia ejecutada queda para la 1.2.
+- **«No relanzar tras retomar» es una instrucción al modelo**, no un cerrojo: nada en el código impide un `spawn_agent` tras retomar. Lo acotan las puertas de siempre (el alcance de lectura, los lotes que aprueba solo el usuario, la jaula y los límites de arriba) y cada worker se anuncia en su fila.
+- **«Solo lectura» también es del modelo**: el marcador sale del paso `authorize` del coordinador; una ejecución que nunca lo cierra no queda restringida (las escrituras siguen esperando tu lote).
+- **Una aprobación pedida entre dos turnos del coordinador** se rechaza y el panel lo dice (`worker N: a tool approval was refused when the orchestrator moved on; the worker can ask again`); el worker puede volver a pedirla. El registro y el aviso de esa pregunta no son atómicos.
+- **Los workers no tienen tus herramientas de servidores MCP**; las puede usar el coordinador y cada llamada te pide un `y`.
+- Un coordinador sin herramientas verificadas no arranca; un worker cuyo motor no está disponible (sin instalar, sin el modelo, sin jaula donde hace falta) se rechaza y la ejecución se detiene. lazarobox no los reemplaza por otro motor. Al salir de lazarobox se matan todos los workers. Con Ollama, la fiabilidad depende del modelo (ver `not recommended`).
 
 ### Publicar una versión (mantenedores)
 
