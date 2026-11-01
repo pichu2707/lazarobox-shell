@@ -425,3 +425,24 @@ fn an_unseen_change_is_never_called_clean_in_the_batch_line() {
         "{text}"
     );
 }
+
+// D4: a gap in the diff is named in the batch line and the receipt.
+#[test]
+fn a_diff_gap_is_named_and_never_called_clean() {
+    let mut review = high();
+    review.consent(Consent::Granted).unwrap();
+    review.pick("risk", "touches the lockfile").unwrap();
+    review.report(Lens::Risk, "NONE").unwrap();
+    review.note_gap("diff cut at 24 KiB");
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let text = line(&held.evidence());
+    assert!(!text.contains("clean"), "{text}");
+    assert!(text.contains("incomplete (diff cut at 24 KiB)"), "{text}");
+    let note = judgement(&held.evidence());
+    assert!(
+        note.left.contains("not whole: diff cut at 24 KiB"),
+        "{}",
+        note.left
+    );
+}

@@ -108,11 +108,6 @@ pub fn diff_hash(base: Option<&str>, text: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// The most diff text a review prompt carries, in bytes. Below the cap the
-/// prompt wrapper applies (32 KiB), so the cut is ours and says so instead of
-/// the wrapper's silent one.
-pub const DIFF_CAP: usize = 24 * 1024;
-
 /// One staged file as a review reads it: the text it replaces (none for a
 /// create) and the text it becomes.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -122,47 +117,108 @@ pub struct StagedText {
     pub text: String,
 }
 
-/// The unified diff of `files` for a review prompt, within [`DIFF_CAP`].
-/// `skipped` are staged paths a review may not read (outside its scope or
-/// guarded by the secret rules): named, never shown. A cut is always said,
-/// with how much is missing, so a reviewer knows it did not see everything.
-pub fn render_diff(files: &[StagedText], skipped: &[String]) -> String {
-    use crate::core::ai::tools::diff::diff;
-    let mut out = String::new();
-    let mut hidden = 0;
-    for (at, file) in files.iter().enumerate() {
-        let mut block = format!("diff of {}\n", file.path);
-        block.push_str(&diff(file.base.as_deref(), &file.text).to_string());
-        if !block.ends_with('\n') {
-            block.push('\n');
+/// The names of skipped paths a diff lists before it says `+N more`.
+const SKIPPED_SHOWN: usize = 10;
+/// Room kept for the note that the diff was cut.
+const CUT_NOTE: usize = 160;
+
+/// What a review may be shown of a staged batch: the files it may read, the
+/// paths it may not (or that have no text, like a folder), and whether the
+/// batch could be read at all.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct StagedDiff {
+    pub files: Vec<StagedText>,
+    /// Staged paths with nothing for a review to read: out of its scope,
+    /// guarded by the secret rules, or a folder.
+    pub skipped: Vec<String>,
+    /// The batch could not be read.
+    pub unavailable: bool,
+}
+
+/// A staged diff rendered within a budget.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Rendered {
+    pub text: String,
+    /// Why the review did not see the whole change; empty when it did.
+    pub gaps: Vec<String>,
+}
+
+impl StagedDiff {
+    pub fn unavailable() -> Self {
+        Self {
+            unavailable: true,
+            ..Self::default()
         }
-        let room = DIFF_CAP.saturating_sub(out.len());
-        if block.len() <= room {
-            out.push_str(&block);
-            continue;
+    }
+
+    /// The unified diff within `budget` bytes. The notes (skipped paths, a
+    /// cut) come before the body, so a cut never hides them. A cut is always
+    /// said, with how much is missing, and listed in `gaps`.
+    pub fn render(&self, budget: usize) -> Rendered {
+        use crate::core::ai::tools::diff::diff;
+        if self.unavailable {
+            return Rendered {
+                text: "staged text: not included (it could not be read); read it with your read tools\n"
+                    .to_owned(),
+                gaps: vec!["diff unavailable".to_owned()],
+            };
         }
-        let mut end = room;
-        while !block.is_char_boundary(end) {
-            end -= 1;
+        let mut gaps = Vec::new();
+        let mut notes = String::new();
+        if !self.skipped.is_empty() {
+            let shown: Vec<&str> = self
+                .skipped
+                .iter()
+                .take(SKIPPED_SHOWN)
+                .map(String::as_str)
+                .collect();
+            notes.push_str(&format!(
+                "not shown (nothing a review can read): {}",
+                shown.join(", ")
+            ));
+            if self.skipped.len() > SKIPPED_SHOWN {
+                notes.push_str(&format!(", +{} more", self.skipped.len() - SKIPPED_SHOWN));
+            }
+            notes.push('\n');
+            gaps.push(format!(
+                "{} file(s) not readable by a review",
+                self.skipped.len()
+            ));
         }
-        out.push_str(&block[..end]);
-        out.push_str(&format!(
-            "\n[diff truncated: {} byte(s) of {} cut]\n",
-            block.len() - end,
-            file.path
-        ));
-        hidden = files.len() - at - 1;
-        break;
+        let room = budget.saturating_sub(notes.len() + CUT_NOTE);
+        let mut body = String::new();
+        let mut cut = None;
+        for (at, file) in self.files.iter().enumerate() {
+            let mut block = format!("diff of {}\n", file.path);
+            block.push_str(&diff(file.base.as_deref(), &file.text).to_string());
+            if !block.ends_with('\n') {
+                block.push('\n');
+            }
+            let left = room.saturating_sub(body.len());
+            if block.len() <= left {
+                body.push_str(&block);
+                continue;
+            }
+            let mut end = left;
+            while !block.is_char_boundary(end) {
+                end -= 1;
+            }
+            body.push_str(&block[..end]);
+            let more: usize = self.files[at + 1..].len();
+            cut = Some((block.len() - end, more, file.path.clone()));
+            break;
+        }
+        if let Some((bytes, more, path)) = cut {
+            notes.push_str(&format!(
+                "[diff cut: {bytes} byte(s) of {path} and {more} more file(s) are not shown]\n"
+            ));
+            gaps.push(format!("diff cut at {} KiB", budget / 1024));
+        }
+        Rendered {
+            text: format!("{notes}{body}"),
+            gaps,
+        }
     }
-    if hidden > 0 {
-        out.push_str(&format!(
-            "[diff truncated: {hidden} more file(s) not shown]\n"
-        ));
-    }
-    for path in skipped {
-        out.push_str(&format!("not shown (not readable by a review): {path}\n"));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -177,42 +233,68 @@ mod diff_tests {
         }
     }
 
+    fn of(files: Vec<StagedText>, skipped: &[&str]) -> StagedDiff {
+        StagedDiff {
+            files,
+            skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
+            unavailable: false,
+        }
+    }
+
     #[test]
-    fn the_diff_holds_the_added_and_removed_lines() {
-        let files = [staged(
+    fn the_diff_holds_the_added_and_removed_lines_and_is_whole() {
+        let files = vec![staged(
             "Makefile",
             Some("all:\n\techo build\n"),
             "all:\n\techo lint\n",
         )];
-        let text = render_diff(&files, &[]);
-        assert!(text.starts_with("diff of Makefile\n"), "{text}");
-        assert!(text.contains("-\techo build"), "{text}");
-        assert!(text.contains("+\techo lint"), "{text}");
+        let out = of(files, &[]).render(8192);
+        assert!(out.text.starts_with("diff of Makefile\n"), "{}", out.text);
+        assert!(out.text.contains("-\techo build"), "{}", out.text);
+        assert!(out.text.contains("+\techo lint"), "{}", out.text);
+        assert!(out.gaps.is_empty());
     }
 
     #[test]
     fn a_create_shows_every_line_as_added() {
-        let text = render_diff(&[staged("a.txt", None, "one\ntwo\n")], &[]);
-        assert!(text.contains("+one") && text.contains("+two"), "{text}");
+        let out = of(vec![staged("a.txt", None, "one\ntwo\n")], &[]).render(8192);
+        assert!(out.text.contains("+one") && out.text.contains("+two"));
     }
 
     #[test]
-    fn a_long_diff_is_cut_at_the_cap_and_says_how_much() {
+    fn a_cut_diff_says_so_before_the_body_and_is_a_gap() {
         let big = "x".repeat(40 * 1024);
-        let files = [staged("big.txt", None, &big), staged("b.txt", None, "b\n")];
-        let text = render_diff(&files, &[]);
-        assert!(text.len() < DIFF_CAP + 300, "{}", text.len());
-        assert!(
-            text.contains("[diff truncated:"),
-            "{}",
-            &text[text.len() - 200..]
-        );
-        assert!(text.contains("1 more file(s) not shown"));
+        let files = vec![staged("big.txt", None, &big), staged("b.txt", None, "b\n")];
+        let out = of(files, &[]).render(24 * 1024);
+        assert!(out.text.len() <= 24 * 1024, "{}", out.text.len());
+        let note = out.text.find("[diff cut:").expect("the cut is said");
+        assert!(note < out.text.find("diff of big.txt").unwrap());
+        assert!(out.text.contains("1 more file(s)"));
+        assert_eq!(out.gaps, ["diff cut at 24 KiB"]);
     }
 
     #[test]
-    fn a_path_a_review_may_not_read_is_named_and_not_shown() {
-        let text = render_diff(&[], &[".env".to_owned()]);
-        assert!(text.contains("not shown (not readable by a review): .env"));
+    fn a_skipped_path_is_named_before_the_body_and_is_a_gap() {
+        let out = of(vec![staged("a.txt", None, "a\n")], &[".env"]).render(8192);
+        let note = out.text.find("not shown").unwrap();
+        assert!(note < out.text.find("diff of a.txt").unwrap());
+        assert!(out.text.contains(".env"));
+        assert_eq!(out.gaps, ["1 file(s) not readable by a review"]);
+    }
+
+    #[test]
+    fn the_skipped_list_is_bounded() {
+        let names: Vec<String> = (0..150).map(|n| format!("dir{n}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let out = of(Vec::new(), &refs).render(8192);
+        assert!(out.text.contains("+140 more"), "{}", out.text);
+        assert!(out.text.len() < 400, "{}", out.text.len());
+    }
+
+    #[test]
+    fn an_unavailable_diff_says_so_and_is_a_gap() {
+        let out = StagedDiff::unavailable().render(8192);
+        assert!(out.text.contains("not included"));
+        assert_eq!(out.gaps, ["diff unavailable"]);
     }
 }

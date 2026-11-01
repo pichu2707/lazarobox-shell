@@ -255,15 +255,14 @@ impl ToolHost {
         review::joined(taken.await)
     }
 
-    /// The diff text of the batch of `key` for a review prompt, within the
-    /// review cap; `allow` says which staged targets a review may read.
-    /// `None` when the read itself failed.
+    /// What a review may be shown of the batch of `key`; `allow` says which
+    /// staged targets it may read. `None` when the read itself failed.
     pub(crate) async fn staged_diff(
         &self,
         key: StageKey,
         origin: &Path,
         allow: impl Fn(&Path) -> bool + Send + 'static,
-    ) -> Option<String> {
+    ) -> Option<crate::core::ai::orchestra::changes::StagedDiff> {
         let (stages, env) = (self.stages.clone(), self.env(origin));
         let taken =
             tokio::task::spawn_blocking(move || files::staged_diff(&stages, key, &env, &allow));

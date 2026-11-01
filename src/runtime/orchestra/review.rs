@@ -31,9 +31,11 @@ use super::*;
 use crate::core::ai::{
     chat::prompts::{lens_builtin, refuter_builtin, validator_builtin},
     orchestra::{
+        changes::StagedDiff,
         rdd::{
             Consent, Finding, Lens, Outcome as Ended, Refutation, Review, ReviewError,
-            correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, validation_prompt,
+            correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, says_unseen,
+            validation_prompt,
         },
         receipt::{self, Evidence},
         review::{Assessment, Raise, Tier, assess},
@@ -186,6 +188,8 @@ struct Guard {
     run: RunId,
     worker: WorkerId,
     spawned: Vec<WorkerId>,
+    /// Why the workers did not see the whole change; the review notes them.
+    gaps: Vec<String>,
     armed: bool,
 }
 
@@ -408,6 +412,7 @@ impl RunManager {
             run,
             worker,
             spawned: Vec::new(),
+            gaps: Vec::new(),
             armed: true,
         };
         let parked = self.on_run(pane, run, |live| {
@@ -435,6 +440,9 @@ impl RunManager {
             Some(Stop::Start(format!("worker {} is not running", worker.0)))
         };
         let unread = self.take_unread(pane, run, &guard.spawned);
+        for gap in std::mem::take(&mut guard.gaps) {
+            review.note_gap(&gap);
+        }
         guard.release();
         let (outcome, line) = match stopped {
             Some(Stop::Start(why)) => (
@@ -633,9 +641,10 @@ impl RunManager {
                 .pick(lens.id(), DEFAULT_WHY)
                 .map_err(|e| other(refused(e)))?;
             let prompt = lens_prompt(wrap()?, lens, DEFAULT_WHY, changes, &diff);
+            guard.gaps.extend(prompt.gaps);
             let system = Some(lens_builtin(profile, lens));
             let id = self
-                .start_review(pane, run, Role::Reader, prompt, system)
+                .start_review(pane, run, Role::Reader, prompt.text, system)
                 .map_err(Stop::Start)?;
             guard.spawned.push(id);
             lenses.push((lens, id));
@@ -724,12 +733,17 @@ impl RunManager {
                 validator_builtin(profile),
             ),
         };
+        guard.gaps.extend(prompt.gaps);
         let id = self
-            .start_review(pane, run, Role::Reader, prompt, Some(system))
+            .start_review(pane, run, Role::Reader, prompt.text, Some(system))
             .map_err(Stop::Start)?;
         guard.spawned.push(id);
         let texts = self.finished(pane, run, worker, &[id]).await?;
-        Ok(texts.into_iter().next().flatten())
+        let text = texts.into_iter().next().flatten();
+        if text.as_deref().is_some_and(says_unseen) {
+            guard.gaps.push(CHECKER_UNSEEN.to_owned());
+        }
+        Ok(text)
     }
 
     /// The one correction and its check. Returns the targets that are still
@@ -772,7 +786,8 @@ impl RunManager {
             .collect();
         let diff = self.diff_text(pane, run).await;
         let prompt = correction_prompt(nonce, changes, &blockers, &diff);
-        let started = self.start_review(pane, run, Role::Correction, prompt, None);
+        guard.gaps.extend(prompt.gaps);
+        let started = self.start_review(pane, run, Role::Correction, prompt.text, None);
         let id = match started {
             Ok(id) => id,
             Err(why) => {
@@ -782,7 +797,11 @@ impl RunManager {
         };
         guard.spawned.push(id);
         let texts = self.finished(pane, run, worker, &[id]).await?;
-        if texts.into_iter().next().flatten().is_none() {
+        let fixed = texts.into_iter().next().flatten();
+        if fixed.as_deref().is_some_and(says_unseen) {
+            guard.gaps.push(CHECKER_UNSEEN.to_owned());
+        }
+        if fixed.is_none() {
             self.say(pane, run, "the correction did not finish".to_owned());
             return Ok(targets.to_vec());
         }
@@ -865,17 +884,17 @@ impl RunManager {
             .await
     }
 
-    /// The diff text of the staged batch for a review prompt, bounded; the
-    /// files outside the run's scope are named, not shown. When it cannot be
-    /// read the prompt says so and the reviewer falls back to its read tools.
-    async fn diff_text(self: &Arc<Self>, pane: PaneId, run: RunId) -> String {
+    /// What a review may be shown of the staged batch: its files within the
+    /// run's scope, the other paths named. When the batch cannot be read the
+    /// prompt says so and the review is incomplete.
+    async fn diff_text(self: &Arc<Self>, pane: PaneId, run: RunId) -> StagedDiff {
         #[cfg(test)]
         if let Some(diff) = self.diff {
             return diff();
         }
         let origin = self.on_run(pane, run, |live| live.origin.clone());
         let (Some(origin), Some(tooling)) = (origin, self.tooling.as_ref()) else {
-            return UNAVAILABLE_DIFF.to_owned();
+            return StagedDiff::unavailable();
         };
         let me = self.clone();
         let allow = move |real: &Path| {
@@ -886,7 +905,7 @@ impl RunManager {
             .host
             .staged_diff(StageKey::Pane(pane), &origin, allow)
             .await
-            .unwrap_or_else(|| UNAVAILABLE_DIFF.to_owned())
+            .unwrap_or_else(StagedDiff::unavailable)
     }
 
     /// Starts one review worker as a worker of the run.
@@ -979,9 +998,9 @@ impl RunManager {
     }
 }
 
-/// What a prompt says when the staged text could not be put in it.
-const UNAVAILABLE_DIFF: &str =
-    "staged text: not included (it could not be read); read it with your read tools";
+/// Why a review is incomplete when a refuter, checker or corrector said it
+/// could not see the change.
+const CHECKER_UNSEEN: &str = "a checker could not see the change";
 
 /// Which prompt a refuter-shaped worker gets.
 #[derive(Clone, Copy)]
@@ -1023,6 +1042,7 @@ mod guard_tests {
             run: RunId(1),
             worker: WorkerId(1),
             spawned: vec![WorkerId(2)],
+            gaps: Vec::new(),
             armed: true,
         };
         drop(guard);

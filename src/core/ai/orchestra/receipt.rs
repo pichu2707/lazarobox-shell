@@ -56,21 +56,24 @@ pub fn summary(ev: &Evidence) -> Summary {
 /// unseen says it covers the reviewed paths only.
 fn outcome_word(ev: &Evidence) -> String {
     let word = match ev.outcome {
-        Some(Outcome::Clean) => "clean",
-        Some(Outcome::Corrected) => "corrected",
-        Some(Outcome::BlockersOpen) => "blockers open",
+        Some(Outcome::Clean) => "clean".to_owned(),
+        Some(Outcome::Corrected) => "corrected".to_owned(),
+        Some(Outcome::BlockersOpen) => "blockers open".to_owned(),
         Some(Outcome::Incomplete) if ev.review.unseen() > 0 => {
-            "incomplete (a reviewer could not see the change)"
+            "incomplete (a reviewer could not see the change)".to_owned()
         }
-        Some(Outcome::Incomplete) => "incomplete",
-        Some(Outcome::NotReviewed) | None => "not reviewed",
+        Some(Outcome::Incomplete) if !ev.review.gaps().is_empty() => {
+            format!("incomplete ({})", clip(&ev.review.gaps().join("; ")))
+        }
+        Some(Outcome::Incomplete) => "incomplete".to_owned(),
+        Some(Outcome::NotReviewed) | None => "not reviewed".to_owned(),
     };
     let partial = matches!(ev.outcome, Some(Outcome::Clean | Outcome::Corrected))
         && !(ev.unreviewed.is_empty() && ev.unread.is_empty());
     if partial {
         format!("{word} (reviewed paths only)")
     } else {
-        word.to_owned()
+        word
     }
 }
 
@@ -199,6 +202,9 @@ fn left(ev: &Evidence) -> String {
     }
     if !ev.unread.is_empty() {
         lines.push(format!("could not read: {}", list(ev.unread)));
+    }
+    for gap in review.gaps() {
+        lines.push(format!("not whole: {}", clip(gap)));
     }
     for (what, n) in [
         ("omitted", review.omitted()),

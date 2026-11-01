@@ -23,7 +23,7 @@ use crate::{
         },
         orchestra::{
             WorkerKey,
-            changes::{Change, StagedText, diff_hash, render_diff},
+            changes::{Change, StagedDiff, StagedText, diff_hash},
         },
         tools::{
             Call, ToolError,
@@ -540,8 +540,8 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
         .collect()
 }
 
-/// The diff text of the batch of `key` for a review prompt: the files `allow`
-/// lets a review read, as a bounded unified diff, and the others named only.
+/// What a review may be shown of the batch of `key`: the files `allow` lets
+/// it read, and the other paths (and folders, which have no text) named only.
 /// Those are the files the review's read tools show it through the staged
 /// view, so this hands the prompt nothing the tools would refuse.
 pub(super) fn staged_diff(
@@ -549,28 +549,26 @@ pub(super) fn staged_diff(
     key: StageKey,
     env: &ToolEnv,
     allow: &dyn Fn(&Path) -> bool,
-) -> String {
+) -> StagedDiff {
     let stages = lock(stages);
     let Some(batch) = stages.batch(key) else {
-        return String::new();
+        return StagedDiff::default();
     };
-    let (mut shown, mut skipped) = (Vec::new(), Vec::new());
+    let mut out = StagedDiff::default();
     for staged in batch.entries() {
-        let Entry::File { text, base } = &staged.entry else {
-            continue;
-        };
         let path = ledger_path(env, &staged.target.real);
-        if allow(&staged.target.real) {
-            shown.push(StagedText {
-                path,
-                base: base.clone(),
-                text: text.clone(),
-            });
-        } else {
-            skipped.push(path);
+        match &staged.entry {
+            Entry::File { text, base } if allow(&staged.target.real) => {
+                out.files.push(StagedText {
+                    path,
+                    base: base.clone(),
+                    text: text.clone(),
+                });
+            }
+            _ => out.skipped.push(path),
         }
     }
-    render_diff(&shown, &skipped)
+    out
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change

@@ -1727,12 +1727,11 @@ async fn the_staged_diff_holds_readable_paths_and_names_the_others() {
     let origin = home.join("dev/app");
     let key = StageKey::Pane(PANE);
     let all = host.staged_diff(key, &origin, |_| true).await.unwrap();
-    assert!(all.contains("diff of fresh.rs"), "{all}");
-    assert!(all.contains("+only staged"), "{all}");
+    assert!(all.skipped.is_empty(), "{all:?}");
+    assert_eq!(all.files.len(), 1);
+    assert_eq!(all.files[0].path, "fresh.rs");
+    assert_eq!(all.files[0].text, "only staged");
     let none = host.staged_diff(key, &origin, |_| false).await.unwrap();
-    assert!(!none.contains("only staged"), "{none}");
-    assert!(
-        none.contains("not shown (not readable by a review): fresh.rs"),
-        "{none}"
-    );
+    assert!(none.files.is_empty(), "{none:?}");
+    assert_eq!(none.skipped, ["fresh.rs"]);
 }

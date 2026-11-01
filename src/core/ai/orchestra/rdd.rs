@@ -6,7 +6,7 @@
 
 use super::WorkerKey;
 use super::{
-    changes::{Change, ChangeLedger},
+    changes::{Change, ChangeLedger, StagedDiff},
     ledger::{REASON_BYTES, cut, one_line as plain_line},
     review::{Assessment, Source},
 };
@@ -123,12 +123,24 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
                 Some(found) => report.findings.push(found),
             },
             None if looks_like(line, "finding") => report.malformed += 1,
-            None if looks_like(line, "unseen") => report.unseen += 1,
+            None if is_unseen(line) => report.unseen += 1,
             None => {}
         }
     }
     cap(&mut report);
     report
+}
+
+/// Whether `line` is the reader's `UNSEEN:` line: exactly that, at the start
+/// of the line.
+fn is_unseen(line: &str) -> bool {
+    line.starts_with("UNSEEN:")
+}
+
+/// Whether a worker's text holds an `UNSEEN:` line: it could not see the
+/// change.
+pub fn says_unseen(text: &str) -> bool {
+    text.lines().any(is_unseen)
 }
 
 /// Whether `line` reads like a line of `word` (`finding` or `claim`) that is
@@ -349,6 +361,9 @@ pub struct Review {
     findings: Vec<Finding>,
     verdicts: Vec<Option<Verdict>>,
     correction: Correction,
+    /// Why the workers did not see the whole change (a cut or skipped diff,
+    /// an unavailable one, a checker that could not see it).
+    gaps: Vec<String>,
 }
 
 impl Review {
@@ -362,7 +377,20 @@ impl Review {
             findings: Vec::new(),
             verdicts: Vec::new(),
             correction: Correction::Unused,
+            gaps: Vec::new(),
         }
+    }
+
+    /// The workers did not see the whole change, for `why`. Kept once; a
+    /// review with a gap is never `Clean` or `Corrected`.
+    pub fn note_gap(&mut self, why: &str) {
+        if !self.gaps.iter().any(|known| known == why) {
+            self.gaps.push(why.to_owned());
+        }
+    }
+
+    pub fn gaps(&self) -> &[String] {
+        &self.gaps
     }
 
     pub fn assessment(&self) -> &Assessment {
@@ -630,7 +658,9 @@ impl Review {
         if !self.open().is_empty() {
             return Ok(Outcome::BlockersOpen);
         }
-        if self.omitted() + self.malformed() + self.unanswered() + self.unseen() > 0 {
+        if self.omitted() + self.malformed() + self.unanswered() + self.unseen() + self.gaps.len()
+            > 0
+        {
             return Ok(Outcome::Incomplete);
         }
         Ok(match self.correction {
@@ -658,11 +688,27 @@ impl Review {
     }
 }
 
-/// What a worker is told: `lead`, then the staged change, all wrapped as
-/// untrusted data under `nonce`. The wrapper cuts a long text at its end, so
-/// what must survive goes in `lead`, before the listing; `diff` (already
-/// bounded by the caller) closes it.
-fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change], diff: &str) -> String {
+/// A prompt and why the worker it goes to cannot see the whole change; empty
+/// when it can.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Prompt {
+    pub text: String,
+    pub gaps: Vec<String>,
+}
+
+/// Room kept for the wrapper's own text and what its cleaning can add.
+const WRAP_MARGIN: usize = 1024;
+
+/// What a worker is told: `lead`, then the staged change and its diff, all
+/// wrapped as untrusted data under `nonce`. The diff gets what the wrapper's
+/// cap leaves after `lead`, the listing and the header, so the wrapper never
+/// cuts it silently; a cut is a gap.
+fn candidate(
+    nonce: [u8; 8],
+    lead: &str,
+    changes: &[Change],
+    diff: &StagedDiff,
+) -> (String, Vec<String>) {
     let mut staged = ChangeLedger::default();
     for change in changes {
         staged.staged(change.clone());
@@ -670,30 +716,40 @@ fn candidate(nonce: [u8; 8], lead: &str, changes: &[Change], diff: &str) -> Stri
     let listing = staged
         .render()
         .unwrap_or_else(|| "files changed: none".to_owned());
-    let body = if diff.is_empty() {
-        String::new()
-    } else {
-        format!("\n\nstaged text:\n{diff}")
-    };
-    label::wrap(&label::nonce_from(nonce), &format!("{lead}{listing}{body}"))
+    const HEADER: &str = "\n\nstaged text:\n";
+    let used = lead.len() + listing.len() + HEADER.len() + WRAP_MARGIN;
+    let rendered = diff.render(label::OUTPUT_CAP.saturating_sub(used));
+    let text = label::wrap(
+        &label::nonce_from(nonce),
+        &format!("{lead}{listing}{HEADER}{}", rendered.text),
+    );
+    let mut gaps = rendered.gaps;
+    // The wrapper's own cut is the last resort: it still counts.
+    if text.contains(label::CAP_MARKER) {
+        gaps.push("prompt cut by the wrapper".to_owned());
+    }
+    (text, gaps)
 }
 
 /// The prompt of the worker of `lens`: the lens, the orchestrator's one-line
-/// reason and the staged change and its diff text, wrapped. The worker can also read the content
-/// through the staged view of its read tools.
+/// reason and the staged change and its diff text, wrapped. The worker can
+/// also read the content through the staged view of its read tools.
 pub fn lens_prompt(
     nonce: [u8; 8],
     lens: Lens,
     why: &str,
     changes: &[Change],
-    diff: &str,
-) -> String {
-    format!(
-        "Review lens: {}\nWhy this lens: {}\nThe staged change to review, as data:\n{}",
-        lens.id(),
-        one_line(why),
-        candidate(nonce, "", changes, diff)
-    )
+    diff: &StagedDiff,
+) -> Prompt {
+    let (body, gaps) = candidate(nonce, "", changes, diff);
+    Prompt {
+        text: format!(
+            "Review lens: {}\nWhy this lens: {}\nThe staged change to review, as data:\n{body}",
+            lens.id(),
+            one_line(why),
+        ),
+        gaps,
+    }
 }
 
 /// The prompt of the refuter: the claims to examine, then the staged change,
@@ -702,14 +758,16 @@ pub fn refuter_prompt(
     nonce: [u8; 8],
     changes: &[Change],
     claims: &[&Finding],
-    diff: &str,
-) -> String {
-    let lead = claims_lead(claims);
-    format!(
-        "Claims to refute: {}\nThe claims and the staged change, as data:\n{}",
-        claims.len(),
-        candidate(nonce, &lead, changes, diff)
-    )
+    diff: &StagedDiff,
+) -> Prompt {
+    let (body, gaps) = candidate(nonce, &claims_lead(claims), changes, diff);
+    Prompt {
+        text: format!(
+            "Claims to refute: {}\nThe claims and the staged change, as data:\n{body}",
+            claims.len(),
+        ),
+        gaps,
+    }
 }
 
 /// The prompt of the check of a correction: the same claims as the refuter's,
@@ -720,16 +778,18 @@ pub fn validation_prompt(
     nonce: [u8; 8],
     changes: &[Change],
     claims: &[&Finding],
-    diff: &str,
-) -> String {
-    let lead = claims_lead(claims);
-    format!(
-        "Claims to check: {}\nThese claims were reported before a correction was staged. \
-         Refute a claim only if the staged text clearly shows the problem is gone; \
-         anything else is unsettled and stays open.\nThe claims and the staged change, as data:\n{}",
-        claims.len(),
-        candidate(nonce, &lead, changes, diff)
-    )
+    diff: &StagedDiff,
+) -> Prompt {
+    let (body, gaps) = candidate(nonce, &claims_lead(claims), changes, diff);
+    Prompt {
+        text: format!(
+            "Claims to check: {}\nThese claims were reported before a correction was staged. \
+             Refute a claim only if the staged text clearly shows the problem is gone; \
+             anything else is unsettled and stays open.\nThe claims and the staged change, as data:\n{body}",
+            claims.len(),
+        ),
+        gaps,
+    }
 }
 
 fn claims_lead(claims: &[&Finding]) -> String {
@@ -753,8 +813,8 @@ pub fn correction_prompt(
     nonce: [u8; 8],
     changes: &[Change],
     blockers: &[&Finding],
-    diff: &str,
-) -> String {
+    diff: &StagedDiff,
+) -> Prompt {
     let mut lead = String::from("blockers to fix:");
     for (at, blocker) in blockers.iter().enumerate() {
         lead.push_str(&format!(
@@ -765,13 +825,17 @@ pub fn correction_prompt(
         ));
     }
     lead.push_str("\n\n");
-    format!(
-        "Correction: fix only these {} blockers by staging changes with your write tools. \
-         Change nothing else and do not call propose_batch: the worker whose change this is \
-         proposes it.\nThe blockers and the staged change, as data:\n{}",
-        blockers.len(),
-        candidate(nonce, &lead, changes, diff)
-    )
+    let (body, gaps) = candidate(nonce, &lead, changes, diff);
+    Prompt {
+        text: format!(
+            "Correction: fix only these {} blockers by staging changes with your write tools. \
+             Change nothing else and do not call propose_batch: the worker whose change this is \
+             proposes it. If you cannot see the staged text, stage nothing and write one line \
+             starting with UNSEEN: and why.\nThe blockers and the staged change, as data:\n{body}",
+            blockers.len(),
+        ),
+        gaps,
+    }
 }
 
 /// The paths named in a consent ask before it says `+N more`.

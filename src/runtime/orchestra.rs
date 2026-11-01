@@ -575,7 +575,7 @@ pub struct RunManager {
     restage: Option<Restage>,
     /// Where a test says what the staged diff text is.
     #[cfg(test)]
-    diff: Option<fn() -> String>,
+    diff: Option<fn() -> crate::core::ai::orchestra::changes::StagedDiff>,
 }
 
 impl RunManager {
