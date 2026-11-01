@@ -9,6 +9,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use crate::core::probe::{Outcome, parse, render};
@@ -16,6 +17,9 @@ use crate::runtime::{bounded_read, engram::serve::state_dir};
 
 /// The file inside the state folder.
 pub const FILE: &str = "terminals.json";
+
+/// Makes each save's temporary name its own.
+static SAVES: AtomicU32 = AtomicU32::new(0);
 
 /// The most bytes read: a file of a few terminals is far below it.
 const CAP: u64 = 64 * 1024;
@@ -32,39 +36,65 @@ pub fn load(dir: Option<&Path>) -> Result<BTreeMap<String, Outcome>, String> {
     let bytes = match bounded_read::read_regular(&path, CAP) {
         Ok(bytes) => bytes,
         Err(bounded_read::ReadError::Missing) => return Ok(BTreeMap::new()),
-        Err(bounded_read::ReadError::NotRegular) => return Err(why("is not a regular file")),
-        Err(bounded_read::ReadError::TooLarge) => return Err(why("is too large")),
-        Err(bounded_read::ReadError::Unreadable) => return Err(why("cannot be read")),
+        Err(bounded_read::ReadError::NotRegular) => {
+            return Err(why(&path, "is not a regular file"));
+        }
+        Err(bounded_read::ReadError::TooLarge) => return Err(why(&path, "is too large")),
+        Err(bounded_read::ReadError::Unreadable) => return Err(why(&path, "cannot be read")),
     };
-    let text = String::from_utf8(bytes).map_err(|_| why("is not valid UTF-8"))?;
-    parse(&text).map_err(|error| why(&error.to_string()))
+    let text = String::from_utf8(bytes).map_err(|_| why(&path, "is not valid UTF-8"))?;
+    parse(&text).map_err(|error| why(&path, &error.to_string()))
 }
 
-fn why(reason: &str) -> String {
-    format!("{FILE}: {reason}")
+/// A reason that names the file, so the user can find and delete it.
+fn why(path: &Path, reason: &str) -> String {
+    format!("{}: {reason}", path.display())
 }
 
 fn no_dir() -> String {
-    why("no state folder (HOME is not set)")
+    format!("{FILE}: no usable state folder")
 }
 
 /// Stores `outcome` for `key`, keeping the other terminals' rows. The file is
 /// written to a temporary name and renamed over the old one.
 pub fn save(dir: Option<&Path>, key: &str, outcome: Outcome) -> Result<(), String> {
-    // Read first: a file that cannot be read is left alone, not replaced.
-    let mut results = load(dir)?;
+    save_with(dir, key, outcome, || {})
+}
+
+/// [`save`] with a hook that runs after the temporary file exists and before
+/// the rows are read, so a test can play another lazarobox writing in that gap.
+fn save_with(
+    dir: Option<&Path>,
+    key: &str,
+    outcome: Outcome,
+    between: impl FnOnce(),
+) -> Result<(), String> {
     let dir = dir.ok_or_else(no_dir)?;
-    results.insert(key.to_owned(), outcome);
-    let failed = |error: io::Error| why(&format!("cannot be written ({error})"));
+    let failed = |error: io::Error| why(&dir.join(FILE), &format!("cannot be written: {error}"));
     fs::create_dir_all(dir).map_err(failed)?;
-    let temp = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
-    let written = fs::File::create(&temp)
-        .and_then(|mut file| file.write_all(render(&results).as_bytes()))
-        .and_then(|()| fs::rename(&temp, dir.join(FILE)));
-    if let Err(error) = written {
+    let temp = dir.join(format!(
+        "{FILE}.{}.{}.tmp",
+        std::process::id(),
+        SAVES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = fs::File::create(&temp).map_err(failed)?;
+    between();
+    // The rows are read as late as possible, right before the rename: another
+    // lazarobox saving at the same moment can still lose its row. The race is
+    // accepted (one tiny write per terminal, ever; the loser probes again).
+    // A file that cannot be read is left alone, not replaced.
+    let written = load(Some(dir))
+        .map_err(|reason| (None, reason))
+        .and_then(|mut results| {
+            results.insert(key.to_owned(), outcome);
+            file.write_all(render(&results).as_bytes())
+                .and_then(|()| fs::rename(&temp, dir.join(FILE)))
+                .map_err(|error| (Some(error), String::new()))
+        });
+    if let Err((error, reason)) = written {
         // Best effort: the temporary name is ours alone.
         let _ = fs::remove_file(&temp);
-        return Err(failed(error));
+        return Err(error.map_or(reason, failed));
     }
     Ok(())
 }
@@ -133,7 +163,7 @@ mod tests {
             let dir = tmp();
             fs::write(dir.path().join(FILE), bad).unwrap();
             let err = load(Some(dir.path())).unwrap_err();
-            assert!(err.starts_with(FILE), "{err}");
+            assert!(err.contains(FILE), "{err}");
             assert!(save(Some(dir.path()), "kitty", Outcome::Pass).is_err());
             assert_eq!(fs::read_to_string(dir.path().join(FILE)).unwrap(), bad);
         }
@@ -142,19 +172,42 @@ mod tests {
     #[test]
     fn io_errors_are_reasons_not_panics() {
         // No state folder at all.
-        assert!(load(None).unwrap_err().contains("HOME"));
-        assert!(save(None, "k", Outcome::Pass).unwrap_err().contains("HOME"));
+        assert!(load(None).unwrap_err().contains("no usable state folder"));
+        assert!(
+            save(None, "k", Outcome::Pass)
+                .unwrap_err()
+                .contains("no usable state folder")
+        );
         // The file is a folder.
         let dir = tmp();
         fs::create_dir(dir.path().join(FILE)).unwrap();
-        assert!(load(Some(dir.path())).unwrap_err().starts_with(FILE));
+        let err = load(Some(dir.path())).unwrap_err();
+        // The message names the whole path, so the user can delete the file.
+        assert!(
+            err.starts_with(dir.path().join(FILE).to_str().unwrap()),
+            "{err}"
+        );
         // The state folder is a file: it cannot be created or written.
         let blocked = tmp();
         let file = blocked.path().join("lazarobox");
         fs::write(&file, "x").unwrap();
         let err = save(Some(&file), "k", Outcome::Pass).unwrap_err();
-        assert!(err.starts_with(FILE), "{err}");
+        assert!(err.contains(FILE), "{err}");
         assert_eq!(fs::read_to_string(&file).unwrap(), "x");
+    }
+
+    // The rows of another lazarobox written while this one saves are kept.
+    #[test]
+    fn a_row_written_during_the_save_is_not_lost() {
+        let dir = tmp();
+        let other = dir.path().to_owned();
+        save_with(Some(dir.path()), "kitty", Outcome::Pass, || {
+            save(Some(&other), "xterm", Outcome::Alias).unwrap();
+        })
+        .unwrap();
+        let got = load(Some(dir.path())).unwrap();
+        assert_eq!(got.get("kitty"), Some(&Outcome::Pass));
+        assert_eq!(got.get("xterm"), Some(&Outcome::Alias));
     }
 
     #[test]

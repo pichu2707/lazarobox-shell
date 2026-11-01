@@ -80,7 +80,7 @@ Spec: terminal-compatibility "First-run prefix probe" and "Remembered probe resu
 
 - [ ] 2b.1 RED: `terminal_key` table: `TERM_PROGRAM` wins; else `Windows Terminal` when `WT_SESSION`; else `TERM`; else `unknown`.
 - [ ] 2b.2 RED: JSON parse/render of `terminal key -> "pass" | "alias" | "missed"`; unknown value, bad JSON and empty file give a typed error, not a panic.
-- [ ] 2b.3 RED: `Probe` transitions with the app clock: `Ctrl+Space` gives `pass`, PREFIX, no offer; `Ctrl+]` gives `alias`, PREFIX, no offer (D8); any other key gives `missed`, offer notice, key goes to the pane; no key for `PROBE_WINDOW` (10 s) on tick gives `missed` and offer; tick before 10 s keeps waiting; each outcome emits one `Effect::SaveProbe`.
+- [ ] 2b.3 RED: `Probe` transitions with the app clock: `Ctrl+Space` gives `pass`, PREFIX, no offer; `Ctrl+]` gives `alias`, PREFIX, no offer (D8); a plain space or a non-printable or modified key gives `missed`, offer notice, key goes to the pane; an unmodified printable key other than space keeps waiting (user decision); `PROBE_WINDOW` (10 s) opens at the first tick and ends the probe with nothing stored and no offer; each result emits one `Effect::SaveProbe`.
 - [ ] 2b.4 RED: no probe when a stored result exists for this key; probe runs for a different terminal key; a startup notice wins and the probe is deferred with nothing stored (D13); `Ctrl+]` still works after any stored result.
 - [ ] 2b.5 RED: `--check-prefix` parsed in `StartArgs`; it starts the probe even with a stored result and shows `Checking the prefix key: press Ctrl+Space`.
 - [ ] 2b.6 RED: self-heal: stored `missed` plus later `Ctrl+Space` gives one `SaveProbe` with `pass`; stored `pass` plus `Ctrl+Space` emits no `SaveProbe`.

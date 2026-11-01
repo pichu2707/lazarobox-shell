@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::prefix::{ALIAS_KEY, ALIAS_KEY_LEGACY, PREFIX_KEY};
 
@@ -23,14 +23,16 @@ pub const CHECK_NOTICE: &str = "Checking the prefix key: press Ctrl+Space";
 /// Advice when Ctrl+Space did not arrive. Only advice: Ctrl+] always works.
 pub const OFFER_NOTICE: &str = "Ctrl+Space did not reach lazarobox; use Ctrl+] as the prefix key";
 
-/// Shown when the state file cannot be read; no probe runs then.
+/// Shown when the state file cannot be read; no probe runs then. `reason`
+/// names the file path.
 pub fn read_failed(reason: &str) -> String {
-    format!("Could not read the prefix check result ({reason})")
+    format!("Could not read the prefix check result: {reason}; delete the file to check again")
 }
 
 /// Shown when the result could not be written; the app keeps working.
+/// `reason` names the file path.
 pub fn save_failed(reason: &str) -> String {
-    format!("Could not remember the prefix check result ({reason})")
+    format!("Could not keep the prefix check result: {reason}")
 }
 
 /// What the probe learned about one terminal.
@@ -40,7 +42,7 @@ pub enum Outcome {
     Pass,
     /// Ctrl+] arrived first: the user already found the alias.
     Alias,
-    /// Another key or nothing arrived within the window.
+    /// A key other than typing arrived and it was not Ctrl+Space or the alias.
     Missed,
 }
 
@@ -61,6 +63,9 @@ pub enum Seen {
     Prefix,
     /// Ctrl+] (either spelling).
     Alias,
+    /// An unmodified printable key other than the space bar: the user is
+    /// typing, so the probe keeps waiting.
+    Plain,
     /// Anything else.
     Other,
 }
@@ -68,10 +73,14 @@ pub enum Seen {
 impl Seen {
     /// Classifies a key press.
     pub fn of(key: &KeyEvent) -> Self {
+        let typed = matches!(key.code, KeyCode::Char(c) if c != ' ')
+            && (key.modifiers - KeyModifiers::SHIFT).is_empty();
         if PREFIX_KEY.matches(key) {
             Self::Prefix
         } else if ALIAS_KEY.matches(key) || ALIAS_KEY_LEGACY.matches(key) {
             Self::Alias
+        } else if typed {
+            Self::Plain
         } else {
             Self::Other
         }
@@ -154,23 +163,33 @@ pub fn render(results: &BTreeMap<String, Outcome>) -> String {
     text
 }
 
+/// Where the wait stands.
+#[derive(Clone, Copy, Debug)]
+enum Wait {
+    /// No tick yet: the app may still be starting, so the window is closed.
+    NotStarted,
+    /// The first tick came at this time.
+    Since(Instant),
+}
+
 /// The probe of one terminal.
 #[derive(Clone, Debug)]
 pub struct Probe {
     key: String,
-    /// When the wait began; `None` when no probe runs.
-    waiting: Option<Instant>,
+    /// `None` when no probe runs.
+    waiting: Option<Wait>,
     /// The stored result is `missed`: Ctrl+Space arriving later heals it.
     heal: bool,
 }
 
 impl Probe {
     /// `stored` is the remembered result of this terminal; `rerun` asks for
-    /// the probe again (`--check-prefix`).
-    pub fn new(key: String, stored: Option<Outcome>, rerun: bool, now: Instant) -> Self {
+    /// the probe again (`--check-prefix`). The window starts at the first
+    /// [`Probe::on_tick`].
+    pub fn new(key: String, stored: Option<Outcome>, rerun: bool) -> Self {
         Self {
             key,
-            waiting: (stored.is_none() || rerun).then_some(now),
+            waiting: (stored.is_none() || rerun).then_some(Wait::NotStarted),
             heal: stored == Some(Outcome::Missed),
         }
     }
@@ -192,14 +211,16 @@ impl Probe {
     }
 
     /// A key press. `Some` is a result to remember: the probe's own, or the
-    /// heal of a stored `missed` when Ctrl+Space arrives later.
+    /// heal of a stored `missed` when Ctrl+Space arrives later. Typing
+    /// (`Seen::Plain`) is not an answer and keeps the probe waiting.
     pub fn on_key(&mut self, seen: Seen) -> Option<Outcome> {
-        if self.waiting.take().is_some() {
+        if self.waiting.is_some() && seen != Seen::Plain {
+            self.waiting = None;
             self.heal = false;
             return Some(match seen {
                 Seen::Prefix => Outcome::Pass,
                 Seen::Alias => Outcome::Alias,
-                Seen::Other => Outcome::Missed,
+                Seen::Other | Seen::Plain => Outcome::Missed,
             });
         }
         if self.heal && seen == Seen::Prefix {
@@ -209,15 +230,19 @@ impl Probe {
         None
     }
 
-    /// The clock moved. `Some(Missed)` once the window is over.
+    /// The clock moved. The first tick opens the window; once it is over the
+    /// probe ends with no result (nothing is stored and no offer is shown:
+    /// it runs again on the next start). Check [`Probe::is_waiting`] to see
+    /// that it ended.
     pub fn on_tick(&mut self, now: Instant) -> Option<Outcome> {
-        let since = self.waiting?;
-        if now.saturating_duration_since(since) < PROBE_WINDOW {
-            return None;
+        match self.waiting {
+            Some(Wait::NotStarted) => self.waiting = Some(Wait::Since(now)),
+            Some(Wait::Since(since)) if now.saturating_duration_since(since) >= PROBE_WINDOW => {
+                self.waiting = None;
+            }
+            _ => {}
         }
-        self.waiting = None;
-        self.heal = false;
-        Some(Outcome::Missed)
+        None
     }
 }
 
@@ -240,11 +265,34 @@ mod tests {
         assert_eq!(Seen::of(&ev(KeyCode::Char(' '), ctrl)), Seen::Prefix);
         assert_eq!(Seen::of(&ev(KeyCode::Char(']'), ctrl)), Seen::Alias);
         assert_eq!(Seen::of(&ev(KeyCode::Char('5'), ctrl)), Seen::Alias);
+        // A plain space is a key press that is not the prefix: a miss.
         assert_eq!(
             Seen::of(&ev(KeyCode::Char(' '), KeyModifiers::NONE)),
             Seen::Other
         );
         assert_eq!(Seen::of(&ev(KeyCode::Char('a'), ctrl)), Seen::Other);
+        // Typing does not count.
+        for c in ['a', '7', ';', 'é'] {
+            assert_eq!(
+                Seen::of(&ev(KeyCode::Char(c), KeyModifiers::NONE)),
+                Seen::Plain,
+                "{c}"
+            );
+        }
+        assert_eq!(
+            Seen::of(&ev(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Seen::Plain
+        );
+        // Modified or non-character keys are misses.
+        for other in [
+            ev(KeyCode::Char('a'), KeyModifiers::ALT),
+            ev(KeyCode::Esc, KeyModifiers::NONE),
+            ev(KeyCode::Enter, KeyModifiers::NONE),
+            ev(KeyCode::Up, KeyModifiers::NONE),
+            ev(KeyCode::Char(' '), KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(Seen::of(&other), Seen::Other, "{other:?}");
+        }
     }
 
     #[test]
@@ -305,7 +353,7 @@ mod tests {
             (Seen::Other, Outcome::Missed),
         ];
         for (seen, outcome) in cases {
-            let mut p = Probe::new("kitty".into(), None, false, t0());
+            let mut p = Probe::new("kitty".into(), None, false);
             assert!(p.is_waiting());
             assert_eq!(p.on_key(seen), Some(outcome));
             assert!(!p.is_waiting());
@@ -314,26 +362,63 @@ mod tests {
         }
     }
 
+    // The user decided: a quiet window stores nothing and offers nothing.
     #[test]
-    fn no_key_for_the_window_is_a_miss_and_earlier_ticks_keep_waiting() {
+    fn a_quiet_window_ends_the_probe_with_no_result() {
         let start = t0();
-        let mut p = Probe::new("kitty".into(), None, false, start);
+        let mut p = Probe::new("kitty".into(), None, false);
+        // The first tick starts the window.
+        assert_eq!(p.on_tick(start), None);
         assert_eq!(
             p.on_tick(start + PROBE_WINDOW - Duration::from_millis(1)),
             None
         );
         assert!(p.is_waiting());
-        assert_eq!(p.on_tick(start + PROBE_WINDOW), Some(Outcome::Missed));
+        assert_eq!(p.on_tick(start + PROBE_WINDOW), None);
         assert!(!p.is_waiting());
-        assert_eq!(p.on_tick(start + PROBE_WINDOW * 2), None);
+        assert_eq!(p.on_key(Seen::Prefix), None);
+    }
+
+    // The window must not run while the app is still starting.
+    #[test]
+    fn the_window_starts_at_the_first_tick_not_at_construction() {
+        let start = t0();
+        let mut p = Probe::new("kitty".into(), None, false);
+        let late = start + Duration::from_secs(60);
+        assert_eq!(p.on_tick(late), None);
+        assert!(p.is_waiting());
+        assert_eq!(
+            p.on_tick(late + PROBE_WINDOW - Duration::from_millis(1)),
+            None
+        );
+        assert!(p.is_waiting());
+        assert_eq!(p.on_tick(late + PROBE_WINDOW), None);
+        assert!(!p.is_waiting());
+    }
+
+    #[test]
+    fn typing_keeps_the_probe_waiting() {
+        let mut p = Probe::new("kitty".into(), None, false);
+        assert_eq!(p.on_key(Seen::Plain), None);
+        assert!(p.is_waiting());
+        assert_eq!(p.on_key(Seen::Other), Some(Outcome::Missed));
+    }
+
+    #[test]
+    fn a_timed_out_rerun_over_a_miss_can_still_heal() {
+        let start = t0();
+        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), true);
+        p.on_tick(start);
+        assert_eq!(p.on_tick(start + PROBE_WINDOW), None);
+        assert_eq!(p.on_key(Seen::Prefix), Some(Outcome::Pass));
     }
 
     #[test]
     fn a_stored_result_means_no_probe_unless_asked() {
         for stored in [Outcome::Pass, Outcome::Alias, Outcome::Missed] {
-            let p = Probe::new("kitty".into(), Some(stored), false, t0());
+            let p = Probe::new("kitty".into(), Some(stored), false);
             assert!(!p.is_waiting());
-            let p = Probe::new("kitty".into(), Some(stored), true, t0());
+            let p = Probe::new("kitty".into(), Some(stored), true);
             assert!(p.is_waiting());
         }
     }
@@ -341,7 +426,7 @@ mod tests {
     #[test]
     fn a_deferred_probe_never_runs_and_stores_nothing() {
         let start = t0();
-        let mut p = Probe::new("kitty".into(), None, false, start).deferred();
+        let mut p = Probe::new("kitty".into(), None, false).deferred();
         assert!(!p.is_waiting());
         assert_eq!(p.on_key(Seen::Prefix), None);
         assert_eq!(p.on_tick(start + PROBE_WINDOW * 2), None);
@@ -349,7 +434,7 @@ mod tests {
 
     #[test]
     fn a_stored_miss_heals_once_when_ctrl_space_arrives() {
-        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), false, t0());
+        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), false);
         assert_eq!(p.on_key(Seen::Other), None);
         assert_eq!(p.on_key(Seen::Alias), None);
         assert_eq!(p.on_key(Seen::Prefix), Some(Outcome::Pass));
@@ -359,27 +444,27 @@ mod tests {
     #[test]
     fn a_stored_pass_or_alias_never_saves_again() {
         for stored in [Outcome::Pass, Outcome::Alias] {
-            let mut p = Probe::new("kitty".into(), Some(stored), false, t0());
+            let mut p = Probe::new("kitty".into(), Some(stored), false);
             assert_eq!(p.on_key(Seen::Prefix), None);
         }
     }
 
     #[test]
     fn a_rerun_over_a_miss_is_one_result_not_two() {
-        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), true, t0());
+        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), true);
         assert_eq!(p.on_key(Seen::Prefix), Some(Outcome::Pass));
         assert_eq!(p.on_key(Seen::Prefix), None);
     }
 
     #[test]
     fn a_deferred_probe_still_heals_a_stored_miss() {
-        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), false, t0()).deferred();
+        let mut p = Probe::new("kitty".into(), Some(Outcome::Missed), false).deferred();
         assert_eq!(p.on_key(Seen::Prefix), Some(Outcome::Pass));
     }
 
     #[test]
     fn the_probe_names_its_terminal_row() {
-        assert_eq!(Probe::new("kitty".into(), None, false, t0()).key(), "kitty");
+        assert_eq!(Probe::new("kitty".into(), None, false).key(), "kitty");
     }
 
     #[test]
