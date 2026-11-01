@@ -9,10 +9,10 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, FOLDER_CHECKING_KEYS,
-            FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, exec_notice,
-            run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
+            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS,
+            exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -58,9 +58,11 @@ impl App {
                 continue;
             };
             chat.set_run_hint(on);
-            if !on && let Some(approval) = chat.approvals().pending().cloned() {
+            // Every one waiting: a withdrawal promotes the next queued ask.
+            while !on && let Some(approval) = chat.approvals().pending().cloned() {
                 chat.approvals_mut().withdraw(approval.id());
                 chat.set_run_target(None);
+                chat.approvals_mut().take_promoted();
                 // A tool call that waited for it is told, so it ends now.
                 effects.extend(Self::answer(
                     id,
@@ -171,6 +173,7 @@ impl App {
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
+        self.arm_promoted(id);
         Some(approval)
     }
 
@@ -326,6 +329,7 @@ impl App {
         if let Some((turn, call)) = call {
             effects.push(Effect::ToolDecision {
                 pane: id,
+                worker: None,
                 turn,
                 call,
                 decision,
@@ -501,6 +505,15 @@ impl App {
     /// What chat `id` shows for its pending run-in-pane confirm: the target
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
+        let mut prompt = self.pending_prompt(id)?;
+        let waiting = self.panes.get(&id)?.chat_state()?.approvals().waiting();
+        if waiting > 0 {
+            prompt.target = format!("{} ({waiting} waiting)", prompt.target);
+        }
+        Some(prompt)
+    }
+
+    fn pending_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let armed = self.approval_armed(id);
         let approval = chat.approvals().pending()?;
@@ -526,6 +539,16 @@ impl App {
             // The path was resolved and made safe to show before it was asked.
             ApprovalAsk::Read { path, .. } => Some(ApprovalPrompt {
                 target: "send a file's text to the engine".to_owned(),
+                command: format!("read {path}"),
+                keys: READ_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            // A worker's read outside its scope: the label names the worker,
+            // its kind and `engine>model`, already sanitized.
+            ApprovalAsk::WorkerRead { path, label, .. } => Some(ApprovalPrompt {
+                target: format!("worker {label}: send a file's text to the engine"),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
@@ -607,6 +630,15 @@ impl App {
             }
             // The review view draws a batch; it has no overlay.
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
+            // The label and the change were made one clean line when asked.
+            ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
+                target: format!("worker {label}: review this high-risk change first?"),
+                command: change.clone(),
+                keys: CONSENT_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             ApprovalAsk::Folder {
                 from,
                 to,

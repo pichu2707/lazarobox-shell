@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod config_edit;
 pub mod copy;
@@ -15,6 +16,7 @@ pub mod opener;
 pub mod osc7;
 pub mod pane;
 pub mod prefix;
+pub mod probe;
 pub mod pty;
 pub mod start;
 pub mod update;

@@ -10,8 +10,10 @@ use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
-use super::chat::adapters::adapter_for;
+use super::chat::adapters::{adapter_for, claude_too_old};
+use super::chat::engine::MCP_VERIFIED;
 use super::config::{AiConfig, Assignment, Task};
+use super::marks::{ToolMark, tool_mark};
 use super::parse::sanitize;
 use super::sanitize::is_format;
 use super::{
@@ -36,7 +38,8 @@ pub use ollama::{
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target {
-    /// `Set all tasks`: the choice is written to all five tasks.
+    /// `Set all tasks`: the choice is written to the five tasks of
+    /// [`Task::SET_ALL`], never to `orchestrate`.
     All,
     Task(Task),
 }
@@ -48,7 +51,7 @@ impl Target {
         match self {
             Self::Task(task) => draft.set(task, assignment),
             Self::All => {
-                for task in Task::ALL {
+                for task in Task::SET_ALL {
                     draft.set(task, assignment.clone());
                 }
             }
@@ -113,6 +116,8 @@ pub struct PickRow {
     pub enabled: bool,
     /// Whether this row is the current assignment of the target (`●`).
     pub current: bool,
+    /// The tool mark of an installed model, shown beside `mark`.
+    pub tools: Option<ToolMark>,
 }
 
 /// The assignment shared by every task a target writes to (as resolved, like
@@ -121,8 +126,8 @@ fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     match target {
         Target::Task(task) => Some(draft.get(task).clone()),
         Target::All => {
-            let first = draft.resolve(Task::ALL[0]).0;
-            Task::ALL
+            let first = draft.resolve(Task::SET_ALL[0]).0;
+            Task::SET_ALL
                 .iter()
                 .all(|t| draft.resolve(*t).0 == first)
                 .then_some(first)
@@ -216,22 +221,29 @@ pub fn engine_rows(
         mark: Mark::Plain,
         enabled: true,
         current: current.as_ref().is_some_and(|a| a.engine.is_none()),
+        tools: None,
     }];
-    let mut push = |id: &str, mark: Mark, enabled: bool| {
+    let mut push = |id: &str, mark: Mark, enabled: bool, tools: Option<ToolMark>| {
         rows.push(PickRow {
             key: PickKey::Engine(id.to_owned()),
             label: id.to_owned(),
             mark,
             enabled,
             current: current_engine == Some(id),
+            tools,
         });
     };
     for engine in CATALOG {
         if is_available(detection, engine.id) {
+            let mut text = status_text(detection, engine.id);
+            if matches!(target, Target::Task(task) if not_recommended(task, engine.id)) {
+                text = format!("{text} · {NOT_RECOMMENDED}");
+            }
             push(
                 engine.id,
-                Mark::Status(status_text(detection, engine.id)),
+                Mark::Status(text),
                 adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
+                cli_tool_mark(engine, detection),
             );
         }
     }
@@ -244,6 +256,7 @@ pub fn engine_rows(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
                 adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
+                None,
             );
         }
     }
@@ -259,9 +272,25 @@ pub fn engine_rows(
             None => Mark::Checking,
             Some(_) => Mark::Status("(not detected)".to_owned()),
         };
-        push(id, mark, true);
+        push(id, mark, true, None);
     }
     rows
+}
+
+/// The mark of a detected CLI engine whose tools passed the manual MCP check.
+/// Independent of `[ai.tools]`: it says what the engine can do, not what is
+/// switched on. Never a wrong mark: a refused engine (jail) and a claude that
+/// needs an update cannot run tools, so they carry none.
+fn cli_tool_mark(engine: &Engine, detection: Option<&Detection>) -> Option<ToolMark> {
+    let outdated = engine.id == "claude"
+        && detection
+            .and_then(|d| d.engines.iter().find(|s| s.id == engine.id))
+            .is_some_and(|s| claude_too_old(s.version.as_deref()));
+    (matches!(engine.kind, Kind::Cli)
+        && MCP_VERIFIED.contains(&engine.id)
+        && !is_refused(detection, engine.id)
+        && !outdated)
+        .then_some(ToolMark::Capable)
 }
 
 /// The `(label, value)` models the account lists for a CLI engine; empty
@@ -305,6 +334,7 @@ pub fn model_rows(
             },
             enabled: true,
             current: false,
+            tools: None,
         });
     }
     // Last, while the Ollama server answers: the pull goes through it.
@@ -315,6 +345,7 @@ pub fn model_rows(
             mark: Mark::Plain,
             enabled: true,
             current: false,
+            tools: None,
         });
     }
     rows
@@ -342,6 +373,7 @@ fn listed_models(
         mark,
         enabled,
         current: is_current(name),
+        tools: None,
     };
     let row = |name: &str, mark: Mark, enabled: bool| labeled(name, name, mark, enabled);
     let info = |label: &str, mark: Mark| PickRow {
@@ -350,6 +382,7 @@ fn listed_models(
         mark,
         enabled: false,
         current: false,
+        tools: None,
     };
     // Every model assigned to this engine anywhere in the draft, once.
     let mut assigned: Vec<&str> = Vec::new();
@@ -411,6 +444,7 @@ fn listed_models(
             mark: Mark::Plain,
             enabled: true,
             current: false,
+            tools: None,
         });
         return rows;
     }
@@ -497,7 +531,11 @@ fn listed_models(
     for m in &state.models {
         if !listed.iter().any(|l| same_model(engine, l, m)) {
             listed.push(m);
-            rows.push(row(m, Mark::Downloaded, true));
+            let mut installed = row(m, Mark::Downloaded, true);
+            installed.tools = detection
+                .facts(engine, m)
+                .and_then(|f| tool_mark(f.tools, f.params));
+            rows.push(installed);
         }
     }
     let missing = assigned.iter().chain(curated(engine).iter());
@@ -528,6 +566,7 @@ fn note_rows(text: &str) -> impl Iterator<Item = PickRow> + '_ {
             mark: Mark::Plain,
             enabled: false,
             current: false,
+            tools: None,
         })
 }
 
@@ -590,6 +629,9 @@ fn fit_chars(s: &str, room: usize) -> usize {
     s.len()
 }
 
+/// The mark of a server engine on the `orchestrate` row.
+pub const NOT_RECOMMENDED: &str = "not recommended";
+
 /// The warning for a CLI model the account's own list does not contain.
 pub const NOT_IN_LIST: &str = "not in your account's list";
 
@@ -597,8 +639,28 @@ pub const NOT_IN_LIST: &str = "not in your account's list";
 /// that is not available gets ` (not detected)` and no model mark; a model
 /// of an available server that is not detected gets ` · download required`.
 /// CLI assignments never get a model mark, and nothing is marked before the
-/// first detection result.
+/// first detection result. The `not recommended` mark follows the effective
+/// engine, so an unassigned row that falls back to a server in `general` gets
+/// it too.
 pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
+    let label = detected_label(config, task, detection);
+    match config.resolve(task).0.engine.as_deref() {
+        Some(id) if not_recommended(task, id) => format!("{label} · {NOT_RECOMMENDED}"),
+        _ => label,
+    }
+}
+
+/// The mark of an engine a task cannot lean on: small local models cannot
+/// orchestrate, so a server engine on `orchestrate` is marked. Only a
+/// warning: the row stays selectable and the assignment is never changed.
+fn not_recommended(task: Task, engine: &str) -> bool {
+    task == Task::Orchestrate
+        && CATALOG
+            .iter()
+            .any(|e| e.id == engine && matches!(e.kind, Kind::Server { .. }))
+}
+
+fn detected_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
     let detection = known(detection);
     let plain = config.label(task);
     let (
@@ -1052,6 +1114,8 @@ mod machine_tests;
 #[cfg(test)]
 mod manage_tests;
 #[cfg(test)]
+mod marks_tests;
+#[cfg(test)]
 mod note_tests;
 #[cfg(test)]
 mod ollama_tests;
@@ -1101,6 +1165,7 @@ mod tests {
             mark,
             enabled,
             current,
+            tools: None,
         }
     }
 
@@ -1112,6 +1177,13 @@ mod tests {
             true,
             current,
         )
+    }
+
+    fn marked_engine(id: &str, status: &str, current: bool) -> PickRow {
+        PickRow {
+            tools: Some(ToolMark::Capable),
+            ..engine(id, status, current)
+        }
     }
 
     fn compact(rows: &[PickRow]) -> Vec<(String, Mark, bool)> {
@@ -1662,7 +1734,7 @@ mod tests {
                     false
                 ),
                 engine("ollama", "available · 2 models", false),
-                engine("claude", "available · version unknown", false),
+                marked_engine("claude", "available · version unknown", false),
                 engine("lmstudio", "not running", false),
                 engine("codex", "(not detected)", true),
             ]
@@ -1724,6 +1796,7 @@ mod tests {
                     mark: Mark::Status(MANAGED_MARK.to_owned()),
                     enabled: true,
                     current: false,
+                    tools: None,
                 },
                 model("old", Mark::Plain, true, true),
                 hf_entry(),
@@ -1853,6 +1926,7 @@ mod tests {
             mark: Mark::Status(MANAGED_MARK.to_owned()),
             enabled: true,
             current,
+            tools: None,
         }
     }
 
@@ -1984,6 +2058,7 @@ mod tests {
                     mark: Mark::Plain,
                     enabled: false,
                     current: false,
+                    tools: None,
                 }),
         );
         want.push(hf_entry());
@@ -2092,7 +2167,7 @@ mod tests {
                     true,
                     true
                 ),
-                engine("claude", "available · version unknown", false),
+                marked_engine("claude", "available · version unknown", false),
                 engine("vllm", "not running", false),
             ]
         );

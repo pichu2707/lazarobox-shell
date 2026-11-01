@@ -1,4 +1,4 @@
-use super::super::engine::{ChatError, Finish};
+use super::super::engine::{ChatError, Finish, Usage};
 use super::*;
 
 fn delta(text: &str) -> StreamEvent {
@@ -60,6 +60,29 @@ fn same_at_every_split(text: &str, want: &[StreamEvent], decode: fn(&[&[u8]]) ->
     }
     let singles: Vec<&[u8]> = bytes.chunks(1).collect();
     assert_eq!(decode(&singles), want, "per byte");
+}
+
+#[test]
+fn the_final_ollama_line_reports_its_token_counts() {
+    let line = "{\"message\":{\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":30,\"eval_count\":3}\n";
+    assert_eq!(
+        ndjson(&[line.as_bytes()]),
+        [
+            StreamEvent::Usage(Usage {
+                input: 30,
+                output: 3,
+                cost_micros: None
+            }),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+}
+
+#[test]
+fn an_ollama_final_line_without_counts_emits_no_usage_event() {
+    // OLLAMA's final line has none (a cached prompt can omit them too).
+    let events = ndjson(&[OLLAMA.as_bytes()]);
+    assert!(events.iter().all(|e| !matches!(e, StreamEvent::Usage(_))));
 }
 
 #[test]
@@ -375,12 +398,15 @@ fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {
         })
         .collect();
     let mut want = vec!["thinking"; 6];
-    want.extend(["thinking", "thinking", "thinking", "delta", "delta", "done"]);
+    want.extend([
+        "thinking", "thinking", "thinking", "delta", "delta", "other", "done",
+    ]);
     assert_eq!(kinds, want);
     assert_eq!(events[0], thinking("Okay"));
     assert_eq!(events[8], thinking(".\n"));
     assert_eq!(events[9], delta("4"));
-    assert_eq!(events[11], StreamEvent::Done(Finish::Stop));
+    assert!(matches!(events[11], StreamEvent::Usage(_)));
+    assert_eq!(events[12], StreamEvent::Done(Finish::Stop));
     same_at_every_split(QWEN3, &events, ndjson);
 }
 
@@ -388,7 +414,16 @@ fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {
 fn a_recorded_plain_model_gives_the_events_it_always_did() {
     assert_eq!(
         ndjson(&[LLAMA.as_bytes()]),
-        [delta("Hi"), delta("!"), StreamEvent::Done(Finish::Stop)]
+        [
+            delta("Hi"),
+            delta("!"),
+            StreamEvent::Usage(Usage {
+                input: 30,
+                output: 3,
+                cost_micros: None
+            }),
+            StreamEvent::Done(Finish::Stop)
+        ]
     );
 }
 
@@ -1210,4 +1245,17 @@ fn a_late_id_after_the_name_is_kept_and_a_choice_without_delta_is_ignored() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].id.as_deref(), Some("late"));
     assert!(calls[0].call.is_ok());
+}
+
+#[test]
+fn an_ollama_final_line_with_one_count_emits_nothing_never_a_zero() {
+    // A cached prompt omits `prompt_eval_count`.
+    for counts in ["\"eval_count\":3", "\"prompt_eval_count\":30"] {
+        let line = format!("{{\"done\":true,\"done_reason\":\"stop\",{counts}}}\n");
+        assert_eq!(
+            ndjson(&[line.as_bytes()]),
+            [StreamEvent::Done(Finish::Stop)],
+            "{counts}"
+        );
+    }
 }

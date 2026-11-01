@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
             folder::{Probed, Purpose as FolderPurpose, Refusal},
             folder_picker::{Completion, Source as PickerSource},
             list::fit,
@@ -26,14 +26,17 @@ use crate::core::{
         gguf,
         hf::{AccountAsk, AccountReply, Answer, Ask, End, Job, TokenFacts},
         jail::{JailOff, JailSupport},
+        marks::ToolGlyph,
         memory::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
         ollama_lib::{self, Pull},
+        orchestra::{RunId, WorkerKey, event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
         tools::{report::RunReport, stage::BatchId},
     },
+    clipboard::{self, Tool},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -46,7 +49,8 @@ use crate::core::{
     },
     menu::{MenuCommand, MenuState},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
-    prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
+    prefix::{self, Binding, Group, PREFIX_TREE, PrefixAction, Step},
+    probe::Probe,
     pty::{PtyEvent, SpawnSpec},
     update::{Fallback, InstallEnv, UpdateAction},
 };
@@ -57,14 +61,20 @@ mod chat_copy;
 mod compact;
 mod context;
 mod folder;
+mod handoff;
 mod history;
 mod hub;
 mod install;
 mod notes;
 mod offer;
+mod orchestra;
 mod picker;
+mod probe;
 mod review;
 mod run;
+mod run_resume;
+mod run_store;
+mod run_view;
 mod scroll;
 mod summary;
 mod tags;
@@ -93,6 +103,7 @@ const TAGS_NEED_HISTORY: &str = "Tags need the conversation history";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
+const ALIAS_LITERAL: u8 = 0x1D;
 
 /// Where the user's keys go. Independent from `AppMode`, which is what is viewed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -221,6 +232,9 @@ pub enum AppEvent {
     MemoryTick,
     /// What the runtime found out about a run in pane `.0` (design D21).
     Run(PaneId, RunEvent),
+    /// What the run manager said about the orchestrator run of chat `.0`
+    /// (agent-orchestrator D1): a worker row, a failure, the run's end.
+    Orchestra(PaneId, OrchestraEvent),
     /// The terminal window gained (`true`) or lost (`false`) the focus, as
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
@@ -271,6 +285,17 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
+    /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
+    /// the short reason.
+    Clipboard {
+        seq: u64,
+        result: Result<(), String>,
+    },
+    /// The prefix probe's clock: sent every second while the probe waits
+    /// (see [`App::probe_waiting`]).
+    ProbeTick,
+    /// `Effect::SaveProbe` failed; the error is the one reason, safe to show.
+    ProbeSaveFailed(String),
 }
 
 /// How the menu closed.
@@ -296,6 +321,20 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Put `text` on the clipboard with the local tool the app was given
+    /// (see [`App::with_clipboard`]). The runtime answers with one
+    /// `AppEvent::Clipboard` carrying the same `seq`.
+    CopyLocal {
+        seq: u64,
+        text: String,
+    },
+    /// Remember the prefix probe's result for a terminal row. The runtime
+    /// writes it at once and answers only a failure, with
+    /// `AppEvent::ProbeSaveFailed`.
+    SaveProbe {
+        key: String,
+        outcome: crate::core::probe::Outcome,
+    },
     /// Open this link in the browser through the host's opener. Only emitted
     /// when the runtime said it has one (see [`App::with_opener`]).
     OpenUrl(String),
@@ -318,6 +357,16 @@ pub enum Effect {
         turn: u64,
         request: ChatRequest,
     },
+    /// Start one orchestrator turn for a pane (agent-orchestrator D5): a chat
+    /// turn on the `orchestrate` engine whose session offers the
+    /// orchestration tools, with the run it starts. Only an orchestrating
+    /// pane sends it; every other turn is a `ChatSend`.
+    OrchestrateSend {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+        orch: Box<OrchSend>,
+    },
     /// Start a background compaction run for a pane: not a turn of the chat,
     /// so it touches neither the pane's tool session nor its servers.
     ChatCompact {
@@ -330,11 +379,29 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// The user's answer to the failure alert of the run of chat `pane`
+    /// (agent-orchestrator, Failure stops the run), for run `run`. A run that
+    /// ended, was replaced or is not halted any more drops it, and says so.
+    OrchDecide {
+        pane: PaneId,
+        run: RunId,
+        choice: UserChoice,
+    },
+    /// Ctrl+C with a worker row selected (S3): cancels that worker of run
+    /// `run` and nothing else. A worker that ended meanwhile is a no-op; its
+    /// row events (and `withdraw_worker`) do the rest.
+    OrchCancelWorker {
+        pane: PaneId,
+        run: RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+    },
     /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
     /// (the approval overlay, or a check that failed on `y`). A call that
     /// ended meanwhile ignores it.
     ToolDecision {
         pane: PaneId,
+        /// The worker session the call belongs to; `None` for the chat's own.
+        worker: Option<WorkerKey>,
         turn: u64,
         call: CallId,
         decision: Decision,
@@ -526,6 +593,22 @@ const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
+/// A short line for why a turn failed, or `None` for a clean end or a cut-off
+/// stream (the shape of a turn cap, which a continuation exists for).
+fn turn_failure(event: &StreamEvent) -> Option<String> {
+    use crate::core::ai::chat::engine::ChatError;
+    let StreamEvent::Error(error) = event else {
+        return None;
+    };
+    let text = match error {
+        ChatError::Interrupted => return None,
+        ChatError::Truncated => "the answer was too long",
+        ChatError::Failed(text) | ChatError::Jail(text) => text,
+    };
+    let line = text.lines().next().unwrap_or_default();
+    Some(line.chars().filter(|c| !c.is_control()).take(120).collect())
+}
+
 fn pane_size(cols: u16, rows: u16) -> PaneSize {
     PaneSize {
         rows: rows.saturating_sub(1).max(1),
@@ -780,6 +863,14 @@ pub struct App {
     summary_notice_shown: bool,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
+    /// The saves of the live orchestrator runs' handoffs.
+    run_stores: HashMap<RunId, handoff::RunStore>,
+    /// Runs that ended or lost their pane: they store nothing more.
+    ended_runs: HashSet<RunId>,
+    /// The runs saved to the local store, and what is said about it (S9).
+    run_keep: run_store::RunKeep,
+    /// Run saves whose wait ran out: their late answer is dropped.
+    lost_saves: HashSet<(PaneId, crate::core::ai::memory::port::SaveId)>,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
     /// Whether the open quit prompt also names the llama-server, answering
@@ -834,8 +925,12 @@ pub struct App {
     tool_engines: &'static [&'static str],
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,
+    /// How the tool badge of a model row is drawn (injected).
+    tool_glyph: ToolGlyph,
     /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
     cwd_readable: bool,
+    /// The first-run prefix probe of this terminal, when the runtime set one.
+    probe: Option<Probe>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -854,6 +949,19 @@ pub struct App {
     host: crate::core::menu::feedback::Facts,
     /// The host has a program that opens links in the browser.
     opener: bool,
+    /// The local clipboard tool, if one fits this session.
+    clipboard: Option<Tool>,
+    /// Running over SSH: the notices point at the terminal's OSC 52.
+    ssh: bool,
+    /// The number of the last `Effect::CopyLocal`; an answer to an older
+    /// one is dropped (latest copy wins).
+    clip_seq: u64,
+    /// OSC 52 went out with the last `CopyLocal` (false when the text was
+    /// too large for it).
+    clip_osc52: bool,
+    /// The last copy was the link a failed browser open fell back to: the
+    /// menu footer keeps that context.
+    clip_link: bool,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -888,6 +996,12 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// The chat showing the provider notice of the orchestrator, until it is
+    /// accepted or dismissed (agent-orchestrator D12).
+    orch_notice: Option<PaneId>,
+    /// Config writes of an accepted notice still unanswered: their results
+    /// are the notice's, never the menu's (they come back in order).
+    orch_saves: usize,
     /// Why no server can be offered (no usable `engram` on the PATH), as the
     /// worker said once: it names the cause of every `engram is not running`.
     no_server: Option<Reason>,
@@ -924,6 +1038,10 @@ impl App {
             config_path: None,
             summary_notice_shown: false,
             summary_failure_shown: false,
+            run_stores: HashMap::new(),
+            ended_runs: HashSet::new(),
+            run_keep: run_store::RunKeep::default(),
+            lost_saves: HashSet::new(),
             still_running: Vec::new(),
             serving_others: false,
             update: None,
@@ -948,7 +1066,9 @@ impl App {
             hold: Hold::default(),
             tool_engines: MCP_VERIFIED,
             utf8_locale: false,
+            tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
+            probe: None,
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -959,6 +1079,11 @@ impl App {
                 ..Default::default()
             },
             opener: false,
+            clipboard: None,
+            ssh: false,
+            clip_seq: 0,
+            clip_osc52: false,
+            clip_link: false,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -973,6 +1098,8 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            orch_notice: None,
+            orch_saves: 0,
             no_server: None,
             history: false,
             download: None,
@@ -1088,6 +1215,14 @@ impl App {
         self
     }
 
+    /// Injects the local clipboard tool the runtime found (none when no tool
+    /// fits) and whether the session is SSH. Over SSH no tool is used.
+    pub fn with_clipboard(mut self, tool: Option<Tool>, ssh: bool) -> Self {
+        self.clipboard = tool.filter(|_| !ssh);
+        self.ssh = ssh;
+        self
+    }
+
     /// Injects what the runtime finds of the Hugging Face tokens, read each
     /// time the menu opens.
     pub fn with_hf_tokens(mut self, hf_tokens: fn() -> TokenFacts) -> Self {
@@ -1112,6 +1247,16 @@ impl App {
     pub fn with_utf8_locale(mut self, utf8: bool) -> Self {
         self.utf8_locale = utf8;
         self
+    }
+
+    pub fn with_tool_glyph(mut self, glyph: ToolGlyph) -> Self {
+        self.tool_glyph = glyph;
+        self
+    }
+
+    /// How the tool badge of a model row is drawn.
+    pub fn tool_glyph(&self) -> ToolGlyph {
+        self.tool_glyph
     }
 
     /// Names this machine so OSC 7 reports for it are accepted.
@@ -1783,6 +1928,7 @@ impl App {
                 purpose,
                 result,
             } => self.on_folder_probed(pane, purpose, result),
+            AppEvent::Orchestra(id, event) => self.on_orchestra(id, event),
             AppEvent::FoldersProbed {
                 pane,
                 id,
@@ -1805,6 +1951,11 @@ impl App {
                 effects
             }
             AppEvent::SpawnFailed(..) => Vec::new(),
+            // The write of an accepted notice is answered to the notice.
+            AppEvent::ConfigSaved if self.orch_saves > 0 => self.on_notice_saved(None),
+            AppEvent::ConfigSaveFailed(message) if self.orch_saves > 0 => {
+                self.on_notice_saved(Some(message))
+            }
             // Results of a save are stale when the menu is gone.
             AppEvent::ConfigSaved if self.menu.is_some() => {
                 self.dirty = true;
@@ -1844,6 +1995,7 @@ impl App {
             AppEvent::Store(reply) => {
                 let mut effects = self.on_history_reply(&reply);
                 effects.extend(self.on_store_reply(&reply));
+                self.on_runs_reply(&reply);
                 effects
             }
             // What was just installed is not news any more.
@@ -1872,6 +2024,8 @@ impl App {
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::ProbeTick => self.on_probe_tick(),
+            AppEvent::ProbeSaveFailed(reason) => self.on_probe_save_failed(&reason),
             AppEvent::ManagedStarted(started) => {
                 self.dirty = true;
                 match started {
@@ -1895,6 +2049,7 @@ impl App {
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
                 Some(menu) => {
                     let command = menu.feedback_reply(reply);
@@ -1978,17 +2133,19 @@ impl App {
             }
         }
         self.dirty |= self.notice.take().is_some();
+        // The probe only watches: the key below is handled as usual.
+        let mut effects = self.probe_key(&key, repeat);
         if repeat && matches!(self.input, InputMode::Prefix | InputMode::Group(_))
             || held && matches!(self.input, InputMode::Confirm(_))
         {
-            return Vec::new();
+            return effects;
         }
         self.dirty = true;
         let modal = matches!(
             self.input,
             InputMode::Menu | InputMode::Confirm(_) | InputMode::Resize
         );
-        let effects = match self.input {
+        effects.extend(match self.input {
             InputMode::Terminal => self.on_terminal_key(key, held),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
@@ -1997,7 +2154,7 @@ impl App {
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, held),
-        };
+        });
         // The rest of the hold of the key that closed a modal view is not
         // typed into the pane under it.
         if modal && self.input == InputMode::Terminal {
@@ -2191,7 +2348,13 @@ impl App {
         if !effects.is_empty()
             && let Some(menu) = self.menu.as_mut()
         {
-            menu.set_copied("The browser did not open: link copied".to_owned());
+            self.clip_link = self.clipboard.is_some();
+            let said = if self.clip_link {
+                "copying link"
+            } else {
+                "link copied"
+            };
+            menu.set_copied(format!("The browser did not open: {said}"));
         }
         effects
     }
@@ -2216,23 +2379,60 @@ impl App {
         effects
     }
 
-    /// Puts `text` on the host clipboard (OSC 52) and says so in the notice:
-    /// `Copied N characters`, or `Selection too large to copy` and nothing
-    /// sent when it does not fit in one sequence.
+    /// Puts `text` on the host clipboard and says what happened in the
+    /// notice. OSC 52 always goes out when `text` fits in one sequence; a
+    /// local tool, when one fits the session, gets the text too and its
+    /// outcome comes back as `AppEvent::Clipboard`. A tool is the only proof
+    /// of a copy, so without one the notice says OSC 52 was only sent. A
+    /// text too large for OSC 52 is refused unless a tool can take it.
     pub(super) fn copy_to_clipboard(&mut self, text: &str) -> Vec<Effect> {
-        match osc52(text) {
-            Ok(sequence) => {
-                self.notice = Some(match text.chars().count() {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
+        let sequence = osc52(text);
+        let mut effects = Vec::new();
+        match (&sequence, self.clipboard) {
+            (Err(TooLarge), None) => {
                 self.notice = Some("Selection too large to copy".to_string());
-                Vec::new()
+                return effects;
+            }
+            (Ok(_), None) => self.notice = Some(clipboard::osc52_only(self.ssh)),
+            (_, Some(tool)) => {
+                self.clip_seq += 1;
+                self.clip_osc52 = sequence.is_ok();
+                self.clip_link = false;
+                self.notice = Some(clipboard::copying(tool));
             }
         }
+        if let Ok(sequence) = sequence {
+            effects.push(Effect::SetClipboard(sequence));
+        }
+        if self.clipboard.is_some() {
+            effects.push(Effect::CopyLocal {
+                seq: self.clip_seq,
+                text: text.to_owned(),
+            });
+        }
+        effects
+    }
+
+    /// The local tool of copy `seq` finished. An answer to an older copy is
+    /// dropped. The notice and an open menu footer say how it went.
+    fn on_clipboard(&mut self, seq: u64, result: Result<(), String>) -> Vec<Effect> {
+        let Some(tool) = self.clipboard.filter(|_| seq == self.clip_seq) else {
+            return Vec::new();
+        };
+        let said = match result {
+            Ok(()) => clipboard::copied(tool),
+            Err(reason) if self.clip_osc52 => clipboard::failed(tool, &reason),
+            Err(reason) => clipboard::failed_too_large(tool, &reason),
+        };
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_copied(match self.clip_link {
+                true => format!("The browser did not open: {said}"),
+                false => said.clone(),
+            });
+        }
+        self.notice = Some(said);
+        self.dirty = true;
+        Vec::new()
     }
 
     /// An unchanged draft has nothing to save and closes at once. A changed
@@ -2252,7 +2452,7 @@ impl App {
     }
 
     fn on_terminal_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
-        if PREFIX_KEY.matches(&key) {
+        if prefix::is_prefix(&key) {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
@@ -2268,6 +2468,20 @@ impl App {
         self.note_user_key(&key);
         self.return_to_live();
         vec![Effect::WritePty(self.tab().focus, bytes)]
+    }
+
+    /// The byte of the prefix key just pressed, for the focused shell pane.
+    /// A pane that is not a shell has no program to receive it: a notice.
+    fn send_prefix_literal(&mut self, alias: bool) -> Vec<Effect> {
+        if self.focused_pty().is_none() {
+            self.notice = Some("The prefix key has no program to go to here".to_string());
+            return Vec::new();
+        }
+        self.return_to_live();
+        self.mark_dirty(self.tab().focus);
+        self.note_typed(self.tab().focus);
+        let byte = if alias { ALIAS_LITERAL } else { PREFIX_LITERAL };
+        vec![Effect::WritePty(self.tab().focus, vec![byte])]
     }
 
     /// Resolve a key against the pending table (the root or an open group).
@@ -2295,6 +2509,7 @@ impl App {
             Step::Cancel
             | Step::Run(
                 PrefixAction::SendPrefixLiteral
+                | PrefixAction::SendAliasLiteral
                 | PrefixAction::SplitRight
                 | PrefixAction::SplitBelow
                 | PrefixAction::ToggleZoom
@@ -2304,6 +2519,9 @@ impl App {
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
+                | PrefixAction::ViewWorker
+                | PrefixAction::ResumeRun
+                | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
@@ -2325,13 +2543,10 @@ impl App {
                 self.serving_others = false;
                 vec![Effect::ListRunning]
             }
-            // The literal is a byte for a child; a chat has none, so it swallows it.
-            Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
-                self.return_to_live();
-                self.mark_dirty(self.tab().focus);
-                self.note_typed(self.tab().focus);
-                vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
-            }
+            // The literal is a byte for a child; a chat has none, so it says so.
+            Step::Run(
+                action @ (PrefixAction::SendPrefixLiteral | PrefixAction::SendAliasLiteral),
+            ) => self.send_prefix_literal(action == PrefixAction::SendAliasLiteral),
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
             // They would open a view under the folder picker.
@@ -2343,6 +2558,15 @@ impl App {
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
+            // They would replace the transcript of a worker.
+            Step::Run(
+                PrefixAction::EditTags
+                | PrefixAction::SaveNote
+                | PrefixAction::Summarize
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleMemory
+                | PrefixAction::ToggleApproval,
+            ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
             Step::Run(
                 PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
@@ -2378,6 +2602,9 @@ impl App {
                 self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
+            Step::Run(PrefixAction::ViewWorker) => self.view_worker(),
+            Step::Run(PrefixAction::ResumeRun) => self.resume_run(),
+            Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -2495,9 +2722,12 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         let leaves = self.tabs.remove(index).tree.leaves();
         let mut effects = self.end_effects(&leaves);
+        effects.extend(self.close_run_effects(&leaves));
         effects.extend(self.deny_closing_runs(&leaves));
         for id in leaves {
             self.panes.remove(&id);
+            self.drop_pane_stores(id);
+            effects.extend(self.keep_pane_closed(id));
             self.drop_parked_send(id);
             self.drop_note_choices(id);
             self.drop_folder_state(id);
@@ -2651,8 +2881,29 @@ impl App {
                 event,
                 StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
             );
+        let failure = turn_failure(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
+        if finished {
+            chat.set_turn_failure(failure);
+        }
+        let no_run = chat.orch_run().is_none();
+        if finished {
+            self.reply_ended(id, how == Ended::Done);
+        }
+        // A start that failed leaves no run to give its goal to.
+        if finished && how == Ended::Error && no_run {
+            self.forget_goal(id);
+        } else if finished && no_run {
+            // A turn that ended with no run never gave a resumed one a worker;
+            // one that ended normally left the coordinator waiting for the
+            // user, whose reply can still relaunch it.
+            if how == Ended::Done {
+                self.resume_awaits_reply(id);
+            } else {
+                self.resume_not_started(id);
+            }
+        }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
         let mut effects = self.store_effects(id);
@@ -2669,6 +2920,16 @@ impl App {
         }
         if llamacpp_failed {
             effects.extend(self.request_detection());
+        }
+        // A continuation that came before this turn's end starts now (S4).
+        if finished
+            && let Some(next) = self
+                .panes
+                .get_mut(&id)
+                .and_then(PaneState::chat_mut)
+                .and_then(ChatState::take_continue)
+        {
+            effects.extend(self.start_continuation(id, next));
         }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
@@ -2712,8 +2973,11 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 let mut ends = self.end_effects(&[id]);
+                ends.extend(self.close_run_effects(&[id]));
                 ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
+                self.drop_pane_stores(id);
+                ends.extend(self.keep_pane_closed(id));
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
                 self.drop_folder_state(id);
@@ -3136,6 +3400,7 @@ mod app_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use crate::core::{
+        clipboard::osc52_only,
         copy::{CopyState, Point, SelectionKind},
         menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
@@ -3158,6 +3423,18 @@ mod app_tests {
 
     fn esc() -> AppEvent {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+    }
+
+    /// Every spelling of a prefix key: Ctrl+Space, Ctrl+] and Ctrl+5.
+    fn prefix_keys() -> [AppEvent; 3] {
+        let [bracket, five] = alias_keys();
+        [ctrl_space(), bracket, five]
+    }
+
+    /// Ctrl+] as a terminal without enhancement flags reports it: 0x1D parses
+    /// to Ctrl+5 (design D6), so a key test must cover both spellings.
+    fn alias_keys() -> [AppEvent; 2] {
+        [']', '5'].map(|c| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)))
     }
 
     /// Moves the open menu's cursor onto the row labelled `label` with the
@@ -3408,6 +3685,53 @@ mod app_tests {
             vec![Effect::WritePty(PaneId::FIRST, vec![0x00])]
         );
         assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn alias_enters_prefix_without_writing_in_both_spellings() {
+        for ev in alias_keys() {
+            let mut a = app();
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Prefix, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn alias_twice_sends_its_own_byte_and_the_keys_mix_by_second_byte() {
+        let keys = prefix_keys();
+        for first in &keys {
+            for second in &keys {
+                let mut a = app();
+                a.update(first.clone());
+                let byte = if *second == ctrl_space() { 0x00 } else { 0x1D };
+                assert_eq!(
+                    a.update(second.clone()),
+                    vec![Effect::WritePty(PaneId::FIRST, vec![byte])],
+                    "{first:?} then {second:?}"
+                );
+                assert_eq!(a.input(), InputMode::Terminal);
+            }
+        }
+    }
+
+    #[test]
+    fn alias_drives_the_whole_tree() {
+        for ev in alias_keys() {
+            let mut a = app();
+            a.update(ev.clone());
+            a.update(key('w'));
+            a.update(key('v'));
+            assert_eq!(a.tab_panes(), 2, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn alias_cancels_inside_a_group() {
+        for ev in alias_keys() {
+            let mut a = in_group('w');
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Terminal, "{ev:?}");
+        }
     }
 
     #[test]
@@ -4210,7 +4534,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
         );
-        assert_eq!(a.notice(), Some("Copied 8 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Multi-row line selection.
@@ -4225,7 +4549,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc("foo\nbar"))]
         );
-        assert_eq!(a.notice(), Some("Copied 7 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Wide character once.
@@ -4237,7 +4561,7 @@ mod app_tests {
         a.update(key('v'));
         a.update(key('$'));
         assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("a漢b"))]);
-        assert_eq!(a.notice(), Some("Copied 3 characters"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     // copy-selection: Selection spans scrollback (app part: offset restored).
@@ -4295,16 +4619,144 @@ mod app_tests {
         assert_eq!(a.notice(), Some("Selection too large to copy"));
     }
 
+    /// `hello` selected in COPY mode, ready for `y`.
+    fn hello_selected(a: &mut App) {
+        copy_after(a, b"hello");
+        a.update(key('0'));
+        a.update(key('v'));
+        press_n(a, 'l', 4);
+    }
+
+    // copy-selection: Local tool ran, Tool order.
+    #[test]
+    fn a_yank_with_a_tool_also_asks_the_runtime_to_copy_locally() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        assert_eq!(
+            a.update(key('y')),
+            vec![
+                Effect::SetClipboard(osc("hello")),
+                Effect::CopyLocal {
+                    seq: 1,
+                    text: "hello".to_owned()
+                }
+            ]
+        );
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        let mut b = app().with_clipboard(Some(Tool::Xclip), false);
+        hello_selected(&mut b);
+        b.update(key('y'));
+        assert_eq!(b.notice(), Some("Copying (xclip)"));
+    }
+
+    // copy-selection: Only OSC 52 sent, SSH skips local tools.
+    #[test]
+    fn without_a_tool_only_osc52_goes_out_and_the_notice_says_so() {
+        let mut a = app().with_clipboard(None, false);
+        hello_selected(&mut a);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
+        assert_eq!(a.notice(), Some(clipboard::osc52_only(false).as_str()));
+        assert!(
+            a.notice()
+                .is_some_and(|n| n.contains("Install wl-copy or xclip"))
+        );
+    }
+
+    #[test]
+    fn over_ssh_no_tool_runs_even_if_one_is_given() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), true);
+        hello_selected(&mut a);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
+        assert!(
+            a.notice()
+                .is_some_and(|n| n.contains("Enable OSC 52 in your terminal"))
+        );
+    }
+
+    #[test]
+    fn a_tool_failure_on_an_oversized_selection_does_not_claim_osc52_went_out() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        big_selection(&mut a, 76);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Err("exit code 1".to_owned()),
+        });
+        assert_eq!(
+            a.notice(),
+            Some("wl-copy failed; not copied: too large for OSC 52 (exit code 1)")
+        );
+    }
+
+    // Design D5: too large for OSC 52.
+    #[test]
+    fn an_oversized_selection_still_reaches_a_local_tool() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        big_selection(&mut a, 76);
+        let effects = a.update(key('y'));
+        assert!(
+            matches!(effects.as_slice(), [Effect::CopyLocal { seq: 1, text }] if text.len() == 75_001),
+            "{:?}",
+            effects.len()
+        );
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // copy-selection: Local tool ran, Tool fails.
+    #[test]
+    fn the_runtime_answer_replaces_the_notice() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+        assert!(a.take_dirty());
+        let mut b = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut b);
+        b.update(key('y'));
+        b.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Err("exit code 1".to_owned()),
+        });
+        assert_eq!(
+            b.notice(),
+            Some("wl-copy failed; sent via OSC 52 (exit code 1)")
+        );
+    }
+
+    #[test]
+    fn an_answer_to_an_older_copy_is_dropped() {
+        let mut a = app().with_clipboard(Some(Tool::WlCopy), false);
+        hello_selected(&mut a);
+        a.update(key('y'));
+        hello_selected(&mut a);
+        a.update(key('y'));
+        a.update(AppEvent::Clipboard {
+            seq: 1,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+        a.update(AppEvent::Clipboard {
+            seq: 2,
+            result: Ok(()),
+        });
+        assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+    }
+
     // statusline: Copied notice, Singular notice, Notice cleared by next key.
     #[test]
-    fn the_copied_notice_counts_characters_and_clears_on_the_next_key() {
+    fn the_copy_notice_is_honest_and_clears_on_the_next_key() {
         let mut a = app();
         copy_after(&mut a, b"x");
         a.update(key('0'));
         a.update(key('v'));
         a.update(key('y'));
-        assert_eq!(a.notice(), Some("Copied 1 character"));
-        assert_eq!(a.status_path(40), "Copied 1 character");
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.status_path(40), osc52_only(false));
         assert_eq!(a.input(), InputMode::Terminal);
         a.update(key('z'));
         assert_eq!(a.notice(), None);
@@ -4404,7 +4856,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.update(repeat('y')), vec![]);
         // The drop must not eat the yank notice.
-        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     #[test]
@@ -4511,7 +4963,7 @@ mod app_tests {
         for ms in [400, 433, 466] {
             assert_eq!(at(&mut a, ms, key('y')), vec![], "y at {ms}");
         }
-        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     }
 
     #[test]
@@ -8251,6 +8703,27 @@ mod app_tests {
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
+    /// Selecting a worker row and the escalating Ctrl+C (S3).
+    mod orchestra_cancel;
+    mod orchestra_consent;
+    /// The handoffs of a run in engram, and the degraded mode.
+    mod orchestra_handoffs;
+    /// The one-time provider notice of an orchestrating pane.
+    mod orchestra_notice;
+    /// The run-scoped override picked from a failure alert.
+    mod orchestra_override;
+    /// Resuming or discarding an interrupted run (S9 9.1c).
+    mod orchestra_resume;
+    /// The failure alert of a run, its keys and the run's events.
+    mod orchestra_run;
+    mod orchestra_send;
+    /// The runs the local store keeps and shows after a restart (S9).
+    mod orchestra_store;
+    /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
+    mod orchestra_toggle;
+    /// The full-pane transcript of a worker (S9).
+    mod orchestra_view;
+
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;
@@ -8286,9 +8759,13 @@ mod app_tests {
 
     /// A menu save names the file it wrote.
     mod save_notice;
+    mod tool_glyph;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;
+
+    /// The first-run prefix probe (terminal-agnostic S2b).
+    mod probe;
 
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
@@ -8558,6 +9035,25 @@ mod app_tests {
             assert_eq!(a.input(), InputMode::Prefix);
             assert_eq!(a.update(ctrl_space()), vec![]);
             assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn a_second_prefix_key_on_a_chat_shows_a_notice_and_writes_nothing() {
+            let keys = prefix_keys();
+            for first in keys.clone() {
+                for second in keys.clone() {
+                    let mut a = launched(80, 25);
+                    a.open_chat(None);
+                    a.update(first.clone());
+                    assert_eq!(a.update(second), vec![]);
+                    assert_eq!(a.input(), InputMode::Terminal);
+                    assert!(
+                        a.notice().is_some_and(|n| n.contains("prefix")),
+                        "{:?}",
+                        a.notice()
+                    );
+                }
+            }
         }
 
         #[test]

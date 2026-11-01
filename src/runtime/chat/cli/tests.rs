@@ -471,6 +471,26 @@ async fn the_cli_sees_neither_agents_nor_outer_claude_state_but_keeps_its_settin
     assert!(has("HOME") && has("PATH"));
 }
 
+// Spec (chat-engines, API keys survive the scrub): with the three provider
+// key variables set, the environment a turn (a chat's or a worker's: both
+// run through this command) is built with holds all three.
+#[tokio::test]
+async fn the_provider_api_keys_survive_the_scrub() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    let keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"];
+    for name in keys {
+        env.inject.push((name.into(), "k".into()));
+    }
+    run(env, request()).await;
+    let dump = lab.recorded("env");
+    for name in keys {
+        let line = format!("{name}=k");
+        assert!(dump.lines().any(|l| l == line), "{name} must be kept");
+    }
+}
+
 #[tokio::test]
 async fn a_failing_cli_shows_the_last_stderr_line_sanitized() {
     let lab = lab();
@@ -1462,10 +1482,59 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
     fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
     let real = fs::canonicalize(&ok).unwrap();
     let writable = Untrusted::Writable {
-        path: real.clone(),
-        yours: true,
+        paths: vec![real.clone()],
+        foreign: vec![],
+        cause: WriteCause::Others,
     };
     assert_eq!(interpreter_trust(&ok), Err((real, writable)));
+}
+
+// Issue #496: the rule stays strict. A default `cargo install` under umask 002
+// (folder and binary 0775) is refused, and the refusal lists both paths and
+// the group as the cause, so that one chmod fixes it.
+#[test]
+fn a_umask_002_install_is_refused_naming_both_paths_and_the_group() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let file = exe_in(&base.join("cargo-bin"), "lazarobox-shell", 0o775);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o775)).unwrap();
+    let real = fs::canonicalize(&file).unwrap();
+    let dir = real.parent().unwrap().to_owned();
+    let writable = Untrusted::Writable {
+        paths: vec![dir, real.clone()],
+        foreign: vec![],
+        cause: WriteCause::Group,
+    };
+    assert_eq!(interpreter_trust(&file), Err((real.clone(), writable)));
+    // Only the folder, only the file, and the file with others' write.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    let Err((_, Untrusted::Writable { paths, cause, .. })) = interpreter_trust(&file) else {
+        panic!("the folder is group-writable");
+    };
+    assert_eq!(
+        (paths, cause),
+        (vec![real.parent().unwrap().to_owned()], WriteCause::Group)
+    );
+    fs::set_permissions(real.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o766)).unwrap();
+    let Err((_, Untrusted::Writable { paths, cause, .. })) = interpreter_trust(&file) else {
+        panic!("the file is writable");
+    };
+    assert_eq!((paths, cause), (vec![real], WriteCause::GroupAndOthers));
+}
+
+#[test]
+fn a_file_that_cannot_be_inspected_is_unchecked_not_writable() {
+    let p = Path::new("/x/shim");
+    for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::NotFound] {
+        assert_eq!(
+            judge(p, Err(io::Error::from(kind))),
+            Err(Untrusted::Unchecked {
+                path: p.to_path_buf(),
+                kind
+            })
+        );
+    }
 }
 
 #[test]
@@ -1640,8 +1709,9 @@ fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing()
         Err(JailRefusal::UntrustedInterpreter {
             path: fs::canonicalize(sibling_dir.join("fakenode")).unwrap(),
             why: Untrusted::Writable {
-                path: fs::canonicalize(&sibling_dir).unwrap(),
-                yours: true,
+                paths: vec![fs::canonicalize(&sibling_dir).unwrap()],
+                foreign: vec![],
+                cause: WriteCause::GroupAndOthers,
             },
         })
     );
@@ -1664,8 +1734,8 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
     let reason = jail_reason(&events);
     assert!(
-        reason.contains("is writable by group or others")
-            && reason.contains("; run: chmod go-w -- '"),
+        reason.contains("is writable by its group or others")
+            && reason.contains("; run: chmod go-w "),
         "{reason}"
     );
     assert!(!lab.rec.join("helper_called").exists());
@@ -2131,6 +2201,23 @@ fn with_shim(lab: &Lab, mut env: CliEnv, shim: &str) -> CliEnv {
 
 const OFF_NOTICE: &str = "tools are off for this turn: they could not be set up";
 
+/// The notice of a turn that goes on without tools: the generic line, or, when
+/// the trust check refused a path others (or a group) can write, the cause and
+/// the fix (issue #496). `cause` is the wording expected after `tools are off: `.
+fn assert_off_notice(event: &StreamEvent, cause: bool) {
+    let StreamEvent::Notice(text) = event else {
+        panic!("{event:?}");
+    };
+    if cause {
+        assert!(text.starts_with("tools are off: "), "{text}");
+        assert!(text.contains(" writable by "), "{text}");
+        assert!(text.contains("; run: chmod "), "{text}");
+        assert!(!text.contains("could not be set up"), "{text}");
+    } else {
+        assert_eq!(text, OFF_NOTICE);
+    }
+}
+
 #[tokio::test]
 async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant() {
     let lab = lab();
@@ -2324,11 +2411,7 @@ async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
     );
     let env = with_shim(lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(lab, true)).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], true);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     let helper = lab.recorded("helper_args");
@@ -2656,7 +2739,7 @@ async fn a_wired_codex_gets_the_overrides_and_the_jail_grant_and_the_token_only_
 
 /// A codex turn that fell back to text: it ran bare of the tools, said so, and
 /// ended its session once.
-async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
+async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("codex"),
         &lab.rec,
@@ -2665,11 +2748,7 @@ async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
     let mut job = wired_codex_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], cause);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
     assert!(
@@ -2687,7 +2766,7 @@ async fn a_shim_the_jail_refuses_retries_codex_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_text_fallback(&lab, &env).await;
+    assert_codex_text_fallback(&lab, &env, false).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2702,7 +2781,7 @@ async fn an_untrusted_shim_runs_codex_as_text_with_the_notice() {
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_text_fallback(&lab, &env).await;
+    assert_codex_text_fallback(&lab, &env, true).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2939,7 +3018,7 @@ async fn the_turns_token_is_not_shown_from_a_gemini_stderr_tail() {
 /// A gemini turn that fell back to text: it ran in the shared empty folder
 /// with the pinned argv and nothing of the wiring, said so, and ended its
 /// session once.
-async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
+async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("gemini"),
         &lab.rec,
@@ -2948,11 +3027,7 @@ async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
     let mut job = wired_gemini_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], cause);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
     let args = lab.args();
@@ -2978,7 +3053,7 @@ async fn a_shim_the_jail_refuses_retries_gemini_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_text_fallback(&lab, &env).await;
+    assert_gemini_text_fallback(&lab, &env, false).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2993,7 +3068,7 @@ async fn an_untrusted_shim_runs_gemini_as_text_with_the_notice() {
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_text_fallback(&lab, &env).await;
+    assert_gemini_text_fallback(&lab, &env, true).await;
 }
 
 #[tokio::test]
@@ -3345,4 +3420,38 @@ fn linux_gets_no_os_grants() {
     let head = b"#!/usr/bin/env node\n";
     let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
     assert_eq!(os_grants(Os::Linux, head, Some(node)), (vec![], vec![]));
+}
+
+#[tokio::test]
+async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o775)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    let StreamEvent::Notice(text) = &events[0] else {
+        panic!("{events:?}");
+    };
+    let (dir, shim) = (
+        fs::canonicalize(&dir).unwrap(),
+        fs::canonicalize(&shim).unwrap(),
+    );
+    let expected = format!(
+        "tools are off: {} and {} are writable by its group; run: chmod g-w '{}' '{}'",
+        dir.display(),
+        shim.display(),
+        dir.display(),
+        shim.display()
+    );
+    assert_eq!(text, &expected);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
 }

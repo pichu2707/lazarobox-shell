@@ -101,7 +101,7 @@ fn warned() -> MenuState {
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
 fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 9];
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 10];
     assert_eq!(memory.label, "Memory");
     let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
@@ -118,6 +118,7 @@ fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
             "chat",
             "review",
             "summarize",
+            "orchestrate",
             "Profile",
             "Context",
             "Memory",
@@ -128,6 +129,7 @@ fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
             "Git",
             "Git write",
             "Approval",
+            "Orchestrator",
             "Hugging Face",
         ]
     );
@@ -144,6 +146,7 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "chat",
         "review",
         "summarize",
+        "orchestrate",
         "Profile",
         "Context",
         "Memory",
@@ -154,6 +157,7 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Git",
         "Git write",
         "Approval",
+        "Orchestrator",
         "Hugging Face",
         "Set all tasks",
     ] {
@@ -163,6 +167,7 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
     press(&mut menu, KeyCode::Char('k'));
     assert_eq!(selected_label(&menu), "Hugging Face");
     for label in [
+        "Orchestrator",
         "Approval",
         "Git write",
         "Git",

@@ -18,12 +18,13 @@ pub enum Action {
 
 /// The text of `--help`.
 pub const USAGE: &str = "\
-usage: lazarobox-shell [--force] [--dir <folder> | --dir=<folder>]
+usage: lazarobox-shell [--force] [--check-prefix] [--dir <folder> | --dir=<folder>]
        lazarobox-shell install-desktop [--terminal <cmd>] [--dir <folder>] [--uninstall]
        lazarobox-shell --version | --help
 
   --force        start even inside a lazarobox pane
   --dir <folder> start in this folder (also --dir=<folder>)
+  --check-prefix check again whether Ctrl+Space reaches lazarobox
   install-desktop  must be the first argument
   -V, --version  print the version
   -h, --help     print this help";
@@ -54,7 +55,7 @@ pub fn classify(argv: &[String]) -> Action {
         match arg.as_str() {
             "--version" | "-V" => return Action::Version,
             "--help" | "-h" => return Action::Help,
-            "--force" => {}
+            "--force" | "--check-prefix" => {}
             "--dir" => {
                 it.next_if(|v| !v.starts_with('-'));
             }
@@ -78,6 +79,8 @@ mod tests {
     #[test]
     fn known_flags_run_the_tui() {
         assert_eq!(c(&[]), Action::Run);
+        assert_eq!(c(&["--check-prefix"]), Action::Run);
+        assert_eq!(c(&["--force", "--check-prefix"]), Action::Run);
         assert_eq!(c(&["--force"]), Action::Run);
         assert_eq!(c(&["--dir", "/a", "--force"]), Action::Run);
         assert_eq!(c(&["--dir=/a"]), Action::Run);

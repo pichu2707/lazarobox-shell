@@ -51,7 +51,7 @@ fn profile_edit(value: &'static str) -> ConfigEdit {
 // Spec (config-menu): Descriptor integrity; the row is found by kind.
 #[test]
 fn the_profile_row_follows_the_task_rows() {
-    let row = &AI_SECTION.items[6];
+    let row = &AI_SECTION.items[7];
     assert_eq!(row.label, "Profile");
     assert!(matches!(row.kind, ItemKind::Profile));
     let kinds = AI_SECTION
@@ -60,22 +60,22 @@ fn the_profile_row_follows_the_task_rows() {
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 17);
+    assert_eq!(AI_SECTION.items.len(), 19);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.
 #[test]
-fn profile_sits_between_summarize_and_context_in_navigation() {
+fn profile_sits_between_orchestrate_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    m.goto("summarize");
+    m.goto("orchestrate");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Profile", "after summarize");
+    assert_eq!(selected_label(&m), "Profile", "after orchestrate");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Context", "then Context");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Profile");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "summarize");
+    assert_eq!(selected_label(&m), "orchestrate");
 }
 
 // Spec (config-menu): AI section rows.

@@ -46,16 +46,17 @@ fn approval_edit(value: &'static str) -> ConfigEdit {
 }
 
 // Spec (agent-tools, config menu): the row follows Tools and the five family
-// rows, right before `Hugging Face` (config-menu, Hugging Face account row),
-// and is found by its kind.
+// rows, ahead of the `Orchestrator` gate and `Hugging Face` (config-menu,
+// Hugging Face account row), and is found by its kind.
 #[test]
 fn the_approval_row_precedes_hugging_face_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let approval = &items[items.len() - 2];
+    let approval = &items[items.len() - 3];
     assert_eq!(approval.label, "Approval");
     assert!(matches!(approval.kind, ItemKind::Approval));
+    assert_eq!(items[items.len() - 2].label, "Orchestrator");
     assert_eq!(items[items.len() - 1].label, "Hugging Face");
-    assert_eq!(items[items.len() - 3].label, "Git write");
+    assert_eq!(items[items.len() - 4].label, "Git write");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Approval))
@@ -64,13 +65,15 @@ fn the_approval_row_precedes_hugging_face_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_ai_tab_holds_seventeen_rows() {
-    assert_eq!(AI_SECTION.items.len(), 17);
+fn the_ai_tab_holds_nineteen_rows() {
+    assert_eq!(AI_SECTION.items.len(), 19);
 }
 
 #[test]
-fn navigation_goes_family_rows_approval_hugging_face_then_wraps_to_the_first_ai_row() {
+fn navigation_goes_family_rows_approval_gate_hugging_face_then_wraps_to_the_first_ai_row() {
     let mut m = on_approval(ApprovalMode::Ask);
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Hugging Face");
     press(&mut m, 'j');
@@ -81,6 +84,8 @@ fn navigation_goes_family_rows_approval_hugging_face_then_wraps_to_the_first_ai_
     );
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Hugging Face");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');

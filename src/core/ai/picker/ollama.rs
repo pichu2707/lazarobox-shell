@@ -7,9 +7,12 @@
 use super::super::Detection;
 use super::super::config::AiConfig;
 use super::super::hf;
-use super::super::ollama_lib::{self, Answer, Ask, Licenses, Manifest, Pick, Pull};
+use super::super::marks::{Tools, tool_mark};
+use super::super::ollama_lib::{
+    self, Answer, Ask, Card, Licenses, Manifest, Pick, Pull, size_params,
+};
 use super::hub::{HINT_CONFIRM, HINT_LIST, Source, TOO_BIG, info, item, shown};
-use super::{Level, Outcome, PickKey, PickRow, Picker, wrap_note};
+use super::{Level, Outcome, PickKey, PickRow, Picker, ToolMark, wrap_note};
 
 /// The entry row on ollama's model level.
 pub const OLLAMA_ROW: &str = "download from Ollama…";
@@ -40,6 +43,8 @@ pub enum Screen {
         model: String,
         manifests: Vec<(String, Option<Manifest>)>,
         ram: Option<u64>,
+        /// Whether the Popular card of `model` declares `tools`.
+        tools: bool,
     },
     /// Everything the user agrees to with `y`.
     Confirm(Box<Confirm>),
@@ -111,22 +116,24 @@ impl Ollama {
                 if picks.is_empty() {
                     rows.push(info(NONE_FITS.to_owned()));
                 }
-                rows.extend(
-                    picks
-                        .iter()
-                        .enumerate()
-                        .map(|(index, pick)| item(index, pick_label(pick))),
-                );
+                rows.extend(picks.iter().enumerate().map(|(index, pick)| PickRow {
+                    tools: pick_mark(pick),
+                    ..item(index, pick_label(pick))
+                }));
                 rows
             }
             Some(Screen::Sizes {
                 model,
                 manifests,
                 ram,
+                tools,
             }) => manifests
                 .iter()
                 .enumerate()
-                .map(|(index, (tag, manifest))| item(index, size_label(model, tag, manifest, *ram)))
+                .map(|(index, (tag, manifest))| PickRow {
+                    tools: tag_mark(*tools, tag),
+                    ..item(index, size_label(model, tag, manifest, *ram))
+                })
                 .collect(),
             Some(Screen::Confirm(confirm)) => confirm_lines(confirm)
                 .iter()
@@ -136,6 +143,29 @@ impl Ollama {
                 .collect(),
         }
     }
+}
+
+/// Whether the library card lists `tools` among its capabilities.
+pub(super) fn declares_tools(card: &Card) -> bool {
+    card.capabilities
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("tools"))
+}
+
+/// The mark of a Popular row: its card declares `tools`, judged by the
+/// largest size that fits this PC.
+fn pick_mark(pick: &Pick) -> Option<ToolMark> {
+    let declared = declares_tools(&pick.card);
+    let largest = pick.fitting.iter().filter_map(|t| size_params(t)).max();
+    tool_mark(if declared { Tools::Yes } else { Tools::No }, largest)
+}
+
+/// The mark of a Sizes row: the model declares `tools`, judged by this tag.
+pub(super) fn tag_mark(declared: bool, tag: &str) -> Option<ToolMark> {
+    tool_mark(
+        if declared { Tools::Yes } else { Tools::No },
+        size_params(tag),
+    )
 }
 
 /// A Popular row: `llama3.2  86.3M pulls  1b 3b`.
@@ -379,10 +409,19 @@ impl Picker {
                 fallback,
             }),
             (Ask::Sizes { model, .. }, Ok(Answer::Sizes { manifests, ram })) => {
+                // Whether the Popular card of this model declares tools.
+                let tools = match ollama.screen() {
+                    Some(Screen::Popular { picks, .. }) => picks
+                        .iter()
+                        .find(|p| p.card.name == *model)
+                        .is_some_and(|p| declares_tools(&p.card)),
+                    _ => false,
+                };
                 self.push_ollama(Screen::Sizes {
                     model: model.clone(),
                     manifests,
                     ram,
+                    tools,
                 });
             }
             (Ask::Licenses { model, tag, .. }, Ok(Answer::Licenses(licenses))) => {

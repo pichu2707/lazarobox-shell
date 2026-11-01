@@ -9,6 +9,9 @@ use std::path::{Component, Path, PathBuf};
 /// The flag that names the start folder.
 pub const DIR_FLAG: &str = "--dir";
 
+/// The flag that runs the first-run prefix probe again.
+pub const CHECK_PREFIX_FLAG: &str = "--check-prefix";
+
 /// What the command line said about the start folder.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StartArgs {
@@ -16,6 +19,8 @@ pub struct StartArgs {
     pub dir: Option<String>,
     /// `--dir` came without a usable value.
     pub missing_value: bool,
+    /// `--check-prefix`: run the prefix probe even with a stored result.
+    pub check_prefix: bool,
 }
 
 /// What a path is on disk.
@@ -42,6 +47,10 @@ pub fn parse_args(argv: &[String]) -> StartArgs {
     while let Some(arg) = it.next() {
         if !arg.starts_with('-') {
             break;
+        }
+        if arg == CHECK_PREFIX_FLAG {
+            out.check_prefix = true;
+            continue;
         }
         let value = if arg == DIR_FLAG {
             it.next_if(|v| !v.starts_with('-')).cloned()

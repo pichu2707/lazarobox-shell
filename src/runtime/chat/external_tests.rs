@@ -18,15 +18,21 @@ use super::{
 };
 use crate::{
     core::ai::{
+        chat::engine::{Availability, OrchSend},
         chat::{
             approval::ApprovalAsk,
             engine::{Decision, Tools},
         },
-        config::McpServer,
+        config::{McpServer, Profile, Task},
         jail::{JailOff, JailSupport},
+        orchestra::{
+            Toolset,
+            run::{Roster, RunLimits},
+        },
     },
     runtime::{
         mcp::external::fake::{Lab as Fake, lab as fake_lab},
+        orchestra::RunManager,
         proc::process_state,
         tools::{Limits, ToolHost},
     },
@@ -255,6 +261,21 @@ async fn quitting_stops_every_server() {
 // shim lists it, a call asks `y`, and only then the server is contacted.
 #[tokio::test]
 async fn a_cli_engine_lists_the_user_tool_and_a_call_waits_for_y() {
+    user_tool_listed_and_asked(false).await;
+}
+
+// Spec (agent-tools, Toolsets by session role; user decision 2026-10-29):
+// an orchestrator turn offers the user's server tools beside its own, and a
+// call asks `y` exactly as in a chat turn.
+#[tokio::test]
+async fn an_orchestrator_turn_lists_the_user_tool_and_a_call_waits_for_y() {
+    user_tool_listed_and_asked(true).await;
+}
+
+/// A turn on `claude` with the fake `fs` server: its `search` tool is listed
+/// (with `spawn_agent` in an orchestrator turn, never otherwise), a call asks
+/// `y`, and the server is contacted only after it.
+async fn user_tool_listed_and_asked(orchestrated: bool) {
     let lab = lab();
     let started = Arc::new(Notify::new());
     let runner: Runner = {
@@ -268,8 +289,29 @@ async fn a_cli_engine_lists_the_user_tool_and_a_call_waits_for_y() {
         })
     };
     let servers = vec![lab.fake.server("fs", "search", "found it")];
-    let (mut chats, mut rx) = open_chats(&lab, runner, servers);
-    chats.send(pane(1), 4, turn_on("claude"));
+    let (mut chats, mut rx) = open_chats(&lab, runner.clone(), servers);
+    if orchestrated {
+        let (events, _) = mpsc::unbounded_channel();
+        let manager = Arc::new(RunManager::new(runner, None, events));
+        chats = chats.with_orchestra(manager);
+        let mut request = turn_on("claude");
+        request.families = Toolset::Orchestrator.families();
+        let ready = Availability::Ready {
+            engine: "claude".into(),
+            model: Some("opus".into()),
+        };
+        let orch = OrchSend {
+            roster: Roster::new(vec![(Task::Orchestrate, ready)]),
+            profile: Profile::default(),
+            deadline: Duration::from_secs(60),
+            limits: RunLimits::default(),
+            goal: String::new(),
+            attach: None,
+        };
+        chats.send_orchestrated(pane(1), 4, request, orch);
+    } else {
+        chats.send(pane(1), 4, turn_on("claude"));
+    }
     timeout(Duration::from_secs(10), started.notified())
         .await
         .expect("the engine starts after the servers");
@@ -294,6 +336,7 @@ async fn a_cli_engine_lists_the_user_tool_and_a_call_waits_for_y() {
         "params": {"name": "fs__search", "arguments": {"q": "cats"}}}))
     .await;
     let mut listed = false;
+    let mut orchestration = None;
     let mut line = String::new();
     // The call is announced with its ask, and nothing reached the server.
     let (_, turn, id, ask) = loop {
@@ -326,6 +369,7 @@ async fn a_cli_engine_lists_the_user_tool_and_a_call_waits_for_y() {
         if reply["id"] == 1 {
             let names = reply["result"]["tools"].as_array().unwrap();
             listed = names.iter().any(|t| t["name"] == "fs__search");
+            orchestration = Some(names.iter().any(|t| t["name"] == "spawn_agent"));
         }
         if reply["id"] == 5 {
             let text = reply["result"]["content"][0]["text"].as_str().unwrap();
@@ -335,6 +379,7 @@ async fn a_cli_engine_lists_the_user_tool_and_a_call_waits_for_y() {
         }
     }
     assert!(listed, "tools/list did not offer fs__search");
+    assert_eq!(orchestration, Some(orchestrated), "spawn_agent offered");
     assert!(lab.fake.received("fs").contains("\"q\":\"cats\""));
     chats.shutdown(Duration::from_secs(5)).await;
 }

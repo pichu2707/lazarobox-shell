@@ -298,7 +298,8 @@ impl ChatState {
             StreamEvent::ThinkingDelta(_)
             | StreamEvent::Notice(_)
             | StreamEvent::ToolCall { .. }
-            | StreamEvent::ToolResult { .. } => Follow::Nothing,
+            | StreamEvent::ToolResult { .. }
+            | StreamEvent::Usage(_) => Follow::Nothing,
             StreamEvent::Delta(text) => {
                 if text.is_empty() {
                     return Follow::Nothing;

@@ -13,7 +13,7 @@ use toml::{Table, Value};
 
 use super::ai::{
     self,
-    config::{AiConfig, ApprovalMode, ToolToggle},
+    config::{AiConfig, ApprovalMode, Task, ToolToggle},
 };
 
 /// Which edge of the screen a bar sits on.
@@ -111,6 +111,23 @@ impl ConfigEdit {
         }
     }
 
+    /// An edit of an owned orchestrator flag (`ai.orchestrator.enabled` or
+    /// `.acknowledged`). `worker_timeout_secs` is owned but never edited.
+    pub fn orchestrator_flag(key: &'static str, on: bool) -> Self {
+        Self {
+            table: ORCHESTRATOR_TABLE,
+            key,
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// Whether the edit deletes its key instead of writing it: a cleared
+    /// `orchestrate` slot is absent from the file, not a pair of empty
+    /// strings.
+    pub fn is_removal(&self) -> bool {
+        self.table == Task::Orchestrate.table() && self.value.is_empty()
+    }
+
     /// Whether the key is a TOML integer (written as a number, not as a
     /// string): `ai.servers.llamacpp.idle_minutes`.
     pub fn is_integer(&self) -> bool {
@@ -119,9 +136,9 @@ impl ConfigEdit {
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches and `ai.servers.llamacpp.managed`.
-    /// Every other owned key holds a string; `ai.memory.port` is owned but
-    /// never edited.
+    /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches,
+    /// `ai.servers.llamacpp.managed` and the orchestrator flags. Every other
+    /// owned key holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
@@ -129,6 +146,7 @@ impl ConfigEdit {
             || (self.table == TOOLS_TABLE
                 && (self.key == "enabled" || ToolToggle::ALL.iter().any(|t| t.key() == self.key)))
             || (self.table == LLAMACPP_TABLE && self.key == "managed")
+            || (self.table == ORCHESTRATOR_TABLE && matches!(self.key, "enabled" | "acknowledged"))
     }
 }
 
@@ -137,6 +155,9 @@ pub const LLAMACPP_TABLE: &str = "ai.servers.llamacpp";
 
 /// The dotted table of the memory keys.
 pub const MEMORY_TABLE: &str = "ai.memory";
+
+/// The dotted table of the orchestrator keys.
+pub const ORCHESTRATOR_TABLE: &str = "ai.orchestrator";
 
 /// The dotted table of the agent tools keys.
 pub const TOOLS_TABLE: &str = "ai.tools";

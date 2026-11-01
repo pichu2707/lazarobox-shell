@@ -668,4 +668,65 @@ mod tests {
             "[ai]\nnotify = \"auto\"\n"
         );
     }
+
+    // Spec (config-persistence): the orchestrator keys follow the save rules.
+    #[test]
+    fn an_orchestrator_collision_maps_to_its_message_and_stays_byte_identical() {
+        let flag = ConfigEdit::orchestrator_flag("enabled", true);
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        for (text, message) in [
+            (
+                "[ai]\norchestrator = 3\n",
+                "config.toml: ai.orchestrator is not a table; fix it before saving",
+            ),
+            (
+                "[ai.orchestrator.enabled]\nx = 1\n",
+                "config.toml: ai.orchestrator.enabled is a table; fix it before saving",
+            ),
+        ] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(
+                save_config(Some(&path), std::slice::from_ref(&flag)),
+                Err(message.to_owned())
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn the_notice_acceptance_alone_is_saved_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        save_config(
+            Some(&path),
+            &[ConfigEdit::orchestrator_flag("acknowledged", true)],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ai.orchestrator]\nacknowledged = true\n"
+        );
+    }
+
+    #[test]
+    fn clearing_the_orchestrate_slot_on_disk_removes_the_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(
+            &path,
+            "[ai]\nengine = \"x\"\n\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n",
+        )
+        .unwrap();
+        let clear = |key| ConfigEdit {
+            table: "ai.tasks.orchestrate",
+            key,
+            value: std::borrow::Cow::Borrowed(""),
+        };
+        save_config(Some(&path), &[clear("engine"), clear("model")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().trim_end(),
+            "[ai]\nengine = \"x\""
+        );
+    }
 }

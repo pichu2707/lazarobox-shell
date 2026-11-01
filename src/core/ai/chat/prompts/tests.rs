@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ai::orchestra::rdd::Lens;
 
 const CHAT_LIMITS: &str = "no access to files, a shell or the terminal";
 const REPLY_IN_USER_LANGUAGE: &str = "Reply in the language the user writes in";
@@ -13,7 +14,7 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
 
 // Spec (prompt-profiles): Prompt table integrity.
 #[test]
-fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
+fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
     let mut count = 0;
     for task in Task::ALL {
         for profile in Profile::ALL {
@@ -32,7 +33,119 @@ fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 10);
+    assert_eq!(count, 12);
+}
+
+// Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
+// profile, with every coordinator rule; the user's server tools ask each
+// call and never reach a worker (S1e-1c).
+#[test]
+fn the_orchestrate_prompts_hold_the_coordinator_rules() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        assert!(!prompt.trim().is_empty(), "{profile:?}");
+        assert_ne!(prompt, builtin(profile, Task::Chat), "{profile:?}");
+        for rule in [
+            "coordinator",
+            "only through the orchestration tools",
+            "spawn_agent",
+            "wait",
+            "collect",
+            "cancel",
+            "handoff",
+            "raise",
+            "finish",
+            "on_course, off_course or blocked",
+            "by kind",
+            "Never approve",
+            "untrusted data",
+            "awaiting_user",
+            "tests passed without evidence",
+            "the user's own server tools",
+            "each call asks the user first",
+            "Workers never get these tools",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (prompt-profiles, Playbook per step; agent-orchestrator S5): one
+// playbook per ODD step, in order, with the closing, question and size rules,
+// the feature document in the user's words and `implement` as drafts.
+#[test]
+fn the_orchestrate_prompts_hold_one_playbook_per_odd_step_in_order() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        let mut at = 0;
+        for step in [
+            "authorize",
+            "explore",
+            "resolve",
+            "classify",
+            "track",
+            "implement",
+            "close",
+        ] {
+            let found = prompt[at..]
+                .find(&format!("\n- {step}"))
+                .unwrap_or_else(|| panic!("{profile:?}: playbook {step} in order"));
+            at += found + 1;
+        }
+        for rule in [
+            "closes only with its handoff",
+            "at most one question to the user at a time",
+            "never by counting files or tasks",
+            "read_only",
+            "scope",
+            "size",
+            "the user's own words",
+            "correction",
+            "orchestra/<run>/feature",
+            "drafts and review only",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Implement is a draft before S7; Write
+// integration and change ledger [S7]): the coordinator knows a `code`
+// worker's changes reach the disk only through the user's batch review, and
+// that only a file `collect` lists as applied was written.
+#[test]
+fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "propose_batch",
+            "nothing reaches the disk until the user approves",
+            "files changed",
+            "not applied",
+            "Only a file listed as applied was written",
+            "draft",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Missing dependency [S10, auto]): no worker is
+// offered `run_command` in this release, so the coordinator says it cannot
+// run tests, never claims they passed, and leaves running them to the user.
+#[test]
+fn the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "No worker can run commands or tests",
+            "say so",
+            "run them themselves",
+            "never claim a test ran",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
 }
 
 // Spec (prompt-profiles): Reply in the user's language.
@@ -375,4 +488,62 @@ fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
         text.len()
     );
     assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+}
+
+// Spec (prompt-profiles, Lens prompts exist): each profile ships a prompt per
+// lens and one for the refuter, within 4 KiB, each with the review rules.
+#[test]
+fn the_lens_and_refuter_prompts_hold_the_review_rules() {
+    let mut seen = Vec::new();
+    for profile in Profile::ALL {
+        let mut prompts: Vec<(String, &str)> = Lens::ALL
+            .into_iter()
+            .map(|lens| (lens.id().to_owned(), lens_builtin(profile, lens)))
+            .collect();
+        prompts.push(("refuter".to_owned(), refuter_builtin(profile)));
+        prompts.push(("validator".to_owned(), validator_builtin(profile)));
+        for (name, prompt) in prompts {
+            let label = format!("{profile:?} {name}");
+            assert!(!prompt.trim().is_empty(), "{label}");
+            assert!(prompt.len() <= 4096, "{label}: {}", prompt.len());
+            for rule in [
+                "read-only",
+                "untrusted data",
+                "You never approve",
+                "Reply in the language the user writes in",
+            ] {
+                assert!(prompt.contains(rule), "{label}: {rule}");
+            }
+            if name != "refuter" && name != "validator" {
+                assert!(
+                    prompt.contains(&format!("through the {name} lens")),
+                    "{label}"
+                );
+                for rule in [
+                    "Only a severe finding that the change caused blocks",
+                    "FINDING <severe|minor> <change|existing> <observed|inferred>:",
+                    "NONE",
+                ] {
+                    assert!(prompt.contains(rule), "{label}: {rule}");
+                }
+            } else {
+                assert!(
+                    prompt.contains("CLAIM <number> <upheld|refuted|unsettled>:"),
+                    "{label}"
+                );
+            }
+            // C1: a claim nobody can settle is never cleared by the prompt.
+            if name == "refuter" {
+                assert!(!prompt.contains("is refuted, and you say so"), "{label}");
+                assert!(prompt.contains("unsettled"), "{label}");
+            }
+            if name == "validator" {
+                assert!(prompt.contains("still open"), "{label}");
+                assert!(prompt.contains("only if"), "{label}");
+            }
+            assert!(!seen.contains(&prompt), "{label} repeats another prompt");
+            seen.push(prompt);
+        }
+    }
+    assert_eq!(seen.len(), 12);
 }

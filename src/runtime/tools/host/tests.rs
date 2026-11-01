@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// A temp HOME with a directory to find and a file to read.
-fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
+pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().canonicalize().unwrap().join("home");
     std::fs::create_dir_all(home.join("dev/curso-rust")).unwrap();
@@ -33,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
     (dir, home, host)
 }
 
-fn scope(locality: Locality, home: &Path) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
+pub(super) fn scope(locality: Locality, home: &Path) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
     let (tx, rx) = mpsc::channel(32);
     (TurnScope::new(tx, locality, home.to_path_buf()), rx)
 }
@@ -45,7 +45,7 @@ pub(super) fn events(rx: &mut mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
 /// Answers every ask the same way and remembers what it was asked.
 pub(super) struct Scripted {
     answer: Decision,
-    asked: Mutex<Vec<ApprovalAsk>>,
+    pub(super) asked: Mutex<Vec<ApprovalAsk>>,
 }
 
 impl Scripted {
@@ -80,13 +80,13 @@ fn find(query: &str) -> Call {
     }
 }
 
-fn run_cmd(command: &str) -> Call {
+pub(super) fn run_cmd(command: &str) -> Call {
     Call::RunInPane {
         command: command.into(),
     }
 }
 
-fn read(path: &str) -> Call {
+pub(super) fn read(path: &str) -> Call {
     Call::ReadFile {
         path: path.into(),
         lines: None,

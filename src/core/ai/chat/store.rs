@@ -9,7 +9,10 @@
 use std::path::PathBuf;
 
 use super::{Msg, MsgStatus, engine::Role, tags::Tags};
-use crate::core::{ai::sanitize::clean, layout::PaneId};
+use crate::core::{
+    ai::{orchestra::record::RunRecord, sanitize::clean},
+    layout::PaneId,
+};
 
 /// The most conversations the store keeps.
 pub const RETENTION_LIMIT: usize = 200;
@@ -134,6 +137,13 @@ pub enum StoreCmd {
     /// with `Deleted` (carrying the note rows the delete took with it), or
     /// `DeleteFailed`.
     Delete { pane: PaneId, conversation: i64 },
+    /// Stores an orchestrator run with its workers, replacing what the store
+    /// holds under the same id (S9). Silent on success; a failure is answered
+    /// with `RunsFailed`.
+    SaveRun { pane: PaneId, run: Box<RunRecord> },
+    /// Marks the live runs whose process is gone as interrupted and answers
+    /// with them and the ones still interrupted from before (S9): `RunsRecovered`, or `RunsFailed`. Nothing is started.
+    RecoverRuns { pane: PaneId },
     /// Finish what is queued and stop.
     Quit,
 }
@@ -278,6 +288,18 @@ pub enum StoreReply {
     RecentFolders {
         pane: PaneId,
         folders: Vec<PathBuf>,
+    },
+    /// The runs a restart found live and marked interrupted, newest first
+    /// (empty for most starts).
+    RunsRecovered {
+        pane: PaneId,
+        runs: Vec<RunRecord>,
+    },
+    /// A run could not be stored (`saving`) or the stored runs could not be
+    /// read. The chat history is unaffected.
+    RunsFailed {
+        pane: PaneId,
+        saving: bool,
     },
 }
 

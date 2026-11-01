@@ -6,6 +6,7 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +20,8 @@ use crate::core::ai::{
         review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
     },
-    config::ApprovalMode,
+    config::{ApprovalMode, Task},
+    orchestra::WorkerKey,
     sanitize::clean,
     tools::{
         Call, Locality, allow,
@@ -56,6 +58,13 @@ pub const ASK_ARM_DELAY: Duration = Duration::from_millis(800);
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
 
+/// How many worker asks may wait behind the one shown; one more is refused
+/// with [`ANOTHER_PENDING`], so a flood never grows without limit.
+pub const MAX_QUEUED: usize = 16;
+
+/// The reason given to a worker ask that finds the queue full.
+pub const QUEUE_FULL: &str = "approval queue full";
+
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
 
@@ -90,6 +99,18 @@ pub enum ApprovalAsk {
     /// in what it found. The ask an edit opens is always `Other`.
     Read {
         path: String,
+        reach: Reach,
+        cloud: bool,
+    },
+    /// A worker's read outside its run's scope: `path`, `reach` and `cloud`
+    /// as in `Read`, so the approval mode answers it exactly as the same chat
+    /// read (see [`answers_itself`]), and the worker's `label` (see
+    /// [`worker_label`]) for its prompt.
+    WorkerRead {
+        path: String,
+        label: String,
+        /// The worker that asks: the session the answer is addressed to.
+        worker: WorkerKey,
         reach: Reach,
         cloud: bool,
     },
@@ -147,6 +168,19 @@ pub enum ApprovalAsk {
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+    /// A worker's staged change is `high` risk and a receipt-driven review
+    /// would spend lens workers on it (S7b, D16): the user is asked first.
+    /// `y` consents; anything else declines, and the change goes on to the
+    /// batch review marked `not reviewed`. Never routed by the approval mode,
+    /// and only the user answers it: the orchestrator cannot.
+    Consent {
+        /// The worker whose change it is: the session the answer goes to.
+        worker: WorkerKey,
+        /// That worker's label (see [`worker_label`]), one clean line.
+        label: String,
+        /// Why the change is `high` and which paths it holds, one clean line.
+        change: String,
+    },
     /// Change the chat folder (the user's `/cd`, never a tool call). `from`
     /// is the current folder as one sanitized line, `to` the resolved folder
     /// that becomes the chat's on `y`, and `note` a fact the user must see
@@ -198,6 +232,27 @@ impl ApprovalAsk {
         }
     }
 
+    /// Whether a worker raised the ask (a read outside its scope, a batch it
+    /// proposed): only those queue behind a pending approval.
+    pub fn is_worker(&self) -> bool {
+        match self {
+            Self::WorkerRead { .. } | Self::Consent { .. } => true,
+            Self::Batch(review) => review.label().is_some(),
+            _ => false,
+        }
+    }
+
+    /// The worker whose session the ask belongs to, `None` for a chat's own.
+    /// The answer, and the withdrawal when the worker ends, are addressed to
+    /// that session and no other.
+    pub fn worker(&self) -> Option<WorkerKey> {
+        match self {
+            Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
+            Self::Batch(review) => review.worker(),
+            _ => None,
+        }
+    }
+
     /// How long after it opens the keys start to answer this ask: the review
     /// of a batch waits longer than any other ask, because the user has to
     /// read it first.
@@ -218,6 +273,8 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
+/// A worker's read is not decided here: outside the run's scope the host asks
+/// [`ApprovalAsk::WorkerRead`] where a chat read would ask.
 /// The host also asks for a local read that leads outside the chat's root,
 /// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
@@ -280,7 +337,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         }
         // `glob` returns names only and, like the directory tools, never asks.
         // Staging touches no disk and asks nothing: the host builds the batch
-        // ask itself when `propose_batch` seals the batch.
+        // ask itself when `propose_batch` seals the batch. An orchestration
+        // call touches nothing of the user's: it never asks.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
@@ -294,8 +352,15 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
         // The host reads the index and builds the commit review itself.
-        | Call::GitCommit { .. } => None,
+        | Call::GitCommit { .. }
+        | Call::Orchestra(_) => None,
     }
+}
+
+/// The label of a worker's asks: `<kind> <engine>><model>`, the engine and
+/// the model each one sanitized line, cut like a server name.
+pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
+    format!("{} {}>{}", kind.id(), shown_name(engine), shown_name(model))
 }
 
 /// The most characters of the paths of an add that its prompt shows. The host
@@ -628,17 +693,21 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// no prompt; `None` opens the prompt. A read or a search let go gets
 /// [`Decision::Unprompted`], which the host never takes for the user's `y`.
 ///
-/// In `run`: a search of a concrete root (its walk never leaves the root),
-/// and a cloud read that stays in such a root or that the path guard refuses
-/// (the read then returns the refusal). A read or a search under a root that
+/// In every mode: a cloud read that the path guard refuses (the read then
+/// returns the refusal and no prompt opens). In `run`: a search of a concrete
+/// root (its walk never leaves the root), and a cloud read that stays in such
+/// a root. A read or a search under a root that
 /// is HOME or `/` ([`Reach::Broad`]) prompts, and so does a read that leads
 /// outside the root, on every engine; one whose path cannot be shown is
-/// denied, as no prompt may approve it. In `ask` and `auto`: only a local
+/// denied, as no prompt may approve it. In `ask` and `auto`: a local
 /// read outside the root, which runs free there as it always has; every
-/// other ask prompts. A command, a user tool, a batch and the ask of an edit
-/// are never answered here.
+/// other ask prompts. A worker's read outside its run's scope is answered
+/// exactly as the same chat read. A command, a user tool, a batch and the ask
+/// of an edit are never answered here.
 pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
-    let ApprovalAsk::Read { reach, cloud, .. } = ask else {
+    let (ApprovalAsk::Read { reach, cloud, .. } | ApprovalAsk::WorkerRead { reach, cloud, .. }) =
+        ask
+    else {
         let search = matches!(
             ask,
             ApprovalAsk::Search {
@@ -649,7 +718,12 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision>
         return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
     };
     match (mode, reach, cloud) {
-        (ApprovalMode::Run, Reach::Root | Reach::Refused, true) => Some(Decision::Unprompted),
+        // A cloud read the path guard refuses (a secret such as `.env`, any
+        // spelling of it, or a path that does not exist) is answered in every
+        // mode: the read returns the refusal and opens nothing, so a prompt
+        // would offer the user a `y` that cannot work.
+        (_, Reach::Refused, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Root, true) => Some(Decision::Unprompted),
         (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
         (ApprovalMode::Run, _, _) => None,
         // The local engine asks only for a read outside the root.
@@ -758,13 +832,20 @@ pub const SEARCH_KEYS: &str = "y search · n deny";
 pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 /// The keys of the folder prompt while the folder is checked after `y`.
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
+/// The keys of the consent prompt of a receipt-driven review.
+pub const CONSENT_KEYS: &str = "y review it · n skip the review";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
-/// The pending approval of a chat, if any.
+/// The pending approval of a chat, if any, and the worker asks queued behind
+/// it (first in, first shown).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// Worker asks that arrived while another was shown, oldest first.
+    queue: VecDeque<Approval>,
+    /// A queued ask just became the pending one and the app has not armed it.
+    promoted: bool,
     /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
     /// approval, however that ends.
     review: Option<ReviewView>,
@@ -776,8 +857,26 @@ impl Approvals {
         self.pending.as_ref()
     }
 
+    /// The worker asks waiting behind the pending one, oldest first.
+    pub fn queued(&self) -> impl Iterator<Item = &Approval> {
+        self.queue.iter()
+    }
+
+    /// How many worker asks wait behind the pending one.
+    pub fn waiting(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Whether the pending approval was a queued one, promoted by an answer
+    /// or a withdrawal since the last call. The app then arms it afresh.
+    pub fn take_promoted(&mut self) -> bool {
+        std::mem::take(&mut self.promoted)
+    }
+
     /// Ask the user and return the id of the new approval. Refused with
-    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending.
+    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending. A
+    /// worker's ask (see [`ApprovalAsk::is_worker`]) queues instead, up to
+    /// [`MAX_QUEUED`].
     pub fn request(&mut self, ask: ApprovalAsk, origin: Origin) -> Result<u64, Refusal> {
         self.open(ask, origin, None, None)
     }
@@ -803,19 +902,39 @@ impl Approvals {
         call: Option<(u64, CallId)>,
         why: Option<String>,
     ) -> Result<u64, Refusal> {
+        // Only a tool call (it has a call) queues: a review the user opened
+        // is never a worker's ask, whatever its label.
+        let worker = call.is_some() && ask.is_worker();
         if self.pending.is_some() {
-            return Err(Refusal::new(ANOTHER_PENDING));
+            if !worker {
+                return Err(Refusal::new(ANOTHER_PENDING));
+            }
+            if self.queue.len() >= MAX_QUEUED {
+                return Err(Refusal::new(QUEUE_FULL));
+            }
         }
         let id = next_id();
-        self.review = None;
-        self.pending = Some(Approval {
+        let approval = Approval {
             id,
             ask,
             origin,
             call,
             why,
-        });
+        };
+        if self.pending.is_some() {
+            self.queue.push_back(approval);
+        } else {
+            self.review = None;
+            self.pending = Some(approval);
+        }
         Ok(id)
+    }
+
+    /// The pending approval ended: the oldest queued ask takes its place.
+    fn promote(&mut self) {
+        self.review = None;
+        self.pending = self.queue.pop_front();
+        self.promoted = self.pending.is_some();
     }
 
     /// Answer approval `id`. Only a [`Press::Press`] answers; a repeat or a
@@ -828,8 +947,9 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
-        self.review = None;
-        self.pending.take().map(|approval| (approval, reply))
+        let approval = self.pending.take();
+        self.promote();
+        approval.map(|approval| (approval, reply))
     }
 
     /// End approval `id` without an answer (cancel, close, a target that is
@@ -837,10 +957,12 @@ impl Approvals {
     /// records the result as denied.
     pub fn withdraw(&mut self, id: u64) -> Option<Approval> {
         if self.pending.as_ref()?.id != id {
-            return None;
+            let at = self.queue.iter().position(|queued| queued.id == id)?;
+            return self.queue.remove(at);
         }
-        self.review = None;
-        self.pending.take()
+        let approval = self.pending.take();
+        self.promote();
+        approval
     }
 
     /// The review view of the pending batch, if it is one.
@@ -921,6 +1043,56 @@ mod tests {
         match route {
             Route::Prompt(Some(fallback)) => Some(fallback.why),
             _ => None,
+        }
+    }
+
+    // Spec (agent-orchestrator, Outside read asks with a label): the label
+    // is the kind and `engine>model`, the engine and the model each one
+    // sanitized line cut like a server name.
+    #[test]
+    fn a_worker_label_is_the_kind_and_engine_model_on_one_clipped_line() {
+        assert_eq!(
+            worker_label(Task::Review, "claude", "opus"),
+            "review claude>opus"
+        );
+        let model = format!("qwen\n\x1b[31m{}", "m".repeat(100));
+        let label = worker_label(Task::Code, "ollama", &model);
+        assert!(label.starts_with("code ollama>qwen "), "{label:?}");
+        assert!(
+            !label.contains('\n') && !label.contains('\x1b'),
+            "{label:?}"
+        );
+        assert!(label.ends_with('\u{2026}'), "{label:?}");
+        assert_eq!(label.chars().count(), "code ollama>".len() + SHOWN_NAME + 1);
+    }
+
+    // Spec (agent-orchestrator, Outside read follows the mode as a chat read):
+    // a worker's read ask is never typed or run: where the mode does not
+    // answer it, it prompts, as the same chat read does.
+    #[test]
+    fn a_worker_read_routes_as_the_same_chat_read_in_every_mode() {
+        for (reach, cloud) in [
+            (Reach::Other, true),
+            (Reach::Root, true),
+            (Reach::Other, false),
+        ] {
+            let worker = ApprovalAsk::WorkerRead {
+                worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+                path: "~/a".into(),
+                label: "review claude>opus".into(),
+                reach,
+                cloud,
+            };
+            let chat = ApprovalAsk::Read {
+                path: "~/a".into(),
+                reach,
+                cloud,
+            };
+            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+                let got = route(&worker, Origin::Tool, mode, FREE);
+                assert_eq!(got, route(&chat, Origin::Tool, mode, FREE), "{mode:?}");
+                assert_eq!(got, Route::Prompt(None), "{mode:?}");
+            }
         }
     }
 
@@ -1384,7 +1556,9 @@ mod tests {
         let reads = [
             // (reach, cloud, run, ask and auto)
             (Root, true, free, None),
-            (Refused, true, free, None),
+            // A path the guard refuses never prompts on a cloud engine, in
+            // any mode: the user's `y` could not open it (T10).
+            (Refused, true, free, free),
             (Broad, true, None, None),
             (Other, true, None, None),
             (Unshowable, true, unshowable, None),
@@ -1394,15 +1568,21 @@ mod tests {
             (Other, false, None, free),
             (Unshowable, false, unshowable, free),
         ];
+        // A worker's read outside its run's scope follows the same table
+        // (agent-orchestrator, Outside read follows the mode as a chat read).
+        let worker = |reach, cloud| ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+            path: "~/a".into(),
+            label: "review claude>opus".into(),
+            reach,
+            cloud,
+        };
         for (reach, cloud, run, others) in reads {
-            let ask = read(reach, cloud);
-            assert_eq!(answers_itself(&ask, Run), run, "{reach:?} cloud={cloud}");
-            for mode in [Ask, Auto] {
-                assert_eq!(
-                    answers_itself(&ask, mode),
-                    others,
-                    "{mode:?} {reach:?} {cloud}"
-                );
+            for ask in [read(reach, cloud), worker(reach, cloud)] {
+                assert_eq!(answers_itself(&ask, Run), run, "{ask:?}");
+                for mode in [Ask, Auto] {
+                    assert_eq!(answers_itself(&ask, mode), others, "{mode:?} {ask:?}");
+                }
             }
         }
         for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
@@ -1538,6 +1718,100 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.reason(), "another approval is pending");
         assert_eq!(a.pending().unwrap().ask(), &run("one"));
+    }
+
+    fn worker_read(path: &str, label: &str) -> ApprovalAsk {
+        ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+            path: path.into(),
+            label: label.into(),
+            reach: Reach::Other,
+            cloud: false,
+        }
+    }
+
+    // Spec (agent-tools, Approval queue for workers; FIFO order): asks A then
+    // B from different workers are shown A first, then B, one at a time.
+    #[test]
+    fn worker_asks_queue_in_arrival_order_and_show_one_at_a_time() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "review claude>opus"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "general codex>x"), 1, CallId(2), None)
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 1);
+        let (done, _) = a.answer(first, Reply::Approve, Press::Press).unwrap();
+        assert_eq!(done.call(), Some((1, CallId(1))));
+        assert_eq!(a.pending().unwrap().id(), second);
+        assert_eq!(a.waiting(), 0);
+        assert!(a.take_promoted());
+        assert!(!a.take_promoted(), "reported once");
+        a.answer(second, Reply::Decline, Press::Press).unwrap();
+        assert!(a.pending().is_none() && !a.take_promoted());
+    }
+
+    // Spec (chat-pane, Approval label and queue): each answer applies to its
+    // own prompt only; an id that is not the shown one changes nothing.
+    #[test]
+    fn an_answer_applies_to_its_own_prompt_only() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        assert!(a.answer(second, Reply::Approve, Press::Press).is_none());
+        assert_eq!(a.waiting(), 1);
+    }
+
+    // Spec (agent-tools): cancelling a session denies its pending and queued
+    // approvals. A queued ask can be withdrawn without touching the shown one.
+    #[test]
+    fn a_queued_ask_can_be_withdrawn_and_the_shown_one_stays() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        let withdrawn = a.withdraw(second).unwrap();
+        assert_eq!(withdrawn.call(), Some((1, CallId(2))));
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 0);
+        assert!(!a.take_promoted());
+    }
+
+    // A chat's own asks keep the one-pending rule; only a worker's queue.
+    #[test]
+    fn a_chat_ask_is_still_refused_beside_a_pending_worker_ask() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let err = a
+            .request_call(ApprovalAsk::read("/x"), 1, CallId(2), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        assert_eq!(a.waiting(), 0);
+    }
+
+    // The queue is bounded: a flood is refused, never grown without limit.
+    #[test]
+    fn the_worker_queue_is_bounded() {
+        let mut a = Approvals::default();
+        for n in 0..=MAX_QUEUED as u64 {
+            a.request_call(worker_read("a", "w"), 1, CallId(n), None)
+                .unwrap();
+        }
+        let err = a
+            .request_call(worker_read("z", "w"), 1, CallId(999), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), QUEUE_FULL);
+        assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
     #[test]

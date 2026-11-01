@@ -12,6 +12,7 @@ use crate::core::{
         },
         config::{Assignment, Task},
     },
+    clipboard::osc52_only,
     copy::osc52,
 };
 
@@ -265,6 +266,19 @@ fn shifted_letters_are_typed() {
     assert_eq!(composer(&a), "H");
 }
 
+// zutty sends Alt+Enter as ESC LF once modifyOtherKeys is off. crossterm
+// 0.29 in raw mode decodes LF as Ctrl+J and ESC adds Alt, so the event is
+// Alt+Ctrl+J: it must insert a newline like Alt+Enter does.
+#[test]
+fn alt_ctrl_j_from_esc_lf_inserts_a_newline() {
+    let mut a = ready_app();
+    type_text(&mut a, "uno");
+    let both = KeyModifiers::ALT | KeyModifiers::CONTROL;
+    assert_eq!(a.update(code(KeyCode::Char('j'), both)), vec![]);
+    type_text(&mut a, "dos");
+    assert_eq!(composer(&a), "uno\ndos");
+}
+
 #[test]
 fn enter_sends_and_the_newline_bindings_do_not() {
     let mut a = ready_app();
@@ -465,12 +479,35 @@ fn the_composer_survives_the_menu_and_the_menu_does_not_feed_it() {
 
 // Yank ------------------------------------------------------------------------
 
+// copy-selection: Other callers get the same notice (chat copy).
+#[test]
+fn ctrl_y_with_a_tool_copies_locally_and_the_answer_updates_the_notice() {
+    let mut a = answered("hello").with_clipboard(Some(crate::core::clipboard::Tool::WlCopy), false);
+    let effects = a.update(ctrl('y'));
+    assert_eq!(
+        effects,
+        vec![
+            Effect::SetClipboard(osc52("hello").unwrap()),
+            Effect::CopyLocal {
+                seq: 1,
+                text: "hello".to_owned()
+            }
+        ]
+    );
+    assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Ok(()),
+    });
+    assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+}
+
 #[test]
 fn ctrl_y_copies_the_last_answer_and_says_how_much() {
     let mut a = answered("hello");
     let effects = a.update(ctrl('y'));
     assert_eq!(effects, vec![Effect::SetClipboard(osc52("hello").unwrap())]);
-    assert_eq!(a.notice(), Some("Copied 5 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert!(a.take_dirty());
 }
 
@@ -478,7 +515,7 @@ fn ctrl_y_copies_the_last_answer_and_says_how_much() {
 fn a_one_character_yank_is_singular() {
     let mut a = answered("x");
     a.update(ctrl('y'));
-    assert_eq!(a.notice(), Some("Copied 1 character"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 }
 
 #[test]
@@ -505,7 +542,7 @@ fn ctrl_b_copies_the_last_code_block_without_its_fences() {
         effects,
         vec![Effect::SetClipboard(osc52("let x = 1;").unwrap())]
     );
-    assert_eq!(a.notice(), Some("Copied 10 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 }
 
 #[test]
