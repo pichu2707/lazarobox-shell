@@ -8,6 +8,7 @@ use super::orchestra_send::{orch_app, toggle};
 use super::*;
 use crate::app::orchestra::OrchHint;
 use crate::core::ai::chat::{Entry, ReasoningState, engine::StreamEvent};
+use crate::core::clipboard::osc52_only;
 use crate::core::copy::osc52;
 
 /// `a` with the global orchestrator gate (`[ai.orchestrator] enabled`) set.
@@ -157,7 +158,7 @@ fn ctrl_y_still_copies_the_last_answer() {
     let mut a = gated(answered("hello"), true);
     let effects = a.update(ctrl('y'));
     assert_eq!(effects, vec![Effect::SetClipboard(osc52("hello").unwrap())]);
-    assert_eq!(a.notice(), Some("Copied 5 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert!(!orch(&a, chat_id()));
 }
 
