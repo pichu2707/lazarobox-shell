@@ -45,7 +45,7 @@ fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
 // its own kind and a distinct key path.
 #[test]
 fn the_five_rows_sit_between_tools_and_approval_in_order() {
-    let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
+    let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let tools = labels.iter().position(|l| *l == "Tools").unwrap();
     let rows: Vec<_> = ROWS.iter().map(|(label, _)| *label).collect();
     assert_eq!(labels[tools + 1..tools + 6], rows[..]);
@@ -56,7 +56,11 @@ fn the_five_rows_sit_between_tools_and_approval_in_order() {
 fn each_row_is_found_by_its_own_kind_and_key_paths_are_distinct() {
     let mut paths = Vec::new();
     for (label, toggle) in ROWS {
-        let item = AI_SECTION.items.iter().find(|i| i.label == label).unwrap();
+        let item = TOOLS_SECTION
+            .items
+            .iter()
+            .find(|i| i.label == label)
+            .unwrap();
         assert!(
             matches!(item.kind, ItemKind::Family(t) if t == toggle),
             "{label}"

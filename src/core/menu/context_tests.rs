@@ -48,32 +48,9 @@ fn context_edit(value: &'static str) -> ConfigEdit {
 // Spec (Context toggle): the row comes right after Profile and is found by kind.
 #[test]
 fn the_context_row_follows_profile_and_precedes_memory() {
-    let labels: Vec<&str> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(
-        labels,
-        [
-            "Set all tasks",
-            "general",
-            "code",
-            "chat",
-            "review",
-            "summarize",
-            "orchestrate",
-            "Profile",
-            "Context",
-            "Memory",
-            "Tools",
-            "Search",
-            "Write",
-            "Exec",
-            "Git",
-            "Git write",
-            "Approval",
-            "Orchestrator",
-            "Hugging Face",
-        ]
-    );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 11];
+    let labels: Vec<&str> = CHAT_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels, ["Profile", "Context", "Memory"]);
+    let context = &CHAT_SECTION.items[1];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -85,43 +62,11 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Tools");
-    for label in [
-        "Search",
-        "Write",
-        "Exec",
-        "Git",
-        "Git write",
-        "Approval",
-        "Orchestrator",
-        "Hugging Face",
-    ] {
-        press(&mut m, 'j');
-        assert_eq!(selected_label(&m), label);
-    }
-    press(&mut m, 'j');
-    assert_eq!(
-        selected_label(&m),
-        "Set all tasks",
-        "wraps inside the AI tab"
-    );
+    assert_eq!(selected_label(&m), "Profile", "wraps inside the Chat tab");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Hugging Face");
-    for label in [
-        "Orchestrator",
-        "Approval",
-        "Git write",
-        "Git",
-        "Exec",
-        "Write",
-        "Search",
-        "Tools",
-        "Memory",
-        "Context",
-    ] {
-        press(&mut m, 'k');
-        assert_eq!(selected_label(&m), label);
-    }
+    assert_eq!(selected_label(&m), "Memory");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Context");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Profile");
 }

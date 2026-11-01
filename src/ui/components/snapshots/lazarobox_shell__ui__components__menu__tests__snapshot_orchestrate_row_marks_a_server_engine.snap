@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &orchestrating(\"llama3:8b\")))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                        ⇥ Tab │
+│ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
 │ Set all tasks                                claude › opus │
 │ general                       claude (not detected) › opus │
 │ code                                             (default) │
@@ -11,18 +11,9 @@ expression: "text(&draw(62, POPUP_H, &orchestrating(\"llama3:8b\")))"
 │ review                                           (default) │
 │ summarize                                        (default) │
 │ orchestrate           ollama › llama3:8b · not recommended │
-│ Profile                                         programmer │
-│ Context                                                 on │
-│ Memory                                                 off │
-│ Tools                                                   on │
-│ Search                                                 off │
-│ Write                                                  off │
-│ Exec                                                   off │
-│ Git                                                    off │
-│ Git write                                              off │
-│ Approval                                               ask │
-│ Orchestrator                                           off │
 │ Hugging Face                                 not connected │
+│                                                            │
+│                                                            │
 │                                                            │
 │                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │

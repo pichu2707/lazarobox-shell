@@ -1,4 +1,4 @@
-//! Tests of the `Hugging Face` row of the AI tab (config-menu, Hugging Face
+//! Tests of the `Hugging Face` row of the Models tab (config-menu, Hugging Face
 //! account row), at the `MenuState` level.
 
 use super::account::{
@@ -46,16 +46,15 @@ fn pasted() -> MenuState {
     m
 }
 
-// Spec (config-menu): Account row. The row is the last of the AI tab, after
-// the tools rows, and reads `not connected` with no token.
+// Spec (config-menu): Account row. The row is the last of the Models tab,
+// after the task rows, and reads `not connected` with no token.
 #[test]
 fn the_account_row_is_last_and_reads_not_connected_without_a_token() {
-    let items = AI_SECTION.items;
+    let items = MODELS_SECTION.items;
     let last = items.last().unwrap();
     assert_eq!(last.label, "Hugging Face");
     assert!(matches!(last.kind, ItemKind::HfAccount));
-    assert_eq!(items[items.len() - 2].label, "Orchestrator");
-    assert_eq!(items[items.len() - 3].label, "Approval");
+    assert_eq!(items[items.len() - 2].label, "orchestrate");
     let m = open_with(TokenFacts::default(), None);
     assert_eq!(row_value(&m), "not connected");
     let m = on_row(TokenFacts::default(), None);

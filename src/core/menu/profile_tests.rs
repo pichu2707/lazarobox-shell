@@ -50,32 +50,30 @@ fn profile_edit(value: &'static str) -> ConfigEdit {
 
 // Spec (config-menu): Descriptor integrity; the row is found by kind.
 #[test]
-fn the_profile_row_follows_the_task_rows() {
-    let row = &AI_SECTION.items[7];
+fn the_profile_row_opens_the_chat_tab() {
+    let row = &CHAT_SECTION.items[0];
     assert_eq!(row.label, "Profile");
     assert!(matches!(row.kind, ItemKind::Profile));
-    let kinds = AI_SECTION
+    let kinds = CHAT_SECTION
         .items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 19);
+    assert_eq!(CHAT_SECTION.items.len(), 3);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.
 #[test]
-fn profile_sits_between_orchestrate_and_context_in_navigation() {
+fn profile_opens_the_chat_tab_before_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    m.goto("orchestrate");
-    press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Profile", "after orchestrate");
+    m.goto("Profile");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Context", "then Context");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Profile");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "orchestrate");
+    assert_eq!(selected_label(&m), "Memory", "wraps inside the Chat tab");
 }
 
 // Spec (config-menu): AI section rows.
