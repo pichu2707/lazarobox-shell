@@ -59,7 +59,7 @@ Spec: copy-selection "Yank to the clipboard via OSC 52" (all scenarios tagged [a
 - [x] 1.10 REFACTOR: remove duplicated notice strings; keep `copy_to_clipboard` the single choke point.
 - [x] 1.11 Gate. Re-measure production lines (target 190-240).
 - [x] 1.12 Docs: doc comments on `Tool`, `Session`, worker invariants (latest wins, timeout, null stdio).
-- [ ] 1.13 [manual] Local desktop: `y` shows `Copied (<tool>)` and the text pastes in another app; with PATH stripped of tools, the OSC 52-only notice shows. Result goes in the Kitty record (task 4.6).
+- [x] 1.13 [manual] Local desktop: `y` shows `Copied (<tool>)` and the text pastes in another app; with PATH stripped of tools, the OSC 52-only notice shows. Result goes in the Kitty record (task 4.6).
 
 ## S2a: Prefix alias `Ctrl+]` (`src/core/prefix.rs`, `src/app.rs`, `src/core/ai/chat/copy.rs`)
 

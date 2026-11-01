@@ -47,7 +47,7 @@ pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
 }
 
 /// Terminals that have a record under `docs/terminals/<name>/`.
-pub const RECORDED_TERMINALS: [&str; 1] = ["kitty"];
+pub const RECORDED_TERMINALS: [&str; 2] = ["kitty", "zutty"];
 
 /// What the launcher says about the host terminal; `None` is the terminal the
 /// desktop picks (unknown here).
