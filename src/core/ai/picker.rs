@@ -10,7 +10,8 @@ use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
-use super::chat::adapters::adapter_for;
+use super::chat::adapters::{adapter_for, claude_too_old};
+use super::chat::engine::MCP_VERIFIED;
 use super::config::{AiConfig, Assignment, Task};
 use super::marks::{ToolMark, tool_mark};
 use super::parse::sanitize;
@@ -221,14 +222,14 @@ pub fn engine_rows(
         current: current.as_ref().is_some_and(|a| a.engine.is_none()),
         tools: None,
     }];
-    let mut push = |id: &str, mark: Mark, enabled: bool| {
+    let mut push = |id: &str, mark: Mark, enabled: bool, tools: Option<ToolMark>| {
         rows.push(PickRow {
             key: PickKey::Engine(id.to_owned()),
             label: id.to_owned(),
             mark,
             enabled,
             current: current_engine == Some(id),
-            tools: None,
+            tools,
         });
     };
     for engine in CATALOG {
@@ -237,6 +238,7 @@ pub fn engine_rows(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
                 adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
+                cli_tool_mark(engine, detection),
             );
         }
     }
@@ -249,6 +251,7 @@ pub fn engine_rows(
                 engine.id,
                 Mark::Status(status_text(detection, engine.id)),
                 adapter_for(engine.id).is_some() && !is_refused(detection, engine.id),
+                None,
             );
         }
     }
@@ -264,9 +267,25 @@ pub fn engine_rows(
             None => Mark::Checking,
             Some(_) => Mark::Status("(not detected)".to_owned()),
         };
-        push(id, mark, true);
+        push(id, mark, true, None);
     }
     rows
+}
+
+/// The mark of a detected CLI engine whose tools passed the manual MCP check.
+/// Independent of `[ai.tools]`: it says what the engine can do, not what is
+/// switched on. Never a wrong mark: a refused engine (jail) and a claude that
+/// needs an update cannot run tools, so they carry none.
+fn cli_tool_mark(engine: &Engine, detection: Option<&Detection>) -> Option<ToolMark> {
+    let outdated = engine.id == "claude"
+        && detection
+            .and_then(|d| d.engines.iter().find(|s| s.id == engine.id))
+            .is_some_and(|s| claude_too_old(s.version.as_deref()));
+    (matches!(engine.kind, Kind::Cli)
+        && MCP_VERIFIED.contains(&engine.id)
+        && !is_refused(detection, engine.id)
+        && !outdated)
+        .then_some(ToolMark::Capable)
 }
 
 /// The `(label, value)` models the account lists for a CLI engine; empty
@@ -1132,6 +1151,13 @@ mod tests {
         )
     }
 
+    fn marked_engine(id: &str, status: &str, current: bool) -> PickRow {
+        PickRow {
+            tools: Some(ToolMark::Capable),
+            ..engine(id, status, current)
+        }
+    }
+
     fn compact(rows: &[PickRow]) -> Vec<(String, Mark, bool)> {
         rows.iter()
             .map(|r| (r.label.clone(), r.mark.clone(), r.enabled))
@@ -1680,7 +1706,7 @@ mod tests {
                     false
                 ),
                 engine("ollama", "available · 2 models", false),
-                engine("claude", "available · version unknown", false),
+                marked_engine("claude", "available · version unknown", false),
                 engine("lmstudio", "not running", false),
                 engine("codex", "(not detected)", true),
             ]
@@ -2113,7 +2139,7 @@ mod tests {
                     true,
                     true
                 ),
-                engine("claude", "available · version unknown", false),
+                marked_engine("claude", "available · version unknown", false),
                 engine("vllm", "not running", false),
             ]
         );

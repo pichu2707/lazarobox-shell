@@ -7,7 +7,7 @@ expression: "text(&draw(62, POPUP_H, &picker_of(\"code\", 0)))"
 │ Engine for code                                            │
 │ (default · use general)                                    │
 │ ollama available · 8 models                                │
-│ claude available · 2.1.302 ●                               │
+│ claude available · 2.1.302 tools ●                         │
 │ lmstudio not running                                       │
 │ llamacpp not installed                                     │
 │                                                            │

@@ -18,6 +18,10 @@ baseline.
   unknown support or size, shows no mark. The mark is informational (the model
   stays selectable) and shows even with `[ai.tools] enabled = false`. On
   `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
+  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
+  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
+  detected and CLI model rows carry none.
 - Ollama detection now sends one `POST /api/show` per installed model to the
   local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
   2 seconds in total, cached by digest) to read whether it declares tools.

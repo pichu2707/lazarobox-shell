@@ -69,10 +69,10 @@ Order note: S2 and S3 are independent of each other (both need S1b); the chain k
 
 ## S2: CLI engine rows (`src/core/ai/picker.rs`, README, CHANGELOG)
 
-- [ ] S2.1 RED: engine list with claude, codex, gemini, opencode, ollama available → `🔧` on the first three only; shown with `[ai.tools] enabled = false`; status text unchanged and first, mark after; `(not detected)` engine gets no mark; CLI model rows unmarked; text fallback gives `tools` (`Linux console`, `Non-UTF-8 locale`, `Normal terminal`).
-- [ ] S2.2 GREEN: in the `push` closure, set `tools` for `Kind::Cli` ids in `MCP_VERIFIED`; ignore the tools config; ollama row never marked.
-- [ ] S2.3 Gate.
-- [ ] S2.4 Docs: README and CHANGELOG lines for the engine mark.
+- [x] S2.1 RED: engine list with claude, codex, gemini, opencode, ollama available → `🔧` on the first three only; shown with `[ai.tools] enabled = false`; status text unchanged and first, mark after; `(not detected)` engine gets no mark; CLI model rows unmarked; text fallback gives `tools` (`Linux console`, `Non-UTF-8 locale`, `Normal terminal`).
+- [x] S2.2 GREEN: in the `push` closure, set `tools` for `Kind::Cli` ids in `MCP_VERIFIED`; ignore the tools config; ollama row never marked.
+- [x] S2.3 Gate.
+- [x] S2.4 Docs: README and CHANGELOG lines for the engine mark.
 
 ## S3: Download screens (`src/core/ai/picker/ollama.rs`, `src/core/ai/picker/hub.rs`, README, CHANGELOG)
 
