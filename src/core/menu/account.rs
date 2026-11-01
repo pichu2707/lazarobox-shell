@@ -47,6 +47,9 @@ pub struct Account {
     asking: Option<Asking>,
     /// `disconnect <name>? (y/n)` waits for an answer.
     prompt: bool,
+    /// The Hub refused the saved token while another view was open: the field
+    /// opens when that view closes.
+    pending_field: bool,
 }
 
 impl Account {
@@ -109,6 +112,7 @@ impl Account {
     /// Enter on the row: the disconnect prompt for a known account, a check
     /// of the saved token, else the token field.
     pub fn enter(&mut self) -> Option<AccountAsk> {
+        self.pending_field = false;
         if self.asking.is_some() {
             return None;
         }
@@ -206,10 +210,22 @@ impl Account {
         None
     }
 
+    /// Opens the field a refused token was waiting to open. Returns whether
+    /// it did.
+    pub fn open_pending(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.pending_field);
+        if pending {
+            self.field = Some(Secret::default());
+        }
+        pending
+    }
+
     /// What the runtime found. The account follows what really happened,
     /// also for a request nobody waits for any more; a failure comes back
     /// as the message to show only when it was waited for.
-    pub fn reply(&mut self, reply: AccountReply) -> Option<String> {
+    /// `open_field` is false while another view is open: a refused token then
+    /// waits for [`Account::open_pending`] instead of replacing that view.
+    pub fn reply(&mut self, reply: AccountReply, open_field: bool) -> Option<String> {
         let waited = |asking: &mut Option<Asking>, kind: Asking| {
             let found = *asking == Some(kind);
             if found {
@@ -248,8 +264,10 @@ impl Account {
                     }
                     Err(message) if waited => {
                         // A saved token the Hub refuses: paste another.
-                        if message == REJECTED {
+                        if message == REJECTED && open_field {
                             self.field = Some(Secret::default());
+                        } else if message == REJECTED {
+                            self.pending_field = true;
                         }
                         Some(message)
                     }

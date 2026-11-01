@@ -175,6 +175,10 @@ impl AiChoice {
 
     /// Accepting the warning: the row is on and its second key is set.
     pub(crate) fn accept(&self, ai: &mut AiConfig) {
+        debug_assert!(
+            self.second.as_ref().is_some_and(|s| s.warn),
+            "only a warned row opens the warning"
+        );
         if let DraftValue::Flag(flag) = &self.value {
             (flag.set)(ai, 1);
         }
@@ -852,6 +856,8 @@ pub enum MenuCommand {
 /// Footer notices of the tab keys: a refused key always says why.
 const NOTICE_RANGE: &str = "Tabs are 1-5";
 const NOTICE_ONE_TAB: &str = "No other tabs";
+/// The field opened late for a refused token.
+const NOTICE_TOKEN_REFUSED: &str = "Hugging Face token refused";
 const NOTICE_NO_AI: &str = "No AI section";
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -1184,7 +1190,8 @@ impl MenuState {
     /// What the runtime found for an account request of the `Hugging Face`
     /// row; a failure it waited for becomes the footer error.
     pub fn account_reply(&mut self, reply: AccountReply) {
-        if let Some(message) = self.account.reply(reply) {
+        let free = matches!(self.sub_view(), None | Some(SubView::AccountField));
+        if let Some(message) = self.account.reply(reply, free) {
             self.error = Some(message);
         }
     }
@@ -1381,12 +1388,10 @@ impl MenuState {
     /// The link drawn on body row `index`, if that row is one: the token
     /// field's link to create a token, or a sent Feedback issue's link.
     fn link_at(&self, config: &Config, index: usize) -> Option<String> {
-        let link = if self.account.field().is_some() {
-            account::TOKEN_URL
-        } else if let Some(Done::Sent(url)) = &self.feedback_done {
-            url
-        } else {
-            return None;
+        let link = match (self.sub_view(), &self.feedback_done) {
+            (Some(SubView::AccountField), _) => account::TOKEN_URL,
+            (Some(SubView::Feedback), Some(Done::Sent(url))) => url,
+            _ => return None,
         };
         let on_link = matches!(
             self.rows(config).get(index),
@@ -1619,7 +1624,10 @@ impl MenuState {
         }
     }
 
-    /// The view that is open over the rows, in priority order.
+    /// The view that is open over the rows. The views are not always exclusive
+    /// (a late Hugging Face reply could open the token field over another
+    /// view), so the order below is the priority, and the late reply waits
+    /// instead of opening the field.
     fn sub_view(&self) -> Option<SubView> {
         if self.in_warning() {
             Some(SubView::Warning)
@@ -1855,6 +1863,15 @@ impl MenuState {
     /// never saves or cancels; a pending error is cleared by the next press.
     /// Ctrl+H is Backspace in every text field.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
+        let command = self.handle_key(key, repeat, config);
+        // A refused token waited for the view that was open to close.
+        if self.sub_view().is_none() && self.account.open_pending() {
+            self.notice = Some(NOTICE_TOKEN_REFUSED.to_owned());
+        }
+        command
+    }
+
+    fn handle_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
         let key = &crate::core::keys::backspace_alias(*key);
         if key.kind == KeyEventKind::Release {
             return MenuCommand::None;
@@ -2367,7 +2384,7 @@ impl MenuState {
         if let Some(prompt) = self.account.prompt() {
             return Footer::Hint(Cow::Owned(prompt));
         }
-        if self.account.asking() && (self.account.field().is_some() || self.on_account_row()) {
+        if self.account.asking() && (view == Some(SubView::AccountField) || self.on_account_row()) {
             return Footer::Hint(Cow::Borrowed(HINT_ASKING));
         }
         match view {

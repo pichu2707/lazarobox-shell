@@ -64,6 +64,7 @@ impl AiMenu {
     /// declining leaves them as they were.
     pub fn answer_warning(&mut self, accept: bool, choice: Option<&AiChoice>) {
         self.warning = false;
+        debug_assert!(choice.is_some(), "the warning belongs to a Draft row");
         if let (true, Some(choice)) = (accept, choice) {
             choice.accept(&mut self.draft);
         }
