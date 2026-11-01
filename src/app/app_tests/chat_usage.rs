@@ -317,13 +317,28 @@ fn nothing_is_asked_with_the_segment_off_over_a_shell_or_without_history() {
     assert_eq!(read_requests(&press(&mut no_history, "c")), 0);
 }
 
-static NOW: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(NOON);
+thread_local! {
+    /// The wall clock of the test running on this thread.
+    static CLOCK: std::cell::Cell<i64> = const { std::cell::Cell::new(NOON) };
+}
+
+fn clock() -> i64 {
+    CLOCK.with(std::cell::Cell::get)
+}
+
+fn set_clock(secs: i64) {
+    CLOCK.with(|c| c.set(secs));
+}
+
+/// Sets this thread's clock and returns it, for `with_wall_clock`.
+fn at(secs: i64) -> fn() -> i64 {
+    set_clock(secs);
+    clock
+}
 
 #[test]
 fn yesterdays_figure_is_never_shown_and_the_day_is_read_again() {
-    use std::sync::atomic::Ordering::SeqCst;
-    NOW.store(NOON, SeqCst);
-    let mut a = history_app().with_wall_clock(|| NOW.load(SeqCst));
+    let mut a = history_app().with_wall_clock(at(NOON));
     press(&mut a, "c");
     a.update(AppEvent::Store(StoreReply::UsageRecorded {
         pane: chat_id(),
@@ -334,7 +349,7 @@ fn yesterdays_figure_is_never_shown_and_the_day_is_read_again() {
         problem: None,
     }));
     assert_eq!(a.status_usage().as_deref(), Some("today: 900 tok"));
-    NOW.store(NOON + 3600, SeqCst);
+    set_clock(NOON + 3600);
     assert_eq!(a.status_usage(), None, "past midnight: not yesterday's");
     let again = a.update(AppEvent::AnimTick);
     assert_eq!(read_requests(&again), 1, "{again:?}");
@@ -357,9 +372,106 @@ fn a_failed_read_keeps_the_figure_says_so_once_and_waits_before_retrying() {
     assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 0);
 }
 
+// Spec (statusline): a read that failed is shown as unknown, never as no data.
 #[test]
-fn a_failed_first_read_shows_nothing_rather_than_no_data() {
+fn a_failed_first_read_shows_unknown_rather_than_no_data() {
     let mut a = conversation();
     a.update(failed_read("database damaged"));
-    assert_eq!(a.status_usage(), None);
+    assert_eq!(a.status_usage().as_deref(), Some("today: ?"));
+}
+
+fn reply_until(until: i64) -> AppEvent {
+    AppEvent::Store(StoreReply::UsageRecorded {
+        pane: chat_id(),
+        today: Some(5),
+        cost: Vec::new(),
+        until: Some(until),
+        read_problem: None,
+        problem: None,
+    })
+}
+
+// Zones where midnight does not exist can answer a moment already past: the
+// app must not ask again at once.
+#[test]
+fn a_reply_ending_in_the_past_is_retried_after_a_minute_not_in_a_storm() {
+    let mut a = history_app().with_wall_clock(at(NOON));
+    press(&mut a, "c");
+    a.update(reply_until(NOON - 10));
+    assert_eq!(a.status_usage(), None, "already past: not shown");
+    for t in [NOON, NOON + 30, NOON + 59] {
+        set_clock(t);
+        assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 0, "{t}");
+    }
+    set_clock(NOON + 60);
+    assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 1);
+}
+
+// Spec (never stuck silently): a read nobody answers is given up on.
+#[test]
+fn a_read_with_no_reply_is_asked_again_after_thirty_seconds() {
+    let mut a = history_app().with_wall_clock(at(NOON));
+    let first = press(&mut a, "c");
+    assert_eq!(read_requests(&first), 1);
+    set_clock(NOON + 29);
+    assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 0);
+    set_clock(NOON + 31);
+    assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 1);
+}
+
+// A lost write is not the answer to a read in flight.
+#[test]
+fn a_failed_write_reply_does_not_clear_a_pending_read() {
+    let mut a = history_app().with_wall_clock(at(NOON));
+    press(&mut a, "c");
+    a.update(recorded_reply(Some("disk full")));
+    assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 0);
+}
+
+// Spec (never fail silently): a store that recovers and fails again is told
+// again.
+#[test]
+fn the_read_notice_comes_back_after_a_good_read() {
+    let mut a = conversation();
+    let told = |a: &App| {
+        systems(chat_of(a))
+            .iter()
+            .filter(|l| l.starts_with("Usage not read:"))
+            .count()
+    };
+    a.update(failed_read("database busy"));
+    a.update(failed_read("database busy"));
+    assert_eq!(told(&a), 1);
+    a.update(recorded_with(Some(1), &[]));
+    a.update(failed_read("database busy"));
+    assert_eq!(told(&a), 2);
+}
+
+#[test]
+fn an_expired_figure_whose_reread_failed_reads_unknown() {
+    let mut a = history_app().with_wall_clock(at(NOON));
+    press(&mut a, "c");
+    a.update(reply_until(NOON + 100));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5 tok"));
+    set_clock(NOON + 100);
+    assert_eq!(a.status_usage(), None, "expired, no failure yet");
+    a.update(AppEvent::AnimTick);
+    a.update(failed_read("database busy"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: ?"));
+    a.update(reply_until(NOON + 5000));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5 tok"));
+}
+
+// A clock set by hand, or a machine back from sleep: read again.
+#[test]
+fn a_wall_clock_jump_of_over_an_hour_either_way_reads_again() {
+    for jump in [4 * 3600, -4 * 3600] {
+        let mut a = history_app().with_wall_clock(at(NOON));
+        press(&mut a, "c");
+        a.update(reply_until(NOON + 10 * 3600));
+        set_clock(NOON + 600);
+        assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 0, "no jump");
+        set_clock(NOON + 600 + jump);
+        assert_eq!(read_requests(&a.update(AppEvent::AnimTick)), 1, "{jump}");
+    }
 }

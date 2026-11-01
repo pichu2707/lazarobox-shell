@@ -90,7 +90,7 @@ use crate::{
                 approval,
                 notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
-                store::StoreReply,
+                store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
@@ -1800,6 +1800,17 @@ impl Panes {
                 Effect::Store(cmd) => {
                     if let Some(store) = self.store.as_ref() {
                         store.send(cmd);
+                    } else if let StoreCmd::UsageToday { pane } = cmd {
+                        // Nobody will answer: say so at once, or the app
+                        // would wait for a read that never comes.
+                        feedback.push(AppEvent::Store(StoreReply::UsageRecorded {
+                            pane,
+                            today: None,
+                            cost: Vec::new(),
+                            until: None,
+                            read_problem: Some("store not available".to_owned()),
+                            problem: None,
+                        }));
                     }
                 }
                 // Returns at once: the files are read on their own thread.
@@ -3820,6 +3831,30 @@ mod tests {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let (outcome, feedback) = panes.apply(vec![Effect::Store(store_create("hi"))]);
         assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
+    // A day that nobody can read is answered at once, so the app never waits.
+    #[test]
+    fn a_day_read_without_a_store_thread_is_answered_with_a_read_problem() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pane = PaneId::for_test(2);
+        let (_, feedback) = panes.apply(vec![Effect::Store(StoreCmd::UsageToday { pane })]);
+        let [
+            AppEvent::Store(StoreReply::UsageRecorded {
+                until,
+                read_problem,
+                problem,
+                ..
+            }),
+        ] = feedback.as_slice()
+        else {
+            panic!("expected one UsageRecorded, got {feedback:?}");
+        };
+        assert_eq!(
+            (until, read_problem.as_deref(), problem),
+            (&None, Some("store not available"), &None)
+        );
         panes.shutdown_store(STORE_JOIN_BOUND);
     }
 

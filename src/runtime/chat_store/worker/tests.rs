@@ -2939,3 +2939,57 @@ fn a_day_that_cannot_be_read_says_so_and_carries_no_figures() {
     let reason = read_problem.expect("the failure is reported");
     assert!(!reason.is_empty() && !reason.contains('/'), "{reason}");
 }
+
+// Opening the store may prune old usage (as for every command); the read
+// itself adds nothing and runs no DDL.
+#[test]
+fn reading_the_day_of_a_store_without_the_table_is_no_data_not_a_problem() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage").unwrap();
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, read_problem, problem),
+        (None, Vec::new(), None, None)
+    );
+    assert!(until.expect("the day was read") > now());
+    let back: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turn_usage'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(back, 0, "reading never creates the table");
+}
+
+// A panic while reading is a read problem: it never spends the write notice.
+#[test]
+fn a_panic_while_reading_the_day_is_a_read_problem_with_a_fixed_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(StoreCmd::UsageToday { pane: pane() }, |_, _| {
+        panic!("ZZ-MARKER-ZZ /home/secret")
+    });
+    let Some(StoreReply::UsageRecorded {
+        until,
+        read_problem,
+        problem,
+        ..
+    }) = reply
+    else {
+        panic!("expected UsageRecorded, got {reply:?}");
+    };
+    assert_eq!(
+        (until, read_problem.as_deref(), problem),
+        (None, Some("internal error"), None)
+    );
+}

@@ -407,33 +407,33 @@ impl App {
 
     /// The day's figures of a usage answer. A day that was read replaces the
     /// figures and sets the next read at its end; one that was not keeps the
-    /// last figures, is told once per run and is tried again in a minute.
+    /// last figures, is told once until a read succeeds again, and is tried
+    /// again in a minute.
     fn on_usage_day(
         &mut self,
         id: PaneId,
         (today, cost, until): (Option<u64>, &[(String, u64)], Option<i64>),
         read_problem: Option<&str>,
     ) {
-        const RETRY_SECS: i64 = 60;
-        self.usage_read_pending = false;
-        self.dirty = true;
-        match until {
-            Some(until) => {
-                self.usage_today = Some(UsageToday {
-                    tokens: today,
-                    cost: cost.to_vec(),
-                    until,
-                });
-                self.usage_next_read = until;
-            }
-            None => self.usage_next_read = (self.wall)().saturating_add(RETRY_SECS),
-        }
-        let Some(reason) = read_problem else { return };
-        if self.usage_read_notice_shown {
+        // An answer that read no day (a lost write) says nothing about a read
+        // in flight.
+        if until.is_none() && read_problem.is_none() {
             return;
         }
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            self.usage_read_notice_shown = true;
+        self.dirty = true;
+        let now = (self.wall)();
+        self.usage_read.answered(now, until, read_problem.is_some());
+        if let Some(until) = until {
+            self.usage_today = Some(UsageToday {
+                tokens: today,
+                cost: cost.to_vec(),
+                until,
+            });
+        }
+        let Some(reason) = read_problem else { return };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+            && self.usage_read.tell()
+        {
             chat.push_system(format!("{USAGE_NOT_READ}{}", bounded_error(reason)));
         }
     }

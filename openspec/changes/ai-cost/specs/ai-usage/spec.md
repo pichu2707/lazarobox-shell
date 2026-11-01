@@ -357,3 +357,21 @@ Cost tracking ships marked ALPHA, because engines report usage in formats that c
 - GIVEN the README section on `/cost`
 - WHEN it is read
 - THEN it says the feature is alpha, that figures may be missing or differ from the provider's bill, and how to report it
+
+### Requirement: Reading today's figures
+The store worker MUST answer a request for today's figures (`UsageToday`) with the known tokens of the local day (the sum of input plus output of the records that have both, `None` when none), the dollars per engine, and the second of the next local midnight, which MUST be later than the time of the request. The request writes nothing and runs no schema change; it is answered with no data and no problem when the usage table does not exist. A read that fails MUST be answered with a read problem (a fixed reason free of text and paths) and no figures; it MUST NOT be confused with a day with no known total, and a panic while reading MUST be a read problem, not a write problem, so it never spends the `Usage not saved` notice.
+
+#### Scenario: Absent table [auto]
+- GIVEN a store without the usage table
+- WHEN today's figures are requested
+- THEN the answer has no tokens, no dollars, a midnight and no problem, and the table is not created
+
+#### Scenario: Unreadable day [auto]
+- GIVEN a usage table of the wrong shape
+- WHEN today's figures are requested
+- THEN the answer carries a read problem and no figures
+
+#### Scenario: Panic while reading [auto]
+- GIVEN a panic while reading
+- WHEN the request is answered
+- THEN the read problem is `internal error` and the write problem is empty

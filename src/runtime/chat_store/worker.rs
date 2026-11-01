@@ -265,6 +265,8 @@ impl Worker {
                     Err(reason) => day_reply(pane, Err(String::new()), Some(reason)),
                 })
             }
+            // Opening the store may prune old usage, as for any command; the
+            // read adds nothing and runs no DDL.
             StoreCmd::UsageToday { pane } => {
                 let read = match self.conn() {
                     Ok(conn) => day_figures(conn, now()),
@@ -384,9 +386,8 @@ impl Worker {
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
-            StoreCmd::RecordUsage { pane, .. } | StoreCmd::UsageToday { pane } => {
-                (*pane, Panicked::Usage)
-            }
+            StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
+            StoreCmd::UsageToday { pane } => (*pane, Panicked::Today),
             StoreCmd::UsageReport { pane, .. } => (*pane, Panicked::Report),
             StoreCmd::Quit => return None,
         };
@@ -407,6 +408,7 @@ impl Worker {
                         | Panicked::SetFolder
                         | Panicked::Recent
                         | Panicked::Usage
+                        | Panicked::Today
                         | Panicked::Report
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
@@ -428,6 +430,9 @@ impl Worker {
                     },
                     Panicked::Report => StoreReply::UsageReport { pane, rows: None },
                     // A fixed reason: panic text can quote anything.
+                    // A fixed reason, and a read problem: the write notice is
+                    // not spent on a read.
+                    Panicked::Today => day_reply(pane, Err("internal error".to_owned()), None),
                     Panicked::Usage => {
                         day_reply(pane, Err(String::new()), Some("internal error".to_owned()))
                     }
@@ -445,6 +450,7 @@ impl Worker {
 
 /// What a command that panicked is answered with.
 enum Panicked {
+    Today,
     Create,
     Append,
     Link(LinkKind),
@@ -593,6 +599,8 @@ fn day_figures(conn: &Connection, at: i64) -> DayRead {
             |r| r.get(0),
         )
         .map_err(read)?;
+    // A zone with no midnight on a DST day can answer a moment in the past.
+    let until = until.max(at.saturating_add(1));
     let present: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'turn_usage')",

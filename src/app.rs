@@ -796,13 +796,8 @@ pub struct App {
     usage_notice_shown: bool,
     /// Today's figures, as the store last answered; none until it has.
     usage_today: Option<chat::UsageToday>,
-    /// A read of today's figures is in flight.
-    usage_read_pending: bool,
-    /// The wall-clock second before which no new read is asked: the next
-    /// local midnight after a good answer, a minute after a failed one.
-    usage_next_read: i64,
-    /// The `Usage not read` notice was shown in this run.
-    usage_read_notice_shown: bool,
+    /// When and how today's figures are read.
+    usage_read: chat::UsageRead,
     /// Wall clock in seconds since the Unix epoch, injected like `clock`.
     wall: fn() -> i64,
     /// A quiet save (the rolling summary) failed and the user was told.
@@ -952,9 +947,7 @@ impl App {
             summary_notice_shown: false,
             usage_notice_shown: false,
             usage_today: None,
-            usage_read_pending: false,
-            usage_next_read: 0,
-            usage_read_notice_shown: false,
+            usage_read: chat::UsageRead::default(),
             wall: system_secs,
             summary_failure_shown: false,
             still_running: Vec::new(),
