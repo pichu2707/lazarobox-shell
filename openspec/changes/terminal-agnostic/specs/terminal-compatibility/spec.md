@@ -6,7 +6,7 @@ Make every terminal dependency either work or say clearly that it did not. Suppo
 ## ADDED Requirements
 
 ### Requirement: First-run prefix probe
-On the first run in a terminal with no remembered probe result, the app MUST ask the user to press `Ctrl+Space`. If `Ctrl+Space` arrives within the probe window, the app MUST remember a pass and show no offer. If `Ctrl+]` arrives, the app MUST remember `alias` and show no offer. If any other key arrives, or nothing arrives within the window, the app MUST show a notice offering `Ctrl+]` as the prefix and MUST remember the result. The window MUST be a few seconds (the exact length is left to design). The probe MUST NOT block the app: the user can leave it with any key at any time, and the notice is advice only. The probe MUST NOT use environment heuristics (`WT_SESSION`, WSL, `TERM_PROGRAM`).
+On the first run in a terminal with no remembered probe result, the app MUST ask the user to press `Ctrl+Space`. If `Ctrl+Space` arrives within the probe window, the app MUST remember a pass and show no offer. If `Ctrl+]` (or `Ctrl+5`, the same byte) arrives, the app MUST remember `alias` and show no offer. If a plain space, or any key that is neither printable nor unmodified (for example `Esc`, `Enter`, an arrow, or a modified key), arrives first, the app MUST show a notice offering `Ctrl+]` as the prefix and MUST remember `missed`. An unmodified printable key other than the space bar (letters, digits, symbols) MUST NOT end the probe: the user may be typing, so the probe keeps waiting. If the window passes with no deciding key, the app MUST end the probe, MUST store nothing and MUST show no offer; the probe runs again on the next start. The window MUST be a few seconds (the exact length is left to design) and MUST NOT start before the app is running. The probe MUST NOT block the app: every key reaches the app as usual, and the notice is advice only. The probe MUST NOT use environment heuristics (`WT_SESSION`, WSL, `TERM_PROGRAM`) to decide the result.
 
 #### Scenario: Ctrl+Space arrives [auto]
 - GIVEN a first run with no remembered result
@@ -15,24 +15,29 @@ On the first run in a terminal with no remembered probe result, the app MUST ask
 
 #### Scenario: Nothing arrives [auto]
 - GIVEN a first run with no remembered result
-- WHEN no key arrives within the window
-- THEN a notice offers `Ctrl+]` as the prefix and the result is remembered
+- WHEN no deciding key arrives within the window
+- THEN the probe ends, nothing is stored, no offer is shown, and the probe runs again on the next start
 
-#### Scenario: Another key arrives [auto]
+#### Scenario: A non-prefix key arrives [auto]
 - GIVEN a first run with no remembered result
-- WHEN a key other than `Ctrl+Space` arrives within the window
-- THEN a notice offers `Ctrl+]` as the prefix and the result is remembered
+- WHEN a plain space, or a non-printable or modified key other than `Ctrl+Space` and `Ctrl+]`, arrives within the window
+- THEN a notice offers `Ctrl+]` as the prefix and `missed` is remembered
+
+#### Scenario: Typing does not end the probe [auto]
+- GIVEN the probe is waiting
+- WHEN the user presses an unmodified printable key other than the space bar
+- THEN the key reaches the pane as usual and the probe keeps waiting
 
 #### Scenario: Probe never traps the user [auto]
 - GIVEN the probe is waiting
 - WHEN the user presses `Ctrl+]` or any other key
-- THEN the app reacts to that key normally (`Ctrl+]` enters PREFIX) and the probe ends
-- AND `Ctrl+]` records `alias` and shows no offer (the user already found the alias); any other key records `missed` and shows the offer
+- THEN the app reacts to that key normally (`Ctrl+]` enters PREFIX) in every input mode
+- AND `Ctrl+]` records `alias` and shows no offer (the user already found the alias)
 
 #### Scenario: Probe in a real terminal [manual, terminal records]
 - GIVEN a terminal where `Ctrl+Space` is swallowed
 - WHEN lazarobox starts for the first time
-- THEN the notice offering `Ctrl+]` appears and the result is written in the terminal's record
+- THEN pressing a non-typing key (for example `Esc`) shows the notice offering `Ctrl+]` and the result is written in the terminal's record
 
 ### Requirement: Remembered probe result
 The probe result MUST be remembered so that the probe does not run again on later starts in the same terminal. The remembered result MUST NOT be stored in `config.toml`. A remembered result MUST NOT hide the alias: `Ctrl+]` works in every run whatever the result. The user MUST have a way to run the probe again; when they do, the app MUST show a notice that the probe is running. If the stored result cannot be read or written, the app MUST show a notice and MUST continue to start (it MUST NOT fail or ignore this silently).
