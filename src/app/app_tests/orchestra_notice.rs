@@ -185,5 +185,8 @@ fn the_notice_is_drawn_above_the_composer_with_its_keys() {
     assert!(!shown.contains("y accept"), "{shown}");
     insta::assert_snapshot!("orch_notice_on_screen", shown);
     a.update(plain(KeyCode::Esc));
-    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        Some(crate::app::orchestra::HINT_RUN.to_owned())
+    );
 }

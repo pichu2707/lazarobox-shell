@@ -24,6 +24,6 @@ expression: shown
                                        │
                                        │
                                        │
-                                       │
+                                       │Ctrl+O: stop orchestrating
                                        │
  ◐ CHAT  /launch                                          ollama › llama3:8b

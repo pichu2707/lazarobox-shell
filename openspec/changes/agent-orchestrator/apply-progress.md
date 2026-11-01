@@ -808,4 +808,4 @@ Decision (user, 2026-10-31): the orchestrator ships in 1.1.0 WITHOUT S8. Merged 
 | 10.1 | README section `### Orquestador de agentes (experimental)` (Spanish, like the README) plus key-table rows and the AI-menu paragraph; CHANGELOG `Added` entry |
 | 10.2 | `manual-tests.md`: 53 orchestrator tests (T01-T53) and 15 board passes (P01-P15). NOT ticked: waits for the user |
 
-Findings: `App::orch_hint` (Ctrl+O footer hint, spec modal-input) has no UI consumer, so the hint is not drawn (T04 records it). `code` workers get write tools regardless of `[ai.tools] write`. The Zellij Ctrl+O claim comes from design notes, never checked on a live Zellij.
+Finding fixed afterwards: `App::orch_hint` (Ctrl+O footer hint, spec modal-input) had no UI consumer. It is now drawn on the guidance line above the composer (`Ctrl+O: orchestrate this pane` / `Ctrl+O: stop orchestrating` / run-active text, plus a notice on Ctrl+O during a run); gate off draws nothing. Tests `the_footer_hint_*` in `orchestra_toggle.rs`, RED observed first. `code` workers get write tools regardless of `[ai.tools] write`. The Zellij Ctrl+O claim comes from design notes, never checked on a live Zellij.

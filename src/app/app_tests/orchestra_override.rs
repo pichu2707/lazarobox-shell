@@ -299,12 +299,15 @@ fn ctrl_c_closes_an_open_picker_and_ended_leaves_the_guidance_clean() {
     assert!(chat_of(&a).orch_picker().is_none());
     assert_eq!(
         a.chat_guidance(chat_id()),
-        None,
+        Some(crate::app::orchestra::HINT_RUN.to_owned()),
         "no picker without an alert"
     );
     a.update(event(OrchestraEvent::Ended { run: RUN }));
     assert!(chat_of(&a).orch_picker().is_none());
-    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(
+        a.chat_guidance(chat_id()).as_deref(),
+        Some("Ctrl+O: stop orchestrating")
+    );
 }
 
 #[test]
@@ -313,7 +316,10 @@ fn ended_closes_an_open_picker() {
     a.update(key('m'));
     a.update(event(OrchestraEvent::Ended { run: RUN }));
     assert!(chat_of(&a).orch_picker().is_none());
-    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        Some(crate::app::orchestra::HINT_RUN.to_owned())
+    );
 }
 
 // The picker is shown only while its alert exists.
@@ -326,7 +332,10 @@ fn the_picker_is_not_shown_without_its_alert() {
         .and_then(PaneState::chat_mut)
         .expect("a chat")
         .set_orch_alert(None);
-    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        Some(crate::app::orchestra::HINT_RUN.to_owned())
+    );
 }
 
 // Review W1: only a row on the override's engine carries the marker; a worker

@@ -67,7 +67,7 @@ Evidence to keep: the pane text of each run (`Prefix [` then copy) when a test f
 - Setup: gate on and saved, `orchestrate` on a cloud engine.
 - Steps: 1. Open two chat panes (`Prefix w v`, `Prefix c` in each). 2. `Ctrl+O` in pane A. 3. Press it again. 4. Turn it on in A, then send `hello` in A and in B. 5. Hold `Ctrl+O` for a second. 6. Close and reopen a chat.
 - Expect: ORCH badge beside AUTO/RUN only in A while on; a new pane starts off; A's message is an orchestrator turn, B's a plain chat turn on the `chat` engine; a held key toggles once; nothing is written to `config.toml` for ORCH.
-- Finding to record: the spec says the footer hint shows `Ctrl+O` while the gate is on. In the code `App::orch_hint` has no UI consumer, so expect no hint; note what you see.
+- Footer hint: with the gate on and the composer ready, the line above the composer reads `Ctrl+O: orchestrate this pane` (ORCH off) or `Ctrl+O: stop orchestrating` (ORCH on); during a run it reads `A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode`, and pressing `Ctrl+O` then shows the same text as a notice. With the gate off no hint is drawn.
 - [ ] Pass   Notes:
 
 ### T05 · Gate off then on keeps pane modes [ANY]

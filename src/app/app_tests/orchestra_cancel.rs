@@ -228,7 +228,11 @@ fn the_guidance_names_the_cancel_keys_while_a_worker_is_live() {
     for id in [1, 2] {
         a.update(event(row(RUN, id, WorkerStatus::Done)));
     }
-    assert_eq!(a.orch_guidance(chat_id()), None);
+    // The run is still open: only the toggle hint is left.
+    assert_eq!(
+        a.orch_guidance(chat_id()).as_deref(),
+        Some(crate::app::orchestra::HINT_RUN)
+    );
 }
 
 // Gate off: the keys do nothing and Ctrl+C is the chat cancel.
