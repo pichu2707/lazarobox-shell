@@ -100,6 +100,17 @@ baseline.
   default, or `per-token`). A wrong value falls back to its default and is
   reported at startup; a threshold of 0 or less is off.
 
+- AI usage settings in the menu (alpha). A new `Usage (alpha)` row in Settings,
+  after `llama-server idle`, reads `line on · bar on` and opens a view with
+  `Usage line` and `Usage in status bar` (`[ai.usage] line` and `statusline`)
+  and `claude billing`, `codex billing` and `gemini billing`
+  (`[ai.usage.billing]`: `subscription` or `per-token`); local engines have no
+  row. Changes are a draft until `s` saves, only the changed keys are written,
+  and `Esc` goes back keeping the draft. The thresholds stay in the config
+  file. The menu popup is one row taller (17 rows, 24x16 at least) because
+  Settings gained a row. The README now says what the usage history stores:
+  numbers only, never message text, pruned after 90 days.
+
 ### Fixed
 
 - Alt+Enter is no longer lost in zutty, which sends it as `CSI 27;3;13~` while
