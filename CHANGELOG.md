@@ -156,6 +156,20 @@ baseline.
   itself only (`memory on for this run`), and when engram cannot be used the
   run goes on with `handoffs not persisted`, said once.
 
+### Not yet checked by hand
+
+These parts passed automated tests but have not been tried by hand yet.
+Reports are welcome.
+
+- Terminals: WSL and WezTerm have no manual record yet (#490).
+- Orchestrator, Kitty: paste refusal, `run_in_pane` in auto mode, and the
+  checks P01, P02 and P07 have only been run under tmux.
+- Orchestrator, MCP: a hand-started session against the lazarobox MCP server
+  (P04, P05) has not been checked.
+- Orchestrator, model-dependent steps: classification, the feature document
+  and correcting a written spec (T21 to T25) depend on the coordinator model
+  following its instructions (#503).
+
 ## [1.0.1] - 2026-10-31
 
 ### Changed
