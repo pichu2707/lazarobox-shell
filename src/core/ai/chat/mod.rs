@@ -329,6 +329,10 @@ pub struct ChatState {
     /// What the last turn used, summed over its `Usage` events. Cleared by
     /// the next send, so it outlives the turn for whoever stores it.
     turn_usage: Option<usage::TurnUsage>,
+    /// The `/cost` overlay, while it is shown over the conversation.
+    cost: Option<usage_view::CostView>,
+    /// What this pane used, kept in memory for `/cost` with the history off.
+    session_usage: usage_view::Session,
     /// Usage of ended runs the store has not been told about yet.
     usage_outbox: Vec<usage::Pending>,
     /// The compaction or summary run in flight, for its own usage.
@@ -408,6 +412,8 @@ impl ChatState {
             tools_offered: false,
             request_engine: String::new(),
             turn_usage: None,
+            cost: None,
+            session_usage: usage_view::Session::default(),
             usage_outbox: Vec::new(),
             side_run: None,
             closing: false,
@@ -641,6 +647,7 @@ impl ChatState {
         self.tag_editor().is_none()
             && self.folder_picker().is_none()
             && self.list().is_none()
+            && self.cost().is_none()
             && self.note_editor().is_none()
             && self.summary_draft().is_none()
             && self.approvals().review().is_none()
@@ -714,6 +721,29 @@ impl ChatState {
     /// next send.
     pub fn turn_usage(&self) -> Option<&usage::TurnUsage> {
         self.turn_usage.as_ref()
+    }
+
+    /// The `/cost` overlay, while it is shown.
+    pub fn cost(&self) -> Option<&usage_view::CostView> {
+        self.cost.as_ref()
+    }
+
+    pub fn cost_mut(&mut self) -> Option<&mut usage_view::CostView> {
+        self.cost.as_mut()
+    }
+
+    /// Shows the `/cost` overlay.
+    pub fn open_cost(&mut self, view: usage_view::CostView) {
+        self.cost = Some(view);
+    }
+
+    pub fn close_cost(&mut self) {
+        self.cost = None;
+    }
+
+    /// What this pane used since it opened.
+    pub fn session_usage(&self) -> &[usage_view::UsageRow] {
+        self.session_usage.rows()
     }
 
     /// Moves with every change of the transcript; the line cache keys on it.
@@ -1230,6 +1260,7 @@ impl ChatState {
             usage.partial = true;
         }
         if let Some(usage) = self.turn_usage.clone() {
+            self.session_usage.add(&self.request_engine, &usage);
             self.usage_outbox.push(usage::Pending {
                 role: "chat",
                 engine: self.request_engine.clone(),
@@ -1266,6 +1297,7 @@ impl ChatState {
     /// waits for the store. `cut` when it did not end well.
     fn end_side_run(&mut self, cut: bool) {
         if let Some(pending) = self.side_run.take().and_then(|run| run.end(cut)) {
+            self.session_usage.add(&pending.engine, &pending.usage);
             self.usage_outbox.push(pending);
         }
     }

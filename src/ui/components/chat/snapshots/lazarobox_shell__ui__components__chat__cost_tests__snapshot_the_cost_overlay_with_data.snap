@@ -1,0 +1,14 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "text(&draw(&chat, 72, 10))"
+---
+AI usage (alpha)
+today: 6 tokens · 2 turns
+last 7 days: 126 tokens · 3 turns
+by engine and model (last 7 days):
+  ollama › llama3:8b: in 100 · out 20
+  claude › sonnet: in 2 · out 4 · $0.0049 list-price equivalent
+this chat: 6 tokens · 2 turns
+
+
+Esc close
