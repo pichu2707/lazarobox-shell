@@ -1791,3 +1791,27 @@ async fn the_cli_cwd_note_survives_a_long_path() {
     });
     assert!(row.expect("a row").ends_with("(from cli-cwd path)"));
 }
+
+// D4: the diff text a review prompt carries is built from the staged batch,
+// only for paths the review may read; the others are named and not shown.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_staged_diff_holds_readable_paths_and_names_the_others() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = Scripted::new(Decision::Sent);
+    let w = writer(&host, Locality::Cloud, &home, handle.clone(), user);
+    assert!(!w.call(write_call("fresh.rs", "only staged")).await.is_error);
+    let origin = home.join("dev/app");
+    let key = StageKey::Pane(PANE);
+    let all = host.staged_diff(key, &origin, |_| true).await.unwrap();
+    assert!(all.skipped.is_empty(), "{all:?}");
+    assert_eq!(all.files.len(), 1);
+    assert_eq!(all.files[0].path, "fresh.rs");
+    assert_eq!(all.files[0].text, "only staged");
+    let none = host.staged_diff(key, &origin, |_| false).await.unwrap();
+    assert!(none.files.is_empty(), "{none:?}");
+    assert_eq!(none.skipped, ["fresh.rs"]);
+}

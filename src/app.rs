@@ -2887,12 +2887,22 @@ impl App {
         if finished {
             chat.set_turn_failure(failure);
         }
+        let no_run = chat.orch_run().is_none();
+        if finished {
+            self.reply_ended(id, how == Ended::Done);
+        }
         // A start that failed leaves no run to give its goal to.
-        if finished && how == Ended::Error && chat.orch_run().is_none() {
+        if finished && how == Ended::Error && no_run {
             self.forget_goal(id);
-        } else if finished && chat.orch_run().is_none() {
-            // A turn that ended with no run never gave a resumed one a worker.
-            self.resume_not_started(id);
+        } else if finished && no_run {
+            // A turn that ended with no run never gave a resumed one a worker;
+            // one that ended normally left the coordinator waiting for the
+            // user, whose reply can still relaunch it.
+            if how == Ended::Done {
+                self.resume_awaits_reply(id);
+            } else {
+                self.resume_not_started(id);
+            }
         }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).

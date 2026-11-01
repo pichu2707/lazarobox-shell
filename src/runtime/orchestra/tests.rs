@@ -15,7 +15,7 @@ use tokio::{
 
 use super::*;
 use crate::core::ai::orchestra::{
-    changes::Change,
+    changes::{Change, StagedDiff, StagedText},
     rdd::{Lens, Outcome as Ended},
     review::Tier,
     steps::{Grant, Size},
@@ -3566,6 +3566,7 @@ async fn reviewed_with(
     let lab = lab_with(Script::By(by), |m, home| RunManager {
         scratch: |_| false,
         restage,
+        diff: Some(staged_text),
         ..tooled(m, home)
     });
     let scope = OrchScope {
@@ -3582,6 +3583,152 @@ async fn reviewed_with(
     let ended = timeout(Duration::from_secs(10), done).await;
     assert!(ended.expect("the review ended").is_ok());
     (lab, run, handle)
+}
+
+fn staged_text() -> StagedDiff {
+    StagedDiff {
+        files: vec![StagedText {
+            path: "Cargo.lock".to_owned(),
+            base: None,
+            text: "yanked = 1\n".to_owned(),
+        }],
+        ..StagedDiff::default()
+    }
+}
+
+fn skipped_text() -> StagedDiff {
+    StagedDiff {
+        skipped: vec![".env".to_owned()],
+        ..staged_text()
+    }
+}
+
+fn gone_text() -> StagedDiff {
+    StagedDiff::unavailable()
+}
+
+/// [`reviewed`] where the staged diff is `diff`.
+async fn reviewed_diff(
+    by: fn(&ChatRequest) -> Option<&'static str>,
+    diff: fn() -> StagedDiff,
+) -> (Lab, RunId, OrchHandle) {
+    let lab = lab_with(Script::By(by), |m, home| RunManager {
+        scratch: |_| false,
+        diff: Some(diff),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab
+        .manager
+        .start(pane(), lab.scope(codex_both(), &[]))
+        .unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    let ended = timeout(Duration::from_secs(10), done).await;
+    assert!(ended.expect("the review ended").is_ok());
+    (lab, run, handle)
+}
+
+// D4: every lens worker gets the staged diff text in its prompt, inside the
+// untrusted wrapper, not only the file listing.
+#[tokio::test]
+async fn the_lens_workers_receive_the_staged_diff_text() {
+    let (lab, run, _handle) = reviewed_diff(quiet, staged_text).await;
+    let requests = lab.seen.requests();
+    let lenses: Vec<_> = requests.iter().filter(|r| is_lens(r)).collect();
+    assert_eq!(lenses.len(), 2);
+    for lens in lenses {
+        let prompt = user_of(lens);
+        let open = prompt.find("<untrusted").unwrap();
+        let at = prompt.find("+yanked = 1").expect("the diff body");
+        let close = prompt.find("</untrusted").unwrap();
+        assert!(open < at && at < close, "{prompt}");
+    }
+    // A whole diff and quiet readers: clean.
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Clean));
+}
+
+// D4: a diff the readers did not see whole never gives a clean review, and
+// the receipt says why.
+#[tokio::test]
+async fn a_skipped_file_makes_the_review_incomplete_with_the_reason() {
+    let (mut lab, run, _handle) = reviewed_diff(quiet, skipped_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    let lines = review_lines(&mut lab);
+    assert!(lines.iter().all(|l| !l.contains("clean")), "{lines:?}");
+}
+
+#[tokio::test]
+async fn an_unavailable_diff_makes_the_review_incomplete() {
+    let (lab, run, _handle) = reviewed_diff(quiet, gone_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+}
+
+fn checker_unseen(request: &ChatRequest) -> Option<&'static str> {
+    if is_lens(request) && user_of(request).contains("lens: risk") {
+        Some("FINDING severe change inferred: may race")
+    } else if is_lens(request) {
+        Some("NONE")
+    } else if is_refuter(request) {
+        Some("UNSEEN: no staged text")
+    } else {
+        None
+    }
+}
+
+// D4: a refuter that could not see the change is a gap of the review.
+#[tokio::test]
+async fn a_refuter_that_could_not_see_the_change_is_a_gap() {
+    let (lab, run, _handle) = reviewed_diff(checker_unseen, staged_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    assert!(
+        kept[0].review.gaps().iter().any(|g| g.contains("checker")),
+        "{:?}",
+        kept[0].review.gaps()
+    );
+}
+
+fn chatty(request: &ChatRequest) -> Option<&'static str> {
+    is_lens(request).then_some("Looks fine to me, nothing to report.")
+}
+
+// D4: a lens that answers in free form (no FINDING, no NONE) gave no answer;
+// the review is incomplete and its line says why.
+#[tokio::test]
+async fn a_free_form_lens_reply_is_no_answer_and_the_line_says_why() {
+    let (mut lab, run, _handle) = reviewed_diff(chatty, staged_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    let lines = review_lines(&mut lab);
+    assert!(lines.iter().all(|l| !l.contains(": clean")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("a reviewer gave no answer")),
+        "{lines:?}"
+    );
+}
+
+fn unseen(request: &ChatRequest) -> Option<&'static str> {
+    is_lens(request).then_some("UNSEEN: I only got file metadata, no diff")
+}
+
+// D4: reviewers that say they could not see the change never yield `clean`;
+// the receipt line says so.
+#[tokio::test]
+async fn reviewers_that_could_not_see_the_change_leave_an_incomplete_review() {
+    let (mut lab, run, _handle) = reviewed_diff(unseen, staged_text).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::Incomplete));
+    let lines = review_lines(&mut lab);
+    assert!(lines.iter().all(|l| !l.contains("clean")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("incomplete")), "{lines:?}");
 }
 
 fn review_lines(lab: &mut Lab) -> Vec<String> {

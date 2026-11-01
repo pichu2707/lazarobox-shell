@@ -48,8 +48,8 @@ use crate::{
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
             JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
-            elf_interp_at, interp_path, is_scratch, jail_policy, jail_spec_with, launch,
-            parse_shebang,
+            WriteCause, elf_interp_at, interp_path, is_scratch, jail_policy, jail_spec_with,
+            launch, parse_shebang,
             rpath::{homebrew_openssl_files, macos_openssl_files, search_dirs, shebang_env},
         },
         tools::wiring,
@@ -589,6 +589,23 @@ fn in_scratch(path: &Path) -> bool {
     is_scratch(path)
 }
 
+/// The mode, owner and group of a file or folder.
+#[derive(Debug, PartialEq, Eq)]
+struct Stat {
+    mode: u32,
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+}
+
+/// What reading a file or folder gave. A read that failed is `Unchecked`, not
+/// writable: the notice must not blame the permissions for an I/O error.
+fn judge(p: &Path, stat: io::Result<Stat>) -> Result<Stat, Untrusted> {
+    stat.map_err(|e| Untrusted::Unchecked {
+        path: p.to_path_buf(),
+        kind: e.kind(),
+    })
+}
+
 /// [`interpreter_trust`] under `rule`. The jail checks the file and its
 /// folder; [`Rule::OwnGroup`] also checks every folder above, and the folders
 /// that hold the link `path` itself when it is a link (a `cargo` that is a
@@ -601,34 +618,48 @@ fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
         return Err((real, Untrusted::Scratch));
     }
     let group_private = matches!(rule, Rule::OwnGroup) && own_group_is_private();
-    // A file or folder that cannot be read counts as writable, as before.
     let closed = |p: &Path| {
+        let stat = fs::metadata(p).map(|meta| Stat {
+            mode: meta.permissions().mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
+        });
+        let stat = judge(p, stat)?;
         // SAFETY: `geteuid` and `getegid` have no arguments and cannot fail.
         let (me, my_group) = unsafe { (libc::geteuid(), libc::getegid()) };
-        match fs::metadata(p) {
-            Ok(meta)
-                if !rule.open(
-                    meta.permissions().mode(),
-                    Owner {
-                        user_is_me: meta.uid() == me,
-                        group_is_mine: meta.gid() == my_group,
-                        group_private,
-                    },
-                ) =>
-            {
-                Ok(())
-            }
-            Ok(meta) => Err(Untrusted::Writable {
-                path: p.to_path_buf(),
-                yours: meta.uid() == me,
-            }),
-            Err(_) => Err(Untrusted::Writable {
-                path: p.to_path_buf(),
-                yours: false,
-            }),
+        let owner = Owner {
+            user_is_me: stat.uid == me,
+            group_is_mine: stat.gid == my_group,
+            group_private,
+        };
+        if !rule.open(stat.mode, owner) {
+            return Ok(());
         }
+        Err(Untrusted::Writable {
+            paths: vec![p.to_path_buf()],
+            foreign: if owner.user_is_me {
+                Vec::new()
+            } else {
+                vec![p.to_path_buf()]
+            },
+            cause: WriteCause::of_mode(stat.mode),
+        })
     };
-    if let Err(why) = closed(&real) {
+    // The jail reports every path it refuses, so one command fixes them all;
+    // the update install stops at the first.
+    let mut offenders = Vec::new();
+    let mut note = |result: Result<(), Untrusted>| match result {
+        Err(Untrusted::Writable {
+            paths,
+            foreign,
+            cause,
+        }) if matches!(rule, Rule::Jail) => {
+            offenders.push((paths, foreign, cause));
+            Ok(())
+        }
+        other => other,
+    };
+    if let Err(why) = note(closed(&real)) {
         return Err((real, why));
     }
     let dirs = match rule {
@@ -637,10 +668,25 @@ fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
     };
     let mut seen = 0;
     for dir in real.ancestors().skip(1).take(dirs) {
-        if let Err(why) = closed(dir) {
+        if let Err(why) = note(closed(dir)) {
             return Err((real, why));
         }
         seen += 1;
+    }
+    if !offenders.is_empty() {
+        let cause = WriteCause::union(offenders.iter().map(|(_, _, cause)| *cause));
+        // The folder first, then the file.
+        let foreign: Vec<PathBuf> = offenders.iter().flat_map(|(_, f, _)| f.clone()).collect();
+        let mut paths: Vec<PathBuf> = offenders.into_iter().flat_map(|(p, _, _)| p).collect();
+        paths.sort_by_key(|path| path.components().count());
+        return Err((
+            real,
+            Untrusted::Writable {
+                paths,
+                foreign,
+                cause,
+            },
+        ));
     }
     if seen == 0 {
         return Err((real, Untrusted::Unresolvable));
@@ -1251,6 +1297,9 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         _ if job.jail == JailPolicy::Exempt => EXEMPT_REASON.to_owned(),
         (Launch::Jailed, _) => {
             let mut result = None;
+            // Why the attempt with the tools was refused, to name it when the
+            // turn goes on without them.
+            let mut tools_refusal = None;
             // With the tools first; if the jail refuses that layout (say the
             // shim program sits in a place it never grants), again without
             // them. The jail is never widened to fit the tools.
@@ -1279,7 +1328,20 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                 }
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
-                        let notice = tools_off(None).filter(|_| attempt.is_none());
+                        let notice = tools_off(None)
+                            .filter(|_| attempt.is_none())
+                            .map(|generic| match &tools_refusal {
+                                // A path others could swap, or one that cannot
+                                // be inspected, is a cause with a fix: never
+                                // the generic line alone (issue #496).
+                                Some(
+                                    why @ JailRefusal::UntrustedInterpreter {
+                                        why: Untrusted::Writable { .. } | Untrusted::Unchecked { .. },
+                                        ..
+                                    },
+                                ) => format!("tools are off: {}", why.hint(home)),
+                                _ => generic,
+                            });
                         return Ok(Plan {
                             program,
                             argv,
@@ -1290,7 +1352,12 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                             cwd: attempt.and_then(|w| w.cwd),
                         });
                     }
-                    Err(why) => result = Some(why),
+                    Err(why) => {
+                        if attempt.is_some() {
+                            tools_refusal = Some(why.clone());
+                        }
+                        result = Some(why);
+                    }
                 }
                 // The config holds the token: it does not stay for a turn that
                 // was not told about it.

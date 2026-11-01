@@ -375,8 +375,8 @@ fn a_resume_turn_cancelled_before_any_worker_leaves_the_run_offered() {
     still_offered(&mut a);
 }
 
-#[test]
-fn a_resume_turn_that_ends_with_no_worker_leaves_the_run_offered() {
+/// The resume turn of the interrupted app, ended normally with no worker.
+fn resumed_and_waiting() -> App {
     use crate::core::ai::chat::engine::{Finish, StreamEvent};
     let mut a = interrupted_app();
     let effects = keys(&mut a, "rr");
@@ -392,7 +392,88 @@ fn a_resume_turn_that_ends_with_no_worker_leaves_the_run_offered() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    still_offered(&mut a);
+    a
+}
+
+// D6: the coordinator waits for the user's reply: the pane says the run waits
+// (not that it is "still interrupted"), and `r r` does not resume it twice.
+#[test]
+fn a_resume_turn_that_ends_with_no_worker_waits_for_the_reply() {
+    let mut a = resumed_and_waiting();
+    let said = system(&a);
+    assert!(
+        said.iter().any(|l| l.contains("run 9 waits for your reply")
+            && l.contains("closes when a worker starts")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .all(|l| !l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_none(), "not resumed twice");
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("waits for your reply")),
+        "{:?}",
+        a.notice()
+    );
+}
+
+// D6: toggling ORCH in the pane gives the run back to the list, said.
+#[test]
+fn toggling_orch_while_the_run_waits_offers_it_again() {
+    let mut a = resumed_and_waiting();
+    toggle(&mut a);
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("run 9 is still interrupted") && l.contains("Ctrl+Space r r")),
+        "{said:?}"
+    );
+    toggle(&mut a);
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_some(), "offered again");
+}
+
+// D6: a reply that starts no worker gives the run back; one that starts a
+// worker closes it.
+#[test]
+fn a_reply_that_starts_no_worker_offers_the_run_again() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let reply = super::chat_live::ask(&mut a, "what is left?");
+    let turn = reply
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("the reply is a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
+}
+
+// D6: the run a pane waits on is not offered to a second pane of the same
+// folder.
+#[test]
+fn a_second_pane_is_not_offered_the_run_another_pane_waits_on() {
+    let mut a = resumed_and_waiting();
+    keys(&mut a, "c");
+    assert_eq!(a.focused(), super::chat_history::second_chat());
+    let again = keys(&mut a, "rr");
+    assert!(turn_of(&again).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
 
 // Re-review W2: the stream's `Done` and the run manager's worker rows travel
@@ -422,10 +503,38 @@ fn a_worker_arriving_after_the_turns_done_still_closes_the_old_run() {
     assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
 
-// The link does not outlive the next turn: a later, unrelated run of the pane
-// never closes an interrupted run.
+// The link does not outlive the next turn: after a resume turn that failed, a
+// later, unrelated run of the pane never closes an interrupted run.
 #[test]
 fn a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("could not start".into())),
+    ));
+    super::chat_live::ask(&mut a, "something else");
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, None);
+    // Still on the list: the refusal is the active run, not an empty list.
+    keys(&mut a, "rr");
+    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: the resume turn ends with the coordinator waiting for the user; the
+// user's reply starts the run that relaunches the worker, and that run closes
+// the interrupted one, so a restart does not name it again.
+#[test]
+fn the_run_the_users_reply_starts_closes_the_resumed_run() {
     use crate::core::ai::chat::engine::{Finish, StreamEvent};
     let mut a = interrupted_app();
     let effects = keys(&mut a, "rr");
@@ -441,10 +550,121 @@ fn a_later_fresh_run_does_not_close_a_run_whose_resume_was_abandoned() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    super::chat_live::ask(&mut a, "something else");
+    super::chat_live::ask(&mut a, "ok, relaunch");
     let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    // Closed in the store and no longer offered here.
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: the link lasts for the reply only; a second unrelated turn after it
+// closes nothing.
+#[test]
+fn the_link_to_the_resumed_run_lasts_for_the_reply_only() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let reply = super::chat_live::ask(&mut a, "what is left?");
+    let turn = reply
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("the reply is a turn");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    // The reply started no worker; the next turn is a different question.
+    super::chat_live::ask(&mut a, "something else");
+    let saved = saved_runs(&a.update(event(row(RunId(902), 1, WorkerStatus::Running))));
     assert_eq!(saved[0].supersedes, None);
-    // Still on the list: the refusal is the active run, not an empty list.
-    keys(&mut a, "rr");
-    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+/// The orchestrator turn among `effects`.
+fn turn_id(effects: &[Effect]) -> u64 {
+    effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn")
+}
+
+// D6: a worker that arrives after the reply turn's Done (the rows travel apart
+// from the stream) still closes the resumed run.
+#[test]
+fn a_worker_arriving_after_the_replys_done_still_closes_the_resumed_run() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: a reply that errors keeps the wait; the retried reply closes the run.
+#[test]
+fn a_reply_that_errors_and_is_retried_still_closes_the_resumed_run() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("engine down".into())),
+    ));
+    // Still waiting, not offered twice.
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("waits for your reply"))
+    );
+    super::chat_live::ask(&mut a, "ok, relaunch, again");
+    let saved = saved_runs(&a.update(event(row(RunId(902), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+}
+
+// D6: a reply whose run has a live worker closes the resumed run at the
+// worker, and the end of that turn does not offer it again.
+#[test]
+fn the_end_of_a_reply_turn_with_a_live_run_does_not_reoffer_a_closed_run() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .all(|l| !l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
 }
