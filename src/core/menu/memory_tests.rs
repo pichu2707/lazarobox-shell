@@ -103,7 +103,11 @@ fn warned() -> MenuState {
 fn the_memory_descriptor_is_well_formed_and_closes_the_chat_tab() {
     let memory = &CHAT_SECTION.items[CHAT_SECTION.items.len() - 1];
     assert_eq!(memory.label, "Memory");
-    let ItemKind::Memory(row) = &memory.kind else {
+    let ItemKind::Draft(AiChoice {
+        value: DraftValue::Flag(row),
+        ..
+    }) = &memory.kind
+    else {
         panic!("not a memory row");
     };
     assert_eq!((row.table, row.key), ("ai.memory", "enabled"));

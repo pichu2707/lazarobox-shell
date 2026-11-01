@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::menu::DraftValue;
+use crate::core::menu::AiChoice;
 
 use super::{
     Detection, Status,
@@ -55,47 +55,18 @@ impl AiMenu {
             .map(|t| (t, self.draft.get(t)))
     }
 
-    /// Flips the memory draft. Turning it on without the acknowledgement
-    /// opens the privacy warning instead: the draft changes only when the
-    /// user accepts. Nothing is written or requested here.
-    pub fn toggle_memory(&mut self) {
-        let memory = &mut self.draft.memory;
-        if memory.active() {
-            memory.enabled = false;
-        } else if memory.acknowledged {
-            memory.enabled = true;
-        } else {
-            self.warning = true;
-        }
-    }
-
     /// Whether the privacy warning is open.
     pub fn warning(&self) -> bool {
         self.warning
     }
 
-    /// Closes the warning. Accepting sets both drafts (memory on, note
-    /// acknowledged); declining leaves them as they were.
-    pub fn answer_warning(&mut self, accept: bool) {
+    /// Closes the warning. Accepting sets both keys of the warned row;
+    /// declining leaves them as they were.
+    pub fn answer_warning(&mut self, accept: bool, choice: Option<&AiChoice>) {
         self.warning = false;
-        if accept {
-            self.draft.memory.enabled = true;
-            self.draft.memory.acknowledged = true;
+        if let (true, Some(choice)) = (accept, choice) {
+            choice.accept(&mut self.draft);
         }
-    }
-
-    /// The memory keys whose draft differs from the saved one, as
-    /// `(key, value)` in file order. The port is owned but never edited.
-    pub fn changed_memory(&self) -> Vec<(&'static str, bool)> {
-        let (old, new) = (self.original.memory, self.draft.memory);
-        [
-            ("enabled", old.enabled, new.enabled),
-            ("acknowledged", old.acknowledged, new.acknowledged),
-        ]
-        .into_iter()
-        .filter(|(_, old, new)| old != new)
-        .map(|(key, _, new)| (key, new))
-        .collect()
     }
 
     /// The model file of `assignment` when it is one lazarobox starts a
@@ -159,9 +130,12 @@ impl AiMenu {
             .flatten()
     }
 
-    /// Steps a draft row to its next (or previous) value.
-    pub fn step_draft(&mut self, value: &DraftValue, forward: bool) {
-        value.step(&mut self.draft, forward);
+    /// Steps a draft row to its next (or previous) value. An unacknowledged
+    /// warned row opens the privacy warning instead.
+    pub fn step_draft(&mut self, choice: &AiChoice, forward: bool) {
+        if choice.step(&mut self.draft, forward) {
+            self.warning = true;
+        }
     }
 
     /// The open config, to compare a draft row against.
@@ -169,30 +143,10 @@ impl AiMenu {
         &self.original
     }
 
-    /// Flips the orchestrator gate of the draft (`[ai.orchestrator] enabled`).
-    pub fn toggle_orchestrator(&mut self) {
-        let next = !self.draft.orchestrator.enabled;
-        self.draft.orchestrator.enabled = next;
-    }
-
     /// Records the acceptance of the provider notice in the draft; it is
     /// written with the next save.
     pub fn accept_notice(&mut self) {
         self.draft.orchestrator.acknowledged = true;
-    }
-
-    /// The orchestrator flags whose draft differs from the saved ones, as
-    /// `(key, value)` in file order. The timeout is owned but never edited.
-    pub fn changed_orchestrator(&self) -> Vec<(&'static str, bool)> {
-        let (old, new) = (self.original.orchestrator, self.draft.orchestrator);
-        [
-            ("enabled", old.enabled, new.enabled),
-            ("acknowledged", old.acknowledged, new.acknowledged),
-        ]
-        .into_iter()
-        .filter(|(_, old, new)| old != new)
-        .map(|(key, _, new)| (key, new))
-        .collect()
     }
 
     /// Replaces the detection. The draft is never touched.
