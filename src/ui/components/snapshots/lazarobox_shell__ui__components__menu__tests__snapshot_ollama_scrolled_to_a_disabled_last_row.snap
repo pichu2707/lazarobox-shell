@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Model for general (ollama) 18/19                           │
 │ llama3.1:8b download required                              │
 │ qwen3:8b download required                                 │
@@ -15,15 +15,6 @@ expression: shown
 │ phi4:14b download required                                 │
 │ gpt-oss:20b download required                              │
 │ download from Ollama…                                      │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │ download required · not selectable                         │
 └────────────────────────────────────────────────────────────┘

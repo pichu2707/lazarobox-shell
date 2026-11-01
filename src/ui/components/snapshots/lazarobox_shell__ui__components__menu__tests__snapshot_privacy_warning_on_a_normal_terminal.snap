@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ AI                                              │
+│ Settings │ Models │ Tools │ Chat                           │
 │ Memory: save notes to engram                               │
 │ Saved notes leave lazarobox's private store (0600).        │
 │ They become readable by every local process and            │
@@ -14,15 +14,6 @@ expression: shown
 │ Once saved, this note is not shown again.                  │
 │                                                            │
 │ Turn memory on? (y/n)                                      │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │ y accept (then s to save) · any other key declines         │
