@@ -26,6 +26,7 @@ mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
+pub mod clipboard;
 mod config_write;
 pub mod desktop;
 pub mod engram;
