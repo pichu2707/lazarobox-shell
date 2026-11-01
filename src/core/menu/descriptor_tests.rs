@@ -27,7 +27,7 @@ fn drafts() -> Vec<(&'static Item, &'static AiChoice)> {
 fn choice(choice: &AiChoice) -> Option<&Choice<AiConfig>> {
     match &choice.value {
         DraftValue::Flag(c) | DraftValue::List(c) => Some(c),
-        DraftValue::Minutes { .. } => None,
+        DraftValue::Minutes { .. } | DraftValue::Limit { .. } => None,
     }
 }
 
@@ -63,7 +63,10 @@ fn the_migrated_rows_are_drafts_in_tab_then_row_order() {
             "Usage in bar",
             "claude billing",
             "codex billing",
-            "gemini billing"
+            "gemini billing",
+            "Turn limit (tokens)",
+            "Day limit (tokens)",
+            "Day limit ($)"
         ]
     );
 }
@@ -138,6 +141,9 @@ fn the_key_paths_are_the_ones_the_config_has_always_used() {
             ("ai.usage.billing", "claude"),
             ("ai.usage.billing", "codex"),
             ("ai.usage.billing", "gemini"),
+            ("ai.usage", "turn_tokens"),
+            ("ai.usage", "day_tokens"),
+            ("ai.usage", "day_usd"),
         ]
     );
     let mut unique = paths.clone();

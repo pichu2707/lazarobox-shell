@@ -125,13 +125,25 @@ impl ConfigEdit {
     /// `orchestrate` slot is absent from the file, not a pair of empty
     /// strings.
     pub fn is_removal(&self) -> bool {
-        self.table == Task::Orchestrate.table() && self.value.is_empty()
+        (self.table == Task::Orchestrate.table() || (self.table == USAGE_TABLE && self.is_limit()))
+            && self.value.is_empty()
+    }
+
+    /// Whether the key is one of the usage limits, which are off when absent.
+    fn is_limit(&self) -> bool {
+        matches!(self.key, "turn_tokens" | "day_tokens" | "day_usd")
+    }
+
+    /// Whether the key is a TOML float (`ai.usage.day_usd`).
+    pub fn is_float(&self) -> bool {
+        self.table == USAGE_TABLE && self.key == "day_usd"
     }
 
     /// Whether the key is a TOML integer (written as a number, not as a
     /// string): `ai.servers.llamacpp.idle_minutes`.
     pub fn is_integer(&self) -> bool {
-        self.table == LLAMACPP_TABLE && self.key == "idle_minutes"
+        (self.table == LLAMACPP_TABLE && self.key == "idle_minutes")
+            || (self.table == USAGE_TABLE && matches!(self.key, "turn_tokens" | "day_tokens"))
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not

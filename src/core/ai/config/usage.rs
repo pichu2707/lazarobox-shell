@@ -86,6 +86,18 @@ impl UsageConfig {
         self.day_usd_micros
     }
 
+    pub fn set_turn_tokens(&mut self, limit: Option<u64>) {
+        self.turn_tokens = limit;
+    }
+
+    pub fn set_day_tokens(&mut self, limit: Option<u64>) {
+        self.day_tokens = limit;
+    }
+
+    pub fn set_day_usd_micros(&mut self, limit: Option<u64>) {
+        self.day_usd_micros = limit;
+    }
+
     /// The billing mode of `engine`: `None` for a local engine, which never
     /// shows dollars.
     pub fn billing(&self, engine: &str) -> Option<Billing> {
