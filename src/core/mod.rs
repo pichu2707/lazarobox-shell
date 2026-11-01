@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod config_edit;
 pub mod copy;
