@@ -458,21 +458,26 @@ impl App {
         let notes = [
             (
                 DayNote::Tokens,
+                usage.day_tokens(),
                 usage::day_tokens_note(tokens, usage.day_tokens()),
             ),
             (
                 DayNote::Spend,
+                usage.day_usd_micros(),
                 usage::day_spend_note(spend, usage.day_usd_micros()),
             ),
         ];
-        for (kind, note) in notes {
-            let Some(note) = note else { continue };
-            if self.day_noted.contains(&(kind, until)) {
+        // Keyed on the limit too: raising it the same day arms the note again.
+        for (kind, limit, note) in notes {
+            let (Some(note), Some(limit)) = (note, limit) else {
+                continue;
+            };
+            if self.day_noted.contains(&(kind, until, limit)) {
                 continue;
             }
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-                self.day_noted.retain(|(_, day)| *day >= until);
-                self.day_noted.push((kind, until));
+                self.day_noted.retain(|(_, day, _)| *day >= until);
+                self.day_noted.push((kind, until, limit));
                 chat.push_system(note);
                 self.dirty = true;
             }

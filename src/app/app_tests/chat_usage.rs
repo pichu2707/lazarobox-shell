@@ -556,3 +556,18 @@ fn the_day_notes_come_in_order_without_a_limit_and_never_block_a_send() {
     off.update(recorded_with(Some(9_000), &[("claude", 9_000_000)]));
     assert!(limit_notes(&off).is_empty(), "no limits, no notes");
 }
+
+// W4: a note is keyed on the limit too, so raising the limit re-arms it.
+#[test]
+fn raising_the_limit_the_same_day_re_arms_the_note() {
+    let mut a = limited("[ai.usage]\nday_tokens = 5000\n");
+    a.update(recorded_with(Some(5_200), &[]));
+    assert_eq!(limit_notes(&a).len(), 1);
+    let mut raised = ollama();
+    raised.set_usage(billing_config("[ai.usage]\nday_tokens = 6000\n"));
+    a.ai = raised;
+    a.update(recorded_with(Some(5_900), &[]));
+    assert_eq!(limit_notes(&a).len(), 1, "under the new limit");
+    a.update(recorded_with(Some(6_100), &[]));
+    assert_eq!(limit_notes(&a).len(), 2, "the new limit is crossed");
+}

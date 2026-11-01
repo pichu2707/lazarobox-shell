@@ -877,8 +877,8 @@ pub struct App {
     summary_notice_shown: bool,
     /// The `Usage not saved` notice was shown in this run.
     usage_notice_shown: bool,
-    /// The day notes already shown this run: the note and the end of its day.
-    day_noted: Vec<(chat::DayNote, i64)>,
+    /// The day notes already shown this run: the note, the end of its day and the limit it was shown for.
+    day_noted: Vec<(chat::DayNote, i64, u64)>,
     /// Today's figures, as the store last answered; none until it has.
     usage_today: Option<chat::UsageToday>,
     /// When and how today's figures are read.
@@ -8551,6 +8551,11 @@ mod app_tests {
             }
             let before = a.menu().cloned();
             assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
+            // The Usage view says so instead of ignoring it (a limit takes
+            // pasted digits while it is edited).
+            if footer_of(&a) == "Esc first to leave Usage" {
+                continue;
+            }
             assert_eq!(a.menu().cloned(), before);
         }
     }
