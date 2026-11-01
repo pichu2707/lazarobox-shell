@@ -423,6 +423,8 @@ Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores
 
 En la lista de motores, `claude`, `codex` y `gemini` detectados llevan `🔧` (o `tools` en `TERM=linux` o con un locale que no es UTF-8) tras su estado: sus herramientas están verificadas. No lo llevan `opencode`, `ollama`, un motor no detectado, uno rechazado (`refused`) ni `claude` cuando pide actualizarse (`update needed`), y tampoco las filas de modelos de un CLI. Se muestra también con `[ai.tools] enabled = false`.
 
+En las pantallas de descarga de Ollama, una fila de `Popular` lleva `🔧` si la tarjeta de la biblioteca declara `tools` y el mayor tamaño que cabe en tu PC tiene 3B o más (`tools: unreliable` si es menor); cada fila de `Sizes` usa el tamaño de su propia etiqueta. No hay peticiones nuevas: la marca sale de la tarjeta ya leída. La pantalla de confirmación no lleva marca.
+
 La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
 
 Si un servidor escucha en otro puerto (por ejemplo, porque el suyo está ocupado), indícalo en `config.toml`. La detección y el chat usan ese mismo puerto, siempre en `127.0.0.1`:
