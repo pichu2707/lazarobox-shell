@@ -116,6 +116,15 @@ pub fn adapter_for(id: &str) -> Option<Adapter> {
     }
 }
 
+/// Whether engine `id` is a CLI run in a private cwd (Claude, Codex or
+/// Gemini). Servers and unknown engines are not.
+pub fn is_cli_engine(id: &str) -> bool {
+    matches!(
+        adapter_for(id),
+        Some(Adapter::Claude | Adapter::Codex | Adapter::Gemini)
+    )
+}
+
 /// The catalog port of a server engine.
 fn catalog_port(id: &str) -> u16 {
     CATALOG

@@ -45,7 +45,7 @@ use crate::core::{
         ServerPorts,
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{Adapter, Invocation, Wire, adapter_for},
+            adapters::{Adapter, Invocation, Wire, adapter_for, is_cli_engine},
             claude::ClaudeDecoder,
             codex::CodexDecoder,
             engine::{
@@ -955,6 +955,7 @@ impl Chats {
             // workers'.
             orchestra,
             read_scope: None,
+            cli: is_cli_engine(&request.engine),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

@@ -1712,6 +1712,86 @@ async fn every_spelling_of_a_secret_is_refused_at_the_ask_with_the_one_text() {
     }
 }
 
+// D8: a CLI worker joins a relative path to its private cwd; the path means
+// the project's file. It is read from the project, unasked, and never offered
+// for approval.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_path_under_the_cli_cwd_is_read_from_the_project_and_never_asked() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let input = cwd.join("a.rs");
+    let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    scope.cli = true;
+    let approver = Scripted::new(Decision::Denied("must not be asked"));
+    scope.approver = approver.clone();
+    let out = host
+        .dispatch(scope)
+        .call(read(input.to_str().unwrap()))
+        .await;
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert!(out.text.contains("inside the scope"), "{out:?}");
+    assert_eq!(status, ToolStatus::Ok);
+    assert_eq!(ask, None);
+    assert!(approver.asked.lock().unwrap().is_empty());
+}
+
+// D8: the rewrite is for CLI turns; a server engine's path is judged as typed
+// (and so asked), and the row says when a path was rewritten.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn only_a_cli_turn_has_its_cli_cwd_paths_rewritten_and_the_row_says_so() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let input = cwd.join("a.rs");
+    for cli in [false, true] {
+        let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+        scope.cli = cli;
+        scope.approver = Scripted::new(Decision::Denied("declined"));
+        let out = host
+            .dispatch(scope)
+            .call(read(input.to_str().unwrap()))
+            .await;
+        let seen = events(&mut rx);
+        let row = seen.iter().find_map(|e| match e {
+            StreamEvent::ToolCall { summary, .. } => Some(summary.clone()),
+            _ => None,
+        });
+        let row = row.expect("a row");
+        assert_eq!(out.is_error, !cli, "{out:?}");
+        assert_eq!(row.ends_with("(from cli-cwd path)"), cli, "{row}");
+    }
+}
+
+// D8: the note on the row is never cut, whatever the path's length.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_cli_cwd_note_survives_a_long_path() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let cwd = home.join(".local/share/lazarobox/cli-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let long = format!("{}/{}.rs", cwd.display(), "d".repeat(400));
+    let (mut scope, mut rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+    scope.cli = true;
+    host.dispatch(scope).call(read(&long)).await;
+    let row = events(&mut rx).iter().find_map(|e| match e {
+        StreamEvent::ToolCall { summary, .. } => Some(summary.clone()),
+        _ => None,
+    });
+    assert!(row.expect("a row").ends_with("(from cli-cwd path)"));
+}
+
 // D4: the diff text a review prompt carries is built from the staged batch,
 // only for paths the review may read; the others are named and not shown.
 // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
