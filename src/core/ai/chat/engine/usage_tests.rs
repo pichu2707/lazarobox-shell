@@ -56,3 +56,54 @@ fn a_cost_too_small_to_show_is_not_printed_as_zero() {
     assert_eq!(label(50), "1 in 1 out $0.0001");
     assert_eq!(label(4936), "1 in 1 out $0.0049");
 }
+
+fn turn(
+    input: Option<u64>,
+    output: Option<u64>,
+    cache: (Option<u64>, Option<u64>),
+    cost: Option<u64>,
+) -> TurnUsage {
+    TurnUsage {
+        input,
+        output,
+        cache_read: cache.0,
+        cache_write: cache.1,
+        cost_micros: cost,
+        ..TurnUsage::default()
+    }
+}
+
+#[test]
+fn a_turn_becomes_a_row_figure_only_with_both_counts() {
+    const NONE: (Option<u64>, Option<u64>) = (None, None);
+    let cases = [
+        // (turn, row figure)
+        (turn(Some(7), None, NONE, None), None),
+        (turn(None, Some(3), NONE, None), None),
+        (turn(None, Some(3), (Some(9), None), None), None),
+        (turn(None, None, NONE, Some(5)), None),
+        (turn(Some(2), Some(4), NONE, None), Some(used(2, 4, None))),
+        // The cache buckets join the prompt count.
+        (
+            turn(Some(2), Some(4), (Some(30), Some(600)), None),
+            Some(used(632, 4, None)),
+        ),
+        (
+            turn(Some(2), Some(4), (None, Some(600)), None),
+            Some(used(602, 4, None)),
+        ),
+        // The cost passes through as it was reported.
+        (
+            turn(Some(2), Some(4), NONE, Some(4936)),
+            Some(used(2, 4, Some(4936))),
+        ),
+        // Sums saturate instead of wrapping.
+        (
+            turn(Some(u64::MAX), Some(1), (Some(5), Some(5)), None),
+            Some(used(u64::MAX, 1, None)),
+        ),
+    ];
+    for (given, want) in cases {
+        assert_eq!(Usage::from_turn(&given), want, "{given:?}");
+    }
+}

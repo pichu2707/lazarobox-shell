@@ -1828,6 +1828,11 @@ async fn drive(
                     // report reads `n/a`, never a partial figure.
                     if let Some(used) = Usage::from_turn(&usage) {
                         events.push(WorkerEvent::Usage(used));
+                        // A cut or failed turn must not show a figure that
+                        // looks whole.
+                        if usage.partial {
+                            events.push(WorkerEvent::UsageGap);
+                        }
                     }
                 }
                 // A capped answer still ends the worker: `collect` caps it

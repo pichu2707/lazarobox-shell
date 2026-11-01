@@ -54,6 +54,11 @@ enum Script {
     Answer(&'static str),
     /// Streams the text, reports two usages (one per round), then ends.
     Used(&'static str),
+    /// Streams the text, reports a usage with one count only (an Ollama final
+    /// line with `eval_count` but no `prompt_eval_count`), then ends.
+    UsedOneCount(&'static str),
+    /// Streams the text, reports a usage marked partial, then ends.
+    UsedPartial(&'static str),
     /// Streams the text, then fails with the message.
     Fail(&'static str, &'static str),
     /// The jail refuses the turn with the reason.
@@ -163,6 +168,25 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                         };
                         let _ = tx.send(StreamEvent::usage(usage)).await;
                     }
+                    (text, StreamEvent::Done(Finish::Stop))
+                }
+                Script::UsedOneCount(text) => {
+                    let usage = TurnUsage {
+                        output: Some(7),
+                        ..TurnUsage::default()
+                    };
+                    let _ = tx.send(StreamEvent::usage(usage)).await;
+                    (text, StreamEvent::Done(Finish::Stop))
+                }
+                Script::UsedPartial(text) => {
+                    let usage = TurnUsage {
+                        input: Some(5),
+                        output: Some(2),
+                        cost_micros: Some(40),
+                        partial: true,
+                        ..TurnUsage::default()
+                    };
+                    let _ = tx.send(StreamEvent::usage(usage)).await;
                     (text, StreamEvent::Done(Finish::Stop))
                 }
                 Script::Fail(text, error) => {
@@ -433,6 +457,43 @@ async fn a_workers_usage_events_reach_its_done_row_summed() {
             cost_micros: None
         })
     );
+}
+
+// A one-count report is not a figure: the row reads `n/a`, never a partial
+// number that looks whole.
+#[tokio::test]
+async fn a_one_count_usage_gives_no_figure_and_the_row_reads_na() {
+    let mut lab = lab(Script::UsedOneCount("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let OrchestraEvent::Worker(done) = lab.next().await else {
+        panic!("a worker row");
+    };
+    assert_eq!((done.status, done.usage), (WorkerStatus::Done, None));
+}
+
+// A report marked partial reaches the row as partial, without a cost.
+#[tokio::test]
+async fn a_partial_usage_marks_the_row_partial_and_drops_the_cost() {
+    let mut lab = lab(Script::UsedPartial("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let OrchestraEvent::Worker(done) = lab.next().await else {
+        panic!("a worker row");
+    };
+    assert_eq!(
+        done.usage,
+        Some(Usage {
+            input: 5,
+            output: 2,
+            cost_micros: None
+        })
+    );
+    assert!(done.partial);
 }
 
 #[tokio::test]
