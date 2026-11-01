@@ -13,6 +13,9 @@ use crate::core::ai::chat::{
     yank,
 };
 
+/// Alt and Ctrl together.
+const ALT_CONTROL: KeyModifiers = KeyModifiers::ALT.union(KeyModifiers::CONTROL);
+
 impl App {
     /// `Prefix c`: a chat pane as a right split of the focused pane, opened
     /// from that pane's cwd. A split the layout refuses opens nothing. An
@@ -185,9 +188,11 @@ impl App {
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => one_shot(App::chat_review_orphan, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
-            (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.edit_composer(|c| c.newline())
-            }
+            // Alt+Ctrl+J is what crossterm reports for ESC LF, how zutty sends
+            // Alt+Enter once modifyOtherKeys is off.
+            (KeyCode::Enter, KeyModifiers::ALT)
+            | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('j'), ALT_CONTROL) => self.edit_composer(|c| c.newline()),
             (KeyCode::Tab, KeyModifiers::NONE) => one_shot(App::cd_complete, self),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.edit_composer(|c| c.clear()),
             (KeyCode::Char(ch), _) if plain => self.edit_composer(|c| c.insert(ch)),

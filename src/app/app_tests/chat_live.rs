@@ -266,6 +266,19 @@ fn shifted_letters_are_typed() {
     assert_eq!(composer(&a), "H");
 }
 
+// zutty sends Alt+Enter as ESC LF once modifyOtherKeys is off. crossterm
+// 0.29 in raw mode decodes LF as Ctrl+J and ESC adds Alt, so the event is
+// Alt+Ctrl+J: it must insert a newline like Alt+Enter does.
+#[test]
+fn alt_ctrl_j_from_esc_lf_inserts_a_newline() {
+    let mut a = ready_app();
+    type_text(&mut a, "uno");
+    let both = KeyModifiers::ALT | KeyModifiers::CONTROL;
+    assert_eq!(a.update(code(KeyCode::Char('j'), both)), vec![]);
+    type_text(&mut a, "dos");
+    assert_eq!(composer(&a), "uno\ndos");
+}
+
 #[test]
 fn enter_sends_and_the_newline_bindings_do_not() {
     let mut a = ready_app();
