@@ -1047,3 +1047,34 @@ fn answer_text_that_imitates_a_tool_row_stays_a_delta() {
         "{out:?}"
     );
 }
+
+fn usage(input: u64) -> StreamEvent {
+    StreamEvent::usage(crate::core::ai::chat::usage::TurnUsage {
+        input: Some(input),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn usage_passes_through_before_the_end_and_unchanged() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(delta("hi"));
+    out.extend(pipe.event(usage(7)));
+    out.extend(pipe.event(done()));
+    assert_eq!(out, [delta("hi"), usage(7), done()]);
+}
+
+#[test]
+fn usage_is_delivered_before_an_error_too() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(usage(3));
+    out.extend(pipe.event(StreamEvent::Error(ChatError::Interrupted)));
+    assert_eq!(out, [usage(3), StreamEvent::Error(ChatError::Interrupted)]);
+}
+
+#[test]
+fn usage_after_the_final_event_is_dropped() {
+    let mut pipe = Pipe::new();
+    pipe.event(done());
+    assert_eq!(pipe.event(usage(1)), []);
+}

@@ -42,6 +42,13 @@ const OPENAI: &str = concat!(
     "data: [DONE]\r\n\r\n",
 );
 
+fn without_usage(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    events
+        .into_iter()
+        .filter(|e| !matches!(e, StreamEvent::Usage(_)))
+        .collect()
+}
+
 fn hello() -> Vec<StreamEvent> {
     vec![
         delta("Hel"),
@@ -346,12 +353,25 @@ const LLAMA: &str = include_str!("../../../../../tests/fixtures/ollama/llama3.2-
 /// `finish_reason` with an empty delta, then `[DONE]`. No reasoning field.
 const LLAMACPP: &str = include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-plain.sse");
 
+/// The timings recorded in `qwen2.5-plain.sse`.
+fn llamacpp_usage() -> crate::core::ai::chat::usage::TurnUsage {
+    crate::core::ai::chat::usage::TurnUsage {
+        input: Some(18),
+        output: Some(4),
+        cache_read: Some(5),
+        duration_ms: Some(215),
+        model: Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into()),
+        ..Default::default()
+    }
+}
+
 #[test]
 fn a_recorded_llamacpp_reply_gives_text_then_one_final_at_every_split_point() {
     let want = [
         delta("Hi"),
         delta(" there"),
         delta("."),
+        StreamEvent::usage(llamacpp_usage()),
         StreamEvent::Done(Finish::Stop),
     ];
     same_at_every_split(LLAMACPP, &want, sse);
@@ -371,23 +391,27 @@ fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {
             StreamEvent::ThinkingDelta(_) => "thinking",
             StreamEvent::Delta(_) => "delta",
             StreamEvent::Done(_) => "done",
+            StreamEvent::Usage(_) => "usage",
             _ => "other",
         })
         .collect();
     let mut want = vec!["thinking"; 6];
-    want.extend(["thinking", "thinking", "thinking", "delta", "delta", "done"]);
+    want.extend([
+        "thinking", "thinking", "thinking", "delta", "delta", "usage", "done",
+    ]);
     assert_eq!(kinds, want);
     assert_eq!(events[0], thinking("Okay"));
     assert_eq!(events[8], thinking(".\n"));
     assert_eq!(events[9], delta("4"));
-    assert_eq!(events[11], StreamEvent::Done(Finish::Stop));
+    assert!(matches!(events[11], StreamEvent::Usage(_)));
+    assert_eq!(events[12], StreamEvent::Done(Finish::Stop));
     same_at_every_split(QWEN3, &events, ndjson);
 }
 
 #[test]
 fn a_recorded_plain_model_gives_the_events_it_always_did() {
     assert_eq!(
-        ndjson(&[LLAMA.as_bytes()]),
+        without_usage(ndjson(&[LLAMA.as_bytes()])),
         [delta("Hi"), delta("!"), StreamEvent::Done(Finish::Stop)]
     );
 }
@@ -889,7 +913,11 @@ fn fragments_are_accumulated_per_index_at_every_split() {
     let bytes = input.as_bytes();
     let check = |chunks: &[&[u8]], at: usize| {
         let (events, calls) = oa_run(chunks);
-        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(
+            without_usage(events),
+            [StreamEvent::Done(Finish::Stop)],
+            "cut at {at}"
+        );
         assert_eq!(calls.len(), 2, "cut at {at}");
         assert_eq!(calls[0].call, Ok(Call::FindDir { query: "x".into() }));
         assert_eq!(
@@ -1111,7 +1139,11 @@ fn the_recorded_tool_call_decodes_to_one_request_at_every_split_point() {
     let bytes = CALL_F1.as_bytes();
     let check = |chunks: &[&[u8]], at: usize| {
         let (events, calls) = oa_run(chunks);
-        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(
+            without_usage(events),
+            [StreamEvent::Done(Finish::Stop)],
+            "cut at {at}"
+        );
         assert_eq!(
             calls,
             [ToolRequest {
@@ -1210,4 +1242,159 @@ fn a_late_id_after_the_name_is_kept_and_a_choice_without_delta_is_ignored() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].id.as_deref(), Some("late"));
     assert!(calls[0].call.is_ok());
+}
+
+mod usage_tests {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    const LLAMACPP_PLAIN: &str =
+        include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-plain.sse");
+    const OLLAMA_PLAIN: &str =
+        include_str!("../../../../../tests/fixtures/ollama/llama3.2-plain.ndjson");
+
+    fn usage_of(events: &[StreamEvent]) -> Option<TurnUsage> {
+        events.iter().find_map(|e| match e {
+            StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
+            _ => None,
+        })
+    }
+
+    fn before_the_end(events: &[StreamEvent]) -> bool {
+        let usage = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::Usage(_)));
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::Done(_)));
+        usage.is_some() && usage < end
+    }
+
+    fn ollama_done(extra: &str) -> String {
+        format!(
+            "{{\"message\":{{\"content\":\"\"}},\"done\":true,\"done_reason\":\"stop\"{extra}}}\n"
+        )
+    }
+
+    #[test]
+    fn an_ollama_final_line_reports_input_output_and_the_model() {
+        let events = ndjson(&[OLLAMA_PLAIN.as_bytes()]);
+        let got = usage_of(&events).expect("usage");
+        assert_eq!((got.input, got.output), (Some(30), Some(3)));
+        assert_eq!(got.model.as_deref(), Some("llama3.2:3b"));
+        assert_eq!(got.duration_ms, Some(1759));
+        assert_eq!((got.cost_micros, got.cost_source), (None, None));
+        assert!(before_the_end(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_missing_prompt_count_is_none_not_zero() {
+        let line = ollama_done(r#","eval_count":9"#);
+        let got = usage_of(&ndjson(&[line.as_bytes()])).expect("usage");
+        assert_eq!((got.input, got.output), (None, Some(9)));
+    }
+
+    #[test]
+    fn a_final_line_without_counts_gives_no_record() {
+        let events = ndjson(&[ollama_done("").as_bytes()]);
+        assert_eq!(usage_of(&events), None);
+        assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    }
+
+    #[test]
+    fn an_ollama_cost_field_never_becomes_dollars() {
+        let line =
+            ollama_done(r#","prompt_eval_count":12,"eval_count":34,"cost":1.5,"cost_usd":2"#);
+        let got = usage_of(&ndjson(&[line.as_bytes()])).expect("usage");
+        assert_eq!((got.input, got.output), (Some(12), Some(34)));
+        assert_eq!((got.cost_micros, got.cost_source), (None, None));
+    }
+
+    #[test]
+    fn bad_ollama_counts_are_none_for_that_field_only() {
+        let line =
+            ollama_done(r#","prompt_eval_count":"x","eval_count":-2,"total_duration":5000000"#);
+        // Nothing usable is left, so there is no record at all.
+        assert_eq!(usage_of(&ndjson(&[line.as_bytes()])), None);
+        let line =
+            ollama_done(r#","prompt_eval_count":"x","eval_count":8,"total_duration":5000000"#);
+        let got = usage_of(&ndjson(&[line.as_bytes()])).expect("usage");
+        assert_eq!(
+            (got.input, got.output, got.duration_ms),
+            (None, Some(8), Some(5))
+        );
+    }
+
+    #[test]
+    fn usage_on_a_line_that_is_not_the_last_is_not_read() {
+        let line = "{\"message\":{\"content\":\"a\"},\"done\":false,\"eval_count\":4}\n";
+        assert_eq!(usage_of(&ndjson(&[line.as_bytes()])), None);
+    }
+
+    #[test]
+    fn llamacpp_timings_on_the_finish_chunk_give_input_cache_and_output() {
+        let events = sse(&[LLAMACPP_PLAIN.as_bytes()]);
+        let got = usage_of(&events).expect("usage");
+        assert_eq!(
+            (got.input, got.cache_read, got.output),
+            (Some(18), Some(5), Some(4))
+        );
+        assert_eq!(got.duration_ms, Some(215));
+        assert_eq!(got.cost_micros, None);
+        assert!(before_the_end(&events), "{events:?}");
+    }
+
+    #[test]
+    fn an_openai_usage_object_on_the_finish_chunk_is_read() {
+        let chunk = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n";
+        let events = sse(&[chunk.as_bytes()]);
+        let got = usage_of(&events).expect("usage");
+        assert_eq!(
+            (got.input, got.output, got.cache_read),
+            (Some(10), Some(20), None)
+        );
+        assert!(before_the_end(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_stream_without_usage_has_no_record() {
+        let events = sse(&[OPENAI.as_bytes()]);
+        assert_eq!(usage_of(&events), None);
+        assert_eq!(events, hello());
+    }
+
+    #[test]
+    fn a_null_or_malformed_usage_is_no_data_and_the_turn_completes() {
+        for extra in [
+            r#","usage":null"#,
+            r#","usage":"oops""#,
+            r#","timings":[1]"#,
+            r#","usage":{"prompt_tokens":"x"}"#,
+        ] {
+            let chunk = format!(
+                "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]{extra}}}\n\n"
+            );
+            let events = sse(&[chunk.as_bytes()]);
+            assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "{extra}");
+        }
+    }
+
+    #[test]
+    fn a_finish_chunk_with_usage_then_done_gives_one_of_each() {
+        let text = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\ndata: [DONE]\n\n";
+        let events = sse(&[text.as_bytes()]);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(events[0], StreamEvent::Usage(_)));
+        assert_eq!(events[1], StreamEvent::Done(Finish::Stop));
+    }
+
+    #[test]
+    fn a_usage_chunk_after_the_finish_chunk_is_lost_and_done_stays_single() {
+        let text = concat!(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(sse(&[text.as_bytes()]), [StreamEvent::Done(Finish::Stop)]);
+    }
 }

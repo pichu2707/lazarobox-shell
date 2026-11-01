@@ -1,6 +1,7 @@
 use super::super::engine::{ChatError, Finish};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
+use crate::core::ai::chat::usage::TurnUsage;
 
 const PLAIN: &str = include_str!("../../../../../tests/fixtures/gemini/plain.jsonl");
 const MULTI: &str = include_str!("../../../../../tests/fixtures/gemini/multi-delta.jsonl");
@@ -52,15 +53,27 @@ fn error_line(message: &str) -> String {
 #[test]
 fn a_plain_answer_is_one_delta_and_a_stop() {
     // The echoed user message and the init line are not part of the answer.
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+    let usage = TurnUsage {
+        input: Some(17318),
+        output: Some(0),
+        cache_read: Some(0),
+        duration_ms: Some(2025),
+        model: Some("gemini-2.5-flash".into()),
+        ..TurnUsage::default()
+    };
+    assert_eq!(
+        whole(PLAIN),
+        [delta("ok"), StreamEvent::usage(usage), done()]
+    );
 }
 
 #[test]
 fn deltas_arrive_in_order_and_the_result_ends_the_turn() {
     let events = whole(MULTI);
-    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!(events.len(), 5, "{events:?}");
     assert_eq!(events[0], delta("1,2,3,4,5,6,7,8,9,10,11,12,13,"));
-    assert_eq!(events[3], done());
+    assert!(matches!(events[3], StreamEvent::Usage(_)));
+    assert_eq!(events[4], done());
     let text: String = events
         .iter()
         .filter_map(|e| match e {
@@ -74,7 +87,11 @@ fn deltas_arrive_in_order_and_the_result_ends_the_turn() {
 #[test]
 fn a_token_split_across_deltas_is_just_text() {
     // M2: the model answered 391 as "3" then "91".
-    assert_eq!(whole(SPLIT_TOKEN), [delta("3"), delta("91"), done()]);
+    let events = whole(SPLIT_TOKEN);
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!((&events[0], &events[1]), (&delta("3"), &delta("91")));
+    assert!(matches!(events[2], StreamEvent::Usage(_)));
+    assert_eq!(events[3], done());
 }
 
 #[test]
@@ -129,11 +146,16 @@ fn a_failed_result_gives_the_api_message_without_its_wrapper() {
         )]
     );
     assert_eq!(
-        whole(QUOTA_ERROR),
+        without_usage(whole(QUOTA_ERROR)),
         [failed(
             "You have exhausted your daily quota on this model. Please wait and try again later. To increase your limits, request a quota increase through AI Studio, or switch to another /auth method"
         )]
     );
+    // The quota run did spend tokens before it failed: they are reported.
+    let events = whole(QUOTA_ERROR);
+    let spent = usage_of(&events).expect("usage");
+    assert_eq!((spent.input, spent.output), (Some(33972 - 15971), Some(89)));
+    assert!(matches!(events[0], StreamEvent::Usage(_)));
 }
 
 #[test]
@@ -398,4 +420,103 @@ fn a_text_only_turn_refuses_even_our_own_tool() {
         whole(&calls_then_answers("mcp_lazarobox_read_file")),
         [failed(TOOL_REFUSED)]
     );
+}
+
+fn result_with(stats: &str) -> String {
+    format!(
+        "{{\"type\":\"result\",\"timestamp\":\"t\",\"status\":\"success\",\"stats\":{stats}}}\n"
+    )
+}
+
+fn usage_of(events: &[StreamEvent]) -> Option<TurnUsage> {
+    events.iter().find_map(|e| match e {
+        StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
+        _ => None,
+    })
+}
+
+#[test]
+fn cached_is_taken_out_of_input_and_there_are_no_dollars() {
+    let stats = r#"{"total_tokens":99,"input_tokens":1000,"output_tokens":40,"cached":600,"duration_ms":7}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!(got.input, Some(400));
+    assert_eq!(got.cache_read, Some(600));
+    assert_eq!(got.output, Some(40));
+    assert_eq!(got.duration_ms, Some(7));
+    assert_eq!(
+        (got.cost_micros, got.cost_source, got.model),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn cached_larger_than_input_saturates_at_zero() {
+    let stats = r#"{"input_tokens":5,"output_tokens":1,"cached":9}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.input, got.cache_read), (Some(0), Some(9)));
+}
+
+#[test]
+fn input_without_a_cached_count_stays_whole() {
+    let stats = r#"{"input_tokens":12,"output_tokens":3}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.input, got.cache_read), (Some(12), None));
+}
+
+#[test]
+fn an_unknown_stats_shape_is_no_data_and_the_answer_completes() {
+    for stats in ["\"oops\"", "{\"models\":{\"x\":[1]}}", "[]", "{}", "null"] {
+        let events = whole(&format!("{}{}", assistant_line("hi"), result_with(stats)));
+        assert_eq!(events, [delta("hi"), done()], "{stats}");
+    }
+}
+
+#[test]
+fn a_bad_count_is_none_for_that_field_only() {
+    let stats = r#"{"input_tokens":"x","output_tokens":-1,"cached":3}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!(
+        (got.input, got.output, got.cache_read),
+        (None, None, Some(3))
+    );
+}
+
+#[test]
+fn an_error_result_that_spent_tokens_reports_them_before_the_error() {
+    let line = r#"{"type":"result","status":"error","error":{"message":"boom"},"stats":{"input_tokens":4,"output_tokens":2}}"#;
+    let events = whole(&format!("{line}\n"));
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(matches!(events[0], StreamEvent::Usage(_)));
+    assert!(matches!(events[1], StreamEvent::Error(_)));
+}
+
+fn without_usage(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    events
+        .into_iter()
+        .filter(|e| !matches!(e, StreamEvent::Usage(_)))
+        .collect()
+}
+
+#[test]
+fn a_net_input_field_wins_over_the_difference() {
+    let stats = r#"{"input_tokens":100,"input":37,"output_tokens":3,"cached":60}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.input, got.cache_read), (Some(37), Some(60)));
+}
+
+#[test]
+fn a_malformed_cached_count_makes_the_input_unknown() {
+    let stats = r#"{"input_tokens":100,"output_tokens":3,"cached":"x"}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!(
+        (got.input, got.cache_read, got.output),
+        (None, None, Some(3))
+    );
+}
+
+#[test]
+fn more_than_one_model_is_flagged_and_gets_no_model_name() {
+    let stats = r#"{"input_tokens":5,"output_tokens":1,"models":{"a":{},"b":{}}}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!((got.model.clone(), got.multi_model), (None, true));
 }

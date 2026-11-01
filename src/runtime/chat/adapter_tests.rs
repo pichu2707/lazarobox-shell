@@ -22,6 +22,7 @@ use super::*;
 use crate::core::ai::chat::{
     ANSWER_CAP, ChatState, Entry, REASONING_CAP, SendOutcome,
     engine::{Availability, ChatMessage, Finish, Role, Tools},
+    usage::TurnUsage,
 };
 
 const QWEN3: &str = include_str!("../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
@@ -391,6 +392,14 @@ async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answ
                 StreamEvent::Delta("Hi".into()),
                 StreamEvent::Delta(" there".into()),
                 StreamEvent::Delta(".".into()),
+                StreamEvent::usage(TurnUsage {
+                    input: Some(18),
+                    output: Some(4),
+                    cache_read: Some(5),
+                    duration_ms: Some(215),
+                    model: Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into()),
+                    ..Default::default()
+                }),
                 StreamEvent::Done(Finish::Stop)
             ],
             "{engine}"

@@ -39,6 +39,7 @@ pub mod tags;
 pub mod text_call;
 pub mod tool;
 pub mod transcript;
+pub mod usage;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
@@ -324,6 +325,9 @@ pub struct ChatState {
     tools_offered: bool,
     /// The engine of the request in flight, as sent.
     request_engine: String,
+    /// What the last turn used, summed over its `Usage` events. Cleared by
+    /// the next send, so it outlives the turn for whoever stores it.
+    turn_usage: Option<usage::TurnUsage>,
     /// `close_stream` already queued the answer in progress.
     closing: bool,
     /// The profile changed while the first system prompt was still being
@@ -398,6 +402,7 @@ impl ChatState {
             fill: None,
             tools_offered: false,
             request_engine: String::new(),
+            turn_usage: None,
             closing: false,
             reprepare_prompt: false,
             approvals: approval::Approvals::default(),
@@ -698,6 +703,12 @@ impl ChatState {
         self.scroll = scroll;
     }
 
+    /// What the last turn used, if its engine reported any. Stays until the
+    /// next send.
+    pub fn turn_usage(&self) -> Option<&usage::TurnUsage> {
+        self.turn_usage.as_ref()
+    }
+
     /// Moves with every change of the transcript; the line cache keys on it.
     pub fn generation(&self) -> u64 {
         self.generation
@@ -935,6 +946,7 @@ impl ChatState {
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
+        self.turn_usage = None;
         self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
@@ -999,13 +1011,16 @@ impl ChatState {
         if self.summarizing.is_some() {
             return self.apply_summary(event);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_)) {
+        if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
-            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+            StreamEvent::Slow
+                | StreamEvent::Notice(_)
+                | StreamEvent::Error(_)
+                | StreamEvent::Usage(_)
         ) {
             self.told_sent.clear();
         }
@@ -1020,6 +1035,17 @@ impl ChatState {
                 let entry = Entry::System(line);
                 if !self.entries.contains(&entry) {
                     self.entries.push(entry);
+                }
+                Follow::Nothing
+            }
+            StreamEvent::Usage(usage) => {
+                let mut usage = *usage;
+                if usage.model.is_none() && !usage.multi_model && !self.request_model.is_empty() {
+                    usage.model = usage::model_id(&self.request_model);
+                }
+                match self.turn_usage.as_mut() {
+                    Some(sum) => sum.merge(&usage),
+                    None => self.turn_usage = Some(usage),
                 }
                 Follow::Nothing
             }
@@ -1188,6 +1214,12 @@ impl ChatState {
             let mut lines = std::mem::take(&mut self.told_sent);
             lines.append(&mut self.told);
             self.told = lines;
+        }
+        // A turn that did not end well used more than the engine reported.
+        if status != MsgStatus::Complete
+            && let Some(usage) = self.turn_usage.as_mut()
+        {
+            usage.partial = true;
         }
         self.collapse_reasoning(now);
         self.settle_tool_rows();

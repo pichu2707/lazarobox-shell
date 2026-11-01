@@ -8,6 +8,7 @@ use super::{
     adapters::{self, adapter_for},
     approval::ApprovalAsk,
     budget,
+    usage::TurnUsage,
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -218,8 +219,19 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
+    /// What the turn used, as the engine reported it. Sent before the final
+    /// event: nothing after `Done` or `Error` is delivered.
+    Usage(Box<TurnUsage>),
     Done(Finish),
     Error(ChatError),
+}
+
+impl StreamEvent {
+    /// The usage event of a turn. Boxed so the event stays small: every
+    /// adapter result carries one.
+    pub fn usage(usage: TurnUsage) -> Self {
+        Self::Usage(Box::new(usage))
+    }
 }
 
 /// What the chat pane may do with the engine assigned to the `chat` task.

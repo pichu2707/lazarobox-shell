@@ -29,6 +29,7 @@ use crate::{
                 ToolRequest,
             },
             text_call,
+            usage::{TurnUsage, UsageFold},
         },
         tools::{
             mcp::refusal_text,
@@ -207,6 +208,8 @@ async fn rounds(
     let mut go_on_reminded = false;
     let mut requests = 0;
     let limit = max_rounds(request.families);
+    // The usage of each request, folded into the one the turn reports.
+    let mut usage = UsageFold::default();
     while requests < limit && !tx.is_closed() {
         let body = if offer {
             profile.body(&tooled, &history, true)
@@ -216,7 +219,7 @@ async fn rounds(
         let path = profile.path();
         // A round after tool results may leak reasoning into its text.
         let hold = !history.is_empty();
-        let reply = match profile {
+        let mut reply = match profile {
             Profile::Ollama => {
                 let decoder = OllamaToolDecoder::server_with(external.clone())
                     .with_families(request.families);
@@ -243,6 +246,8 @@ async fn rounds(
                 continue;
             }
             Some(Err(error)) => {
+                usage.add(reply.usage.take());
+                report(tx, usage, true).await;
                 let _ = tx.send(StreamEvent::Error(error)).await;
                 return;
             }
@@ -250,6 +255,7 @@ async fn rounds(
             None => return,
         };
         requests += 1;
+        usage.add(reply.usage.take());
         // Without tools, whatever calls the reply holds are not run.
         if reply.calls.is_empty() || !offer {
             let room = offer && requests < limit;
@@ -271,6 +277,7 @@ async fn rounds(
                 (None, None) => None,
             };
             let Some((notice, reminder)) = reminder else {
+                report(tx, usage, false).await;
                 let _ = tx.send(StreamEvent::Done(finish)).await;
                 return;
             };
@@ -304,8 +311,18 @@ async fn rounds(
         });
     }
     if !tx.is_closed() {
+        report(tx, usage, true).await;
         let _ = tx.send(StreamEvent::Notice(CAP_NOTICE.into())).await;
         let _ = tx.send(StreamEvent::Done(Finish::Stop)).await;
+    }
+}
+
+/// Sends the turn's usage, if any request reported some. It goes before the
+/// final event: nothing after `Done` or `Error` is delivered. `cut` is a turn
+/// that ended in an error or at the tool limit.
+async fn report(tx: &mpsc::Sender<StreamEvent>, usage: UsageFold, cut: bool) {
+    if let Some(total) = usage.finish(cut) {
+        let _ = tx.send(StreamEvent::usage(total)).await;
     }
 }
 
@@ -339,6 +356,8 @@ struct Reply {
     text: String,
     thinking: Option<String>,
     calls: Vec<ToolRequest>,
+    /// What the request used, if its engine said.
+    usage: Option<TurnUsage>,
     /// How the stream ended; `None` when the receiver went away first.
     end: Option<Result<Finish, ChatError>>,
 }
@@ -377,6 +396,7 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
     let relay = async {
         let (mut text, mut thinking) = (String::new(), String::new());
         let mut end = None;
+        let mut usage: Option<TurnUsage> = None;
         let mut gap = gap;
         let mut split = LeakedThinking::new(hold, ANSWER_CAP);
         let mut sort = |piece: Piece, text: &mut String, thinking: &mut String| match piece {
@@ -400,11 +420,19 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
                     end = Some(Err(error));
                     continue;
                 }
+                // Held for the turn's fold, not forwarded: one goes out per turn.
+                StreamEvent::Usage(u) => {
+                    match usage.as_mut() {
+                        Some(sum) => sum.merge(&u),
+                        None => usage = Some(*u),
+                    }
+                    continue;
+                }
                 StreamEvent::Delta(t) => split.push(&t),
                 StreamEvent::ThinkingDelta(t) => vec![Piece::Reasoning(t)],
                 other => {
                     if tx.send(other).await.is_err() {
-                        return (text, thinking, None);
+                        return (text, thinking, usage, None);
                     }
                     continue;
                 }
@@ -412,23 +440,24 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
             for piece in out {
                 let event = sort(piece, &mut text, &mut thinking);
                 if tx.send(event).await.is_err() {
-                    return (text, thinking, None);
+                    return (text, thinking, usage, None);
                 }
             }
         }
         for piece in split.finish() {
             let event = sort(piece, &mut text, &mut thinking);
             if tx.send(event).await.is_err() {
-                return (text, thinking, None);
+                return (text, thinking, usage, None);
             }
         }
-        (text, thinking, end)
+        (text, thinking, usage, end)
     };
-    let ((), (text, thinking, end)) = tokio::join!(post, relay);
+    let ((), (text, thinking, usage, end)) = tokio::join!(post, relay);
     Reply {
         text,
         thinking: (!thinking.is_empty()).then_some(thinking),
         calls: decoder.take_calls(),
+        usage,
         end,
     }
 }

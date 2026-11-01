@@ -1,6 +1,7 @@
 use super::super::engine::{ChatError, Finish};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
+use crate::core::ai::chat::usage::{CostSource, TurnUsage};
 
 const PLAIN: &str = include_str!("../../../../../tests/fixtures/claude/plain.jsonl");
 const REFUSAL: &str =
@@ -62,8 +63,146 @@ fn result_line(result: &str, extra: &str) -> String {
 }
 
 #[test]
-fn a_plain_answer_is_one_delta_and_a_stop() {
-    assert_eq!(whole(PLAIN), [delta("ok"), done()]);
+fn a_plain_answer_is_one_delta_usage_and_a_stop() {
+    assert_eq!(
+        whole(PLAIN),
+        [delta("ok"), StreamEvent::usage(plain_usage()), done()]
+    );
+}
+
+/// The numbers of `plain.jsonl`.
+fn plain_usage() -> TurnUsage {
+    TurnUsage {
+        input: Some(2),
+        output: Some(4),
+        cache_read: Some(0),
+        cache_write: Some(606),
+        reasoning: Some(0),
+        cost_micros: Some(4_936),
+        cost_source: Some(CostSource::EngineList),
+        duration_ms: Some(1321),
+        model: Some("claude-opus-5-5".into()),
+        partial: false,
+        multi_model: false,
+    }
+}
+
+/// The usage of a stream: the `Usage` events, in order.
+fn usages(events: &[StreamEvent]) -> Vec<TurnUsage> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn usage_comes_before_the_final_event() {
+    let events = whole(PLAIN);
+    let at = |want: fn(&StreamEvent) -> bool| events.iter().position(want);
+    let usage = at(|e| matches!(e, StreamEvent::Usage(_)));
+    let end = at(|e| matches!(e, StreamEvent::Done(_)));
+    assert!(usage.is_some() && usage < end, "{events:?}");
+}
+
+#[test]
+fn model_usage_of_the_main_model_and_a_subagent_is_summed() {
+    let extra = r#","total_cost_usd":0.5,"duration_api_ms":900,"modelUsage":{"claude-opus-5-5":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40,"thinkingTokens":5,"costUSD":0.4},"claude-haiku-4-5":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4,"thinkingTokens":1,"costUSD":0.1}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(
+        got,
+        [TurnUsage {
+            input: Some(11),
+            output: Some(22),
+            cache_read: Some(33),
+            cache_write: Some(44),
+            reasoning: Some(6),
+            cost_micros: Some(500_000),
+            cost_source: Some(CostSource::EngineList),
+            duration_ms: Some(900),
+            model: None,
+            partial: false,
+            multi_model: true,
+        }]
+    );
+}
+
+#[test]
+fn without_model_usage_the_top_level_usage_is_read() {
+    let extra = r#","usage":{"input_tokens":7,"output_tokens":8,"cache_read_input_tokens":9,"cache_creation_input_tokens":10}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (
+            got[0].input,
+            got[0].output,
+            got[0].cache_read,
+            got[0].cache_write
+        ),
+        (Some(7), Some(8), Some(9), Some(10))
+    );
+    assert_eq!(got[0].cost_micros, None);
+    assert_eq!(got[0].cost_source, None);
+}
+
+#[test]
+fn cost_falls_back_to_the_sum_of_model_costs() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1,"costUSD":0.25},"b":{"inputTokens":1,"costUSD":0.5}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(got[0].cost_micros, Some(750_000));
+}
+
+#[test]
+fn a_bad_or_negative_cost_is_no_cost_and_the_counts_survive() {
+    for cost in ["-1", "\"free\""] {
+        let extra =
+            format!(r#","total_cost_usd":{cost},"usage":{{"input_tokens":3,"output_tokens":4}}"#);
+        let events = whole(&result_line("ok", &extra));
+        let got = usages(&events);
+        assert_eq!(got.len(), 1, "{cost}");
+        assert_eq!((got[0].input, got[0].output), (Some(3), Some(4)), "{cost}");
+        assert_eq!(
+            (got[0].cost_micros, got[0].cost_source),
+            (None, None),
+            "{cost}"
+        );
+        assert_eq!(events.last(), Some(&done()), "{cost}");
+    }
+}
+
+#[test]
+fn a_bad_count_is_none_for_that_field_only() {
+    let extra =
+        r#","usage":{"input_tokens":"many","output_tokens":-5,"cache_read_input_tokens":7}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].cache_read),
+        (None, None, Some(7))
+    );
+}
+
+#[test]
+fn a_malformed_usage_object_gives_no_record_and_the_answer_completes() {
+    for extra in [
+        r#","usage":"oops""#,
+        r#","modelUsage":[1,2]"#,
+        r#","usage":{}"#,
+    ] {
+        let events = whole(&result_line("ok", extra));
+        assert_eq!(events, [delta("ok"), done()], "{extra}");
+    }
+}
+
+#[test]
+fn an_error_result_still_reports_the_usage_before_the_error() {
+    let extra = r#","usage":{"input_tokens":3,"output_tokens":1}"#;
+    let text = format!("{{\"type\":\"result\",\"is_error\":true,\"result\":\"boom\"{extra}}}\n");
+    let events = whole(&text);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(matches!(events[0], StreamEvent::Usage(_)));
+    assert!(matches!(events[1], StreamEvent::Error(_)));
 }
 
 #[test]
@@ -554,4 +693,58 @@ fn a_subagent_tool_use_is_judged_like_any_other() {
 fn text_that_mentions_a_tool_use_is_just_text() {
     let line = text_line("{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Bash\\\"}");
     assert!(answer(&whole(&format!("{line}{}", result_line("x", "")))).contains("tool_use"));
+}
+
+#[test]
+fn a_failed_request_that_used_nothing_reports_no_usage() {
+    let events = whole(MODEL_ERROR);
+    assert_eq!(usages(&events), []);
+    assert!(
+        matches!(events.as_slice(), [StreamEvent::Error(_)]),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn empty_or_wrong_typed_model_entries_fall_back_to_the_top_level_usage() {
+    for models in [
+        r#"{"x":{}}"#,
+        r#"{"x":{"inputTokens":"many","outputTokens":-1}}"#,
+        r#"{"x":5,"y":"z"}"#,
+    ] {
+        let extra =
+            format!(r#","modelUsage":{models},"usage":{{"input_tokens":7,"output_tokens":8}}"#);
+        let got = usages(&whole(&result_line("ok", &extra)));
+        assert_eq!(got.len(), 1, "{models}");
+        assert_eq!(
+            (got[0].input, got[0].output),
+            (Some(7), Some(8)),
+            "{models}"
+        );
+    }
+}
+
+#[test]
+fn model_entries_with_nothing_and_no_top_level_usage_give_no_record() {
+    let events = whole(&result_line("ok", r#","modelUsage":{"x":{}}"#));
+    assert_eq!(events, [delta("ok"), done()]);
+}
+
+#[test]
+fn a_field_one_model_lacks_is_a_gap_not_a_partial_turn() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1,"outputTokens":2,"thinkingTokens":3},"b":{"inputTokens":4,"outputTokens":5}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(
+        (got[0].input, got[0].reasoning, got[0].partial),
+        (Some(5), Some(3), false)
+    );
+}
+
+#[test]
+fn more_than_one_model_is_flagged_and_gets_no_model_name() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1},"b":{"inputTokens":2}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!((got[0].model.clone(), got[0].multi_model), (None, true));
+    let single = usages(&whole(PLAIN));
+    assert!(!single[0].multi_model);
 }

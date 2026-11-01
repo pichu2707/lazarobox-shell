@@ -239,12 +239,12 @@ The two per-day notes MUST appear once per threshold per local day per app run (
 
 ### Requirement: The `/cost` view
 `/cost` MUST be a user-only composer command (see chat-pane). It MUST aggregate every stored usage record, including those of deleted chats, and show these lines as system lines, in this order:
-1. `AI usage`
+1. `AI usage (alpha)`
 2. `today: <T> · <K> turns` where `<T>` is `<N> tokens` (sum of known totals) or `no data` when no record of the day has a known total;
 3. `last 7 days: <T> · <K> turns` (the last 7 local days including today);
 4. `by engine and model (last 7 days):` followed by one line per engine/model pair, sorted by total tokens descending: `  <engine> › <model>: in <N> · out <N>` plus the cached, dollar and partial parts as in Usage text formats, dollars labelled by the engine's billing mode;
 5. `this chat: <T> · <K> turns` for the current conversation (records still linked to it), or `this chat: no data` when it has none.
-Sums MUST skip `None` values rather than treating them as 0, and a pair that has at least one partial record or at least one record with a missing count MUST be marked `partial`. With no records at all the view is `AI usage` followed by `no usage recorded yet`. Reading the store happens off the UI thread; until the answer arrives the pane shows `reading usage…`; if the store is unavailable the view is `usage history is not available` with no other lines. When chat history is off, no usage rows are written; the view then shows only the current session, built from memory, with the line `chat history is off: showing this session only`.
+Sums MUST skip `None` values rather than treating them as 0, and a pair that has at least one partial record or at least one record with a missing count MUST be marked `partial`. With no records at all the view is `AI usage (alpha)` followed by `no usage recorded yet`. Reading the store happens off the UI thread; until the answer arrives the pane shows `reading usage…`; if the store is unavailable the view is `usage history is not available` with no other lines. When chat history is off, no usage rows are written; the view then shows only the current session, built from memory, with the line `chat history is off: showing this session only`.
 
 #### Scenario: Aggregates all chats [auto]
 - GIVEN records in two chats and in one deleted chat, today
@@ -269,7 +269,7 @@ Sums MUST skip `None` values rather than treating them as 0, and a pair that has
 #### Scenario: Empty store [auto]
 - GIVEN no usage records
 - WHEN `/cost` runs
-- THEN the lines are `AI usage` and `no usage recorded yet`
+- THEN the lines are `AI usage (alpha)` and `no usage recorded yet`
 
 #### Scenario: Store unavailable [auto]
 - GIVEN an unavailable store
@@ -329,3 +329,16 @@ The usage table and every surface of this capability MUST contain counts, ids an
 - GIVEN the README
 - WHEN it is read
 - THEN it covers the statements above
+
+### Requirement: Alpha status
+Cost tracking ships marked ALPHA, because engines report usage in formats that change and the figures may be missing, or may not match the provider's bill, depending on the engine and the account. The `/cost` header MUST read `AI usage (alpha)`, and the README section on `/cost` MUST carry an alpha note that says so and explains how to report a problem (the report skill, or a GitHub issue). The marker is a label only: it MUST NOT change any count, record or behaviour.
+
+#### Scenario: Alpha header [auto]
+- GIVEN any `/cost` view (records, no records, history off)
+- WHEN it is rendered
+- THEN its first line is `AI usage (alpha)`
+
+#### Scenario: README alpha note [manual]
+- GIVEN the README section on `/cost`
+- WHEN it is read
+- THEN it says the feature is alpha, that figures may be missing or differ from the provider's bill, and how to report it
