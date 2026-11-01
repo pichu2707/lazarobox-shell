@@ -48,6 +48,7 @@ use crate::core::{
     menu::{MenuCommand, MenuState},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_TREE, PrefixAction, Step},
+    probe::Probe,
     pty::{PtyEvent, SpawnSpec},
     update::{Fallback, InstallEnv, UpdateAction},
 };
@@ -64,6 +65,7 @@ mod install;
 mod notes;
 mod offer;
 mod picker;
+mod probe;
 mod review;
 mod run;
 mod scroll;
@@ -279,6 +281,11 @@ pub enum AppEvent {
         seq: u64,
         result: Result<(), String>,
     },
+    /// The prefix probe's clock: sent every second while the probe waits
+    /// (see [`App::probe_waiting`]).
+    ProbeTick,
+    /// `Effect::SaveProbe` failed; the error is the one reason, safe to show.
+    ProbeSaveFailed(String),
 }
 
 /// How the menu closed.
@@ -310,6 +317,13 @@ pub enum Effect {
     CopyLocal {
         seq: u64,
         text: String,
+    },
+    /// Remember the prefix probe's result for a terminal row. The runtime
+    /// writes it at once and answers only a failure, with
+    /// `AppEvent::ProbeSaveFailed`.
+    SaveProbe {
+        key: String,
+        outcome: crate::core::probe::Outcome,
     },
     /// Open this link in the browser through the host's opener. Only emitted
     /// when the runtime said it has one (see [`App::with_opener`]).
@@ -851,6 +865,8 @@ pub struct App {
     utf8_locale: bool,
     /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
     cwd_readable: bool,
+    /// The first-run prefix probe of this terminal, when the runtime set one.
+    probe: Option<Probe>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -977,6 +993,7 @@ impl App {
             tool_engines: MCP_VERIFIED,
             utf8_locale: false,
             cwd_readable: cfg!(target_os = "linux"),
+            probe: None,
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -1913,6 +1930,8 @@ impl App {
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::ProbeTick => self.on_probe_tick(),
+            AppEvent::ProbeSaveFailed(reason) => self.on_probe_save_failed(&reason),
             AppEvent::ManagedStarted(started) => {
                 self.dirty = true;
                 match started {
@@ -2020,17 +2039,19 @@ impl App {
             }
         }
         self.dirty |= self.notice.take().is_some();
+        // The probe only watches: the key below is handled as usual.
+        let mut effects = self.probe_key(&key, repeat);
         if repeat && matches!(self.input, InputMode::Prefix | InputMode::Group(_))
             || held && matches!(self.input, InputMode::Confirm(_))
         {
-            return Vec::new();
+            return effects;
         }
         self.dirty = true;
         let modal = matches!(
             self.input,
             InputMode::Menu | InputMode::Confirm(_) | InputMode::Resize
         );
-        let effects = match self.input {
+        effects.extend(match self.input {
             InputMode::Terminal => self.on_terminal_key(key, held),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
@@ -2039,7 +2060,7 @@ impl App {
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, held),
-        };
+        });
         // The rest of the hold of the key that closed a modal view is not
         // typed into the pane under it.
         if modal && self.input == InputMode::Terminal {
@@ -8574,6 +8595,9 @@ mod app_tests {
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;
+
+    /// The first-run prefix probe (terminal-agnostic S2b).
+    mod probe;
 
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;

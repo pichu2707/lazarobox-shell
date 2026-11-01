@@ -325,6 +325,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         clipboard.as_ref().map(clipboard::Clipboard::tool),
         session.ssh,
     );
+    // The prefix probe: this terminal's stored result decides whether it runs.
+    let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
+    let terminal = crate::core::probe::terminal_key(
+        env::var("TERM_PROGRAM").ok().as_deref(),
+        env::var_os("WT_SESSION").is_some(),
+        env::var("TERM").ok().as_deref(),
+    );
+    let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
+    app = app.with_probe(terminal, stored, start_args.check_prefix);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
@@ -452,6 +461,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
         .with_config_path(config_path)
+        .with_probe_dir(probe_dir)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let live = live.clone();
@@ -983,10 +993,13 @@ async fn run_loop(
     let mut anim = anim::Animation::new();
     // Armed only while a chat awaits a memory reply: no wait lasts for ever.
     let mut memory_watch = anim::Animation::every(anim::MEMORY_PERIOD);
+    // Armed only while the first-run prefix probe waits for a key.
+    let mut probe_watch = anim::Animation::every(anim::PROBE_PERIOD);
 
     loop {
         anim.sync(app.animating());
         memory_watch.sync(app.memory_waiting());
+        probe_watch.sync(app.probe_waiting());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -1137,6 +1150,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            () = probe_watch.tick() => {
+                if step(&mut app, AppEvent::ProbeTick, panes) {
+                    return Ok(());
+                }
+            }
             _ = tick.tick() => {
                 // `select!` picks a ready branch at random, so output that is
                 // queued could lose to this tick and be probed around: while
@@ -1268,6 +1286,9 @@ struct Panes {
     reapers: Vec<JoinHandle<()>>,
     /// Where `SaveConfig` writes; `None` when no config path could be resolved.
     config_path: Option<PathBuf>,
+    /// The folder `SaveProbe` writes `terminals.json` in; `None` when no
+    /// state folder could be resolved.
+    probe_dir: Option<PathBuf>,
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
@@ -1357,6 +1378,7 @@ impl Panes {
             spawn,
             reapers: Vec::new(),
             config_path: None,
+            probe_dir: None,
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
@@ -1483,6 +1505,12 @@ impl Panes {
     /// Sets what plays the notification sound.
     fn with_sound(mut self, sound: Box<dyn FnMut()>) -> Self {
         self.sound_send = sound;
+        self
+    }
+
+    /// Sets the folder the prefix probe results are kept in.
+    fn with_probe_dir(mut self, probe_dir: Option<PathBuf>) -> Self {
+        self.probe_dir = probe_dir;
         self
     }
 
@@ -1619,6 +1647,14 @@ impl Panes {
                         Ok(()) => AppEvent::ConfigSaved,
                         Err(message) => AppEvent::ConfigSaveFailed(message),
                     });
+                }
+                // Synchronous like `SaveConfig`: the file is tiny. Only a
+                // failure is answered, so the user sees the notice.
+                Effect::SaveProbe { key, outcome } => {
+                    if let Err(reason) = probe_store::save(self.probe_dir.as_deref(), &key, outcome)
+                    {
+                        feedback.push(AppEvent::ProbeSaveFailed(reason));
+                    }
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 // Returns at once: the tool runs on the clipboard worker.
@@ -2727,6 +2763,38 @@ mod tests {
         assert!(feedback.is_empty());
         assert!(panes.host_out.is_empty());
         assert_eq!(*calls.borrow(), vec![(4, "hello".to_owned())]);
+    }
+
+    // terminal-compatibility: "Remembered probe result" (runtime part).
+    #[test]
+    fn save_probe_writes_the_row_and_answers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_probe_dir(Some(dir.path().to_owned()));
+        let (outcome, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Alias,
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        let stored = probe_store::load(Some(dir.path())).unwrap();
+        assert_eq!(
+            stored.get("kitty"),
+            Some(&crate::core::probe::Outcome::Alias)
+        );
+    }
+
+    #[test]
+    fn a_probe_that_cannot_be_saved_comes_back_as_an_event() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (_, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Pass,
+        }]);
+        assert!(matches!(
+            feedback.as_slice(),
+            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("no usable state folder")
+        ));
     }
 
     // copy-selection: Yank emits OSC 52 (runtime part).
