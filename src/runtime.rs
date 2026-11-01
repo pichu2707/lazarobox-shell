@@ -2150,6 +2150,14 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
+/// XTMODKEYS: `CSI > 4 ; 0 m` turns xterm's modifyOtherKeys off. Terminals
+/// with it on (zutty) send Alt+Enter as `CSI 27;3;13~`, a form crossterm
+/// 0.29 rejects, so the key would vanish. Terminals that do not know the
+/// sequence ignore it.
+const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
+/// `CSI > 4 m` resets modifyOtherKeys to the terminal's own default.
+const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
+
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles. The mouse capture
 /// is disabled whether or not it was on: the sequence is harmless when the
@@ -2162,13 +2170,16 @@ fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
         DisableBracketedPaste,
         DisableFocusChange
     );
-    mouse.and(rest)
+    let keys = out.write_all(MODIFY_OTHER_KEYS_DEFAULT);
+    mouse.and(rest).and(keys)
 }
 
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
 /// paste and focus reporting. [`restore_to`] undoes them.
 fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, EnableBracketedPaste, EnableFocusChange)
+    execute!(out, EnableBracketedPaste, EnableFocusChange)?;
+    out.write_all(MODIFY_OTHER_KEYS_OFF)?;
+    out.flush()
 }
 
 fn restore() {
@@ -2513,6 +2524,26 @@ mod tests {
         restore_to(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[?1004l"), "{text:?}");
+    }
+
+    // zutty sends Alt+Enter as `CSI 27;3;13~` (xterm modifyOtherKeys), which
+    // crossterm 0.29 cannot parse, so the key would be lost. Startup asks the
+    // terminal to stop using that format.
+    #[test]
+    fn startup_turns_modify_other_keys_off() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+    }
+
+    // Restore hands the terminal back its own default (`CSI > 4 m`).
+    #[test]
+    fn restore_resets_modify_other_keys_to_the_terminal_default() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4m"), "{text:?}");
     }
 
     // The modes are entered with one write and undone by `restore_to`.

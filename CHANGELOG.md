@@ -26,6 +26,12 @@ baseline.
 - `docs/terminals/` holds the support policy, the checklist and the record
   templates. A terminal is supported only with a filled record.
 
+### Fixed
+
+- Alt+Enter is no longer lost in terminals that use xterm modifyOtherKeys
+  (zutty sends `CSI 27;3;13~`, which the input library cannot parse): startup
+  turns that mode off (`CSI > 4 ; 0 m`) and exit restores the default.
+
 ### Changed
 
 - A single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane: it is
