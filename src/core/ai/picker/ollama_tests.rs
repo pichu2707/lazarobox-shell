@@ -524,6 +524,45 @@ fn popular_rows_carry_the_mark_of_the_largest_fitting_size() {
     assert_eq!(mark_on(&rows, "mix "), Some(ToolMark::Unreliable));
     assert_eq!(mark_on(&rows, "mix2 "), Some(ToolMark::Capable));
     assert_eq!(mark_on(&rows, "edge "), Some(ToolMark::Capable));
+    // An "effective" size has no parameter count: it never fits a known RAM.
+    assert!(rows.iter().all(|r| !r.label.starts_with("effective ")));
+}
+
+#[test]
+fn an_unknown_ram_lists_every_card_and_a_size_without_params_gets_no_mark() {
+    let d = ollama(Status::Available);
+    let mut p = at_row("ollama", &PickKey::OllamaDownload, &d);
+    p.enter(&AiConfig::default(), Some(&d));
+    let reply = Answer::Popular {
+        cards: vec![
+            tool_card("effective", &["e2b"]),
+            tool_card("llama3.1", &["8b"]),
+        ],
+        fallback: false,
+        ram: None,
+    };
+    assert_eq!(p.ollama_reply(&Ask::Popular, Ok(reply)), None);
+    let rows = p.ollama().unwrap().rows();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(mark_on(&rows, "effective "), None);
+    assert_eq!(mark_on(&rows, "llama3.1 "), Some(ToolMark::Capable));
+}
+
+#[test]
+fn a_tag_without_a_known_size_carries_no_mark() {
+    assert_eq!(ollama::tag_mark(true, "latest"), None);
+    assert_eq!(ollama::tag_mark(true, "e2b"), None);
+    assert_eq!(ollama::tag_mark(true, "8x7b"), Some(ToolMark::Capable));
+    assert_eq!(ollama::tag_mark(false, "8b"), None);
+}
+
+#[test]
+fn tools_in_a_card_is_read_ignoring_case() {
+    let upper = Card {
+        capabilities: vec!["Tools".to_owned()],
+        ..card("m", &["8b"], "")
+    };
+    assert!(ollama::declares_tools(&upper));
 }
 
 #[test]

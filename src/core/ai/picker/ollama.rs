@@ -146,8 +146,10 @@ impl Ollama {
 }
 
 /// Whether the library card lists `tools` among its capabilities.
-fn declares_tools(card: &Card) -> bool {
-    card.capabilities.iter().any(|c| c == "tools")
+pub(super) fn declares_tools(card: &Card) -> bool {
+    card.capabilities
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("tools"))
 }
 
 /// The mark of a Popular row: its card declares `tools`, judged by the
@@ -159,7 +161,7 @@ fn pick_mark(pick: &Pick) -> Option<ToolMark> {
 }
 
 /// The mark of a Sizes row: the model declares `tools`, judged by this tag.
-fn tag_mark(declared: bool, tag: &str) -> Option<ToolMark> {
+pub(super) fn tag_mark(declared: bool, tag: &str) -> Option<ToolMark> {
     tool_mark(
         if declared { Tools::Yes } else { Tools::No },
         size_params(tag),
