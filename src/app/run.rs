@@ -96,7 +96,10 @@ impl App {
     /// view, so a hidden prompt is never answered blind.
     pub(super) fn has_approval(&self, id: PaneId) -> bool {
         self.approval_pending(id)
-            && !(self.list_open(id) || self.memory_view_open(id) || self.tag_editor_open(id))
+            && !(self.list_open(id)
+                || self.cost_open(id)
+                || self.memory_view_open(id)
+                || self.tag_editor_open(id))
     }
 
     /// `Prefix T`, `n` or `s` on a chat whose confirm waits: they would
@@ -423,7 +426,11 @@ impl App {
             self.notice = Some(CHAT_ONLY.to_owned());
             return Vec::new();
         }
-        if self.list_open(id) || self.memory_view_open(id) || self.tag_editor_open(id) {
+        if self.list_open(id)
+            || self.cost_open(id)
+            || self.memory_view_open(id)
+            || self.tag_editor_open(id)
+        {
             self.notice = Some(CONVERSATION_ONLY.to_owned());
             return Vec::new();
         }

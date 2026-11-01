@@ -1078,6 +1078,25 @@ Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna pro
 
 Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
 
+### Uso de IA: `/cost` (alfa)
+
+> **Alfa.** Los motores informan del uso en formatos que cambian: las cifras pueden faltar o no coincidir con lo que te factura el proveedor, según el motor y la cuenta. Si ves algo raro, ábrelo como incidencia en [GitHub](https://github.com/pichu2707/lazarobox-shell/issues) (si trabajas con un agente de IA en este repositorio, su skill `report-lazarobox-issue` lo hace por ti, con tu permiso).
+
+`/cost` escrito en el compositor del chat y enviado con `Enter` abre una vista sobre la conversación, como la lista de conversaciones. `Esc` la cierra; las flechas (o `j`/`k`) y `PageUp`/`PageDown` la desplazan, y las líneas largas se parten en vez de cortarse. `Ctrl+C` no la cierra ni cancela nada: avisa de que primero hay que pulsar `Esc`. Es un comando tuyo: no crea un mensaje, no llega al modelo, funciona aunque haya un stream en curso y aunque no haya motor. Con texto detrás (`/cost ahora`) no hace nada, avisa con `/cost takes no arguments` y deja el texto en el compositor. Para enviar de verdad un mensaje que sea `/cost`, escribe `//cost`.
+
+La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats guardados (incluidos los borrados):
+
+- `today` y `last 7 days`: tokens y turnos (días locales, desde la medianoche). Los turnos son los del chat; las compactaciones y los resúmenes suman tokens pero no cuentan como turno.
+- `by engine and model`: una línea por motor y modelo, del que más usó al que menos, con `in`, `out` y, si el motor lo cuenta, `cached`.
+- `this chat`: lo de la conversación actual. Si todavía no tiene datos, `this chat: no data`.
+- `this session`: lo que ha gastado este panel desde que se abrió.
+
+**`no data` no es 0.** Si un motor no informa de un valor, la vista dice `no data` y la línea se marca `partial`; nunca se rellena con un cero. `partial` aparece tanto en las líneas por motor y modelo como en las de resumen (`today`, `last 7 days`, `this chat`, `this session`) cuando algún registro está cortado o le falta la entrada o la salida, y también en una línea con dólares si solo parte de sus registros los informó (la cifra es un mínimo). Mientras el historial responde se lee `reading usage…`, y si no se puede leer, `usage history is not available`.
+
+**Dólares.** Solo aparecen si el motor los informa (hoy, claude), con 4 decimales por debajo de un dólar y 2 a partir de él. Por defecto claude, codex y gemini se tratan como `subscription`, así que la cifra se etiqueta `list-price equivalent`: es el precio de lista del motor, no una factura. Los motores locales (ollama, lmstudio, llama.cpp y vllm) enseñan tokens y nunca dólares.
+
+**Historial desactivado.** El uso se guarda en `chat.db` solo con el historial activado. Con él desactivado no se guarda nada y `/cost` muestra únicamente la sesión actual, leída de la memoria, con la línea `chat history is off: showing this session only`.
+
 ### Memoria del proyecto (engram)
 
 El chat puede actuar como cliente de [engram](https://github.com/Gentleman-Programming/engram) y compartir la memoria del proyecto con Claude Code, opencode y otros agentes: al abrir el chat lee el contexto del proyecto, puedes guardar **notas** durante la conversación y generar un **resumen** de la sesión. Es opcional y está **desactivada** por defecto.

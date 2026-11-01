@@ -144,6 +144,7 @@ impl App {
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
+            && !self.cost_open(id)
             && let Some(effects) = self.answer_server_offer(offered)
         {
             return effects;
@@ -164,6 +165,9 @@ impl App {
         }
         if self.list_open(id) {
             return self.on_list_key(id, &key, repeat);
+        }
+        if self.cost_open(id) {
+            return self.on_cost_key(id, &key);
         }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
@@ -221,8 +225,8 @@ impl App {
             self.tag_paste(id, text);
             return;
         }
-        // The list takes keys only: a paste is not one.
-        if self.list_open(id) {
+        // The list and the cost view take keys only: a paste is not one.
+        if self.list_open(id) || self.cost_open(id) {
             return;
         }
         if self.note_editor_open(id) {
@@ -291,6 +295,11 @@ impl App {
         // works whatever the engine state.
         match parse_command(&text) {
             Command::Cd(arg) => return self.cd_submit(id, &arg),
+            Command::Cost => return self.cost_submit(id),
+            Command::CostArgs => {
+                self.cost_refused(id);
+                return Vec::new();
+            }
             Command::Escaped(unescaped) => text = unescaped,
             Command::Plain => {}
         }

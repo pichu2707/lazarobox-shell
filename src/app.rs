@@ -56,6 +56,7 @@ mod chat;
 mod chat_copy;
 mod compact;
 mod context;
+mod cost;
 mod folder;
 mod history;
 mod hub;
@@ -8304,6 +8305,9 @@ mod app_tests {
 
     /// Usage rows and the notice for a lost one (ai-cost 1b).
     mod chat_usage;
+
+    /// The `/cost` command and its overlay (ai-cost 1c).
+    mod chat_cost;
 
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;

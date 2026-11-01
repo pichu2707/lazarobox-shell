@@ -274,3 +274,34 @@ mod busy {
         );
     }
 }
+
+// ---- /cost (ai-cost 1c.1) ---------------------------------------------------
+
+#[test]
+fn the_exact_token_cost_is_the_command() {
+    assert_eq!(parse_command("/cost"), Command::Cost);
+    assert_eq!(parse_command("  /cost \n"), Command::Cost);
+}
+
+#[test]
+fn cost_with_anything_after_it_is_refused_not_sent() {
+    assert_eq!(parse_command("/cost now"), Command::CostArgs);
+    assert_eq!(parse_command("/cost\tx y"), Command::CostArgs);
+}
+
+#[test]
+fn cost_is_case_sensitive_and_other_text_is_plain() {
+    assert_eq!(parse_command("/Cost"), Command::Plain);
+    assert_eq!(parse_command("/costs"), Command::Plain);
+    assert_eq!(parse_command("what does /cost do"), Command::Plain);
+}
+
+#[test]
+fn a_double_slash_escapes_cost() {
+    assert_eq!(parse_command("//cost"), Command::Escaped("/cost".into()));
+    assert_eq!(
+        parse_command("//cost x"),
+        Command::Escaped("/cost x".into())
+    );
+    assert_eq!(parse_command("//costs"), Command::Plain);
+}
