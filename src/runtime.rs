@@ -2150,12 +2150,12 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
-/// XTMODKEYS: `CSI > 4 ; 0 m` turns xterm's modifyOtherKeys off. Terminals
-/// with it on (zutty) send Alt+Enter as `CSI 27;3;13~`, a form crossterm
-/// 0.29 rejects, so the key would vanish. Terminals that do not know the
-/// sequence ignore it.
+/// XTMODKEYS: `CSI > 4 ; 0 m` asks the terminal to turn xterm's
+/// modifyOtherKeys off. A terminal with it on (zutty) sends Alt+Enter as
+/// `CSI 27;3;13~`, a form crossterm 0.29 rejects, so the key would vanish.
+/// A terminal that does not know the sequence ignores it.
 const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
-/// `CSI > 4 m` resets modifyOtherKeys to the terminal's own default.
+/// `CSI > 4 m` asks the terminal to return modifyOtherKeys to its initial value.
 const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
 
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
@@ -2163,15 +2163,16 @@ const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
 /// is disabled whether or not it was on: the sequence is harmless when the
 /// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    let mouse = out.write_all(CAPTURE_OFF);
+    let mouse = out
+        .write_all(CAPTURE_OFF)
+        .and_then(|()| out.write_all(MODIFY_OTHER_KEYS_DEFAULT));
     let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
         DisableBracketedPaste,
         DisableFocusChange
     );
-    let keys = out.write_all(MODIFY_OTHER_KEYS_DEFAULT);
-    mouse.and(rest).and(keys)
+    mouse.and(rest)
 }
 
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
@@ -2535,6 +2536,11 @@ mod tests {
         enter_modes(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+        // The mode goes off once the others are on, in the same write.
+        assert!(
+            text.find("\x1b[?1004h").unwrap() < text.find("\x1b[>4;0m").unwrap(),
+            "{text:?}"
+        );
     }
 
     // Restore hands the terminal back its own default (`CSI > 4 m`).
@@ -2544,9 +2550,14 @@ mod tests {
         restore_to(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[>4m"), "{text:?}");
+        // Written with the mouse reset, ahead of the flushed `execute!` part.
+        assert!(
+            text.find("\x1b[>4m").unwrap() < text.find("\x1b[?2004l").unwrap(),
+            "{text:?}"
+        );
     }
 
-    // The modes are entered with one write and undone by `restore_to`.
+    // The modes are entered together and undone by `restore_to`.
     #[test]
     fn startup_enables_focus_reporting_next_to_bracketed_paste() {
         let mut out = Vec::new();

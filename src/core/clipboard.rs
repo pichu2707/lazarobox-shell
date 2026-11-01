@@ -120,7 +120,10 @@ pub fn failed(tool: Tool, reason: &str) -> String {
 /// The notice when a local tool failed on a text too large for OSC 52:
 /// nothing was sent to the terminal either. Reason last, as in [`failed`].
 pub fn failed_too_large(tool: Tool, reason: &str) -> String {
-    format!("{} failed; too large for OSC 52 ({reason})", tool.name())
+    format!(
+        "{} failed; not copied: too large for OSC 52 ({reason})",
+        tool.name()
+    )
 }
 
 /// The notice when only OSC 52 was sent: nothing confirms it arrived. The
@@ -172,7 +175,10 @@ mod tests {
     #[test]
     fn a_failure_on_a_text_too_large_for_osc52_does_not_claim_it_was_sent() {
         let text = failed_too_large(Tool::WlCopy, "timed out");
-        assert_eq!(text, "wl-copy failed; too large for OSC 52 (timed out)");
+        assert_eq!(
+            text,
+            "wl-copy failed; not copied: too large for OSC 52 (timed out)"
+        );
         assert!(!text.contains("sent to the terminal"));
     }
 
@@ -285,7 +291,9 @@ mod tests {
             copied(Tool::Xsel),
         ];
         for notice in notices {
-            assert!(notice.chars().count() <= ROOM_AT_80, "{notice:?}");
+            // Everything before the reason must fit; the reason may clip.
+            let fixed = notice.rsplit_once(" (").map_or(&*notice, |(head, _)| head);
+            assert!(fixed.chars().count() <= ROOM_AT_80, "{notice:?}");
         }
         // Even a long reason leaves the action before it in view.
         let long = failed(Tool::ClipExe, &"x".repeat(80));

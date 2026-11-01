@@ -14,7 +14,9 @@ baseline.
 
 - Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
   `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
-  happened: `Copied (<tool>)`, a failure with the OSC 52 fallback, or
+  happened, short and action first so it fits an 80-column statusline:
+  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
+  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
   `No paste? Install wl-copy or xclip (OSC 52 sent)`.
 - `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
 - First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
@@ -27,12 +29,11 @@ baseline.
 
 ### Fixed
 
-- Alt+Enter is no longer lost in terminals that use xterm modifyOtherKeys
-  (zutty sends `CSI 27;3;13~`, which the input library cannot parse): startup
-  turns that mode off (`CSI > 4 ; 0 m`) and exit restores the default.
-- Copy notices are shorter and keep the action first (`No paste? Install
-  wl-copy or xclip (OSC 52 sent)`, `<tool> failed; sent via OSC 52 (<reason>)`),
-  so the tool names stay visible in an 80-column statusline.
+- Alt+Enter is no longer lost in zutty, which sends it as `CSI 27;3;13~` while
+  xterm modifyOtherKeys is on (the input library cannot parse that form):
+  startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
+  asks it to return to its initial value. zutty then sends ESC LF, which the
+  chat now treats as a newline (Alt+Ctrl+J).
 
 ### Changed
 

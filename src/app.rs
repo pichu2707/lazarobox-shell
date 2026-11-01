@@ -4538,7 +4538,7 @@ mod app_tests {
         });
         assert_eq!(
             a.notice(),
-            Some("wl-copy failed; too large for OSC 52 (exit code 1)")
+            Some("wl-copy failed; not copied: too large for OSC 52 (exit code 1)")
         );
     }
 
