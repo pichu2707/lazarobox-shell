@@ -4083,7 +4083,8 @@ mod tests {
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         // The list is answered by the real store: empty.
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             chat,
             crate::core::ai::chat::prompts::Resolved {
@@ -4237,7 +4238,8 @@ mod tests {
         let mut app = history_app(&dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4322,7 +4324,8 @@ mod tests {
         let mut app = history_app(dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
         opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4350,6 +4353,7 @@ mod tests {
         // The one stored conversation was opened from the same directory.
         let resume = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, resume, 1).await;
+
         app.update(hkey(KeyCode::Char('x'), KeyModifiers::NONE));
         let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         let turn = sent

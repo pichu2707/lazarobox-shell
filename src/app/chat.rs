@@ -21,6 +21,8 @@ pub(super) struct UsageToday {
     pub(super) tokens: Option<u64>,
     /// Dollars the engines reported today, per engine.
     pub(super) cost: Vec<(String, u64)>,
+    /// The wall-clock second they stop being today's (the next local midnight).
+    pub(super) until: i64,
 }
 
 impl App {
@@ -99,6 +101,10 @@ impl App {
         }
         self.focused_state().chat_state()?;
         let today = self.usage_today.as_ref()?;
+        // Yesterday's figure is never shown.
+        if (self.wall)() >= today.until {
+            return None;
+        }
         let spend = today
             .cost
             .iter()
@@ -107,6 +113,28 @@ impl App {
             .reduce(u64::saturating_add)
             .filter(|micros| *micros > 0);
         Some(today_segment(today.tokens, spend))
+    }
+
+    /// Asks the store thread for today's figures when they are missing or no
+    /// longer today's: the first time a chat is focused with history on, and
+    /// again after the local midnight. One read at a time, and a failed one
+    /// waits a minute. Nothing here touches SQLite.
+    pub(super) fn usage_read_effects(&mut self) -> Vec<Effect> {
+        if !self.history || self.usage_read_pending || !self.ai.usage().statusline() {
+            return Vec::new();
+        }
+        let focus = self.tab().focus;
+        if self
+            .panes
+            .get(&focus)
+            .and_then(PaneState::chat_state)
+            .is_none()
+            || (self.wall)() < self.usage_next_read
+        {
+            return Vec::new();
+        }
+        self.usage_read_pending = true;
+        vec![Effect::Store(StoreCmd::UsageToday { pane: focus })]
     }
 
     /// How full the focused chat's context was at its last send, in percent.

@@ -33,6 +33,8 @@ pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved
 pub const TAGS_NOT_SAVED_LINE: &str = "tags kept in this pane only: history is not saving";
 /// Start of the notice shown, once per run, when a usage row is lost.
 pub const USAGE_NOT_SAVED: &str = "Usage not saved: ";
+/// Prefix of the notice for a day of usage the store could not read.
+pub const USAGE_NOT_READ: &str = "Usage not read: ";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
@@ -155,6 +157,9 @@ pub enum StoreCmd {
         pane: PaneId,
         conversation: Option<i64>,
     },
+    /// Reads today's figures (the status segment) without writing anything.
+    /// Answered with `UsageRecorded` (`problem` is `None`), always.
+    UsageToday { pane: PaneId },
     /// Finish what is queued and stop.
     Quit,
 }
@@ -305,6 +310,13 @@ pub enum StoreReply {
         pane: PaneId,
         today: Option<u64>,
         cost: Vec<(String, u64)>,
+        /// When the figures stop being today's: the next local midnight, in
+        /// seconds since the Unix epoch. `None` when the day could not be
+        /// read (see `read_problem`): the figures then say nothing.
+        until: Option<i64>,
+        /// A short reason, free of text and paths, for a day that could not
+        /// be read. The row (if any) is stored all the same.
+        read_problem: Option<String>,
         problem: Option<String>,
     },
     /// The answer to `UsageReport`. `rows` is `None` when the store could not

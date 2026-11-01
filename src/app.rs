@@ -764,6 +764,19 @@ impl Tab {
 }
 
 /// Owns the panes and the input state. Pure: it never touches IO.
+/// The wall clock, in seconds since the Unix epoch. A test app reads a fixed
+/// second until a test injects another.
+fn system_secs() -> i64 {
+    if cfg!(test) {
+        return 1_700_000_000;
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 pub struct App {
     /// Every pane of every tab; ids are global and never reused.
     panes: HashMap<PaneId, PaneState>,
@@ -783,6 +796,15 @@ pub struct App {
     usage_notice_shown: bool,
     /// Today's figures, as the store last answered; none until it has.
     usage_today: Option<chat::UsageToday>,
+    /// A read of today's figures is in flight.
+    usage_read_pending: bool,
+    /// The wall-clock second before which no new read is asked: the next
+    /// local midnight after a good answer, a minute after a failed one.
+    usage_next_read: i64,
+    /// The `Usage not read` notice was shown in this run.
+    usage_read_notice_shown: bool,
+    /// Wall clock in seconds since the Unix epoch, injected like `clock`.
+    wall: fn() -> i64,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
     /// What still runs in the panes, named by the open quit prompt.
@@ -930,6 +952,10 @@ impl App {
             summary_notice_shown: false,
             usage_notice_shown: false,
             usage_today: None,
+            usage_read_pending: false,
+            usage_next_read: 0,
+            usage_read_notice_shown: false,
+            wall: system_secs,
             summary_failure_shown: false,
             still_running: Vec::new(),
             serving_others: false,
@@ -1107,6 +1133,12 @@ impl App {
     /// unavailable, claude runs bare.
     pub fn with_jail(mut self, jail: JailSupport) -> Self {
         self.jail = jail;
+        self
+    }
+
+    /// Injects the wall clock that dates today's usage figures.
+    pub fn with_wall_clock(mut self, wall: fn() -> i64) -> Self {
+        self.wall = wall;
         self
     }
 
@@ -1775,7 +1807,7 @@ impl App {
     }
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
-        let effects = match event {
+        let mut effects = match event {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
@@ -1931,6 +1963,7 @@ impl App {
             "the menu state and the MENU mode go together"
         );
         self.debug_assert_copy_on_shell();
+        effects.extend(self.usage_read_effects());
         effects
     }
 

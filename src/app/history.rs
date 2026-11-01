@@ -11,7 +11,7 @@ use crate::core::ai::chat::{
     },
     store::{
         ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE,
-        USAGE_NOT_SAVED, bounded_error, skipped_line,
+        USAGE_NOT_READ, USAGE_NOT_SAVED, bounded_error, skipped_line,
     },
     tags::Tags,
 };
@@ -387,17 +387,11 @@ impl App {
                 pane,
                 today,
                 cost,
+                until,
+                read_problem,
                 problem,
             } => {
-                // A write that failed keeps the last figures: it says nothing
-                // about the day.
-                if problem.is_none() || today.is_some() {
-                    self.usage_today = Some(UsageToday {
-                        tokens: *today,
-                        cost: cost.clone(),
-                    });
-                    self.dirty = true;
-                }
+                self.on_usage_day(*pane, (*today, cost, *until), read_problem.as_deref());
                 self.on_usage_reply(*pane, problem.as_deref());
                 Vec::new()
             }
@@ -408,6 +402,39 @@ impl App {
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())
             }
+        }
+    }
+
+    /// The day's figures of a usage answer. A day that was read replaces the
+    /// figures and sets the next read at its end; one that was not keeps the
+    /// last figures, is told once per run and is tried again in a minute.
+    fn on_usage_day(
+        &mut self,
+        id: PaneId,
+        (today, cost, until): (Option<u64>, &[(String, u64)], Option<i64>),
+        read_problem: Option<&str>,
+    ) {
+        const RETRY_SECS: i64 = 60;
+        self.usage_read_pending = false;
+        self.dirty = true;
+        match until {
+            Some(until) => {
+                self.usage_today = Some(UsageToday {
+                    tokens: today,
+                    cost: cost.to_vec(),
+                    until,
+                });
+                self.usage_next_read = until;
+            }
+            None => self.usage_next_read = (self.wall)().saturating_add(RETRY_SECS),
+        }
+        let Some(reason) = read_problem else { return };
+        if self.usage_read_notice_shown {
+            return;
+        }
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            self.usage_read_notice_shown = true;
+            chat.push_system(format!("{USAGE_NOT_READ}{}", bounded_error(reason)));
         }
     }
 

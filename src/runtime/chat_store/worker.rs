@@ -261,19 +261,16 @@ impl Worker {
                     Err(reason) => Err(reason),
                 };
                 Some(match saved {
-                    Ok(((today, cost), pruned)) => StoreReply::UsageRecorded {
-                        pane,
-                        today,
-                        cost,
-                        problem: pruned.or(earlier),
-                    },
-                    Err(reason) => StoreReply::UsageRecorded {
-                        pane,
-                        today: None,
-                        cost: Vec::new(),
-                        problem: Some(reason),
-                    },
+                    Ok((read, pruned)) => day_reply(pane, read, pruned.or(earlier)),
+                    Err(reason) => day_reply(pane, Err(String::new()), Some(reason)),
                 })
+            }
+            StoreCmd::UsageToday { pane } => {
+                let read = match self.conn() {
+                    Ok(conn) => day_figures(conn, now()),
+                    Err(reason) => Err(reason),
+                };
+                Some(day_reply(pane, read, None))
             }
             StoreCmd::UsageReport { pane, conversation } => {
                 let conversation = conversation.or_else(|| self.created.get(&pane).copied());
@@ -387,7 +384,9 @@ impl Worker {
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
             StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
             StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
-            StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
+            StoreCmd::RecordUsage { pane, .. } | StoreCmd::UsageToday { pane } => {
+                (*pane, Panicked::Usage)
+            }
             StoreCmd::UsageReport { pane, .. } => (*pane, Panicked::Report),
             StoreCmd::Quit => return None,
         };
@@ -429,12 +428,9 @@ impl Worker {
                     },
                     Panicked::Report => StoreReply::UsageReport { pane, rows: None },
                     // A fixed reason: panic text can quote anything.
-                    Panicked::Usage => StoreReply::UsageRecorded {
-                        pane,
-                        today: None,
-                        cost: Vec::new(),
-                        problem: Some("internal error".to_owned()),
-                    },
+                    Panicked::Usage => {
+                        day_reply(pane, Err(String::new()), Some("internal error".to_owned()))
+                    }
                 })
             }
         }
@@ -528,7 +524,7 @@ fn record_usage(
     conversation: Option<i64>,
     (engine, role): (&str, &str),
     usage: &TurnUsage,
-) -> Result<(DayFigures, Option<String>), String> {
+) -> Result<(DayRead, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
     // The subselect leaves the link NULL for a conversation that is gone.
@@ -561,18 +557,59 @@ fn record_usage(
     Ok((day_figures(conn, at), pruned))
 }
 
-/// The figures of the local day of `at`. A read that fails gives no figures.
-fn day_figures(conn: &Connection, at: i64) -> DayFigures {
+/// Today's figures and the second they stop being today's, or why the day
+/// could not be read (a fixed reason, free of text and paths).
+type DayRead = Result<(DayFigures, i64), String>;
+
+/// The reply to a usage command: the figures when the day was read, the
+/// reason when it was not, and the reason a write failed, if it did.
+fn day_reply(pane: PaneId, read: DayRead, problem: Option<String>) -> StoreReply {
+    let (figures, read_problem) = match read {
+        Ok((figures, until)) => (Some((figures, until)), None),
+        Err(reason) => (None, (!reason.is_empty()).then_some(reason)),
+    };
+    let ((today, cost), until) = figures.map_or(((None, Vec::new()), None), |(f, u)| (f, Some(u)));
+    StoreReply::UsageRecorded {
+        pane,
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+    }
+}
+
+/// The figures of the local day of `at`, read without DDL: a store without
+/// the table has none. A read that fails is an error, never "no data".
+fn day_figures(conn: &Connection, at: i64) -> DayRead {
     const SAME_DAY: &str =
         "date(ts, 'unixepoch', 'localtime') = date(?1, 'unixepoch', 'localtime')";
-    let today = conn
+    let read = |err: rusqlite::Error| usage_reason(&err).to_owned();
+    let until: i64 = conn
+        .query_row(
+            "SELECT CAST(strftime('%s', date(?1, 'unixepoch', 'localtime', '+1 day'), 'utc')
+                         AS INTEGER)",
+            [at],
+            |r| r.get(0),
+        )
+        .map_err(read)?;
+    let present: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'turn_usage')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(read)?;
+    if !present {
+        return Ok(((None, Vec::new()), until));
+    }
+    let today: Option<i64> = conn
         .query_row(
             &format!("SELECT SUM(input + output) FROM turn_usage WHERE {SAME_DAY}"),
             [at],
-            |r| r.get::<_, Option<i64>>(0),
+            |r| r.get(0),
         )
-        .ok()
-        .flatten();
+        .map_err(read)?;
     let cost = conn
         .prepare(&format!(
             "SELECT engine, SUM(cost_micros) FROM turn_usage
@@ -582,12 +619,12 @@ fn day_figures(conn: &Connection, at: i64) -> DayFigures {
             q.query_map([at], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
                 .collect::<Result<Vec<_>, _>>()
         })
-        .unwrap_or_default();
+        .map_err(read)?;
     let cost = cost
         .into_iter()
         .filter_map(|(engine, micros)| Some((engine, u64::try_from(micros).ok()?)))
         .collect();
-    (today.and_then(|t| u64::try_from(t).ok()), cost)
+    Ok(((today.and_then(|t| u64::try_from(t).ok()), cost), until))
 }
 
 /// The usage records folded for `/cost`: by local day (days before `at`),
@@ -1108,12 +1145,8 @@ impl StoreHandle {
                 pane,
                 folders: Vec::new(),
             },
-            StoreCmd::RecordUsage { pane, .. } => StoreReply::UsageRecorded {
-                pane,
-                today: None,
-                cost: Vec::new(),
-                problem: Some(reason),
-            },
+            StoreCmd::RecordUsage { pane, .. } => day_reply(pane, Err(String::new()), Some(reason)),
+            StoreCmd::UsageToday { pane } => day_reply(pane, Err(reason), None),
             StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },
             _ => return,
         };
