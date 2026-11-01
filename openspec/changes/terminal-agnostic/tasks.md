@@ -65,14 +65,14 @@ Spec: copy-selection "Yank to the clipboard via OSC 52" (all scenarios tagged [a
 
 Spec: modal-input "Prefix key". Independent of S1.
 
-- [ ] 2a.1 RED: key tests: `Char(']')+CONTROL` and `Char('5')+CONTROL` (crossterm's legacy parse of 0x1D, D6) both enter PREFIX with no `WritePty`. Add a unit test on crossterm parsing of byte 0x1D if reachable.
-- [ ] 2a.2 RED: `Ctrl+]` then `Ctrl+]` emits `WritePty [0x1D]` and returns to TERMINAL; `Ctrl+Space` then `Ctrl+Space` still emits `[0x00]`; `Ctrl+]` then `Ctrl+Space` emits `[0x00]`; `Ctrl+Space` then `Ctrl+]` emits `[0x1D]` (second key's own byte, D7).
-- [ ] 2a.3 RED: chat pane focused: either prefix key repeated writes nothing, returns to TERMINAL and shows a notice. In a group, the alias cancels like the prefix.
-- [ ] 2a.4 RED: `Ctrl+]`, `w`, `v` splits right (alias drives the whole tree).
-- [ ] 2a.5 GREEN: alias chords in `core/prefix.rs`, `is_prefix()`, `PrefixAction::SendAliasLiteral`, hooks in `app.rs` `on_terminal_key` (`~2255`) and `on_pending_key` (`~2329`); `core/ai/chat/copy.rs:~126` uses `is_prefix()`.
-- [ ] 2a.6 REFACTOR: no hard-coded prefix branch left; the prefix table row text matches the spec row.
-- [ ] 2a.7 Gate. Target 30-50 production lines.
-- [ ] 2a.8 Docs: doc comment on the alias commitment (fixed, 1.x, not configurable).
+- [x] 2a.1 RED: key tests: `Char(']')+CONTROL` and `Char('5')+CONTROL` (crossterm's legacy parse of 0x1D, D6) both enter PREFIX with no `WritePty`. Add a unit test on crossterm parsing of byte 0x1D if reachable.
+- [x] 2a.2 RED: `Ctrl+]` then `Ctrl+]` emits `WritePty [0x1D]` and returns to TERMINAL; `Ctrl+Space` then `Ctrl+Space` still emits `[0x00]`; `Ctrl+]` then `Ctrl+Space` emits `[0x00]`; `Ctrl+Space` then `Ctrl+]` emits `[0x1D]` (second key's own byte, D7).
+- [x] 2a.3 RED: chat pane focused: either prefix key repeated writes nothing, returns to TERMINAL and shows a notice. In a group, the alias cancels like the prefix.
+- [x] 2a.4 RED: `Ctrl+]`, `w`, `v` splits right (alias drives the whole tree).
+- [x] 2a.5 GREEN: alias chords in `core/prefix.rs`, `is_prefix()`, `PrefixAction::SendAliasLiteral`, hooks in `app.rs` `on_terminal_key` (`~2255`) and `on_pending_key` (`~2329`); `core/ai/chat/copy.rs:~126` uses `is_prefix()`.
+- [x] 2a.6 REFACTOR: no hard-coded prefix branch left; the prefix table row text matches the spec row.
+- [x] 2a.7 Gate. Target 30-50 production lines.
+- [x] 2a.8 Docs: doc comment on the alias commitment (fixed, 1.x, not configurable).
 
 ## S2b: First-run probe (`src/core/probe.rs`, `src/runtime/probe_store.rs`, `src/core/start.rs`, `src/app.rs`, `src/runtime.rs`)
 

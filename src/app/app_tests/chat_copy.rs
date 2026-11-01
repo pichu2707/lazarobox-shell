@@ -359,6 +359,17 @@ fn ctrl_space_inside_chat_copy_gives_prefix() {
     assert_eq!(a.input(), InputMode::Prefix);
 }
 
+#[test]
+fn the_alias_inside_chat_copy_gives_prefix() {
+    for c in [']', '5'] {
+        let mut a = long();
+        enter(&mut a);
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(a.update(AppEvent::Key(key)), vec![], "{c}");
+        assert_eq!(a.input(), InputMode::Prefix, "{c}");
+    }
+}
+
 // Selecting and copying ---------------------------------------------------------
 
 #[test]

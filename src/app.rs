@@ -47,7 +47,7 @@ use crate::core::{
     },
     menu::{MenuCommand, MenuState},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
-    prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
+    prefix::{self, Binding, Group, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
     update::{Fallback, InstallEnv, UpdateAction},
 };
@@ -94,6 +94,7 @@ const TAGS_NEED_HISTORY: &str = "Tags need the conversation history";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
+const ALIAS_LITERAL: u8 = 0x1D;
 
 /// Where the user's keys go. Independent from `AppMode`, which is what is viewed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -2336,7 +2337,7 @@ impl App {
     }
 
     fn on_terminal_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
-        if PREFIX_KEY.matches(&key) {
+        if prefix::is_prefix(&key) {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
@@ -2356,6 +2357,20 @@ impl App {
 
     /// Resolve a key against the pending table (the root or an open group).
     /// `ShowCommands` is a no-op until the command viewer lands.
+    /// The byte of the prefix key just pressed, for the focused shell pane.
+    /// A pane that is not a shell has no program to receive it: a notice.
+    fn send_prefix_literal(&mut self, alias: bool) -> Vec<Effect> {
+        if self.focused_pty().is_none() {
+            self.notice = Some("The prefix key has no program to go to here".to_string());
+            return Vec::new();
+        }
+        self.return_to_live();
+        self.mark_dirty(self.tab().focus);
+        self.note_typed(self.tab().focus);
+        let byte = if alias { ALIAS_LITERAL } else { PREFIX_LITERAL };
+        vec![Effect::WritePty(self.tab().focus, vec![byte])]
+    }
+
     fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
         let step = prefix::lookup(table, key);
         self.input = match step {
@@ -2379,6 +2394,7 @@ impl App {
             Step::Cancel
             | Step::Run(
                 PrefixAction::SendPrefixLiteral
+                | PrefixAction::SendAliasLiteral
                 | PrefixAction::SplitRight
                 | PrefixAction::SplitBelow
                 | PrefixAction::ToggleZoom
@@ -2409,13 +2425,10 @@ impl App {
                 self.serving_others = false;
                 vec![Effect::ListRunning]
             }
-            // The literal is a byte for a child; a chat has none, so it swallows it.
-            Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
-                self.return_to_live();
-                self.mark_dirty(self.tab().focus);
-                self.note_typed(self.tab().focus);
-                vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
-            }
+            // The literal is a byte for a child; a chat has none, so it says so.
+            Step::Run(
+                action @ (PrefixAction::SendPrefixLiteral | PrefixAction::SendAliasLiteral),
+            ) => self.send_prefix_literal(action == PrefixAction::SendAliasLiteral),
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
             // They would open a view under the folder picker.
@@ -3245,6 +3258,12 @@ mod app_tests {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
     }
 
+    /// Ctrl+] as a terminal without enhancement flags reports it: 0x1D parses
+    /// to Ctrl+5 (design D6), so a key test must cover both spellings.
+    fn alias_keys() -> [AppEvent; 2] {
+        [']', '5'].map(|c| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)))
+    }
+
     /// Moves the open menu's cursor onto the row labelled `label` with the
     /// keys a user would press: `j` through the current tab, then `Tab`
     /// into the next one. Bounded: it panics with `no row {label}` instead
@@ -3493,6 +3512,57 @@ mod app_tests {
             vec![Effect::WritePty(PaneId::FIRST, vec![0x00])]
         );
         assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn alias_enters_prefix_without_writing_in_both_spellings() {
+        for ev in alias_keys() {
+            let mut a = app();
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Prefix, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn alias_twice_sends_its_own_byte_and_the_keys_mix_by_second_byte() {
+        let keys = [
+            ctrl_space(),
+            alias_keys()[0].clone(),
+            alias_keys()[1].clone(),
+        ];
+        for first in &keys {
+            for second in &keys {
+                let mut a = app();
+                a.update(first.clone());
+                let byte = if *second == ctrl_space() { 0x00 } else { 0x1D };
+                assert_eq!(
+                    a.update(second.clone()),
+                    vec![Effect::WritePty(PaneId::FIRST, vec![byte])],
+                    "{first:?} then {second:?}"
+                );
+                assert_eq!(a.input(), InputMode::Terminal);
+            }
+        }
+    }
+
+    #[test]
+    fn alias_drives_the_whole_tree() {
+        let mut a = app();
+        for ev in alias_keys().into_iter().take(1) {
+            a.update(ev);
+        }
+        a.update(key('w'));
+        a.update(key('v'));
+        assert_eq!(a.tab_panes(), 2);
+    }
+
+    #[test]
+    fn alias_cancels_inside_a_group() {
+        for ev in alias_keys() {
+            let mut a = in_group('w');
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Terminal, "{ev:?}");
+        }
     }
 
     #[test]
@@ -8771,6 +8841,29 @@ mod app_tests {
             assert_eq!(a.input(), InputMode::Prefix);
             assert_eq!(a.update(ctrl_space()), vec![]);
             assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn a_second_prefix_key_on_a_chat_shows_a_notice_and_writes_nothing() {
+            let keys = [
+                ctrl_space(),
+                alias_keys()[0].clone(),
+                alias_keys()[1].clone(),
+            ];
+            for first in keys.clone() {
+                for second in keys.clone() {
+                    let mut a = launched(80, 25);
+                    a.open_chat(None);
+                    a.update(first.clone());
+                    assert_eq!(a.update(second), vec![]);
+                    assert_eq!(a.input(), InputMode::Terminal);
+                    assert!(
+                        a.notice().is_some_and(|n| n.contains("prefix")),
+                        "{:?}",
+                        a.notice()
+                    );
+                }
+            }
         }
 
         #[test]

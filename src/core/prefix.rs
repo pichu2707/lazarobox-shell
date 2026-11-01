@@ -46,6 +46,8 @@ impl KeyChord {
 pub enum PrefixAction {
     /// Forward the prefix itself (NUL) to the child.
     SendPrefixLiteral,
+    /// Forward the alias itself (0x1D) to the child.
+    SendAliasLiteral,
     RequestQuit,
     EnterCopy,
     /// Reserved for the future command viewer; no effect yet.
@@ -86,6 +88,27 @@ pub const PREFIX_KEY: KeyChord = KeyChord {
     code: KeyCode::Char(' '),
     mods: KeyModifiers::CONTROL,
 };
+
+/// Ctrl+], the second prefix key, for terminals that eat Ctrl+Space. It is a
+/// fixed commitment of 1.x: not configurable, not removable. Its byte is 0x1D.
+pub const ALIAS_KEY: KeyChord = KeyChord {
+    code: KeyCode::Char(']'),
+    mods: KeyModifiers::CONTROL,
+};
+
+/// Without keyboard enhancement flags crossterm parses 0x1D as Ctrl+5, so the
+/// alias is two chords for one physical key (design D6).
+pub const ALIAS_KEY_LEGACY: KeyChord = KeyChord {
+    code: KeyCode::Char('5'),
+    mods: KeyModifiers::CONTROL,
+};
+
+/// Whether `key` is a prefix key: Ctrl+Space or the Ctrl+] alias.
+pub fn is_prefix(key: &KeyEvent) -> bool {
+    [PREFIX_KEY, ALIAS_KEY, ALIAS_KEY_LEGACY]
+        .iter()
+        .any(|chord| chord.matches(key))
+}
 
 /// A named set of bindings opened by a key; `label` names the pending mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -226,7 +249,18 @@ pub const PREFIX_TREE: &[Binding] = &[
         target: Target::Action(PrefixAction::SendPrefixLiteral),
         hinted: false,
     },
+    alias(ALIAS_KEY),
+    alias(ALIAS_KEY_LEGACY),
 ];
+
+const fn alias(chord: KeyChord) -> Binding {
+    Binding {
+        chord,
+        description: "send the alias key (0x1D) to the program",
+        target: Target::Action(PrefixAction::SendAliasLiteral),
+        hinted: false,
+    }
+}
 
 /// Outcome of a key pressed while the prefix (or a group) is pending.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -618,11 +652,17 @@ mod tests {
     #[test]
     fn every_action_is_reachable_exactly_once() {
         let all = actions();
-        for (i, a) in all.iter().enumerate() {
-            assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
+        // The alias is one key with two spellings, so its action appears twice.
+        let once: Vec<_> = all
+            .iter()
+            .filter(|a| **a != PrefixAction::SendAliasLiteral)
+            .collect();
+        for (i, a) in once.iter().enumerate() {
+            assert!(!once[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + summary + run + approval + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 34);
+        assert_eq!(all.len() - once.len(), 2);
+        // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(once.len(), 34);
     }
 
     #[test]
