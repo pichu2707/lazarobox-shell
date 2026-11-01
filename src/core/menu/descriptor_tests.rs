@@ -122,3 +122,53 @@ fn a_draft_row_needs_the_ai_section() {
     assert!(ItemKind::HfAccount.needs_ai());
     assert!(!ItemKind::Feedback.needs_ai());
 }
+
+#[test]
+fn each_family_row_uses_the_key_of_its_toggle_in_row_order() {
+    let families: Vec<_> = drafts()
+        .into_iter()
+        .filter(|(_, c)| flag(c).table == TOOLS_TABLE && flag(c).key != "enabled")
+        .collect();
+    assert_eq!(families.len(), ToolToggle::ALL.len());
+    for ((item, choice), toggle) in families.iter().zip(ToolToggle::ALL) {
+        assert_eq!(flag(choice).key, toggle.key(), "{}", item.label);
+    }
+}
+
+#[test]
+fn flipping_each_family_writes_its_own_key_and_nothing_else() {
+    for toggle in ToolToggle::ALL {
+        let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+        let (item, _) = drafts()
+            .into_iter()
+            .find(|(_, c)| flag(c).key == toggle.key())
+            .expect("a row per toggle");
+        m.goto(item.label);
+        m.on_key(
+            &KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            false,
+            &mut Config::default(),
+        );
+        let now = !AiConfig::default().toggle(toggle);
+        assert_eq!(
+            m.edits(&Config::default()),
+            vec![ConfigEdit::toggle(toggle, now)],
+            "{}",
+            item.label
+        );
+    }
+}
+
+/// The ranks of the rows that are not descriptors yet, as `edits()` writes
+/// them: profile, memory, notify, approval, orchestrator, idle.
+const LITERAL_RANKS: [u8; 6] = [10, 30, 40, 70, 80, 90];
+
+#[test]
+fn draft_ranks_never_collide_with_the_literal_ranks() {
+    let mut all: Vec<u8> = drafts().iter().map(|(_, c)| c.rank).collect();
+    all.extend(LITERAL_RANKS);
+    let count = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), count, "{all:?}");
+}
