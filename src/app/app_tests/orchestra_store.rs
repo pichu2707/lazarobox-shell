@@ -53,6 +53,8 @@ fn interrupted(id: u64, running: usize) -> RunRecord {
                 status: "running".into(),
             })
             .collect(),
+        folder: Some("/launch".into()),
+        supersedes: None,
     }
 }
 

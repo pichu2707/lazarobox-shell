@@ -522,7 +522,7 @@ A receipt MUST NOT approve the batch, and the orchestrator MUST NOT consent or a
 - THEN the batch still waits for the user's `y`
 
 ### Requirement: Run view and persistence [S9]
-A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally and, after a restart, shown as interrupted with a resume choice; a resumed run relaunches unfinished workers from scratch only on the user's choice, and re-asks the read scope.
+A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally and, after a restart, shown as interrupted with a resume choice; a resumed run relaunches unfinished workers from scratch only on the user's choice, and sets the read scope again from the chat folder without asking (user decision, 2026-10-29, Read scope of a run): the old run's grant is never reused.
 
 #### Scenario: The transcript of a worker [S9, auto]
 - GIVEN a run with a running worker that streamed text and called a tool
@@ -532,7 +532,14 @@ A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally 
 #### Scenario: Restart shows an interrupted run [S9, auto]
 - GIVEN a stored run with one running worker when lazarobox quit
 - WHEN lazarobox starts again
-- THEN the run shows as interrupted, nothing runs, and resume asks the scope again
+- THEN the run shows as interrupted, nothing runs until the user chooses, and a resumed run sets its scope again from the chat folder without asking
+
+#### Scenario: Resume is offered only in the run's folder [S9, auto]
+- GIVEN an interrupted run stored with folder `~/a` (or with no folder, from before folders were kept)
+- WHEN a chat in `~/b` resumes or discards the newest interrupted run
+- THEN it is refused with a notice, its goal is in no turn, and the startup line only counts runs of other folders
+
+Note (S9 9.1c, what enforces "unfinished workers relaunch only on the user's choice"). Resume starts a NEW run whose seed message names the unfinished workers and tells the orchestrator to relaunch none until the user says so. That instruction is the only thing tying a relaunch to the user's word: it is a model instruction, not a hard gate. Traced spawn path (`Run::spawn`): it refuses only a paused or ended run, a `code` worker in a read-only step, and more than `max_workers`; by user decision (chat-pane, "Worker starts without a prompt") a worker starts with no approval, so nothing in code blocks a spawn after resume. Every worker is announced by its row, and what a worker can do is bounded by the existing per-tool gates: reads outside the run's scope follow the pane approval mode, a `code` worker's writes are staged for the batch review, and the jail and the `max_parallel`/`max_workers`/turn/time limits apply. The read scope is not asked (user decision 2026-10-29): it is set again for the new run from the chat folder (Read scope of a run), and nothing of the old grant is stored or reused.
 
 ### Requirement: Final documentation [S10]
 The README MUST be updated once, in the final slice, with: how to enable and use the orchestrator (the `Orchestrator` menu gate and the per-pane Ctrl+O toggle), the Orchestrate menu row, the provider-terms statement (providers recommend API keys for automation, consumer logins carry risk, no key required) and the Ollama "not recommended" note. No earlier slice MUST edit the README for this feature.

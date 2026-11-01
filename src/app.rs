@@ -68,6 +68,7 @@ mod orchestra;
 mod picker;
 mod review;
 mod run;
+mod run_resume;
 mod run_store;
 mod run_view;
 mod scroll;
@@ -2384,6 +2385,8 @@ impl App {
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
                 | PrefixAction::ViewWorker
+                | PrefixAction::ResumeRun
+                | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
@@ -2468,6 +2471,8 @@ impl App {
                 Vec::new()
             }
             Step::Run(PrefixAction::ViewWorker) => self.view_worker(),
+            Step::Run(PrefixAction::ResumeRun) => self.resume_run(),
+            Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -2753,6 +2758,9 @@ impl App {
         // A start that failed leaves no run to give its goal to.
         if finished && how == Ended::Error && chat.orch_run().is_none() {
             self.forget_goal(id);
+        } else if finished && chat.orch_run().is_none() {
+            // A turn that ended with no run never gave a resumed one a worker.
+            self.resume_not_started(id);
         }
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
@@ -8374,6 +8382,8 @@ mod app_tests {
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.
     mod orchestra_override;
+    /// Resuming or discarding an interrupted run (S9 9.1c).
+    mod orchestra_resume;
     /// The failure alert of a run, its keys and the run's events.
     mod orchestra_run;
     mod orchestra_send;

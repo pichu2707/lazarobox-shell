@@ -783,13 +783,14 @@ impl App {
         let deadline = Duration::from_secs(u64::from(self.ai.orchestrator.worker_timeout_secs));
         let limits = self.run_limits();
         // The goal is what the user typed; a continuation keeps the run's.
+        // A resumed run's goal is the stored one, not the seed that carries it.
         let goal = match attach {
             Some(_) => String::new(),
-            None => request
-                .messages
-                .last()
-                .map(|m| m.content.clone())
-                .unwrap_or_default(),
+            None => self.run_keep.resume_goal.take().unwrap_or_else(|| {
+                (request.messages.last())
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default()
+            }),
         };
         if attach.is_none() {
             self.keep_goal(id, &goal);

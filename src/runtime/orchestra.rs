@@ -99,6 +99,13 @@ pub use review::Reviewed;
 #[cfg(test)]
 type Restage = fn(&[Change]) -> Option<Vec<Change>>;
 
+/// Said when an ask found no orchestrator turn open to hear it.
+const DENIED_IN_GAP: &str = "a tool approval was refused between two orchestrator turns; \
+     the worker can ask again";
+/// Said when the orchestrator moved to a new turn while the ask was sent.
+const DENIED_ON_MOVE: &str = "a tool approval was refused when the orchestrator moved on; \
+     the worker can ask again";
+
 /// What a call of a run that ended, or was replaced, answers.
 const ENDED: &str = "run ended";
 
@@ -127,6 +134,8 @@ struct Current {
     pending: Pending,
     /// Counts the retargets, so a failed send can tell whether the route moved.
     generation: u64,
+    /// The last gap a denied ask was said for.
+    said: Option<u64>,
 }
 
 impl Route {
@@ -146,6 +155,7 @@ impl Route {
                 approver,
                 pending,
                 generation: 0,
+                said: None,
             }),
         })
     }
@@ -192,6 +202,11 @@ impl Route {
             let state = lock(&self.state);
             (state.events.clone(), state.generation)
         };
+        self.send_from(event, to, seen).await;
+    }
+
+    /// `deliver` once the channel `to` and the generation `seen` were read.
+    async fn send_from(&self, event: StreamEvent, to: mpsc::Sender<StreamEvent>, seen: u64) {
         let asks = matches!(
             &event,
             StreamEvent::ToolCall {
@@ -202,17 +217,31 @@ impl Route {
         let retry = if to.send(event.clone()).await.is_ok() {
             return;
         } else {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             if state.generation == seen {
                 if asks {
+                    // Said first: the worker hears the denial after this.
+                    self.say_denied(&mut state, seen, DENIED_IN_GAP);
                     state.approver.end_worker(self.key);
                 }
                 return;
+            }
+            if asks {
+                self.say_denied(&mut state, seen, DENIED_ON_MOVE);
             }
             state.events.clone()
         };
         if !asks {
             let _ = retry.send(event).await;
+        }
+    }
+
+    /// Says a denied ask once per worker and gap (the turn generation it was
+    /// sent under), however many asks the gap held.
+    fn say_denied(&self, state: &mut Current, gap: u64, text: &str) {
+        if state.said.replace(gap) != Some(gap) {
+            self.trace
+                .notice(format!("worker {}: {text}", self.key.worker.0));
         }
     }
 }
@@ -371,6 +400,13 @@ impl Tracer {
         let _ = self
             .events
             .send((self.pane, OrchestraEvent::Trace { run, worker, item }));
+    }
+
+    /// A line for the pane's transcript about this worker.
+    fn notice(&self, text: String) {
+        let _ = self
+            .events
+            .send((self.pane, OrchestraEvent::Notice { text }));
     }
 
     /// A step that is not streamed text: after the text said before it.

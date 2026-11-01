@@ -5,7 +5,10 @@
 //! that never orchestrates never touches the run tables. Never silent: a
 //! failed save or read is said once.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
+};
 
 use super::*;
 use crate::core::ai::orchestra::{
@@ -26,6 +29,11 @@ struct Kept {
     workers: BTreeMap<u32, WorkerRecord>,
     /// A save of this run failed: the next one carries every worker.
     resend: bool,
+    /// The chat folder the run started in.
+    folder: Option<PathBuf>,
+    /// The interrupted run this one resumes, named by the first save (and a
+    /// resend after a failed one) so the store closes that row.
+    supersedes: Option<u64>,
 }
 
 /// What the app keeps to save runs.
@@ -34,10 +42,33 @@ pub(super) struct RunKeep {
     /// The goal of the run a pane is about to start, until its first worker.
     goals: HashMap<PaneId, String>,
     runs: HashMap<RunId, Kept>,
+    /// The runs a restart found interrupted and nobody answered yet, newest
+    /// first. A run leaves when it is discarded, or while its resume starts.
+    pub(super) interrupted: Vec<RunRecord>,
+    /// The interrupted run each pane is resuming, until the new run has its
+    /// first worker (then the store closes it) or fails to start (then it is
+    /// offered again).
+    pub(super) resuming: HashMap<PaneId, RunRecord>,
+    /// The run a pane's abandoned resume named, kept after it went back on the
+    /// offer list: the worker rows travel apart from the stream's `Done`, so a
+    /// first worker may still arrive afterwards and then closes that run. It
+    /// goes at the pane's next turn.
+    pub(super) resume_of: HashMap<PaneId, u64>,
+    /// The goal the next fresh turn of a pane records and shows instead of
+    /// the message it sends (a resume's seed).
+    pub(super) resume_goal: Option<String>,
     /// The store was asked for interrupted runs in this process.
     asked: bool,
     save_failure_said: bool,
     read_failure_said: bool,
+}
+
+impl RunKeep {
+    /// Puts a run back among the ones offered, newest first.
+    pub(super) fn offer_again(&mut self, run: RunRecord) {
+        self.interrupted.push(run);
+        self.interrupted.sort_by_key(|r| std::cmp::Reverse(r.id));
+    }
 }
 
 impl Kept {
@@ -49,6 +80,8 @@ impl Kept {
             goal: self.goal.clone(),
             phase,
             workers: changed,
+            folder: self.folder.clone(),
+            supersedes: None,
         })
     }
 }
@@ -63,6 +96,7 @@ impl App {
     /// A fresh run of pane `id` starts from `goal`: the user's words, which
     /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
+        self.run_keep.resume_of.remove(&id);
         self.run_keep.goals.insert(id, RunRecord::stored_goal(goal));
     }
 
@@ -79,12 +113,21 @@ impl App {
         if self.ended_runs.contains(&row.run) {
             return Vec::new();
         }
+        let folder = (self.panes.get(&id).and_then(PaneState::chat_state))
+            .and_then(ChatState::origin_cwd)
+            .map(Path::to_path_buf);
         let keep = &mut self.run_keep;
         let kept = keep.runs.entry(row.run).or_insert_with(|| Kept {
             pane: id,
             goal: keep.goals.remove(&id).unwrap_or_default(),
             workers: BTreeMap::new(),
             resend: false,
+            folder,
+            supersedes: keep.resuming.remove(&id).map(|run| run.id).or_else(|| {
+                let late = keep.resume_of.remove(&id)?;
+                keep.interrupted.retain(|run| run.id != late);
+                Some(late)
+            }),
         });
         let worker = WorkerRecord {
             id: row.id.0,
@@ -95,18 +138,26 @@ impl App {
         };
         // Usage, elapsed time and the like are not stored: a row that changes
         // none of what is stored writes nothing.
+        let first = kept.workers.is_empty();
         let unchanged = kept.workers.get(&worker.id) == Some(&worker);
         if unchanged && !kept.resend {
             return Vec::new();
         }
         kept.workers.insert(worker.id, worker.clone());
         // After a failed save the store may lack earlier workers: send all.
-        let changed = if std::mem::take(&mut kept.resend) {
+        let resent = std::mem::take(&mut kept.resend);
+        let changed = if resent {
             kept.workers.values().cloned().collect()
         } else {
             vec![worker]
         };
-        let (pane, run) = (kept.pane, kept.record(row.run, RunPhase::Live, changed));
+        let mut run = kept.record(row.run, RunPhase::Live, changed);
+        // The first save closes the run this one resumes (a no-op if another
+        // instance did already); so does a resend, in case that save failed.
+        if first || resent {
+            run.supersedes = kept.supersedes;
+        }
+        let pane = kept.pane;
         vec![Effect::Store(StoreCmd::SaveRun { pane, run })]
     }
 
@@ -126,6 +177,12 @@ impl App {
     /// waiting goal goes. The run manager's own `Ended` saves nothing more.
     pub(super) fn keep_pane_closed(&mut self, id: PaneId) -> Vec<Effect> {
         self.run_keep.goals.remove(&id);
+        self.run_keep.resume_goal = None;
+        // A resume that never started leaves its run offered (to the other
+        // panes of this folder).
+        if let Some(run) = self.run_keep.resuming.remove(&id) {
+            self.run_keep.offer_again(run);
+        }
         let runs: Vec<RunId> = (self.run_keep.runs.iter())
             .filter(|(_, kept)| kept.pane == id)
             .map(|(run, _)| *run)
@@ -142,6 +199,7 @@ impl App {
     /// kept for a later one.
     pub(super) fn forget_goal(&mut self, id: PaneId) {
         self.run_keep.goals.remove(&id);
+        self.resume_not_started(id);
     }
 
     /// The store's answer about runs: the interrupted ones are named in the
@@ -149,13 +207,30 @@ impl App {
     pub(super) fn on_runs_reply(&mut self, reply: &StoreReply) {
         let (pane, lines) = match reply {
             StoreReply::RunsRecovered { pane, runs } => {
-                let mut lines: Vec<_> = (runs.iter().take(SHOWN_MAX))
-                    .map(RunRecord::interrupted_line)
+                self.run_keep.interrupted.clone_from(runs);
+                // Only the runs of this chat's folder are named, goal and all;
+                // the others are counted, their text stays out of the pane.
+                let here = self.chat_folder(*pane);
+                let (mine, other): (Vec<_>, Vec<_>) = runs
+                    .iter()
+                    .partition(|run| super::run_resume::same_folder(run, here.as_deref()));
+                let mut lines: Vec<_> = (mine.iter().take(SHOWN_MAX))
+                    .map(|run| run.interrupted_line())
                     .collect();
-                if runs.len() > SHOWN_MAX {
+                if mine.len() > SHOWN_MAX {
                     lines.push(format!(
                         "{} more runs were interrupted by a restart",
-                        runs.len() - SHOWN_MAX
+                        mine.len() - SHOWN_MAX
+                    ));
+                }
+                if !mine.is_empty() {
+                    lines.push(super::run_resume::HOW_TO.to_owned());
+                }
+                if !other.is_empty() {
+                    lines.push(format!(
+                        "{} interrupted in other folders; open a chat there to resume or discard {}",
+                        runs_noun(other.len()),
+                        if other.len() == 1 { "it" } else { "them" }
                     ));
                 }
                 (*pane, lines)
@@ -188,4 +263,9 @@ impl App {
             self.dirty = true;
         }
     }
+}
+
+/// `1 run`, `2 runs`.
+fn runs_noun(count: usize) -> String {
+    format!("{count} run{}", if count == 1 { "" } else { "s" })
 }
