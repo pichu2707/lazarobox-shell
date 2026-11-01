@@ -56,10 +56,10 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 
 ## PR 3: Second key and SubView (~300)
 
-- [ ] 3.1 RED: Memory warning (both keys on; accept sets both; `on` only when both true), Orchestrator without warning; edits emit `key` then `second.key` only when changed.
-- [ ] 3.2 GREEN: `Second { key, get, set, warn }` (D6); Memory and Orchestrator become `Draft`.
-- [ ] 3.3 RED/GREEN: `SubView { Warning, Picker, AccountField, Feedback }` via one `sub_view()`; exhaustive `match` in `rows`, `on_key`, `footer`, `on_paste`, `in_sub_level` (D9). Account `y/n` stays a pre-check.
-- [ ] 3.4 Gate: 1.9 test unchanged, no pending snapshots.
+- [x] 3.1 RED: Memory warning (both keys on; accept sets both; `on` only when both true), Orchestrator without warning; edits emit `key` then `second.key` only when changed.
+- [x] 3.2 GREEN: `Second { key, get, set, warn }` (D6); Memory and Orchestrator become `Draft`.
+- [x] 3.3 RED/GREEN: `SubView { Warning, Picker, AccountField, Feedback }` via one `sub_view()` (the views are not always exclusive: a late Hugging Face reply waits for the open view to close instead of opening the token field over it, and `sub_view()` gives the priority Warning, Picker, AccountField, Feedback); exhaustive `match` in `rows`, `on_key`, `footer`, `on_paste`, `in_sub_level` (D9). Account `y/n` stays a pre-check.
+- [x] 3.4 Gate: 1.9 test unchanged, no pending snapshots.
 
 ## Manual checks (Kitty and tmux)
 

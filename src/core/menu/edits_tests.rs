@@ -312,3 +312,82 @@ fn a_change_on_one_tab_writes_only_that_edit() {
         vec![("ai", "context", "false".to_owned())]
     );
 }
+
+// ---- Characterization: the two-key rows (Memory and the Orchestrator gate) ---
+//
+// Pinned against the code before the second-key refactor: the edits and the
+// TOML text from an empty file, key first and then `acknowledged`.
+
+fn toml_of(m: &MenuState) -> String {
+    apply_edit(None, &m.edits(&Config::default())).expect("the edits apply to an empty file")
+}
+
+fn saved_memory(enabled: bool, acknowledged: bool) -> AiConfig {
+    let mut ai = AiConfig::default();
+    ai.memory = MemoryConfig {
+        enabled,
+        acknowledged,
+        port: 7437,
+        save_summaries: false,
+    };
+    ai
+}
+
+#[test]
+fn accepting_the_memory_warning_writes_enabled_then_acknowledged() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+    change(&mut m, &mut Config::default(), "Memory", &['l', 'y']);
+    assert_eq!(
+        pairs(&m.edits(&Config::default())),
+        vec![
+            ("ai.memory", "enabled", "true".to_owned()),
+            ("ai.memory", "acknowledged", "true".to_owned()),
+        ]
+    );
+    assert_eq!(
+        toml_of(&m),
+        "[ai.memory]\nenabled = true\nacknowledged = true\n"
+    );
+}
+
+#[test]
+fn accepting_the_orchestrator_notice_writes_only_acknowledged() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+    m.ai.as_mut().unwrap().accept_notice();
+    assert_eq!(
+        pairs(&m.edits(&Config::default())),
+        vec![("ai.orchestrator", "acknowledged", "true".to_owned())]
+    );
+    assert_eq!(toml_of(&m), "[ai.orchestrator]\nacknowledged = true\n");
+}
+
+#[test]
+fn the_gate_with_its_notice_writes_enabled_then_acknowledged() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), None);
+    change(&mut m, &mut Config::default(), "Orchestrator", &['l']);
+    m.ai.as_mut().unwrap().accept_notice();
+    assert_eq!(
+        toml_of(&m),
+        "[ai.orchestrator]\nenabled = true\nacknowledged = true\n"
+    );
+}
+
+#[test]
+fn turning_memory_off_writes_only_enabled() {
+    let ai = saved_memory(true, true);
+    let mut m = MenuState::open(&Config::default()).with_ai(ai, None);
+    change(&mut m, &mut Config::default(), "Memory", &['l']);
+    assert_eq!(
+        pairs(&m.edits(&Config::default())),
+        vec![("ai.memory", "enabled", "false".to_owned())]
+    );
+    assert_eq!(toml_of(&m), "[ai.memory]\nenabled = false\n");
+}
+
+#[test]
+fn a_hand_edited_memory_accepted_writes_only_acknowledged() {
+    let ai = saved_memory(true, false);
+    let mut m = MenuState::open(&Config::default()).with_ai(ai, None);
+    change(&mut m, &mut Config::default(), "Memory", &['l', 'y']);
+    assert_eq!(toml_of(&m), "[ai.memory]\nacknowledged = true\n");
+}

@@ -1,6 +1,8 @@
 //! Tests of the draft row descriptors (`ItemKind::Draft`): one declaration
 //! per row, round trips, unique write ranks and the optional fields.
 
+use super::ai_tests::machine;
+use super::picker_tests::key;
 use super::*;
 use crate::core::ai::config::{ApprovalMode, NotifyMode, Profile};
 
@@ -48,8 +50,10 @@ fn the_migrated_rows_are_drafts_in_tab_then_row_order() {
             "Git",
             "Git write",
             "Approval",
+            "Orchestrator",
             "Profile",
-            "Context"
+            "Context",
+            "Memory"
         ]
     );
 }
@@ -115,8 +119,10 @@ fn the_key_paths_are_the_ones_the_config_has_always_used() {
             ("ai.tools", "git"),
             ("ai.tools", "git_write"),
             ("ai.tools", "approval"),
+            ("ai.orchestrator", "enabled"),
             ("ai", "profile"),
             ("ai", "context"),
+            ("ai.memory", "enabled"),
         ]
     );
     let mut unique = paths.clone();
@@ -159,23 +165,17 @@ fn every_ai_only_kind_needs_the_ai_section() {
     for (item, _) in drafts() {
         assert!(item.kind.needs_ai(), "{}", item.label);
     }
-    for kind in [
-        &ItemKind::Assign(None),
-        &ItemKind::HfAccount,
-        &ItemKind::Orchestrator,
-    ] {
+    for kind in [&ItemKind::Assign(None), &ItemKind::HfAccount] {
         assert!(kind.needs_ai());
     }
     assert!(!ItemKind::Feedback.needs_ai());
     assert!(!ItemKind::Updates.needs_ai());
-    let memory = CHAT_SECTION.items.iter().find(|i| i.label == "Memory");
-    assert!(memory.is_some_and(|i| i.kind.needs_ai()));
 }
 
 // ---- list and minutes rows --------------------------------------------------
 
 fn shown(label: &str, ai: &AiConfig) -> String {
-    row(label).value.shown(ai).into_owned()
+    row(label).shown(ai).into_owned()
 }
 
 #[test]
@@ -264,20 +264,6 @@ fn flipping_each_family_writes_its_own_key_and_nothing_else() {
     }
 }
 
-/// The ranks of the rows that are not descriptors yet, as `edits()` writes
-/// them: memory and the orchestrator gate.
-const LITERAL_RANKS: [u8; 2] = [MEMORY_RANK, ORCHESTRATOR_RANK];
-
-#[test]
-fn draft_ranks_never_collide_with_the_literal_ranks() {
-    let mut all: Vec<u8> = drafts().iter().map(|(_, c)| c.rank).collect();
-    all.extend(LITERAL_RANKS);
-    let count = all.len();
-    all.sort_unstable();
-    all.dedup();
-    assert_eq!(all.len(), count, "{all:?}");
-}
-
 #[test]
 fn a_list_row_changed_and_changed_back_writes_nothing() {
     for label in ["Notify", "Profile", "Approval"] {
@@ -329,4 +315,132 @@ fn the_sandbox_badge_follows_the_flag_value_not_its_text() {
     };
     assert_eq!(value("Exec").as_deref(), Some("on · needs Linux sandbox"));
     assert_eq!(value("Git").as_deref(), Some("off"));
+}
+
+// ---- the second key and the sub-view ----------------------------------------
+
+fn second(label: &str) -> Option<(&'static str, bool)> {
+    row(label).second.as_ref().map(|s| (s.key, s.warn))
+}
+
+#[test]
+fn only_memory_and_the_orchestrator_have_a_second_key() {
+    for (item, c) in drafts() {
+        let expected = match item.label {
+            "Memory" => Some(("acknowledged", true)),
+            "Orchestrator" => Some(("acknowledged", false)),
+            _ => None,
+        };
+        assert_eq!(second(item.label), expected, "{}", item.label);
+        assert_eq!(c.second.is_some(), expected.is_some());
+    }
+}
+
+fn memory(enabled: bool, acknowledged: bool) -> AiConfig {
+    let mut ai = AiConfig::default();
+    ai.memory.enabled = enabled;
+    ai.memory.acknowledged = acknowledged;
+    ai
+}
+
+#[test]
+fn a_warned_row_is_on_only_when_both_keys_are_true() {
+    for (enabled, acknowledged, text) in [
+        (false, false, "off"),
+        (true, false, "off"),
+        (false, true, "off"),
+        (true, true, "on"),
+    ] {
+        assert_eq!(shown("Memory", &memory(enabled, acknowledged)), text);
+    }
+}
+
+#[test]
+fn an_unwarned_row_shows_its_own_key() {
+    let mut ai = AiConfig::default();
+    ai.orchestrator.enabled = true;
+    assert_eq!(shown("Orchestrator", &ai), "on");
+}
+
+#[test]
+fn stepping_an_unacknowledged_memory_asks_for_the_warning_and_changes_nothing() {
+    let mut ai = memory(true, false);
+    assert!(row("Memory").step(&mut ai, true));
+    assert_eq!(ai, memory(true, false));
+}
+
+#[test]
+fn stepping_an_acknowledged_memory_toggles_enabled_without_a_warning() {
+    let mut ai = memory(false, true);
+    assert!(!row("Memory").step(&mut ai, true));
+    assert_eq!(ai, memory(true, true));
+    assert!(!row("Memory").step(&mut ai, true));
+    assert_eq!(ai, memory(false, true));
+}
+
+#[test]
+fn accepting_sets_both_keys() {
+    let mut ai = memory(false, false);
+    row("Memory").accept(&mut ai);
+    assert_eq!(ai, memory(true, true));
+}
+
+#[test]
+fn stepping_the_orchestrator_flips_enabled_and_never_warns() {
+    let mut ai = AiConfig::default();
+    assert!(!row("Orchestrator").step(&mut ai, true));
+    assert!(ai.orchestrator.enabled && !ai.orchestrator.acknowledged);
+}
+
+#[test]
+fn the_edits_are_the_key_then_the_second_key_only_when_changed() {
+    let keys = |was: &AiConfig, now: &AiConfig| {
+        row("Memory")
+            .edits(now, was)
+            .iter()
+            .map(|e| (e.key, e.value.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let off = memory(false, false);
+    assert_eq!(
+        keys(&off, &memory(true, true)),
+        [("enabled", "true".into()), ("acknowledged", "true".into())]
+    );
+    assert_eq!(
+        keys(&memory(true, false), &memory(true, true)),
+        [("acknowledged", "true".into())]
+    );
+    assert_eq!(
+        keys(&memory(true, true), &memory(false, true)),
+        [("enabled", "false".into())]
+    );
+    assert_eq!(keys(&off, &off), []);
+}
+
+#[test]
+fn one_sub_view_is_chosen_for_every_state() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), Some(machine()));
+    assert_eq!(m.sub_view(), None);
+    m.goto("Memory");
+    m.on_key(&key(KeyCode::Char('l')), false, &mut Config::default());
+    assert_eq!(m.sub_view(), Some(SubView::Warning));
+    m.on_key(&key(KeyCode::Char('n')), false, &mut Config::default());
+    assert_eq!(m.sub_view(), None);
+    m.goto("code");
+    m.on_key(&key(KeyCode::Enter), false, &mut Config::default());
+    assert_eq!(m.sub_view(), Some(SubView::Picker));
+    assert!(m.in_sub_level());
+    m.on_key(&key(KeyCode::Esc), false, &mut Config::default());
+    m.goto("Feedback");
+    m.on_key(&key(KeyCode::Enter), false, &mut Config::default());
+    assert_eq!(m.sub_view(), Some(SubView::Feedback));
+    assert!(m.in_sub_level());
+}
+
+#[test]
+fn the_token_field_is_the_account_sub_view() {
+    let mut m = MenuState::open(&Config::default()).with_ai(AiConfig::default(), Some(machine()));
+    m.goto("Hugging Face");
+    m.on_key(&key(KeyCode::Enter), false, &mut Config::default());
+    assert_eq!(m.sub_view(), Some(SubView::AccountField));
 }
