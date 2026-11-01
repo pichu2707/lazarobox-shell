@@ -7,14 +7,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, IsTerminal, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::core::desktop::{
-    FILE_NAME, Options, USAGE, applications_dir, choose_terminal, data_home, parse_args,
-    plan_install,
+    Entry, FILE_NAME, Options, Parsed, RECORDS_URL, USAGE, applications_dir, choose_terminal,
+    data_home, is_wsl, parse_args, parse_choice, picker_choices, plan_install,
 };
 
 /// Everything `execute` reads from the outside world.
@@ -27,6 +27,8 @@ pub struct Context<'a> {
     pub exe: PathBuf,
     /// The working directory, for a relative `--dir`.
     pub cwd: PathBuf,
+    /// Running inside WSL (adds the WSL notes).
+    pub wsl: bool,
     /// Resolves a command to an absolute executable path.
     pub lookup: &'a dyn Fn(&str) -> Option<PathBuf>,
     /// Best-effort `update-desktop-database <applications dir>`.
@@ -70,10 +72,21 @@ pub fn main(args: &[OsString]) -> i32 {
         home: std::env::var_os("HOME"),
         exe,
         cwd: std::env::current_dir().unwrap_or_default(),
+        wsl: is_wsl(
+            std::env::var("WSL_DISTRO_NAME").ok().as_deref(),
+            fs::read_to_string("/proc/sys/kernel/osrelease")
+                .ok()
+                .as_deref(),
+        ),
         lookup: &lookup,
         refresh_db: &refresh_db,
     };
-    match execute(&options, &ctx, &mut std::io::stdout()) {
+    // Ask only when a person is at the keyboard and reading the screen.
+    let stdin = std::io::stdin();
+    let asks = stdin.is_terminal() && std::io::stdout().is_terminal();
+    let mut locked = stdin.lock();
+    let input = asks.then_some(&mut locked as &mut dyn BufRead);
+    match execute(&options, &ctx, input, &mut std::io::stdout()) {
         Ok(()) => 0,
         Err(why) => {
             eprintln!("error: {why}");
@@ -82,8 +95,15 @@ pub fn main(args: &[OsString]) -> i32 {
     }
 }
 
-/// Installs or removes the launcher, reporting to `out`.
-pub fn execute(options: &Options, ctx: &Context, out: &mut dyn Write) -> Result<(), String> {
+/// Installs or removes the launcher, reporting to `out`. `input` is `Some`
+/// only when stdin and stdout are a TTY; it enables the terminal picker, which
+/// `--terminal` skips.
+pub fn execute(
+    options: &Options,
+    ctx: &Context,
+    input: Option<&mut dyn BufRead>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let data = data_home(ctx.xdg_data_home.as_deref(), ctx.home.as_deref())?;
     let apps_dir = applications_dir(&data);
     let target = apps_dir.join(FILE_NAME);
@@ -111,19 +131,69 @@ pub fn execute(options: &Options, ctx: &Context, out: &mut dyn Write) -> Result<
                 .as_deref()
                 .map(|raw| install_dir(raw, ctx))
                 .transpose()?;
-            let (choice, mut notes) =
+            let (mut choice, mut notes) =
                 choose_terminal(terminal.as_deref(), ctx.env_terminal.as_deref(), ctx.lookup)?;
-            let plan = plan_install(&choice, &ctx.exe, dir.as_deref())?;
+            if let (None, Some(input)) = (terminal, input) {
+                let alternative = (ctx.lookup)("x-terminal-emulator")
+                    .and_then(|path| fs::canonicalize(path).ok());
+                let entries = picker_choices(
+                    ctx.env_terminal.as_deref(),
+                    ctx.lookup,
+                    alternative,
+                    &choice,
+                );
+                if let Some(entry) = ask(&entries, input, out)?.filter(|e| !e.default) {
+                    choice = entry.choice();
+                }
+            }
+            let existed = fs::symlink_metadata(&target).is_ok();
+            let plan = plan_install(&choice, &ctx.exe, dir.as_deref(), ctx.wsl)?;
             notes.extend(plan.notes);
             write_atomically(&apps_dir, &target, &plan.contents)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
             (ctx.refresh_db)(&apps_dir);
-            writeln!(out, "Installed {}", target.display()).map_err(io_error)?;
+            let verb = if existed { "Updated" } else { "Installed" };
+            let again = if existed { " (already installed)" } else { "" };
+            writeln!(out, "{verb} {}{again}", target.display()).map_err(io_error)?;
             writeln!(out, "  Exec: {}", plan.exec).map_err(io_error)?;
             for note in notes {
                 writeln!(out, "  note: {note}").map_err(io_error)?;
             }
             Ok(())
+        }
+    }
+}
+
+/// Lists `entries` and reads answers until one is valid. `Ok(None)` when
+/// there is nothing to choose from; end of input cancels with an error, so
+/// nothing is written.
+fn ask<'e>(
+    entries: &'e [Entry],
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<Option<&'e Entry>, String> {
+    // Nothing to choose from, or only the terminal Enter would pick anyway.
+    if entries.is_empty() || matches!(entries, [only] if only.default) {
+        return Ok(None);
+    }
+    writeln!(out, "Choose the terminal that runs lazarobox:").map_err(io_error)?;
+    for (i, e) in entries.iter().enumerate() {
+        let tested = if e.tested { " (tested)" } else { "" };
+        let default = if e.default { " [default]" } else { "" };
+        writeln!(out, "  {}) {}{tested}{default}", i + 1, e.name).map_err(io_error)?;
+    }
+    writeln!(out, "(tested) = has a record: {RECORDS_URL}").map_err(io_error)?;
+    loop {
+        write!(out, "Number, or Enter for the default: ").map_err(io_error)?;
+        out.flush().map_err(io_error)?;
+        let mut line = String::new();
+        let read = input
+            .read_line(&mut line)
+            .map_err(|e| format!("cannot read the answer: {e}"))?;
+        match parse_choice((read > 0).then_some(line.as_str()), entries) {
+            Parsed::Pick(i) => return Ok(entries.get(i)),
+            Parsed::Retry(notice) => writeln!(out, "{notice}").map_err(io_error)?,
+            Parsed::Cancel => return Err("cancelled: nothing was written".into()),
         }
     }
 }
