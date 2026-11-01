@@ -2,7 +2,7 @@
 //! the line the batch review shows.
 
 use super::WorkerId;
-use super::changes::Change;
+use super::changes::{Change, GAP_CUT};
 use super::ledger::{FIELD_BYTES, Verdict};
 use super::rdd::{Consent, Lens, Outcome, Refutation, Review};
 use super::receipt::{Evidence, fit, judgement, line, summary};
@@ -404,4 +404,50 @@ mod stored {
         let text = run.run_ledger("g").render();
         assert!(text.contains("Reviews: 2"), "{text}");
     }
+}
+
+// D4: a review whose reader could not see the change says so in the line the
+// batch review shows, never `clean`.
+#[test]
+fn an_unseen_change_is_never_called_clean_in_the_batch_line() {
+    let mut review = high();
+    review.consent(Consent::Granted).unwrap();
+    review.pick("risk", "touches the lockfile").unwrap();
+    review
+        .report(Lens::Risk, "UNSEEN: only file metadata")
+        .unwrap();
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let text = line(&held.evidence());
+    assert!(!text.contains("clean"), "{text}");
+    assert!(
+        text.contains("incomplete (a reviewer could not see the change)"),
+        "{text}"
+    );
+}
+
+// D4: a gap in the diff is named in the batch line and the receipt.
+#[test]
+fn a_diff_gap_is_named_and_never_called_clean() {
+    let mut review = high();
+    review.consent(Consent::Granted).unwrap();
+    review.pick("risk", "touches the lockfile").unwrap();
+    review.report(Lens::Risk, "NONE").unwrap();
+    review.note_gap(GAP_CUT);
+    review.note_cut(2048);
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let text = line(&held.evidence());
+    assert!(!text.contains("clean"), "{text}");
+    assert!(
+        text.contains("incomplete (diff cut to fit the prompt)"),
+        "{text}"
+    );
+    let note = judgement(&held.evidence());
+    assert!(
+        note.left
+            .contains("not whole: diff cut to fit the prompt (2048 byte(s) missing)"),
+        "{}",
+        note.left
+    );
 }

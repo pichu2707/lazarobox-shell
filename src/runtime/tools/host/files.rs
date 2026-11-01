@@ -23,7 +23,7 @@ use crate::{
         },
         orchestra::{
             WorkerKey,
-            changes::{Change, diff_hash},
+            changes::{Change, StagedDiff, StagedText, diff_hash},
         },
         tools::{
             Call, ToolError,
@@ -538,6 +538,38 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
         .iter()
         .map(|staged| ledger_change(env, staged))
         .collect()
+}
+
+/// What a review may be shown of the batch of `key`: the files `allow` lets
+/// it read, and the other paths (and folders, which have no text) named only.
+/// Those are the files the review's read tools show it through the staged
+/// view, so this hands the prompt nothing the tools would refuse.
+pub(super) fn staged_diff(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+    allow: &dyn Fn(&Path) -> bool,
+) -> StagedDiff {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return StagedDiff::default();
+    };
+    let mut out = StagedDiff::default();
+    for staged in batch.entries() {
+        let path = ledger_path(env, &staged.target.real);
+        match &staged.entry {
+            Entry::Dir => out.dirs.push(path),
+            Entry::File { text, base } if allow(&staged.target.real) => {
+                out.files.push(StagedText {
+                    path,
+                    base: base.clone(),
+                    text: text.clone(),
+                });
+            }
+            Entry::File { .. } => out.skipped.push(path),
+        }
+    }
+    out
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change

@@ -255,6 +255,20 @@ impl ToolHost {
         review::joined(taken.await)
     }
 
+    /// What a review may be shown of the batch of `key`; `allow` says which
+    /// staged targets it may read. `None` when the read itself failed.
+    pub(crate) async fn staged_diff(
+        &self,
+        key: StageKey,
+        origin: &Path,
+        allow: impl Fn(&Path) -> bool + Send + 'static,
+    ) -> Option<crate::core::ai::orchestra::changes::StagedDiff> {
+        let (stages, env) = (self.stages.clone(), self.env(origin));
+        let taken =
+            tokio::task::spawn_blocking(move || files::staged_diff(&stages, key, &env, &allow));
+        taken.await.ok()
+    }
+
     /// The dispatch of one turn.
     pub fn dispatch(self: &Arc<Self>, scope: TurnScope) -> Arc<dyn Dispatch> {
         Arc::new(TurnDispatch {
