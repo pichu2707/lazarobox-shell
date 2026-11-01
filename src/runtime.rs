@@ -302,6 +302,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
     let listing_cache = Arc::new(ai_detect::ListingCache::new(Arc::new(Instant::now)));
+    // Tool support of the Ollama models, by digest, for the same life.
+    let show_cache = Arc::new(ai_detect::ShowCache::default());
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
@@ -434,6 +436,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     ai_tx.clone(),
                     detect_env.clone(),
                     Arc::clone(&listing_cache),
+                    Arc::clone(&show_cache),
                     force,
                     live.ports(),
                     Arc::clone(&model_dirs),
