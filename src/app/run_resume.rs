@@ -164,19 +164,35 @@ impl App {
         self.say_in_pane(id, line);
     }
 
-    /// The reply of pane `id` to a resumed run ended with no worker: the run
-    /// is offered again.
-    pub(super) fn reply_ended(&mut self, id: PaneId) {
-        if self.run_keep.awaiting.get(&id).is_some_and(|w| w.replied) {
-            self.release_wait(id);
+    /// The user's turn in pane `id` starts while a resumed run waits: it is
+    /// the reply.
+    pub(super) fn reply_started(&mut self, id: PaneId) {
+        if let Some(waiting) = self.run_keep.awaiting.get_mut(&id) {
+            waiting.replied = true;
+        }
+    }
+
+    /// A turn of pane `id` ended. If it was the reply to a resumed run: when
+    /// it ended normally the wait is over and the run goes back on the list,
+    /// still linked so a worker that arrives after the turn's end closes it;
+    /// when it failed or was cancelled the pane keeps waiting for a retry.
+    pub(super) fn reply_ended(&mut self, id: PaneId, done: bool) {
+        match self.run_keep.awaiting.get_mut(&id) {
+            Some(waiting) if waiting.replied && done => self.release_wait(id, true),
+            Some(waiting) if waiting.replied => waiting.replied = false,
+            _ => {}
         }
     }
 
     /// Pane `id` stops waiting for a reply (it sent something else, ORCH was
-    /// toggled, its reply got no worker, it closed): the run is still
-    /// interrupted and goes back on the list, and the pane says so.
-    pub(super) fn release_wait(&mut self, id: PaneId) {
+    /// toggled, its reply ended, it closed): the run is still interrupted and
+    /// goes back on the list, and the pane says so. With `link`, a worker that
+    /// arrives later still closes it, as after an abandoned resume.
+    pub(super) fn release_wait(&mut self, id: PaneId, link: bool) {
         if let Some(waiting) = self.run_keep.awaiting.remove(&id) {
+            if link {
+                self.run_keep.resume_of.insert(id, waiting.run.id);
+            }
             self.say_offered_again(id, waiting.run);
         }
     }

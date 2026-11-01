@@ -595,3 +595,76 @@ fn the_link_to_the_resumed_run_lasts_for_the_reply_only() {
     let saved = saved_runs(&a.update(event(row(RunId(902), 1, WorkerStatus::Running))));
     assert_eq!(saved[0].supersedes, None);
 }
+
+/// The orchestrator turn among `effects`.
+fn turn_id(effects: &[Effect]) -> u64 {
+    effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn")
+}
+
+// D6: a worker that arrives after the reply turn's Done (the rows travel apart
+// from the stream) still closes the resumed run.
+#[test]
+fn a_worker_arriving_after_the_replys_done_still_closes_the_resumed_run() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// D6: a reply that errors keeps the wait; the retried reply closes the run.
+#[test]
+fn a_reply_that_errors_and_is_retried_still_closes_the_resumed_run() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("engine down".into())),
+    ));
+    // Still waiting, not offered twice.
+    assert!(turn_of(&keys(&mut a, "rr")).is_none());
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("waits for your reply"))
+    );
+    super::chat_live::ask(&mut a, "ok, relaunch, again");
+    let saved = saved_runs(&a.update(event(row(RunId(902), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+}
+
+// D6: a reply whose run has a live worker closes the resumed run at the
+// worker, and the end of that turn does not offer it again.
+#[test]
+fn the_end_of_a_reply_turn_with_a_live_run_does_not_reoffer_a_closed_run() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    let mut a = resumed_and_waiting();
+    let turn = turn_id(&super::chat_live::ask(&mut a, "ok, relaunch"));
+    let saved = saved_runs(&a.update(event(row(RunId(901), 1, WorkerStatus::Running))));
+    assert_eq!(saved[0].supersedes, Some(9));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let said = system(&a);
+    assert!(
+        said.iter()
+            .all(|l| !l.contains("run 9 is still interrupted")),
+        "{said:?}"
+    );
+}

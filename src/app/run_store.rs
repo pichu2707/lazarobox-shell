@@ -111,13 +111,6 @@ impl App {
     /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
         self.run_keep.resume_of.remove(&id);
-        // The first fresh turn after the resume is the user's reply; a second
-        // one is not, and gives the run back.
-        match self.run_keep.awaiting.get_mut(&id) {
-            Some(waiting) if !waiting.replied => waiting.replied = true,
-            Some(_) => self.release_wait(id),
-            None => {}
-        }
         self.run_keep.goals.insert(id, RunRecord::stored_goal(goal));
     }
 
@@ -203,7 +196,7 @@ impl App {
     /// waiting goal goes. The run manager's own `Ended` saves nothing more.
     pub(super) fn keep_pane_closed(&mut self, id: PaneId) -> Vec<Effect> {
         self.run_keep.goals.remove(&id);
-        self.release_wait(id);
+        self.release_wait(id, false);
         self.run_keep.resume_goal = None;
         // A resume that never started leaves its run offered (to the other
         // panes of this folder).
