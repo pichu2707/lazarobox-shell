@@ -135,6 +135,26 @@ fn models_usage(value: &Value) -> Option<TurnUsage> {
             ..TurnUsage::default()
         });
     }
+    // Entries that carry no count (only a cost, or nothing) say nothing about
+    // the tokens: the top-level `usage` is then the better source.
+    let counts = [
+        sum.input,
+        sum.output,
+        sum.cache_read,
+        sum.cache_write,
+        sum.reasoning,
+    ];
+    if counts.iter().all(Option::is_none) {
+        return None;
+    }
+    // A sum of costs is whole only when every model reported one: a partial
+    // sum would read as the whole, so the cost stays unknown.
+    if models
+        .values()
+        .any(|entry| micros(&entry["costUSD"]).is_none())
+    {
+        sum.cost_micros = None;
+    }
     if models.len() == 1 {
         sum.model = models.keys().next().and_then(|k| model_id(k));
     } else {

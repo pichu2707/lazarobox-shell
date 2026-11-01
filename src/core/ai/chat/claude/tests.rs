@@ -828,3 +828,26 @@ fn an_empty_limit_type_reads_as_rejected() {
     text.push_str(&error_line("boom"));
     assert_eq!(failed_text(&whole(&text)), "boom (limit window: rejected)");
 }
+
+#[test]
+fn model_entries_with_no_counts_fall_back_to_the_top_level_counts() {
+    let extra = r#","usage":{"input_tokens":7,"output_tokens":8},"modelUsage":{"a":{"costUSD":0.25},"b":{}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].input, got[0].output), (Some(7), Some(8)));
+}
+
+#[test]
+fn a_cost_only_some_models_report_is_unknown_not_a_whole_looking_sum() {
+    let extra = r#","modelUsage":{"a":{"inputTokens":1,"costUSD":0.25},"b":{"inputTokens":2}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(got[0].input, Some(3));
+    assert_eq!((got[0].cost_micros, got[0].cost_source), (None, None));
+}
+
+#[test]
+fn the_cli_total_cost_still_wins_over_a_partial_model_cost() {
+    let extra = r#","total_cost_usd":0.5,"modelUsage":{"a":{"inputTokens":1,"costUSD":0.25},"b":{"inputTokens":2}}"#;
+    let got = usages(&whole(&result_line("ok", extra)));
+    assert_eq!(got[0].cost_micros, Some(500_000));
+}
