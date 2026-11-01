@@ -76,11 +76,11 @@ Order note: S2 and S3 are independent of each other (both need S1b); the chain k
 
 ## S3: Download screens (`src/core/ai/picker/ollama.rs`, `src/core/ai/picker/hub.rs`, README, CHANGELOG)
 
-- [ ] S3.1 RED: Popular rows: `llama3.2` (1b 3b, tools) `🔧`, `smol` (1b, tools) `tools: unreliable`, `chat-only` (7b, no tools) none; mixed sizes use the LARGEST FITTING size (`mix` fits only 1b → unreliable; `mix2` 1b 3b 8b → `🔧`); exactly 3B → `🔧`; missing card data and fallback list → no mark and no row dropped; text fallback `tools` on `TERM=linux`.
-- [ ] S3.2 RED: Sizes rows: `llama3.2:1b` unreliable, `llama3.2:3b` `🔧`, ` · too big for this PC` suffix still ends the row; `Screen::Sizes` carries `tools: bool` taken from the same-name Popular card; Confirm screen carries no mark; `Pick without typing` effects and order identical on a marked row; rows stay selectable and keep order.
-- [ ] S3.3 GREEN: `Screen::Sizes.tools`; Popular badge from `card.capabilities` + largest fitting size; Sizes badge per tag via `size_params`; `item()` rows get `tools` set after. No new request.
-- [ ] S3.4 Gate.
-- [ ] S3.5 Docs: README and CHANGELOG lines for download screens.
+- [x] S3.1 RED: Popular rows: `llama3.2` (1b 3b, tools) `🔧`, `smol` (1b, tools) `tools: unreliable`, `chat-only` (7b, no tools) none; mixed sizes use the LARGEST FITTING size (`mix` fits only 1b → unreliable; `mix2` 1b 3b 8b → `🔧`); exactly 3B → `🔧`; missing card data and fallback list → no mark and no row dropped; text fallback `tools` on `TERM=linux`.
+- [x] S3.2 RED: Sizes rows: `llama3.2:1b` unreliable, `llama3.2:3b` `🔧`, ` · too big for this PC` suffix still ends the row; `Screen::Sizes` carries `tools: bool` taken from the same-name Popular card; Confirm screen carries no mark; `Pick without typing` effects and order identical on a marked row; rows stay selectable and keep order.
+- [x] S3.3 GREEN: `Screen::Sizes.tools`; Popular badge from `card.capabilities` + largest fitting size; Sizes badge per tag via `size_params`; `item()` rows get `tools` set after. No new request.
+- [x] S3.4 Gate.
+- [x] S3.5 Docs: README and CHANGELOG lines for download screens.
 
 ## Manual
 

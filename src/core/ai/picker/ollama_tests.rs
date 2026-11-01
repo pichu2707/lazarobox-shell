@@ -484,3 +484,146 @@ fn the_ollama_screens_neither_copy_nor_refresh() {
     assert_eq!(p.copy(&AiConfig::default(), Some(&d)), Outcome::Stay);
     assert_eq!(p.refresh(), Outcome::Stay);
 }
+
+// --- tool marks (model-marks, download screens) -----------------------------
+
+fn tool_card(name: &str, sizes: &[&str]) -> Card {
+    Card {
+        capabilities: vec!["tools".to_owned()],
+        ..card(name, sizes, "")
+    }
+}
+
+fn mark_on(rows: &[PickRow], prefix: &str) -> Option<ToolMark> {
+    rows.iter()
+        .find(|r| r.label.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no row {prefix}"))
+        .tools
+}
+
+#[test]
+fn popular_rows_carry_the_mark_of_the_largest_fitting_size() {
+    let d = ollama(Status::Available);
+    let p = at_popular(
+        vec![
+            tool_card("llama3.2", &["1b", "3b"]),
+            tool_card("smol", &["1b"]),
+            card("chat-only", &["7b"], ""),
+            tool_card("mix", &["1b", "70b"]),
+            tool_card("mix2", &["1b", "3b", "8b"]),
+            tool_card("edge", &["3b"]),
+            tool_card("effective", &["e2b"]),
+        ],
+        false,
+        &d,
+    );
+    let rows = p.ollama().unwrap().rows();
+    assert_eq!(mark_on(&rows, "llama3.2 "), Some(ToolMark::Capable));
+    assert_eq!(mark_on(&rows, "smol "), Some(ToolMark::Unreliable));
+    assert_eq!(mark_on(&rows, "chat-only "), None);
+    assert_eq!(mark_on(&rows, "mix "), Some(ToolMark::Unreliable));
+    assert_eq!(mark_on(&rows, "mix2 "), Some(ToolMark::Capable));
+    assert_eq!(mark_on(&rows, "edge "), Some(ToolMark::Capable));
+}
+
+#[test]
+fn the_fallback_list_and_cards_without_data_carry_no_mark_and_no_row_is_dropped() {
+    let d = ollama(Status::Available);
+    let p = at_popular(
+        vec![
+            card("llama3.2", &["1b", "3b"], ""),
+            card("qwen3", &["8b"], ""),
+        ],
+        true,
+        &d,
+    );
+    let rows = p.ollama().unwrap().rows();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|r| r.tools.is_none()));
+}
+
+#[test]
+fn sizes_rows_carry_the_mark_of_their_own_tag() {
+    let d = ollama(Status::Available);
+    let draft = AiConfig::default();
+    let mut p = at_popular(vec![tool_card("llama3.2", &["1b", "3b", "70b"])], false, &d);
+    let sizes = Ask::Sizes {
+        model: "llama3.2".to_owned(),
+        tags: vec!["1b".to_owned(), "3b".to_owned(), "70b".to_owned()],
+    };
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::OllamaAsk(sizes.clone()));
+    let mut manifests = llama_manifests();
+    manifests[2].1 = Some(Manifest {
+        size: 42 * GB,
+        licenses: Vec::new(),
+    });
+    p.ollama_reply(
+        &sizes,
+        Ok(Answer::Sizes {
+            manifests,
+            ram: RAM,
+        }),
+    );
+    let o = p.ollama().unwrap();
+    assert!(matches!(
+        o.screen(),
+        Some(ollama::Screen::Sizes { tools: true, .. })
+    ));
+    let rows = o.rows();
+    assert_eq!(mark_on(&rows, "llama3.2:1b"), Some(ToolMark::Unreliable));
+    assert_eq!(mark_on(&rows, "llama3.2:3b"), Some(ToolMark::Capable));
+    assert_eq!(mark_on(&rows, "llama3.2:70b"), Some(ToolMark::Capable));
+    assert!(rows[2].label.ends_with("· too big for this PC"));
+    assert!(rows.iter().all(|r| r.enabled));
+}
+
+#[test]
+fn sizes_of_a_model_without_tools_carry_no_mark() {
+    let d = ollama(Status::Available);
+    let draft = AiConfig::default();
+    let mut p = at_popular(vec![card("llama3.2", &["1b", "3b"], "")], false, &d);
+    let sizes = Ask::Sizes {
+        model: "llama3.2".to_owned(),
+        tags: vec!["1b".to_owned(), "3b".to_owned()],
+    };
+    p.enter(&draft, Some(&d));
+    p.ollama_reply(
+        &sizes,
+        Ok(Answer::Sizes {
+            manifests: llama_manifests(),
+            ram: RAM,
+        }),
+    );
+    let o = p.ollama().unwrap();
+    assert!(matches!(
+        o.screen(),
+        Some(ollama::Screen::Sizes { tools: false, .. })
+    ));
+    assert!(o.rows().iter().all(|r| r.tools.is_none()));
+}
+
+#[test]
+fn enter_on_a_marked_row_asks_exactly_what_an_unmarked_one_asks() {
+    let d = ollama(Status::Available);
+    let draft = AiConfig::default();
+    for card in [
+        tool_card("llama3.2", &["1b", "3b"]),
+        card("llama3.2", &["1b", "3b"], ""),
+    ] {
+        let mut p = at_popular(vec![card], false, &d);
+        assert_eq!(
+            p.enter(&draft, Some(&d)),
+            Outcome::OllamaAsk(Ask::Sizes {
+                model: "llama3.2".to_owned(),
+                tags: vec!["1b".to_owned(), "3b".to_owned()],
+            })
+        );
+    }
+}
+
+#[test]
+fn the_confirm_screen_carries_no_mark() {
+    let d = ollama(Status::Available);
+    let p = at_confirm(vec![LLAMA.to_owned()], &d);
+    assert!(p.ollama().unwrap().rows().iter().all(|r| r.tools.is_none()));
+}

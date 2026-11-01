@@ -22,6 +22,9 @@ baseline.
   the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
   even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
   detected and CLI model rows carry none.
+- The Ollama download screens mark models that declare tools: a Popular row
+  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
+  fits this PC, and each Sizes row by its own tag. No new request is made.
 - Ollama detection now sends one `POST /api/show` per installed model to the
   local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
   2 seconds in total, cached by digest) to read whether it declares tools.
