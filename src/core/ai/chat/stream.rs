@@ -8,6 +8,7 @@
 use serde_json::{Value, json};
 
 use super::engine::{ChatError, Finish, StreamEvent};
+use super::usage::{TurnUsage, count, model_id};
 use crate::core::ai::{
     sanitize::clean,
     tools::{
@@ -182,6 +183,54 @@ fn thinking(text: Option<&str>) -> Option<StreamEvent> {
         .map(|t| StreamEvent::ThinkingDelta(t.into()))
 }
 
+/// What the final line of an Ollama reply says the turn used. Durations are
+/// nanoseconds. Any `cost` field is ignored: a local engine has no dollars.
+/// A line with no count is no data.
+fn ollama_usage(line: &Value) -> Option<TurnUsage> {
+    TurnUsage {
+        input: count(&line["prompt_eval_count"]),
+        output: count(&line["eval_count"]),
+        duration_ms: count(&line["total_duration"]).map(|ns| ns / 1_000_000),
+        model: line["model"].as_str().and_then(model_id),
+        ..TurnUsage::default()
+    }
+    .reported()
+}
+
+/// What the finish chunk of an OpenAI-style reply says the turn used: the
+/// `timings` of llama.cpp (its `usage` chunk comes after the finish and is
+/// lost), else a `usage` object. No dollars.
+fn openai_usage(chunk: &Value) -> Option<TurnUsage> {
+    let timings = &chunk["timings"];
+    let usage = &chunk["usage"];
+    let model = chunk["model"].as_str().and_then(model_id);
+    let from_timings = TurnUsage {
+        input: count(&timings["prompt_n"]),
+        output: count(&timings["predicted_n"]),
+        cache_read: count(&timings["cache_n"]),
+        duration_ms: match (
+            timings["prompt_ms"].as_f64(),
+            timings["predicted_ms"].as_f64(),
+        ) {
+            (Some(a), Some(b)) if (a + b).is_finite() && a + b >= 0.0 => {
+                Some((a + b).round() as u64)
+            }
+            _ => None,
+        },
+        model: model.clone(),
+        ..TurnUsage::default()
+    };
+    from_timings.reported().or_else(|| {
+        TurnUsage {
+            input: count(&usage["prompt_tokens"]),
+            output: count(&usage["completion_tokens"]),
+            model,
+            ..TurnUsage::default()
+        }
+        .reported()
+    })
+}
+
 /// Events of one Ollama line.
 fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
     ndjson_decode(line).0
@@ -207,6 +256,7 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
         .chain(delta(message["content"].as_str()))
         .collect();
     if value["done"].as_bool() == Some(true) {
+        events.extend(ollama_usage(&value).map(StreamEvent::Usage));
         events.push(StreamEvent::Done(finish_reason(
             value["done_reason"].as_str(),
         )));
@@ -231,6 +281,7 @@ fn sse_decode(data: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
         .into_iter()
         .collect();
     if let Some(reason) = choice["finish_reason"].as_str() {
+        events.extend(openai_usage(&value).map(StreamEvent::Usage));
         events.push(StreamEvent::Done(finish_reason(Some(reason))));
     }
     (events, Some(value))
