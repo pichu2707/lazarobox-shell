@@ -51,7 +51,7 @@ fn the_context_row_follows_profile_and_precedes_memory() {
     let labels: Vec<&str> = CHAT_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(labels, ["Profile", "Context", "Memory"]);
     let context = &CHAT_SECTION.items[1];
-    assert!(matches!(&context.kind, ItemKind::Draft(c) if c.flag().key == "context"));
+    assert!(matches!(&context.kind, ItemKind::Draft(c) if c.key() == "context"));
 }
 
 #[test]

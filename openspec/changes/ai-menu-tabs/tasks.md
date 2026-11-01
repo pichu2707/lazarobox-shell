@@ -50,9 +50,9 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 
 ## PR 2.2: List rows and Minutes (~270)
 
-- [ ] 2.2.1 RED: Profile, Notify, Approval cycling; idle 45 steps both ways, `never`/`N min`.
-- [ ] 2.2.2 GREEN: `DraftValue::List` and `Minutes { step: cycled_idle }` (D4); migrate the four rows.
-- [ ] 2.2.3 Gate: 1.9 test unchanged, no pending snapshots.
+- [x] 2.2.1 RED: Profile, Notify, Approval cycling; idle 45 steps both ways, `never`/`N min`.
+- [x] 2.2.2 GREEN: `DraftValue::List` and `Minutes { step: cycled_idle }` (D4); migrate the four rows.
+- [x] 2.2.3 Gate: 1.9 test unchanged, no pending snapshots.
 
 ## PR 3: Second key and SubView (~300)
 
