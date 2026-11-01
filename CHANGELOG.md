@@ -127,6 +127,10 @@ baseline.
   whether the terminal has a test record, and never refuses to install.
 - README: Windows is described as WSL only, and the terminal record policy is
   linked.
+- Orchestrator worker rows count the prompt as input plus cache reads and
+  writes, so it means the same for every engine. A worker on llama.cpp now
+  shows its usage, and a failed `claude` worker keeps the usage it reported. A
+  report cut short is marked partial and shows no cost.
 
 ### Internal
 
