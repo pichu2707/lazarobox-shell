@@ -37,7 +37,7 @@ git add -A && git commit -qm init
 cd ~/scratch/orch-demo && lazarobox-shell
 ```
 
-Assignments used below (menu, `Prefix m`, tab AI, `s` to save): `orchestrate`, `code`, `review` on a cloud engine; `general` on whatever you have. Tools row `on`. A shell pane in the same tab is handy for `git status` and for running tests yourself.
+Assignments used below (menu, `Prefix m`, tabs `2` Models and `3` Tools, `s` to save): `orchestrate`, `code`, `review` on a cloud engine; `general` on whatever you have. Tools row `on`. A shell pane in the same tab is handy for `git status` and for running tests yourself.
 
 Cloud engines and the XDG overrides: the overrides above move only lazarobox's own `config.toml` and `chat.db` (and its private CLI working folders). The jail grants each CLI its own login folder under `$HOME` (`~/.claude`, `~/.codex` or `$CODEX_HOME`, `~/.gemini`), so claude, codex and gemini should stay logged in. I did not verify whether each CLI itself reads XDG paths; if one reports "not logged in", `unset XDG_CONFIG_HOME XDG_DATA_HOME` for the cloud tests (A-K) and use your real config, or log in again inside the sandbox.
 
@@ -55,7 +55,7 @@ Evidence to keep: the pane text of each run (`Prefix [` then copy) when a test f
 
 ### T02 · Menu rows and saving [LOCAL]
 - Setup: T01 done.
-- Steps: 1. `Prefix m`, `Tab` to AI. 2. Find `orchestrate` (right after `summarize`) and `Orchestrator` (right after `Approval`). 3. On `Orchestrator` press `l`; the footer shows `unsaved changes`. 4. Press `Esc`, reopen, confirm it is `off`. 5. Press `l` again and `s`.
+- Steps: 1. `Prefix m`, press `2` for Models. 2. Find `orchestrate` (right after `summarize`), then press `3` for Tools and find `Orchestrator` (right after `Approval`). 3. On `Orchestrator` press `l`; the footer shows `unsaved changes`. 4. Press `Esc`, reopen, confirm it is `off`. 5. Press `l` again and `s`.
 - Expect: `orchestrate` reads `(default)`, `Orchestrator` reads `off`; `Set all tasks` does not change `orchestrate`; after `s`, `config.toml` has `[ai.orchestrator]` with `enabled = true` and no limit keys; `Enter` on the row cycles it and opens no picker.
 - [ ] Pass   Notes:
 
@@ -372,7 +372,7 @@ Spec: agent-orchestrator / README written once.
 ### T51 · Gate off after the upgrade [ANY]
 - Setup: your real config (not the sandbox), upgraded build, no `[ai.orchestrator]`.
 - Steps: 1. Open a chat, send a message, use search/write/exec/git if enabled, open the menu, save once.
-- Expect: everything as in 1.0.1; no new key is bound; the save writes no orchestrator keys; AI tab shows the two new rows (`orchestrate`, `Orchestrator`) off.
+- Expect: everything as in 1.0.1; no new key is bound; the save writes no orchestrator keys; the Models tab shows `orchestrate` and the Tools tab shows `Orchestrator`, both off.
 - [ ] Pass   Notes:
 
 ### T52 · Real keys in Kitty [CLOUD] [SPEC]

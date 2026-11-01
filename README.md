@@ -276,6 +276,7 @@ En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas
 | Tecla | Acción |
 | :--- | :--- |
 | `Tab` / `Shift+Tab` | Pestaña siguiente / anterior |
+| `1`…`5` | Va a la pestaña con ese número: `1` Settings, `2` Models, `3` Tools, `4` Connectors, `5` Chat |
 | `j` `↓` / `k` `↑` | Fila siguiente / anterior |
 | `l` `→` `Espacio` / `h` `←` | Valor siguiente / anterior de la fila (`Enter` también avanza al siguiente) |
 | `s` | Guarda en `config.toml` (`Enter` nunca guarda ni cierra el menú) |
@@ -354,7 +355,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## ⚙️ Menú: sección Settings
 
-`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en pestañas, **Settings** y **AI**, que se cambian con `Tab` y `Shift+Tab`; `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` no hace nada. Su sección **Settings** tiene, en este orden:
+`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en cinco pestañas, **Settings**, **Models**, **Tools**, **Connectors** y **Chat**, que se cambian con `Tab` y `Shift+Tab` o saltando con `1`…`5` (los números son fijos: `4` es siempre Connectors). **Connectors** no se muestra hasta que tenga filas, así que `Tab` la salta y `4` avisa en el pie de que aún no hay conectores; sin la sección de IA solo existe **Settings** y `2`…`5` avisan de que la sección de IA no está disponible. Un número fuera de `1`…`5` avisa con `Tabs are 1-5` y `Tab` con una sola pestaña avisa con `No other tabs`; el aviso desaparece con la siguiente tecla. `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` y los números no cambian de pestaña (en los campos de texto, un número se escribe como cualquier otro carácter). Su sección **Settings** tiene, en este orden:
 
 | Fila | Qué hace | Clave en `config.toml` |
 | ---- | -------- | ---------------------- |
@@ -420,11 +421,11 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **Models** (`2`, o `Tab` desde Settings) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-![Menú de IA: pestaña AI y selector de motor y modelo](docs/assets/ai-menu.gif)
+![Menú de IA: pestaña Models y selector de motor y modelo](docs/assets/ai-menu.gif)
 
-Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval**, **Orchestrator** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **Models** termina con la fila **Hugging Face** (ver «Descargar modelos de Hugging Face»). La pestaña **Tools** (`3`) tiene las filas **Tools**, **Search**, **Write**, **Exec**, **Git**, **Git write**, **Approval** y **Orchestrator**, y la pestaña **Chat** (`5`) tiene **Profile**, **Context** y **Memory**. **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
@@ -520,7 +521,7 @@ La lista de modelos de llamacpp termina en la fila `download from Hugging Face�
 
 **Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, borra su carpeta `models--<owner>--<repo>` (o usa `hf cache delete`).
 
-**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
+**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña Models, `Hugging Face`:
 
 - `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable; `Ctrl+O` lo abre en el navegador, y con `Mouse` activado también basta con hacer clic en esa línea. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada. `Esc` mientras se comprueba la cancela y tampoco guarda el token.
 - El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
