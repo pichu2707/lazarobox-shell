@@ -115,11 +115,14 @@ baseline.
   (`today's spend reached $5.01 (limit $1.00)`, counting only the engines in
   `per-token` mode; list-price equivalents and local engines never count).
   The turn note shows on every turn over the limit; the two day notes show
-  once per local day per run. The Usage view gets the rows `Turn limit
-  (tokens)`, `Day limit (tokens)` and `Day limit ($)`: `Enter` edits, digits
-  type (one `.` and two decimals for dollars, at most 12 digits), `Enter` keeps
-  it, `Esc` cancels, and `0` or an empty field is `off` (the key is removed from
-  `config.toml`). A key that cannot be typed shows a footer notice.
+  once per local day per run. The Usage view gets the rows `Turn tokens`,
+  `Day tokens` and `Day $`: `Enter` edits, digits type (one `.` and two
+  decimals for dollars, at most 12 digits; a paste of valid digits is accepted),
+  `Enter` keeps it, `Esc` cancels, and `0` or an empty field is `off` (the key
+  is removed from `config.toml`). A stored value with more decimals than you can
+  type (`day_usd = 0.125`) is shown as it is and kept unless you change it. A
+  key that cannot be typed shows a footer notice. When the first status read of
+  the day finds a day limit already reached, its note shows at startup.
 
 ### Fixed
 
