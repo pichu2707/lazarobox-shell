@@ -40,6 +40,7 @@ pub mod text_call;
 pub mod tool;
 pub mod transcript;
 pub mod usage;
+pub mod usage_view;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
