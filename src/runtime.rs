@@ -2150,12 +2150,22 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
+/// XTMODKEYS: `CSI > 4 ; 0 m` asks the terminal to turn xterm's
+/// modifyOtherKeys off. A terminal with it on (zutty) sends Alt+Enter as
+/// `CSI 27;3;13~`, a form crossterm 0.29 rejects, so the key would vanish.
+/// A terminal that does not know the sequence ignores it.
+const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
+/// `CSI > 4 m` asks the terminal to return modifyOtherKeys to its initial value.
+const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
+
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles. The mouse capture
 /// is disabled whether or not it was on: the sequence is harmless when the
 /// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    let mouse = out.write_all(CAPTURE_OFF);
+    let mouse = out
+        .write_all(CAPTURE_OFF)
+        .and_then(|()| out.write_all(MODIFY_OTHER_KEYS_DEFAULT));
     let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
@@ -2168,7 +2178,9 @@ fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
 /// paste and focus reporting. [`restore_to`] undoes them.
 fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, EnableBracketedPaste, EnableFocusChange)
+    execute!(out, EnableBracketedPaste, EnableFocusChange)?;
+    out.write_all(MODIFY_OTHER_KEYS_OFF)?;
+    out.flush()
 }
 
 fn restore() {
@@ -2515,7 +2527,37 @@ mod tests {
         assert!(text.contains("\x1b[?1004l"), "{text:?}");
     }
 
-    // The modes are entered with one write and undone by `restore_to`.
+    // zutty sends Alt+Enter as `CSI 27;3;13~` (xterm modifyOtherKeys), which
+    // crossterm 0.29 cannot parse, so the key would be lost. Startup asks the
+    // terminal to stop using that format.
+    #[test]
+    fn startup_turns_modify_other_keys_off() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+        // The mode goes off once the others are on, in the same write.
+        assert!(
+            text.find("\x1b[?1004h").unwrap() < text.find("\x1b[>4;0m").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // Restore hands the terminal back its own default (`CSI > 4 m`).
+    #[test]
+    fn restore_resets_modify_other_keys_to_the_terminal_default() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4m"), "{text:?}");
+        // Written with the mouse reset, ahead of the flushed `execute!` part.
+        assert!(
+            text.find("\x1b[>4m").unwrap() < text.find("\x1b[?2004l").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // The modes are entered together and undone by `restore_to`.
     #[test]
     fn startup_enables_focus_reporting_next_to_bracketed_paste() {
         let mut out = Vec::new();

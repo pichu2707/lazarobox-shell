@@ -14,9 +14,10 @@ baseline.
 
 - Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
   `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
-  happened: `Copied (<tool>)`, a failure with the OSC 52 fallback, or
-  `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or
-  xclip`.
+  happened, short and action first so it fits an 80-column statusline:
+  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
+  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
+  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
 - `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
 - First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
   use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
@@ -27,6 +28,14 @@ baseline.
   templates. A terminal is supported only with a filled record.
 - Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
   known issues they found; `zutty` joins `RECORDED_TERMINALS`.
+
+### Fixed
+
+- Alt+Enter is no longer lost in zutty, which sends it as `CSI 27;3;13~` while
+  xterm modifyOtherKeys is on (the input library cannot parse that form):
+  startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
+  asks it to return to its initial value. zutty then sends ESC LF, which the
+  chat now treats as a newline (Alt+Ctrl+J).
 
 ### Changed
 

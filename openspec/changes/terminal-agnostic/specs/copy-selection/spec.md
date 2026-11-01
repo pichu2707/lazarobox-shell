@@ -7,10 +7,10 @@
 
 Every copy MUST show a notice, and the notice MUST say honestly what happened:
 - `Copied (<tool>)` when a local tool ran and succeeded (`<tool>` is its name, e.g. `wl-copy`).
-- On a local desktop session with no tool found: `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip`.
-- Over SSH (tools skipped): `Sent to the terminal (OSC 52); if it does not paste, enable OSC 52 in your terminal`.
-- `<tool> failed (<reason>); sent to the terminal (OSC 52)` when the tool was started and failed. OSC 52 was still sent, and the notice MUST NOT claim a successful copy.
-- `<tool> failed (<reason>); selection too large for OSC 52` when the tool failed and the text was too large for OSC 52, so nothing was sent to the terminal.
+- On a local desktop session with no tool found: `No paste? Install wl-copy or xclip (OSC 52 sent)`.
+- Over SSH (tools skipped): `No paste? Enable OSC 52 in your terminal (sent)`.
+- `<tool> failed; sent via OSC 52 (<reason>)` when the tool was started and failed. OSC 52 was still sent, and the notice MUST NOT claim a successful copy.
+- `<tool> failed; not copied: too large for OSC 52 (<reason>)` when the tool failed and the text was too large for OSC 52, so nothing was sent to the terminal.
 
 A copy MUST NOT end without a notice, whichever caller started it (COPY yank, chat copy, feedback, update). The same fallback chain and notices apply to every caller of the copy path.
 (Previously: OSC 52 only, no notice on success)
@@ -33,22 +33,22 @@ A copy MUST NOT end without a notice, whichever caller started it (COPY yank, ch
 #### Scenario: Only OSC 52 sent [auto]
 - GIVEN a local desktop session and no local tool is available
 - WHEN `y` is pressed
-- THEN the notice is `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip`
+- THEN the notice is `No paste? Install wl-copy or xclip (OSC 52 sent)`
 
 #### Scenario: SSH skips local tools [auto]
 - GIVEN `SSH_CONNECTION` is set and `wl-copy` is available
 - WHEN `y` is pressed
-- THEN `wl-copy` is not run, OSC 52 is written and the notice is `Sent to the terminal (OSC 52); if it does not paste, enable OSC 52 in your terminal`
+- THEN `wl-copy` is not run, OSC 52 is written and the notice is `No paste? Enable OSC 52 in your terminal (sent)`
 
 #### Scenario: Tool fails [auto]
 - GIVEN `wl-copy` is available but exits with an error
 - WHEN `y` is pressed
-- THEN OSC 52 is still written, the notice is `wl-copy failed (<reason>); sent to the terminal (OSC 52)`, and the notice does not start with `Copied`
+- THEN OSC 52 is still written, the notice is `wl-copy failed; sent via OSC 52 (<reason>)`, and the notice does not start with `Copied`
 
 #### Scenario: Tool fails on a selection too large for OSC 52 [auto]
 - GIVEN `wl-copy` is available and the extracted text is larger than one OSC 52 sequence allows
 - WHEN `y` is pressed and `wl-copy` exits with an error
-- THEN nothing was sent to the terminal, and the notice is `wl-copy failed (<reason>); selection too large for OSC 52`, never `sent to the terminal`
+- THEN nothing was sent to the terminal, and the notice is `wl-copy failed; not copied: too large for OSC 52 (<reason>)`, never `sent via OSC 52`
 
 #### Scenario: Other callers get the same notice [auto]
 - GIVEN a chat copy, a feedback copy or an update copy goes through the copy path

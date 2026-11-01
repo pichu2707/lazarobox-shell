@@ -332,7 +332,7 @@ En un panel de chat de IA funciona igual y copia texto limpio: sin los prefijos 
 
 ![Modo COPY: seleccionar líneas con V y copiarlas con y en un panel de shell](docs/assets/copy-mode.gif)
 
-**Cadena de copia.** Al copiar, lazarobox manda siempre OSC 52 a la terminal y, además, usa una herramienta local si la encuentra: `wl-copy` (Wayland), `xclip` o `xsel` (X11) y `clip.exe` (WSL; recibe UTF-16LE con marca de orden de bytes). Por SSH no se usa ninguna herramienta local, porque el portapapeles que importa es el de tu máquina. El aviso dice lo que pasó de verdad: `Copied (xclip)` si la herramienta terminó bien; `xclip failed (...); sent to the terminal (OSC 52)` si falló; y `Sent to the terminal (OSC 52); if it does not paste, install wl-copy or xclip` si solo se mandó OSC 52, porque nada confirma que haya llegado. Una selección demasiado grande para OSC 52 solo se copia con una herramienta local, y si esta falla lo dice.
+**Cadena de copia.** Al copiar, lazarobox manda siempre OSC 52 a la terminal y, además, usa una herramienta local si la encuentra: `wl-copy` (Wayland), `xclip` o `xsel` (X11) y `clip.exe` (WSL; recibe UTF-16LE con marca de orden de bytes). Por SSH no se usa ninguna herramienta local, porque el portapapeles que importa es el de tu máquina. El aviso dice lo que pasó de verdad: `Copied (xclip)` si la herramienta terminó bien; `xclip failed; sent via OSC 52 (...)` si falló; y `No paste? Install wl-copy or xclip (OSC 52 sent)` si solo se mandó OSC 52, porque nada confirma que haya llegado. Una selección demasiado grande para OSC 52 solo se copia con una herramienta local, y si esta falla lo dice.
 
 Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 

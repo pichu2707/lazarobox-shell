@@ -212,7 +212,7 @@ fn the_copied_link_goes_through_the_local_tool_and_the_menu_footer_follows() {
         seq: 1,
         result: Err("timed out".to_owned()),
     });
-    let expected = "xclip failed (timed out); sent to the terminal (OSC 52)";
+    let expected = "xclip failed; sent via OSC 52 (timed out)";
     assert_eq!(a.notice(), Some(expected));
     assert_eq!(a.menu().unwrap().footer(), Footer::Hint(expected.into()));
 }

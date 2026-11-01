@@ -20,7 +20,7 @@ Resolved by the user: chained PRs with feature-branch-chain. Only the tracker me
 
 ### Reconciliation applied by this phase (2026-11-01)
 
-- Spec `copy-selection`: `SetClipboard` keeps the OSC 52 bytes; new `CopyLocal` effect carries the text for the local tool (follows design D1). Behaviour is unchanged. OSC 52-only notice now has two texts: local desktop ("install wl-copy or xclip") and SSH ("enable OSC 52 in your terminal"). Tool failure notice is `<tool> failed (<reason>); sent to the terminal (OSC 52)`.
+- Spec `copy-selection`: `SetClipboard` keeps the OSC 52 bytes; new `CopyLocal` effect carries the text for the local tool (follows design D1). Behaviour is unchanged. OSC 52-only notice now has two texts: local desktop ("install wl-copy or xclip") and SSH ("enable OSC 52 in your terminal"). Tool failure notice is `<tool> failed; sent via OSC 52 (<reason>)`.
 - Spec `terminal-compatibility`: `Ctrl+]` during the probe records `alias`, no offer (D8). Other keys record `missed` with the offer.
 - Design: Open Questions closed; Risks section added for WSLg (verified by web search 2026-11-01).
 
@@ -49,7 +49,7 @@ Spec: copy-selection "Yank to the clipboard via OSC 52" (all scenarios tagged [a
 
 - [x] 1.1 RED: `core::clipboard::candidates(Session)` table tests: ssh gives `[]`; wsl gives `[ClipExe, WlCopy, Xclip, Xsel]`; wayland gives `WlCopy` first; display-only gives `Xclip, Xsel`; nothing gives `[]`.
 - [x] 1.2 RED: `args(Tool)` (`xclip -selection clipboard`, `xsel --clipboard --input`, others none) and `payload(Tool, &str)` (UTF-8; `ClipExe` UTF-16LE with BOM, marked unverified until the Windows Terminal record) tests.
-- [x] 1.3 RED: notice text tests: `Copying (wl-copy)`, `Copied (wl-copy)`, `wl-copy failed (<reason>); sent to the terminal (OSC 52)`, OSC 52-only local text, OSC 52-only SSH text. The failure text never starts with `Copied`.
+- [x] 1.3 RED: notice text tests: `Copying (wl-copy)`, `Copied (wl-copy)`, `wl-copy failed; sent via OSC 52 (<reason>)`, OSC 52-only local text, OSC 52-only SSH text. The failure text never starts with `Copied`.
 - [x] 1.4 GREEN: implement `Tool`, `Session`, `candidates`, `args`, `payload`, notice fns in `src/core/clipboard.rs`.
 - [x] 1.5 RED: app tests through `App::update`: with a tool, `y` emits `SetClipboard(osc52)` and `CopyLocal{seq,text}` and notice `Copying (wl-copy)`; without a tool only `SetClipboard` and the local OSC 52-only notice (existing ~25 assertions stay valid); SSH gives the SSH notice and no `CopyLocal`; too-large text with a tool emits `CopyLocal` only, without a tool keeps `Selection too large to copy` (D5).
 - [x] 1.6 RED: `AppEvent::Clipboard{seq, result}` tests: Ok gives `Copied (wl-copy)`; Err gives the failure notice; a stale `seq` is dropped; an open menu footer is updated too (as `on_open_failed`).

@@ -21,6 +21,15 @@ Only a terminal listed in `RECORDED_TERMINALS` (`src/core/desktop.rs`) is
 reported as "has a record" by `install-desktop`. Adding a terminal means a
 folder here, a filled record, and that constant, in the same change.
 
+## Known terminal quirks
+
+- **zutty and modifyOtherKeys.** zutty reports Alt+Enter as `CSI 27;3;13~`
+  while xterm modifyOtherKeys is on, a form the input library drops.
+  lazarobox asks the terminal to turn that mode off at startup (and to return
+  it to its initial value on exit); zutty then sends ESC LF, read as
+  Alt+Ctrl+J, which inserts a newline in the chat. The Linux console and GNU
+  screen are untested.
+
 ## Record header
 
 Copy this table to the top of the record and fill it in.
