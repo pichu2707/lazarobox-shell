@@ -136,7 +136,7 @@ impl ConfigEdit {
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches,
+    /// `ai.notify_sound`, `ai.usage.line`, `ai.usage.statusline`, `ai.tools.enabled`, the five family switches,
     /// `ai.servers.llamacpp.managed` and the orchestrator flags. Every other
     /// owned key holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
@@ -145,6 +145,7 @@ impl ConfigEdit {
             || (self.table == "ai" && matches!(self.key, "context" | "notify_sound"))
             || (self.table == TOOLS_TABLE
                 && (self.key == "enabled" || ToolToggle::ALL.iter().any(|t| t.key() == self.key)))
+            || (self.table == USAGE_TABLE && matches!(self.key, "line" | "statusline"))
             || (self.table == LLAMACPP_TABLE && self.key == "managed")
             || (self.table == ORCHESTRATOR_TABLE && matches!(self.key, "enabled" | "acknowledged"))
     }
@@ -158,6 +159,12 @@ pub const MEMORY_TABLE: &str = "ai.memory";
 
 /// The dotted table of the orchestrator keys.
 pub const ORCHESTRATOR_TABLE: &str = "ai.orchestrator";
+
+/// The dotted table of the usage display keys.
+pub const USAGE_TABLE: &str = "ai.usage";
+
+/// The dotted table of the billing mode of each CLI engine.
+pub const BILLING_TABLE: &str = "ai.usage.billing";
 
 /// The dotted table of the agent tools keys.
 pub const TOOLS_TABLE: &str = "ai.tools";

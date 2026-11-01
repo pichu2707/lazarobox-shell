@@ -16,5 +16,6 @@ expression: "text(&draw(62, POPUP_H, &ai_tab()))"
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │
 └────────────────────────────────────────────────────────────┘

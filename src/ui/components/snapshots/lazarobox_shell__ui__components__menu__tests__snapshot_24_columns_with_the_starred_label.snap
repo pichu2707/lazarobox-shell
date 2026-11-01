@@ -10,6 +10,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
 │ Notify           off │
 │ Sound             on │
 │ llama-server idle  … │
+│ Usage (alpha)  line… │
 │ * Updates  0.16.0 a… │
 │ Feedback  bug repor… │
 │                      │

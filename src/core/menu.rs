@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection, REFUSED,
+        chat::usage_view::Billing,
         config::{AiConfig, ApprovalMode, NotifyMode, Profile, Task, ToolToggle, cycled_idle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
@@ -23,8 +24,8 @@ use super::{
         },
     },
     config::{
-        BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE, ORCHESTRATOR_TABLE,
-        TOOLS_TABLE,
+        BILLING_TABLE, BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE,
+        ORCHESTRATOR_TABLE, TOOLS_TABLE, USAGE_TABLE,
     },
     layout::Rect,
 };
@@ -249,6 +250,9 @@ pub enum ItemKind {
     HfAccount,
     /// The `Feedback` row of the Settings tab: Enter opens the form.
     Feedback,
+    /// The `Usage (alpha)` row of the Settings tab: Enter opens the usage
+    /// view. Its rows edit the AI draft, but the row itself writes nothing.
+    Usage,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -261,7 +265,10 @@ const RUNNING_VERSION: &str = "0.15.3";
 impl ItemKind {
     /// Whether the row edits the AI draft, so it needs the AI section.
     const fn needs_ai(&self) -> bool {
-        matches!(self, Self::Draft(_) | Self::Assign(_) | Self::HfAccount)
+        matches!(
+            self,
+            Self::Draft(_) | Self::Assign(_) | Self::HfAccount | Self::Usage
+        )
     }
 }
 
@@ -273,6 +280,16 @@ pub struct Item {
 pub struct Section {
     pub title: &'static str,
     pub items: &'static [Item],
+}
+
+/// The value of the `Usage (alpha)` row: the two toggles of the draft.
+fn usage_summary(ai: &AiConfig) -> String {
+    let word = |on| if on { "on" } else { "off" };
+    format!(
+        "line {} · bar {}",
+        word(ai.usage().line()),
+        word(ai.usage().statusline())
+    )
 }
 
 fn position_index(position: BarPosition) -> usize {
@@ -375,6 +392,10 @@ pub static SECTIONS: &[Section] = &[Section {
             }),
         },
         Item {
+            label: USAGE_LABEL,
+            kind: ItemKind::Usage,
+        },
+        Item {
             label: "Updates",
             kind: ItemKind::Updates,
         },
@@ -384,6 +405,78 @@ pub static SECTIONS: &[Section] = &[Section {
         },
     ],
 }];
+
+const USAGE_LABEL: &str = "Usage (alpha)";
+
+/// A draft row of the usage view.
+macro_rules! usage_row {
+    ($label:literal, $value:expr, $rank:literal) => {
+        Item {
+            label: $label,
+            kind: ItemKind::Draft(AiChoice {
+                value: $value,
+                rank: $rank,
+                caution: false,
+                badge: None,
+                test: false,
+                second: None,
+            }),
+        }
+    };
+}
+
+/// A `subscription` / `per-token` row for the CLI engine at `$at`.
+macro_rules! billing_row {
+    ($label:literal, $key:literal, $at:literal, $rank:literal) => {
+        usage_row!(
+            $label,
+            DraftValue::List(Choice {
+                table: BILLING_TABLE,
+                key: $key,
+                values: &["subscription", "per-token"],
+                get: |c| usize::from(c.usage().billing_at($at) == Billing::PerToken),
+                set: |c, i| c
+                    .usage_mut()
+                    .set_billing_at($at, [Billing::Subscription, Billing::PerToken][i]),
+            }),
+            $rank
+        )
+    };
+}
+
+/// The usage view: what is shown and how each CLI engine is billed. The
+/// thresholds are set in the config file. The rows are not in a tab: the
+/// `Usage (alpha)` row of Settings opens them.
+pub static USAGE_SECTION: Section = Section {
+    title: USAGE_LABEL,
+    items: &[
+        usage_row!(
+            "Usage line",
+            DraftValue::Flag(Choice {
+                table: USAGE_TABLE,
+                key: "line",
+                values: &["off", "on"],
+                get: |c| usize::from(c.usage().line()),
+                set: |c, i| c.usage_mut().set_line(i == 1),
+            }),
+            100
+        ),
+        usage_row!(
+            "Usage in status bar",
+            DraftValue::Flag(Choice {
+                table: USAGE_TABLE,
+                key: "statusline",
+                values: &["off", "on"],
+                get: |c| usize::from(c.usage().statusline()),
+                set: |c, i| c.usage_mut().set_statusline(i == 1),
+            }),
+            101
+        ),
+        billing_row!("claude billing", "claude", 0, 102),
+        billing_row!("codex billing", "codex", 1, 103),
+        billing_row!("gemini billing", "gemini", 2, 104),
+    ],
+};
 
 /// The Models tab: the task rows (their labels are the task ids; their key
 /// path is `Task::table`) and the `Hugging Face` account.
@@ -659,7 +752,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Draft(_)
             | ItemKind::Updates
             | ItemKind::HfAccount
-            | ItemKind::Feedback => None,
+            | ItemKind::Feedback
+            | ItemKind::Usage => None,
         })
 }
 
@@ -867,6 +961,7 @@ const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · 
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
 const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
+const HINT_USAGE: &str = "j/k move · h/l change · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
@@ -972,6 +1067,8 @@ pub struct MenuState {
     facts: feedback::Facts,
     /// The Feedback form, while it is open.
     feedback: Option<feedback::Feedback>,
+    /// The cursor row of the usage view, while it is open.
+    usage: Option<usize>,
     /// The form is done: the view says what became of it until Esc.
     feedback_done: Option<Done>,
     /// The host has a program that opens links in the browser.
@@ -992,6 +1089,7 @@ enum SubView {
     Picker,
     AccountField,
     Feedback,
+    Usage,
 }
 
 /// What became of the Feedback form.
@@ -1035,6 +1133,7 @@ impl MenuState {
                 ..feedback::Facts::default()
             },
             feedback: None,
+            usage: None,
             feedback_done: None,
             opener: false,
             no_sandbox: false,
@@ -1567,7 +1666,11 @@ impl MenuState {
     pub fn in_sub_level(&self) -> bool {
         match self.sub_view() {
             Some(
-                SubView::Warning | SubView::Picker | SubView::AccountField | SubView::Feedback,
+                SubView::Warning
+                | SubView::Picker
+                | SubView::AccountField
+                | SubView::Feedback
+                | SubView::Usage,
             ) => true,
             None => false,
         }
@@ -1637,6 +1740,8 @@ impl MenuState {
             Some(SubView::AccountField)
         } else if self.feedback_open() {
             Some(SubView::Feedback)
+        } else if self.usage.is_some() {
+            Some(SubView::Usage)
         } else {
             None
         }
@@ -1737,7 +1842,8 @@ impl MenuState {
             | ItemKind::Draft(_)
             | ItemKind::Updates
             | ItemKind::HfAccount
-            | ItemKind::Feedback => None,
+            | ItemKind::Feedback
+            | ItemKind::Usage => None,
         }
     }
 
@@ -1765,6 +1871,7 @@ impl MenuState {
             Some(SubView::Picker) => self.picker_rows(),
             Some(SubView::AccountField) => self.account_rows(),
             Some(SubView::Feedback) => self.feedback_rows(),
+            Some(SubView::Usage) => self.usage_rows(),
             None => None,
         };
         if let Some(rows) = view {
@@ -1827,6 +1934,19 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Owned(self.account.value())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Usage => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Owned(usage_summary(ai.draft()))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -1900,6 +2020,7 @@ impl MenuState {
         match view {
             Some(SubView::AccountField) => return self.on_account_key(key, repeat),
             Some(SubView::Feedback) => return self.on_feedback_key(key, repeat),
+            Some(SubView::Usage) => return self.on_usage_key(key, repeat),
             Some(SubView::Picker) => return self.on_picker_key(key, repeat),
             Some(SubView::Warning) | None => {}
         }
@@ -1913,6 +2034,12 @@ impl MenuState {
             KeyCode::Char(digit @ '0'..='9') if key.modifiers.is_empty() => self.jump_tab(digit),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if self.on_usage_row() => {
+                if !repeat {
+                    self.usage = Some(0);
+                }
+                MenuCommand::None
+            }
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
@@ -1950,6 +2077,65 @@ impl MenuState {
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
+        }
+    }
+
+    /// Whether the selection is on the `Usage (alpha)` row.
+    fn on_usage_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Usage))
+    }
+
+    /// The usage view that replaces the rows while it is open.
+    fn usage_rows(&self) -> Option<Vec<Row>> {
+        let (cursor, ai) = (self.usage?, self.ai.as_ref()?);
+        let mut rows = vec![Row::Title(Cow::Borrowed(USAGE_LABEL))];
+        for (at, item) in USAGE_SECTION.items.iter().enumerate() {
+            let ItemKind::Draft(choice) = &item.kind else {
+                continue;
+            };
+            rows.push(Row::Item {
+                label: item.label,
+                value: Some(choice.shown(ai.draft())),
+                selected: at == cursor,
+                enabled: true,
+            });
+        }
+        Some(rows)
+    }
+
+    /// Keys in the usage view: the rows cycle like any draft row, Esc goes
+    /// back to Settings keeping the draft, and `s` saves as it does there.
+    fn on_usage_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            return MenuCommand::None;
+        }
+        let Some(cursor) = self.usage else {
+            return MenuCommand::None;
+        };
+        let count = USAGE_SECTION.items.len();
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.usage = Some((cursor + 1) % count),
+            KeyCode::Char('k') | KeyCode::Up => self.usage = Some((cursor + count - 1) % count),
+            KeyCode::Char('l' | ' ') | KeyCode::Right => self.step_usage(cursor, true),
+            KeyCode::Char('h') | KeyCode::Left => self.step_usage(cursor, false),
+            KeyCode::Enter if !repeat => self.step_usage(cursor, true),
+            KeyCode::Char('s') if !repeat => return MenuCommand::Save,
+            KeyCode::Esc if !repeat => self.usage = None,
+            _ => {}
+        }
+        MenuCommand::None
+    }
+
+    fn step_usage(&mut self, cursor: usize, forward: bool) {
+        if let (
+            Some(ai),
+            Some(Item {
+                kind: ItemKind::Draft(choice),
+                ..
+            }),
+        ) = (&mut self.ai, USAGE_SECTION.items.get(cursor))
+        {
+            ai.step_draft(choice, forward);
         }
     }
 
@@ -2307,6 +2493,7 @@ impl MenuState {
                 .iter()
                 .flat_map(|tab| tab.sections.iter())
                 .flat_map(|section| section.items.iter())
+                .chain(USAGE_SECTION.items.iter())
                 .filter_map(|item| match &item.kind {
                     ItemKind::Draft(choice) => Some(choice),
                     _ => None,
@@ -2360,7 +2547,7 @@ impl MenuState {
                     ai.edit(|p| p.paste(text));
                 }
             }
-            Some(SubView::Warning) | None => {}
+            Some(SubView::Warning | SubView::Usage) | None => {}
         }
     }
 
@@ -2411,6 +2598,7 @@ impl MenuState {
                     };
                 }
             }
+            Some(SubView::Usage) => return Footer::Hint(Cow::Borrowed(HINT_USAGE)),
             // The picker's footers follow below, with its cursor row.
             Some(SubView::Picker) | Some(SubView::Warning) | None => {}
         }
@@ -2896,6 +3084,8 @@ mod family_tests;
 mod approval_tests;
 #[cfg(test)]
 mod idle_tests;
+#[cfg(test)]
+mod usage_tests;
 
 #[cfg(test)]
 mod copy_tests;

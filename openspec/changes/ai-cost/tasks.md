@@ -70,9 +70,9 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 2b: Menu (PR 2b)
 
-- [ ] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity.
-- [ ] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
-- [ ] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
+- [x] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity. (Done in `core/menu.rs`: row in Settings after `llama-server idle`, popup 17 rows, minimum 24x16; limit rows deferred to slice 3.)
+- [x] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
+- [x] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
 
 ## Slice 3: Thresholds (PR 3)
 
