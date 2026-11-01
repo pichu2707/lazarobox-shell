@@ -731,7 +731,11 @@ fn every_digit_reaches_its_tab_when_connectors_has_rows() {
     for digit in ['1', '2', '3', '4', '5'] {
         press_digit(&mut m, digit);
         seen.push(m.tab);
-        assert_eq!(notice(&m), None);
+        assert_eq!(
+            notice(&m).is_some(),
+            digit == '1',
+            "only the active tab says so"
+        );
     }
     assert_eq!(seen, [0, 1, 2, 3, 4]);
 }
@@ -744,16 +748,20 @@ fn a_repeat_of_a_digit_jumps_like_a_press() {
 }
 
 #[test]
-fn a_jump_to_the_active_tab_changes_nothing_and_shows_no_notice() {
+fn a_jump_to_the_active_tab_changes_nothing_and_says_so() {
     let mut m = menu(None, None, Some(machine()));
     press_digit(&mut m, '2');
     press(&mut m, 'j');
-    let before = m.clone();
+    let mut before = m.clone();
     press_digit(&mut m, '2');
+    assert_eq!(footer_text(&m), "Already on Models");
+    before.notice = m.notice.clone();
     assert_eq!(m, before);
     press_digit(&mut m, '1');
     assert_eq!(m.tab, 0);
     assert_eq!(notice(&m), None);
+    press_digit(&mut m, '1');
+    assert_eq!(footer_text(&m), "Already on Settings");
 }
 
 #[test]
@@ -780,7 +788,7 @@ fn without_the_ai_section_two_to_five_say_it_is_not_available() {
         let mut m = MenuState::open(&Config::default());
         let mut before = m.clone();
         assert_eq!(press_digit(&mut m, digit), MenuCommand::None);
-        assert_eq!(footer_text(&m), "AI section not available", "digit {digit}");
+        assert_eq!(footer_text(&m), "No AI section", "digit {digit}");
         before.notice = m.notice.clone();
         assert_eq!(m, before);
     }
@@ -867,4 +875,29 @@ fn the_custom_field_types_digits_and_the_tab_stays() {
         Some(&Row::Field("ab1".into()))
     );
     assert_eq!(m.active_tab(), 1);
+}
+
+#[test]
+fn the_no_ai_notice_fits_the_smallest_popup() {
+    let mut m = MenuState::open(&Config::default());
+    press_digit(&mut m, '2');
+    assert!(cells_of(&footer_text(&m)) <= usize::from(MIN_WIDTH) - 4);
+}
+
+fn cells_of(text: &str) -> usize {
+    text.chars().count()
+}
+
+#[test]
+fn shift_digits_are_not_jumps_and_follow_the_modified_key_path() {
+    let mut m = menu(None, None, Some(machine()));
+    let before = m.clone();
+    with_mods(&mut m, KeyCode::Char('3'), KeyModifiers::SHIFT, false);
+    assert_eq!(m, before, "no jump and no notice");
+}
+
+#[test]
+fn the_tab_count_matches_the_one_to_five_keys_and_the_hint() {
+    assert_eq!(TAB_COUNT, 5);
+    assert_eq!(NOTICE_RANGE, format!("Tabs are 1-{TAB_COUNT}"));
 }

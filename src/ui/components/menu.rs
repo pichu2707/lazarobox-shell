@@ -1779,6 +1779,12 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_names_the_jump_range_of_the_tab_table() {
+        assert_eq!(menu::TAB_COUNT, 5);
+        assert!(TAB_HINT.ends_with(&format!("1-{}", menu::TAB_COUNT)));
+    }
+
+    #[test]
     fn the_smallest_full_popup_is_24_by_15_and_the_zero_size_is_empty() {
         assert_eq!(MIN_HEIGHT, 15);
         for digit in ['1', '2', '3', '5'] {

@@ -600,7 +600,7 @@ pub enum MenuCommand {
 /// Footer notices of the tab keys: a refused key always says why.
 const NOTICE_RANGE: &str = "Tabs are 1-5";
 const NOTICE_ONE_TAB: &str = "No other tabs";
-const NOTICE_NO_AI: &str = "AI section not available";
+const NOTICE_NO_AI: &str = "No AI section";
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc cancel";
@@ -1763,7 +1763,7 @@ impl MenuState {
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.step_tab(false),
             KeyCode::Tab => self.step_tab(true),
             KeyCode::BackTab => self.step_tab(false),
-            KeyCode::Char(digit @ '0'..='9') => self.jump_tab(digit),
+            KeyCode::Char(digit @ '0'..='9') if key.modifiers.is_empty() => self.jump_tab(digit),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
@@ -2051,6 +2051,7 @@ impl MenuState {
             return MenuCommand::None;
         };
         if target == self.tab {
+            self.notice = Some(format!("Already on {}", tab.label));
             return MenuCommand::None;
         }
         let has_ai = self.ai.is_some();

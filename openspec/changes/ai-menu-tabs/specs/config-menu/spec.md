@@ -302,7 +302,7 @@ The popup MUST group its rows into menu tabs. The tabs MUST come from a static t
 - THEN the tab does not change, the footer shows `No other tabs` and nothing else happens
 
 ### Requirement: Jump keys
-At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED position in the tab table: `1` Settings, `2` Models, `3` Tools, `4` Connectors, `5` Chat. The digits do not renumber when Connectors is hidden. Press and Repeat act alike. A jump to the visible tab that is not active MUST activate it with the same cursor memory as Tab. A jump to the active tab MUST change nothing and show no notice. A jump to a tab that does not exist MUST show a visible one-line notice that names the reason and MUST change nothing else: `4` while Connectors has no rows (the notice says there are no connectors yet), and `2` to `5` without the AI section (the notice says the AI section is not available). The notice is drawn in the footer with the precedence of an error, is cleared by the next key press (which then acts normally), blocks neither `s` nor Esc, and writes nothing to any PTY. `0` and `6` to `9` (unmodified, top level) show the notice `Tabs are 1-5` and change nothing else. Digits with Ctrl or Alt stay swallowed. No unmodified digit is ever swallowed without an effect or a notice at the top level.
+At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED position in the tab table: `1` Settings, `2` Models, `3` Tools, `4` Connectors, `5` Chat. The digits do not renumber when Connectors is hidden. Press and Repeat act alike. A jump to the visible tab that is not active MUST activate it with the same cursor memory as Tab. A jump to the active tab MUST change nothing and show the footer notice `Already on <Tab>` (no key is swallowed silently). The `Already on` notice and the other notices follow the rules below. A jump to a tab that does not exist MUST show a visible one-line notice that names the reason and MUST change nothing else: `4` while Connectors has no rows (the notice says there are no connectors yet), and `2` to `5` without the AI section (the notice reads `No AI section`). The notice is drawn in the footer with the precedence of an error, is cleared by the next key press (which then acts normally), blocks neither `s` nor Esc, and writes nothing to any PTY. `0` and `6` to `9` (unmodified, top level) show the notice `Tabs are 1-5` and change nothing else. Digits with Ctrl, Alt or Shift stay swallowed and are not jumps; this is a known exception to the notice rule, the same as every other modified key today. No unmodified digit is ever swallowed without an effect or a notice at the top level.
 
 #### Scenario: Jump to each tab [auto]
 - GIVEN the AI section attached and a test table with Connectors visible
@@ -322,12 +322,12 @@ At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED posit
 #### Scenario: No AI section shows a notice [auto]
 - GIVEN the menu without the AI section
 - WHEN `2`, then `3`, then `4`, then `5` are pressed
-- THEN each shows the notice that the AI section is not available, the tab does not change and nothing is written
+- THEN each shows the notice `No AI section`, the tab does not change and nothing is written
 
 #### Scenario: Active tab and Settings [auto]
 - GIVEN the active tab `Models`
 - WHEN `2` is pressed, then `1`
-- THEN the first changes nothing and shows no notice, and the second activates `Settings`
+- THEN the first changes nothing and shows `Already on Models`, and the second activates `Settings`
 
 #### Scenario: The notice does not block [auto]
 - GIVEN the notice from `4` is showing and a draft is changed

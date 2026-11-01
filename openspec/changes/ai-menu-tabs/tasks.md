@@ -70,6 +70,8 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 
 ## Risks
 
+- Merge hazard: `AI_SECTION` no longer exists after PR 1 (split into `MODELS_SECTION`, `TOOLS_SECTION`, `CHAT_SECTION`). Other in-flight branches (feat/ai-cost, agent-tools 4a) still reference it and will conflict; ai-menu-tabs archives last.
+
 - Once Connectors is visible and an update waits, BAR = 48 and the `⇥ Tab · 1-5` hint is hidden at the standard width (spec scenario "Five tabs and an update drop the hint"). Future, when MCP rows land.
 - MCP rows are dynamic, so `view_body()` cannot count them; agent-tools 4a must cap or reserve rows.
 - Archive after all in-flight config-menu deltas.
