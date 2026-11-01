@@ -3,13 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::menu::Choice;
+use crate::core::menu::DraftValue;
 
 use super::{
     Detection, Status,
-    config::{
-        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, cycled_idle,
-    },
+    config::{AiConfig, Assignment, ManagedServer, Task},
     hf::{Answer, Ask},
     ollama_lib,
     picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
@@ -100,28 +98,6 @@ impl AiMenu {
         .collect()
     }
 
-    /// Moves the draft profile to the next (or previous) one, wrapping.
-    pub fn cycle_profile(&mut self, forward: bool) {
-        let next = self.draft.profile().cycled(forward);
-        self.draft.set_profile(next);
-    }
-
-    /// The profile in the draft, and whether it differs from the open one.
-    pub fn changed_profile(&self) -> Option<Profile> {
-        (self.draft.profile() != self.original.profile()).then(|| self.draft.profile())
-    }
-
-    /// Steps the notify mode of the draft.
-    pub fn cycle_notify(&mut self, forward: bool) {
-        let next = self.draft.notify().cycled(forward);
-        self.draft.set_notify(next);
-    }
-
-    /// The notify mode in the draft, when it differs from the open one.
-    pub fn changed_notify(&self) -> Option<NotifyMode> {
-        (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
-    }
-
     /// The model file of `assignment` when it is one lazarobox starts a
     /// stopped llama-server with: the managed one or a file found on the
     /// machine. `None` for anything a running server or a CLI serves.
@@ -183,41 +159,14 @@ impl AiMenu {
             .flatten()
     }
 
-    /// Steps a flag row of the draft to its next (or previous) value.
-    pub fn step_flag(&mut self, flag: &Choice<AiConfig>, forward: bool) {
-        let len = flag.values.len();
-        let now = (flag.get)(&self.draft);
-        let next = if forward { now + 1 } else { now + len - 1 } % len;
-        (flag.set)(&mut self.draft, next);
+    /// Steps a draft row to its next (or previous) value.
+    pub fn step_draft(&mut self, value: &DraftValue, forward: bool) {
+        value.step(&mut self.draft, forward);
     }
 
-    /// The value of a flag row in the draft, when it differs from the open one.
-    pub fn changed_flag(&self, flag: &Choice<AiConfig>) -> Option<usize> {
-        let now = (flag.get)(&self.draft);
-        (now != (flag.get)(&self.original)).then_some(now)
-    }
-
-    /// Cycles the approval mode of the draft.
-    pub fn cycle_approval(&mut self, forward: bool) {
-        let next = self.draft.approval().cycled(forward);
-        self.draft.set_approval(next);
-    }
-
-    /// Steps the idle time of the managed llama-server in the draft.
-    pub fn cycle_idle(&mut self, forward: bool) {
-        let minutes = self.draft.managed_options().idle_minutes;
-        self.draft.set_idle_minutes(cycled_idle(minutes, forward));
-    }
-
-    /// The idle minutes in the draft, when they differ from the open ones.
-    pub fn changed_idle(&self) -> Option<u32> {
-        let minutes = self.draft.managed_options().idle_minutes;
-        (minutes != self.original.managed_options().idle_minutes).then_some(minutes)
-    }
-
-    /// The approval mode in the draft, when it differs from the open one.
-    pub fn changed_approval(&self) -> Option<ApprovalMode> {
-        (self.draft.approval() != self.original.approval()).then(|| self.draft.approval())
+    /// The open config, to compare a draft row against.
+    pub fn original(&self) -> &AiConfig {
+        &self.original
     }
 
     /// Flips the orchestrator gate of the draft (`[ai.orchestrator] enabled`).

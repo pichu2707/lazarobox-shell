@@ -51,11 +51,11 @@ fn the_tools_row_opens_its_tab_and_is_found_by_kind() {
     let items = TOOLS_SECTION.items;
     let tools = &items[0];
     assert_eq!(tools.label, "Tools");
-    assert!(matches!(&tools.kind, ItemKind::Draft(c) if c.flag().key == "enabled"));
+    assert!(matches!(&tools.kind, ItemKind::Draft(c) if c.key() == "enabled"));
     assert_eq!(items[1].label, "Search");
     let count = items
         .iter()
-        .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.flag().key == "enabled"))
+        .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "enabled"))
         .count();
     assert_eq!(count, 1);
 }

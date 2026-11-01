@@ -53,11 +53,11 @@ fn profile_edit(value: &'static str) -> ConfigEdit {
 fn the_profile_row_opens_the_chat_tab() {
     let row = &CHAT_SECTION.items[0];
     assert_eq!(row.label, "Profile");
-    assert!(matches!(row.kind, ItemKind::Profile));
+    assert!(matches!(&row.kind, ItemKind::Draft(c) if c.key() == "profile"));
     let kinds = CHAT_SECTION
         .items
         .iter()
-        .filter(|i| matches!(i.kind, ItemKind::Profile))
+        .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "profile"))
         .count();
     assert_eq!(kinds, 1);
     assert_eq!(CHAT_SECTION.items.len(), 3);

@@ -63,14 +63,16 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Feedback"
         ]
     );
-    assert!(matches!(items[3].kind, ItemKind::Notify));
+    assert!(matches!(&items[3].kind, ItemKind::Draft(c) if c.key() == "notify"));
     assert!(matches!(&items[4].kind, ItemKind::Draft(c) if c.test));
     assert!(
         [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
             .iter()
             .flat_map(|s| s.items.iter())
-            .all(|i| !matches!(&i.kind, ItemKind::Notify)
-                && !matches!(&i.kind, ItemKind::Draft(c) if c.test))
+            .all(
+                |i| !matches!(&i.kind, ItemKind::Draft(c) if c.key() == "notify")
+                    && !matches!(&i.kind, ItemKind::Draft(c) if c.test)
+            )
     );
 }
 

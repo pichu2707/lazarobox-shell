@@ -52,12 +52,12 @@ fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
     let items = TOOLS_SECTION.items;
     let approval = &items[items.len() - 2];
     assert_eq!(approval.label, "Approval");
-    assert!(matches!(approval.kind, ItemKind::Approval));
+    assert!(matches!(&approval.kind, ItemKind::Draft(c) if c.key() == "approval"));
     assert_eq!(items[items.len() - 1].label, "Orchestrator");
     assert_eq!(items[items.len() - 3].label, "Git write");
     let count = items
         .iter()
-        .filter(|i| matches!(i.kind, ItemKind::Approval))
+        .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "approval"))
         .count();
     assert_eq!(count, 1);
 }
