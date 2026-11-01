@@ -99,7 +99,7 @@ impl CodexDecoder {
             Some("item.started" | "item.updated") => self.tool_check(&value),
             Some("item.completed") => self.completed(&value),
             Some("turn.completed") => usage(&value["usage"])
-                .map(StreamEvent::Usage)
+                .map(StreamEvent::usage)
                 .into_iter()
                 .chain([StreamEvent::Done(Finish::Stop)])
                 .collect(),

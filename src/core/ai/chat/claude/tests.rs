@@ -66,7 +66,7 @@ fn result_line(result: &str, extra: &str) -> String {
 fn a_plain_answer_is_one_delta_usage_and_a_stop() {
     assert_eq!(
         whole(PLAIN),
-        [delta("ok"), StreamEvent::Usage(plain_usage()), done()]
+        [delta("ok"), StreamEvent::usage(plain_usage()), done()]
     );
 }
 
@@ -91,7 +91,7 @@ fn usages(events: &[StreamEvent]) -> Vec<TurnUsage> {
     events
         .iter()
         .filter_map(|e| match e {
-            StreamEvent::Usage(u) => Some(u.clone()),
+            StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
             _ => None,
         })
         .collect()

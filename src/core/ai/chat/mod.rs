@@ -1038,7 +1038,8 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
-            StreamEvent::Usage(mut usage) => {
+            StreamEvent::Usage(usage) => {
+                let mut usage = *usage;
                 if usage.model.is_none() && !self.request_model.is_empty() {
                     usage.model = usage::model_id(&self.request_model);
                 }

@@ -237,10 +237,10 @@ impl ClaudeDecoder {
         let usage = usage(value);
         if failed {
             let error = StreamEvent::Error(ChatError::Failed(error_message(text)));
-            let spent = usage.filter(|u| !u.idle()).map(StreamEvent::Usage);
+            let spent = usage.filter(|u| !u.idle()).map(StreamEvent::usage);
             return spent.into_iter().chain([error]).collect();
         }
-        let usage = usage.map(StreamEvent::Usage);
+        let usage = usage.map(StreamEvent::usage);
         let mut events = Vec::new();
         // Without partial messages the result is the only copy of the answer.
         if !self.streamed && !text.is_empty() {

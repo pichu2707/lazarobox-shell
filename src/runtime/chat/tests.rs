@@ -1049,7 +1049,7 @@ fn answer_text_that_imitates_a_tool_row_stays_a_delta() {
 }
 
 fn usage(input: u64) -> StreamEvent {
-    StreamEvent::Usage(crate::core::ai::chat::usage::TurnUsage {
+    StreamEvent::usage(crate::core::ai::chat::usage::TurnUsage {
         input: Some(input),
         ..Default::default()
     })

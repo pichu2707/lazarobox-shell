@@ -491,7 +491,7 @@ mod usage_tests {
     use crate::core::ai::chat::usage::TurnUsage;
 
     fn usage(input: u64, output: u64) -> StreamEvent {
-        StreamEvent::Usage(TurnUsage {
+        StreamEvent::usage(TurnUsage {
             input: Some(input),
             output: Some(output),
             ..TurnUsage::default()

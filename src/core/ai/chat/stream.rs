@@ -256,7 +256,7 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
         .chain(delta(message["content"].as_str()))
         .collect();
     if value["done"].as_bool() == Some(true) {
-        events.extend(ollama_usage(&value).map(StreamEvent::Usage));
+        events.extend(ollama_usage(&value).map(StreamEvent::usage));
         events.push(StreamEvent::Done(finish_reason(
             value["done_reason"].as_str(),
         )));
@@ -281,7 +281,7 @@ fn sse_decode(data: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
         .into_iter()
         .collect();
     if let Some(reason) = choice["finish_reason"].as_str() {
-        events.extend(openai_usage(&value).map(StreamEvent::Usage));
+        events.extend(openai_usage(&value).map(StreamEvent::usage));
         events.push(StreamEvent::Done(finish_reason(Some(reason))));
     }
     (events, Some(value))

@@ -221,9 +221,17 @@ pub enum StreamEvent {
     },
     /// What the turn used, as the engine reported it. Sent before the final
     /// event: nothing after `Done` or `Error` is delivered.
-    Usage(TurnUsage),
+    Usage(Box<TurnUsage>),
     Done(Finish),
     Error(ChatError),
+}
+
+impl StreamEvent {
+    /// The usage event of a turn. Boxed so the event stays small: every
+    /// adapter result carries one.
+    pub fn usage(usage: TurnUsage) -> Self {
+        Self::Usage(Box::new(usage))
+    }
 }
 
 /// What the chat pane may do with the engine assigned to the `chat` task.

@@ -107,7 +107,7 @@ impl GeminiDecoder {
         let usage = usage(&value["stats"]);
         if value["status"].as_str() == Some("success") {
             return usage
-                .map(StreamEvent::Usage)
+                .map(StreamEvent::usage)
                 .into_iter()
                 .chain([StreamEvent::Done(Finish::Stop)])
                 .collect();
@@ -115,7 +115,7 @@ impl GeminiDecoder {
         let text = value["error"]["message"].as_str().unwrap_or("");
         let error = StreamEvent::Error(ChatError::Failed(error_message(&unwrap_api_error(text))));
         // A failed request that used nothing is not a record.
-        let spent = usage.filter(|u| !u.idle()).map(StreamEvent::Usage);
+        let spent = usage.filter(|u| !u.idle()).map(StreamEvent::usage);
         spent.into_iter().chain([error]).collect()
     }
 

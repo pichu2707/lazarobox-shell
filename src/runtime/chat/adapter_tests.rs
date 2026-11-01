@@ -392,7 +392,7 @@ async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answ
                 StreamEvent::Delta("Hi".into()),
                 StreamEvent::Delta(" there".into()),
                 StreamEvent::Delta(".".into()),
-                StreamEvent::Usage(TurnUsage {
+                StreamEvent::usage(TurnUsage {
                     input: Some(18),
                     output: Some(4),
                     cache_read: Some(5),

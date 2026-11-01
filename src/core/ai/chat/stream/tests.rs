@@ -371,7 +371,7 @@ fn a_recorded_llamacpp_reply_gives_text_then_one_final_at_every_split_point() {
         delta("Hi"),
         delta(" there"),
         delta("."),
-        StreamEvent::Usage(llamacpp_usage()),
+        StreamEvent::usage(llamacpp_usage()),
         StreamEvent::Done(Finish::Stop),
     ];
     same_at_every_split(LLAMACPP, &want, sse);
@@ -1255,7 +1255,7 @@ mod usage_tests {
 
     fn usage_of(events: &[StreamEvent]) -> Option<TurnUsage> {
         events.iter().find_map(|e| match e {
-            StreamEvent::Usage(u) => Some(u.clone()),
+            StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
             _ => None,
         })
     }

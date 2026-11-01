@@ -63,14 +63,14 @@ fn a_plain_answer_is_one_delta_usage_and_a_stop() {
     };
     assert_eq!(
         whole(PLAIN),
-        [delta("ok"), StreamEvent::Usage(usage), done()]
+        [delta("ok"), StreamEvent::usage(usage), done()]
     );
 }
 
 /// The one `Usage` of a stream.
 fn usage_of(events: &[StreamEvent]) -> Option<TurnUsage> {
     events.iter().find_map(|e| match e {
-        StreamEvent::Usage(u) => Some(u.clone()),
+        StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
         _ => None,
     })
 }

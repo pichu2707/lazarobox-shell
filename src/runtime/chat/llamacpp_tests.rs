@@ -679,3 +679,31 @@ async fn the_notice_shows_once_per_pane_across_turns() {
     llamacpp_turn(&mut lab, &mut other, "hello").await;
     assert_eq!(system_lines(&other), 1, "another pane shows its own");
 }
+
+// Usage -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_timings_of_the_finish_chunk_become_one_usage_before_done() {
+    let mut finish = chunk(json!({}), Some("stop"));
+    finish["timings"] = json!({"prompt_n": 10, "cache_n": 4, "predicted_n": 20});
+    let fake = fake(vec![sse(&[chunk(json!({"content": "hi"}), None), finish])]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let [StreamEvent::Delta(_), StreamEvent::Usage(usage), end] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        (usage.input, usage.cache_read, usage.output, usage.partial),
+        (Some(10), Some(4), Some(20), false)
+    );
+    assert_eq!((usage.cost_micros, usage.cost_source), (None, None));
+    assert_eq!(end, &done());
+}
+
+#[tokio::test]
+async fn a_server_without_timings_or_usage_gives_no_usage_event() {
+    let fake = fake(vec![sse_text("hi")]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(events, [StreamEvent::Delta("hi".into()), done()]);
+}
