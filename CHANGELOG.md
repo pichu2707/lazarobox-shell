@@ -31,7 +31,9 @@ baseline.
   recommend API keys for automation and consumer-account logins carry risk; no
   key is required. Known limit: workers cannot run commands or tests yet, so
   the coordinator asks you to run them (test-first evidence is planned for
-  1.2). See the README, "Orquestador de agentes".
+  1.2). The ODD flow (classify, feature document, one question at a time)
+  depends on the model following its instructions and is not reliable yet; a
+  later version will enforce it. See the README, "Orquestador de agentes".
 - Installed Ollama models in the model picker show a tool mark: `🔧` beside
   `✓` for a model of 3B parameters or more that declares tool support, and
   `tools: unreliable` for a smaller one. A model without tool support, or with
