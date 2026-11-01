@@ -693,12 +693,13 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// no prompt; `None` opens the prompt. A read or a search let go gets
 /// [`Decision::Unprompted`], which the host never takes for the user's `y`.
 ///
-/// In `run`: a search of a concrete root (its walk never leaves the root),
-/// and a cloud read that stays in such a root or that the path guard refuses
-/// (the read then returns the refusal). A read or a search under a root that
+/// In every mode: a cloud read that the path guard refuses (the read then
+/// returns the refusal and no prompt opens). In `run`: a search of a concrete
+/// root (its walk never leaves the root), and a cloud read that stays in such
+/// a root. A read or a search under a root that
 /// is HOME or `/` ([`Reach::Broad`]) prompts, and so does a read that leads
 /// outside the root, on every engine; one whose path cannot be shown is
-/// denied, as no prompt may approve it. In `ask` and `auto`: only a local
+/// denied, as no prompt may approve it. In `ask` and `auto`: a local
 /// read outside the root, which runs free there as it always has; every
 /// other ask prompts. A worker's read outside its run's scope is answered
 /// exactly as the same chat read. A command, a user tool, a batch and the ask
@@ -717,7 +718,12 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision>
         return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
     };
     match (mode, reach, cloud) {
-        (ApprovalMode::Run, Reach::Root | Reach::Refused, true) => Some(Decision::Unprompted),
+        // A cloud read the path guard refuses (a secret such as `.env`, any
+        // spelling of it, or a path that does not exist) is answered in every
+        // mode: the read returns the refusal and opens nothing, so a prompt
+        // would offer the user a `y` that cannot work.
+        (_, Reach::Refused, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Root, true) => Some(Decision::Unprompted),
         (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
         (ApprovalMode::Run, _, _) => None,
         // The local engine asks only for a read outside the root.
@@ -1550,7 +1556,9 @@ mod tests {
         let reads = [
             // (reach, cloud, run, ask and auto)
             (Root, true, free, None),
-            (Refused, true, free, None),
+            // A path the guard refuses never prompts on a cloud engine, in
+            // any mode: the user's `y` could not open it (T10).
+            (Refused, true, free, free),
             (Broad, true, None, None),
             (Other, true, None, None),
             (Unshowable, true, unshowable, None),

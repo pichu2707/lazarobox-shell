@@ -72,6 +72,11 @@ baseline.
   startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
   asks it to return to its initial value. zutty then sends ESC LF, which the
   chat now treats as a newline (Alt+Ctrl+J).
+- A cloud read of a path the path guard refuses (`.env` in any spelling, or a
+  path that does not exist, such as the same name under a worker's own cwd) no
+  longer opens an approval prompt in `ask` and `auto` mode, in a plain chat or
+  in an orchestrator run: it returns the one refusal text at once, as `run`
+  mode already did. Before, `y` could only lead to the same refusal.
 
 ### Changed
 
