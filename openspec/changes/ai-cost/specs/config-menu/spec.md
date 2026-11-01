@@ -5,7 +5,7 @@ Applies on top of the unarchived deltas for config-menu (`agent-tools`, `auto-ex
 ## ADDED Requirements
 
 ### Requirement: Usage row and view
-The AI tab MUST end with a static row `Usage` after the rows added by earlier changes, found by its own `ItemKind`, never by position. Its value reads a summary of the draft: `line on · bar on` (the two toggles as `on`/`off`). `Enter`, `l` or Right open the Usage view, a sub-level of the AI tab; the popup keeps its fixed height and 24x15 minimum (see Popup height is fixed) because the row only adds one line to the tab and the view reuses the popup. The view lists, in this order, static rows found by their own kinds:
+The AI tab MUST end with a static row `Usage (alpha)` after the rows added by earlier changes, found by its own `ItemKind`, never by position. Its value reads a summary of the draft: `line on · bar on` (the two toggles as `on`/`off`). `Enter`, `l` or Right open the Usage view, a sub-level of the AI tab; the popup keeps its fixed height and 24x15 minimum (see Popup height is fixed) because the row only adds one line to the tab and the view reuses the popup. The view lists, in this order, static rows found by their own kinds:
 1. `Usage line` (`ai.usage.line`, `on`/`off`);
 2. `Usage in status bar` (`ai.usage.statusline`, `on`/`off`);
 3. `claude billing`, `codex billing`, `gemini billing` (`ai.usage.billing.<id>`, values `subscription`, `per-token`);
@@ -15,10 +15,10 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 #### Scenario: Row and summary [auto, TestBackend + insta]
 - GIVEN the AI tab with the defaults
 - WHEN rendered
-- THEN the last row is `Usage` with the value `line on · bar on`
+- THEN the last row is `Usage (alpha)` with the value `line on · bar on`
 
 #### Scenario: Open and back [auto]
-- GIVEN `Usage` selected
+- GIVEN `Usage (alpha)` selected
 - WHEN `Enter` then `Esc` are pressed
 - THEN the view opens, then the AI tab returns with the draft kept and no file touched
 

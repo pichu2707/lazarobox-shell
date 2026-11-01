@@ -8,11 +8,11 @@ Approach A from the proposal, bound by `sdd/ai-cost/premises`. Each decoder read
 
 | # | Topic | Options | Tradeoff | Decision |
 |---|---|---|---|---|
-| D1 | Event shape | `Done(Finish, Option<TurnUsage>)` / new `Usage` variant | Changing `Done` touches about 150 match and test sites, and usage then rides only on clean ends. A variant needs about 3 exhaustive matches (`Pipe::event`, `ChatState::apply_at`, `ollama::round` uses `other =>`), and it also works before an `Error` | **Variant `Usage(TurnUsage)`**, emitted before `Done`/`Error` |
+| D1 | Event shape | `Done(Finish, Option<TurnUsage>)` / new `Usage` variant | Changing `Done` touches about 150 match and test sites, and usage then rides only on clean ends. A variant needs about 3 exhaustive matches (`Pipe::event`, `ChatState::apply_at`, `ollama::round` uses `other =>`), and it also works before an `Error` | **Variant `Usage(Box<TurnUsage>)`** (boxed: the event stays small, clippy `result_large_err`), emitted before `Done`/`Error` |
 | D2 | Token semantics | Keep each engine's semantics / normalize | Mixed semantics make sums meaningless | **Disjoint buckets**: `input` = fresh prompt tokens, plus `cache_read`, `cache_write` and `output`. `reasoning` is part of `output` (shown as informational only). For engines that count cache inside input (codex `cached_input_tokens`, gemini `cached` inside `input_tokens`), `input = input − cached` with a saturating subtraction |
 | D3 | Dollars | f64 / integer | `StreamEvent` and `StoreCmd` derive `Eq`, which f64 breaks | **`cost_micros: Option<u64>`** (rounded) plus `cost_source: Option<CostSource>` (`EngineList` today, `Gateway` reserved for OxideGate) |
 | D4 | Claude totals | top-level `usage` / sum of `modelUsage[*]` | `usage` leaves out sub-agents and side models, but `total_cost_usd` includes them | **Sum `modelUsage`** (fallback `usage`). Cost = `total_cost_usd`. `model` = the single key, or the request model |
-| D5 | Multi-request turns | Sum in the app / fold in the runtime | The app cannot see a round that sent no usage | **Runtime fold** in `ollama.rs::round` (stores `Reply.usage`). One `Usage` goes out before the turn's final event, including on error or at the cap. `partial = true` when a round sent nothing, or when a field is `Some` on one side and `None` on the other. The app also sums whatever arrives, as a defensive measure |
+| D5 | Multi-request turns | Sum in the app / fold in the runtime | The app cannot see a round that sent no usage | **Runtime fold** in `ollama.rs::round` (stores `Reply.usage`). One `Usage` goes out before the turn's final event, including on error or at the cap. `partial = true` only when a request of the turn reported no usage record at all, or when the turn ended in error, cancel or at the cap after usage had been reported (`ChatState` marks that one). A field reported by one request only is **not** partial: the gap stays `None` ("no data"). The app also sums whatever arrives, as a defensive measure |
 | D6 | Missing data | 0 / `None` | A 0 would be a false statement | **`None` per field**. If no `Usage` arrives, the row still gets written with every field `None` ("no data") |
 | D7 | Persistence | bump `user_version` to 4 / additive `ensure_usage` | **`refuse_newer` locks a v3 build out of a v4 file**, so a bump would break the rollback claim in the proposal | **No version bump**: `CREATE TABLE IF NOT EXISTS` runs on every open after the v3 step. This follows the `ensure_folder` precedent (chat-folder D8). Later changes to this table must stay additive |
 | D8 | Link on delete | cascade / SET NULL | The premise requires rows to survive deletion | **`ON DELETE SET NULL`**. SQLite enforces it from the schema even in older builds. Indexed so the delete stays cheap |
@@ -38,7 +38,8 @@ pub struct TurnUsage { pub input: Option<u64>, pub output: Option<u64>,
   pub cache_read: Option<u64>, pub cache_write: Option<u64>,
   pub reasoning: Option<u64>, pub cost_micros: Option<u64>,
   pub cost_source: Option<CostSource>, pub duration_ms: Option<u64>,
-  pub model: Option<String> /* sanitized, ≤80 */, pub partial: bool }
+  pub model: Option<String> /* sanitized, ≤80 */, pub partial: bool,
+  pub multi_model: bool /* >1 model reported: `model` names none */ }
 ```
 
 ```sql

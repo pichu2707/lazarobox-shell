@@ -58,8 +58,8 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 - [ ] 1c.1 RED+GREEN `parse_command`: `/cost`, `//cost` escaped, trailing text gives `usage: /cost`.
 - [ ] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
 - [ ] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
-- [ ] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, Esc closes; history off shows session-only view from memory with the history-off line.
-- [ ] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the history-off line; CHANGELOG entry.
+- [ ] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, header `AI usage (alpha)`, Esc closes; history off shows session-only view from memory with the history-off line.
+- [ ] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the history-off line; an "alpha" note in the `/cost` section (figures may be missing or not match the provider's bill depending on engine and account; how to report it via the report skill / GitHub issues); CHANGELOG entry.
 
 ## Slice 2a: Display (PR 2a)
 
@@ -70,7 +70,7 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 2b: Menu (PR 2b)
 
-- [ ] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage` row and sub-view (toggles, billing); confirm AI-tab row capacity.
+- [ ] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity.
 - [ ] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
 - [ ] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
 
