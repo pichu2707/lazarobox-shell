@@ -62,6 +62,12 @@ baseline.
 
 ### Fixed
 
+- The tools on the `codex` engine were refused by codex itself (`MCP tool call
+  requires approval, but approval policy is never`), so no call reached
+  lazarobox: `list_panes`, `read_file` and the rest failed, and no lazarobox ask
+  appeared. codex now passes our calls on (`default_tools_approval_mode =
+  "approve"` for the `lazarobox` server only) and they reach lazarobox's own
+  approval, which is unchanged. Checked with codex 0.162.1.
 - `Ctrl+Space r r` and `Ctrl+Space r d` showed nothing when the answer was
   already known, or when the store answered at once (#501, #527): the notice
   (`No interrupted run to resume or discard`) was set but the screen was not
