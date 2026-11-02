@@ -413,8 +413,34 @@ pub struct AiConfig {
     servers: ServerPorts,
     managed: Option<ManagedServer>,
     managed_options: ManagedOptions,
+    ollama: OllamaOptions,
     pub memory: MemoryConfig,
     pub orchestrator: OrchestratorConfig,
+}
+
+/// What lazarobox asks of Ollama on each turn, from `[ai.servers.ollama]`.
+/// The menu writes neither key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OllamaOptions {
+    /// The most tokens of context to ask for (`num_ctx` is the smaller of this
+    /// and the model's own window).
+    pub num_ctx_cap: usize,
+    /// Minutes the model stays loaded after a reply; 0 unloads it at once.
+    pub keep_alive_minutes: u32,
+}
+
+/// The `num_ctx` cap of Ollama unless `num_ctx_cap` is set.
+pub const DEFAULT_NUM_CTX_CAP: usize = 16_384;
+/// The keep-alive of Ollama unless `keep_alive_minutes` is set.
+pub const DEFAULT_KEEP_ALIVE_MINUTES: u32 = 30;
+
+impl Default for OllamaOptions {
+    fn default() -> Self {
+        Self {
+            num_ctx_cap: DEFAULT_NUM_CTX_CAP,
+            keep_alive_minutes: DEFAULT_KEEP_ALIVE_MINUTES,
+        }
+    }
 }
 
 /// The port of a llama-server that lazarobox starts itself, unless
@@ -503,6 +529,7 @@ impl Default for AiConfig {
             servers: ServerPorts::default(),
             managed: None,
             managed_options: ManagedOptions::default(),
+            ollama: OllamaOptions::default(),
             memory: MemoryConfig::default(),
             orchestrator: OrchestratorConfig::default(),
         }
@@ -623,6 +650,11 @@ impl AiConfig {
     /// How lazarobox runs its llama-server.
     pub fn managed_options(&self) -> &ManagedOptions {
         &self.managed_options
+    }
+
+    /// What lazarobox asks of Ollama on each turn.
+    pub fn ollama_options(&self) -> OllamaOptions {
+        self.ollama
     }
 
     /// Sets the idle time of the managed llama-server; 0 never stops it.
@@ -878,6 +910,7 @@ pub fn read_with_port_env(
     config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
     (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
+    config.ollama = read_ollama_options(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config.orchestrator = read_orchestrator(table, problems);
     config
@@ -1246,6 +1279,42 @@ fn read_servers(
     (ports, managed, options)
 }
 
+/// `num_ctx_cap` and `keep_alive_minutes` of `[ai.servers.ollama]`, each with
+/// its own fallback and problem. A broken `ai.servers` table is reported by
+/// [`read_servers`].
+fn read_ollama_options(table: &Table, problems: &mut Vec<String>) -> OllamaOptions {
+    let mut options = OllamaOptions::default();
+    let Some(server) = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("servers"))
+        .and_then(Value::as_table)
+        .and_then(|servers| servers.get("ollama"))
+        .and_then(Value::as_table)
+    else {
+        return options;
+    };
+    match server.get("num_ctx_cap") {
+        None => {}
+        Some(Value::Integer(n)) if *n > 0 && usize::try_from(*n).is_ok() => {
+            options.num_ctx_cap = *n as usize;
+        }
+        Some(_) => problems.push(
+            "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens above 0".to_owned(),
+        ),
+    }
+    match server.get("keep_alive_minutes") {
+        None => {}
+        Some(Value::Integer(n)) if u32::try_from(*n).is_ok() => {
+            options.keep_alive_minutes = *n as u32;
+        }
+        Some(_) => problems.push(
+            "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes".to_owned(),
+        ),
+    }
+    options
+}
+
 /// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
 /// for never; anything else falls back to [`DEFAULT_IDLE_MINUTES`].
 fn read_idle_minutes(server: &Table, problems: &mut Vec<String>) -> u32 {
@@ -1528,6 +1597,60 @@ mod tests {
                     vec![],
                     vec!["ai.servers.llamacpp.args: expected a list of strings".to_owned()]
                 ),
+                "{value}"
+            );
+        }
+    }
+
+    /// The Ollama cap, keep-alive and problems of `text`.
+    fn ollama_of(text: &str) -> ((usize, u32), Vec<String>) {
+        let (ai, problems) = read_text(text);
+        let o = ai.ollama_options();
+        ((o.num_ctx_cap, o.keep_alive_minutes), problems)
+    }
+
+    const CAP_PROBLEM: &str =
+        "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens above 0";
+    const KEEP_PROBLEM: &str =
+        "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes";
+
+    #[test]
+    fn ollama_options_default_to_16384_and_30_minutes() {
+        assert_eq!(ollama_of(""), ((16_384, 30), vec![]));
+        assert_eq!(
+            ollama_of("[ai.servers.ollama]\nport = 11500\n"),
+            ((16_384, 30), vec![])
+        );
+    }
+
+    #[test]
+    fn ollama_options_accept_valid_overrides_and_zero_keep_alive() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = 8192\nkeep_alive_minutes = 5\n";
+        assert_eq!(ollama_of(text), ((8192, 5), vec![]));
+        let zero = "[ai.servers.ollama]\nkeep_alive_minutes = 0\n";
+        assert_eq!(ollama_of(zero), ((16_384, 0), vec![]));
+    }
+
+    #[test]
+    fn a_bad_ollama_cap_falls_back_with_the_exact_problem() {
+        for value in ["\"big\"", "0", "-1", "1.5"] {
+            let text = format!("[ai.servers.ollama]\nnum_ctx_cap = {value}\n");
+            assert_eq!(
+                ollama_of(&text),
+                ((16_384, 30), vec![CAP_PROBLEM.to_owned()]),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_keep_alive_falls_back_per_key() {
+        for value in ["1.5", "-1", "\"5\""] {
+            let text =
+                format!("[ai.servers.ollama]\nnum_ctx_cap = 8192\nkeep_alive_minutes = {value}\n");
+            assert_eq!(
+                ollama_of(&text),
+                ((8192, 30), vec![KEEP_PROBLEM.to_owned()]),
                 "{value}"
             );
         }
