@@ -25,6 +25,8 @@ pub struct FakePty {
     pub foreground: Option<bool>,
     /// What `cwd` answers; `None` is "cannot read".
     pub cwd: Option<std::path::PathBuf>,
+    /// What `foreground_argv` answers; `None` is "cannot read".
+    pub argv: Option<Vec<String>>,
 }
 
 impl PtyHandle for FakePty {
@@ -47,6 +49,10 @@ impl PtyHandle for FakePty {
 
     fn cwd(&self) -> Option<std::path::PathBuf> {
         self.cwd.clone()
+    }
+
+    fn foreground_argv(&self) -> Option<Vec<String>> {
+        self.argv.clone()
     }
 
     fn kill(&mut self) {

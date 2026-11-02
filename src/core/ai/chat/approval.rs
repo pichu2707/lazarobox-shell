@@ -349,6 +349,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::EditFile { .. }
         | Call::ProposeBatch
         | Call::GitStatus
+        // Metadata of the panes, no text from a screen or a file: it never asks.
+        | Call::ListPanes
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
         // The host reads the index and builds the commit review itself.
@@ -1972,6 +1974,14 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    // list_panes is read-only metadata: no ask on any engine, cloud included.
+    #[test]
+    fn list_panes_never_asks() {
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(ask_for(&Call::ListPanes, locality), None);
         }
     }
 

@@ -109,6 +109,13 @@ pub trait PtyHandle: Send {
     fn cwd(&self) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
     }
+    /// The argv of the program that owns the terminal now (the foreground
+    /// process group's leader), read from `/proc/<pgid>/cmdline`. Only the
+    /// command line: never the environment. `None` when it cannot be read
+    /// (a platform without `/proc`, a process that is gone).
+    fn foreground_argv(&self) -> Option<Vec<String>> {
+        None
+    }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
 }

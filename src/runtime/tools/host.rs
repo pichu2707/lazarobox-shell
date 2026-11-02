@@ -56,6 +56,7 @@ use crate::{
             edit::EditError,
             label,
             mcp::refusal_text,
+            panes::{self, Roster},
             paths::{REFUSED, display_target},
             registry::FamilySet,
             report::{self, RunReport},
@@ -209,6 +210,8 @@ pub struct ToolHost {
     exec: exec::Exec,
     /// The private cwds of CLI turns, found on first use.
     cli_cwds: std::sync::OnceLock<Arc<[PathBuf]>>,
+    /// The last reading of the panes, filled by the runtime's poll.
+    roster: Roster,
 }
 
 impl ToolHost {
@@ -237,7 +240,13 @@ impl ToolHost {
             stages: Arc::default(),
             exec: exec::Exec::system(),
             cli_cwds: std::sync::OnceLock::new(),
+            roster: Roster::default(),
         })
+    }
+
+    /// Where the runtime puts what the panes run, for `list_panes`.
+    pub fn roster(&self) -> Roster {
+        self.roster.clone()
     }
 
     /// What a call may see, for the chat whose origin directory is `origin`.
@@ -301,6 +310,8 @@ impl Dispatch for TurnDispatch {
 const CANCELLED: &str = "cancelled";
 /// A run answered a call that is not a command: nothing ran.
 const NOT_COMMAND: &str = "that call is not a command";
+/// No nonce could be made, so the rows cannot be wrapped as data.
+const NO_PANES: &str = "the panes cannot be listed now";
 /// A server tool was approved but the turn has no running server for it.
 const NO_SERVER: &str = "that tool is not available";
 
@@ -465,6 +476,17 @@ async fn orchestrate(handle: &OrchHandle, call: OrchCall) -> (Outcome, ToolStatu
         (ToolStatus::Ok, format!("{} bytes", outcome.text.len()))
     };
     (outcome, status, summary)
+}
+
+/// The rows of `list_panes`, wrapped as data: the command line of a program is
+/// text the model must not take as instructions. The row shows what was sent.
+fn list_panes(host: &ToolHost) -> (Outcome, ToolStatus, String) {
+    let Some(nonce) = super::new_nonce() else {
+        return ended(ToolStatus::Error, NO_PANES.to_owned(), NO_PANES);
+    };
+    let home = host.home.as_deref().map(Path::new);
+    let text = panes::render(&host.roster.rows(), home);
+    ended(ToolStatus::Ok, label::wrap(&nonce, &text), &text)
 }
 
 /// The private cwds of a CLI turn (`<data>/lazarobox/cli-cwd`), as typed and
@@ -820,6 +842,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         ended(ToolStatus::Error, reason.to_owned(), reason)
                     }
                 },
+                // Read-only metadata of the panes: it never asked.
+                (Decision::Sent, Call::ListPanes) => list_panes(&host),
                 // Only after `y`: the sandbox starts here and nowhere else.
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
                     exec::run(&host, &scope, &call, pinned.take()).await
@@ -905,5 +929,7 @@ mod gate_tests;
 mod git_tests;
 #[cfg(test)]
 mod orchestra_tests;
+#[cfg(test)]
+mod panes_tests;
 #[cfg(test)]
 mod tests;

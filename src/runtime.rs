@@ -60,6 +60,7 @@ pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
+use crate::core::ai::tools::panes::{PaneRow, Roster};
 use crate::core::menu::feedback::{Issue, SendReply};
 use ai_detect::spawn_detection;
 use chat::Chats;
@@ -421,6 +422,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .and_then(Path::parent)
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
+    let roster = tool_host.roster();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
     // Read at startup, like the memory port: detection and chat both use
     // these, so an engine is chatted with where it was detected. Only a menu
@@ -487,6 +489,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let plan = notify::PlanSlot::default();
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
+        .with_roster(roster)
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
@@ -1172,6 +1175,7 @@ async fn run_loop(
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
                 }
+                panes.refresh_roster(app.focused());
             }
             () = anim.tick() => {
                 if step(&mut app, AppEvent::AnimTick, panes) {
@@ -1401,6 +1405,8 @@ struct Panes {
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
+    /// Where the poll writes what the panes run, for `list_panes`.
+    roster: Option<Roster>,
 }
 
 impl Panes {
@@ -1438,7 +1444,31 @@ impl Panes {
             hub: None,
             ollama: None,
             installer: None,
+            roster: None,
         }
+    }
+
+    /// Sets where the poll writes what the panes run.
+    fn with_roster(mut self, roster: Roster) -> Self {
+        self.roster = Some(roster);
+        self
+    }
+
+    /// Writes one row per live pane, in pane order, for `list_panes`: the
+    /// shell's folder and the argv of the foreground program. A fact that
+    /// cannot be read is left out of its row, and the pane stays listed.
+    fn refresh_roster(&self, focused: PaneId) {
+        let Some(roster) = &self.roster else { return };
+        let mut rows: Vec<PaneRow> = (self.handles.iter())
+            .map(|(id, handle)| PaneRow {
+                number: id.number(),
+                focused: *id == focused,
+                cwd: handle.cwd(),
+                argv: handle.foreground_argv(),
+            })
+            .collect();
+        rows.sort_by_key(|row| row.number);
+        roster.set(rows);
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -3938,6 +3968,44 @@ mod tests {
         assert_eq!(
             events,
             vec![AppEvent::Cwd(id(1), cwd.clone()), AppEvent::Cwd(id(2), cwd)]
+        );
+    }
+
+    // list_panes: the poll writes one row per live pane, in pane order, with
+    // the focus and the foreground argv; a pane that cannot be read stays
+    // listed with no program.
+    #[test]
+    fn refresh_roster_lists_every_pane_with_focus_and_foreground_argv() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some(roster.clone());
+        panes.spawn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                cwd: Some(PathBuf::from("/tmp/p")),
+                argv: Some(vec!["nvim".into(), "prueba.rs".into()]),
+                ..FakePty::default()
+            }))
+        });
+        panes.apply(vec![Effect::SpawnPane(id(2), spec())]);
+        panes.spawn = Box::new(|_, _| Ok(Box::new(FakePty::default())));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.refresh_roster(id(2));
+        assert_eq!(
+            roster.rows(),
+            vec![
+                PaneRow {
+                    number: 1,
+                    focused: false,
+                    cwd: None,
+                    argv: None
+                },
+                PaneRow {
+                    number: 2,
+                    focused: true,
+                    cwd: Some(PathBuf::from("/tmp/p")),
+                    argv: Some(vec!["nvim".into(), "prueba.rs".into()]),
+                },
+            ]
         );
     }
 
