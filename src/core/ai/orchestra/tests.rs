@@ -236,7 +236,7 @@ fn an_unavailable_engine_is_refused_and_halts_the_run_with_no_fallback() {
     else {
         panic!("not halted");
     };
-    assert_eq!((worker, class), (id, ErrorClass::Other));
+    assert_eq!((worker, class), (id, ErrorClass::Setup));
     assert!(text.contains("no jail here"), "{text}");
     assert_eq!(run.spawn(t0, Task::Code, "q"), Err(Refusal::Paused));
 }
@@ -727,7 +727,7 @@ fn a_refused_retry_goes_to_pending_behind_the_older_failure() {
         run.state(),
         &RunState::Halted {
             worker: refused,
-            class: ErrorClass::Other,
+            class: ErrorClass::Setup,
             text: "no engine assigned to review".to_owned()
         }
     );

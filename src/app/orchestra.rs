@@ -19,7 +19,7 @@ use crate::core::ai::{
         overrides::{Change, FailurePicker, Picked},
         persist::Item,
         run::{Roster, RunLimits},
-        worker::WorkerStatus,
+        worker::{ErrorClass, WorkerStatus},
     },
 };
 
@@ -33,6 +33,10 @@ const TOOLS_OFF: &str =
 const NOTICE: &str = "Providers recommend API keys for automation; \
      consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
 
+/// Said when `m` opens the engines because the worker has no engine to take
+/// the models from.
+const NO_ENGINE_FOR_MODEL: &str =
+    "This worker has no engine and none is configured for its task; pick an engine first";
 /// The keys of the failure alert after `r retry`: `m` and `p` open the
 /// detached picker, `c` or Esc cancels.
 const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc cancel";
@@ -550,13 +554,26 @@ impl App {
                 _ => None,
             })
         });
+        let mut unresolved = false;
         let picker = failed.map(|row| {
             let config = chat
                 .orch_overrides()
                 .map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
-            let in_use = (row.engine.as_str(), row.model.as_deref());
+            let mut in_use = (row.engine.as_str(), row.model.as_deref());
+            // A refused worker never got an engine: the models offered are
+            // those of the engine its class is configured with.
+            let configured = config.resolve(row.kind).0;
+            if in_use.0.is_empty()
+                && let Some(engine) = configured.engine.as_deref()
+            {
+                in_use = (engine, None);
+            }
+            unresolved = change == Change::Model && in_use.0.is_empty();
             FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
         });
+        if unresolved {
+            self.notice = Some(NO_ENGINE_FOR_MODEL.to_owned());
+        }
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             if picker.is_none() {
                 chat.push_system_line("cannot change: that worker is not shown any more".into());
@@ -917,7 +934,12 @@ fn alert_text(chat: &ChatState, alert: &OrchAlert) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let mut line = format!("run paused: worker {worker} {ended}: {text}");
+    // `other` says nothing more than the error does.
+    let class = match alert.class {
+        ErrorClass::Other => String::new(),
+        class => format!(" ({})", class.id()),
+    };
+    let mut line = format!("run paused: worker {worker} {ended}{class}: {text}");
     let retry = match chat.orch_note() {
         Some(OrchNote::RetryFailed(reason)) => {
             line.push_str(&format!(" \u{b7} retry failed: {reason}"));

@@ -31,7 +31,7 @@ A worker turn MUST be a single stateless engine turn with the same adapter flags
 - THEN all three are present
 
 ### Requirement: Provider error classification [S2]
-Each adapter decoder MUST map a failed turn to a classified error (`rate_limit`, `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `other`) carrying the provider's message sanitized and capped. A classified error MUST NOT contain secrets (the redaction rules apply) and MUST NOT be logged with content.
+Each adapter decoder MUST map a failed turn to a classified error (`rate_limit`, `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `setup`, `other`) carrying the provider's message sanitized and capped. A classified error MUST NOT contain secrets (the redaction rules apply) and MUST NOT be logged with content.
 
 #### Scenario: Each adapter classifies [auto]
 - GIVEN fixtures of 429 and 409 responses for ollama, claude, codex and gemini

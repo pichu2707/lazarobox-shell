@@ -22,6 +22,37 @@ const SAVE_FAILED: &str = "could not save the run: it will not be listed after a
 /// Said once when the stored runs could not be read.
 const READ_FAILED: &str = "could not read the stored runs";
 
+/// A key that waits for the store's answer about interrupted runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Waiting {
+    Resume,
+    Discard,
+}
+
+/// How long the store has to answer before the read counts as failed.
+pub(super) const RUNS_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Said when the store did not answer in time.
+pub(super) const READ_TIMED_OUT: &str = "interrupted runs could not be read";
+
+/// What the app knows of the interrupted runs: "none" is only ever said in
+/// `Known`.
+#[derive(Default)]
+pub(super) enum RunsRead {
+    /// The store was not asked in this process.
+    #[default]
+    Unknown,
+    /// The store was asked; `pending` is the key pressed meanwhile, with the
+    /// pane it was pressed in.
+    Recovering {
+        since: Instant,
+        pending: Option<(PaneId, Waiting)>,
+    },
+    /// The store answered.
+    Known,
+    /// The read failed. `told`: a press already said so.
+    Failed { told: bool, text: &'static str },
+}
+
 /// A run as the app last told the store.
 struct Kept {
     pane: PaneId,
@@ -63,8 +94,8 @@ pub(super) struct RunKeep {
     /// The goal the next fresh turn of a pane records and shows instead of
     /// the message it sends (a resume's seed).
     pub(super) resume_goal: Option<String>,
-    /// The store was asked for interrupted runs in this process.
-    asked: bool,
+    /// What the app knows of the stored interrupted runs.
+    pub(super) read: RunsRead,
     save_failure_said: bool,
     read_failure_said: bool,
 }
@@ -116,9 +147,13 @@ impl App {
 
     /// Asks the store for interrupted runs, once per process.
     pub(super) fn recover_runs(&mut self, id: PaneId) -> Vec<Effect> {
-        if std::mem::replace(&mut self.run_keep.asked, true) {
+        if !matches!(self.run_keep.read, RunsRead::Unknown) {
             return Vec::new();
         }
+        self.run_keep.read = RunsRead::Recovering {
+            since: self.now(),
+            pending: None,
+        };
         vec![Effect::Store(StoreCmd::RecoverRuns { pane: id })]
     }
 
@@ -224,9 +259,19 @@ impl App {
 
     /// The store's answer about runs: the interrupted ones are named in the
     /// pane, a failure is said once.
-    pub(super) fn on_runs_reply(&mut self, reply: &StoreReply) {
+    pub(super) fn on_runs_reply(&mut self, reply: &StoreReply) -> Vec<Effect> {
+        let read_reply = matches!(
+            reply,
+            StoreReply::RunsRecovered { .. } | StoreReply::RunsFailed { saving: false, .. }
+        );
+        let waiting = match read_reply.then(|| std::mem::take(&mut self.run_keep.read)) {
+            Some(RunsRead::Recovering { pending, .. }) => pending,
+            _ => None,
+        };
+        let looking = self.notice.as_deref() == Some(super::run_resume::LOOKING);
         let (pane, lines) = match reply {
             StoreReply::RunsRecovered { pane, runs } => {
+                self.run_keep.read = RunsRead::Known;
                 self.run_keep.interrupted.clone_from(runs);
                 // Only the runs of this chat's folder are named, goal and all;
                 // the others are counted, their text stays out of the pane.
@@ -256,6 +301,18 @@ impl App {
                 (*pane, lines)
             }
             StoreReply::RunsFailed { pane, saving } => {
+                if !*saving {
+                    // Never "none": the next press says why and retries.
+                    let told = waiting.is_some();
+                    self.run_keep.read = RunsRead::Failed {
+                        told,
+                        text: READ_FAILED,
+                    };
+                    if told || looking {
+                        self.notice = Some(READ_FAILED.to_owned());
+                        self.dirty = true;
+                    }
+                }
                 let said = if *saving {
                     &mut self.run_keep.save_failure_said
                 } else {
@@ -269,18 +326,36 @@ impl App {
                     }
                 }
                 if std::mem::replace(said, true) {
-                    return;
+                    return Vec::new();
                 }
                 let text = if *saving { SAVE_FAILED } else { READ_FAILED };
                 (*pane, vec![text.to_owned()])
             }
-            _ => return,
+            _ => return Vec::new(),
         };
         if let Some(chat) = self.panes.get_mut(&pane).and_then(PaneState::chat_mut) {
             for line in lines {
                 chat.push_system_line(line);
             }
             self.dirty = true;
+        }
+        if !matches!(reply, StoreReply::RunsRecovered { .. }) {
+            return Vec::new();
+        }
+        // The notice that said the store was being asked does not outlive the
+        // answer; the key that waited gets its answer now.
+        if looking {
+            self.notice = None;
+            self.dirty = true;
+        }
+        match waiting {
+            Some((at, key)) if self.tab().focus == at && self.panes.contains_key(&at) => {
+                match key {
+                    Waiting::Resume => self.resume_run(),
+                    Waiting::Discard => self.discard_run(),
+                }
+            }
+            _ => Vec::new(),
         }
     }
 }
