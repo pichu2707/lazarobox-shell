@@ -1,6 +1,6 @@
 //! Tests of the `Usage (alpha)` row of Settings and its view (ai-cost,
 //! config-menu "Usage row and view"): the two toggles and the billing mode of
-//! the three CLI engines. The thresholds stay in the config file.
+//! the three CLI engines. The limits are in `usage_limit_tests`.
 
 use super::account_tests::SAVED;
 use super::ai_tests::{machine, menu, press, selected_label};
@@ -123,6 +123,9 @@ fn the_view_lists_the_toggles_then_one_billing_row_per_cli_engine() {
             ("claude billing", "subscription".to_owned()),
             ("codex billing", "subscription".to_owned()),
             ("gemini billing", "subscription".to_owned()),
+            ("Turn tokens", "off".to_owned()),
+            ("Day tokens", "off".to_owned()),
+            ("Day $", "off".to_owned()),
         ]
     );
 }
@@ -168,7 +171,7 @@ fn enter_and_space_cycle_but_an_enter_repeat_is_ignored() {
 fn the_cursor_wraps_in_the_view() {
     let mut m = opened();
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "gemini billing");
+    assert_eq!(selected_label(&m), "Day $");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Usage line");
 }
@@ -211,7 +214,10 @@ fn esc_at_the_top_level_cancels_the_menu_and_the_view_never_does() {
 
 #[test]
 fn the_footer_names_the_keys_of_the_view() {
-    assert_eq!(hint(&opened()), "j/k move · h/l change · s save · Esc back");
+    assert_eq!(
+        hint(&opened()),
+        "j/k move · h/l change · Enter edit · s save · Esc back"
+    );
 }
 
 #[test]
@@ -249,6 +255,9 @@ fn the_view_rows_have_unique_key_paths_and_ranks_apart_from_the_tabs() {
             ("ai.usage.billing", "claude"),
             ("ai.usage.billing", "codex"),
             ("ai.usage.billing", "gemini"),
+            ("ai.usage", "turn_tokens"),
+            ("ai.usage", "day_tokens"),
+            ("ai.usage", "day_usd"),
         ]
     );
     let others: Vec<u8> = SECTIONS
@@ -286,7 +295,10 @@ fn a_key_the_view_does_not_use_says_so_and_changes_nothing() {
         assert_eq!(hint(&m), "Esc first to leave Usage", "{code:?}");
         // The next press clears the notice.
         press(&mut m, 'j');
-        assert_eq!(hint(&m), "j/k move · h/l change · s save · Esc back");
+        assert_eq!(
+            hint(&m),
+            "j/k move · h/l change · Enter edit · s save · Esc back"
+        );
     }
 }
 

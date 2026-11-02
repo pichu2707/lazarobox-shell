@@ -104,6 +104,11 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
                 label,
                 selected: true,
                 ..
+            }
+            | Row::Edit {
+                label,
+                selected: true,
+                ..
             } => Some(*label),
             _ => None,
         })

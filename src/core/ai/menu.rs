@@ -139,6 +139,11 @@ impl AiMenu {
         }
     }
 
+    /// Sets a typed value of the draft (a usage limit).
+    pub fn set_draft(&mut self, set: fn(&mut AiConfig, Option<u64>), value: Option<u64>) {
+        set(&mut self.draft, value);
+    }
+
     /// The open config, to compare a draft row against.
     pub fn original(&self) -> &AiConfig {
         &self.original

@@ -1,0 +1,20 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ────────────────┐
+│ ‹ Settings ›         │
+│ Usage (alpha)        │
+│ Usage line        on │
+│ Usage in bar      on │
+│ claude billing  sub… │
+│ codex billing  subs… │
+│ gemini billing  sub… │
+│ Edit   123456789012_ │
+│ Day tokens       off │
+│ Day $            off │
+│                      │
+│                      │
+│                      │
+│ digits · Enter · Esc │
+└──────────────────────┘
