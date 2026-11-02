@@ -116,7 +116,7 @@ A worker MUST be started from a `WorkerSpec` holding: kind, prompt, the engine a
 - THEN its result records the engine and model it started with
 
 ### Requirement: Refusal on an unavailable engine [S1]
-Before starting a worker, the engine resolved for its kind MUST pass the same availability checks as a chat turn for that task (installed, version, model present, jail where required). When it does not, the spawn MUST end with status `refused`, a structured reason and no process started. lazarobox MUST NOT pick another engine or model. A refusal MUST be handled as a worker failure (see Failure stops the run).
+Before starting a worker, the engine resolved for its kind MUST pass the same availability checks as a chat turn for that task (installed, version, model present, jail where required). When it does not, the spawn MUST end with status `refused`, a structured reason and no process started. lazarobox MUST NOT pick another engine or model. A refusal MUST be handled as a worker failure (see Failure stops the run) and classified `setup`: the failure alert shows `(setup)`. The reason MUST be given to the coordinator in the tool result of the refused worker (one redacted line, capped) instead of only `worker N: refused`, with absolute paths replaced by `<path>`. `m` on a refused worker MUST open the model picker of the engine configured for its task; with no engine to take from it MUST open the engine list and a notice says why. (Since 1.2.1.)
 
 #### Scenario: No jail refuses [auto]
 - GIVEN `review` is `gemini` and the jail is Unavailable
@@ -127,6 +127,11 @@ Before starting a worker, the engine resolved for its kind MUST pass the same av
 - GIVEN `code` is `ollama` with a model that is not downloaded
 - WHEN a `code` worker is spawned
 - THEN the status is `refused` and the reason names the model and `download required`
+
+#### Scenario: A refusal is a setup failure with its reason [auto]
+- GIVEN a worker routed to an ollama model that is not downloaded, and a reason that holds the absolute path `/home/u/models/m.gguf`
+- WHEN the spawn is refused
+- THEN the alert shows the class `(setup)`, the coordinator's tool result carries one redacted, capped line with `<path>` in place of the absolute path, and no other class text is added
 
 ### Requirement: Worker toolsets [S1, S7]
 Every worker but a `code` one MUST be offered only the read-only tools (`find_dir`, `list_dir`, `read_file`). No worker MUST be offered `run_in_pane`, an orchestration tool or a user server tool. [S7] `code` workers MUST be offered the read-only tools and the coding-tools write tools (`create_dir`, `write_file`, `edit_file`, `propose_batch`), and nothing else. Their writes MUST be staged and reach the disk only through the user's batch review, labelled with the worker; no scope and no approval mode (`run` included) pre-approves a write. A write MUST be staged only inside the run's read scope: one outside it, into a path the secret rules guard or outside the chat's root MUST be refused with the refusal text of a plain chat write, and is never asked. Staging inside the scope MUST NOT ask (an `edit_file` included, on a cloud engine: reads inside the scope run unasked).
@@ -573,3 +578,21 @@ Worker prompts, worker output, provider error text and paths MUST NOT be written
 - GIVEN a run with a failing worker
 - WHEN logs are captured
 - THEN they hold the class and status and none of the prompt, output or error message text
+
+### Requirement: Resume and discard ask the store on demand [S9]
+`Prefix r r` (resume) and `Prefix r d` (discard) MUST NOT report `No interrupted run to resume or discard` while the run store has not answered. When the interrupted runs are not known yet (for example ORCH was never turned on since the start), the key MUST ask the store on the spot, off the UI thread, and show the notice `Looking for interrupted runs`; the answer MUST complete the key that waited, including `Turn ORCH on in this pane first`. A failed read, or one with no answer within 10 s, MUST be said and retried by the next press, never reported as `No interrupted run`. The key MUST redraw the screen after its answer, also when the answer comes at once, so the notice and the clearing of the `RUN` key hint are shown. (Since 1.2.1.)
+
+#### Scenario: The store is asked when the runs are unknown [auto]
+- GIVEN ORCH never turned on since the start and an interrupted run in the store
+- WHEN `Prefix r r` is pressed
+- THEN the notice `Looking for interrupted runs` shows, the store is asked off the UI thread, and the answer completes the resume
+
+#### Scenario: A silent store is not an empty one [auto]
+- GIVEN a store that does not answer within 10 s
+- WHEN `Prefix r d` is pressed
+- THEN the failure is said, `No interrupted run to resume or discard` is not shown, and the next press asks again
+
+#### Scenario: The key always redraws [auto]
+- GIVEN the store already answered that there is no interrupted run
+- WHEN `Prefix r r` is pressed
+- THEN the notice `No interrupted run to resume or discard` is shown and the screen is redrawn, so the `RUN` key hint is cleared

@@ -557,12 +557,12 @@ Each registry entry MUST declare its arguments (name, kind string, integer, bool
 - THEN both reject it
 
 ### Requirement: Off equals 0.18.0
-With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0. A characterization test MUST pin this.
+With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0, except that the default tool list also holds `list_panes` (see its requirement; since 1.2.1 the pinned bytes are no longer the 0.18.0 ones, on purpose). A characterization test MUST pin this.
 
 #### Scenario: Characterization [auto]
 - GIVEN all family toggles off
 - WHEN the tool list and an Ollama request are built
-- THEN they equal the stored 0.18.0 fixtures byte for byte
+- THEN they equal the stored fixtures byte for byte (the 0.18.0 ones plus `list_panes` since 1.2.1)
 
 ### Requirement: Tool root is the current chat folder
 Every tool family (read, search, write, command, git) MUST take its root from the chat folder at the moment a call is executed, not from the folder the chat was opened in and not from the moment the tool list was offered. After a folder change (see chat-folder) the next call uses the new root; a path argument that was valid in the old folder is judged against the new root only. The root policies are unchanged: choosing a folder never relaxes them. When the chat folder is unknown, `$HOME` or `/`, tools behave as they do today for such a root (refusals, asks). The write refusals for such a root name the folder as the reason (`path not available: the chat's folder is ~, where files cannot be written; ask the user to run /cd <project folder>`), and the command and git refusals use one fixed text (`path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`) so a model stops retrying and asks for `/cd`; a refused path inside a concrete folder keeps one uniform text.
@@ -649,3 +649,21 @@ Approvals raised by worker sessions MUST be queued FIFO with a worker label, one
 - GIVEN a collect result
 - WHEN it is returned to the orchestrator
 - THEN it is inside the wrapper
+
+### Requirement: list_panes tool
+A read-only tool `list_panes` of the `Pane` family MUST tell the model what each pane runs: its number, whether it is focused, its folder and the foreground program. It MUST be part of the default tool list. It MUST NOT be offered to `Toolset::Code` workers. On a local engine it runs without approval (an Ollama `*-cloud` model counts as local); on a cloud engine it MUST ask first, the prompt MUST show the exact text that would be sent, and no approval mode (`ask`, `auto`, `run`) answers that ask for the user. The text MUST be bounded: at most 5 panes, the focused pane first, then `+N more`; each argument is capped at 120 characters and each pane at 300; paths under `$HOME` show as `~/`. Arguments MUST come from an allowlist, not a denylist: the focused pane shows the program name, flags without their `=value`, and paths (starting with `/`, `./`, `../` or `~/`, or naming an existing entry in the program's folder; only the first 16 arguments are looked up on disk); every other argument is shown as `…`; `bash -c`, `python -c`, `node -e`, `perl -e` and `ruby -e` show the flag only; other panes show the program name only; a program title with spaces or `:` shows as `…`. Every fragment MUST be cleaned like other prompts (no escape sequences, bidi or zero-width characters), redacted and capped. The environment of other processes MUST NOT be read and file contents MUST NOT be read. The pane roster MUST be refreshed off the UI loop; a list older than 10 s MUST say so in its text. On Linux it reads `/proc/<pgid>/cmdline` and `cwd`; on macOS the program and folder are `unknown`; a pane that cannot be read shows `program: unknown`. (Since 1.2.1.)
+
+#### Scenario: Free on a local engine, asked on a cloud one [auto]
+- GIVEN `list_panes` called on a local engine, then on a cloud engine
+- WHEN the approval is decided
+- THEN the local call runs at once and the cloud call asks, showing the text, in every approval mode
+
+#### Scenario: Arguments are an allowlist [auto]
+- GIVEN the focused pane runs `bash -c "secret"` and another pane runs `nvim a.rs`
+- WHEN the text is built
+- THEN the focused pane shows `bash -c` only, the other shows `nvim` only, and no argument value appears
+
+#### Scenario: Bounded and stale [auto]
+- GIVEN seven panes and a roster older than 10 s
+- WHEN the text is built
+- THEN it holds five panes, the focused first, then `+2 more`, and says the list is stale
