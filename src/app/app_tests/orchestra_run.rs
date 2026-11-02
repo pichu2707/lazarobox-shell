@@ -179,7 +179,7 @@ pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
         worker: WorkerId(1),
-        class: ErrorClass::Conflict,
+        class: ErrorClass::Other,
         text: text.into(),
     }
 }
@@ -218,7 +218,7 @@ fn a_failure_shows_its_alert_with_the_error_as_it_came() {
         Some(&OrchAlert {
             run: RUN,
             worker: WorkerId(1),
-            class: ErrorClass::Conflict,
+            class: ErrorClass::Other,
             text: "409 conflict: session busy".into(),
         })
     );
@@ -420,7 +420,7 @@ fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
 }
 
 /// What the alert of `alerted` says.
-const ALERT: &str = "run paused: worker review codex>gpt-5 failed (conflict): \
+const ALERT: &str = "run paused: worker review codex>gpt-5 failed: \
      409 conflict: session busy \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 
 // chat-pane / Alert content (S1 part; the class and the change options are
@@ -452,7 +452,7 @@ fn the_alert_names_how_the_worker_ended_on_one_paragraph() {
     assert_eq!(
         a.chat_guidance(chat_id()).as_deref(),
         Some(
-            "run paused: worker review codex>gpt-5 timed_out (conflict): no answer in 600 s \
+            "run paused: worker review codex>gpt-5 timed_out: no answer in 600 s \
              \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel"
         )
     );
@@ -847,4 +847,22 @@ fn a_user_cancel_stops_every_continuation_of_the_run() {
         assert!(attaches(&late).is_none(), "{late:?}");
         b.update(event(OrchestraEvent::Ended { run: RUN }));
     }
+}
+
+// The class is shown when it says something; `other` adds nothing.
+#[test]
+fn the_alert_shows_a_class_that_says_something_and_omits_other() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Failed)));
+    a.update(event(OrchestraEvent::Halted {
+        run: RUN,
+        worker: WorkerId(1),
+        class: ErrorClass::Auth,
+        text: "not logged in".into(),
+    }));
+    let text = a.chat_guidance(chat_id()).unwrap();
+    assert!(text.contains("failed (auth): not logged in"), "{text}");
+    a.update(event(halted(RUN, "boom")));
+    let text = a.chat_guidance(chat_id()).unwrap();
+    assert!(text.contains("failed: boom") && !text.contains("(other)"), "{text}");
 }
