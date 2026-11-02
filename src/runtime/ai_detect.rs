@@ -728,7 +728,10 @@ pub fn spawn_detection(
     spawn_detection_of(tx, async move {
         // The ports as the menu has them now.
         let ports = live.ports();
-        let detection = detect_all(&env, &cache, &show, force, &ports, &model_dirs).await;
+        let mut detection = detect_all(&env, &cache, &show, force, &ports, &model_dirs).await;
+        // A probe that failed this run must not make a known window unknown:
+        // the model would be asked for another `num_ctx` and reload.
+        detection.carry_windows(&live.ollama_windows());
         // The runtime learns the windows before the app does, so a request
         // never carries less than the budget assumed.
         live.set_ollama_windows(detection.ollama_windows());

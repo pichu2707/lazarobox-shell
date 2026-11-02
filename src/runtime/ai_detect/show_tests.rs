@@ -549,3 +549,69 @@ async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
     live.stamp(&mut request);
     assert_eq!(request.ollama.num_ctx, Some(8_192));
 }
+
+/// Runs one detection of `models` through `spawn_detection` with `cache`,
+/// feeding `live`, and returns what the app would receive.
+async fn rerun(live: &crate::runtime::chat::LiveServers, cache: &Arc<ShowCache>) -> Detection {
+    let (_dir, env) = env();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    spawn_detection(
+        tx,
+        env,
+        Arc::new(ListingCache::new(Arc::new(Instant::now))),
+        cache.clone(),
+        true,
+        Arc::from(Vec::new()),
+        live.clone(),
+    );
+    rx.recv().await.expect("a detection")
+}
+
+#[tokio::test]
+async fn a_failed_probe_on_the_next_run_keeps_the_last_known_window() {
+    use crate::runtime::chat::LiveServers;
+    let good = fake_ollama(tags(&named(2)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", good.port), None);
+    let first = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&first, "m0:8b"), Some(8_192));
+    // Same models, but every probe fails now and nothing is cached.
+    let flaky = fake_ollama(tags(&named(2)), Duration::ZERO, |_| Show::Status(500)).await;
+    live.set_ports(ServerPorts::default().with("ollama", flaky.port));
+    let second = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&second, "m0:8b"), Some(8_192), "the app keeps it");
+    let mut request = crate::core::ai::chat::engine::ChatRequest {
+        engine: "ollama".into(),
+        model: Some("m0:8b".into()),
+        system: String::new(),
+        memory: None,
+        messages: Vec::new(),
+        tools: crate::core::ai::chat::engine::Tools::Off,
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
+        ollama: Default::default(),
+    };
+    live.stamp(&mut request);
+    assert_eq!(request.ollama.num_ctx, Some(8_192), "so does the wire");
+}
+
+#[tokio::test]
+async fn a_new_answer_replaces_the_kept_window_and_an_unlisted_model_drops_it() {
+    use crate::runtime::chat::LiveServers;
+    let one = fake_ollama(tags(&named(2)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", one.port), None);
+    rerun(&live, &Arc::new(ShowCache::default())).await;
+    // m1 is gone from the listing; m0 answers with a new window.
+    let next = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("llama", 4_096)
+    })
+    .await;
+    live.set_ports(ServerPorts::default().with("ollama", next.port));
+    let d = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&d, "m0:8b"), Some(4_096));
+    assert_eq!(live.ollama_windows(), [("m0:8b".to_owned(), 4_096)]);
+}

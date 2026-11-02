@@ -64,6 +64,12 @@ impl LiveServers {
         self.0.write().unwrap_or_else(PoisonError::into_inner).idle = idle;
     }
 
+    /// Points the engines at other ports (tests move a fake server).
+    #[cfg(test)]
+    pub fn set_ports(&self, ports: ServerPorts) {
+        self.0.write().unwrap_or_else(PoisonError::into_inner).ports = ports;
+    }
+
     /// Sets the cap and keep-alive of Ollama turns.
     pub fn set_ollama(&self, options: OllamaOptions) {
         self.0
@@ -72,7 +78,17 @@ impl LiveServers {
             .ollama = options;
     }
 
-    /// Replaces the known Ollama windows: what the last detection read.
+    /// The Ollama windows known now, by listed name.
+    pub fn ollama_windows(&self) -> Vec<(String, usize)> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .windows
+            .clone()
+    }
+
+    /// Replaces the known Ollama windows: what the last detection read, with
+    /// the ones a failed probe could not read carried over.
     pub fn set_ollama_windows(&self, windows: Vec<(String, usize)>) {
         self.0
             .write()

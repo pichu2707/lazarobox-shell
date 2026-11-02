@@ -316,6 +316,21 @@ impl Detection {
             .collect()
     }
 
+    /// Gives a listed Ollama model the window it had in `before` when this
+    /// run could not read one (a probe that failed or timed out), so a flaky
+    /// run never turns a known window into an unknown one and `num_ctx` stays
+    /// the same. A new answer wins, and a model no longer listed is not kept.
+    pub fn carry_windows(&mut self, before: &[(String, usize)]) {
+        for facts in self.model_facts.iter_mut().filter(|f| f.engine == "ollama") {
+            if facts.window.is_none() {
+                facts.window = before
+                    .iter()
+                    .find(|(name, _)| catalog::same_model("ollama", name, &facts.name))
+                    .map(|(_, window)| *window);
+            }
+        }
+    }
+
     /// The context window of engine `id` in tokens, when it reported one.
     pub fn window(&self, id: &str) -> Option<usize> {
         self.windows
@@ -689,6 +704,41 @@ mod tests {
     }
 
     const OLLAMA_OK: &str = r#"{"models":[{"name":"llama3:8b"},{"name":"qwen2.5:7b"}]}"#;
+    fn facts_with(name: &str, window: Option<usize>) -> ModelFacts {
+        ModelFacts {
+            engine: "ollama",
+            name: name.into(),
+            params: None,
+            digest: None,
+            tools: marks::Tools::Unknown,
+            window,
+        }
+    }
+
+    #[test]
+    fn carrying_windows_fills_only_the_listed_models_that_lost_theirs() {
+        let mut next = Detection {
+            model_facts: vec![
+                facts_with("a:1b", None),
+                facts_with("b:1b", Some(4_096)),
+                facts_with("c:1b", None),
+                facts_with("d", None),
+            ],
+            ..Default::default()
+        };
+        let before = [
+            ("a:1b".to_owned(), 8_192),
+            ("b:1b".to_owned(), 2_048),
+            ("gone:1b".to_owned(), 1_024),
+            ("d:latest".to_owned(), 512),
+        ];
+        next.carry_windows(&before);
+        let got: Vec<Option<usize>> = next.model_facts.iter().map(|f| f.window).collect();
+        // a keeps its old one, b keeps its new answer, c had none, d matches
+        // `:latest`, and the unlisted model is not added back.
+        assert_eq!(got, [Some(8_192), Some(4_096), None, Some(512)]);
+    }
+
     #[test]
     fn reduce_leaves_facts_empty_without_a_probe() {
         assert!(reduce(&[]).model_facts.is_empty());
