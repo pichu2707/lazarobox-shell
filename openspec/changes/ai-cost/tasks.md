@@ -4,10 +4,10 @@
 
 | Field | Value |
 |-------|-------|
-| Estimated production lines | 1a ~310, 1b ~240, 1c ~260, 2a ~280, 2b ~200, 3 ~150, 4 ~180 (~1620 total) |
+| Estimated production lines | 1a ~310, 1b ~240, 1c ~260, 2a ~280, 2b ~200, 3 ~150, 4 ~180 (~1620 total), 5 ~400 (~2020 total) |
 | 400-line budget risk | Low per slice (1a Medium) |
 | Chained PRs recommended | Yes |
-| Suggested split | 7 PRs: 1a, 1b, 1c, 2a, 2b, 3, 4 |
+| Suggested split | 8 PRs: 1a, 1b, 1c, 2a, 2b, 3, 4, 5 |
 | Delivery strategy | ask-on-risk |
 | Chain strategy | feature-branch-chain |
 
@@ -29,6 +29,7 @@ Decision: the split is already chosen (chained, tracker `feat/ai-cost`); confirm
 | 2b | AI menu toggles + billing + README | PR 2a |
 | 3 | Thresholds | PR 2b |
 | 4 | Charts | PR 3 |
+| 5 | Worker usage | PR 4 |
 
 Every task is RED (failing test) then GREEN (code); refactor at slice end.
 
@@ -86,9 +87,18 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 - [x] 4.1 RED+GREEN plain-text `chart_lines` in `usage_view.rs` (per the spec, no ratatui widget) with snapshot tests in `cost_tests.rs`; narrow-terminal fallback by wrapping.
 - [x] 4.2 Docs: README documents the charts; CHANGELOG entry.
 
+## Slice 5: Worker usage (PR 5)
+
+- [x] 5.1 RED+GREEN store: `RecordUsage` carries `worker`; the insert writes the `worker` column; the report query folds `role = 'worker'` rows into `UsageRow` worker figures (records, known total, partial); day figures already sum every role (ai-usage: Worker usage).
+- [x] 5.2 RED+GREEN `usage_view`: `of which workers: <T>` after `last 7 days`, only with worker records, `no data` and `partial` rules; `usage_line` coordinator label (ai-usage: The `/cost` view; chat-pane: Per-answer usage line).
+- [x] 5.3 RED+GREEN `runtime/orchestra.rs` `drive`: fold the worker turn's usage into one record, `OrchestraEvent::Usage`, flushed `partial` on failure, cancel or deadline; nothing when the engine reported nothing.
+- [x] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (history off drops it, the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
+- [x] 5.5 Docs: README (es) documents worker usage and the coordinator label and drops the "workers are not recorded" wording; CHANGELOG entry (alpha).
+
 ## Final manual check (real engines)
 
 - [ ] M.1 claude: tokens and labelled `$` appear in `/cost`; sub-agent turn sums.
 - [ ] M.2 codex and gemini: tokens appear; no dollars in subscription mode.
 - [ ] M.3 ollama and llama.cpp: tokens only, never `$`.
 - [ ] M.4 History off: no rows, `/cost` shows session only; delete a chat and usage survives.
+- [ ] M.5 A real orchestrated run: the workers' tokens appear in `/cost` (`of which workers`), in the charts and in `today: N tok`; the coordinator's line reads `usage (coordinator):`.

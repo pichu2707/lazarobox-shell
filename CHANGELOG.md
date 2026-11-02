@@ -12,6 +12,21 @@ baseline.
 
 ### Added
 
+- AI usage of orchestrator workers (alpha, slice 5 of #440). Each worker turn
+  is now stored in the usage store with the role `worker`, the worker's
+  engine and model and its `<run>.<worker>` id, under the same rules as a chat
+  turn: nothing is stored with the history off (`/cost` still counts it in
+  `this session`), a count the engine did not report stays `no data`, a worker
+  that failed, was cancelled or ran past its deadline is stored `partial`, a
+  failed write shows `Usage not saved: <reason>` once per run, and deleting the
+  chat keeps the records. They count in `today`, `last 7 days`, the charts, the
+  status bar's `today: N tok` and the day limits; the per-turn limit never
+  fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
+  days` when there are worker records, and on the coordinator's
+  orchestrated turn its usage line reads `usage (coordinator): ...` so it is not taken
+  for the run total. There is no per-worker or per-run breakdown yet. Usage that arrives after
+  its pane was closed is still stored (unlinked); if that write fails there is
+  no pane to tell.
 - The menu's AI tab is split into the tabs Models, Tools, Connectors and
   Chat after Settings, so the popup is 17 rows high instead of 25 (24x16 at least; the Usage row of Settings takes the 17th). `Tab` and
   `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight to

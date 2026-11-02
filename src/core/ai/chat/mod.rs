@@ -1652,6 +1652,7 @@ impl ChatState {
                 .add(&self.request_engine, usage_view::Run::Chat, &usage);
             self.usage_outbox.push(usage::Pending {
                 role: "chat",
+                worker: None,
                 engine: self.request_engine.clone(),
                 usage,
             });
@@ -1695,16 +1696,35 @@ impl ChatState {
         self.request_engine.clear();
     }
 
+    /// What a worker turn of the run used, waiting for the store like a chat
+    /// turn's. It counts in this session; it is not a turn and raises no
+    /// per-turn note.
+    pub fn record_worker_usage(&mut self, key: WorkerKey, engine: &str, usage: usage::TurnUsage) {
+        self.session_usage
+            .add(engine, usage_view::Run::Side, &usage);
+        self.usage_outbox.push(usage::Pending {
+            role: "worker",
+            worker: Some(format!("{}.{}", key.run.0, key.worker.0)),
+            engine: engine.to_owned(),
+            usage,
+        });
+    }
+
     /// The usage line of the turn that ends with `status`, when the setting is
     /// on: a clean end without a record reads `no data`; an unclean end gets
-    /// one only if it has a record.
+    /// one only if it has a record. The coordinator's turn of a run says so.
     fn usage_line_for(&self, status: MsgStatus) -> Option<String> {
         let usage = self.turn_usage.as_ref();
         if !self.usage_config.line() || (usage.is_none() && status != MsgStatus::Complete) {
             return None;
         }
         let billing = self.usage_config.billing(&self.request_engine);
-        Some(usage_view::usage_line(usage, billing))
+        let line = usage_view::usage_line(usage, billing);
+        Some(if self.orch_turn_in_flight() {
+            usage_view::coordinator_line(line)
+        } else {
+            line
+        })
     }
 
     /// The compaction or summary run ended: its usage, if it reported any,

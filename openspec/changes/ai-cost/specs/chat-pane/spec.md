@@ -43,7 +43,7 @@ Tags as in the main spec. Usage semantics and text formats live in `ai-usage`.
 - THEN `reading usage…` shows at once and the view replaces it when the data arrives, without blocking keys
 
 ### Requirement: Per-answer usage line
-After a turn that ended with a final event, the pane MUST append one dim system line below the answer, in the format of `ai-usage` (Usage text formats), when the `ai.usage.line` setting is on (default on). For a turn with no record the line reads `usage: no data`. For a cancelled, interrupted or errored turn the line appears only when the turn has a record (it is then marked `partial`). The line is not part of the assistant message: not stored, not sent to an engine, not included by yank of an answer, and not shown after resume. With the setting off, no usage line appears and nothing else changes. The line appears before any threshold note of the same turn.
+After a turn that ended with a final event, the pane MUST append one dim system line below the answer, in the format of `ai-usage` (Usage text formats), when the `ai.usage.line` setting is on (default on). For a turn with no record the line reads `usage: no data`. For a cancelled, interrupted or errored turn the line appears only when the turn has a record (it is then marked `partial`). The line is not part of the assistant message: not stored, not sent to an engine, not included by yank of an answer, and not shown after resume. With the setting off, no usage line appears and nothing else changes. The line appears before any threshold note of the same turn. When the turn is the coordinator's turn of an orchestrator run, the line starts `usage (coordinator):` instead of `usage:` (every other part is unchanged, `no data` included): it is the coordinator's own usage, not the run total, and the workers' usage is recorded apart (see `ai-usage`, Worker usage).
 
 #### Scenario: Line after a claude turn [auto, TestBackend + insta]
 - GIVEN a claude turn with 2 in, 4 out, cost 0.004936 and mode `subscription`
@@ -59,6 +59,11 @@ After a turn that ended with a final event, the pane MUST append one dim system 
 - GIVEN a turn whose engine reported nothing
 - WHEN the turn ends
 - THEN the line reads `usage: no data`
+
+#### Scenario: Coordinator label [auto]
+- GIVEN an orchestrator turn with 12 in and 34 out
+- WHEN the turn ends
+- THEN the line reads `usage (coordinator): in 12 · out 34`, and a plain chat turn still reads `usage: in 12 · out 34`
 
 #### Scenario: Turned off [auto]
 - GIVEN `ai.usage.line` off

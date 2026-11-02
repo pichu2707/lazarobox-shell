@@ -182,6 +182,9 @@ fn with_charts() -> Vec<String> {
         cost_micros: None,
         total,
         partial: false,
+        workers: 0,
+        worker_total: None,
+        worker_partial: false,
     };
     let rows = [
         day(3, "claude", Some(0)),

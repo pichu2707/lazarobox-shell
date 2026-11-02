@@ -63,6 +63,11 @@ The schema MUST move from version 3 to version 4 by an additive migration that c
 - WHEN each turn ends
 - THEN `Usage not saved:` appears after the first turn only, and every turn still completes
 
+#### Scenario: Worker row fields [auto]
+- GIVEN a record of role `worker` with a worker id
+- WHEN it is stored
+- THEN the row holds that role and id (identifiers only: no text, no path) and the same NULL-for-unknown rule
+
 #### Scenario: Migration failure is visible [auto]
 - GIVEN a version 3 store whose v4 migration fails (fake)
 - WHEN a turn with usage ends

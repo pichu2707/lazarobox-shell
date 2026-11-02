@@ -125,10 +125,12 @@ impl TurnUsage {
 }
 
 /// The usage of one run, waiting for the store. `role` says what ran: `chat`,
-/// `compaction` or `summary`.
+/// `compaction`, `summary` or `worker`; a worker run also names the worker.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Pending {
     pub role: &'static str,
+    /// `<run>.<worker>` of a `worker` run: identifiers, never text.
+    pub worker: Option<String>,
     pub engine: String,
     pub usage: TurnUsage,
 }
@@ -171,6 +173,7 @@ impl SideRun {
         usage.partial |= cut;
         Some(Pending {
             role: self.role,
+            worker: None,
             engine: self.engine,
             usage,
         })

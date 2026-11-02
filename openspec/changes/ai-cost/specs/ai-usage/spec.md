@@ -187,7 +187,7 @@ Everywhere usage appears as a line it MUST follow these formats (English UI text
 
 ### Requirement: Thresholds
 Three optional thresholds MUST exist: per turn (total tokens, `turn_tokens`), per day (total tokens, `day_tokens`) and per day (dollars, `day_usd`). An unset threshold is off. A threshold MUST only produce a passive note and MUST NEVER block, delay, shorten or cancel a send or a stream.
-- Per turn: when a finished turn's total tokens are known and exceed `turn_tokens`, the pane shows the system line `turn used <N> tokens (limit <L>)`. A turn whose total is `None` never triggers it.
+- Per turn: when a finished turn's total tokens are known and exceed `turn_tokens`, the pane shows the system line `turn used <N> tokens (limit <L>)`. A turn whose total is `None` never triggers it. A worker turn never triggers it (see Worker usage); worker records do count toward the per-day notes.
 - Per day, tokens: after a record is stored, when the sum of the total tokens of the day's records (records with `None` total are skipped) reaches `day_tokens`, the pane shows `today's usage reached <N> tokens (limit <L>)`.
 - Per day, dollars: when the sum of `cost_usd` of the day's records of engines in `per-token` mode reaches `day_usd`, the pane shows `today's spend reached $<N> (limit $<L>)`. Records of `subscription` engines and local engines never count toward it.
 The notes are evaluated on every store answer that carries the day's figures, so the first status read of the day MAY show a per-day note at startup when the day is already over the limit (in the pane that read it). The key of a per-day note includes the limit, so raising the limit the same day arms it again. The two per-day notes MUST appear once per threshold per local day per app run (crossing again later the same day does not repeat them); the per-turn note appears on every turn that exceeds it. Notes are system lines: not stored, not sent to any engine.
@@ -244,6 +244,7 @@ The notes are evaluated on every store answer that carries the day's figures, so
 3. `last 7 days: <T> · <K> turns` (the last 7 local days including today);
 4. `by engine and model (last 7 days):` followed by one line per engine/model pair, sorted by total tokens descending: `  <engine> › <model>: in <N> · out <N>` plus the cached, dollar and partial parts as in Usage text formats, dollars labelled by the engine's billing mode;
 5. `this chat: <T> · <K> turns` for the current conversation (records still linked to it), or `this chat: no data` when it has none.
+The totals of lines 2, 3 and 5 include the tokens of worker records (see Worker usage). Right after line 3, and only when the last 7 days hold at least one worker record, the view MUST show `of which workers: <T>`, where `<T>` is `<N> tokens` (sum of the known totals of the worker records of those days) or `no data` when none has a known total; it ends with ` · partial` when any of those worker records is partial or lacks its input or output count. The line is tokens only: dollars appear in the per-engine and model lines under the existing billing rules, never in this line. Worker records are not turns.
 `<K> turns` counts chat records only (compaction and summary runs add their tokens but are not turns). Sums MUST skip `None` values rather than treating them as 0. A pair line, and every summary line (`today`, `last 7 days`, `this chat`, `this session`), MUST end with ` · partial` when any record in it is partial or lacks its input or output count. A pair line that shows a dollar figure is also `partial` when some of its records reported tokens but no dollars while others did (the figure is then a floor). With no records at all the view is `AI usage (alpha)` followed by `no usage recorded yet`. Reading the store happens off the UI thread; until the answer arrives the pane shows `reading usage…`; if the store is unavailable the view is `usage history is not available` with no other lines. When chat history is off, no usage rows are written; the view then shows only the current session, built from memory, with the line `chat history is off: showing this session only`.
 
 #### Scenario: Aggregates all chats [auto]
@@ -276,6 +277,21 @@ The notes are evaluated on every store answer that carries the day's figures, so
 - WHEN `/cost` runs
 - THEN the pair line shows the figure followed by ` · partial`
 
+#### Scenario: Workers line appears with worker records [auto]
+- GIVEN a chat record of 300 total tokens and a worker record of 200 total tokens, both today
+- WHEN `/cost` runs
+- THEN `today` and `last 7 days` read `500 tokens · 1 turns`, and `of which workers: 200 tokens` follows the `last 7 days` line
+
+#### Scenario: No workers line without worker records [auto]
+- GIVEN only chat records
+- WHEN `/cost` runs
+- THEN no line starts with `of which workers`
+
+#### Scenario: Workers line never invents a total [auto]
+- GIVEN a worker record with an output count and no input count
+- WHEN `/cost` runs
+- THEN the line reads `of which workers: no data · partial`
+
 #### Scenario: Turns are chat records only [auto]
 - GIVEN a chat record and a compaction record of one engine
 - WHEN `/cost` runs
@@ -295,6 +311,95 @@ The notes are evaluated on every store answer that carries the day's figures, so
 - GIVEN a claude and an ollama turn in a real pane
 - WHEN `/cost` is typed
 - THEN the claude turn shows tokens and a labelled dollar figure, the ollama turn shows tokens and no dollars
+
+### Requirement: Worker usage
+When an orchestrator run is live, the usage that each worker turn reports MUST be recorded like a chat turn's, as one record per worker turn (the requests of the turn summed as in Summing per turn), with the role `worker`, the worker's engine and model, the worker id with its run id, and the conversation of the pane when it is saved. A worker whose engine reports nothing writes no record (no data, no row). Counts the engine did not report stay `None`, are stored as NULL and are never estimated or filled from other workers. A worker turn that ended without a final answer (failed, cancelled, timed out or cut) or whose usage the engine marked partial MUST be recorded as `partial`; a worker usage gap is stored as a partial record, never dropped and never completed. A record that lacks its input or output count is stored with NULL there and is read as partial by `/cost`, as for any record. Billing and list-price rules apply by the worker's engine, exactly as for a chat turn (a local engine never shows dollars). Worker usage that arrives when its pane is no longer a chat MUST still be stored (unlinked) when the history is on; if that write fails there is no pane to tell, a known limit. Per-worker and per-run breakdowns are out of scope: records are only identifiable in the store.
+Worker records are subject to every rule of the chat records: nothing is written with the history off (the session view in memory still counts them); a failed write is surfaced as `Usage not saved: <reason>` under the once-per-run rule; a deleted conversation keeps its worker records (link dropped); the 90-day retention applies. Worker records count in `today` and `last 7 days`, in the charts and per-engine bars, in the status-bar segment and in the day thresholds (spend included under the `per-token` rule). A worker turn MUST NEVER trigger the per-turn threshold note, which belongs to the chat turn. On the coordinator's orchestrated turn the usage line under its answer MUST read `usage (coordinator): ...` (see chat-pane), so it is not read as the run total.
+
+#### Scenario: Worker turn is stored [auto]
+- GIVEN history on and a worker (engine ollama, model `m`) that reported 120 in and 30 out
+- WHEN its turn ends
+- THEN one record is stored with role `worker`, that engine and model, those counts, the worker id and run id, and the pane's conversation when it has one
+
+#### Scenario: Usage rounds are summed into one record [auto]
+- GIVEN a worker turn that reported usage in two requests
+- WHEN the turn ends
+- THEN one record holds the sums
+
+#### Scenario: Engine reported nothing [auto]
+- GIVEN a worker whose engine emitted no usage
+- WHEN the turn ends
+- THEN no record is stored
+
+#### Scenario: Gap is a partial record [auto]
+- GIVEN a worker whose usage the engine marked partial
+- WHEN the turn ends
+- THEN one record is stored with `partial` set
+
+#### Scenario: Missing count stays unknown [auto]
+- GIVEN a worker that reported an output count and no input count
+- WHEN the turn ends
+- THEN one record is stored with a NULL input and the output, and `/cost` reads it as partial
+
+#### Scenario: Failed or cut worker is partial [auto]
+- GIVEN a worker that reported usage and then failed, was cancelled or hit its deadline
+- WHEN the turn is over
+- THEN its record is stored as `partial`
+
+#### Scenario: History off stores nothing [auto]
+- GIVEN history off
+- WHEN a worker turn reports usage
+- THEN no store command is issued, and the session view counts the tokens
+
+#### Scenario: Billing by the worker's engine [auto]
+- GIVEN a claude worker with a reported dollar figure in mode `subscription` and an ollama worker
+- WHEN `/cost` runs
+- THEN the claude pair line labels the dollars `list-price equivalent` and the ollama pair line has no dollars
+
+#### Scenario: Day figures include workers [auto]
+- GIVEN a chat record of 100 tokens and a worker record of 50 today
+- WHEN the store answers the day figures
+- THEN the status segment reads `today: 150 tok`, and a `day_tokens` limit of 150 is reached
+
+#### Scenario: Worker spend counts under per-token [auto]
+- GIVEN a claude worker record with a dollar figure and mode `per-token`
+- WHEN the day figures arrive
+- THEN the spend counts toward `day_usd`; in mode `subscription` it does not
+
+#### Scenario: Worker turns never trigger the per-turn note [auto]
+- GIVEN `turn_tokens` 1000 and a worker turn of 5000 tokens
+- WHEN its usage is recorded
+- THEN no `turn used` note appears
+
+#### Scenario: Failed worker write is surfaced [auto]
+- GIVEN a store whose usage insert fails and a worker turn that reported usage
+- WHEN the store answers
+- THEN the pane shows `Usage not saved: <reason>` once per run and the run goes on
+
+#### Scenario: Pane gone [auto]
+- GIVEN history on and a worker record for a pane that is no longer a chat
+- WHEN the record arrives
+- THEN it is stored with no conversation, and with the history off nothing is stored
+
+#### Scenario: Truncated worker is partial [auto]
+- GIVEN a worker that reported usage and whose answer hit the cap
+- WHEN the turn ends
+- THEN one partial record is stored and its row shows the gap
+
+#### Scenario: Deleting the chat keeps worker usage [auto]
+- GIVEN a conversation with worker records
+- WHEN it is deleted
+- THEN the worker records remain with a NULL link and `/cost` totals are unchanged
+
+#### Scenario: Charts include workers [auto]
+- GIVEN worker records only today
+- WHEN the charts are built
+- THEN the engine bars and the per-day line count their tokens
+
+#### Scenario: Real orchestrated run [manual]
+- GIVEN an orchestrated run with two workers on real engines
+- WHEN `/cost` is typed afterwards
+- THEN the totals include the workers and `of which workers` shows their tokens
 
 ### Requirement: Charts
 The `/cost` view MUST also show, after the lines above and as plain text system lines (no new widget required), two charts:
