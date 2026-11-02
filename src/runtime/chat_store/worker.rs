@@ -576,9 +576,10 @@ fn record_usage(
     // The subselect leaves the link NULL for a conversation that is gone.
     conn.execute(
         "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
-             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial)
+             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial,
+             prefill_ms, load_ms)
          VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?15, ?6, ?7, ?8,
-             ?9, ?10, ?11, ?12, ?13, ?14)",
+             ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?17)",
         rusqlite::params![
             at,
             conversation,
@@ -595,6 +596,8 @@ fn record_usage(
             count_of(usage.duration_ms),
             usage.partial,
             worker,
+            count_of(usage.prefill_ms),
+            count_of(usage.load_ms),
         ],
     )
     .map_err(|err| usage_reason(&err).to_owned())?;
@@ -715,7 +718,11 @@ fn usage_report(
                           AND (engine <> 'claude' OR cache_write IS NOT NULL)
                          THEN input + cache_read + COALESCE(cache_write, 0) END),
                 COUNT(*) - COUNT(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
-                          AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END)
+                          AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END),
+                SUM(CASE WHEN input IS NOT NULL AND prefill_ms IS NOT NULL THEN prefill_ms END),
+                SUM(CASE WHEN input IS NOT NULL AND prefill_ms IS NOT NULL
+                         THEN input + COALESCE(cache_read, 0) END),
+                COUNT(*) - COUNT(CASE WHEN input IS NOT NULL AND prefill_ms IS NOT NULL THEN 1 END)
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
     )?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
@@ -740,6 +747,9 @@ fn usage_report(
             cache_hit: count(r.get(16)?),
             cache_base: count(r.get(17)?),
             cache_gap: count(r.get(18)?).unwrap_or(0),
+            prefill_ms: count(r.get(19)?),
+            prefill_tokens: count(r.get(20)?),
+            prefill_gap: count(Some(r.get(21)?)).unwrap_or(0),
         })
     })?;
     rows.collect()

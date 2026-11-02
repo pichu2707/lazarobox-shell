@@ -166,6 +166,9 @@ fn with_charts() -> Vec<String> {
         cache_hit: None,
         cache_base: None,
         cache_gap: 0,
+        prefill_ms: None,
+        prefill_tokens: None,
+        prefill_gap: 0,
         cost_micros: None,
         total,
         partial: false,
@@ -231,6 +234,9 @@ fn snapshot_a_narrow_pane_wraps_a_long_cache_line_and_keeps_partial() {
         cache_hit: Some(hit),
         cache_base: Some(100),
         cache_gap: gap,
+        prefill_ms: None,
+        prefill_tokens: None,
+        prefill_gap: 0,
         total: Some(15),
         ..UsageRow::default()
     };

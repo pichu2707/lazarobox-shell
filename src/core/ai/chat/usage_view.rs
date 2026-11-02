@@ -119,6 +119,12 @@ pub struct UsageRow {
     /// Records of the row that gave no cache figure: no input, no cache read
     /// or, for claude, no cache write. The share leaves them out.
     pub cache_gap: u64,
+    /// Prompt-processing time of the local records that reported it, in ms.
+    pub prefill_ms: Option<u64>,
+    /// Full prompt tokens (fresh input + cache reads) of those same records.
+    pub prefill_tokens: Option<u64>,
+    /// Records of the row that gave no prefill time or no input.
+    pub prefill_gap: u64,
     pub cost_micros: Option<u64>,
     /// Sum of the known totals (`input + output` of each record that has both).
     pub total: Option<u64>,

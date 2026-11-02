@@ -3379,3 +3379,52 @@ fn the_cache_gap_counts_records_without_a_usable_cache_figure() {
         (Some(80), Some(100), 1)
     );
 }
+
+#[test]
+fn a_record_stores_prefill_and_load_and_leaves_missing_ones_null() {
+    let (_dir, _worker, mut conn) = fixture();
+    let usage = |prefill_ms, load_ms| TurnUsage {
+        input: Some(10),
+        prefill_ms,
+        load_ms,
+        ..TurnUsage::default()
+    };
+    record_usage(&mut conn, None, ("ollama", "chat", None), &usage(Some(5), Some(115))).unwrap();
+    record_usage(&mut conn, None, ("ollama", "chat", None), &usage(None, None)).unwrap();
+    let stored: Vec<(Option<i64>, Option<i64>)> = conn
+        .prepare("SELECT prefill_ms, load_ms FROM turn_usage ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(stored, [(Some(5), Some(115)), (None, None)]);
+}
+
+#[test]
+fn the_report_sums_prefill_over_the_full_prompt_and_counts_the_gap() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    let ins = |engine: &str, input: Option<i64>, read: Option<i64>, prefill: Option<i64>| {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, model, role, input, output, cache_read, prefill_ms)
+             VALUES (?1, ?2, 'm', 'chat', ?3, 1, ?4, ?5)",
+            rusqlite::params![now, engine, input, read, prefill],
+        )
+        .unwrap();
+    };
+    // Ollama: the input is the full prompt. One record has no prefill.
+    ins("ollama", Some(3000), None, Some(5));
+    ins("ollama", Some(600), None, Some(1));
+    ins("ollama", Some(50), None, None);
+    // llama.cpp: the prompt is the fresh tokens plus the cached ones.
+    ins("llamacpp", Some(1), Some(4598), Some(10));
+    // A cloud engine reports none.
+    ins("claude", Some(10), Some(80), None);
+    let rows = usage_report(&conn, None, now).unwrap();
+    let of = |e: &str| rows.iter().find(|r| r.engine == e).unwrap();
+    let got = |e: &str| (of(e).prefill_ms, of(e).prefill_tokens, of(e).prefill_gap);
+    assert_eq!(got("ollama"), (Some(6), Some(3600), 1));
+    assert_eq!(got("llamacpp"), (Some(10), Some(4599), 0));
+    assert_eq!(of("claude").prefill_ms, None);
+}

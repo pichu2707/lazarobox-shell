@@ -1125,9 +1125,46 @@ fn the_usage_table_holds_only_counts_ids_and_timestamps() {
             "cost_micros",
             "cost_source",
             "duration_ms",
-            "partial"
+            "partial",
+            "prefill_ms",
+            "load_ms"
         ]
     );
+}
+
+#[test]
+fn a_turn_usage_table_without_prefill_columns_gains_them_and_keeps_its_rows() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    // The table as a build before the prefill columns left it.
+    let raw = Connection::open(&db).unwrap();
+    raw.execute_batch(
+        "DROP TABLE turn_usage;
+         CREATE TABLE turn_usage (
+            id INTEGER PRIMARY KEY, ts INTEGER NOT NULL,
+            conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+            engine TEXT NOT NULL, model TEXT, role TEXT NOT NULL DEFAULT 'chat', worker TEXT,
+            input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER,
+            reasoning INTEGER, cost_micros INTEGER, cost_source TEXT, duration_ms INTEGER,
+            partial INTEGER NOT NULL DEFAULT 0 CHECK (partial IN (0, 1)));
+         INSERT INTO turn_usage(ts, engine, input) VALUES (1, 'ollama', 9);",
+    )
+    .unwrap();
+    drop(raw);
+    let conn = open_as(&db, me()).unwrap();
+    let cols = table_columns(&conn, "turn_usage");
+    assert!(cols.contains(&"prefill_ms".to_owned()) && cols.contains(&"load_ms".to_owned()));
+    let kept: (i64, Option<i64>, Option<i64>) = conn
+        .query_row("SELECT input, prefill_ms, load_ms FROM turn_usage", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(kept, (9, None, None));
+    // Still v3, and a second open (columns present) is a no-op.
+    assert_eq!(pragma_text(&conn, "user_version"), "3");
+    drop(conn);
+    assert!(open_with(&db, me(), 3).is_ok());
 }
 
 #[test]
