@@ -285,6 +285,9 @@ pub struct ModelFacts {
     /// The listing's digest: the key of the tool-support cache.
     pub digest: Option<String>,
     pub tools: marks::Tools,
+    /// The model's own maximum context window in tokens, from the same
+    /// `POST /api/show` reply as `tools`; `None` when the probe did not say.
+    pub window: Option<usize>,
 }
 
 impl Detection {
@@ -293,6 +296,24 @@ impl Detection {
         self.model_facts
             .iter()
             .find(|f| f.engine == engine && f.name == name)
+    }
+
+    /// The maximum context window of model `name` of engine `engine`, with
+    /// the same `:latest` rule as [`catalog::same_model`].
+    pub fn model_window(&self, engine: &str, name: &str) -> Option<usize> {
+        self.model_facts
+            .iter()
+            .find(|f| f.engine == engine && catalog::same_model(engine, &f.name, name))
+            .and_then(|f| f.window)
+    }
+
+    /// The known windows of the Ollama models, by listed name.
+    pub fn ollama_windows(&self) -> Vec<(String, usize)> {
+        self.model_facts
+            .iter()
+            .filter(|f| f.engine == "ollama")
+            .filter_map(|f| Some((f.name.clone(), f.window?)))
+            .collect()
     }
 
     /// The context window of engine `id` in tokens, when it reported one.

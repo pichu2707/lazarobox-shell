@@ -39,6 +39,7 @@ pub fn ollama_tag_facts(body: &[u8]) -> Option<Vec<ModelFacts>> {
                     params,
                     digest,
                     tools: Tools::Unknown,
+                    window: None,
                 })
             })
             .take(MAX_MODELS)

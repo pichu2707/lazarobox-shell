@@ -105,19 +105,25 @@ async fn exchange(port: u16, request: &str) -> Option<(u16, Vec<u8>)> {
     parse_response(&raw)
 }
 
-/// Tool support of Ollama models by digest, in memory for the life of the
-/// process (never on disk). Only answers (`Yes`, `No`) are kept: an `Unknown`
-/// is probed again on the next run.
+/// What one `POST /api/show` told about a model: tool support and the
+/// model's own context window.
+type Shown = (Tools, Option<usize>);
+
+/// What `/api/show` said of Ollama models by digest, in memory for the life
+/// of the process (never on disk). Only answers (`Yes`, `No`) are kept: an
+/// `Unknown` is probed again on the next run. A Modelfile edit changes the
+/// digest, so the window is read again too.
 #[derive(Default)]
-pub struct ShowCache(Mutex<HashMap<String, Tools>>);
+pub struct ShowCache(Mutex<HashMap<String, Shown>>);
 
 impl ShowCache {
-    pub fn get(&self, digest: &str) -> Option<Tools> {
+    pub fn get(&self, digest: &str) -> Option<Shown> {
         let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
         map.get(digest).copied()
     }
 
-    pub fn put(&self, digest: &str, tools: Tools) {
+    pub fn put(&self, digest: &str, shown: Shown) {
+        let (tools, _) = shown;
         if tools == Tools::Unknown {
             return;
         }
@@ -125,7 +131,7 @@ impl ShowCache {
         if map.len() >= SHOW_CACHE_CAP && !map.contains_key(digest) {
             map.clear();
         }
-        map.insert(digest.to_owned(), tools);
+        map.insert(digest.to_owned(), shown);
     }
 }
 
@@ -149,7 +155,7 @@ async fn show_phase(
     let mut todo = Vec::new();
     for (at, facts) in facts_all.iter_mut().enumerate() {
         match facts.digest.as_deref().and_then(|d| cache.get(d)) {
-            Some(tools) => facts.tools = tools,
+            Some((tools, window)) => (facts.tools, facts.window) = (tools, window),
             None => todo.push((at, facts.name.clone())),
         }
     }
@@ -157,11 +163,14 @@ async fn show_phase(
     let mut calls = stream::iter(todo)
         .map(|(at, name)| async move {
             let reply = http_post_show(port, &name).await;
-            let tools = match reply {
-                Some((200, body)) => parse::show_tools(&body),
-                _ => Tools::Unknown,
+            let shown = match reply {
+                Some((200, body)) => (
+                    parse::show_tools(&body),
+                    window::ollama_context_length(&body),
+                ),
+                _ => (Tools::Unknown, None),
             };
-            (at, tools)
+            (at, shown)
         })
         .buffer_unordered(SHOW_PARALLEL);
     let mut answers = Vec::new();
@@ -171,11 +180,11 @@ async fn show_phase(
         }
     })
     .await;
-    for (at, tools) in answers {
+    for (at, shown) in answers {
         let facts = &mut facts_all[at];
-        facts.tools = tools;
+        (facts.tools, facts.window) = shown;
         if let Some(digest) = &facts.digest {
-            cache.put(digest, tools);
+            cache.put(digest, shown);
         }
     }
     facts_all
@@ -658,7 +667,8 @@ pub async fn detect_all(
 
 /// The context windows of the servers that are up and say theirs: a running
 /// llama-server's `n_ctx` (`GET /props`). Ollama is left out: its window sits
-/// behind a POST (`/api/show`), which only [`show_phase`] sends, for tools.
+/// behind a POST (`/api/show`), which [`show_phase`] sends and keeps on the
+/// model facts.
 async fn windows(detection: &Detection, ports: &ServerPorts) -> Vec<(&'static str, usize)> {
     let up = detection
         .engines
@@ -2335,6 +2345,7 @@ mod tests {
                 params: None,
                 digest: None,
                 tools: Tools::Unknown,
+                window: None,
             })
             .collect();
         Detection {

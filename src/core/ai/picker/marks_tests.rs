@@ -10,6 +10,7 @@ fn facts(name: &str, params: Option<u64>, tools: Tools) -> ModelFacts {
         params,
         digest: Some(format!("digest-{name}")),
         tools,
+        window: None,
     }
 }
 

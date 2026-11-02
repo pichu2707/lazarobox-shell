@@ -396,18 +396,18 @@ async fn the_other_servers_never_get_a_post() {
 #[test]
 fn the_cache_keeps_only_answers_and_clears_when_full() {
     let cache = ShowCache::default();
-    cache.put("a", Tools::Yes);
-    cache.put("b", Tools::No);
-    cache.put("c", Tools::Unknown);
-    assert_eq!(cache.get("a"), Some(Tools::Yes));
-    assert_eq!(cache.get("b"), Some(Tools::No));
+    cache.put("a", (Tools::Yes, Some(8192)));
+    cache.put("b", (Tools::No, None));
+    cache.put("c", (Tools::Unknown, Some(4096)));
+    assert_eq!(cache.get("a"), Some((Tools::Yes, Some(8192))));
+    assert_eq!(cache.get("b"), Some((Tools::No, None)));
     assert_eq!(cache.get("c"), None);
     for i in 0..256 {
-        cache.put(&format!("k{i}"), Tools::Yes);
+        cache.put(&format!("k{i}"), (Tools::Yes, None));
     }
     // The 257th insert found it full: everything went, then it was stored.
     assert_eq!(cache.get("a"), None);
-    assert_eq!(cache.get("k255"), Some(Tools::Yes));
+    assert_eq!(cache.get("k255"), Some((Tools::Yes, None)));
 }
 
 /// A llama.cpp double: lists a model, never answers `/props` (the window
@@ -453,4 +453,65 @@ async fn a_hung_show_overlaps_the_other_slow_probes() {
         took >= Duration::from_millis(900) && took < Duration::from_millis(1500),
         "{took:?}"
     );
+}
+
+fn with_window(arch: &str, length: u64) -> Show {
+    Show::Body(format!(
+        r#"{{"capabilities":["tools"],"model_info":{{"general.architecture":"{arch}","{arch}.context_length":{length}}}}}"#
+    ))
+}
+
+fn window_of(d: &Detection, name: &str) -> Option<usize> {
+    d.facts("ollama", name).unwrap().window
+}
+
+#[tokio::test]
+async fn one_show_reply_fills_the_tools_and_the_window() {
+    let fake = fake_ollama(tags(&named(2)), Duration::ZERO, |m| match m {
+        "m0:8b" => with_window("llama", 131_072),
+        _ => caps(r#""tools""#),
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(fake.posts().len(), 2, "no extra call for the window");
+    assert_eq!(tools_of(&d, "m0:8b"), Tools::Yes);
+    assert_eq!(window_of(&d, "m0:8b"), Some(131_072));
+    assert_eq!(d.model_window("ollama", "m0:8b"), Some(131_072));
+    assert_eq!(window_of(&d, "m1:8b"), None, "no model_info is unknown");
+    assert_eq!(d.model_window("ollama", "m1:8b"), None);
+}
+
+#[tokio::test]
+async fn the_window_is_cached_by_digest_with_the_tools() {
+    let cache = ShowCache::default();
+    let first = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("qwen3", 40_960)
+    })
+    .await;
+    detect(first.port, &cache).await;
+    let second = fake_ollama(tags(&named(1)), Duration::ZERO, |_| caps(r#""completion""#)).await;
+    let d = detect(second.port, &cache).await;
+    assert!(second.posts().is_empty(), "a cache hit makes no call");
+    assert_eq!(window_of(&d, "m0:8b"), Some(40_960));
+    assert_eq!(tools_of(&d, "m0:8b"), Tools::Yes);
+}
+
+#[tokio::test]
+async fn a_failed_probe_leaves_the_window_unknown() {
+    let fake = fake_ollama(tags(&named(1)), Duration::ZERO, |_| Show::Status(500)).await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(window_of(&d, "m0:8b"), None);
+}
+
+#[tokio::test]
+async fn model_window_matches_the_latest_tag_like_the_other_lookups() {
+    let models = vec![("tiny:latest".to_owned(), "1B", "dl".to_owned())];
+    let fake = fake_ollama(tags(&models), Duration::ZERO, |_| {
+        with_window("llama", 4_096)
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(d.model_window("ollama", "tiny"), Some(4_096));
+    assert_eq!(d.model_window("ollama", "tiny:latest"), Some(4_096));
+    assert_eq!(d.model_window("ollama", "other"), None);
 }
