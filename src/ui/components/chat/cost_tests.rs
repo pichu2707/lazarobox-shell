@@ -255,3 +255,34 @@ fn snapshot_a_narrow_pane_wraps_a_long_cache_line_and_keeps_partial() {
     assert!(shown.contains("partial"), "{shown}");
     insta::assert_snapshot!(shown);
 }
+
+#[test]
+fn snapshot_a_narrow_pane_wraps_a_long_prefill_line_and_keeps_partial() {
+    use crate::core::ai::chat::usage_view::{Session, UsageRow, report_lines};
+    let row = |engine: &str, ms, gap| UsageRow {
+        engine: engine.into(),
+        model: Some("m".into()),
+        turns: 1,
+        records: 1,
+        input: Some(10),
+        output: Some(5),
+        prefill_ms: Some(ms),
+        prefill_tokens: Some(1_000),
+        prefill_gap: gap,
+        total: Some(15),
+        ..UsageRow::default()
+    };
+    let rows = [
+        row("llamacpp", 3, 0),
+        row("lmstudio", 12, 1),
+        row("ollama", 1, 0),
+        row("vllm", 8, 0),
+    ];
+    let billing = |_: &str| None;
+    let mut lines = report_lines(&rows, &Session::default(), &billing);
+    lines.retain(|l| l.starts_with("prefill") || l.starts_with("AI usage"));
+    let chat = chat_with(CostView::with(lines));
+    let shown = text(&draw(&chat, 30, 14));
+    assert!(shown.contains("partial"), "{shown}");
+    insta::assert_snapshot!(shown);
+}

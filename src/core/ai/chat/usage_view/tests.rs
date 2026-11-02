@@ -767,3 +767,20 @@ fn no_prefill_data_shows_no_line_and_a_gap_marks_it_partial() {
     let lines = before_charts(view(&[prefilled("ollama", Some(5), Some(5_000), 1)]));
     assert!(lines.contains(&"prefill today: ollama 1.0 ms/1k tok · partial".to_owned()));
 }
+
+#[test]
+fn only_local_server_engines_show_a_prefill_figure() {
+    let lines = before_charts(view(&[
+        prefilled("claude", Some(5), Some(1_000), 0),
+        prefilled("lmstudio", Some(5), Some(1_000), 0),
+        prefilled("vllm", Some(2), Some(1_000), 0),
+    ]));
+    assert!(
+        lines.contains(&"prefill today: lmstudio 5.0 ms/1k tok · vllm 2.0 ms/1k tok".to_owned())
+    );
+    let lines = before_charts(view(&[prefilled("codex", Some(5), Some(1_000), 0)]));
+    assert!(
+        lines.iter().all(|l| !l.starts_with("prefill ")),
+        "{lines:?}"
+    );
+}

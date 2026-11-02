@@ -298,6 +298,9 @@ fn cache_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Opti
     (!shares.is_empty()).then(|| format!("cache {label}: {}{mark}", shares.join(" · ")))
 }
 
+/// The local server engines: the only ones that report a prefill time.
+const LOCAL_ENGINES: [&str; 4] = ["ollama", "llamacpp", "lmstudio", "vllm"];
+
 /// `prefill <label>: <engine> N ms/1k tok · ...` for the rows picked: the
 /// average time a local engine took to process 1000 prompt tokens, so a low
 /// figure means its prompt cache was hit. `None` when no engine reported a
@@ -305,7 +308,7 @@ fn cache_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Opti
 fn prefill_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Option<String> {
     // Per engine: milliseconds, prompt tokens and records without a figure.
     let mut by_engine: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-    for r in rows {
+    for r in rows.filter(|r| LOCAL_ENGINES.contains(&r.engine.as_str())) {
         let e = by_engine.entry(ident(&r.engine)).or_default();
         e.0 = e.0.saturating_add(r.prefill_ms.unwrap_or(0));
         e.1 = e.1.saturating_add(r.prefill_tokens.unwrap_or(0));
