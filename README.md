@@ -67,8 +67,8 @@ Los paréntesis lanzan un subshell: el `umask 022` solo afecta a ese comando y n
 
 Compatibilidad de plataformas:
 
-- **Linux:** soportado. Es la única plataforma probada.
-- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente en la 1.0. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
+- **Linux:** soportado. Es la única plataforma probada a mano.
+- **macOS:** sin soporte oficial. El CI compila lazarobox y pasa todos sus tests en macOS (arm64 e Intel), y prueba el codex real dentro de la jaula Seatbelt, pero nadie ha usado la interfaz a mano en un Mac. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
 - **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
@@ -812,7 +812,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - En sistemas que no son Linux ni macOS no hay jaula. El chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini no arrancan. El mensaje lo indica: `the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat`.
 - **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 10 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
-- **macOS no está soportado oficialmente en la 1.0.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian el estado de soporte de la 1.0.
+- **macOS no está soportado oficialmente.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian por sí solos el estado de soporte.
 - **claude nunca corre dentro de la jaula en macOS.** Guarda su sesión en el llavero (Keychain) y la jaula se lo impediría; en macOS siempre corre sin jaula, solo con sus opciones de solo texto, aunque la comprobación de la jaula falle. El panel lo avisa con `claude runs without the jail here: claude keeps its macOS Keychain login, so it never runs jailed on macOS` y nunca lo trata como «jaula no disponible».
 
 **La jaula en macOS: lo que cambia.**
