@@ -628,6 +628,8 @@ fn m_on_a_refused_worker_opens_the_models_of_its_configured_engine() {
     assert_eq!(a.update(key('m')), vec![]);
     let text = guidance(&a);
     assert!(text.starts_with("Model for review (ollama)"), "{text}");
+    // The worker never ran on that model: none is marked as in use.
+    assert!(!text.contains('\u{25cf}'), "{text}");
 }
 
 // With nothing to take the engine from, the engine picker opens and the

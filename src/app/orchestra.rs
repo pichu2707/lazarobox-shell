@@ -566,7 +566,7 @@ impl App {
             if in_use.0.is_empty()
                 && let Some(engine) = configured.engine.as_deref()
             {
-                in_use = (engine, configured.model.as_deref());
+                in_use = (engine, None);
             }
             unresolved = change == Change::Model && in_use.0.is_empty();
             FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
