@@ -298,9 +298,9 @@ The notes are evaluated on every store answer that carries the day's figures, so
 
 ### Requirement: Charts
 The `/cost` view MUST also show, after the lines above and as plain text system lines (no new widget required), two charts:
-- `per day (last 7 days, oldest first):` followed by one line of 7 glyphs, one per local day, scaled to the day with the most known tokens using `▁▂▃▄▅▆▇█`; a day with no record, or only records with unknown totals, is `·`; a day with known tokens of 0 is `▁`; the line ends with the largest value as ` max <N>`;
-- `per engine (last 7 days):` followed by one line per engine, `  <engine> <bar> <N>`, where the bar is `█` repeated 1 to 20 times in proportion to the largest engine, at least one glyph for any engine with known tokens, and an engine with no known totals shows `no data` in place of bar and number.
-With no records the charts are not shown. Charts MUST use only the same data as the text view and MUST render without panic at any pane width from 0 upward (long lines wrap or clip like other system lines).
+- `per day (last 7 days, oldest first):` followed by one line of 7 glyphs, one per local day, scaled to the day with the most known tokens using `▁▂▃▄▅▆▇█`; a day with no record, or only records with unknown totals, is `·`; a day with known tokens of 0 is `▁`; a known non-zero day shows at least `▂`, never `▁`; the line ends with the largest value as ` max <N>`;
+- `per engine (last 7 days):` followed by one line per engine, `  <engine> <bar> <N>`, with engine names padded to the longest by display width, cut with `…` past 16 columns, and `?` when empty, where the bar is `█` repeated 1 to 20 times in proportion to the largest engine, at least one glyph for any engine with known tokens, and an engine with no known totals shows `no data` in place of bar and number.
+A figure that includes a partial or unknown record (a day or an engine) is followed by ` *` (the per-day line ends ` max <N> *`). With no records the charts are not shown. Charts MUST use only the same data as the text view and MUST render without panic at any pane width from 0 upward (long lines wrap or clip like other system lines).
 
 #### Scenario: Sparkline scaling [auto]
 - GIVEN, oldest to newest, three days with no records and then daily token totals 0, 100, 200 and 400
@@ -316,6 +316,16 @@ With no records the charts are not shown. Charts MUST use only the same data as 
 - GIVEN claude 1000, ollama 250 and codex with unknown totals
 - WHEN the per-engine lines are built
 - THEN claude has 20 glyphs, ollama 5 and codex shows `no data`
+
+#### Scenario: Partial figures are marked [auto]
+- GIVEN claude with a partial record and 1000 known tokens, and ollama with 250 complete tokens
+- WHEN the charts are built
+- THEN the claude line ends `1000 *`, the ollama line has no marker and the per-day line ends ` max 1000 *`
+
+#### Scenario: Small day is not zero [auto]
+- GIVEN daily totals 1 and 100000
+- WHEN the per-day line is built
+- THEN the first day is `▂`, not `▁`
 
 #### Scenario: No charts when empty [auto]
 - GIVEN no records

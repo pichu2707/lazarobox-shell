@@ -129,7 +129,8 @@ baseline.
   `max <N>`) and `per engine` (a bar of up to 20 `█` per engine, or `no data`
   when it reported no totals). They chart tokens only: a missing count is a
   gap, never zero, and no dollars are drawn. They wrap like any other line in
-  a narrow pane and are not shown with the history off.
+  a narrow pane and are not shown with the history off. A ` *` after a figure
+  means some turns did not report both counts, so it is a minimum.
 
 ### Fixed
 

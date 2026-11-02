@@ -21,6 +21,7 @@ Approach A from the proposal, bound by `sdd/ai-cost/premises`. Each decoder read
 | D11 | Day boundary | Rust timezone code / SQLite `'localtime'` | No chrono crate. SQLite already uses localtime_r | **SQLite** `date(ts,'unixepoch','localtime')`. Replies carry the day key, so the app holds no timezone logic |
 | D12 | Interpretation | store billing mode per row / current config | Rows hold facts and config interprets them, so fixing a wrong mode also fixes past rows | **Current config**. `per-token` shows "spent", `subscription` shows "list-price equivalent". Local engines never show dollars |
 | D13 | Status data | poll / reply-driven | Polling wastes work | After each insert the worker answers `UsageRecorded { day, today }`. The status segment and the day threshold read that reply |
+| D14 | Charts | ratatui `Sparkline`/`BarChart` / plain text lines | The spec asks for plain system lines with exact glyphs and no new widget; text wraps with the other lines at any width | **Plain-text `chart_lines` in `usage_view.rs`**, appended to the report; a ` *` marks a figure that includes a partial or unknown record |
 
 ## Data Flow
 
@@ -70,7 +71,7 @@ Per-answer line (`Entry::Usage`, shown, never stored or sent): `1.2k in · 4 out
 | 2a display | `core/ai/config.rs` (`[ai.usage]` parse), `mod.rs` (`Entry::Usage`), chat render, `statusline.rs`, app wiring | ~280 |
 | 2b menu | `core/ai/menu.rs`, `core/menu.rs`, `core/config.rs` (owned keys), README | ~200 |
 | 3 thresholds | `usage.rs` (checks), app notes (once per day key) | ~150 |
-| 4 charts | `ui/components/chat/cost.rs` (ratatui `Sparkline`/`BarChart`) | ~180 |
+| 4 charts | `core/ai/chat/usage_view.rs` (plain-text `chart_lines`, no ratatui widget) | ~100 |
 
 ## Testing Strategy (strict TDD)
 
