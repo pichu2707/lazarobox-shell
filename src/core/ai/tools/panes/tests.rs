@@ -366,3 +366,35 @@ fn a_roster_that_fits_is_sent_whole() {
     ];
     assert_eq!(render(&lines), lines.join("\n"));
 }
+
+#[test]
+fn a_roster_knows_how_old_it_is() {
+    let roster = Roster::default();
+    assert_eq!(roster.age(), None);
+    roster.set(vec!["pane 1".to_owned()]);
+    assert!(roster.age().unwrap() < Duration::from_secs(5));
+    roster.backdate(Duration::from_secs(42));
+    assert!(roster.age().unwrap() >= Duration::from_secs(42));
+}
+
+#[test]
+fn an_old_roster_says_so_in_the_text_that_is_sent() {
+    let lines = vec!["pane 1 (focused) cwd: ~ program: zsh".to_owned()];
+    let fresh = render_aged(&lines, Some(Duration::from_secs(9)));
+    assert_eq!(fresh, lines[0]);
+    let old = render_aged(&lines, Some(Duration::from_secs(42)));
+    assert_eq!(
+        old,
+        format!(
+            "{}\n(pane list is 42s old; a lookup may be stuck)",
+            lines[0]
+        )
+    );
+    // The note counts for the prompt's rows too.
+    use crate::core::ai::chat::approval_rows::fits;
+    for count in [1, 8, 40] {
+        let text = render_aged(&panes_lines(count), Some(Duration::from_secs(99)));
+        assert!(text.ends_with("a lookup may be stuck)"), "{text}");
+        assert!(fits(&prompt_of(text.clone()), PROMPT_COLS, 20), "{text}");
+    }
+}

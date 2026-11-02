@@ -89,6 +89,10 @@ pub enum PtyEvent {
 /// listening any more, so the reader can stop.
 pub type PtySink = Box<dyn FnMut(PtyEvent) -> bool + Send>;
 
+/// The slow step of [`PtyHandle::probe`]: the shell's folder and the program
+/// in the foreground.
+pub type Probe = Box<dyn FnOnce() -> (Option<PathBuf>, Option<Foreground>) + Send>;
+
 /// A running child behind a PTY.
 pub trait PtyHandle: Send {
     /// Queues bytes for the child. Never blocks.
@@ -109,13 +113,16 @@ pub trait PtyHandle: Send {
     fn cwd(&self) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
     }
-    /// The program that owns the terminal now (the foreground process
-    /// group's leader): its argv from `/proc/<pgid>/cmdline` and its folder
-    /// from `/proc/<pgid>/cwd`. Only those two: never the environment. `None`
-    /// when the command line cannot be read (a platform without `/proc`, a
-    /// process that is gone).
-    fn foreground(&self) -> Option<Foreground> {
-        None
+    /// A reading of the pane for `list_panes`, in two steps so the slow one
+    /// can leave the UI loop. This call is the cheap step and runs on the
+    /// loop: it takes the foreground process group with one ioctl. The
+    /// returned closure does the `/proc` reads, which can block on a stuck
+    /// process, and yields the shell's folder and the foreground program (its
+    /// argv from `/proc/<pgid>/cmdline` and its folder from
+    /// `/proc/<pgid>/cwd`; never the environment). Each is `None` when it
+    /// cannot be read.
+    fn probe(&self) -> Probe {
+        Box::new(|| (None, None))
     }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
