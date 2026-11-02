@@ -22,10 +22,14 @@ baseline.
   instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
   child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
   the real file. The turn warns before it starts when no login is found, honours
-  `GEMINI_CLI_HOME`, links gemini's `.env`, reads `settings.json` with comments,
+  a validated `GEMINI_CLI_HOME`, rewrites gemini's `.env` with only its login keys (never a link, so `GEMINI_SYSTEM_MD` cannot come back through it), reads `settings.json` with comments,
   and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
   and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
-  (model cache, installation id), which costs a few extra calls.
+  (model cache, installation id), which costs a few extra calls. A gemini login
+  refreshed during a turn is not saved back (lazarobox never writes credential
+  files), so each turn refreshes the token again, which is a little slower; if
+  Google ever rotated the refresh token, a new `gemini` login would be needed.
+  The login notices show once per run.
 
 ## [1.2.0] - 2026-11-02
 

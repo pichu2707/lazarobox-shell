@@ -23,7 +23,10 @@ use std::{
     os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -108,6 +111,9 @@ pub struct CliEnv {
     /// `$GEMINI_CLI_HOME`, when it is an absolute path: gemini keeps its
     /// state in `<it>/.gemini` instead of `~/.gemini`.
     pub gemini_home: Option<PathBuf>,
+    /// Which CLIs have already had their login notice in this run (a bit
+    /// each): the notice is shown once, not on every turn. Clones share it.
+    pub noticed: Arc<AtomicU8>,
     /// This program's canonical executable, resolved once at startup (inside a
     /// jailed CLI `/proc/self/exe` is node): what an engine runs as its MCP
     /// shim. `None` turns the tools off.
@@ -207,6 +213,7 @@ impl CliEnv {
             gemini_home: std::env::var_os("GEMINI_CLI_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
+            noticed: Arc::default(),
             shim: std::env::current_exe()
                 .and_then(fs::canonicalize)
                 .ok()
@@ -916,7 +923,13 @@ fn jail_plan(
         cli,
         home,
         codex_home: env.codex_home.as_deref().and_then(resolve),
-        gemini_home: env.gemini_home.as_deref().and_then(resolve),
+        gemini_home: match (cli, env.gemini_home.as_deref()) {
+            (Cli::Gemini, Some(set)) => Some(
+                home::checked_gemini_home(set, env.home.as_deref())
+                    .map_err(JailRefusal::BadGeminiHome)?,
+            ),
+            _ => None,
+        },
         binary: bin.clone(),
         interpreter,
         loaders,
@@ -1311,17 +1324,38 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
     // folder: a chat turn gives them a private one (see `home`) and is refused
     // when it cannot, never run with the user's own folder. The model listing
     // and `--version` read none of it and get no home.
-    let (private, home_notice) = if private {
+    let (private, home_notice, home_cwd, dotenv) = if private {
         let prepared = home::prepare(env, job.cli, &dirs.tmp).map_err(|e| {
             let reason: String = e.to_string().chars().take(REASON_CAP).collect();
             StreamEvent::Error(ChatError::Failed(format!(
                 "{CANNOT_PREPARE_HOME}: {reason}"
             )))
         })?;
-        (prepared.vars, prepared.notice)
+        // The login notice is shown once per run, not on every turn.
+        let bit = match job.cli {
+            Cli::Claude => 0,
+            Cli::Codex => 1,
+            Cli::Gemini => 2,
+        };
+        let notice = prepared
+            .notice
+            .filter(|_| env.noticed.fetch_or(bit, Ordering::Relaxed) & bit == 0);
+        (prepared.vars, notice, prepared.cwd, prepared.dotenv)
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, None, None)
     };
+    // A wired gemini runs in its own work folder: the private `.env` goes there
+    // too, or the tools are left off.
+    if let (Some(w), Some(text)) = (&wired, &dotenv) {
+        let placed = w
+            .cwd
+            .as_ref()
+            .is_none_or(|work| write_private(&work.join(".env"), text.as_bytes()).is_ok());
+        if !placed {
+            unwrite_mcp(&dirs);
+            wired = None;
+        }
+    }
     let vars = |wired: Option<&Wired>| {
         let mut vars = env.child_vars();
         vars.extend(private.iter().cloned());
@@ -1393,7 +1427,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                             dirs,
                             notice: joined(notice, home_notice),
                             wired: attempt.is_some(),
-                            cwd: attempt.and_then(|w| w.cwd),
+                            cwd: attempt.and_then(|w| w.cwd).or_else(|| home_cwd.clone()),
                         });
                     }
                     Err(why) => {
@@ -1427,7 +1461,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
         vars: vars(None),
         dirs,
         wired: false,
-        cwd: None,
+        cwd: home_cwd,
         notice: joined(
             tools_off(Some(format!(
                 "{} runs without the jail here: {reason}",

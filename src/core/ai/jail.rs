@@ -411,6 +411,9 @@ pub enum JailRefusal {
     NotCanonical(PathBuf),
     /// A program path the CLI could also write (or the other way round).
     Overlap(PathBuf),
+    /// The user's `$GEMINI_CLI_HOME` is not a folder the jail can open, and
+    /// why.
+    BadGeminiHome(String),
 }
 
 /// Who can write a path the trust check refused.
@@ -678,6 +681,7 @@ impl JailRefusal {
                 "{} would be both run and written by the jail; keep the CLI and its state in separate folders",
                 at(path)
             ),
+            Self::BadGeminiHome(why) => format!("{}; fix or unset it", one_line(why)),
         }
     }
 
@@ -695,6 +699,7 @@ impl JailRefusal {
             Self::RootTooBroad(path) => format!("{} too broad", brief(path, home)),
             Self::NotCanonical(path) => format!("{} not canonical", brief(path, home)),
             Self::Overlap(path) => format!("{} is run and written", brief(path, home)),
+            Self::BadGeminiHome(_) => "bad $GEMINI_CLI_HOME".to_owned(),
         }
     }
 }
