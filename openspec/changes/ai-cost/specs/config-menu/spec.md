@@ -9,8 +9,8 @@ The Settings tab MUST hold a static row `Usage (alpha)` after `llama-server idle
 1. `Usage line` (`ai.usage.line`, `on`/`off`);
 2. `Usage in bar` (`ai.usage.statusline`, `on`/`off`);
 3. `claude billing`, `codex billing`, `gemini billing` (`ai.usage.billing.<id>`, values `subscription`, `per-token`);
-4. (Slice 3, not shipped in slice 2b: the thresholds stay in the config file until then.) `Turn tokens` (`ai.usage.turn_tokens`), `Day tokens` (`ai.usage.day_tokens`), `Day $` (`ai.usage.day_usd`).
-Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an Enter repeat is ignored). `s` saves from inside the view. Any other key (Tab, digits, letters) shows the notice `Esc first to leave Usage` and does nothing else. Limit rows (slice 3) show `off` when empty. `Enter` on a limit row starts editing: digits are accepted (and one `.` for `Day $`, at most 2 decimals), Backspace deletes, `Enter` confirms, `Esc` cancels the edit and restores the previous value; any other character is ignored. A limit is at most 12 digits; `0` or an empty value means `off`. There is no row for local engines. The footer is `j/k move · h/l change · s save · Esc back`; slice 3 adds `Enter edit` once limit rows exist (and while editing a limit `type digits · Enter ok · Esc cancel`). Esc at the view's top level returns to Settings keeping the draft; the AI draft is saved or reverted with the menu as for other AI rows (`s` saves, Esc at the top level restores). Changing a draft MUST have no live effect on open chat panes until a successful save; after a save the usage line, the status segment and the labels take effect at the next frame. The descriptor integrity rules extend to the view's rows (no duplicated key path).
+4. `Turn tokens` (`ai.usage.turn_tokens`, tokens per turn), `Day tokens` (`ai.usage.day_tokens`, tokens per day) and `Day $` (`ai.usage.day_usd`, dollars per day). The labels are short so the value fits the smallest popup.
+Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an Enter repeat is ignored). `s` saves from inside the view. Any other key (Tab, digits, letters) shows the notice `Esc first to leave Usage` and does nothing else. Limit rows show `off` when empty. `h`, `l`, Left, Right and Space on a limit row show the notice `Enter edits this limit`. `Enter` on a limit row starts editing, with the field holding the current value (empty when `off`). While editing: digits are accepted (and one `.` for `Day $`, at most 2 decimals typed), Backspace deletes (on an empty field it only clears the notice), `Enter` confirms, `Esc` cancels the edit and restores the previous value. Any other character shows the notice `Digits only` and is never ignored silently; a refused digit shows `At most 12 digits`, `At most 2 decimals` or `One decimal point only`; any key that is not a character (Tab, arrows, function keys) and any modified key shows `Digits, Backspace, Enter or Esc only`. A limit is at most 12 typed digits; `0` or an empty value means `off` and removes the key from the file. A lone `.` shows `Type a number, Esc cancels` and keeps editing; a value that does not fit shows `That number is too large`; more than 6 decimals shows `At most 6 decimals`. A whole-token limit never takes a fraction. A paste during an edit is typed char by char under the same caps: valid digits are accepted whole, a refused one applies nothing and shows the notice of its first refused character, an empty or blank paste shows `Nothing to paste`, and a paste outside an edit shows `Esc first to leave Usage`. A stored `Day $` value may have up to 6 decimals (`day_usd = 0.125`); it is shown as stored, and `Enter` on a field whose text is unchanged never produces an edit, so a stored value the field cannot retype is never rewritten. While a limit is being edited the row keeps its label when the label and the value fit; otherwise the label becomes `Edit` and a too-long value is clipped on the left behind a leading `…`, so the cursor `_` and the tail stay visible. There is no row for local engines. The footer is `j/k move · h/l change · s save · Esc back`; slice 3 adds `Enter edit` once limit rows exist, and while editing a limit the footer is `digits · Enter · Esc`. Esc at the view's top level returns to Settings keeping the draft; the AI draft is saved or reverted with the menu as for other AI rows (`s` saves, Esc at the top level restores). Changing a draft MUST have no live effect on open chat panes until a successful save; after a save the usage line, the status segment and the labels take effect at the next frame. The descriptor integrity rules extend to the view's rows (no duplicated key path).
 
 #### Scenario: Row and summary [auto, TestBackend + insta]
 - GIVEN the Settings tab with the defaults
@@ -35,7 +35,7 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 #### Scenario: Edit a limit [auto, slice 3]
 - GIVEN `Turn tokens` showing `off`
 - WHEN `Enter`, `4`, `0`, `a`, `0`, `0` and `Enter` are pressed
-- THEN the row shows `4000` (the `a` was ignored)
+- THEN the row shows `4000` and the notice `Digits only` appeared for the `a`
 
 #### Scenario: Escape cancels an edit [auto, slice 3]
 - GIVEN a limit showing `4000` and an edit in progress typing `9`
@@ -50,7 +50,23 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 #### Scenario: Dollar limit decimals [auto, slice 3]
 - GIVEN `Day $` in edit
 - WHEN `2`, `.`, `5`, `0`, `9` are typed
-- THEN the field reads `2.50` or `2.5` and the extra digit is ignored
+- THEN the field reads `2.50`, the `9` is refused with the notice `At most 2 decimals`, and after `Enter` the row shows `2.5`
+
+#### Scenario: Paste into a limit [auto, slice 3]
+- GIVEN `Turn tokens` in edit
+- WHEN `4000` is pasted, then `12x`, then `1234567890123`, then a blank text
+- THEN the field reads `4000` after the first; the next two change nothing and show `Digits only` and `At most 12 digits`; the blank one shows `Nothing to paste`
+- AND a paste when no limit is being edited shows `Esc first to leave Usage`
+
+#### Scenario: A stored value with many decimals is kept [auto, slice 3]
+- GIVEN `day_usd = 0.125` in the file
+- WHEN `Day $` is opened with `Enter` and confirmed with `Enter` without typing
+- THEN the row shows `0.125` and the save writes no edit; the same holds for `0.005` and for the largest value the config can hold
+
+#### Scenario: Edit label at the smallest popup [auto, slice 3]
+- GIVEN a limit being typed at 24x16 and, in another run, at 62 columns
+- WHEN rendered
+- THEN at 24 columns the row reads `Edit` plus the value (clipped on the left behind `…` when too long) and the footer is `digits · Enter · Esc`; at 62 columns the row keeps its real label
 
 #### Scenario: No live effect [auto]
 - GIVEN an open chat with the usage line on and the draft toggled off
