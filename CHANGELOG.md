@@ -22,9 +22,11 @@ baseline.
   chat keeps the records. They count in `today`, `last 7 days`, the charts, the
   status bar's `today: N tok` and the day limits; the per-turn limit never
   fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
-  days` when there are worker records, and while a run is live the
-  coordinator's usage line reads `usage (coordinator): ...` so it is not taken
-  for the run total. There is no per-worker or per-run breakdown yet.
+  days` when there are worker records, and on the coordinator's
+  orchestrated turn its usage line reads `usage (coordinator): ...` so it is not taken
+  for the run total. There is no per-worker or per-run breakdown yet. Usage that arrives after
+  its pane was closed is still stored (unlinked); if that write fails there is
+  no pane to tell.
 - The menu's AI tab is split into the tabs Models, Tools, Connectors and
   Chat after Settings, so the popup is 17 rows high instead of 25 (24x16 at least; the Usage row of Settings takes the 17th). `Tab` and
   `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight to

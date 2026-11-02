@@ -1866,6 +1866,7 @@ async fn drive(
                 // The answer was cut: what the engine reported is a floor.
                 StreamEvent::Error(ChatError::Truncated) => {
                     held.send(true);
+                    events.push(WorkerEvent::UsageGap);
                     events.push(WorkerEvent::Done { text });
                     return events;
                 }

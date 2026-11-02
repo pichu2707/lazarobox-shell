@@ -166,3 +166,43 @@ fn the_coordinators_usage_line_says_it_is_the_coordinators() {
     a.update(finish(turn));
     assert_eq!(usage_lines(&a), ["usage (coordinator): in 12 · out 34"]);
 }
+
+fn orphan_usage(a: &mut App) -> Vec<Effect> {
+    // A pane that is not a chat any more (closed).
+    a.update(AppEvent::Orchestra(
+        PaneId::for_test(99),
+        worker_used(120, 30),
+    ))
+}
+
+#[test]
+fn spend_of_a_pane_that_is_gone_is_still_stored_unlinked() {
+    let (mut a, _) = running();
+    a.history = true;
+    let effects = orphan_usage(&mut a);
+    let cmds: Vec<_> = stores(&effects)
+        .into_iter()
+        .filter(|c| matches!(c, StoreCmd::RecordUsage { .. }))
+        .collect();
+    let [
+        StoreCmd::RecordUsage {
+            conversation,
+            role,
+            worker,
+            usage,
+            ..
+        },
+    ] = cmds.as_slice()
+    else {
+        panic!("one record: {effects:?}");
+    };
+    assert_eq!(*conversation, None);
+    assert_eq!((role.as_str(), worker.as_deref()), ("worker", Some("7.1")));
+    assert_eq!((usage.input, usage.output), (Some(120), Some(30)));
+}
+
+#[test]
+fn with_history_off_the_usage_of_a_pane_that_is_gone_is_not_stored() {
+    let (mut a, _) = running();
+    assert_eq!(stores(&orphan_usage(&mut a)), Vec::new());
+}

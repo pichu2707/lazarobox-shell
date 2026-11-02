@@ -182,6 +182,25 @@ impl App {
             kept = self.keep_end(*run);
         }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            // The spend happened: with history on it is stored unlinked.
+            // There is no pane to tell if that write fails.
+            if let OrchestraEvent::Usage {
+                run,
+                worker,
+                engine,
+                usage,
+            } = event
+                && self.history
+            {
+                kept.push(Effect::Store(StoreCmd::RecordUsage {
+                    pane: id,
+                    conversation: None,
+                    engine,
+                    role: "worker".to_owned(),
+                    worker: Some(format!("{}.{}", run.0, worker.0)),
+                    usage,
+                }));
+            }
             return kept;
         };
         // A worker that is over takes its waiting asks with it.

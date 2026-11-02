@@ -63,6 +63,8 @@ enum Script {
     UsedThenFail(&'static str),
     /// Reports a usage of 100 in and 10 out, then never ends.
     UsedThenHang,
+    /// Reports a usage of 100 in and 10 out, then an answer past the cap.
+    UsedThenOverflow,
     /// Streams the text, then fails with the message.
     Fail(&'static str, &'static str),
     /// The jail refuses the turn with the reason.
@@ -201,6 +203,17 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     };
                     let _ = tx.send(StreamEvent::usage(usage)).await;
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::UsedThenOverflow => {
+                    let usage = TurnUsage {
+                        input: Some(100),
+                        output: Some(10),
+                        ..TurnUsage::default()
+                    };
+                    let _ = tx.send(StreamEvent::usage(usage)).await;
+                    let big = "x".repeat(crate::core::ai::chat::ANSWER_CAP + 10);
+                    let _ = tx.send(StreamEvent::Delta(big)).await;
+                    ("", StreamEvent::Done(Finish::Stop))
                 }
                 Script::UsedThenHang => {
                     let usage = TurnUsage {
@@ -645,6 +658,77 @@ async fn a_worker_cut_by_its_deadline_sends_its_usage_partial() {
     let sent = recorded(&lab);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].2.partial);
+}
+
+// A worker whose answer hit the cap still ends `done`, but the engine may have
+// reported less than it used: one partial record, and the row shows the gap.
+#[tokio::test]
+async fn a_truncated_worker_sends_one_partial_record_and_a_partial_done_row() {
+    let mut lab = lab(Script::UsedThenOverflow);
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let OrchestraEvent::Worker(done) = lab.next().await else {
+        panic!("a worker row");
+    };
+    assert_eq!(done.status, WorkerStatus::Done);
+    assert!(done.partial, "the row shows the gap");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while lab.events.try_recv().is_ok_and(|(_, e)| {
+        if matches!(e, OrchestraEvent::Usage { .. }) {
+            lab.usages.push(e);
+        }
+        true
+    }) {}
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].2.partial);
+}
+
+// A normal end sends one record: the guard's drop afterwards adds nothing.
+#[tokio::test]
+async fn a_worker_that_ends_normally_sends_exactly_one_record() {
+    let mut lab = lab(Script::Used("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _done = lab.next().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let later = lab.sent();
+    let all = lab.usages.len()
+        + later
+            .iter()
+            .filter(|e| matches!(e, OrchestraEvent::Usage { .. }))
+            .count();
+    assert_eq!(all, 1);
+    assert!(!recorded(&lab)[0].2.partial);
+}
+
+// A worker the user cancels keeps what it reported, partial.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_worker_sends_its_usage_partial() {
+    let mut lab = lab(Script::UsedThenHang);
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    lab.seen.first().await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    lab.manager.cancel_worker(pane(), run, WorkerId(1));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let records: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter_map(|e| match e {
+            OrchestraEvent::Usage { usage, .. } => Some(*usage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!((records[0].input, records[0].output), (Some(100), Some(10)));
+    assert!(records[0].partial);
 }
 
 /// The nonce of a wrapped text.
