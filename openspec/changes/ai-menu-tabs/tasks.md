@@ -64,9 +64,9 @@ Open: owner confirms the 2.1/2.2 split. Merge order 1 → 2.1 → 2.2 → ai-cos
 ## Manual checks (Kitty and tmux)
 
 - [ ] M.1 Kitty, standard width: Tab, Shift+Tab, `1`-`5`; `4` shows the notice; nvim gets no keys.
-- [ ] M.2 Kitty at 49 and 48 columns: whole bar, then only ` ‹ active › `; no panic.
+- [ ] M.2 Kitty at 49+ columns: the whole bar plus the `⇥ Tab · 1-5` hint; at 48 to 36: the bar only, no hint; at 35 or less: only ` ‹ active ›`; no panic.
 - [ ] M.3 tmux: Tab, Shift+Tab (BackTab) and digits work; sub-levels inert.
-- [ ] M.4 `0`, `6`-`9` show `Tabs are 1-5`; no-AI menu: Tab shows `No other tabs`.
+- [ ] M.4 `0`, `6`-`9` show `Tabs are 1-5`. (`No other tabs` cannot be checked by hand: `open_menu` always attaches the AI config, so the menu always has more than one tab; the notice is reachable only in tests.)
 
 ## Risks
 
