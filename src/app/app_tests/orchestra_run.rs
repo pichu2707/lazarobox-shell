@@ -864,5 +864,8 @@ fn the_alert_shows_a_class_that_says_something_and_omits_other() {
     assert!(text.contains("failed (auth): not logged in"), "{text}");
     a.update(event(halted(RUN, "boom")));
     let text = a.chat_guidance(chat_id()).unwrap();
-    assert!(text.contains("failed: boom") && !text.contains("(other)"), "{text}");
+    assert!(
+        text.contains("failed: boom") && !text.contains("(other)"),
+        "{text}"
+    );
 }

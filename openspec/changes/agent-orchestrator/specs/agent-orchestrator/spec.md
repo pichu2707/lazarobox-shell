@@ -287,7 +287,7 @@ When a worker ends `failed`, `timed_out` or `refused`, the run MUST stop at that
 - THEN `wait` returns `awaiting_user` and `spawn_agent` is refused with `run paused`
 
 ### Requirement: Error classes [S2]
-Each adapter MUST classify a worker failure as one of: `rate_limit` (429), `conflict` (409), `auth`, `quota`, `timeout`, `jail_refusal`, `other`. The class MUST be shown with the raw message. `rate_limit` MUST be its own class: the alert names the limit and offers the same options, and lazarobox MUST NOT retry on its own.
+Each adapter MUST classify a worker failure as one of: `rate_limit` (429), `conflict` (409), `auth`, `quota`, `timeout`, `jail_refusal`, `setup` (a worker refused because its engine or model is not available), `other`. The class MUST be shown with the raw message, except `other`, which adds nothing. `rate_limit` MUST be its own class: the alert names the limit and offers the same options, and lazarobox MUST NOT retry on its own.
 
 #### Scenario: 429 is its own class [auto]
 - GIVEN a worker whose provider answers 429
@@ -297,7 +297,7 @@ Each adapter MUST classify a worker failure as one of: `rate_limit` (429), `conf
 #### Scenario: Class table [auto]
 - GIVEN decoder fixtures for 409, auth failure, quota exhausted, a timeout, a jail exit 71 and an unknown error
 - WHEN each is classified
-- THEN they give `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `other`
+- THEN they give `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `setup`, `other`
 
 ### Requirement: Failure options and relaunch [S2]
 `retry` MUST relaunch the same `WorkerSpec` from scratch (CLI turns are stateless) with the engine and model of the failed attempt, and its prompt MUST be followed by the failed attempt's error, sanitized and capped as in the alert and wrapped as untrusted data. `change model` MUST open the menu picker for that task at the model level of its engine; `change provider` MUST open it at the engine level. A confirmed choice is a *run-scoped override*, not a menu change: it MUST apply to the failed worker's task for the rest of this run only, MUST NOT change the menu draft or the saved configuration and MUST NOT write the config file. The worker MUST be relaunched with the override, and every later worker of the same task in the same run MUST also use it; workers of other tasks are unaffected. The override MUST end with the run (finished or cancelled) and a new run starts from the menu values. The run state and the rows of the affected workers MUST show that an override is active, with the `engine>model` in use. Leaving the picker without a choice MUST return to the alert with the same options and nothing is relaunched. `cancel` MUST end the run (see Cancel). The relaunched worker keeps its worker id and its row. An override is still subject to Refusal on an unavailable engine.
