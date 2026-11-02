@@ -3949,3 +3949,154 @@ fn every_gemini_file_variable_is_scrubbed() {
         assert!(!SCRUBBED.contains(&key), "{key} must pass through");
     }
 }
+
+const OLD_LOGIN: &str = r#"{"access_token":"old","expiry_date":100}"#;
+const NEW_LOGIN: &str = r#"{"access_token":"new","expiry_date":200}"#;
+
+/// A gemini that renews its login the way the real one does: a temp file
+/// renamed over `oauth_creds.json`. `before` runs first (to touch the real
+/// file, say).
+fn gemini_renewing(lab: &Lab, content: &str, before: &str) {
+    let body = format!(
+        "{GEMINI_HOME_PROBE}\n{before}\nd=\"$GEMINI_CLI_HOME/.gemini\"\n\
+         printf '%s' '{content}' > \"$d/new\" && mv \"$d/new\" \"$d/oauth_creds.json\"\n"
+    );
+    script(&lab.bin.join("gemini"), &lab.rec, &body);
+}
+
+/// The lab with a real login of `OLD_LOGIN`.
+fn lab_with_old_login() -> (Lab, PathBuf) {
+    let lab = lab();
+    let real = lab.home.join(".gemini/oauth_creds.json");
+    fs::write(&real, OLD_LOGIN).unwrap();
+    (lab, real)
+}
+
+async fn renewal_notices(lab: &Lab) -> Vec<String> {
+    login_notices(&run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await)
+}
+
+#[tokio::test]
+async fn a_newer_renewed_login_is_copied_back_with_mode_0600() {
+    let (lab, real) = lab_with_old_login();
+    gemini_renewing(&lab, NEW_LOGIN, "");
+    assert!(renewal_notices(&lab).await.is_empty());
+    assert_eq!(fs::read_to_string(&real).unwrap(), NEW_LOGIN);
+    assert_eq!(
+        fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let leftovers: Vec<_> = fs::read_dir(real.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("lazarobox-") && !n.ends_with(".lock"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_login_that_is_still_a_link_or_not_newer_is_left_alone_quietly() {
+    let (lab, real) = lab_with_old_login();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    assert!(renewal_notices(&lab).await.is_empty());
+    assert_eq!(fs::read_to_string(&real).unwrap(), OLD_LOGIN);
+    for same in [OLD_LOGIN, r#"{"access_token":"older","expiry_date":50}"#] {
+        gemini_renewing(&lab, same, "");
+        assert!(renewal_notices(&lab).await.is_empty(), "{same}");
+        assert_eq!(fs::read_to_string(&real).unwrap(), OLD_LOGIN, "{same}");
+    }
+}
+
+#[tokio::test]
+async fn a_renewed_login_that_is_not_valid_is_refused_with_a_notice() {
+    let too_big = format!(
+        r#"{{"access_token":"{}","expiry_date":200}}"#,
+        "a".repeat(70 * 1024)
+    );
+    for bad in [
+        "not json",
+        "[1]",
+        r#"{"access_token":"","expiry_date":200}"#,
+        r#"{"access_token":"x"}"#,
+        r#"{"access_token":"x","expiry_date":"200"}"#,
+        too_big.as_str(),
+    ] {
+        let (lab, real) = lab_with_old_login();
+        gemini_renewing(&lab, bad, "");
+        let said = renewal_notices(&lab).await;
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with("gemini login refresh not saved: "),
+            "{said:?}"
+        );
+        assert!(
+            !said[0].contains("access_token\":"),
+            "no content in the notice"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), OLD_LOGIN);
+    }
+}
+
+#[tokio::test]
+async fn a_real_login_that_changed_during_the_turn_is_not_overwritten() {
+    let (lab, real) = lab_with_old_login();
+    let touch = format!(
+        "sleep 1; printf '%s' '{{\"access_token\":\"mine\",\"expiry_date\":150}}' > '{}'",
+        real.display()
+    );
+    gemini_renewing(&lab, NEW_LOGIN, &touch);
+    let said = renewal_notices(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini login refresh not saved: your login file changed meanwhile"]
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        r#"{"access_token":"mine","expiry_date":150}"#
+    );
+}
+
+#[tokio::test]
+async fn a_renewed_login_is_written_through_a_link_to_its_target() {
+    let (lab, real) = lab_with_old_login();
+    let store = lab.home.join("dotfiles");
+    fs::create_dir(&store).unwrap();
+    let target = store.join("oauth_creds.json");
+    fs::rename(&real, &target).unwrap();
+    symlink(&target, &real).unwrap();
+    gemini_renewing(&lab, NEW_LOGIN, "");
+    assert!(renewal_notices(&lab).await.is_empty());
+    assert!(
+        fs::symlink_metadata(&real)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), NEW_LOGIN);
+}
+
+#[tokio::test]
+async fn a_renewed_login_is_saved_when_the_user_had_none() {
+    let lab = lab();
+    let real = lab.home.join(".gemini/oauth_creds.json");
+    fs::remove_file(&real).unwrap();
+    gemini_renewing(&lab, NEW_LOGIN, "");
+    let said = renewal_notices(&lab).await;
+    assert!(
+        said.iter().all(|n| n.starts_with("gemini has no login")),
+        "{said:?}"
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), NEW_LOGIN);
+}
+
+#[tokio::test]
+async fn a_renewed_login_is_saved_even_when_the_turn_fails() {
+    let (lab, real) = lab_with_old_login();
+    let body = format!(
+        "{GEMINI_HOME_PROBE}\nd=\"$GEMINI_CLI_HOME/.gemini\"\n\
+         printf '%s' '{NEW_LOGIN}' > \"$d/new\" && mv \"$d/new\" \"$d/oauth_creds.json\"\nexit 3\n"
+    );
+    script(&lab.bin.join("gemini"), &lab.rec, &body);
+    run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(fs::read_to_string(&real).unwrap(), NEW_LOGIN);
+}

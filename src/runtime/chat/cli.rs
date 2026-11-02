@@ -1122,6 +1122,8 @@ struct Plan {
     wired: bool,
     /// The working folder when it is not the shared empty one.
     cwd: Option<PathBuf>,
+    /// A renewed OAuth login to save after the turn (gemini).
+    refresh: Option<home::LoginRefresh>,
 }
 
 impl Plan {
@@ -1311,16 +1313,16 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
     // folder: a chat turn gives them a private one (see `home`) and is refused
     // when it cannot, never run with the user's own folder. The model listing
     // and `--version` read none of it and get no home.
-    let (private, home_notice) = if private {
+    let (private, home_notice, refresh) = if private {
         let prepared = home::prepare(env, job.cli, &dirs.tmp).map_err(|e| {
             let reason: String = e.to_string().chars().take(REASON_CAP).collect();
             StreamEvent::Error(ChatError::Failed(format!(
                 "{CANNOT_PREPARE_HOME}: {reason}"
             )))
         })?;
-        (prepared.vars, prepared.notice)
+        (prepared.vars, prepared.notice, prepared.refresh)
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, None)
     };
     let vars = |wired: Option<&Wired>| {
         let mut vars = env.child_vars();
@@ -1394,6 +1396,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                             notice: joined(notice, home_notice),
                             wired: attempt.is_some(),
                             cwd: attempt.and_then(|w| w.cwd),
+                            refresh,
                         });
                     }
                     Err(why) => {
@@ -1428,6 +1431,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
         dirs,
         wired: false,
         cwd: None,
+        refresh,
         notice: joined(
             tools_off(Some(format!(
                 "{} runs without the jail here: {reason}",
@@ -1618,8 +1622,23 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
             return send(tx, event).await;
         }
     };
+    turn(env, &job, tx, &mut plan).await;
+    // Whatever way the turn ended, the private home is still there: a renewed
+    // login is saved before the folder is wiped.
+    if let Some(refresh) = plan.refresh.take() {
+        let notice = tokio::task::spawn_blocking(move || refresh.save_notice())
+            .await
+            .unwrap_or_else(|_| Some("gemini login refresh not saved: internal error".into()));
+        if let Some(line) = notice {
+            send(tx, StreamEvent::Notice(line)).await;
+        }
+    }
+}
+
+/// The child of a planned turn, up to its end.
+async fn turn(env: &CliEnv, job: &Job, tx: &mpsc::Sender<StreamEvent>, plan: &mut Plan) {
     if !plan.wired {
-        unwire(&job);
+        unwire(job);
     }
     if let Some(line) = plan.notice.take() {
         send(tx, StreamEvent::Notice(line)).await;

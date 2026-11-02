@@ -26,6 +26,13 @@ baseline.
   and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
   and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
   (model cache, installation id), which costs a few extra calls.
+  When gemini renews its OAuth login (it renames a new `oauth_creds.json` over
+  the link), the renewal is copied back to the real file after the turn, only if
+  it is a regular file of yours, at most 64 KiB, a JSON object with a non-empty
+  `access_token` and a larger `expiry_date`, and the real file did not change
+  during the turn. The write is atomic under a `flock` (0600 temp file, `fsync`,
+  `rename`, through a link to its target). A refusal shows `gemini login refresh
+  not saved: <reason>` and never the content.
 
 ## [1.2.0] - 2026-11-02
 
