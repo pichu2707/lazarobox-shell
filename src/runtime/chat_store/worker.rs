@@ -707,7 +707,11 @@ fn usage_report(
                 SUM(CASE WHEN role = 'worker' AND input IS NOT NULL AND output IS NOT NULL
                          THEN input + output END),
                 COALESCE(MAX(role = 'worker'
-                             AND (partial OR input IS NULL OR output IS NULL)), 0)
+                             AND (partial OR input IS NULL OR output IS NULL)), 0),
+                SUM(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
+                         THEN cache_read END),
+                SUM(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
+                         THEN input + cache_read + COALESCE(cache_write, 0) END)
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
     )?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
@@ -729,6 +733,8 @@ fn usage_report(
             workers: count(Some(r.get(13)?)).unwrap_or(0),
             worker_total: count(r.get(14)?),
             worker_partial: r.get(15)?,
+            cache_hit: count(r.get(16)?),
+            cache_base: count(r.get(17)?),
         })
     })?;
     rows.collect()

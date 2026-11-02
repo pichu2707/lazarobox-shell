@@ -163,6 +163,8 @@ fn with_charts() -> Vec<String> {
         input: total.map(|_| 1),
         output: total.map(|_| 1),
         cache_read: None,
+        cache_hit: None,
+        cache_base: None,
         cost_micros: None,
         total,
         partial: false,

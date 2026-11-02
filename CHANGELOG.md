@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `/cost` shows the cache share per engine for today, the last 7 days and this
+  chat (`cache today: claude 91% · codex 79%`): cache reads over fresh input,
+  cache reads and cache writes. Engines that report no cache show no figure.
+  Visibility only; no prompt changes (#515).
+
 ## [1.2.1] - 2026-11-02
 
 ### Added

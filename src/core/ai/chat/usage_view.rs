@@ -111,6 +111,11 @@ pub struct UsageRow {
     pub input: Option<u64>,
     pub output: Option<u64>,
     pub cache_read: Option<u64>,
+    /// Cache reads of the records that reported both an input and a cache
+    /// read: the numerator of the cache share.
+    pub cache_hit: Option<u64>,
+    /// Fresh input + cache reads + cache writes of those same records.
+    pub cache_base: Option<u64>,
     pub cost_micros: Option<u64>,
     /// Sum of the known totals (`input + output` of each record that has both).
     pub total: Option<u64>,
@@ -250,6 +255,35 @@ fn workers_line<'a>(rows: impl Iterator<Item = &'a UsageRow>) -> Option<String> 
     });
     let mark = if partial { " · partial" } else { "" };
     (records > 0).then(|| format!("of which workers: {}{mark}", tokens(total)))
+}
+
+/// `<label> <engine> N% · <engine> N%` for the rows picked, `None` when no
+/// engine reported a cache. The share is `cache reads / (fresh input + cache
+/// reads + cache writes)`; `TurnUsage` buckets are disjoint for every engine
+/// (the codex and gemini adapters store the input net of the cache), so one
+/// formula serves all. An engine with no cache report, or an empty base, has
+/// no figure: never 0%. Marked `partial` when a contributing row is.
+fn cache_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Option<String> {
+    let mut by_engine: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    let mut partial = false;
+    for r in rows {
+        let (Some(hit), Some(base)) = (r.cache_hit, r.cache_base) else {
+            continue;
+        };
+        let e = by_engine.entry(ident(&r.engine)).or_default();
+        *e = (e.0.saturating_add(hit), e.1.saturating_add(base));
+        partial |= incomplete(r);
+    }
+    let shares: Vec<String> = by_engine
+        .into_iter()
+        .filter(|(_, (_, base))| *base > 0)
+        .map(|(engine, (hit, base))| {
+            let pct = u128::from(hit) * 100 / u128::from(base);
+            format!("{engine} {pct}%")
+        })
+        .collect();
+    let mark = if partial { " · partial" } else { "" };
+    (!shares.is_empty()).then(|| format!("cache {label}: {}{mark}", shares.join(" · ")))
 }
 
 /// A usage line as the coordinator's: while a run is live the line under the
@@ -464,8 +498,10 @@ pub fn report_lines(
             "today: {}",
             summary(rows.iter().filter(|r| r.days_ago == 0))
         ),
-        format!("last 7 days: {}", summary(window())),
     ];
+    lines.extend(cache_line("today", rows.iter().filter(|r| r.days_ago == 0)));
+    lines.push(format!("last 7 days: {}", summary(window())));
+    lines.extend(cache_line("last 7 days", window()));
     lines.extend(workers_line(window()));
     lines.push("by engine and model (last 7 days):".to_owned());
     lines.extend(pair_lines(window(), billing));
@@ -475,6 +511,7 @@ pub fn report_lines(
     } else {
         "this chat: no data".to_owned()
     });
+    lines.extend(cache_line("this chat", rows.iter().filter(|r| r.in_chat)));
     if !session.rows().is_empty() {
         lines.push(format!("this session: {}", summary(session.rows().iter())));
         if session.full() {
