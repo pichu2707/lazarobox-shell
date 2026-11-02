@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- `list_panes`, a read-only chat tool that tells the model what each pane
+  runs: its number, whether it is focused, its folder and the foreground
+  program with its arguments (`nvim prueba.rs`). It needs no approval and
+  sends the foreground command lines of your panes to the model, cloud engines
+  included. Arguments are redacted (values after `--password`, `--token` and
+  `-p`, `*KEY*`/`*TOKEN*`/`*SECRET*`/`*PASS*` assignments, token-shaped text),
+  capped at 120 characters each and 300 per pane, and paths under `$HOME` show
+  as `~/`. The environment of other processes is never read. Linux only; a
+  pane that cannot be read shows `program: unknown`.
 - `lazarobox-shell --check-install` prints whether the tools can run from this
   install, outside the TUI: exit 0 when the binary and its folder pass the
   trust check, exit 1 with the same reason and `chmod` fix as the chat notice

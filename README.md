@@ -1045,6 +1045,24 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - **Un modelo con Exec puede escribir `.git/hooks`.** Se detecta con las instantáneas de integridad antes y después de cada ejecución (`git hooks or config changed during the run (not reverted)`), pero no se impide ni se revierte. Revisa siempre los ganchos que muestra la revisión del commit.
 - **Git no carga tu configuración.** Los ganchos solo se leen del `.git/hooks` del propio repositorio, el commit no se firma y la identidad se pasa explícitamente.
 
+#### Paneles: `list_panes`
+
+`list_panes` es una herramienta de solo lectura, siempre disponible junto a `run_in_pane` y sin ningún interruptor. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en otro panel, el modelo lo ve en lugar de pedirte que pegues el código. Por cada panel devuelve:
+
+- el número del panel y si es el que tiene el foco;
+- su carpeta (con `~/` en lugar de tu `$HOME`);
+- el programa en primer plano y sus argumentos, por ejemplo `nvim prueba.rs`.
+
+**Qué se envía al modelo.** Las líneas de comando de los programas en primer plano de todos tus paneles, **también con motores en la nube**. Es una herramienta de solo lectura y **no pregunta** en ningún motor ni modo de aprobación; la fila de la herramienta muestra lo que se envió. Antes de salir, los argumentos pasan por la censura de secretos: se enmascara el valor que sigue a `--password`, `--token` y `-p` (y `-pVALOR`), cualquier `CLAVE=valor` cuya clave contenga `KEY`, `TOKEN`, `SECRET` o `PASS`, y el texto con forma de credencial. Cada argumento se corta a 120 caracteres y cada línea de panel a 300. El entorno de otros procesos no se lee nunca, y no se envía el contenido de la pantalla ni del _scrollback_.
+
+**Límites.**
+
+- Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pid>/cmdline`. En macOS no hay `/proc`: el programa y la carpeta salen como `unknown`, y la herramienta no falla.
+- Un panel cuyo proceso no se puede leer aparece como `program: unknown`.
+- La lista se actualiza cada segundo, así que puede ir un instante por detrás.
+- No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
+- Los _workers_ del orquestador no la tienen.
+
 ### Tools with Ollama
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
