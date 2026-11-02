@@ -460,6 +460,16 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
+**Ventana de contexto de Ollama.** lazarobox lee la ventana máxima de cada modelo en la misma respuesta `POST /api/show` que ya usa la detección (sin peticiones nuevas) y pide a Ollama `num_ctx` igual al menor valor entre esa ventana y un tope, para que los modelos con ventanas enormes no reserven tanta memoria de vídeo. Cada turno de un mismo modelo lleva los mismos valores, así que Ollama no recarga el modelo entre mensajes. El historial que se envía descuenta el prompt del sistema y las herramientas de la ventana: se omiten primero los mensajes más antiguos, siempre por pares (pregunta y respuesta), y la conversación muestra `earlier messages are not sent to the model`. Si el mensaje más reciente y la configuración ya superan la ventana, se envía igualmente y la conversación lo avisa. Si no se puede leer la ventana de un modelo, no se envía `num_ctx`, el historial se limita a 12.000 caracteres y la barra de estado avisa una vez por modelo (`context window unknown for <modelo>: using 12,000 characters`).
+
+```toml
+[ai.servers.ollama]
+num_ctx_cap = 16384        # opcional: tope de tokens de contexto que se piden (por defecto 16384)
+keep_alive_minutes = 30    # opcional: minutos que el modelo sigue cargado tras responder (por defecto 30)
+```
+
+`num_ctx_cap` es un número entero mayor que 0. Un tope mayor usa más memoria de vídeo (la caché de contexto crece con él) y deja más historial; uno menor ahorra memoria y recorta antes. `keep_alive_minutes` es un número entero desde 0; `0` descarga el modelo justo después de cada respuesta, y el siguiente mensaje tiene que volver a cargarlo. Un valor incorrecto se cambia por el predeterminado de esa clave con un aviso al arrancar (`ai.servers.ollama.num_ctx_cap: expected a whole number of tokens above 0`). El menú no escribe ninguna de las dos claves y las conserva al guardar. Un `PARAMETER num_ctx` de un Modelfile no se respeta: manda el tope.
+
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
 
 **llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:

@@ -12,6 +12,14 @@ baseline.
 
 ### Added
 
+- Ollama turns now ask for a context window: `options.num_ctx` is the smaller
+  of the model's own window (read from the `POST /api/show` reply detection
+  already sends, no new request) and `[ai.servers.ollama] num_ctx_cap`
+  (default 16384), and `keep_alive` is `[ai.servers.ollama]
+  keep_alive_minutes` (default 30, `0` unloads after each reply). Every turn of
+  a model sends the same values, so Ollama never reloads it because of them.
+  Neither key is written by the menu; bad values fall back with a startup
+  notice.
 - `/cost` shows the cache share per engine for today, the last 7 days and this
   chat (`cache today: claude 91% · codex 79%`): cache reads over fresh input,
   cache reads and cache writes. Engines that report no cache show no figure.
@@ -22,6 +30,17 @@ baseline.
   and llama.cpp's `prompt_ms`; a low figure means the prompt cache was hit.
   Ollama's `load_duration` is stored too. Two additive nullable columns of
   `turn_usage`, no schema version change. Visibility only (#515).
+
+### Changed
+
+- The history budget of local servers now counts the system prompt, the tools
+  block and the tool schemas before any message, also when the window is
+  unknown (the 12,000-character cap is reduced by that head). Trimming still
+  drops whole user and assistant pairs, oldest first, with the usual marker.
+  A message that cannot fit a known window is still sent whole, with a notice,
+  and an Ollama model with an unknown window shows `context window unknown for
+  <model>: using 12,000 characters` once per run. A Modelfile `PARAMETER
+  num_ctx` does not override the cap.
 
 ## [1.2.1] - 2026-11-02
 
