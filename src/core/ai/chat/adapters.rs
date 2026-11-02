@@ -570,12 +570,14 @@ const CODEX_DISABLED: [&str; 14] = [
     "shell_snapshot",
 ];
 
-/// The codex run: the pinned argv (text only, nothing from the user's setup,
-/// nothing kept on disk), and on stdin the profile prompt in an `Instructions:`
+/// The codex run: the pinned argv (text only, nothing kept on disk), and on stdin the profile prompt in an `Instructions:`
 /// block, then the memory block and the history. codex has no system-prompt
 /// flag, and argv is visible in `ps`, so nothing but fixed flags and the model
 /// goes there. The child starts in the private empty folder, which is also
-/// codex's working root, so no `-C` is passed.
+/// codex's working root, so no `-C` is passed. The flags do not isolate the
+/// user's setup: `--ignore-user-config` skips only `config.toml`, and codex has
+/// no option against `~/.codex/AGENTS.md` and skills. The runtime does it by
+/// giving the turn a private `CODEX_HOME` (see `runtime::chat::cli::home`).
 fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
@@ -639,7 +641,8 @@ const GEMINI_PROMPT: &str = "Answer the last user message of the conversation gi
 const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 999\ndenyMessage = \"This chat has no tools.\"\n";
 
 /// The gemini run: the pinned argv (text only, no extension, no MCP server, no
-/// tool), and on stdin the profile prompt in an `Instructions:` block, then the
+/// tool; the user's `GEMINI.md`, skills and settings are kept out by the
+/// runtime's private `GEMINI_CLI_HOME`, which no flag can do), and on stdin the profile prompt in an `Instructions:` block, then the
 /// memory block and the history. gemini has no system-prompt flag, and argv is
 /// visible in `ps`, so nothing but fixed flags and the model goes there. The
 /// runtime appends `--policy <file>` after these flags, and for a turn with

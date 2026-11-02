@@ -3455,3 +3455,169 @@ async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
     assert_eq!(text, &expected);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
 }
+
+/// What the fake codex and gemini record about the home they were given.
+const CODEX_HOME_PROBE: &str = r#"
+cat > "$REC/stdin"
+printf '%s' "$CODEX_HOME" > "$REC/home"
+printf '%s' "$TMPDIR" > "$REC/tmpdir"
+ls -A "$CODEX_HOME" > "$REC/listing"
+readlink "$CODEX_HOME/auth.json" > "$REC/auth_link"
+cat "$CODEX_HOME/auth.json" > "$REC/auth_read"
+printf '%s\n' '{"type":"thread.started","thread_id":"t"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{}}'
+"#;
+
+const GEMINI_HOME_PROBE: &str = r#"
+cat > "$REC/stdin"
+printf '%s' "$GEMINI_CLI_HOME" > "$REC/home"
+printf '%s' "$TMPDIR" > "$REC/tmpdir"
+printf '%s' "${GEMINI_SYSTEM_MD-unset}" > "$REC/system_md"
+ls -A "$GEMINI_CLI_HOME/.gemini" > "$REC/listing"
+cat "$GEMINI_CLI_HOME/.gemini/settings.json" > "$REC/settings"
+readlink "$GEMINI_CLI_HOME/.gemini/oauth_creds.json" > "$REC/oauth_link"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+/// A codex chat turn that may run bare (the fake CLI has no jail around it).
+fn layered_codex() -> Job {
+    Job {
+        jail: JailPolicy::Layered,
+        ..codex_job(&["exec", "-"])
+    }
+}
+
+/// The user's codex folder with global instructions, a skill, a config and a login.
+fn user_codex_folder(dir: &Path) {
+    fs::create_dir_all(dir.join("skills/mine")).unwrap();
+    fs::write(dir.join("AGENTS.md"), "CANARY-INSTRUCTIONS").unwrap();
+    fs::write(dir.join("config.toml"), "model = \"canary\"").unwrap();
+    fs::write(dir.join("skills/mine/SKILL.md"), "CANARY-SKILL").unwrap();
+    fs::write(dir.join("auth.json"), "CANARY-LOGIN").unwrap();
+}
+
+#[tokio::test]
+async fn codex_runs_in_a_private_home_that_holds_only_a_link_to_the_login() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    let real = lab.home.join(".codex");
+    user_codex_folder(&real);
+    let events = run_job(&lab.env(), layered_codex()).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+
+    let home = lab.recorded("home");
+    let tmpdir = lab.recorded("tmpdir");
+    assert!(
+        Path::new(&home).starts_with(&tmpdir) && !Path::new(&home).starts_with(&real),
+        "{home} must be inside the turn folder {tmpdir}"
+    );
+    assert_eq!(lab.recorded("listing").trim(), "auth.json");
+    assert_eq!(
+        lab.recorded("auth_link").trim(),
+        real.join("auth.json").to_str().unwrap()
+    );
+    assert_eq!(lab.recorded("auth_read"), "CANARY-LOGIN");
+    // The user's own files are untouched, and the private home is wiped.
+    assert_eq!(
+        fs::read_to_string(real.join("auth.json")).unwrap(),
+        "CANARY-LOGIN"
+    );
+    assert!(real.join("AGENTS.md").exists());
+    assert!(!Path::new(&home).exists());
+}
+
+#[tokio::test]
+async fn codex_takes_its_login_from_codex_home_when_that_is_set() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    let custom = lab.home.join("custom-codex");
+    user_codex_folder(&custom);
+    let mut env = lab.env();
+    env.codex_home = Some(custom.clone());
+    run_job(&env, layered_codex()).await;
+    assert_eq!(lab.recorded("listing").trim(), "auth.json");
+    assert_eq!(
+        lab.recorded("auth_link").trim(),
+        custom.join("auth.json").to_str().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn codex_without_a_login_file_still_gets_an_empty_private_home() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::create_dir_all(lab.home.join(".codex")).unwrap();
+    fs::write(lab.home.join(".codex/AGENTS.md"), "CANARY-INSTRUCTIONS").unwrap();
+    run_job(&lab.env(), layered_codex()).await;
+    assert!(Path::new(&lab.recorded("home")).starts_with(lab.recorded("tmpdir")));
+    assert_eq!(lab.recorded("listing"), "");
+}
+
+/// The user's gemini folder with global instructions, a skill, rich settings
+/// and an OAuth login.
+fn user_gemini_folder(dir: &Path) {
+    fs::create_dir_all(dir.join("skills/mine")).unwrap();
+    fs::write(dir.join("GEMINI.md"), "CANARY-INSTRUCTIONS").unwrap();
+    fs::write(dir.join("skills/mine/SKILL.md"), "CANARY-SKILL").unwrap();
+    fs::write(dir.join("system.md"), "CANARY-SYSTEM").unwrap();
+    fs::write(dir.join("oauth_creds.json"), "CANARY-LOGIN").unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        r#"{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"x":{}},"context":{"fileName":"CANARY.md"}}"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn gemini_runs_in_a_private_home_with_only_its_auth_choice_and_login_links() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let real = lab.home.join(".gemini");
+    user_gemini_folder(&real);
+    let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert!(
+        events.contains(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+
+    let home = lab.recorded("home");
+    assert!(
+        Path::new(&home).starts_with(lab.recorded("tmpdir"))
+            && !Path::new(&home).starts_with(&real),
+        "{home}"
+    );
+    let listing = lab.recorded("listing");
+    let mut names: Vec<&str> = listing.lines().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["oauth_creds.json", "settings.json"]);
+    assert_eq!(
+        lab.recorded("oauth_link").trim(),
+        real.join("oauth_creds.json").to_str().unwrap()
+    );
+    let settings: serde_json::Value = serde_json::from_str(&lab.recorded("settings")).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({"security": {"auth": {"selectedType": "oauth-personal"}}})
+    );
+    assert!(real.join("GEMINI.md").exists() && real.join("skills").exists());
+}
+
+#[tokio::test]
+async fn gemini_without_a_user_folder_still_gets_a_private_home_and_no_system_prompt_file() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let mut env = lab.env();
+    env.inject
+        .push(("GEMINI_SYSTEM_MD".into(), "/home/u/system.md".into()));
+    run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    assert!(Path::new(&lab.recorded("home")).starts_with(lab.recorded("tmpdir")));
+    assert_eq!(lab.recorded("listing"), "");
+    assert_eq!(lab.recorded("system_md"), "unset");
+}

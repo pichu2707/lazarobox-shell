@@ -35,6 +35,8 @@ use tokio::{
     time::timeout,
 };
 
+mod home;
+
 use super::fresh_decoder;
 use crate::{
     core::ai::{
@@ -68,6 +70,8 @@ const READ_SIZE: usize = 16 * 1024;
 /// How long a CLI gets to exit once it has said it is done (or closed stdout)
 /// before its group is killed.
 pub const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+pub const CANNOT_PREPARE_HOME: &str = "cannot prepare the private home of the CLI";
 
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
@@ -148,8 +152,10 @@ const GEMINI_TRUST_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
 /// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 9] = [
+const SCRUBBED: [&str; 10] = [
     GEMINI_TRUST_ENV,
+    // Replaces gemini's system prompt with a file of the user's.
+    "GEMINI_SYSTEM_MD",
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -1279,8 +1285,14 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
     let mut wired = (how == Launch::Jailed)
         .then(|| wire_mcp(env, job, &dirs))
         .flatten();
+    // codex and gemini keep the user's instructions and skills in their state
+    // folder: the turn gives them a private one (see `home`). A turn that
+    // cannot is refused, never run with the user's own folder.
+    let private = home::prepare(env, job.cli, &dirs.tmp)
+        .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE_HOME.into())))?;
     let vars = |wired: Option<&Wired>| {
         let mut vars = env.child_vars();
+        vars.extend(private.iter().cloned());
         vars.extend(wired.into_iter().flat_map(|w| w.vars.iter().cloned()));
         vars
     };
