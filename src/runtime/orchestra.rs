@@ -1954,14 +1954,38 @@ fn nonce_bytes() -> Option<[u8; 8]> {
 }
 
 /// A refusal's reason as the coordinator gets it: one line, sanitized, with
-/// any token redacted and at most `ERROR_CAP` characters, like an engine's
-/// error text.
+/// any token redacted, paths masked and at most `ERROR_CAP` characters.
 fn refusal_reason(reason: &str) -> String {
     let flat = clean(reason)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    redact_tokens(&flat).chars().take(ERROR_CAP).collect()
+    mask_paths(&redact_tokens(&flat))
+        .chars()
+        .take(ERROR_CAP)
+        .collect()
+}
+
+/// `text` with every absolute or home path (from a `/` or `~/` that starts a
+/// word, or follows an opening bracket, quote or `=`, up to the next space)
+/// replaced by `<path>`: the coordinator learns nothing of the install layout.
+fn mask_paths(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut before = ' ';
+    while let Some(c) = chars.next() {
+        let opens = before.is_whitespace() || matches!(before, '(' | '"' | '\'' | '=');
+        let home = c == '~' && chars.peek() == Some(&'/');
+        if opens && (c == '/' || home) {
+            while chars.next_if(|n| !n.is_whitespace()).is_some() {}
+            out.push_str("<path>");
+            before = '>';
+        } else {
+            out.push(c);
+            before = c;
+        }
+    }
+    out
 }
 
 fn ids_text(ids: &[WorkerId]) -> String {

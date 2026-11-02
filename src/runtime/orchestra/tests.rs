@@ -5259,3 +5259,17 @@ fn a_refusal_reason_is_one_redacted_bounded_line() {
     );
     assert!(text.chars().count() <= 200, "{}", text.chars().count());
 }
+
+// The coordinator gets no install layout: absolute and home paths are masked.
+#[test]
+fn a_refusal_reason_masks_paths() {
+    let text = refusal_reason(
+        "codex: not found at /usr/lib/node_modules/@openai/codex/bin/codex or ~/.local/bin/codex, \
+         see (/opt/x/y) now",
+    );
+    assert!(!text.contains("/usr/lib") && !text.contains(".local/bin"), "{text}");
+    assert!(!text.contains("/opt/x"), "{text}");
+    assert!(text.contains("<path>") && text.contains("codex: not found at"), "{text}");
+    // A bare slash inside a word is not a path.
+    assert!(refusal_reason("and/or 1/2").contains("and/or 1/2"));
+}
