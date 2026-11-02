@@ -791,6 +791,29 @@ fn an_unmodified_y_starts_the_server_and_is_not_typed() {
     assert_eq!(chat_of(&a).composer().text(), "");
 }
 
+// ai-cost 1c: the `/cost` overlay hides the offer, so it must not answer it.
+#[test]
+fn the_cost_overlay_keeps_the_keys_from_the_engram_offer() {
+    let mut a = offered();
+    for c in "/cost".chars() {
+        a.update(unmodified(c));
+    }
+    a.update(plain_key(KeyCode::Enter));
+    assert!(chat_of(&a).cost().is_some());
+    assert_eq!(chat_of(&a).composer().text(), "");
+    for key in [unmodified('y'), unmodified('n')] {
+        assert_eq!(a.update(key), vec![], "the offer must not start or decline");
+        assert!(chat_of(&a).cost().is_some());
+    }
+    a.update(plain_key(KeyCode::Esc));
+    assert!(chat_of(&a).cost().is_none(), "Esc closes the overlay");
+    assert_eq!(
+        a.chat_guidance(chat_id()).as_deref(),
+        Some(OFFER_PROMPT),
+        "the offer is still pending"
+    );
+}
+
 #[test]
 fn n_and_esc_decline_and_are_not_typed() {
     for key in [unmodified('n'), plain_key(KeyCode::Esc)] {

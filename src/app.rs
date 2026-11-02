@@ -60,6 +60,7 @@ mod chat;
 mod chat_copy;
 mod compact;
 mod context;
+mod cost;
 mod folder;
 mod handoff;
 mod history;
@@ -846,6 +847,19 @@ impl Tab {
 }
 
 /// Owns the panes and the input state. Pure: it never touches IO.
+/// The wall clock, in seconds since the Unix epoch. A test app reads a fixed
+/// second until a test injects another.
+fn system_secs() -> i64 {
+    if cfg!(test) {
+        return 1_700_000_000;
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 pub struct App {
     /// Every pane of every tab; ids are global and never reused.
     panes: HashMap<PaneId, PaneState>,
@@ -861,6 +875,16 @@ pub struct App {
     config_path: Option<PathBuf>,
     /// The privacy notice of the rolling summary was shown in this run.
     summary_notice_shown: bool,
+    /// The `Usage not saved` notice was shown in this run.
+    usage_notice_shown: bool,
+    /// The day notes already shown this run: the note, the end of its day and the limit it was shown for.
+    day_noted: Vec<(chat::DayNote, i64, u64)>,
+    /// Today's figures, as the store last answered; none until it has.
+    usage_today: Option<chat::UsageToday>,
+    /// When and how today's figures are read.
+    usage_read: chat::UsageRead,
+    /// Wall clock in seconds since the Unix epoch, injected like `clock`.
+    wall: fn() -> i64,
     /// A quiet save (the rolling summary) failed and the user was told.
     summary_failure_shown: bool,
     /// The saves of the live orchestrator runs' handoffs.
@@ -1037,6 +1061,11 @@ impl App {
             notice: None,
             config_path: None,
             summary_notice_shown: false,
+            usage_notice_shown: false,
+            day_noted: Vec::new(),
+            usage_today: None,
+            usage_read: chat::UsageRead::default(),
+            wall: system_secs,
             summary_failure_shown: false,
             run_stores: HashMap::new(),
             ended_runs: HashSet::new(),
@@ -1235,6 +1264,12 @@ impl App {
     /// unavailable, claude runs bare.
     pub fn with_jail(mut self, jail: JailSupport) -> Self {
         self.jail = jail;
+        self
+    }
+
+    /// Injects the wall clock that dates today's usage figures.
+    pub fn with_wall_clock(mut self, wall: fn() -> i64) -> Self {
+        self.wall = wall;
         self
     }
 
@@ -1667,6 +1702,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        chat.set_usage_config(self.ai.usage().clone());
         match chat.cancel() {
             Follow::CancelEngine => {
                 self.dirty = true;
@@ -1912,7 +1948,7 @@ impl App {
     }
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
-        let effects = match event {
+        let mut effects = match event {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
@@ -2078,6 +2114,7 @@ impl App {
             "the menu state and the MENU mode go together"
         );
         self.debug_assert_copy_on_shell();
+        effects.extend(self.usage_read_effects());
         effects
     }
 
@@ -2863,7 +2900,10 @@ impl App {
         };
         // A compaction run is not a turn: the pane stays idle meanwhile.
         if chat.is_compaction_turn(turn) {
-            return self.on_compaction(id, event);
+            let mut effects = self.on_compaction(id, event);
+            // The run's own usage is a row of its own.
+            effects.extend(self.store_effects(id));
+            return effects;
         }
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
         // Only a final `Done` is a clean end; an error or the answer cap
@@ -2881,6 +2921,8 @@ impl App {
                 event,
                 StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
             );
+        // The usage line follows the settings at the moment the turn ends.
+        chat.set_usage_config(self.ai.usage().clone());
         let failure = turn_failure(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
@@ -7253,7 +7295,7 @@ mod app_tests {
                 ..
             }
         ));
-        // The AI tab starts on its first row too: the old cursor is gone.
+        // The Models tab starts on its first row too: the old cursor is gone.
         a.update(code(KeyCode::Tab));
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
@@ -8509,6 +8551,15 @@ mod app_tests {
             }
             let before = a.menu().cloned();
             assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
+            // The Usage view says so instead of ignoring it (a limit takes
+            // pasted digits while it is edited).
+            let after = format!("{:?}", a.menu());
+            if footer_of(&a) == "Esc first to leave Usage" {
+                // Only the notice differs.
+                let told = "notice: Some(\"Esc first to leave Usage\")";
+                assert_eq!(after.replace(told, "notice: None"), format!("{before:?}"));
+                continue;
+            }
             assert_eq!(a.menu().cloned(), before);
         }
     }
@@ -8773,6 +8824,15 @@ mod app_tests {
     /// Rolling compaction of the history (chat-memory S3, S4, S8).
     mod chat_compact;
 
+    /// Usage rows and the notice for a lost one (ai-cost 1b).
+    mod chat_usage;
+
+    /// The `/cost` command and its overlay (ai-cost 1c).
+    mod chat_cost;
+
+    /// Worker usage records and the coordinator's usage line (ai-cost 5).
+    mod orchestra_usage;
+
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
 
@@ -8801,7 +8861,7 @@ mod app_tests {
     mod hf_download;
     mod ollama_download;
 
-    /// The Hugging Face account row of the AI tab (config-menu).
+    /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;
 
     /// The llama-server install wizard of the llamacpp picker

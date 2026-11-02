@@ -36,6 +36,7 @@ fn chat_with(notes: usize, data: &str) -> ChatState {
         panic!("send refused");
     };
     chat.apply(turn, StreamEvent::Delta("hello".into()));
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     chat.apply(turn, StreamEvent::Done(Finish::Stop));
     chat.inject_memory(block(notes, data));
     chat

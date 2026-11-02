@@ -39,6 +39,7 @@ pub struct StatusLine<'a> {
     marker: Option<SelectionKind>,
     thinking: Option<ThinkingView>,
     memory: Option<MemBadge>,
+    usage: Option<&'a str>,
     context: Option<u8>,
     update: Option<&'a str>,
     download: Option<&'a str>,
@@ -57,6 +58,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            usage: None,
             context: None,
             update: None,
             download: None,
@@ -81,6 +83,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            usage: None,
             context: None,
             update: None,
             download: None,
@@ -139,6 +142,13 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// Today's usage (`today: 1234 tok`), shown after the engine. It is the
+    /// first thing dropped when the line is narrow, before the memory state.
+    pub fn usage(mut self, usage: Option<&'a str>) -> Self {
+        self.usage = usage;
+        self
+    }
+
     /// How full the chat's context is, in percent (` · context 42%`), over a
     /// focused chat that has sent a turn. It outranks the memory state and
     /// the update mark when the line is narrow.
@@ -186,7 +196,8 @@ impl<'a> StatusLine<'a> {
     /// it takes (0 when it does not fit next to the mode block, which has
     /// priority). The marks are part of it only if they fit and showing them
     /// costs the thinking indicator nothing; the memory state goes first, then
-    /// the update mark, then the context fill, then the download mark.
+    /// the update mark, then the context fill, then the download mark. The usage
+    /// text goes before all of them.
     fn fit_right(&self, width: u16) -> (Line<'a>, usize) {
         let fits = |line: &Line| line.width() + self.mode_block_width() <= usize::from(width);
         let plain = self.right_line(Marks::default());
@@ -195,11 +206,12 @@ impl<'a> StatusLine<'a> {
         // Every set of the marks there are, the most kept first: the download
         // mark weighs most, then the context fill, the update mark and, least,
         // the memory state.
-        let wanted = (1..16u8).rev().map(|set| Marks {
-            download: set & 8 != 0 && self.download.is_some(),
-            context: set & 4 != 0 && self.context.is_some(),
-            update: set & 2 != 0 && self.update.is_some(),
-            memory: set & 1 != 0 && self.memory.is_some(),
+        let wanted = (1..32u8).rev().map(|set| Marks {
+            download: set & 16 != 0 && self.download.is_some(),
+            context: set & 8 != 0 && self.context.is_some(),
+            update: set & 4 != 0 && self.update.is_some(),
+            memory: set & 2 != 0 && self.memory.is_some(),
+            usage: set & 1 != 0 && self.usage.is_some(),
         });
         for marks in wanted {
             if marks == Marks::default() {
@@ -272,6 +284,12 @@ impl<'a> StatusLine<'a> {
                 Style::new().fg(t.primary_cyan).bg(t.bg_panel),
             ),
         ];
+        if let Some(text) = self.usage.filter(|_| marks.usage) {
+            spans.push(Span::styled(
+                format!(" \u{b7} {text}"),
+                Style::new().fg(t.text_muted).bg(t.bg_panel),
+            ));
+        }
         if let Some(version) = self.update.filter(|_| marks.update) {
             spans.push(Span::styled(
                 format!(" \u{b7} {}", update::status_mark(version)),
@@ -317,6 +335,7 @@ impl<'a> StatusLine<'a> {
 /// Which marks a right segment shows.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct Marks {
+    usage: bool,
     memory: bool,
     context: bool,
     update: bool,
@@ -844,3 +863,5 @@ mod tests {
 }
 #[cfg(test)]
 mod update_tests;
+#[cfg(test)]
+mod usage_tests;

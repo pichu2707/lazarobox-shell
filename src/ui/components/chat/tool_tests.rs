@@ -78,6 +78,7 @@ fn with_pair(status: ToolStatus, summary: &str) -> ChatState {
     chat.apply(turn, call(1, "find_dir", "curso-rust"));
     chat.apply(turn, result(1, status, summary));
     chat.apply(turn, StreamEvent::Delta("It is under dev.".into()));
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     chat.apply(turn, StreamEvent::Done(Finish::Stop));
     chat
 }
@@ -130,6 +131,7 @@ fn snapshot_an_answer_that_imitates_a_row_keeps_the_answer_style() {
         turn,
         StreamEvent::Delta("» find_dir curso-rust\n  ok: 1 result".into()),
     );
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     chat.apply(turn, StreamEvent::Done(Finish::Stop));
     let buf = draw(&chat, 40, 7);
     insta::assert_snapshot!(text(&buf));

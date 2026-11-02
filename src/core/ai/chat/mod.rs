@@ -15,6 +15,7 @@ pub mod codex;
 pub mod compact;
 pub mod composer;
 pub mod copy;
+pub mod cost_view;
 pub mod engine;
 pub mod folder;
 pub mod folder_picker;
@@ -40,6 +41,8 @@ pub mod tags;
 pub mod text_call;
 pub mod tool;
 pub mod transcript;
+pub mod usage;
+pub mod usage_view;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
@@ -183,6 +186,9 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// The usage line under an answer: shown, never stored, never sent as
+    /// history, never part of a yank.
+    Usage(String),
     /// A worker of the pane's orchestrator run, updated in place as its
     /// status changes: shown, never stored, never sent as history.
     Worker(WorkerRow),
@@ -365,6 +371,19 @@ pub struct ChatState {
     tools_offered: bool,
     /// The engine of the request in flight, as sent.
     request_engine: String,
+    /// What the last turn used, summed over its `Usage` events. Cleared by
+    /// the next send, so it outlives the turn for whoever stores it.
+    turn_usage: Option<usage::TurnUsage>,
+    /// The usage settings, handed in by the app before each event.
+    usage_config: crate::core::ai::config::UsageConfig,
+    /// The `/cost` overlay, while it is shown over the conversation.
+    cost: Option<cost_view::CostView>,
+    /// What this pane used, kept in memory for `/cost` with the history off.
+    session_usage: usage_view::Session,
+    /// Usage of ended runs the store has not been told about yet.
+    usage_outbox: Vec<usage::Pending>,
+    /// The compaction or summary run in flight, for its own usage.
+    side_run: Option<usage::SideRun>,
     /// `close_stream` already queued the answer in progress.
     closing: bool,
     /// The profile changed while the first system prompt was still being
@@ -482,6 +501,12 @@ impl ChatState {
             fill: None,
             tools_offered: false,
             request_engine: String::new(),
+            turn_usage: None,
+            usage_config: crate::core::ai::config::UsageConfig::default(),
+            cost: None,
+            session_usage: usage_view::Session::default(),
+            usage_outbox: Vec::new(),
+            side_run: None,
             closing: false,
             reprepare_prompt: false,
             approvals: approval::Approvals::default(),
@@ -993,6 +1018,7 @@ impl ChatState {
         self.tag_editor().is_none()
             && self.folder_picker().is_none()
             && self.list().is_none()
+            && self.cost().is_none()
             && self.note_editor().is_none()
             && self.summary_draft().is_none()
             && self.approvals().review().is_none()
@@ -1045,6 +1071,7 @@ impl ChatState {
             | Entry::Reasoning(_)
             | Entry::Memory(_)
             | Entry::Tool(_)
+            | Entry::Usage(_)
             | Entry::Worker(_)
             | Entry::RunUsage(_) => None,
         })
@@ -1065,6 +1092,40 @@ impl ChatState {
 
     pub fn set_scroll(&mut self, scroll: Scroll) {
         self.scroll = scroll;
+    }
+
+    /// What the last turn used, if its engine reported any. Stays until the
+    /// next send.
+    pub fn turn_usage(&self) -> Option<&usage::TurnUsage> {
+        self.turn_usage.as_ref()
+    }
+
+    /// The `/cost` overlay, while it is shown.
+    pub fn cost(&self) -> Option<&cost_view::CostView> {
+        self.cost.as_ref()
+    }
+
+    pub fn cost_mut(&mut self) -> Option<&mut cost_view::CostView> {
+        self.cost.as_mut()
+    }
+
+    /// Shows the `/cost` overlay.
+    pub fn open_cost(&mut self, view: cost_view::CostView) {
+        self.cost = Some(view);
+    }
+
+    pub fn close_cost(&mut self) {
+        self.cost = None;
+    }
+
+    /// The usage settings the next usage line follows.
+    pub fn set_usage_config(&mut self, config: crate::core::ai::config::UsageConfig) {
+        self.usage_config = config;
+    }
+
+    /// What this pane used since it opened.
+    pub fn session_usage(&self) -> &usage_view::Session {
+        &self.session_usage
     }
 
     /// Moves with every change of the transcript; the line cache keys on it.
@@ -1284,6 +1345,7 @@ impl ChatState {
             summarized = true;
         }
         self.compaction.cancel();
+        self.end_side_run(true);
         self.compaction.sent(room);
         let memory_text = memory.as_deref().unwrap_or_default();
         self.fill = budget::fill(
@@ -1304,6 +1366,7 @@ impl ChatState {
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
         self.turn += 1;
+        self.turn_usage = None;
         self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
@@ -1368,7 +1431,7 @@ impl ChatState {
         if self.summarizing.is_some() {
             return self.apply_summary(event);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_)) {
+        if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
@@ -1376,8 +1439,8 @@ impl ChatState {
             event,
             StreamEvent::Slow
                 | StreamEvent::Notice(_)
-                | StreamEvent::Usage(_)
                 | StreamEvent::Error(_)
+                | StreamEvent::Usage(_)
         ) {
             self.told_sent.clear();
         }
@@ -1395,9 +1458,18 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Usage(usage) => {
+                let mut usage = *usage;
+                if usage.model.is_none() && !usage.multi_model && !self.request_model.is_empty() {
+                    usage.model = usage::model_id(&self.request_model);
+                }
+                match self.turn_usage.as_mut() {
+                    Some(sum) => sum.merge(&usage),
+                    None => self.turn_usage = Some(usage),
+                }
+                Follow::Nothing
+            }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
-            // The chat pane shows no usage; the orchestrator's rows do.
-            StreamEvent::Usage(_) => Follow::Nothing,
             StreamEvent::ToolCall {
                 id, name, summary, ..
             } => {
@@ -1553,6 +1625,7 @@ impl ChatState {
             | Entry::Reasoning(_)
             | Entry::Memory(_)
             | Entry::Tool(_)
+            | Entry::Usage(_)
             | Entry::Worker(_)
             | Entry::RunUsage(_) => None,
         })
@@ -1568,6 +1641,29 @@ impl ChatState {
             lines.append(&mut self.told);
             self.told = lines;
         }
+        // A turn that did not end well used more than the engine reported.
+        if status != MsgStatus::Complete
+            && let Some(usage) = self.turn_usage.as_mut()
+        {
+            usage.partial = true;
+        }
+        if let Some(usage) = self.turn_usage.clone() {
+            self.session_usage
+                .add(&self.request_engine, usage_view::Run::Chat, &usage);
+            self.usage_outbox.push(usage::Pending {
+                role: "chat",
+                worker: None,
+                engine: self.request_engine.clone(),
+                usage,
+            });
+        }
+        // Read before the engine is handed to the saved answer below.
+        let usage_line = self.usage_line_for(status);
+        // A passive note, shown whether or not the usage line is on.
+        let limit_note = self
+            .turn_usage
+            .as_ref()
+            .and_then(|usage| usage::turn_note(usage, self.usage_config.turn_tokens()));
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
@@ -1588,10 +1684,57 @@ impl ChatState {
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
         }
+        if let Some(line) = usage_line {
+            self.entries.push(Entry::Usage(line));
+        }
+        if let Some(note) = limit_note {
+            self.entries.push(Entry::System(note));
+        }
         self.phase = Phase::Idle;
         self.started = None;
         self.request_model.clear();
         self.request_engine.clear();
+    }
+
+    /// What a worker turn of the run used, waiting for the store like a chat
+    /// turn's. It counts in this session; it is not a turn and raises no
+    /// per-turn note.
+    pub fn record_worker_usage(&mut self, key: WorkerKey, engine: &str, usage: usage::TurnUsage) {
+        self.session_usage
+            .add(engine, usage_view::Run::Side, &usage);
+        self.usage_outbox.push(usage::Pending {
+            role: "worker",
+            worker: Some(format!("{}.{}", key.run.0, key.worker.0)),
+            engine: engine.to_owned(),
+            usage,
+        });
+    }
+
+    /// The usage line of the turn that ends with `status`, when the setting is
+    /// on: a clean end without a record reads `no data`; an unclean end gets
+    /// one only if it has a record. The coordinator's turn of a run says so.
+    fn usage_line_for(&self, status: MsgStatus) -> Option<String> {
+        let usage = self.turn_usage.as_ref();
+        if !self.usage_config.line() || (usage.is_none() && status != MsgStatus::Complete) {
+            return None;
+        }
+        let billing = self.usage_config.billing(&self.request_engine);
+        let line = usage_view::usage_line(usage, billing);
+        Some(if self.orch_turn_in_flight() {
+            usage_view::coordinator_line(line)
+        } else {
+            line
+        })
+    }
+
+    /// The compaction or summary run ended: its usage, if it reported any,
+    /// waits for the store. `cut` when it did not end well.
+    fn end_side_run(&mut self, cut: bool) {
+        if let Some(pending) = self.side_run.take().and_then(|run| run.end(cut)) {
+            self.session_usage
+                .add(&pending.engine, usage_view::Run::Side, &pending.usage);
+            self.usage_outbox.push(pending);
+        }
     }
 
     /// Stops the turn in flight, keeping the partial answer.

@@ -1,0 +1,35 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+assertion_line: 206
+expression: "text(&draw(&chat, 24, 30))"
+---
+AI usage (alpha)
+today: 500 tokens · 3
+turns · partial
+last 7 days: 800 tokens
+· 6 turns · partial
+by engine and model
+(last 7 days):
+  claude › m: in 4 · out
+4
+  ollama › m: in 1 · out
+1
+  codex › m: in no data
+· out no data · partial
+this chat: no data
+per day (last 7 days,
+oldest first):
+···▁▂▃█ max 500 *
+per engine (last 7
+days):
+  claude
+████████████████████ 700
+  ollama ██ 100
+  codex  no data
+
+
+
+
+
+
+Esc close · ↑↓ scroll

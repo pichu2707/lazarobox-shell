@@ -10,6 +10,106 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The menu's AI tab is split into the tabs Models, Tools, Connectors and Chat
+  after Settings, so the popup is 17 rows high instead of 25 and the smallest
+  usable terminal is 24x16; the Usage row of Settings takes the 17th row. `Tab`
+  and `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight
+  to a tab by its fixed number (`2` Models, `3` Tools, `5` Chat). Connectors
+  stays hidden until it has rows, so `4` says there are no connectors yet. The
+  bar hint reads `⇥ Tab · 1-5`. A digit or `Tab` that cannot switch tabs now
+  shows a notice in the footer (`Tabs are 1-5`, `No other tabs`) instead of
+  doing nothing. Nothing changes in `config.toml`.
+- `/cost` (alpha) in the chat composer opens a view over the conversation,
+  headed `AI usage (alpha)`, with the tokens of today and of the last 7 days
+  over every stored chat, the usage per engine and model, this chat and this
+  session. `Esc` closes it, the arrows and `PageUp`/`PageDown` scroll it and
+  long lines wrap. It is a command of yours: no message, no request, and it
+  works during a stream. `/cost` followed by text says `/cost takes no
+  arguments`; `//cost` sends the text `/cost`. A value an engine did not report
+  reads `no data` (never 0) and dollars appear only when the engine reports
+  them, labelled `list-price equivalent` by default. With chat history off it
+  shows this session only, from memory, and says so.
+- A dim usage line (alpha) under each chat answer (`usage: in 2 · out 4 ·
+  $0.0049 list-price equivalent`), on by default. Turn it off with
+  `line = false` under `[ai.usage]` or in the Usage menu view. A turn the
+  engine reported nothing for reads `usage: no data`; a cut or failed turn gets
+  the line only if it has a record, marked `partial`. It is not stored, not
+  sent to the engine, not part of a yank and not shown after a resume.
+- The status bar of a focused chat shows ` · today: N tok` (alpha; all chats
+  and engines, today), on by default. Turn it off with `statusline = false`
+  under `[ai.usage]` or in the Usage menu view. Dollars are added only for
+  engines in `per-token` mode (`$0.42`, `<$0.01` below half a cent, nothing for
+  a zero sum). It is read from the history when the first chat is focused and
+  again when the local day changes, never shows yesterday's figure, and a read
+  that fails keeps the last figure, is told as `Usage not read: <reason>`,
+  shows `today: ?` when no valid figure is left, and is retried after a minute.
+  It is the first segment dropped when the bar is narrow.
+- `[ai.usage]` (`line`, `statusline`, and the thresholds `turn_tokens`,
+  `day_tokens`, `day_usd`) and
+  `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
+  default, or `per-token`). A wrong value falls back to its default and is
+  reported at startup; a threshold of 0 or less is off.
+- AI usage settings in the menu (alpha). A new `Usage (alpha)` row in Settings,
+  after `llama-server idle`, reads `line on · bar on` and opens a view with
+  `Usage line` and `Usage in bar` (`[ai.usage] line` and `statusline`)
+  and `claude billing`, `codex billing` and `gemini billing`
+  (`[ai.usage.billing]`: `subscription` or `per-token`); local engines have no
+  row. Changes are a draft until `s` saves, only the changed keys are written,
+  and `Esc` goes back keeping the draft; any other key inside the view says
+  `Esc first to leave Usage`. The README now says what the usage history
+  stores: numbers only, never message text, pruned after 90 days.
+- Usage limits (alpha). Three optional limits add a passive note and never
+  block, delay or cancel a send: `turn_tokens` (a finished turn used more
+  tokens than the limit: `turn used 1200 tokens (limit 1000)`), `day_tokens`
+  (`today's usage reached 5200 tokens (limit 5000)`) and `day_usd` (`today's
+  spend reached $5.01 (limit $1.00)`, counting only the engines in `per-token`
+  mode; list-price equivalents and local engines never count). The turn note
+  shows on every turn over the limit; the two day notes show once per local day
+  per run. The Usage view gets the rows `Turn tokens`, `Day tokens` and `Day
+  $`: `Enter` edits, digits type (one `.` and two decimals for dollars, at most
+  12 digits; a paste of valid digits is accepted), `Enter` keeps it, `Esc`
+  cancels, and `0` or an empty field is `off` (the key is removed from
+  `config.toml`). A stored value with more decimals than you can type (`day_usd
+  = 0.125`) is shown as it is and kept unless you change it. A key that cannot
+  be typed shows a footer notice. When the first status read of the day finds a
+  day limit already reached, its note shows at startup.
+- Usage charts (alpha). `/cost` ends with two text charts of the last 7 days
+  when there are records: `per day` (one glyph per local day from `▁` to `█`
+  scaled to the biggest day, `·` for a day with no known total, ending in `max
+  <N>`) and `per engine` (a bar of up to 20 `█` per engine, or `no data` when
+  it reported no totals). They chart tokens only: a missing count is a gap,
+  never zero, and no dollars are drawn. They wrap like any other line in a
+  narrow pane and are not shown with the history off. A ` *` after a figure
+  means some turns did not report both counts, so it is a minimum.
+- AI usage of orchestrator workers (alpha, slice 5 of #440). Each worker turn
+  is now stored in the usage store with the role `worker`, the worker's engine
+  and model and its `<run>.<worker>` id, under the same rules as a chat turn:
+  nothing is stored with the history off (`/cost` still counts it in `this
+  session`), a count the engine did not report stays `no data`, a worker that
+  failed, was cancelled or ran past its deadline is stored `partial`, a failed
+  write shows `Usage not saved: <reason>` once per run, and deleting the chat
+  keeps the records. They count in `today`, `last 7 days`, the charts, the
+  status bar's `today: N tok` and the day limits; the per-turn limit never
+  fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
+  days` when there are worker records, and on the coordinator's orchestrated
+  turn its usage line reads `usage (coordinator): ...` so it is not taken for
+  the run total. There is no per-worker or per-run breakdown yet. Usage that
+  arrives after its pane was closed is still stored (unlinked); if that write
+  fails there is no pane to tell.
+### Changed
+
+- The `Orchestrator` row of the menu is now in the Tools tab (it was in the AI
+  tab before the tabs split).
+
+### Fixed
+
+- Orchestrator worker rows count the prompt as input plus cache reads and
+  writes, so it means the same for every engine. A worker on llama.cpp now
+  shows its usage, and a failed `claude` worker keeps the usage it reported. A
+  report cut short is marked partial and shows no cost.
+
 ## [1.1.0] - 2026-11-01
 
 ### Added

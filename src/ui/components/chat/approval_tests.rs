@@ -44,6 +44,7 @@ fn exchange(answer: &str) -> ChatState {
     };
     let turn = chat.turn();
     chat.apply_at(turn, StreamEvent::Delta(answer.into()), at(10));
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     chat.apply_at(turn, StreamEvent::Done(Finish::Stop), at(20));
     chat
 }

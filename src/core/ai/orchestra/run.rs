@@ -133,6 +133,9 @@ pub enum WorkerEvent {
     /// What one turn of the worker used. Any number may come before the end;
     /// they add up.
     Usage(Usage),
+    /// The last report covers only part of its turn (the engine marked it
+    /// partial): the worker's usage is a floor, not a whole.
+    UsageGap,
     Done {
         text: String,
     },
@@ -464,6 +467,7 @@ impl Run {
                 slot.reported = true;
                 slot.usage = Some(slot.usage.map_or(report, |sum| sum.plus(report)));
             }
+            WorkerEvent::UsageGap => self.slots[index(id)].gap = true,
             WorkerEvent::Done { text } => self.end(now, id, WorkerStatus::Done, &text, None),
             WorkerEvent::Failed { class, text } => {
                 self.end(now, id, WorkerStatus::Failed, "", Some((class, text)));

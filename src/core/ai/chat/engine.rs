@@ -8,6 +8,7 @@ use super::{
     adapters::{self, adapter_for},
     approval::ApprovalAsk,
     budget,
+    usage::TurnUsage,
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -236,6 +237,23 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// The worker-row figure of a turn's report: the prompt count adds the
+    /// cache reads and writes to the fresh tokens, so it means the same for
+    /// every engine. `None` unless both the input and output counts were
+    /// reported: a missing one is not zero.
+    pub fn from_turn(turn: &TurnUsage) -> Option<Self> {
+        let (input, output) = turn.input.zip(turn.output)?;
+        let cached = [turn.cache_read, turn.cache_write]
+            .into_iter()
+            .flatten()
+            .fold(0u64, u64::saturating_add);
+        Some(Self {
+            input: input.saturating_add(cached),
+            output,
+            cost_micros: turn.cost_micros,
+        })
+    }
+
     /// The sum of two reports. The cost is known only when both reports
     /// carry one: a missing cost is never counted as zero, and a partial sum
     /// would read as the whole.
@@ -298,11 +316,19 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
-    /// What the turn used, once, just before `Done`. Absent when the engine
-    /// reports nothing.
-    Usage(Usage),
+    /// What the turn used, as the engine reported it. Sent before the final
+    /// event: nothing after `Done` or `Error` is delivered.
+    Usage(Box<TurnUsage>),
     Done(Finish),
     Error(ChatError),
+}
+
+impl StreamEvent {
+    /// The usage event of a turn. Boxed so the event stays small: every
+    /// adapter result carries one.
+    pub fn usage(usage: TurnUsage) -> Self {
+        Self::Usage(Box::new(usage))
+    }
 }
 
 /// What the chat pane may do with the engine assigned to the `chat` task.

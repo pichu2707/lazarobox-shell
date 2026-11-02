@@ -76,6 +76,31 @@ CREATE TABLE memory_notes (
 CREATE INDEX memory_notes_by_conversation ON memory_notes(conversation_id);
 ";
 
+/// The usage table (ai-cost D7). Idempotent, so it runs on every open.
+const SCHEMA_USAGE: &str = "
+    CREATE TABLE IF NOT EXISTS turn_usage (
+        id INTEGER PRIMARY KEY,
+        ts INTEGER NOT NULL,
+        conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+        engine TEXT NOT NULL,
+        model TEXT,
+        role TEXT NOT NULL DEFAULT 'chat',
+        worker TEXT,
+        input INTEGER,
+        output INTEGER,
+        cache_read INTEGER,
+        cache_write INTEGER,
+        reasoning INTEGER,
+        cost_micros INTEGER,
+        cost_source TEXT,
+        duration_ms INTEGER,
+        partial INTEGER NOT NULL DEFAULT 0 CHECK (partial IN (0, 1))
+    );
+    CREATE INDEX IF NOT EXISTS turn_usage_by_ts ON turn_usage(ts);
+    CREATE INDEX IF NOT EXISTS turn_usage_by_engine ON turn_usage(engine, ts);
+    CREATE INDEX IF NOT EXISTS turn_usage_by_conversation ON turn_usage(conversation_id);
+";
+
 /// Schema v3 (1.0 freeze) drops the closed-list CHECKs on `profile`, `role` and
 /// `status`, so a new profile, role (`tool`) or status needs no table rebuild
 /// later. The allowed values are validated in Rust when a row is written. Done
@@ -246,6 +271,11 @@ pub(crate) fn open_with(path: &Path, uid: u32, supported: i64) -> Result<Connect
         return Err(StoreError::Sqlite("journal mode not available"));
     }
     migrate_to(&mut conn, supported, || {})?;
+    if supported >= 3 {
+        // Usage is never worth the history: a table that cannot be made
+        // surfaces again, with its reason, when a usage row is written.
+        let _ = ensure_usage(&mut conn);
+    }
     harden_side_files(path, uid)?;
     Ok(conn)
 }
@@ -404,6 +434,17 @@ fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
         tx.execute_batch("ALTER TABLE conversations ADD COLUMN folder TEXT")?;
     }
     Ok(())
+}
+
+/// Creates the usage table when the file lacks it. Like `ensure_folder` it is
+/// not a schema version: `refuse_newer` would lock a v3 build out of the file,
+/// and a v3 build never names the table. It holds counts, ids and timestamps
+/// only, never text, and outlives its conversation (the link is set to NULL).
+/// Later changes to it must stay additive.
+pub(crate) fn ensure_usage(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(SCHEMA_USAGE)?;
+    tx.commit()
 }
 
 /// Creates or upgrades the schema up to `target`, every step in one

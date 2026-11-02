@@ -66,6 +66,7 @@ pub(super) fn ollama() -> AiConfig {
             model: Some("llama3:8b".into()),
         },
     );
+    ai.set_usage(crate::core::ai::config::UsageConfig::without_line());
     ai
 }
 

@@ -2238,6 +2238,595 @@ fn recent_folders_answer_after_a_v2_store_migrates_to_v3() {
     );
 }
 
+// ---- usage (ai-cost 1b.2) --------------------------------------------------
+
+use crate::core::ai::chat::usage::TurnUsage;
+
+const DAY: i64 = 86_400;
+
+fn record(conversation: Option<i64>, usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation,
+        engine: "ollama".into(),
+        role: "chat".into(),
+        worker: None,
+        usage: Box::new(usage),
+    }
+}
+
+fn tokens(input: u64, output: u64) -> TurnUsage {
+    TurnUsage {
+        input: Some(input),
+        output: Some(output),
+        model: Some("llama3".into()),
+        ..TurnUsage::default()
+    }
+}
+
+/// The `today` and `problem` of a usage reply.
+fn usage_reply(reply: Option<StoreReply>) -> (Option<u64>, Option<String>) {
+    match reply {
+        Some(StoreReply::UsageRecorded { today, problem, .. }) => (today, problem),
+        other => panic!("expected UsageRecorded, got {other:?}"),
+    }
+}
+
+/// The per-engine dollars of a usage reply.
+fn cost_reply(reply: Option<StoreReply>) -> Vec<(String, u64)> {
+    match reply {
+        Some(StoreReply::UsageRecorded { cost, .. }) => cost,
+        other => panic!("expected UsageRecorded, got {other:?}"),
+    }
+}
+
+fn record_for(engine: &str, usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: engine.into(),
+        role: "chat".into(),
+        worker: None,
+        usage: Box::new(usage),
+    }
+}
+
+fn usage_count(conn: &Connection) -> i64 {
+    count(conn, "turn_usage")
+}
+
+fn old_row(conn: &Connection, age_secs: i64) {
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+        [now() - age_secs],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_usage_row_is_stored_and_the_reply_carries_the_day_total() {
+    let (_dir, mut worker, conn) = fixture();
+    let first = usage_reply(worker.handle(record(None, tokens(100, 20))));
+    let second = usage_reply(worker.handle(record(None, tokens(0, 5))));
+    assert_eq!(first, (Some(120), None));
+    assert_eq!(second, (Some(125), None));
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_count_the_engine_did_not_report_stays_null() {
+    let (_dir, mut worker, conn) = fixture();
+    let only_output = TurnUsage {
+        output: Some(5),
+        ..TurnUsage::default()
+    };
+    worker.handle(record(None, only_output));
+    type Row = (
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    );
+    let row: Row = conn
+        .query_row(
+            "SELECT input, output, cache_read, cost_micros, model FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (None, Some(5), None, None, None));
+}
+
+#[test]
+fn a_row_keeps_its_role_and_flags() {
+    let (_dir, mut worker, conn) = fixture();
+    let mut usage = tokens(1, 2);
+    usage.partial = true;
+    usage.cost_micros = Some(4_900);
+    usage.cost_source = Some(crate::core::ai::chat::usage::CostSource::EngineList);
+    let cmd = StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: "claude".into(),
+        role: "compaction".into(),
+        worker: None,
+        usage: Box::new(usage),
+    };
+    worker.handle(cmd);
+    let row: (String, String, i64, i64, String) = conn
+        .query_row(
+            "SELECT engine, role, partial, cost_micros, cost_source FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "claude".into(),
+            "compaction".into(),
+            1,
+            4_900,
+            "engine_list".into()
+        )
+    );
+}
+
+#[test]
+fn a_row_links_to_the_conversation_of_its_pane_or_to_none() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    worker.handle(record(None, tokens(1, 1)));
+    worker.handle(record(Some(id), tokens(1, 1)));
+    // A conversation another pane deleted: the row is kept, unlinked.
+    worker.handle(record(Some(9_999), tokens(1, 1)));
+    let links: Vec<Option<i64>> = conn
+        .prepare("SELECT conversation_id FROM turn_usage ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(links, vec![Some(id), Some(id), None]);
+}
+
+#[test]
+fn deleting_a_conversation_through_the_store_keeps_its_usage() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("ZZ-MARKER-ZZ"), vec![])));
+    for _ in 0..3 {
+        worker.handle(record(Some(id), tokens(2, 3)));
+    }
+    assert!(matches!(
+        worker.handle(delete(id)),
+        Some(StoreReply::Deleted { .. })
+    ));
+    let kept: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(conversation_id), SUM(output) FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (3, 0, 9));
+}
+
+#[test]
+fn no_usage_row_holds_message_text() {
+    let (dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("ZZ-MARKER-ZZ"), vec![])));
+    worker.handle(record(Some(id), tokens(2, 3)));
+    let text: String = conn
+        .query_row(
+            "SELECT quote(engine) || quote(model) || quote(role) || quote(worker)
+             FROM turn_usage",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!text.contains("ZZ-MARKER-ZZ"), "{text}");
+    drop(dir);
+}
+
+#[test]
+fn a_write_prunes_rows_older_than_ninety_days() {
+    let (_dir, mut worker, conn) = fixture();
+    old_row(&conn, 91 * DAY);
+    old_row(&conn, 89 * DAY);
+    worker.handle(record(None, tokens(1, 1)));
+    // The 91-day row went; the 89-day row and the new one stay.
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn pruning_keeps_the_ninetieth_day() {
+    let (_dir, _worker, conn) = fixture();
+    let mut conn = conn;
+    let at = now();
+    for ts in [at - 91 * DAY, at - 90 * DAY, at - 89 * DAY] {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+            [ts],
+        )
+        .unwrap();
+    }
+    assert_eq!(prune_usage(&mut conn, at).unwrap(), 1);
+    assert_eq!(usage_count(&conn), 2);
+    // A clock before every row removes nothing.
+    assert_eq!(prune_usage(&mut conn, at - 1_000 * DAY).unwrap(), 0);
+}
+
+#[test]
+fn opening_the_store_prunes_old_rows_and_leaves_conversations() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    {
+        let conn = open_as(&db, me()).unwrap();
+        seed(&conn, 1);
+        conn.execute("UPDATE conversations SET updated_at = 1", [])
+            .unwrap();
+        old_row(&conn, 200 * DAY);
+        old_row(&conn, 10 * DAY);
+    }
+    let mut worker = worker_at(&db);
+    recent(&mut worker, 5);
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(usage_count(&conn), 1);
+    assert_eq!(count(&conn, "conversations"), 1);
+}
+
+/// A store whose usage inserts (or deletes) fail with a raw error that holds a
+/// marker and a path.
+fn failing_worker(dir: &TempDir, trigger: &str) -> Worker {
+    let db = db_path(dir);
+    let trigger = trigger.to_owned();
+    Worker::new(move || {
+        let conn = open_as(&db, me())?;
+        conn.execute_batch(&trigger).unwrap();
+        Ok(conn)
+    })
+}
+
+const FAIL_INSERT: &str = "CREATE TRIGGER boom BEFORE INSERT ON turn_usage BEGIN
+    SELECT RAISE(ABORT, 'ZZ-MARKER-ZZ /home/secret/chat.db'); END;";
+const FAIL_PRUNE: &str = "CREATE TRIGGER boom BEFORE DELETE ON turn_usage BEGIN
+    SELECT RAISE(ABORT, 'ZZ-MARKER-ZZ /home/secret/chat.db'); END;";
+
+#[test]
+fn a_failed_usage_insert_is_reported_without_text_and_conversations_still_save() {
+    let dir = TempDir::new().unwrap();
+    let mut worker = failing_worker(&dir, FAIL_INSERT);
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    let (today, problem) = usage_reply(worker.handle(record(Some(id), tokens(1, 1))));
+    let reason = problem.expect("a failed insert is reported");
+    assert_eq!(today, None);
+    assert!(
+        !reason.contains("ZZ-MARKER-ZZ") && !reason.contains("/home"),
+        "{reason}"
+    );
+    assert!(!reason.is_empty() && reason.chars().count() <= ERROR_MAX);
+    assert!(
+        worker
+            .handle(append(id, reply_msg("ok", MsgStatus::Complete)))
+            .is_none()
+    );
+    let conn = Connection::open(db_path(&dir)).unwrap();
+    assert_eq!(rows(&conn, id).len(), 2);
+}
+
+#[test]
+fn a_failed_prune_is_reported_and_the_new_row_is_kept() {
+    let dir = TempDir::new().unwrap();
+    {
+        let conn = open_as(&db_path(&dir), me()).unwrap();
+        old_row(&conn, 200 * DAY);
+    }
+    let mut worker = failing_worker(&dir, FAIL_PRUNE);
+    let (today, problem) = usage_reply(worker.handle(record(None, tokens(1, 1))));
+    let reason = problem.expect("a failed prune is reported");
+    assert!(
+        !reason.contains("ZZ-MARKER-ZZ") && !reason.contains("/home"),
+        "{reason}"
+    );
+    assert_eq!(today, Some(2));
+    let conn = Connection::open(db_path(&dir)).unwrap();
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_usage_table_that_cannot_be_made_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    {
+        let conn = open_as(&db, me()).unwrap();
+        conn.execute_batch("DROP TABLE turn_usage; CREATE VIEW turn_usage AS SELECT 1 AS ts;")
+            .unwrap();
+    }
+    let mut worker = worker_at(&db);
+    let (today, problem) = usage_reply(worker.handle(record(None, tokens(1, 1))));
+    assert_eq!(today, None);
+    assert!(problem.is_some());
+}
+
+// ---- usage review fixes ----------------------------------------------------
+
+#[test]
+fn a_clock_behind_the_newest_row_prunes_nothing_even_for_old_rows() {
+    let (_dir, _worker, mut conn) = fixture();
+    let at = now();
+    old_row(&conn, 200 * DAY);
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output) VALUES (?1, 'ollama', 1)",
+        [at + DAY],
+    )
+    .unwrap();
+    assert_eq!(prune_usage(&mut conn, at).unwrap(), 0);
+    assert_eq!(usage_count(&conn), 2);
+}
+
+#[test]
+fn a_resumed_pane_stops_pointing_at_its_created_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    let created = created_id(worker.handle(create(user("one"), vec![])));
+    let other = created_id(worker.handle(StoreCmd::Create {
+        pane: PaneId::for_test(3),
+        profile: "programmer".into(),
+        tag: None,
+        extras: vec![],
+        first: user("two"),
+        origin: None,
+        folder: None,
+        open: vec![],
+    }));
+    assert!(matches!(
+        worker.handle(resume(other)),
+        Some(StoreReply::Resumed { .. })
+    ));
+    // The pane left `created`; a detached pane now stores unlinked.
+    worker.handle(record(None, tokens(1, 1)));
+    let link: Option<i64> = conn
+        .query_row("SELECT conversation_id FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(link, None, "not linked to {created}");
+}
+
+#[test]
+fn a_panic_while_recording_usage_shows_a_fixed_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(record(None, tokens(1, 1)), |_, _| {
+        panic!("ZZ-MARKER-ZZ /home/secret")
+    });
+    let (today, problem) = usage_reply(reply);
+    assert_eq!((today, problem.as_deref()), (None, Some("internal error")));
+}
+
+#[test]
+fn huge_counts_are_clamped_so_the_day_total_cannot_overflow() {
+    let (_dir, mut worker, conn) = fixture();
+    let big = TurnUsage {
+        input: Some(u64::MAX),
+        output: Some(u64::MAX),
+        ..TurnUsage::default()
+    };
+    for _ in 0..3 {
+        let (today, problem) = usage_reply(worker.handle(record(None, big.clone())));
+        assert!(
+            today.is_some() && problem.is_none(),
+            "{today:?} {problem:?}"
+        );
+    }
+    let max: i64 = conn
+        .query_row("SELECT MAX(input) FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(max, 1_000_000_000_000_000);
+}
+
+// ---- /cost report (ai-cost 1c.3) -------------------------------------------
+
+use crate::core::ai::chat::usage_view::UsageRow;
+
+fn report(conversation: Option<i64>) -> StoreCmd {
+    StoreCmd::UsageReport {
+        pane: pane(),
+        conversation,
+    }
+}
+
+fn rows_of(reply: Option<StoreReply>) -> Vec<UsageRow> {
+    match reply {
+        Some(StoreReply::UsageReport {
+            rows: Some(rows), ..
+        }) => rows,
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+/// Seconds since the epoch of local 2026-06-15 12:00 moved by `modifiers`
+/// (SQLite date modifiers, read as local time): a fixed "now" and fixed rows,
+/// whatever the machine's zone and clock.
+fn local(conn: &Connection, modifiers: &str) -> i64 {
+    conn.query_row(
+        &format!("SELECT CAST(strftime('%s', '2026-06-15 12:00:00', {modifiers}'utc') AS INTEGER)"),
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+struct Put<'a> {
+    ts: i64,
+    conv: Option<i64>,
+    engine: &'a str,
+    role: &'a str,
+    input: Option<i64>,
+    out: i64,
+    cost: Option<i64>,
+}
+
+fn put(conn: &Connection, p: Put) {
+    conn.execute(
+        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, input, output,
+             cost_micros)
+         VALUES (?1, ?2, ?3, 'm', ?4, ?5, ?6, ?7)",
+        rusqlite::params![p.ts, p.conv, p.engine, p.role, p.input, p.out, p.cost],
+    )
+    .unwrap();
+}
+
+fn at_ts(ts: i64, engine: &str, input: Option<i64>, out: i64) -> Put<'_> {
+    Put {
+        ts,
+        conv: None,
+        engine,
+        role: "chat",
+        input,
+        out,
+        cost: None,
+    }
+}
+
+#[test]
+fn local_days_are_counted_back_from_the_local_day_of_now() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    // (modifiers, expected days_ago): the edges of the 7-day window and the
+    // local midnight either side.
+    let table = [
+        ("'start of day', '+1 minutes', ", 0),
+        ("'start of day', '-1 minutes', ", 1),
+        ("'-6 days', ", 6),
+        ("'-7 days', ", 7),
+        ("'-8 days', ", 8),
+    ];
+    for (modifiers, _) in table {
+        let ts = local(&conn, modifiers);
+        put(&conn, at_ts(ts, &format!("e{ts}"), Some(1), 1));
+    }
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), table.len());
+    for (modifiers, days) in table {
+        let ts = local(&conn, modifiers);
+        let row = rows.iter().find(|r| r.engine == format!("e{ts}")).unwrap();
+        assert_eq!(row.days_ago, days, "{modifiers}");
+    }
+}
+
+#[test]
+fn the_report_sums_per_day_engine_and_model_and_counts_chat_turns_only() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(
+        &conn,
+        Put {
+            cost: Some(100),
+            ..at_ts(now, "claude", Some(10), 5)
+        },
+    );
+    put(
+        &conn,
+        Put {
+            cost: Some(100),
+            ..at_ts(now - 60, "claude", Some(1), 1)
+        },
+    );
+    put(
+        &conn,
+        Put {
+            role: "compaction",
+            ..at_ts(now - 120, "claude", Some(4), 4)
+        },
+    );
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!((r.turns, r.records, r.costed), (2, 3, 2));
+    assert_eq!((r.input, r.output, r.total), (Some(15), Some(10), Some(25)));
+    assert_eq!((r.cost_micros, r.partial), (Some(200), false));
+}
+
+#[test]
+fn a_missing_count_stays_none_and_marks_the_row_partial() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(&conn, at_ts(now, "ollama", None, 9));
+    let rows = usage_report(&conn, None, now).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (
+            rows[0].input,
+            rows[0].output,
+            rows[0].total,
+            rows[0].partial
+        ),
+        (None, Some(9), None, true)
+    );
+}
+
+#[test]
+fn rows_of_the_asking_conversation_are_flagged_and_survive_other_chats() {
+    let (_dir, mut worker, conn) = fixture();
+    let mine = created_id(worker.handle(create(user("a"), vec![])));
+    let other = created_id(worker.handle(create(user("b"), vec![])));
+    let now = local(&conn, "");
+    for conv in [Some(mine), Some(other), None] {
+        put(
+            &conn,
+            Put {
+                conv,
+                ..at_ts(now, "claude", Some(1), 1)
+            },
+        );
+    }
+    let rows = usage_report(&conn, Some(mine), now).unwrap();
+    let chat: u64 = rows.iter().filter(|r| r.in_chat).map(|r| r.turns).sum();
+    let all: u64 = rows.iter().map(|r| r.turns).sum();
+    assert_eq!((chat, all), (1, 3));
+    // A pane that does not know its id yet is read as the conversation the
+    // store created for it (the last one here).
+    let pending = rows_of(worker.handle(report(None)));
+    let pending_chat: u64 = pending.iter().filter(|r| r.in_chat).map(|r| r.turns).sum();
+    assert_eq!(pending_chat, 1);
+}
+
+#[test]
+fn a_report_of_an_empty_store_is_an_empty_list_not_a_failure() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert_eq!(rows_of(worker.handle(report(None))), Vec::new());
+}
+
+#[test]
+fn a_report_never_creates_the_table_and_a_missing_one_is_empty() {
+    let (_dir, _worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage").unwrap();
+    assert_eq!(
+        usage_report(&conn, None, local(&conn, "")).unwrap(),
+        Vec::new()
+    );
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turn_usage'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0, "reading must not run DDL");
+}
+
+#[test]
+fn a_report_that_cannot_be_read_says_unavailable() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage; CREATE VIEW turn_usage AS SELECT 1 AS ts;")
+        .unwrap();
+    assert_eq!(
+        worker.handle(report(None)),
+        Some(StoreReply::UsageReport {
+            pane: pane(),
+            rows: None
+        })
+    );
+}
+
 // ---- orchestrator runs (S9) ------------------------------------------------
 
 fn stored_run(id: u64, phase: RunPhase) -> Box<RunRecord> {
@@ -2310,6 +2899,177 @@ fn run_commands_on_an_unusable_store_answer_failures() {
     );
 }
 
+// ---- the status segment's figures (ai-cost 2a.3) ----------------------------
+
+#[test]
+fn the_day_total_is_input_plus_output_and_skips_unknown_totals_and_the_cache() {
+    let (_dir, mut worker, _conn) = fixture();
+    // Output only: the total is unknown, so the day has no known total yet.
+    let only_output = TurnUsage {
+        output: Some(9),
+        ..TurnUsage::default()
+    };
+    assert_eq!(
+        usage_reply(worker.handle(record(None, only_output))).0,
+        None
+    );
+    // Cache counts are not part of the total.
+    let cached = TurnUsage {
+        cache_read: Some(1000),
+        cache_write: Some(1000),
+        ..tokens(1, 1)
+    };
+    assert_eq!(usage_reply(worker.handle(record(None, cached))).0, Some(2));
+}
+
+#[test]
+fn the_reply_sums_todays_dollars_per_engine_and_leaves_other_days_out() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, output, cost_micros) VALUES (?1, 'claude', 1, 777)",
+        [now() - 2 * DAY],
+    )
+    .unwrap();
+    let dollars = |micros| TurnUsage {
+        cost_micros: Some(micros),
+        ..tokens(1, 1)
+    };
+    cost_reply(worker.handle(record_for("claude", dollars(400))));
+    cost_reply(worker.handle(record_for("ollama", tokens(1, 1))));
+    cost_reply(worker.handle(record_for("codex", dollars(50))));
+    let last = cost_reply(worker.handle(record_for("claude", dollars(100))));
+    assert_eq!(last, [("claude".to_owned(), 500), ("codex".to_owned(), 50)]);
+}
+
+// ---- today's figures at open and across midnight (ai-cost 2a review) ---------
+
+fn today_reply(worker: &mut Worker) -> StoreReply {
+    worker
+        .handle(StoreCmd::UsageToday { pane: pane() })
+        .expect("a reply")
+}
+
+#[test]
+fn reading_today_gives_the_figures_and_the_next_midnight_without_writing() {
+    let (_dir, mut worker, conn) = fixture();
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, read_problem, problem),
+        (None, Vec::new(), None, None)
+    );
+    let until = until.expect("the day was read");
+    let at = now();
+    // Midnight is at most a day (plus a DST hour) away and still ahead.
+    assert!(until > at && until <= at + DAY + 3_600, "{until} vs {at}");
+    assert_eq!(usage_count(&conn), 0, "reading writes nothing");
+}
+
+#[test]
+fn reading_today_sees_what_was_recorded() {
+    let (_dir, mut worker, _conn) = fixture();
+    worker.handle(record(None, tokens(100, 20)));
+    let StoreReply::UsageRecorded { today, until, .. } = today_reply(&mut worker) else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!((today, until.is_some()), (Some(120), true));
+}
+
+// Spec (never fail silently): a read that fails is not "no data".
+#[test]
+fn a_day_that_cannot_be_read_says_so_and_carries_no_figures() {
+    let dir = TempDir::new().unwrap();
+    {
+        let conn = open_as(&db_path(&dir), me()).unwrap();
+        // A table of the wrong shape: the read fails, the table exists.
+        conn.execute_batch(
+            "DROP TABLE turn_usage; CREATE TABLE turn_usage (ts INTEGER, engine TEXT)",
+        )
+        .unwrap();
+    }
+    let mut worker = worker_at(&db_path(&dir));
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, until, problem),
+        (None, Vec::new(), None, None)
+    );
+    let reason = read_problem.expect("the failure is reported");
+    assert!(!reason.is_empty() && !reason.contains('/'), "{reason}");
+}
+
+// Opening the store may prune old usage (as for every command); the read
+// itself adds nothing and runs no DDL.
+#[test]
+fn reading_the_day_of_a_store_without_the_table_is_no_data_not_a_problem() {
+    let (_dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE turn_usage").unwrap();
+    let StoreReply::UsageRecorded {
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+        ..
+    } = today_reply(&mut worker)
+    else {
+        panic!("expected UsageRecorded");
+    };
+    assert_eq!(
+        (today, cost, read_problem, problem),
+        (None, Vec::new(), None, None)
+    );
+    assert!(until.expect("the day was read") > now());
+    let back: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turn_usage'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(back, 0, "reading never creates the table");
+}
+
+// A panic while reading is a read problem: it never spends the write notice.
+#[test]
+fn a_panic_while_reading_the_day_is_a_read_problem_with_a_fixed_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(StoreCmd::UsageToday { pane: pane() }, |_, _| {
+        panic!("ZZ-MARKER-ZZ /home/secret")
+    });
+    let Some(StoreReply::UsageRecorded {
+        until,
+        read_problem,
+        problem,
+        ..
+    }) = reply
+    else {
+        panic!("expected UsageRecorded, got {reply:?}");
+    };
+    assert_eq!(
+        (until, read_problem.as_deref(), problem),
+        (None, Some("internal error"), None)
+    );
+}
+
 #[test]
 fn a_handle_without_a_thread_answers_the_run_commands() {
     let (tx, mut rx) = mpsc::channel(8);
@@ -2364,4 +3124,118 @@ fn the_close_of_a_run_survives_a_long_queue() {
         .query_row("SELECT phase FROM runs WHERE id = 3", [], |r| r.get(0))
         .unwrap();
     assert_eq!(phase, "ended");
+}
+
+// ---- worker usage (ai-cost 5.1) --------------------------------------------
+
+fn worker_record(usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: "codex".into(),
+        role: "worker".into(),
+        worker: Some("3.2".into()),
+        usage: Box::new(usage),
+    }
+}
+
+#[test]
+fn a_worker_row_keeps_its_role_and_worker_id_and_counts_in_the_day() {
+    let (_dir, mut worker, conn) = fixture();
+    worker.handle(record(None, tokens(100, 20)));
+    let reply = worker.handle(worker_record(tokens(30, 5)));
+    let row: (String, Option<String>) = conn
+        .query_row(
+            "SELECT role, worker FROM turn_usage WHERE role = 'worker'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("worker".into(), Some("3.2".into())));
+    let chat_worker: Option<String> = conn
+        .query_row(
+            "SELECT worker FROM turn_usage WHERE role = 'chat'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(chat_worker, None);
+    // The status segment and the day thresholds read this sum.
+    assert_eq!(usage_reply(reply), (Some(155), None));
+}
+
+// S1/W2: the dollars of a worker row are in the day's cost of its engine.
+#[test]
+fn a_worker_row_with_dollars_adds_to_the_days_cost_of_its_engine() {
+    let (_dir, mut worker, _conn) = fixture();
+    let dollars = |micros| TurnUsage {
+        cost_micros: Some(micros),
+        ..tokens(30, 5)
+    };
+    cost_reply(worker.handle(record_for("codex", dollars(400))));
+    let last = cost_reply(worker.handle(worker_record(dollars(600))));
+    assert_eq!(last, [("codex".to_owned(), 1_000)]);
+}
+
+#[test]
+fn the_report_folds_worker_rows_into_the_totals_and_apart() {
+    let (_dir, mut worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(&conn, at_ts(now, "claude", Some(100), 20));
+    put(
+        &conn,
+        Put {
+            role: "worker",
+            ..at_ts(now, "claude", Some(30), 5)
+        },
+    );
+    // A worker row that lacks its input: its total is unknown, and it is
+    // marked, not counted as 0.
+    put(
+        &conn,
+        Put {
+            role: "worker",
+            ..at_ts(now, "claude", None, 9)
+        },
+    );
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!((row.records, row.turns, row.workers), (3, 1, 2));
+    assert_eq!(row.total, Some(155));
+    assert_eq!(row.worker_total, Some(35));
+    assert!(row.worker_partial);
+}
+
+#[test]
+fn a_report_without_worker_rows_has_no_worker_figures() {
+    let (_dir, mut worker, conn) = fixture();
+    put(&conn, at_ts(local(&conn, ""), "claude", Some(1), 1));
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(
+        (
+            rows[0].workers,
+            rows[0].worker_total,
+            rows[0].worker_partial
+        ),
+        (0, None, false)
+    );
+}
+
+#[test]
+fn a_partial_flag_marks_the_worker_figure() {
+    let (_dir, mut worker, conn) = fixture();
+    let mut usage = tokens(4, 4);
+    usage.partial = true;
+    worker.handle(worker_record(usage));
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(
+        (
+            rows[0].workers,
+            rows[0].worker_total,
+            rows[0].worker_partial
+        ),
+        (1, Some(8), true)
+    );
+    let _ = conn;
 }

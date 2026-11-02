@@ -2,6 +2,7 @@
 //! on, what is saved and when, resume and delete. The store thread does the
 //! IO; this side only builds its commands and applies its replies.
 
+use super::chat::{DayNote, UsageToday, per_token_spend};
 use super::*;
 use crate::core::ai::chat::{
     list::{
@@ -9,9 +10,11 @@ use crate::core::ai::chat::{
         notes_result_line, notes_stay_line,
     },
     store::{
-        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE, skipped_line,
+        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE,
+        USAGE_NOT_READ, USAGE_NOT_SAVED, bounded_error, skipped_line,
     },
     tags::Tags,
+    usage,
 };
 
 /// What a confirmed delete does with the notes of its conversation.
@@ -381,12 +384,120 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::UsageRecorded {
+                pane,
+                today,
+                cost,
+                until,
+                read_problem,
+                problem,
+            } => {
+                self.on_usage_day(*pane, (*today, cost, *until), read_problem.as_deref());
+                self.on_usage_reply(*pane, problem.as_deref());
+                Vec::new()
+            }
+            StoreReply::UsageReport { pane, rows } => {
+                self.on_usage_report(*pane, rows.as_deref());
+                Vec::new()
+            }
             StoreReply::RecentFolders { pane, folders } => {
                 self.on_recent_folders(*pane, folders.clone())
             }
             // The runs are `run_store`'s.
             StoreReply::RunsRecovered { .. } | StoreReply::RunsFailed { .. } => Vec::new(),
         }
+    }
+
+    /// The day's figures of a usage answer. A day that was read replaces the
+    /// figures and sets the next read at its end; one that was not keeps the
+    /// last figures, is told once until a read succeeds again, and is tried
+    /// again in a minute.
+    fn on_usage_day(
+        &mut self,
+        id: PaneId,
+        (today, cost, until): (Option<u64>, &[(String, u64)], Option<i64>),
+        read_problem: Option<&str>,
+    ) {
+        // An answer that read no day (a lost write) says nothing about a read
+        // in flight.
+        if until.is_none() && read_problem.is_none() {
+            return;
+        }
+        self.dirty = true;
+        let now = (self.wall)();
+        self.usage_read.answered(now, until, read_problem.is_some());
+        if let Some(until) = until {
+            self.day_notes(id, (today, cost), until);
+        }
+        if let Some(until) = until {
+            self.usage_today = Some(UsageToday {
+                tokens: today,
+                cost: cost.to_vec(),
+                until,
+            });
+        }
+        let Some(reason) = read_problem else { return };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+            && self.usage_read.tell()
+        {
+            chat.push_system(format!("{USAGE_NOT_READ}{}", bounded_error(reason)));
+        }
+    }
+
+    /// The notes of the day thresholds the figures reached (usage limits):
+    /// tokens, then spend of the per-token engines. Each shows once per local
+    /// day (`until` names it) per run, as a passive line that blocks nothing.
+    fn day_notes(
+        &mut self,
+        id: PaneId,
+        (tokens, cost): (Option<u64>, &[(String, u64)]),
+        until: i64,
+    ) {
+        let usage = self.ai.usage().clone();
+        let spend = per_token_spend(&usage, cost);
+        let notes = [
+            (
+                DayNote::Tokens,
+                usage.day_tokens(),
+                usage::day_tokens_note(tokens, usage.day_tokens()),
+            ),
+            (
+                DayNote::Spend,
+                usage.day_usd_micros(),
+                usage::day_spend_note(spend, usage.day_usd_micros()),
+            ),
+        ];
+        // Keyed on the limit too: raising it the same day arms the note again.
+        for (kind, limit, note) in notes {
+            let (Some(note), Some(limit)) = (note, limit) else {
+                continue;
+            };
+            if self.day_noted.contains(&(kind, until, limit)) {
+                continue;
+            }
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                self.day_noted.retain(|(_, day, _)| *day >= until);
+                self.day_noted.push((kind, until, limit));
+                chat.push_system(note);
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// The answer to a usage write. A lost row, a failed migration or a
+    /// failed prune is told once per run in the pane that asked, with a
+    /// reason free of text; the turn is never touched.
+    fn on_usage_reply(&mut self, id: PaneId, problem: Option<&str>) {
+        let Some(reason) = problem else { return };
+        if self.usage_notice_shown {
+            return;
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        self.usage_notice_shown = true;
+        chat.push_system(format!("{USAGE_NOT_SAVED}{}", bounded_error(reason)));
+        self.dirty = true;
     }
 
     /// The list arrived (or could not be read): the pane learns its project

@@ -1,6 +1,7 @@
-use super::super::engine::{ChatError, Finish, Usage};
+use super::super::engine::{ChatError, Finish};
 use super::super::stream::{CLI_LINE_CAP, ERROR_CAP};
 use super::*;
+use crate::core::ai::chat::usage::TurnUsage;
 
 const PLAIN: &str = include_str!("../../../../../tests/fixtures/codex/plain.jsonl");
 const NO_REASONING: &str =
@@ -51,23 +52,70 @@ fn turn_failed_line(message: &str) -> String {
     format!("{{\"type\":\"turn.failed\",\"error\":{{\"message\":\"{message}\"}}}}\n")
 }
 
-fn usage(input: u64, output: u64) -> StreamEvent {
-    StreamEvent::Usage(Usage {
-        input,
-        output,
-        cost_micros: None,
+#[test]
+fn a_plain_answer_is_one_delta_usage_and_a_stop() {
+    let usage = TurnUsage {
+        input: Some(19076),
+        output: Some(5),
+        cache_read: Some(0),
+        reasoning: Some(0),
+        ..TurnUsage::default()
+    };
+    assert_eq!(
+        whole(PLAIN),
+        [delta("ok"), StreamEvent::usage(usage), done()]
+    );
+}
+
+/// The one `Usage` of a stream.
+fn usage_of(events: &[StreamEvent]) -> Option<TurnUsage> {
+    events.iter().find_map(|e| match e {
+        StreamEvent::Usage(u) => Some(TurnUsage::clone(u)),
+        _ => None,
     })
 }
 
-#[test]
-fn a_plain_answer_is_one_delta_a_usage_and_a_stop() {
-    assert_eq!(whole(PLAIN), [delta("ok"), usage(19076, 5), done()]);
+fn completed_with(usage: &str) -> String {
+    format!("{{\"type\":\"turn.completed\",\"usage\":{usage}}}\n")
 }
 
 #[test]
-fn a_turn_completed_without_usage_emits_no_usage_event() {
-    let text = format!("{}{}", message_line("a"), "{\"type\":\"turn.completed\"}\n");
-    assert_eq!(whole(&text), [delta("a"), done()]);
+fn cached_input_is_taken_out_of_input_and_has_no_dollars() {
+    let got = usage_of(&whole(PREAMBLE)).expect("usage");
+    assert_eq!(got.input, Some(39196 - 36352));
+    assert_eq!(got.cache_read, Some(36352));
+    assert_eq!(got.output, Some(927));
+    assert_eq!(got.reasoning, Some(503));
+    assert_eq!((got.cost_micros, got.cost_source), (None, None));
+}
+
+#[test]
+fn cached_larger_than_input_saturates_at_zero() {
+    let line = completed_with(r#"{"input_tokens":5,"cached_input_tokens":9,"output_tokens":2}"#);
+    let got = usage_of(&whole(&line)).expect("usage");
+    assert_eq!((got.input, got.cache_read), (Some(0), Some(9)));
+}
+
+#[test]
+fn bad_values_are_none_and_the_good_ones_stay() {
+    let line =
+        completed_with(r#"{"input_tokens":"many","output_tokens":-5,"cached_input_tokens":7}"#);
+    let events = whole(&line);
+    let got = usage_of(&events).expect("usage");
+    assert_eq!(
+        (got.input, got.output, got.cache_read),
+        (None, None, Some(7))
+    );
+    assert_eq!(events.last(), Some(&done()));
+}
+
+#[test]
+fn missing_or_malformed_usage_gives_no_record_and_a_normal_end() {
+    for usage in ["\"oops\"", "{}", "[1]", "null"] {
+        let events = whole(&completed_with(usage));
+        assert_eq!(events, [done()], "{usage}");
+    }
+    assert_eq!(whole("{\"type\":\"turn.completed\"}\n"), [done()]);
 }
 
 #[test]
@@ -76,7 +124,12 @@ fn the_recorded_run_that_spent_reasoning_tokens_exposes_no_reasoning() {
     // pinned flags no event carries reasoning text, so none is produced.
     assert!(NO_REASONING.contains("\"reasoning_output_tokens\":23"));
     assert!(!NO_REASONING.contains("\"reasoning\""));
-    assert_eq!(whole(NO_REASONING), [delta("9"), usage(19095, 30), done()]);
+    let events = whole(NO_REASONING);
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!((&events[0], &events[2]), (&delta("9"), &done()));
+    // ... yet the reasoning count is kept, as part of the output.
+    let usage = usage_of(&events).expect("usage");
+    assert_eq!((usage.reasoning, usage.output), (Some(23), Some(30)));
 }
 
 #[test]
@@ -441,14 +494,5 @@ fn a_wired_turn_still_refuses_every_other_tool_and_unknown_item() {
 fn a_text_only_turn_refuses_our_mcp_tool_call_too() {
     for event in ["item.started", "item.updated", "item.completed"] {
         assert_eq!(whole(&ours(event)), [failed(TOOL_REFUSED)], "{event}");
-    }
-}
-
-#[test]
-fn a_usage_with_only_one_count_emits_nothing_never_a_zero() {
-    for counts in ["{\"input_tokens\":7}", "{\"output_tokens\":3}"] {
-        let end = format!("{{\"type\":\"turn.completed\",\"usage\":{counts}}}\n");
-        let text = format!("{}{end}", message_line("a"));
-        assert_eq!(whole(&text), [delta("a"), done()], "{counts}");
     }
 }

@@ -804,7 +804,7 @@ The popup body height MUST be the maximum over every view: each tab's rows, the 
 #### Scenario: Same height across views [auto, TestBackend + insta]
 - GIVEN a normal terminal
 - WHEN the Settings tab, the AI tab, a picker level 1 and 2, the custom field and the warning are rendered
-- THEN the popup border spans 16 rows in all of them
+- THEN the popup border spans 17 rows in all of them (16 before the ai-cost `Usage (alpha)` row; that row takes the extra one)
 
 #### Scenario: Adding a row grows only the tallest view [auto]
 - GIVEN the height is derived from the tables

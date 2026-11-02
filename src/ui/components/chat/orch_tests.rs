@@ -27,6 +27,8 @@ fn theme() -> LazaroboxTheme {
 
 fn answered() -> ChatState {
     let mut chat = ChatState::new(None);
+    // These pictures are about the badge: the usage line is not under test.
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     let ready = Availability::Ready {
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),

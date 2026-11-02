@@ -32,6 +32,7 @@ fn answered() -> ChatState {
         panic!("send refused");
     };
     chat.apply(turn, StreamEvent::Delta("an answer".into()));
+    chat.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     chat.apply(turn, StreamEvent::Done(Finish::Stop));
     chat
 }

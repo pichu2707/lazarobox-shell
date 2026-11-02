@@ -1,4 +1,4 @@
-//! The `Hugging Face` row of the AI tab (config-menu, Hugging Face account
+//! The `Hugging Face` row of the Models tab (config-menu, Hugging Face account
 //! row; model-download, Connect a Hugging Face account): the requests go out
 //! as effects, the answers come back as events, and the account is known for
 //! the rest of the session.

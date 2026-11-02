@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role, tags::Tags};
+use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage, usage_view::UsageRow};
 use crate::core::{
     ai::{orchestra::record::RunRecord, sanitize::clean},
     layout::PaneId,
@@ -34,6 +34,10 @@ pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
 /// System line when tags are edited on a conversation that is not saving.
 pub const TAGS_NOT_SAVED_LINE: &str = "tags kept in this pane only: history is not saving";
+/// Start of the notice shown, once per run, when a usage row is lost.
+pub const USAGE_NOT_SAVED: &str = "Usage not saved: ";
+/// Prefix of the notice for a day of usage the store could not read.
+pub const USAGE_NOT_READ: &str = "Usage not read: ";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
@@ -137,6 +141,30 @@ pub enum StoreCmd {
     /// with `Deleted` (carrying the note rows the delete took with it), or
     /// `DeleteFailed`.
     Delete { pane: PaneId, conversation: i64 },
+    /// Stores the usage of one turn (or one compaction or summary run, named
+    /// by `role`). `conversation` is `None` while the pane does not know its
+    /// id yet (as for `Append`); a conversation that is gone stores the row
+    /// unlinked. Counts, ids and a timestamp only: never text. Answered with
+    /// `UsageRecorded`, always: a lost row is never silent.
+    RecordUsage {
+        pane: PaneId,
+        conversation: Option<i64>,
+        engine: String,
+        role: String,
+        /// `<run>.<worker>` for a `worker` record.
+        worker: Option<String>,
+        usage: Box<TurnUsage>,
+    },
+    /// Reads the stored usage for `/cost`: every record, folded by local day,
+    /// engine and model, with the rows of `conversation` flagged. Read-only.
+    /// Answered with `UsageReport`, always.
+    UsageReport {
+        pane: PaneId,
+        conversation: Option<i64>,
+    },
+    /// Reads today's figures (the status segment) without writing anything.
+    /// Answered with `UsageRecorded` (`problem` is `None`), always.
+    UsageToday { pane: PaneId },
     /// Stores an orchestrator run with its workers, replacing what the store
     /// holds under the same id (S9). Silent on success; a failure is answered
     /// with `RunsFailed`.
@@ -283,6 +311,31 @@ pub enum StoreReply {
     },
     TagsFailed {
         pane: PaneId,
+    },
+    /// The answer to `RecordUsage`. `today` is the known tokens of the local
+    /// day (input plus output of the records that have both), `None` when the
+    /// day has no known total or the row was not stored. `cost` is the
+    /// dollars the engines reported today, summed per engine (the app keeps
+    /// the per-token ones). `problem` is a short reason,
+    /// free of text and paths, for a write, migration or prune that failed.
+    UsageRecorded {
+        pane: PaneId,
+        today: Option<u64>,
+        cost: Vec<(String, u64)>,
+        /// When the figures stop being today's: the next local midnight, in
+        /// seconds since the Unix epoch. `None` when the day could not be
+        /// read (see `read_problem`): the figures then say nothing.
+        until: Option<i64>,
+        /// A short reason, free of text and paths, for a day that could not
+        /// be read. The row (if any) is stored all the same.
+        read_problem: Option<String>,
+        problem: Option<String>,
+    },
+    /// The answer to `UsageReport`. `rows` is `None` when the store could not
+    /// be read.
+    UsageReport {
+        pane: PaneId,
+        rows: Option<Vec<UsageRow>>,
     },
     /// The answer to `RecentFolders`: each folder once, newest first.
     RecentFolders {
