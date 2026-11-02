@@ -41,6 +41,7 @@ fn main() -> std::io::Result<()> {
         cli::Action::Help => {
             return out(cli::USAGE);
         }
+        cli::Action::CheckInstall => return check_install(),
         _ => {}
     }
     if let Some(message) = cli::rejection(&action) {
@@ -63,6 +64,20 @@ fn main() -> std::io::Result<()> {
     guard.block_on(lazarobox_shell::runtime::run(
         lazarobox_shell::core::start::parse_args(&argv),
     ))
+}
+
+/// `--check-install`: one line, exit 0 when the tools can run from this binary,
+/// 1 (on stderr) with the reason and the fix when they cannot.
+fn check_install() -> std::io::Result<()> {
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize)?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match lazarobox_shell::runtime::chat::check_install(&exe, home.as_deref()) {
+        Ok(()) => out("tools can run: this install is trusted"),
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Prints a line to stdout; a closed pipe (`--help | head -0`) is not an error.

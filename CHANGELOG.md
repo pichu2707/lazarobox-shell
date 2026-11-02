@@ -10,6 +10,21 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `lazarobox-shell --check-install` prints whether the tools can run from this
+  install, outside the TUI: exit 0 when the binary and its folder pass the
+  trust check, exit 1 with the same reason and `chmod` fix as the chat notice
+  otherwise.
+
+### Changed
+
+- When group write is the only reason `tools are off` (the usual result of
+  `cargo install` under `umask 002`), the notice ends with
+  `(install with umask 022 to keep it)` after the `chmod` command, and the
+  README install and update sections explain why and how to avoid it. The trust
+  rule is unchanged. (#526)
+
 ## [1.2.0] - 2026-11-02
 
 ### Added

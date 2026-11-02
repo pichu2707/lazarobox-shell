@@ -24,6 +24,7 @@ mod external;
 pub mod live;
 pub mod managed;
 
+pub use cli::check_install;
 #[cfg(test)]
 pub(crate) use cli::own_group_is_private;
 pub(crate) use cli::{
