@@ -444,6 +444,19 @@ fn ensure_folder(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
 pub(crate) fn ensure_usage(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(SCHEMA_USAGE)?;
+    // Additive columns of tables an older build created (local engine timing).
+    for column in ["prefill_ms", "load_ms"] {
+        let present: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('turn_usage') WHERE name = ?1)",
+            [column],
+            |r| r.get(0),
+        )?;
+        if !present {
+            tx.execute_batch(&format!(
+                "ALTER TABLE turn_usage ADD COLUMN {column} INTEGER"
+            ))?;
+        }
+    }
     tx.commit()
 }
 

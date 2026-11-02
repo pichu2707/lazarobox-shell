@@ -16,6 +16,12 @@ baseline.
   chat (`cache today: claude 91% · codex 79%`): cache reads over fresh input,
   cache reads and cache writes. Engines that report no cache show no figure.
   Visibility only; no prompt changes (#515).
+- `/cost` shows the prefill speed of local server engines that report timings
+  (Ollama, llama.cpp, LM Studio, vLLM) (`prefill today: llamacpp
+  2.2 ms/1k tok · ollama 1.4 ms/1k tok`), from Ollama's `prompt_eval_duration`
+  and llama.cpp's `prompt_ms`; a low figure means the prompt cache was hit.
+  Ollama's `load_duration` is stored too. Two additive nullable columns of
+  `turn_usage`, no schema version change. Visibility only (#515).
 
 ## [1.2.1] - 2026-11-02
 

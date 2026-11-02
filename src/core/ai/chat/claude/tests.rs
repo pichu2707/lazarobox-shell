@@ -84,6 +84,7 @@ fn plain_usage() -> TurnUsage {
         model: Some("claude-opus-5-5".into()),
         partial: false,
         multi_model: false,
+        ..TurnUsage::default()
     }
 }
 
@@ -125,6 +126,7 @@ fn model_usage_of_the_main_model_and_a_subagent_is_summed() {
             model: None,
             partial: false,
             multi_model: true,
+            ..TurnUsage::default()
         }]
     );
 }

@@ -326,3 +326,32 @@ fn the_day_spend_note_shows_dollars_and_never_fires_on_nothing() {
     assert_eq!(day_spend_note(Some(0), Some(1)), None);
     assert_eq!(day_spend_note(Some(5), None), None, "off");
 }
+
+fn timed(prefill_ms: Option<u64>, load_ms: Option<u64>) -> TurnUsage {
+    TurnUsage {
+        input: Some(10),
+        prefill_ms,
+        load_ms,
+        ..TurnUsage::default()
+    }
+}
+
+#[test]
+fn merge_sums_prefill_and_load_across_two_full_requests() {
+    let mut sum = timed(Some(5), Some(100));
+    sum.merge(&timed(Some(7), Some(20)));
+    assert_eq!((sum.prefill_ms, sum.load_ms), (Some(12), Some(120)));
+}
+
+#[test]
+fn merge_drops_prefill_when_only_one_request_reported_it() {
+    let mut sum = timed(Some(5), None);
+    sum.merge(&timed(None, None));
+    assert_eq!(sum.prefill_ms, None);
+    let mut sum = timed(None, None);
+    sum.merge(&timed(Some(5), None));
+    assert_eq!(sum.prefill_ms, None);
+    // It stays dropped when a later request has one.
+    sum.merge(&timed(Some(5), None));
+    assert_eq!(sum.prefill_ms, None);
+}

@@ -576,9 +576,10 @@ fn record_usage(
     // The subselect leaves the link NULL for a conversation that is gone.
     conn.execute(
         "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
-             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial)
+             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial,
+             prefill_ms, load_ms)
          VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?15, ?6, ?7, ?8,
-             ?9, ?10, ?11, ?12, ?13, ?14)",
+             ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?17)",
         rusqlite::params![
             at,
             conversation,
@@ -595,6 +596,8 @@ fn record_usage(
             count_of(usage.duration_ms),
             usage.partial,
             worker,
+            count_of(usage.prefill_ms),
+            count_of(usage.load_ms),
         ],
     )
     .map_err(|err| usage_reason(&err).to_owned())?;
@@ -680,6 +683,30 @@ fn day_figures(conn: &Connection, at: i64) -> DayRead {
 /// engine and model, with the rows of `conversation` kept apart. A missing
 /// count stays NULL (`None`), never 0; a row is partial when a record was or
 /// lacked its input or output.
+/// The three prefill columns of the report. A file whose `turn_usage` has no
+/// prefill columns yet (nothing has written since the upgrade) reports NULLs
+/// and a gap per record, so the rest of `/cost` still shows. A record counts
+/// only with an input and, for the OpenAI-compatible engines (whose `input`
+/// is the fresh part of the prompt), a cache figure to rebuild the full prompt.
+fn prefill_sql(conn: &Connection) -> rusqlite::Result<String> {
+    let present: bool = conn.query_row(
+        "SELECT COUNT(*) = 2 FROM pragma_table_info('turn_usage')
+         WHERE name IN ('prefill_ms', 'load_ms')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok("NULL, NULL, COUNT(*)".to_owned());
+    }
+    let ok = "input IS NOT NULL AND prefill_ms IS NOT NULL
+         AND (engine NOT IN ('llamacpp', 'lmstudio', 'vllm') OR cache_read IS NOT NULL)";
+    Ok(format!(
+        "SUM(CASE WHEN {ok} THEN prefill_ms END),
+         SUM(CASE WHEN {ok} THEN input + COALESCE(cache_read, 0) END),
+         COUNT(*) - COUNT(CASE WHEN {ok} THEN 1 END)"
+    ))
+}
+
 fn usage_report(
     conn: &Connection,
     conversation: Option<i64>,
@@ -694,7 +721,8 @@ fn usage_report(
     if !present {
         return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare(
+    let prefill = prefill_sql(conn)?;
+    let mut stmt = conn.prepare(&format!(
         "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
                       - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
                 engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
@@ -715,9 +743,10 @@ fn usage_report(
                           AND (engine <> 'claude' OR cache_write IS NOT NULL)
                          THEN input + cache_read + COALESCE(cache_write, 0) END),
                 COUNT(*) - COUNT(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
-                          AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END)
+                          AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END),
+                {prefill}
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
-    )?;
+    ))?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
     let rows = stmt.query_map(rusqlite::params![at, conversation], |r| {
         Ok(UsageRow {
@@ -740,6 +769,9 @@ fn usage_report(
             cache_hit: count(r.get(16)?),
             cache_base: count(r.get(17)?),
             cache_gap: count(r.get(18)?).unwrap_or(0),
+            prefill_ms: count(r.get(19)?),
+            prefill_tokens: count(r.get(20)?),
+            prefill_gap: count(Some(r.get(21)?)).unwrap_or(0),
         })
     })?;
     rows.collect()
