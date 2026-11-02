@@ -10,8 +10,24 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `lazarobox-shell --check-install` prints whether the tools can run from this
+  install, outside the TUI: exit 0 when the binary and its folder pass the
+  trust check, exit 1 with the same reason and `chmod` fix as the chat notice
+  otherwise.
+
 ### Changed
 
+- When group write is the only reason `tools are off` (the usual result of
+  `cargo install` under `umask 002`), the notice ends with
+  `(install with umask 022 to keep it)` before the `chmod` command (which stays
+  last, ready to paste), and the README install and update sections explain why and how to avoid it. The trust
+  rule is unchanged. (#526)
+- The in-app update (Updates row) runs its `cargo install` with `umask 022` for
+  that child process only, so the binary it installs is not group-writable even
+  when the user's umask is 002. The `cargo install` arguments are passed
+  unchanged. (#526)
 - `/cost` no longer describes a chat-history-off view: chat history is always
   on, and an unreadable `chat.db` shows `usage history is not available`.
 

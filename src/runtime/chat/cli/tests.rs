@@ -3446,7 +3446,8 @@ async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
         fs::canonicalize(&shim).unwrap(),
     );
     let expected = format!(
-        "tools are off: {} and {} are writable by its group; run: chmod g-w '{}' '{}'",
+        "tools are off: {} and {} are writable by its group \
+         (install with umask 022 to keep it); run: chmod g-w '{}' '{}'",
         dir.display(),
         shim.display(),
         dir.display(),
@@ -3454,4 +3455,40 @@ async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
     );
     assert_eq!(text, &expected);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+}
+
+/// Issue #526: `--check-install` prints the diagnosis of the trust check.
+#[test]
+fn check_install_is_ok_for_a_closed_binary_and_names_the_fix_otherwise() {
+    let lab = lab();
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    for (dir_mode, shim_mode) in [(0o755, 0o755), (0o775, 0o775), (0o757, 0o755)] {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(dir_mode)).unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(shim_mode)).unwrap();
+        let verdict = check_install(&shim, Some(&lab.home));
+        match (dir_mode, shim_mode) {
+            (0o755, 0o755) => assert!(verdict.is_ok(), "{verdict:?}"),
+            (0o775, 0o775) => {
+                let text = verdict.unwrap_err();
+                assert!(text.starts_with("tools would be off: "), "{text}");
+                assert!(
+                    text.contains(
+                        "writable by its group (install with umask 022 to keep it); \
+                         run: chmod g-w "
+                    ),
+                    "{text}"
+                );
+            }
+            _ => {
+                let text = verdict.unwrap_err();
+                assert!(text.contains("run: chmod o-w "), "{text}");
+                assert!(!text.contains("umask"), "{text}");
+            }
+        }
+    }
+    let gone = check_install(&dir.join("missing"), None).unwrap_err();
+    assert!(gone.starts_with("tools would be off: "), "{gone}");
 }

@@ -83,3 +83,25 @@ fn the_internal_shim_is_not_rejected() {
     assert!(err.contains("usage: lazarobox-shell __mcp-serve"), "{err}");
     assert!(!err.contains("unknown"), "{err}");
 }
+
+#[test]
+fn check_install_exits_0_or_1_and_says_why() {
+    let out = run(&["--check-install"]);
+    let code = out.status.code();
+    assert!(matches!(code, Some(0 | 1)), "{code:?}");
+    let (text, other) = if code == Some(0) {
+        (out.stdout, out.stderr)
+    } else {
+        (out.stderr, out.stdout)
+    };
+    assert!(other.is_empty());
+    let text = String::from_utf8_lossy(&text);
+    assert_eq!(text.trim_end().lines().count(), 1, "{text}");
+}
+
+#[test]
+fn help_asked_first_wins_over_check_install() {
+    let out = run(&["--help", "--check-install"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("usage:"));
+}
