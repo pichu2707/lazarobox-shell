@@ -30,6 +30,13 @@ baseline.
   files), so each turn refreshes the token again, which is a little slower; if
   Google ever rotated the refresh token, a new `gemini` login would be needed.
   The login notices show once per run.
+  Neither CLI walks up from its working folder for `AGENTS.md` or `GEMINI.md`
+  any more (`-c project_root_markers=[]` for codex, `context.memoryBoundaryMarkers`
+  set to `[]` for gemini). A value of the gemini `.env` that cannot be rewritten
+  safely is skipped with a notice, never silently; a line that opens a quote it
+  does not close, and the lines up to its closing quote, are skipped with a
+  notice. In the `.env`, `KEY=abc#def` keeps `#def`: only ` #` starts a comment.
+  Empty values do not count as a login.
 
 ## [1.2.0] - 2026-11-02
 

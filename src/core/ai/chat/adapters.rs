@@ -606,6 +606,10 @@ fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
             "include_apply_patch_tool=false",
             "-c",
             "tools.view_image=false",
+            // codex reads an `AGENTS.md` from each folder up to the nearest
+            // `.git`; with no root marker it reads the working folder only.
+            "-c",
+            "project_root_markers=[]",
         ]
         .map(str::to_owned),
     );

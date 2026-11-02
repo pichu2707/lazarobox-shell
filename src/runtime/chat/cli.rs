@@ -1135,6 +1135,8 @@ struct Plan {
     wired: bool,
     /// The working folder when it is not the shared empty one.
     cwd: Option<PathBuf>,
+    /// The bit of `CliEnv::noticed` to set once `notice` is delivered.
+    noticed_bit: u8,
 }
 
 impl Plan {
@@ -1324,6 +1326,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
     // folder: a chat turn gives them a private one (see `home`) and is refused
     // when it cannot, never run with the user's own folder. The model listing
     // and `--version` read none of it and get no home.
+    let mut noticed_bit = 0;
     let (private, home_notice, home_cwd, dotenv) = if private {
         let prepared = home::prepare(env, job.cli, &dirs.tmp).map_err(|e| {
             let reason: String = e.to_string().chars().take(REASON_CAP).collect();
@@ -1337,23 +1340,22 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
             Cli::Codex => 1,
             Cli::Gemini => 2,
         };
+        // Counted as shown only once it is delivered (see `process_turn`).
         let notice = prepared
             .notice
-            .filter(|_| env.noticed.fetch_or(bit, Ordering::Relaxed) & bit == 0);
+            .filter(|_| env.noticed.load(Ordering::Relaxed) & bit == 0);
+        noticed_bit = if notice.is_some() { bit } else { 0 };
         (prepared.vars, notice, prepared.cwd, prepared.dotenv)
     } else {
         (Vec::new(), None, None, None)
     };
     // A wired gemini runs in its own work folder: the private `.env` goes there
     // too, or the tools are left off.
-    if let (Some(w), Some(text)) = (&wired, &dotenv) {
-        let placed = w
-            .cwd
-            .as_ref()
-            .is_none_or(|work| write_private(&work.join(".env"), text.as_bytes()).is_ok());
-        if !placed {
+    if wired.is_some() && dotenv.is_some() {
+        let had = wired.is_some();
+        wired = with_dotenv(wired, dotenv.as_deref());
+        if had && wired.is_none() {
             unwrite_mcp(&dirs);
-            wired = None;
         }
     }
     let vars = |wired: Option<&Wired>| {
@@ -1428,6 +1430,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                             notice: joined(notice, home_notice),
                             wired: attempt.is_some(),
                             cwd: attempt.and_then(|w| w.cwd).or_else(|| home_cwd.clone()),
+                            noticed_bit,
                         });
                     }
                     Err(why) => {
@@ -1462,6 +1465,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
         dirs,
         wired: false,
         cwd: home_cwd,
+        noticed_bit,
         notice: joined(
             tools_off(Some(format!(
                 "{} runs without the jail here: {reason}",
@@ -1470,6 +1474,19 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
             home_notice,
         ),
     })
+}
+
+/// The wired turn with the private `.env` placed in its work folder, or `None`
+/// (the tools are then left off) when it cannot be written there.
+fn with_dotenv(wired: Option<Wired>, dotenv: Option<&str>) -> Option<Wired> {
+    let (Some(w), Some(text)) = (&wired, dotenv) else {
+        return wired;
+    };
+    let placed = w
+        .cwd
+        .as_ref()
+        .is_none_or(|work| write_private(&work.join(".env"), text.as_bytes()).is_ok());
+    placed.then_some(wired).flatten()
 }
 
 /// Two notices as one line.
@@ -1655,8 +1672,10 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     if !plan.wired {
         unwire(&job);
     }
-    if let Some(line) = plan.notice.take() {
-        send(tx, StreamEvent::Notice(line)).await;
+    if let Some(line) = plan.notice.take()
+        && tx.send(StreamEvent::Notice(line)).await.is_ok()
+    {
+        env.noticed.fetch_or(plan.noticed_bit, Ordering::Relaxed);
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.

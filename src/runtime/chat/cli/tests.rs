@@ -3634,7 +3634,7 @@ async fn gemini_runs_in_a_private_home_with_only_its_auth_choice_and_login_links
     let settings: serde_json::Value = serde_json::from_str(&lab.recorded("settings")).unwrap();
     assert_eq!(
         settings,
-        serde_json::json!({"security": {"auth": {"selectedType": "oauth-personal"}}})
+        serde_json::json!({"security": {"auth": {"selectedType": "oauth-personal"}}, "context": {"memoryBoundaryMarkers": []}})
     );
     assert!(real.join("GEMINI.md").exists() && real.join("skills").exists());
 }
@@ -3650,7 +3650,7 @@ async fn gemini_without_a_user_folder_still_gets_a_private_home_and_no_system_pr
         .push(("GEMINI_SYSTEM_MD".into(), "/home/u/system.md".into()));
     run_job(&env, gemini_job(JailPolicy::Layered)).await;
     assert!(Path::new(&lab.recorded("home")).starts_with(lab.recorded("tmpdir")));
-    assert_eq!(lab.recorded("listing"), ".env\n");
+    assert_eq!(lab.recorded("listing"), ".env\nsettings.json\n");
     assert_eq!(lab.recorded("system_md"), "unset");
 }
 
@@ -3829,6 +3829,9 @@ async fn the_reason_of_a_refused_home_is_bounded() {
     );
 }
 
+/// What gemini's private settings hold when the auth type cannot be read.
+const NO_AUTH_SETTINGS: &str = r#"{"context":{"memoryBoundaryMarkers":[]}}"#;
+
 fn settings_notice(settings: &str, with_variable: bool) -> (Option<String>, String) {
     let lab = lab();
     fs::write(lab.home.join(".gemini/settings.json"), settings).unwrap();
@@ -3852,7 +3855,7 @@ fn gemini_settings_with_comments_are_read() {
     assert_eq!(notice, None);
     assert_eq!(
         written,
-        r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#
+        r#"{"context":{"memoryBoundaryMarkers":[]},"security":{"auth":{"selectedType":"gemini-api-key"}}}"#
     );
 }
 
@@ -3868,7 +3871,7 @@ fn gemini_settings_up_to_the_size_limit_are_read() {
         notice.as_deref(),
         Some("gemini auth type not read: settings.json is larger than 1 MiB")
     );
-    assert_eq!(written, "");
+    assert_eq!(written, NO_AUTH_SETTINGS);
 }
 
 #[test]
@@ -3879,7 +3882,7 @@ fn an_unreadable_gemini_auth_type_gives_a_notice_with_the_reason() {
     ] {
         let (notice, written) = settings_notice(text, false);
         assert_eq!(notice, Some(format!("gemini auth type not read: {reason}")));
-        assert_eq!(written, "");
+        assert_eq!(written, NO_AUTH_SETTINGS);
         // With an API key in the environment the missing choice is no problem.
         assert_eq!(settings_notice(text, true).0, None, "{text}");
     }
@@ -4210,4 +4213,237 @@ async fn lazarobox_never_writes_the_users_oauth_login_even_when_gemini_renames_o
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert!(names.iter().all(|n| !n.contains("lazarobox")), "{names:?}");
+}
+
+fn mkfifo(path: &Path) {
+    let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    // SAFETY: a plain mkfifo with a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+}
+
+#[tokio::test]
+async fn a_skipped_dotenv_value_is_never_dropped_silently_and_never_echoed() {
+    let lab = lab();
+    let tricky = [
+        "GEMINI_API_KEY=it's \"both\"",
+        "GOOGLE_API_KEY=\"it's \\\"x\\\"\"",
+        "GOOGLE_CLOUD_PROJECT=ok",
+    ]
+    .join("\n");
+    fs::write(lab.home.join(".gemini/.env"), tricky).unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        [
+            "gemini .env: GEMINI_API_KEY skipped (unsupported characters); \
+             gemini .env: GOOGLE_API_KEY skipped (unsupported characters)"
+        ]
+    );
+    assert_eq!(lab.recorded("env_home"), "GOOGLE_CLOUD_PROJECT='ok'\n");
+    assert!(!said.concat().contains("both"));
+}
+
+#[test]
+fn a_bom_and_lone_carriage_returns_are_handled_by_the_dotenv_parser() {
+    let (pairs, notes) =
+        home::parse_dotenv("\u{feff}GEMINI_API_KEY=a\rGOOGLE_API_KEY=b\r\nFOO=c\n");
+    assert_eq!(
+        pairs,
+        [
+            ("GEMINI_API_KEY".to_owned(), "a".to_owned()),
+            ("GOOGLE_API_KEY".to_owned(), "b".to_owned()),
+            ("FOO".to_owned(), "c".to_owned())
+        ]
+    );
+    assert!(notes.is_empty());
+}
+
+#[test]
+fn an_unterminated_quote_skips_its_lines_with_a_notice_and_yields_no_keys() {
+    let text = "A=1\nB=\"first\nGEMINI_API_KEY=evil\nlast\" # end\nGOOGLE_API_KEY=ok\n";
+    let (pairs, notes) = home::parse_dotenv(text);
+    let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["A", "GOOGLE_API_KEY"]);
+    assert_eq!(
+        notes,
+        ["gemini .env: line 2 has an unterminated quote; skipped"]
+    );
+    // Never closed: the rest of the file is skipped.
+    let (pairs, notes) = home::parse_dotenv("X='open\nGEMINI_API_KEY=evil\n");
+    assert!(pairs.is_empty(), "{pairs:?}");
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn a_hash_without_a_space_before_it_stays_in_the_value() {
+    let (pairs, _) = home::parse_dotenv("GEMINI_API_KEY=abc#def\nGOOGLE_API_KEY=abc #def\n");
+    assert_eq!(pairs[0].1, "abc#def");
+    assert_eq!(pairs[1].1, "abc");
+}
+
+/// A key written outside every multi-line value, by a plain reference reading
+/// that follows quotes across lines.
+fn reference_keys(text: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut quote: Option<char> = None;
+    for line in text.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if let Some(q) = quote {
+            if line.contains(q) {
+                quote = None;
+            }
+            continue;
+        }
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, rest)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        keys.push(key.trim().to_owned());
+        let rest = rest.trim_start();
+        if let Some(q) = rest.chars().next().filter(|c| matches!(c, '"' | '\''))
+            && !rest[1..].contains(q)
+        {
+            quote = Some(q);
+        }
+    }
+    keys
+}
+
+#[test]
+fn the_parser_never_yields_a_key_from_inside_a_multi_line_value() {
+    let pieces = [
+        "A=1",
+        "B=\"x",
+        "y\"",
+        "C='",
+        "GEMINI_API_KEY=evil",
+        "export GOOGLE_API_KEY=z",
+        "#c",
+        "",
+        "q' # t",
+        "D=\"a\" # b",
+        "GOOGLE_CLOUD_PROJECT=\"p",
+        "\"",
+    ];
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    for _ in 0..2000 {
+        let mut text = String::new();
+        for _ in 0..(seed % 9 + 1) {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+            text.push(['\n', '\r', '\n'][(seed >> 20) as usize % 3]);
+        }
+        let allowed = reference_keys(&text);
+        let (pairs, _) = home::parse_dotenv(&text);
+        for (key, _) in pairs {
+            assert!(
+                allowed.contains(&key),
+                "{key} came from inside a value in {text:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fifo_or_foreign_dotenv_is_skipped_without_hanging() {
+    let lab = lab();
+    mkfifo(&lab.home.join(".gemini/.env"));
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini .env skipped: it is not a regular file of yours"]
+    );
+    // A file of another user (root's) is refused by its owner.
+    let foreign = Path::new("/etc/passwd");
+    if foreign.exists() {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(
+                home::read_dotenv(foreign).unwrap_err(),
+                "it is not a regular file of yours"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fifo_settings_file_is_skipped_without_hanging() {
+    let lab = lab();
+    let settings = lab.home.join(".gemini/settings.json");
+    fs::remove_file(&settings).unwrap();
+    mkfifo(&settings);
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini auth type not read: settings.json is not a regular file of yours"]
+    );
+}
+
+#[tokio::test]
+async fn an_empty_value_is_not_a_login() {
+    let lab = lab();
+    fs::remove_file(lab.home.join(".gemini/oauth_creds.json")).unwrap();
+    fs::write(lab.home.join(".gemini/.env"), "GEMINI_API_KEY=\n").unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert!(said.iter().any(|n| n.contains("no login")), "{said:?}");
+    let mut env = lab.env();
+    env.inject.push(("GEMINI_API_KEY".into(), "".into()));
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let said = login_notices(&run_job(&env, gemini_job(JailPolicy::Layered)).await);
+    assert!(said.iter().any(|n| n.contains("no login")), "{said:?}");
+}
+
+#[test]
+fn a_gemini_cli_home_equal_to_home_follows_the_default_rules() {
+    let lab = lab();
+    fs::set_permissions(&lab.home, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_eq!(
+        home::checked_gemini_home(&lab.home, Some(&lab.home)),
+        Ok(lab.home.clone())
+    );
+    // Any other 0775 home is refused, and the error says how to fix it.
+    let other = gemini_home_in(&lab, "other");
+    fs::set_permissions(&other, fs::Permissions::from_mode(0o775)).unwrap();
+    let why = home::checked_gemini_home(&other, Some(&lab.home)).unwrap_err();
+    assert!(why.contains("chmod g-w,o-w"), "{why}");
+    // A group-writable `.gemini` is refused too.
+    let third = gemini_home_in(&lab, "third");
+    fs::set_permissions(third.join(".gemini"), fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(home::checked_gemini_home(&third, Some(&lab.home)).is_err());
+}
+
+#[test]
+fn the_work_folder_that_cannot_hold_the_dotenv_turns_the_tools_off() {
+    let lab = lab();
+    let wired = |cwd: PathBuf| Wired {
+        args: Vec::new(),
+        drops: Vec::new(),
+        vars: Vec::new(),
+        socket: lab.rec.join("s"),
+        cwd: Some(cwd),
+    };
+    let work = lab.rec.join("work");
+    fs::create_dir(&work).unwrap();
+    assert!(with_dotenv(Some(wired(work.clone())), Some("A='1'\n")).is_some());
+    assert_eq!(fs::read_to_string(work.join(".env")).unwrap(), "A='1'\n");
+    assert!(with_dotenv(Some(wired(lab.rec.join("gone"))), Some("A='1'\n")).is_none());
+}
+
+#[tokio::test]
+async fn the_login_notice_counts_as_shown_only_once_delivered() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
+    let env = lab.env();
+    // A turn whose events nobody receives delivers nothing.
+    let (tx, rx) = mpsc::channel(64);
+    drop(rx);
+    process_turn(&env, layered_codex(), &tx).await;
+    let again = login_notices(&run_job(&env, layered_codex()).await);
+    assert_eq!(again.len(), 1, "{again:?}");
 }

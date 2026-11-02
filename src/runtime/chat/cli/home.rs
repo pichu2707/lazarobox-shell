@@ -95,8 +95,8 @@ pub(super) struct Prepared {
 /// The private home of `cli`, which `tmp` (the turn's private folder) holds.
 /// Empty for a CLI that is isolated by flags (claude).
 pub(super) fn prepare(env: &CliEnv, cli: Cli, tmp: &Path) -> io::Result<Prepared> {
-    let names: Vec<OsString> = std::env::vars_os().map(|(name, _)| name).collect();
-    prepare_with(env, cli, tmp, &names)
+    let vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    prepare_with(env, cli, tmp, &vars)
 }
 
 /// [`prepare`], given the names of the variables that count as the user's
@@ -105,7 +105,7 @@ pub(super) fn prepare_with(
     env: &CliEnv,
     cli: Cli,
     tmp: &Path,
-    process_vars: &[OsString],
+    process_vars: &[(OsString, OsString)],
 ) -> io::Result<Prepared> {
     match cli {
         Cli::Claude => Ok(Prepared::default()),
@@ -133,7 +133,7 @@ fn codex(env: &CliEnv, tmp: &Path) -> io::Result<Prepared> {
     })
 }
 
-fn gemini(env: &CliEnv, tmp: &Path, process_vars: &[OsString]) -> io::Result<Prepared> {
+fn gemini(env: &CliEnv, tmp: &Path, process_vars: &[(OsString, OsString)]) -> io::Result<Prepared> {
     // A `$GEMINI_CLI_HOME` of the user's is where the login lives, resolved as
     // the jail does; one that cannot be resolved is not guessed at.
     let root = match env.gemini_home.as_deref() {
@@ -148,7 +148,10 @@ fn gemini(env: &CliEnv, tmp: &Path, process_vars: &[OsString]) -> io::Result<Pre
     let mut notes = Vec::new();
     // The `.env` is rewritten with the allowlisted keys, never linked.
     let (dotenv, env_has_login) = match state.as_deref().map(|d| read_dotenv(&d.join(".env"))) {
-        Some(Ok(parsed)) => parsed,
+        Some(Ok((text, login, skipped))) => {
+            notes.extend(skipped);
+            (text, login)
+        }
         Some(Err(why)) => {
             notes.push(format!("gemini .env skipped: {why}"));
             (String::new(), false)
@@ -166,19 +169,21 @@ fn gemini(env: &CliEnv, tmp: &Path, process_vars: &[OsString]) -> io::Result<Pre
     let from_env = env
         .inject
         .iter()
-        .map(|(name, _)| name)
         .chain(process_vars)
-        .any(|name| is_login_variable(name));
+        .any(|(name, value)| is_login_variable(name) && !value.is_empty());
+    // No upward search for instruction files either: with no boundary marker
+    // gemini reads the working folder only.
+    let mut settings = serde_json::json!({"context": {"memoryBoundaryMarkers": []}});
     match state.as_deref().map(auth_choice) {
         Some(Ok(kind)) => {
-            let settings = serde_json::json!({"security": {"auth": {"selectedType": kind}}});
-            write_private(&home.join("settings.json"), settings.to_string().as_bytes())?;
+            settings["security"] = serde_json::json!({"auth": {"selectedType": kind}})
         }
         // With an API key in the environment, no auth type is not a problem.
         Some(Err(_)) if from_env => {}
         Some(Err(why)) => notes.push(format!("gemini auth type not read: {why}")),
         None => notes.push("gemini auth type not read: no home folder".to_owned()),
     }
+    write_private(&home.join("settings.json"), settings.to_string().as_bytes())?;
     if linked == 0 && !from_env {
         let at = state.map_or_else(
             || "~/.gemini".to_owned(),
@@ -211,6 +216,11 @@ pub(super) fn checked_gemini_home(set: &Path, home: Option<&Path>) -> Result<Pat
     if dir == Path::new("/") {
         return Err(bad("must not be /"));
     }
+    let real_home = home.and_then(resolve);
+    // The user's own home is the default path, with the default rules.
+    if Some(&dir) == real_home.as_ref() {
+        return Ok(dir);
+    }
     // SAFETY: geteuid has no preconditions and cannot fail.
     let me = unsafe { libc::geteuid() };
     let meta = fs::metadata(&dir).map_err(|_| bad("cannot be read"))?;
@@ -218,82 +228,121 @@ pub(super) fn checked_gemini_home(set: &Path, home: Option<&Path>) -> Result<Pat
         return Err(bad("must be a folder of yours"));
     }
     if meta.mode() & 0o022 != 0 {
-        return Err(bad("must not be writable by group or others"));
+        let at = shown(&dir, home);
+        return Err(bad(&format!(
+            "must not be writable by group or others; run: chmod g-w,o-w {at}"
+        )));
     }
     let state =
         fs::symlink_metadata(dir.join(".gemini")).map_err(|_| bad("has no .gemini folder"))?;
     if !state.is_dir() || state.uid() != me {
         return Err(bad("must hold a real .gemini folder of yours"));
     }
-    let real_home = home.and_then(resolve);
-    // The user's own home is the default; any other broad place is refused.
-    if Some(&dir) != real_home.as_ref() {
-        let homes: Vec<&Path> = home.into_iter().chain(real_home.as_deref()).collect();
-        if broad_place(&dir, &homes) {
-            return Err(bad("is too broad a place"));
-        }
+    if state.mode() & 0o022 != 0 {
+        let at = shown(&dir.join(".gemini"), home);
+        return Err(bad(&format!(
+            "has a .gemini that group or others can write; run: chmod g-w,o-w {at}"
+        )));
+    }
+    let homes: Vec<&Path> = home.into_iter().chain(real_home.as_deref()).collect();
+    if broad_place(&dir, &homes) {
+        return Err(bad("is too broad a place"));
     }
     Ok(dir)
 }
 
-/// The allowlisted part of the user's `.env`, rewritten as `KEY='value'`
-/// lines, and whether it holds a login. The file is opened without following
-/// a link and must be a regular file of the user's, at most 64 KiB; a missing
-/// file is an empty result.
-fn read_dotenv(path: &Path) -> Result<(String, bool), String> {
+/// Why a file could not be read safely.
+enum Fault {
+    Missing,
+    NotRegular,
+    TooBig,
+    Io(io::ErrorKind),
+}
+
+/// The content of a regular file of the user's, at most `cap` bytes, opened
+/// without following a link and without blocking on a pipe.
+fn read_safe(path: &Path, cap: u64) -> Result<Vec<u8>, Fault> {
     let file = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((String::new(), false)),
-        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
-            return Err("it is not a regular file of yours".into());
-        }
-        Err(e) => return Err(format!("it cannot be opened ({})", e.kind())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Fault::Missing),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(Fault::NotRegular),
+        Err(e) => return Err(Fault::Io(e.kind())),
     };
-    let meta = file
-        .metadata()
-        .map_err(|e| format!("it cannot be read ({})", e.kind()))?;
+    let meta = file.metadata().map_err(|e| Fault::Io(e.kind()))?;
     // SAFETY: geteuid has no preconditions and cannot fail.
     if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } {
-        return Err("it is not a regular file of yours".into());
+        return Err(Fault::NotRegular);
     }
     let mut bytes = Vec::new();
-    file.take(DOTENV_CAP + 1)
+    file.take(cap + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("it cannot be read ({})", e.kind()))?;
-    if bytes.len() as u64 > DOTENV_CAP {
-        return Err("it is larger than 64 KiB".into());
+        .map_err(|e| Fault::Io(e.kind()))?;
+    if bytes.len() as u64 > cap {
+        return Err(Fault::TooBig);
     }
+    Ok(bytes)
+}
+
+/// The allowlisted part of the user's `.env`, rewritten as `KEY='value'`
+/// lines, whether it holds a login, and a notice for each thing left out. A
+/// missing file is an empty result; one that is not a regular file of the
+/// user's, or is over 64 KiB, is an error.
+pub(super) fn read_dotenv(path: &Path) -> Result<(String, bool, Vec<String>), String> {
+    let bytes = match read_safe(path, DOTENV_CAP) {
+        Ok(bytes) => bytes,
+        Err(Fault::Missing) => return Ok((String::new(), false, Vec::new())),
+        Err(Fault::NotRegular) => return Err("it is not a regular file of yours".into()),
+        Err(Fault::TooBig) => return Err("it is larger than 64 KiB".into()),
+        Err(Fault::Io(kind)) => return Err(format!("it cannot be read ({kind})")),
+    };
     let text = String::from_utf8_lossy(&bytes);
+    let (pairs, mut notes) = parse_dotenv(&text);
     let mut out = String::new();
     let mut login = false;
-    for (key, value) in parse_dotenv(&text) {
+    for (key, value) in pairs {
         if !DOTENV_KEYS.contains(&key.as_str()) {
             continue;
         }
-        // A value gemini's parser could read differently is left out.
+        // A value gemini's parser could read differently is left out, said.
         let quoted = if !value.contains('\'') && !value.contains(['\n', '\r']) {
             format!("'{value}'")
         } else if !value.contains(['"', '\\', '\n', '\r']) {
             format!("\"{value}\"")
         } else {
+            notes.push(format!(
+                "gemini .env: {key} skipped (unsupported characters)"
+            ));
             continue;
         };
-        login |= DOTENV_LOGIN.contains(&key.as_str());
+        login |= DOTENV_LOGIN.contains(&key.as_str()) && !value.is_empty();
         out.push_str(&format!("{key}={quoted}\n"));
     }
-    Ok((out, login))
+    Ok((out, login, notes))
 }
 
-/// The `KEY=VALUE` pairs of dotenv text: blank lines and `#` lines skipped, an
-/// optional `export `, quoted values taken up to the closing quote, an
-/// unquoted value ending at ` #`. One line per pair (no multi-line values).
-pub(super) fn parse_dotenv(text: &str) -> Vec<(String, String)> {
+/// The `KEY=VALUE` pairs of dotenv text, and a notice for each line left
+/// out. A leading BOM is dropped, `\r` alone is a line break, blank and `#`
+/// lines are skipped, an `export ` prefix is optional, a quoted value ends at
+/// its closing quote and an unquoted one at ` #`. A value that opens a quote it
+/// does not close on its line is not parsed, and neither are the lines up to
+/// the one that closes it, so a multi-line value never yields a key.
+pub(super) fn parse_dotenv(text: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut pairs = Vec::new();
-    for line in text.lines() {
+    let mut notes = Vec::new();
+    let mut open: Option<char> = None;
+    for (index, line) in text.lines().enumerate() {
+        if let Some(quote) = open {
+            if line.contains(quote) {
+                open = None;
+            }
+            continue;
+        }
         let line = line.trim();
         let line = line.strip_prefix("export ").map_or(line, str::trim_start);
         if line.is_empty() || line.starts_with('#') {
@@ -315,7 +364,14 @@ pub(super) fn parse_dotenv(text: &str) -> Vec<(String, String)> {
         let value = match rest.chars().next() {
             Some(q @ ('"' | '\'')) => match rest[1..].find(q) {
                 Some(end) => rest[1..=end].to_owned(),
-                None => rest[1..].to_owned(),
+                None => {
+                    notes.push(format!(
+                        "gemini .env: line {} has an unterminated quote; skipped",
+                        index + 1
+                    ));
+                    open = Some(q);
+                    continue;
+                }
             },
             _ => match rest.find(" #").or_else(|| rest.find("\t#")) {
                 Some(at) => rest[..at].trim_end().to_owned(),
@@ -324,7 +380,7 @@ pub(super) fn parse_dotenv(text: &str) -> Vec<(String, String)> {
         };
         pairs.push((key.to_owned(), value));
     }
-    pairs
+    (pairs, notes)
 }
 
 /// A variable that logs gemini in.
@@ -370,17 +426,14 @@ fn link_login(real: Option<&Path>, home: &Path, files: &[&str]) -> io::Result<us
 /// Which login gemini is set to use (`security.auth.selectedType`), the only
 /// part of the user's settings a turn needs, or why it cannot be read.
 fn auth_choice(state: &Path) -> Result<String, String> {
-    let mut text = String::new();
-    let file = fs::File::open(state.join("settings.json")).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => "settings.json does not exist".to_owned(),
-        kind => format!("settings.json cannot be opened ({kind})"),
-    })?;
-    file.take(SETTINGS_CAP as u64 + 1)
-        .read_to_string(&mut text)
-        .map_err(|e| format!("settings.json cannot be read ({})", e.kind()))?;
-    if text.len() > SETTINGS_CAP {
-        return Err("settings.json is larger than 1 MiB".to_owned());
-    }
+    let bytes =
+        read_safe(&state.join("settings.json"), SETTINGS_CAP as u64).map_err(|f| match f {
+            Fault::Missing => "settings.json does not exist".to_owned(),
+            Fault::NotRegular => "settings.json is not a regular file of yours".to_owned(),
+            Fault::TooBig => "settings.json is larger than 1 MiB".to_owned(),
+            Fault::Io(kind) => format!("settings.json cannot be read ({kind})"),
+        })?;
+    let text = String::from_utf8_lossy(&bytes);
     let settings: serde_json::Value = serde_json::from_str(&strip_comments(&text))
         .map_err(|_| "settings.json is not valid JSON".to_owned())?;
     settings
