@@ -580,6 +580,15 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // The text is exactly what is sent, already redacted by the host.
+            ApprovalAsk::Panes { text } => Some(ApprovalPrompt {
+                target: "send what your panes run to the engine".to_owned(),
+                command: text.clone(),
+                keys: READ_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The paths were made one clean line when asked, and the host
             // refused an add whose paths would not show whole.
             ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {

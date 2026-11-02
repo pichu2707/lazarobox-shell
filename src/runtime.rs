@@ -60,7 +60,7 @@ pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
-use crate::core::ai::tools::panes::{PaneRow, Roster};
+use crate::core::ai::tools::panes::{self, Facts, Roster};
 use crate::core::menu::feedback::{Issue, SendReply};
 use ai_detect::spawn_detection;
 use chat::Chats;
@@ -489,7 +489,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let plan = notify::PlanSlot::default();
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
-        .with_roster(roster)
+        .with_roster(roster, env::var_os("HOME").map(PathBuf::from))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
@@ -1406,7 +1406,7 @@ struct Panes {
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
     /// Where the poll writes what the panes run, for `list_panes`.
-    roster: Option<Roster>,
+    roster: Option<(Roster, Option<PathBuf>)>,
 }
 
 impl Panes {
@@ -1449,26 +1449,32 @@ impl Panes {
     }
 
     /// Sets where the poll writes what the panes run.
-    fn with_roster(mut self, roster: Roster) -> Self {
-        self.roster = Some(roster);
+    fn with_roster(mut self, roster: Roster, home: Option<PathBuf>) -> Self {
+        self.roster = Some((roster, home));
         self
     }
 
-    /// Writes one row per live pane, in pane order, for `list_panes`: the
-    /// shell's folder and the argv of the foreground program. A fact that
-    /// cannot be read is left out of its row, and the pane stays listed.
+    /// Writes one line per live pane, in pane order, for `list_panes`. Each
+    /// line is already redacted (see `panes::line`): the raw argv never
+    /// leaves this function. A fact that cannot be read is left out of its
+    /// line, and the pane stays listed.
     fn refresh_roster(&self, focused: PaneId) {
-        let Some(roster) = &self.roster else { return };
-        let mut rows: Vec<PaneRow> = (self.handles.iter())
-            .map(|(id, handle)| PaneRow {
-                number: id.number(),
-                focused: *id == focused,
-                cwd: handle.cwd(),
-                argv: handle.foreground_argv(),
+        let Some((roster, home)) = &self.roster else {
+            return;
+        };
+        let mut rows: Vec<(u32, String)> = (self.handles.iter())
+            .map(|(id, handle)| {
+                let facts = Facts {
+                    number: id.number(),
+                    focused: *id == focused,
+                    cwd: handle.cwd(),
+                    fg: handle.foreground(),
+                };
+                (facts.number, panes::line(&facts, home.as_deref()))
             })
             .collect();
-        rows.sort_by_key(|row| row.number);
-        roster.set(rows);
+        rows.sort_by_key(|row| row.0);
+        roster.set(rows.into_iter().map(|row| row.1).collect());
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -3971,18 +3977,20 @@ mod tests {
         );
     }
 
-    // list_panes: the poll writes one row per live pane, in pane order, with
-    // the focus and the foreground argv; a pane that cannot be read stays
-    // listed with no program.
+    // list_panes: the poll stores one already-redacted line per live pane, in
+    // pane order; a pane that cannot be read stays listed with no program.
     #[test]
-    fn refresh_roster_lists_every_pane_with_focus_and_foreground_argv() {
+    fn refresh_roster_stores_one_redacted_line_per_pane() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let roster = Roster::default();
-        panes.roster = Some(roster.clone());
+        panes.roster = Some((roster.clone(), Some(PathBuf::from("/home/ana"))));
         panes.spawn = Box::new(|_, _| {
             Ok(Box::new(FakePty {
-                cwd: Some(PathBuf::from("/tmp/p")),
-                argv: Some(vec!["nvim".into(), "prueba.rs".into()]),
+                cwd: Some(PathBuf::from("/home/ana/p")),
+                fg: Some(panes::Foreground {
+                    argv: vec!["nvim".into(), "/home/ana/p/prueba.rs".into()],
+                    cwd: None,
+                }),
                 ..FakePty::default()
             }))
         });
@@ -3991,20 +3999,10 @@ mod tests {
         panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
         panes.refresh_roster(id(2));
         assert_eq!(
-            roster.rows(),
+            roster.lines(),
             vec![
-                PaneRow {
-                    number: 1,
-                    focused: false,
-                    cwd: None,
-                    argv: None
-                },
-                PaneRow {
-                    number: 2,
-                    focused: true,
-                    cwd: Some(PathBuf::from("/tmp/p")),
-                    argv: Some(vec!["nvim".into(), "prueba.rs".into()]),
-                },
+                "pane 1 cwd: unknown program: unknown".to_owned(),
+                "pane 2 (focused) cwd: ~/p program: nvim ~/p/prueba.rs".to_owned(),
             ]
         );
     }

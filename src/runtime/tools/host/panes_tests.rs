@@ -1,87 +1,86 @@
-//! `list_panes` through the host: free on every engine, wrapped as data, and
-//! offered only with the pane family.
-
-use std::path::PathBuf;
+//! `list_panes` through the host: free on a local engine, asked on a cloud
+//! one with the exact text, wrapped as data, and offered only with the pane
+//! family.
 
 use super::{
     tests::{Scripted, events, fixture, scope},
     *,
 };
-use crate::core::ai::tools::{panes::PaneRow, registry::Family};
+use crate::core::ai::tools::registry::Family;
 
-fn row(number: u32, focused: bool, argv: Option<&[&str]>) -> PaneRow {
-    PaneRow {
-        number,
-        focused,
-        cwd: Some(PathBuf::from("/tmp")),
-        argv: argv.map(|words| words.iter().map(|w| (*w).to_owned()).collect()),
-    }
+fn lines() -> Vec<String> {
+    vec![
+        "pane 1 (focused) cwd: /tmp program: nvim prueba.rs".to_owned(),
+        "pane 2 cwd: /tmp program: zsh".to_owned(),
+    ]
 }
 
-// The roster reaches the model on a local and a cloud engine without an ask.
+// A local engine keeps the text on the machine: no ask.
 #[tokio::test]
-async fn list_panes_runs_free_and_wraps_the_rows_as_data() {
+async fn list_panes_runs_free_on_a_local_engine_and_wraps_the_lines_as_data() {
     let (_dir, home, host) = fixture();
-    host.roster().set(vec![
-        row(1, true, Some(&["zsh"])),
-        row(2, false, Some(&["nvim", "prueba.rs"])),
-    ]);
-    for locality in [Locality::Local, Locality::Cloud] {
-        let (mut turn, mut rx) = scope(locality, &home);
-        let asks = Scripted::new(Decision::Denied("no"));
-        turn.approver = asks.clone();
-        let out = host.dispatch(turn).call(Call::ListPanes).await;
-        assert!(!out.is_error, "{out:?}");
-        assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
-        assert!(
-            out.text.contains("pane 1 (focused) cwd: /tmp program: zsh"),
-            "{out:?}"
-        );
-        assert!(out.text.contains("program: nvim prueba.rs"), "{out:?}");
-        assert!(asks.asked.lock().unwrap().is_empty(), "{locality:?}");
-        // The row shows what was sent.
-        let shown = events(&mut rx);
-        assert!(
-            shown.iter().any(|e| matches!(e,
-                StreamEvent::ToolResult { summary, .. } if summary.contains("nvim prueba.rs"))),
-            "{shown:?}"
-        );
-    }
-}
-
-// A pane whose process could not be read says so; the tool does not fail.
-#[tokio::test]
-async fn an_unreadable_pane_shows_program_unknown_and_the_call_succeeds() {
-    let (_dir, home, host) = fixture();
-    host.roster().set(vec![row(3, true, None)]);
-    let (turn, _rx) = scope(Locality::Local, &home);
+    host.roster().set(lines());
+    let (mut turn, mut rx) = scope(Locality::Local, &home);
+    let asks = Scripted::new(Decision::Denied("no"));
+    turn.approver = asks.clone();
     let out = host.dispatch(turn).call(Call::ListPanes).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+    assert!(out.text.contains("program: nvim prueba.rs"), "{out:?}");
+    assert!(asks.asked.lock().unwrap().is_empty());
+    // The row shows what was sent.
+    let shown = events(&mut rx);
     assert!(
-        !out.is_error && out.text.contains("program: unknown"),
-        "{out:?}"
+        shown.iter().any(|e| matches!(e,
+            StreamEvent::ToolResult { summary, .. } if summary.contains("nvim prueba.rs"))),
+        "{shown:?}"
     );
 }
 
-// Paths under the host's HOME are shown from `~`.
+// A cloud engine sends the text to its provider: the user is asked first and
+// the prompt carries exactly the text that is sent.
 #[tokio::test]
-async fn paths_under_home_are_shortened() {
+async fn a_cloud_engine_asks_with_the_exact_text_and_sends_it_after_y() {
     let (_dir, home, host) = fixture();
-    let file = format!("{}/p/a.rs", home.display());
-    host.roster()
-        .set(vec![row(1, true, Some(&["nvim", &file]))]);
+    host.roster().set(lines());
+    let (mut turn, _rx) = scope(Locality::Cloud, &home);
+    let asks = Scripted::new(Decision::Sent);
+    turn.approver = asks.clone();
+    let out = host.dispatch(turn).call(Call::ListPanes).await;
+    let asked = asks.asked.lock().unwrap().clone();
+    let [ApprovalAsk::Panes { text }] = asked.as_slice() else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(text, &lines().join("\n"));
+    assert!(!out.is_error && out.text.contains(text.as_str()), "{out:?}");
+}
+
+#[tokio::test]
+async fn a_denied_cloud_ask_sends_nothing() {
+    let (_dir, home, host) = fixture();
+    host.roster().set(lines());
+    let (mut turn, _rx) = scope(Locality::Cloud, &home);
+    turn.approver = Scripted::new(Decision::Denied("the user declined"));
+    let out = host.dispatch(turn).call(Call::ListPanes).await;
+    assert!(out.is_error && !out.text.contains("nvim"), "{out:?}");
+}
+
+// An empty roster (before the first poll) is said, not an error.
+#[tokio::test]
+async fn an_empty_roster_says_there_are_no_panes() {
+    let (_dir, home, host) = fixture();
     let (turn, _rx) = scope(Locality::Local, &home);
     let out = host.dispatch(turn).call(Call::ListPanes).await;
-    assert!(out.text.contains("nvim ~/p/a.rs"), "{out:?}");
-    assert!(!out.text.contains(&home.display().to_string()), "{out:?}");
+    assert!(!out.is_error && out.text.contains("no panes"), "{out:?}");
 }
 
 // Without the pane family the call is an unknown tool, as for any family.
 #[tokio::test]
 async fn list_panes_is_refused_without_the_pane_family() {
     let (_dir, home, host) = fixture();
-    host.roster().set(vec![row(1, true, Some(&["zsh"]))]);
+    host.roster().set(lines());
     let (mut turn, _rx) = scope(Locality::Local, &home);
     turn.families = FamilySet::EMPTY.with(Family::Read);
     let out = host.dispatch(turn).call(Call::ListPanes).await;
-    assert!(out.is_error && !out.text.contains("zsh"), "{out:?}");
+    assert!(out.is_error && !out.text.contains("nvim"), "{out:?}");
 }

@@ -156,6 +156,11 @@ pub enum ApprovalAsk {
     /// names and subjects only and never ask). `path` is `.` for the whole
     /// tree, as one clean line. Never routed by the approval mode.
     GitDiff { staged: bool, path: String },
+    /// Tell the engine what the panes run (`list_panes`): command lines leave
+    /// the machine on a cloud engine, so it asks. `text` is exactly what is
+    /// sent, already redacted; [`ask_for`] leaves it empty and the host fills
+    /// it in. Never routed by the approval mode.
+    Panes { text: String },
     /// Stage `paths` in the index (one clean line, as the user will read it).
     /// `files` is how many files a dry run says would be staged; the host
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
@@ -312,6 +317,11 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 path: if path.is_empty() { ".".into() } else { path },
             })
         }
+        // The command lines of the panes go to the provider: the host fills
+        // in the exact text.
+        Call::ListPanes if locality == Locality::Cloud => Some(ApprovalAsk::Panes {
+            text: String::new(),
+        }),
         // An add changes the index: it always asks, on any engine and mode.
         Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
             paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
@@ -349,7 +359,6 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::EditFile { .. }
         | Call::ProposeBatch
         | Call::GitStatus
-        // Metadata of the panes, no text from a screen or a file: it never asks.
         | Call::ListPanes
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
@@ -1977,11 +1986,25 @@ mod tests {
         }
     }
 
-    // list_panes is read-only metadata: no ask on any engine, cloud included.
+    // list_panes follows read_file: free on a local engine, asked on a cloud
+    // one (the host fills in the text).
     #[test]
-    fn list_panes_never_asks() {
-        for locality in [Locality::Local, Locality::Cloud] {
-            assert_eq!(ask_for(&Call::ListPanes, locality), None);
+    fn list_panes_asks_on_a_cloud_engine_only() {
+        assert_eq!(ask_for(&Call::ListPanes, Locality::Local), None);
+        assert_eq!(
+            ask_for(&Call::ListPanes, Locality::Cloud),
+            Some(ApprovalAsk::Panes {
+                text: String::new()
+            })
+        );
+    }
+
+    // No approval mode answers it: the user reads the text.
+    #[test]
+    fn no_approval_mode_answers_the_panes_ask() {
+        let ask = ApprovalAsk::Panes { text: "x".into() };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert_eq!(answers_itself(&ask, mode), None, "{mode:?}");
         }
     }
 

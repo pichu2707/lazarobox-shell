@@ -369,7 +369,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(!text.contains(mode), "{mode}");
     }
     assert!(
-        text.lines().count() == 1 && text.len() < 1050,
+        text.lines().count() == 1 && text.len() <= 1033 + 16,
         "{}",
         text.len()
     );

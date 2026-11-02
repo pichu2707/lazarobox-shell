@@ -25,7 +25,7 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::{PtyEvent, PtyHandle, PtySink, SpawnSpec};
 use crate::core::{
-    ai::tools::panes::{CMDLINE_CAP, parse_cmdline},
+    ai::tools::panes::{CMDLINE_CAP, Foreground, parse_cmdline},
     pane::PaneSize,
 };
 
@@ -104,13 +104,16 @@ impl PtyHandle for PortableHandle {
         Some(leader == shell)
     }
 
-    fn foreground_argv(&self) -> Option<Vec<String>> {
+    fn foreground(&self) -> Option<Foreground> {
         use std::io::Read;
         let pgid = self.master.process_group_leader()?;
         let file = std::fs::File::open(format!("/proc/{pgid}/cmdline")).ok()?;
         let mut raw = Vec::new();
         file.take(CMDLINE_CAP as u64).read_to_end(&mut raw).ok()?;
-        parse_cmdline(&raw)
+        Some(Foreground {
+            argv: parse_cmdline(&raw)?,
+            cwd: std::fs::read_link(format!("/proc/{pgid}/cwd")).ok(),
+        })
     }
 
     fn kill(&mut self) {
@@ -426,12 +429,14 @@ mod tests {
         pty.write(b"echo READY\n".to_vec());
         wait_for(&rx, "READY");
         pty.write(b"sleep 31 32\n".to_vec());
-        let want = Some(vec!["sleep".to_owned(), "31".to_owned(), "32".to_owned()]);
+        let want = vec!["sleep".to_owned(), "31".to_owned(), "32".to_owned()];
         let deadline = Instant::now() + TIMEOUT;
-        while pty.foreground_argv() != want && Instant::now() < deadline {
+        while pty.foreground().map(|f| f.argv) != Some(want.clone()) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(pty.foreground_argv(), want);
+        let fg = pty.foreground().unwrap();
+        assert_eq!(fg.argv, want);
+        assert!(fg.cwd.is_some());
     }
 
     // Spec: shell exits -> Exited event.
