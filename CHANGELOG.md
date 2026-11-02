@@ -70,8 +70,8 @@ baseline.
   instruction files (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) or skills
   (`~/.gemini/skills/`), so each turn now runs with a private `CODEX_HOME` or
   `GEMINI_CLI_HOME` inside its wiped temp folder. It holds only symlinks to the
-  login files (nothing is copied or moved) and, for gemini, the one setting
-  that names the login type. A turn that cannot prepare it fails with a notice
+  login files (nothing is copied or moved) and, for gemini, a `settings.json` with the login type
+  and `context.memoryBoundaryMarkers`. A turn that cannot prepare it fails with a notice
   instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
   child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
   the real file. The turn warns before it starts when no login is found, honours
@@ -90,9 +90,6 @@ baseline.
   does not close, and the lines up to its closing quote, are skipped with a
   notice. In the `.env`, `KEY=abc#def` keeps `#def`: only ` #` starts a comment.
   Empty values do not count as a login.
-
-### Fixed
-
 - `Prefix r r` and `Prefix r d` no longer say `No interrupted run to resume or
   discard` when ORCH was never turned on since the start: the store is asked on
   the spot (off the UI thread, with a `Looking for interrupted runs` notice) and
