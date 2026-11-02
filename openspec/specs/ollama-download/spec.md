@@ -1,6 +1,10 @@
 # Ollama Download Specification (new: Ollama downloads)
 
-## ADDED Requirements
+## Purpose
+
+Downloads Ollama models from the Ollama library and registry: the library and registry requests, the choice of model and size, the single confirmed pull through the local Ollama server, and cancel. Nothing is requested before the user enters the flow, and a pull is sent only after the user confirms it.
+
+## Requirements
 
 ### Requirement: Library and registry requests
 The requests to `https://ollama.com` and `https://registry.ollama.ai` MUST go through the system `curl` with the hf-download options:

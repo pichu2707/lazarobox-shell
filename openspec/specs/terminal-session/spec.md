@@ -7,7 +7,7 @@ Lifecycle of the single PTY child: spawn, environment, I/O, resize, exit, shutdo
 ## Requirements
 
 ### Requirement: Shell spawn and environment
-The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the pane's requested cwd (the launch cwd for the first pane), with `TERM=xterm-256color` and `COLORTERM=truecolor`, inheriting the rest of the environment. A chat pane MUST NOT spawn a shell.
+The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the pane's requested cwd (the launch cwd for the first pane), with `TERM=xterm-256color` and `COLORTERM=truecolor`, inheriting the rest of the environment. The launch cwd is the start dir (see start-dir): the `--dir` flag, else `[workspace] dir`, else the process working directory. A chat pane MUST NOT spawn a shell.
 
 #### Scenario: SHELL set [auto]
 - GIVEN `$SHELL=/bin/zsh`
@@ -23,6 +23,16 @@ The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the 
 - GIVEN a chat pane is opened
 - WHEN the effects are computed
 - THEN no SpawnPane effect is emitted
+
+#### Scenario: First pane starts in the start dir [auto]
+- GIVEN a start dir `/w/proj` resolved from `--dir` and a process cwd `/h`
+- WHEN the first shell pane is spawned
+- THEN the spawn request names `/w/proj`
+
+#### Scenario: Start dir from the launcher [manual]
+- GIVEN a launcher installed with `install-desktop --dir /w/proj`
+- WHEN lazarobox is started from it
+- THEN the first shell's `pwd` is `/w/proj`
 
 ### Requirement: Nesting guard
 Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its environment. At startup, when `LAZAROBOX` is set and non-empty and `--force` is absent, the system MUST print one line to stderr, exit with status 1 and NOT enter raw mode or the alternate screen. `--force` MUST skip the check, and is recognised only as a top-level flag. The guard MUST apply only to the plain TUI start: any subcommand (for example the internal `__jail-exec`) MUST NOT be subject to it, and a `--force` after a subcommand is not an override. AI CLI children (scrubbed environment) are not marked.
@@ -206,7 +216,7 @@ Closing a pane MUST NOT block the UI loop: the SIGHUP / grace / SIGKILL teardown
 - THEN the ClosePane effect returns immediately, and the child is gone after the grace period
 
 ### Requirement: Per-pane cwd poll fallback
-The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback for panes that never reported an OSC 7 cwd. The effective cwd of a shell pane MUST be its last valid OSC 7 value if it has ever reported one; otherwise the polled value. Once a pane has reported OSC 7, a poll result MUST NOT override it (the poll may still run). A failed poll MUST keep the last value. Chat panes MUST NOT be polled; their cwd is the fixed origin cwd.
+The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback for panes that never reported an OSC 7 cwd. The effective cwd of a shell pane MUST be its last valid OSC 7 value if it has ever reported one; otherwise the polled value. Once a pane has reported OSC 7, a poll result MUST NOT override it (the poll may still run). A failed poll MUST keep the last value. Chat panes MUST NOT be polled; their cwd is the chat folder, which changes only through the picker or a confirmed `/cd` (see chat-folder), never by polling.
 
 #### Scenario: Fallback for plain shell [auto, unix PTY]
 - GIVEN a pane whose shell never emits OSC 7 and runs `cd /tmp`
@@ -221,25 +231,35 @@ The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback f
 #### Scenario: Chat pane is not polled [auto]
 - GIVEN a chat pane opened from `/a`
 - WHEN a poll cycle runs
-- THEN no poll targets the chat pane and its origin cwd is still `/a`
+- THEN no poll targets the chat pane and its folder is still `/a`
+
+#### Scenario: Chat folder changes only by command [auto]
+- GIVEN a chat pane in `/a` whose confirmed `/cd` set `/b`
+- WHEN a poll cycle runs
+- THEN its folder is `/b`
 
 ### Requirement: Inherited working directory from a chat pane
-When the focused pane is a chat pane, a new pane or tab MUST spawn its shell in the chat's origin cwd, with the same fallback chain as for a shell pane (launch cwd, then an absolute `$HOME`, then `/`, the first that exists).
+When the focused pane is a chat pane, a new pane or tab MUST spawn its shell in the chat's current folder (the folder at the moment of the request, including after a `/cd`), with the same fallback chain as for a shell pane (launch cwd, then an absolute `$HOME`, then `/`, the first that exists). A chat whose folder is unknown (no choice made) uses that fallback chain.
 
-#### Scenario: Split from a chat inherits its origin cwd [auto]
-- GIVEN a focused chat pane with origin cwd `/tmp`
+#### Scenario: Split from a chat inherits its folder [auto]
+- GIVEN a focused chat pane with folder `/tmp`
 - WHEN `w v` is pressed
 - THEN the SpawnPane effect names `/tmp`
 
 #### Scenario: New tab from a chat [auto]
-- GIVEN a focused chat pane with origin cwd `/tmp`
+- GIVEN a focused chat pane with folder `/tmp`
 - WHEN `t n` is pressed
 - THEN the SpawnPane effect names `/tmp`
 
-#### Scenario: Vanished origin cwd falls back [auto]
-- GIVEN a focused chat pane whose origin cwd was removed
+#### Scenario: Vanished folder falls back [auto]
+- GIVEN a focused chat pane whose folder was removed
 - WHEN a split is requested
 - THEN the SpawnPane effect names the launch cwd, or an absolute `$HOME`, or `/`
+
+#### Scenario: Follows a `/cd` [auto]
+- GIVEN a focused chat pane whose folder was changed from `/a` to `/b`
+- WHEN `w v` is pressed
+- THEN the SpawnPane effect names `/b`
 
 ### Requirement: Animation tick only while streaming
 The animation of the thinking indicator (see statusline) MUST be driven by a single tick source that runs only while at least one chat stream is running in any pane or tab. With no running stream there MUST be no animation timer firing, no tick event and no redraw caused by the indicator, so an idle app costs no extra wakeups or CPU. The tick rate MUST be bounded to at most 12 ticks per second; the proposed value is 10 per second (a 100 ms period), for design to confirm. Several simultaneous streams MUST share one tick source and never raise the rate. The tick MUST start when the first stream starts and MUST stop within one tick period after the last stream ends by final, error, cut, cancel, pane close, tab close or quit. Each tick advances the animation frame and requests at most one redraw; ticks that were missed because the event loop was busy MUST be skipped, not replayed in a burst. Elapsed time MUST NOT depend on the number of ticks.
@@ -301,3 +321,95 @@ On quit, running chat streams MUST be cancelled: server connections closed and C
 - GIVEN a chat pane whose CLI ignores SIGTERM
 - WHEN the pane is closed
 - THEN the ChatCancel effect returns immediately and the child is gone after the grace period
+
+### Requirement: Approved writes respect bracketed paste
+A write requested by an approved pane command (see pane-commands) or by a run decided under pane-execution MUST be built from the target pane's current terminal state at the moment of the write: with bracketed paste enabled by the pane's application, the validated command is framed as one bracketed paste (start marker, command, end marker) in a single WritePty; with it disabled, a single-line command is written as plain text and a command with a newline or tab is refused before any byte is written. The command text inside the frame MUST NOT contain the end marker or any ESC (validation refuses it), so the frame cannot be closed early. The write MUST end with the command or the end marker and never add Enter, EXCEPT a run decided under pane-execution in `run` mode, whose single write appends exactly one `\r` after the command or the end marker and nothing else. The write MUST be addressed only to a live shell pane (never a chat pane) and its bytes reach the child unmodified like any other WritePty. Ordinary user typing and user pastes into a shell pane MUST be unchanged by this requirement.
+
+#### Scenario: Framed when enabled [auto]
+- GIVEN the target pane's application enabled bracketed paste (mode 2004)
+- WHEN an approved command `a\nb` is written
+- THEN one WritePty carries `ESC[200~a\nbESC[201~` and nothing after it
+
+#### Scenario: Plain when disabled [auto]
+- GIVEN bracketed paste disabled and the command `cd /tmp`
+- WHEN it is written after `y`
+- THEN one WritePty carries exactly `cd /tmp`
+
+#### Scenario: Run appends one carriage return [auto]
+- GIVEN bracketed paste disabled and a run of `cd /tmp`, and in another run bracketed paste enabled
+- WHEN each is written
+- THEN one WritePty carries `cd /tmp\r`, and in the other run `ESC[200~cd /tmpESC[201~\r`
+
+#### Scenario: Enter only in run [auto]
+- GIVEN writes decided by `y`, by `auto` and by `run`
+- WHEN the bytes are inspected
+- THEN only the `run` write contains `\r`
+
+#### Scenario: Multi-line refused when disabled [auto]
+- GIVEN bracketed paste disabled and the command `a\nb`
+- WHEN it is written
+- THEN no WritePty is emitted
+
+#### Scenario: State read at write [auto]
+- GIVEN the pane toggled bracketed paste between the prompt (or the check) and the write
+- WHEN the write happens
+- THEN the framing follows the state at the write
+
+#### Scenario: User paste unchanged [auto]
+- GIVEN the user pastes text into a shell pane
+- WHEN the paste is handled
+- THEN the bytes are exactly as before this change
+
+#### Scenario: Real paste in a shell [manual, Kitty]
+- GIVEN bash and zsh with bracketed paste enabled
+- WHEN a two-line approved command is written
+- THEN each shows the whole command as one pasted buffer without running any line
+
+### Requirement: Pane state for accept-time rechecks
+The app MUST be able to answer, for any shell pane, whether it exists, whether it is on the alternate screen, whether bracketed paste is enabled, and its effective cwd, from state it already tracks, without reading the PTY and without blocking the event loop. Events of a closed pane remain dropped silently.
+
+#### Scenario: Alternate screen reported [auto]
+- GIVEN a pane that processed `ESC[?1049h`
+- WHEN the state is read
+- THEN it reports the alternate screen, and after `ESC[?1049l` it does not
+
+#### Scenario: Bracketed paste reported [auto]
+- GIVEN a pane that processed `ESC[?2004h`, then `ESC[?2004l`
+- WHEN the state is read after each
+- THEN it reports enabled, then disabled
+
+#### Scenario: Closed pane [auto]
+- GIVEN a closed pane id
+- WHEN the state is read
+- THEN it reports that the pane does not exist
+
+### Requirement: Shutdown with MCP processes
+On quit, the MCP shims of all chats and the user MCP server processes (see mcp-servers) MUST be stopped inside the same 3-second bound as the PTY and engine teardown: process groups killed and reaped, session sockets removed, with the terminal restored first. Closing a chat pane or a tab MUST stop its shim and any user server no other chat uses, off the event loop, without blocking it.
+
+#### Scenario: Quit leaves no MCP process [auto, unix PTY]
+- GIVEN two chats with running fake shims and one user server
+- WHEN the app shuts down
+- THEN the terminal is restored first, none of those pids exists within 3 seconds and the session sockets are gone
+
+#### Scenario: Closing a chat does not block [auto]
+- GIVEN a chat whose user server ignores SIGTERM
+- WHEN the chat pane is closed
+- THEN the effect returns immediately and the server is gone after the grace period
+
+### Requirement: Pane state for a run
+For a pane with a run in flight the app MUST be able to answer, without blocking the event loop and without reading the PTY beyond its emulated screen: whether its foreground process is its shell (unknown is a distinct answer), its real current directory (unknown is a distinct answer), whether it entered the alternate screen since the write, the cursor line and the line generation. A pane that enters the alternate screen while a run is captured MUST abort the run (see pane-execution). Events of a closed pane remain dropped silently.
+
+#### Scenario: Foreground and cwd answers [auto]
+- GIVEN a pane whose foreground is its shell, and one whose foreground is `python3`, and one whose foreground cannot be read
+- WHEN the state is read
+- THEN it reports shell, other and unknown respectively; the cwd likewise reports a path or unknown
+
+#### Scenario: Alternate screen during a run [auto]
+- GIVEN a run in flight and the pane processes `ESC[?1049h`
+- WHEN the state is read
+- THEN it reports the alternate screen since the write and the run aborts
+
+#### Scenario: Closed pane [auto]
+- GIVEN a closed pane id
+- WHEN the state is read
+- THEN it reports that the pane does not exist

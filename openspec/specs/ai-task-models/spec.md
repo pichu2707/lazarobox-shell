@@ -6,13 +6,13 @@ Defines which AI tasks exist, how each task gets an engine and a model, and whic
 
 ## Requirements
 
-### Requirement: Fixed task set
-The tasks MUST be fixed and ordered: `general`, `code`, `chat`, `review`, `summarize`. Task ids are lowercase and are the `config.toml` table names. There is no way to add, rename or remove a task. A task assignment is an engine id plus a model name. A task is "assigned" only when its engine is non-empty; a model without an engine is treated as unassigned (the file keeps it).
+### Requirement: Fixed task set [S1]
+The tasks MUST be fixed and ordered: `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`. Task ids are lowercase and are the `config.toml` table names. There is no way to add, rename or remove a task. A task assignment is an engine id plus a model name. A task is "assigned" only when its engine is non-empty; a model without an engine is treated as unassigned (the file keeps it).
 
 #### Scenario: Task set integrity [auto]
 - GIVEN the task table
 - WHEN it is validated
-- THEN it has exactly `general`, `code`, `chat`, `review`, `summarize` in that order, with unique ids
+- THEN it has exactly `general`, `code`, `chat`, `review`, `summarize`, `orchestrate` in that order, with unique ids
 
 ### Requirement: Fallback to general
 A task other than `general` that is not assigned MUST use the `general` assignment as its effective assignment. `general` has no fallback: with no engine it is "not set". Row labels: an unassigned non-general task shows `(default)`; an unset `general` shows `(not set)`; an assigned task shows `<engine> › <model>`, or only `<engine>` when its model is empty.
@@ -196,8 +196,8 @@ Choosing an engine entry then a selectable model assigns that engine and model t
 - WHEN `(default · use general)` is chosen for code
 - THEN code is cleared and reads `(default)`
 
-### Requirement: Runtime use of the chat assignment
-The chat MUST use the effective assignment of the `chat` task (own assignment, else `general`; see Fallback to general), read from the current configuration on every send, so a saved change applies from the next message. The model MUST be validated against detection before a send: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance and sends nothing. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The chat MUST NOT change any assignment, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config.
+### Requirement: Runtime use of every task assignment [S1]
+Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
 
 #### Scenario: Effective assignment used [auto]
 - GIVEN `general` is `claude` / `sonnet` and `chat` is `ollama` / `llama3:8b`, both available
@@ -233,3 +233,138 @@ The chat MUST use the effective assignment of the `chat` task (own assignment, e
 - GIVEN an open chat and the menu saves `chat` as `claude` / `opus`
 - WHEN the next message is sent
 - THEN the turn goes to claude with `opus`
+
+#### Scenario: Worker kind uses its own row [auto]
+- GIVEN an orchestrating pane, `review` is `codex` / `default` and `code` is `claude` / `sonnet`
+- WHEN a `review` worker and then a `code` worker are spawned
+- THEN they run on codex / `default` and claude / `sonnet` respectively
+
+#### Scenario: Summarize row is now used [auto]
+- GIVEN `summarize` is `claude` / `haiku`
+- WHEN a `summarize` worker is spawned
+- THEN it runs on claude / `haiku`
+
+### Requirement: Tool marks on installed Ollama models
+In the Ollama model list, each detected model (the `✓` rows) MUST carry a tool mark next to `✓`, decided only by its recorded size and capability (see ai-engine-detection, Ollama model size and tool capability):
+- capability `tools` and size 3B or more: the mark `🔧`, so the row reads `<name> ✓ 🔧`;
+- capability `tools` and size under 3B: the mark `tools: unreliable`, so the row reads `<name> ✓ tools: unreliable`;
+- capability `no tools`, capability `unknown`, or size `unknown`: no tool mark. Unknown never produces a mark.
+
+Exactly 3B counts as 3B or more. The mark describes the model, not the configuration: it MUST show the same when `[ai.tools] enabled = false`. The mark is display only: it MUST NOT change selectability, the assignment, the saved value or the task row text. Rows not detected (`download required`, curated catalog) get no tool mark. A mark too long for the row is clipped by display width and never wraps or misaligns the row.
+
+#### Scenario: Tools and large enough [auto]
+- GIVEN ollama detects `llama3:8b` with capability `tools` and size 8B
+- WHEN the list is built
+- THEN the row reads `llama3:8b ✓ 🔧`
+
+#### Scenario: Tools but small [auto]
+- GIVEN ollama detects `tiny:1b` with capability `tools` and size 1B
+- WHEN the list is built
+- THEN the row reads `tiny:1b ✓ tools: unreliable`
+
+#### Scenario: Exactly 3B [auto]
+- GIVEN ollama detects `mid:3b` with capability `tools` and size 3B
+- WHEN the list is built
+- THEN the row reads `mid:3b ✓ 🔧`
+
+#### Scenario: No tools declared [auto]
+- GIVEN ollama detects `gemma:7b` with capability `no tools`
+- WHEN the list is built
+- THEN the row reads `gemma:7b ✓` with no tool mark
+
+#### Scenario: Unknown capability or size [auto]
+- GIVEN ollama detects `a:7b` with capability `unknown`, and `b:latest` with capability `tools` and size `unknown`
+- WHEN the list is built
+- THEN both rows read `✓` with no tool mark
+
+#### Scenario: Tools setting off [auto]
+- GIVEN `[ai.tools] enabled = false` and ollama detects `llama3:8b` with capability `tools` and size 8B
+- WHEN the list is built
+- THEN the row still reads `llama3:8b ✓ 🔧`
+
+#### Scenario: Mark does not change behaviour [auto]
+- GIVEN a marked row
+- WHEN Enter is pressed on it
+- THEN the model is assigned exactly as for an unmarked `✓` row
+
+#### Scenario: Not detected rows [auto]
+- GIVEN code is assigned `ollama` / `old:7b` (not detected) and the curated catalog holds `mistral:7b`
+- WHEN the list is built
+- THEN `old:7b` and `mistral:7b` carry only `download required` and no tool mark
+
+### Requirement: Tool mark on CLI engine rows
+In the engine list of a picker, the engine rows `claude`, `codex` and `gemini` MUST carry the tool mark `🔧`, because lazarobox gives those engines its tools (the engines in the chat tool gate, `MCP_VERIFIED`). The mark follows that gate, not the configuration: it MUST show whether `[ai.tools] enabled` is true or false. It is shown together with the status text, which stays unchanged and first, with the mark after it. The `ollama` engine row MUST carry no tool mark, because only its models carry marks. The rows of `opencode`, `lmstudio`, `llamacpp` and `vllm` carry no tool mark. The CLI model rows (`Opus 5.5`, `default`, `custom…` and so on) MUST carry no tool mark. An engine listed as `(not detected)` keeps its text and gets no tool mark. A mark is never wrong: an engine the jail refuses (`refused · …`) and a `claude` that shows `update needed` cannot run tools, so their rows carry no tool mark.
+
+#### Scenario: CLI engine rows [auto]
+- GIVEN claude, codex, gemini, opencode and ollama are available
+- WHEN the engine list is built
+- THEN the `claude`, `codex` and `gemini` rows carry `🔧`, and the `opencode` and `ollama` rows carry no tool mark
+
+#### Scenario: Shown with tools off [auto]
+- GIVEN `[ai.tools] enabled = false` and claude is available
+- WHEN the engine list is built
+- THEN the `claude` row still carries `🔧`
+
+#### Scenario: CLI model rows unmarked [auto]
+- GIVEN claude is available
+- WHEN its model list is built
+- THEN no row carries a tool mark
+
+#### Scenario: Refused or outdated engine [auto]
+- GIVEN `codex` is refused by the jail, or `claude` is older than the minimum version
+- WHEN the engine list is built
+- THEN the row keeps its status text (`refused · …`, `update needed: …`) and carries no tool mark
+
+#### Scenario: Not detected engine [auto]
+- GIVEN code is assigned `codex`, which is `not installed`
+- WHEN the engine list is built
+- THEN the row reads `codex (not detected)` with no tool mark
+
+### Requirement: Tool mark text fallback
+The tool mark MUST render as the emoji `🔧` only when the terminal can show it. When `TERM=linux`, or the locale is not UTF-8, every place that would show `🔧` MUST show the text `tools` instead. `tools: unreliable` is plain text and does not change. The choice MUST be made in one place, so every screen (engine rows, installed model rows, Ollama download screens) agrees. The fallback MUST NOT change selectability or alignment: rows stay within their width.
+
+#### Scenario: Linux console [auto]
+- GIVEN `TERM=linux` and a model with capability `tools` and size 8B
+- WHEN the row is rendered
+- THEN it reads `<name> ✓ tools`
+
+#### Scenario: Non-UTF-8 locale [auto]
+- GIVEN `TERM=xterm-256color` and a locale that is not UTF-8
+- WHEN an engine row for `claude` is rendered
+- THEN it carries `tools` and no `🔧`
+
+#### Scenario: Normal terminal [auto]
+- GIVEN `TERM=xterm-256color` and a UTF-8 locale
+- WHEN the same rows are rendered
+- THEN they carry `🔧`
+
+#### Scenario: Real machine [manual]
+- GIVEN a real Ollama with a tool model of 3B or more, a tool model under 3B and a model without tools
+- WHEN the model picker is opened on a UTF-8 terminal and then on `TERM=linux`
+- THEN the first shows `🔧`, the second `tools: unreliable`, the third no mark, and the console shows `tools` in place of `🔧`
+
+### Requirement: Orchestrate fallback and recommendation [S1]
+`orchestrate` follows Fallback to general: unassigned, it uses the `general` assignment, and its row shows `(default)`. Ollama (and the other server engines) MUST remain selectable for `orchestrate` but MUST be marked `not recommended` on that row's engine list and on the task row (` · not recommended`), because small local models cannot orchestrate. The mark MUST NOT block, change or clear an assignment.
+
+#### Scenario: Orchestrate falls back [auto]
+- GIVEN `orchestrate` unassigned and `general` is `claude` / `opus`
+- WHEN effective assignments are resolved
+- THEN `orchestrate` is `claude` / `opus`
+
+#### Scenario: Ollama marked not recommended [auto]
+- GIVEN `orchestrate` is `ollama` / `llama3:8b` (available)
+- WHEN the row and the engine list for `orchestrate` are built
+- THEN the row reads `ollama › llama3:8b · not recommended`, the `ollama` entry shows `not recommended`, both are selectable, and the assignment is unchanged
+
+#### Scenario: Other tasks unmarked [auto]
+- GIVEN `code` is `ollama` / `llama3:8b`
+- WHEN the row is built
+- THEN no `not recommended` mark is shown
+
+### Requirement: Set all excludes Orchestrate [S1]
+`Set all tasks` MUST write, clear and summarize the five tasks `general`, `code`, `chat`, `review` and `summarize` only, and MUST NOT read or write `orchestrate`.
+
+#### Scenario: Set all leaves the orchestrator alone [auto]
+- GIVEN `orchestrate` is `claude` / `opus`
+- WHEN `codex` / `default` is chosen for Set all tasks
+- THEN the five tasks are `codex` / `default` and `orchestrate` is still `claude` / `opus`, and the aggregate ignores `orchestrate`

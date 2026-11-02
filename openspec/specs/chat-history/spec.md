@@ -9,7 +9,7 @@ Terms: "conversation" = an ordered list of messages plus metadata (profile, proj
 ## Requirements
 
 ### Requirement: Store location and privacy
-Conversations MUST be stored in one SQLite database file under `$XDG_DATA_HOME/lazarobox/`. When `XDG_DATA_HOME` is unset, empty or relative, the base MUST be `$HOME/.local/share`, only when `HOME` is absolute; with neither there is no store and the unavailable rule applies. The directory MUST be created with mode 0700 when missing. The store MUST hold only conversation data (messages, timestamps, profile, tags, the engine and model used); it MUST NOT hold credentials. The store MUST NOT be encrypted, and the README MUST say so and give the file path and how to delete it. Message text MUST NOT be written to any log.
+Conversations MUST be stored in one SQLite database file under `$XDG_DATA_HOME/lazarobox/`. When `XDG_DATA_HOME` is unset, empty or relative, the base MUST be `$HOME/.local/share`, only when `HOME` is absolute; with neither there is no store and the unavailable rule applies. The directory MUST be created with mode 0700 when missing. The store MUST hold only conversation data (messages, timestamps, profile, tags, the engine and model used, and the last chat folder path) and usage data (counts, timings, engine, model, timestamps; see Usage table); it MUST NOT hold credentials. The store MUST NOT be encrypted, and the README MUST say so, give the file path and how to delete it, say that folder paths are saved in it, and state what usage data the same file holds. Message text MUST NOT be written to any log.
 
 #### Scenario: Path resolution [auto]
 - GIVEN `XDG_DATA_HOME=/x` and `HOME=/h`
@@ -24,7 +24,7 @@ Conversations MUST be stored in one SQLite database file under `$XDG_DATA_HOME/l
 #### Scenario: README states the facts [manual]
 - GIVEN the README
 - WHEN it is read
-- THEN it states that conversations are saved in plain text in an unencrypted SQLite file, gives its path and how to delete it
+- THEN it states that conversations are saved in plain text in an unencrypted SQLite file, gives its path and how to delete it, and says folder paths are saved too
 
 ### Requirement: File modes and secure delete
 Every database file MUST have mode 0600: the main file and any SQLite side file that exists (`-journal`, `-wal`, `-shm`), from the moment each is created. The journal mode is DELETE (the rollback journal is removed after each transaction); the store MUST NOT use WAL. The mode MUST be checked again on open and on each connection start; a wider mode MUST be corrected to 0600, and a symlink or a file of a foreign owner makes the store unavailable. The store MUST run with `secure_delete` on, so deleted and evicted content is overwritten in the file.
@@ -247,7 +247,7 @@ In the conversation list, `d` MUST ask for confirmation; only an unmodified lowe
 - THEN the prompt is the plain one and no note line appears
 
 ### Requirement: Resume
-Enter on a list row MUST open that conversation in the pane with its full history: every stored message in order, partial ones marked, with its stored profile and tags. New messages MUST be appended to the same conversation. The engine used MUST be the current assignment of the `chat` task, not the stored one. The system prompt MUST use the conversation's stored profile (see prompt-profiles). A conversation already open in another pane MUST NOT be opened a second time: the list shows the system line `already open in another pane`.
+Enter on a list row MUST open that conversation in the pane with its full history: every stored message in order, partial ones marked, with its stored profile and tags. New messages MUST be appended to the same conversation. The engine used MUST be the current assignment of the `chat` task, not the stored one. The system prompt MUST use the conversation's stored profile (see prompt-profiles). A conversation already open in another pane MUST NOT be opened a second time: the list shows the system line `already open in another pane`. The chat folder MUST become the stored folder when it is an acceptable folder that is not broad. When the conversation has no stored folder (older rows), or the stored folder no longer exists, is not a directory, is a secret root, or is broad, the folder MUST be treated as unknown-for-this-chat: the history is shown, a system line says `stored folder not available: <folder>` (or `no stored folder`), and the folder picker (see chat-folder) opens over the conversation; nothing is chosen silently, and Esc leaves the chat in the folder the pane had before the resume. The pane's folder is never changed by a resume that fails.
 
 #### Scenario: Full history restored [auto]
 - GIVEN a stored conversation of 30 messages, the last one partial
@@ -268,6 +268,26 @@ Enter on a list row MUST open that conversation in the pane with its full histor
 - GIVEN a conversation open in pane A
 - WHEN pane B's list resumes it
 - THEN it is not opened in B and the system line is shown
+
+#### Scenario: Resume opens the stored folder [auto]
+- GIVEN a stored conversation in `/w/proj` (exists) resumed from a pane in `$HOME`
+- WHEN it is resumed
+- THEN the chat folder is `/w/proj`, no picker is shown and tools and memory use it
+
+#### Scenario: Stored folder vanished [auto]
+- GIVEN a stored conversation whose folder was deleted
+- WHEN it is resumed
+- THEN the history is shown, the line `stored folder not available: <folder>` appears and the picker opens; accepting a folder sets it and stores it, and Esc keeps the folder the pane had
+
+#### Scenario: Older row without a folder [auto]
+- GIVEN a conversation created before this change
+- WHEN it is resumed
+- THEN the line `no stored folder` appears and the picker opens
+
+#### Scenario: Stored broad folder [auto]
+- GIVEN a conversation whose stored folder is `$HOME`
+- WHEN it is resumed
+- THEN the picker opens
 
 ### Requirement: Project tag
 When a chat is opened, its project tag MUST be proposed from the origin cwd: walk up from the cwd to the filesystem root (at most 64 levels) looking for a `.git` entry (a directory, or a file as in worktrees and submodules; a symlink is NOT a marker: it is not followed, it is looked at with `symlink_metadata`, and the walk goes on); the tag is the final path component of the directory that holds it. When that `.git` is a file whose `gitdir:` line (read within 1 KiB) contains `/.git/worktrees/`, the tag is the final path component of the main repository instead; a `.git` file without such a line gives the directory that holds it. When none is found, the tag is the final path component of the cwd itself (`/` for the root). When the origin cwd is unknown or is not an existing directory, there is no project tag. `git` MUST NOT be executed. A tag MUST be trimmed, MUST have control and format characters removed, and MUST be at most 64 characters (the rest is cut). A tag that is empty after cleaning is no tag.
@@ -453,3 +473,163 @@ The store MUST migrate from schema v1 to v2 in one additive transaction on first
 - GIVEN a saved note with content `SECRET-BODY`
 - WHEN the database file and side files are inspected
 - THEN `SECRET-BODY` is not found and the modes are 0600
+
+### Requirement: Chat folder is stored
+Each conversation MUST store the last chat folder (an absolute path) with it: set when the conversation is created from the folder the pane has at that moment, and updated whenever the chat folder changes (a confirmed `/cd`) once the conversation exists. A change made before the first message is not stored until the conversation is created, with the new folder. The write runs off the UI thread like every store write and its failure follows the existing unavailable and write-failure rules. The folder is removed with the conversation (delete and eviction) and is covered by `secure_delete` and the file-mode rules. The addition to the schema is additive: a build that does not know the folder ignores it. Conversations created before this change have no folder.
+
+#### Scenario: Stored on create [auto]
+- GIVEN a new conversation in `/w/proj`
+- WHEN the first message is sent
+- THEN the conversation row holds `/w/proj`
+
+#### Scenario: Updated on change [auto]
+- GIVEN a stored conversation in `/w/a`
+- WHEN the folder is changed to `/w/b`
+- THEN the stored folder is `/w/b`
+
+#### Scenario: Change before the first message [auto]
+- GIVEN a new conversation view where `/cd /w/b` was confirmed and no message sent
+- WHEN the first message is sent
+- THEN nothing was stored earlier and the conversation holds `/w/b`
+
+#### Scenario: Gone with the conversation [auto]
+- GIVEN a conversation with a folder
+- WHEN it is deleted, and in another run evicted
+- THEN the folder is gone from the file bytes in both cases
+
+#### Scenario: Old rows migrate [auto]
+- GIVEN a database from before this change with conversations
+- WHEN it is opened
+- THEN every conversation and message is intact and the conversations report no folder
+
+### Requirement: Project tag follows the folder only at proposal
+The project tag of an existing conversation MUST NOT change when the chat folder changes; it changes only by the tag editor. A new conversation proposes its project tag from the chat folder as accepted from the picker (see Project tag). The list filter keeps using the project tag.
+
+#### Scenario: Tag survives `/cd` [auto]
+- GIVEN a conversation tagged `proj` and a change to a folder named `other`
+- WHEN the stored tags are read
+- THEN the project tag is still `proj`
+
+#### Scenario: New chat takes the picked folder [auto]
+- GIVEN the picker accepted `/w/client-a`
+- WHEN a new conversation is started
+- THEN its proposed project tag is `client-a`
+
+### Requirement: Usage table
+The schema MUST move from version 3 to version 4 by an additive migration that creates a `turn_usage` table and changes nothing else; a version 3 store opens, migrates in one transaction and keeps every conversation, message and tag. A build that only knows version 3 MUST be able to ignore the table. A row MUST hold only: an id, `chat_id` (nullable), `engine`, `model`, `ts` (UTC whole seconds), the optional counts and `cost_usd` of the usage record, a `partial` flag, and the optional short `role` identifier (see `ai-usage`). It MUST NOT hold message text, prompts, answers, reasoning, paths or errors. Unknown (`None`) counts MUST be stored as SQL NULL and never as 0. `chat_id` references the conversation and is set to NULL when the conversation is deleted or evicted (no cascade). One row is written per turn that has a usage record, from the store thread, off the UI thread; a failed usage write (insert error, migration error, prune error) MUST NOT fail or block the turn and MUST NOT affect the conversation or the answer, but it MUST NEVER be silent: the pane shows the system line `Usage not saved: <reason>` (reason short, sanitized, at most 120 characters, no message text, no path), at most once per app run (later failures in the same run show nothing more). A migration error at open that leaves the usage table unusable shows the same line in the first chat pane that tries to store usage; the rest of the store keeps working. `/cost` keeps working with the rows that exist. A conversation that is not saved (deleted while open, store unavailable) writes its usage with `chat_id` NULL when the store is available, and nothing when it is not. The table is covered by the same file modes, `secure_delete` and journal rules as the rest of the file.
+
+#### Scenario: Migration keeps data [auto]
+- GIVEN a version 3 database with conversations, messages and tags
+- WHEN the store is opened
+- THEN the version is 4, `turn_usage` exists and empty, and all earlier rows are unchanged
+
+#### Scenario: Older build ignores the table [auto]
+- GIVEN a version 4 database and the version 3 reader (the old statements)
+- WHEN the old queries run
+- THEN they succeed unchanged
+
+#### Scenario: Unknown stays NULL [auto]
+- GIVEN a record with only `output_tokens` 5
+- WHEN it is stored and read back
+- THEN the other count columns are NULL, not 0
+
+#### Scenario: Columns are the allowed set [auto]
+- GIVEN the created table
+- WHEN its columns are listed
+- THEN they are exactly the allowed set and none can hold message text
+
+#### Scenario: Fresh store is version 4 [auto]
+- GIVEN no store
+- WHEN it is created
+- THEN the version is 4 and `turn_usage` exists
+
+#### Scenario: Failed usage write shows a notice [auto]
+- GIVEN a store whose usage insert fails with a reason (fake)
+- WHEN a turn ends
+- THEN the assistant message is stored as usual, the answer and the composer are unaffected, and the pane shows `Usage not saved: <reason>`
+
+#### Scenario: Notice shown once per run [auto]
+- GIVEN the same failing store and three turns in one app run
+- WHEN each turn ends
+- THEN `Usage not saved:` appears after the first turn only, and every turn still completes
+
+#### Scenario: Worker row fields [auto]
+- GIVEN a record of role `worker` with a worker id
+- WHEN it is stored
+- THEN the row holds that role and id (identifiers only: no text, no path) and the same NULL-for-unknown rule
+
+#### Scenario: Migration failure is visible [auto]
+- GIVEN a version 3 store whose v4 migration fails (fake)
+- WHEN a turn with usage ends
+- THEN conversations still save and `Usage not saved: <reason>` is shown once
+
+#### Scenario: Notice carries no text [auto]
+- GIVEN a failure whose raw error contains `ZZ-MARKER-ZZ` and a path
+- WHEN the notice is built
+- THEN it contains neither and is at most 120 characters of reason
+
+#### Scenario: Slow usage write does not block the UI [auto]
+- GIVEN a store whose writes take 2 seconds (fake)
+- WHEN keys are handled and frames are drawn after a turn ends
+- THEN they are handled without waiting for the usage write
+
+#### Scenario: Marker not in usage rows [auto]
+- GIVEN a turn whose answer contains `ZZ-MARKER-ZZ`
+- WHEN the turn and its usage are stored and the file bytes are searched
+- THEN the marker appears only in the message that held it (until that conversation is deleted), never in any usage row
+
+### Requirement: Usage survives chat deletion
+Deleting a conversation, evicting it by the 200-conversation limit or removing the store entries of a conversation MUST NOT delete or alter any `turn_usage` row except by setting its `chat_id` to NULL, in the same transaction as the removal. The usage totals of `/cost` MUST be the same before and after a conversation is deleted. After the link is dropped, nothing in the file may allow reading the deleted conversation's text, and the secure-delete scenario for messages still holds. Usage rows of a deleted conversation no longer count as "this chat" for any pane.
+
+#### Scenario: Delete keeps usage [auto]
+- GIVEN a conversation with 3 usage rows
+- WHEN the conversation is deleted
+- THEN the 3 rows remain with `chat_id` NULL and their counts unchanged
+
+#### Scenario: Eviction keeps usage [auto]
+- GIVEN 200 conversations and usage rows on the oldest
+- WHEN a new conversation evicts it
+- THEN its rows remain with `chat_id` NULL
+
+#### Scenario: Totals unchanged [auto]
+- GIVEN `/cost` totals before deleting a chat
+- WHEN the chat is deleted and `/cost` runs again
+- THEN `today` and `last 7 days` are equal, and `this chat` reads `no data` in a new chat
+
+#### Scenario: Text gone, usage stays [auto]
+- GIVEN a conversation containing `ZZ-MARKER-ZZ` and a usage row
+- WHEN it is deleted
+- THEN the file and side files do not contain the marker and the usage row is still readable
+
+### Requirement: Usage retention
+Usage rows older than 90 days MUST be removed: counted from `ts` against the current time, when the store is opened and when a usage row is written. Pruning MUST run in the store thread in one transaction, MUST NOT depend on the 200-conversation limit, MUST NOT touch conversations or messages, and MUST NOT prompt or show a message when it succeeds; a failed prune MUST show `Usage not saved: <reason>` under the once-per-run rule of Usage table (the old rows stay, nothing else is affected). A row exactly 90 days old is kept; a row 90 days and one second old is removed. Removed rows are overwritten in the file (`secure_delete`). The clock is injectable in tests. If the clock is before the newest row's `ts`, nothing is pruned.
+
+#### Scenario: Old rows pruned on open [auto]
+- GIVEN rows at 89, 90 and 91 days old
+- WHEN the store is opened
+- THEN the 91-day row is gone and the other two remain
+
+#### Scenario: Pruned on write [auto]
+- GIVEN a long-running store holding a row that became older than 90 days
+- WHEN a new usage row is written
+- THEN the old row is removed
+
+#### Scenario: Conversations untouched [auto]
+- GIVEN a 200-day-old conversation and a 200-day-old usage row
+- WHEN the store is opened
+- THEN the conversation remains and the usage row is gone
+
+#### Scenario: Clock before newest row [auto]
+- GIVEN a clock set before the newest row's `ts`
+- WHEN pruning runs
+- THEN no row is removed
+
+#### Scenario: Successful prune is quiet [auto]
+- GIVEN a prune that removes rows
+- WHEN it runs
+- THEN no system line, notice or prompt is produced
+
+#### Scenario: Failed prune is visible [auto]
+- GIVEN a prune that fails (fake)
+- WHEN it runs
+- THEN `Usage not saved: <reason>` is shown once per run and the store keeps working

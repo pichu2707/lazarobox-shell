@@ -20,7 +20,7 @@ The agent orchestrator (several coordinated AIs) is **1.1**, built on top of the
 
 ### 1. coding-tools: close (blocking)
 
-Change: `openspec/changes/coding-tools`.
+Change: `openspec/changes/archive/2026-11-02-coding-tools`.
 
 | Milestone | Release | State |
 |---|---|---|
@@ -40,7 +40,7 @@ Remaining:
 
 ### 2. chat-folder (blocking)
 
-Change: `openspec/changes/chat-folder`. Closes issue #394 (`/cd`).
+Change: `openspec/changes/archive/2026-11-02-chat-folder`. Closes issue #394 (`/cd`).
 
 **Goal:** the chat and its tools work wherever lazarobox is launched: rofi, desktop
 launcher or terminal.

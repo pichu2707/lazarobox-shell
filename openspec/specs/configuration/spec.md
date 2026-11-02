@@ -272,7 +272,7 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 - THEN nothing is managed, llamacpp keeps port 8080 and the notice names the matching problem
 
 ### Requirement: Server ports
-The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) with `port` (integer from 1 to 65535, default the catalog port). Detection and chat both use it, always on `127.0.0.1`. Unknown ids and unknown keys under `ai.servers` MUST be ignored. A wrong type or out-of-range value MUST fall back to the catalog port for that server only and report a problem under the existing startup-notice rules, with the problems `ai.servers.<id>.port: expected an integer from 1 to 65535`, `ai.servers.<id>: expected a table` when the server entry is not a table, and `ai.servers: expected a table` when `ai.servers` is not a table. The menu MUST NOT write `ai.servers` and every save MUST keep it byte for byte. The ports are read at startup.
+The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) with `port` (integer from 1 to 65535, default the catalog port). Detection and chat both use it, always on `127.0.0.1`. Unknown ids and unknown keys under `ai.servers` MUST be ignored. A wrong type or out-of-range value MUST fall back to the catalog port for that server only and report a problem under the existing startup-notice rules, with the problems `ai.servers.<id>.port: expected an integer from 1 to 65535`, `ai.servers.<id>: expected a table` when the server entry is not a table, and `ai.servers: expected a table` when `ai.servers` is not a table. The menu MUST NOT write `ai.servers` except `managed`, `model` and `idle_minutes` of `[ai.servers.llamacpp]` (see config-menu, Choosing a local model manages llama-server), and every save MUST keep the rest of it byte for byte. The ports are read at startup; only a save that turns the managed llama-server on changes llamacpp's port while running.
 
 #### Scenario: Server ports default to the catalog [auto]
 - GIVEN a file with no `[ai.servers]`, or an empty one
@@ -329,3 +329,263 @@ The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lm
 - GIVEN the row moved to `30 min`
 - WHEN the menu saves
 - THEN config.toml holds `idle_minutes = 30` under `[ai.servers.llamacpp]` and its other keys are kept
+
+### Requirement: Tools key
+The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`). It is the off switch of all agent tools: the run action of pane-commands, the built-in tools, the lazarobox MCP server and the user MCP servers (see agent-tools). A wrong type falls back to `true` for that key only and reports `ai.tools.enabled: expected a boolean`; a non-table `ai.tools` reports `ai.tools: expected a table` and uses the default. Unknown keys under `ai.tools` MUST be ignored. The key is read at startup and when changed from the config menu; a change takes effect at the next turn, never on a stream or approval already running. No secret is part of the schema.
+
+#### Scenario: Default on [auto]
+- GIVEN a file with no `[ai.tools]`
+- WHEN it is parsed
+- THEN tools are on and no notice is produced
+
+#### Scenario: Off [auto]
+- GIVEN `[ai.tools]` with `enabled = false`
+- WHEN it is parsed
+- THEN tools are off and no notice is produced
+
+#### Scenario: Wrong type [auto]
+- GIVEN `[ai.tools]` with `enabled = "no"`
+- WHEN the app starts
+- THEN tools are on (the default) and the notice is `config: ai.tools.enabled: expected a boolean`
+
+#### Scenario: Non-table [auto]
+- GIVEN `[ai]` holding `tools = 3`
+- WHEN the app starts
+- THEN tools use the default and the notice is `config: ai.tools: expected a table`
+
+#### Scenario: Counted with other problems [auto]
+- GIVEN `enabled = 1` under `[ai.tools]` and `[statusline] position = "middle"`
+- WHEN the app starts
+- THEN the notice starts with `config (2 problems): ` and both keys use their defaults
+
+#### Scenario: Unknown keys ignored [auto]
+- GIVEN `[ai.tools]` with `mode = "fast"` next to `enabled = true`
+- WHEN it is parsed
+- THEN `enabled` applies and no notice is produced
+
+### Requirement: Approval mode key
+The table `[ai.tools]` MAY hold `approval`, the string `"ask"`, `"auto"` or `"run"` (default `"ask"`, compared exactly, lowercase). It is the approval mode a chat pane takes when it opens and at each conversation switch inside it (see agent-tools, Chat approval mode); the current conversation of an open pane keeps its mode. Any other value or type (including `"RUN"`) falls back to `"ask"` for that key only and reports `ai.tools.approval: expected "ask", "auto" or "run"`, after the `ai.tools.enabled` problem in the notice order. A non-table `ai.tools` uses the default with the existing `ai.tools: expected a table` problem only. The key is read at startup and when changed from the config menu. The default is never `run`.
+
+#### Scenario: Default ask [auto]
+- GIVEN a file with no `approval` under `[ai.tools]`, and a file with no `[ai.tools]`
+- WHEN each is parsed
+- THEN the approval mode is `ask` and no notice is produced
+
+#### Scenario: Auto [auto]
+- GIVEN `[ai.tools]` with `approval = "auto"`
+- WHEN it is parsed
+- THEN the approval mode is `auto` and no notice is produced
+
+#### Scenario: Run [auto]
+- GIVEN `[ai.tools]` with `approval = "run"`
+- WHEN it is parsed
+- THEN the approval mode is `run` and no notice is produced
+
+#### Scenario: Bad value [auto]
+- GIVEN `approval = "AUTO"`, `approval = "Run"`, `approval = "yes"` and `approval = true` in separate files
+- WHEN the app starts
+- THEN the mode is `ask` each time and the notice is `config: ai.tools.approval: expected "ask", "auto" or "run"`
+
+#### Scenario: Notice order [auto]
+- GIVEN `enabled = 1` and `approval = 2` under `[ai.tools]`
+- WHEN the app starts
+- THEN the notice is `config (2 problems): ai.tools.enabled: expected a boolean`, tools are on and the mode is `ask`
+
+#### Scenario: Older build reads run as a bad value [manual]
+- GIVEN a file saved with `approval = "run"` and a build without this change
+- WHEN it starts
+- THEN the mode is `ask` and the notice names `ai.tools.approval`
+
+### Requirement: MCP server lists
+The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (lowercase letters, digits and `-`, 1 to 24 characters, unique in its scope: the global list, or one project root; it is also the server part of a qualified tool name), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty, each an identifier of at most 64 bytes; values are never in the file) and `enabled` (boolean, default `true`). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of lowercase letters, digits and - (1 to 24 characters)`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored. There are no `Authorization`, token or secret keys in the schema. The list is read once at startup (no hot reload). The menu has no row for it in this change: it is edited by hand.
+
+#### Scenario: Defaults [auto]
+- GIVEN a file with no `[ai.mcp]`
+- WHEN it is parsed
+- THEN there are no servers and no notice is produced
+
+#### Scenario: Entry parsed [auto]
+- GIVEN `[[ai.mcp.servers]]` with `name = "fs"`, `command = "mcp-fs"`, `args = ["--root", "/home/u/dev"]`, `env = ["GITHUB_TOKEN"]`
+- WHEN it is parsed
+- THEN one enabled server `fs` exists with those values and no notice is produced
+
+#### Scenario: Invalid entry skipped, others kept [auto]
+- GIVEN two entries where the first has `command = 5` and the second is valid
+- WHEN the app starts
+- THEN only the second is kept and the notice is `config: ai.mcp.servers[0].command: expected a non-empty string`
+
+#### Scenario: Duplicate name [auto]
+- GIVEN two entries named `fs`
+- WHEN the app starts
+- THEN the first is kept, the second is skipped and the notice is `config: ai.mcp.servers[1].name: duplicate name`
+
+#### Scenario: Values never in the file [auto]
+- GIVEN `env = { GITHUB_TOKEN = "abc" }`
+- WHEN the app starts
+- THEN the entry is skipped with the `env` problem and `abc` appears in no notice or log
+
+#### Scenario: enabled false [auto]
+- GIVEN an entry with `enabled = false`
+- WHEN servers are resolved
+- THEN the entry is not active and no process is started for it
+
+#### Scenario: Wrong container types [auto]
+- GIVEN `ai.mcp = 3`, and in another file `ai.mcp.servers = 3`
+- WHEN each is parsed
+- THEN the notices are `config: ai.mcp: expected a table` and `config: ai.mcp.servers: expected an array of tables`
+
+#### Scenario: Unknown keys ignored [auto]
+- GIVEN an entry with `timeout = 5` next to valid keys
+- WHEN it is parsed
+- THEN the valid keys apply and no notice is produced
+
+#### Scenario: Project extras only from the user file [design-confirm]
+- GIVEN a repository file that declares a server and a project entry in the user file for another root
+- WHEN servers are resolved for a chat in the repository
+- THEN only entries from the user file for that root are active
+
+### Requirement: Family toggle keys
+The table `[ai.tools]` MAY hold five booleans: `search`, `write`, `exec`, `git` and `git_write` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs and Git write verbs (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored. A change takes effect at the next turn, never on a stream or approval already running.
+
+#### Scenario: Defaults off [auto]
+- GIVEN a file with no family keys, and a file with no `[ai.tools]`
+- WHEN each is parsed
+- THEN all five toggles are off and no notice is produced
+
+#### Scenario: On [auto]
+- GIVEN `[ai.tools]` with `write = true` and `exec = true`
+- WHEN it is parsed
+- THEN Write and Exec are on and the other three are off
+
+#### Scenario: Wrong type [auto]
+- GIVEN `[ai.tools]` with `git = "yes"`
+- WHEN the app starts
+- THEN `git` is off and the notice is `config: ai.tools.git: expected a boolean`
+
+#### Scenario: Master switch wins [auto]
+- GIVEN `enabled = false` and `write = true`
+- WHEN the tool list is built
+- THEN no tool is offered
+
+#### Scenario: Git toggles are independent [auto]
+- GIVEN `git = false` and `git_write = true`
+- WHEN the tool list is built
+- THEN only `git_add` and `git_commit` are offered among the git tools
+
+### Requirement: Workspace key
+The file MAY hold a table `[workspace]` with `dir`, a string: an absolute path, or a path starting with `~` which expands to an absolute `$HOME`. A missing key and an empty string both mean unset. `dir` is the start folder of the app when no `--dir` flag is given (see start-dir). Invalid values fall back to unset for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`, the other keys respected): `workspace.dir: expected a string` for a non-string, `workspace.dir: expected an absolute path` for a relative path, and `workspace: expected a table` for a non-table `workspace`. A well-formed path that does not exist or is not a directory at startup is not a parse problem: the start dir falls back to the launch cwd and the notice is `config: workspace.dir: folder not found`. Unknown keys under `workspace` MUST be ignored. A valid `dir` never raises a notice. The key is read once at startup; there is no hot reload.
+
+#### Scenario: Default [auto]
+- GIVEN a file with no `[workspace]`
+- WHEN it is parsed
+- THEN `dir` is unset and no notice is produced
+
+#### Scenario: Absolute and tilde [auto]
+- GIVEN `dir = "/w/proj"`, and in another file `dir = "~/code"` with `HOME=/h`
+- WHEN each is parsed
+- THEN the values are `/w/proj` and `/h/code` and no notice is produced
+
+#### Scenario: Empty string is unset [auto]
+- GIVEN `dir = ""`
+- WHEN it is parsed
+- THEN `dir` is unset and no notice is produced
+
+#### Scenario: Relative path [auto]
+- GIVEN `dir = "proj"`
+- WHEN the app starts
+- THEN `dir` is unset and the notice is `config: workspace.dir: expected an absolute path`
+
+#### Scenario: Wrong types [auto]
+- GIVEN `dir = 3`, and in another file `workspace = 3`
+- WHEN each is parsed
+- THEN the notices are `config: workspace.dir: expected a string` and `config: workspace: expected a table`
+
+#### Scenario: Counted with other problems [auto]
+- GIVEN `dir = 3` and `[statusline] position = "middle"`
+- WHEN the app starts
+- THEN the notice starts with `config (2 problems): ` and both keys use their defaults
+
+#### Scenario: Unknown keys ignored [auto]
+- GIVEN `[workspace]` with `colour = "red"` next to a valid `dir`
+- WHEN it is parsed
+- THEN `dir` applies and no notice is produced
+
+### Requirement: Orchestrate slot [S1]
+The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the table `[ai.tasks.orchestrate]`. An absent table means unassigned. The slot MUST NOT be counted by any logic that is defined over the five original tasks (Set all, its aggregate).
+
+#### Scenario: Slot parsed [auto]
+- GIVEN `[ai.tasks.orchestrate]` with `engine = "claude"` and `model = "opus"`
+- WHEN the configuration is loaded
+- THEN `orchestrate` is `claude` / `opus` and the other slots are as before
+
+#### Scenario: Absent means unassigned [auto]
+- GIVEN no `[ai.tasks.orchestrate]` table
+- WHEN the configuration is loaded
+- THEN `orchestrate` is unassigned and falls back to `general`
+
+### Requirement: Orchestrator keys [S1, S3, S4]
+The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) `run_timeout_mins` (integer, default 60, valid range 1 to 480) and [S4] `max_turns` (integer, default 6, valid range 1 to 24; the orchestrator turns one run may take, the first included). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
+
+#### Scenario: Defaults [auto]
+- GIVEN no `[ai.orchestrator]` table
+- WHEN the configuration is loaded
+- THEN `enabled` and `acknowledged` are false, `worker_timeout_secs` is 600, `max_parallel` is 2, `max_workers` is 8, `run_timeout_mins` is 60 and `max_turns` is 6
+
+#### Scenario: Bad value falls back [auto]
+- GIVEN `max_parallel = 0` and `enabled = true`
+- WHEN the configuration is loaded
+- THEN `max_parallel` is 2, `enabled` is true and a startup notice names the key
+
+#### Scenario: Bad max_turns falls back [auto]
+- GIVEN `max_turns = 25` and `enabled = true`
+- WHEN the configuration is loaded
+- THEN `max_turns` is 6, `enabled` is true and a startup notice names the key and the range 1 to 24
+
+#### Scenario: Older build ignores keys [auto]
+- GIVEN a file with `[ai.tasks.orchestrate]` and `[ai.orchestrator]` read by the previous schema
+- WHEN it is loaded
+- THEN the earlier keys load unchanged and the new ones are ignored
+
+### Requirement: Usage keys
+`[ai.usage]` MAY hold:
+- `line` (boolean, default `true`): the per-answer usage line;
+- `statusline` (boolean, default `true`): the status-bar usage segment;
+- `turn_tokens` (whole number greater than 0): per-turn token threshold;
+- `day_tokens` (whole number greater than 0): per-day token threshold;
+- `day_usd` (number greater than 0, a TOML float or integer): per-day dollar threshold.
+A missing threshold key means that threshold is off. `[ai.usage.billing]` MAY hold `claude`, `codex` and `gemini`, each the string `subscription` or `per-token`; a missing key is `subscription`. Any other key under `[ai.usage.billing]` (including local engine ids) and any unknown key under `[ai.usage]` MUST be ignored. A wrong value MUST fall back to that key's default (thresholds: off) and produce one problem under the startup-notice rules, in this order after the `ai.notify` problem: `ai.usage.line: expected true or false`, `ai.usage.statusline: expected true or false`, `ai.usage.turn_tokens: expected a whole number above 0`, `ai.usage.day_tokens: expected a whole number above 0`, `ai.usage.day_usd: expected a number above 0`, `ai.usage.billing.claude: expected "subscription" or "per-token"` (same for `codex`, `gemini`). `ai.usage` holding a non-table value falls back to all defaults with the problem `ai.usage: expected a table`. Values are case-sensitive. The keys are independent of every other `[ai]` key.
+
+#### Scenario: Defaults [auto]
+- GIVEN no `[ai.usage]` table
+- WHEN the config is read
+- THEN line and statusline are on, all thresholds are off, billing is `subscription` for all three and there is no problem
+
+#### Scenario: Explicit values [auto]
+- GIVEN `[ai.usage]\nline = false\nturn_tokens = 4000\nday_usd = 5\n[ai.usage.billing]\nclaude = "per-token"`
+- WHEN the config is read
+- THEN line is off, turn limit 4000, day dollars 5.0, claude `per-token`, codex and gemini `subscription`, and no problem
+
+#### Scenario: Wrong types and ranges [auto]
+- GIVEN `turn_tokens = 0`, `day_tokens = -3`, `day_usd = "5"`, `line = "yes"`
+- WHEN the config is read
+- THEN each falls back (thresholds off, line on) and one problem per key is reported with the exact texts above
+
+#### Scenario: Wrong billing value [auto]
+- GIVEN `[ai.usage.billing]\ncodex = "Subscription"`
+- WHEN the config is read
+- THEN codex is `subscription` and the problem is `ai.usage.billing.codex: expected "subscription" or "per-token"`
+
+#### Scenario: Local engines ignored [auto]
+- GIVEN `[ai.usage.billing]\nollama = "per-token"`
+- WHEN the config is read
+- THEN there is no problem and ollama still never shows dollars
+
+#### Scenario: Not a table [auto]
+- GIVEN `[ai]\nusage = 3`
+- WHEN the config is read
+- THEN all defaults apply and the problem is `ai.usage: expected a table`
+
+#### Scenario: Fractional whole number [auto]
+- GIVEN `turn_tokens = 1.5`
+- WHEN the config is read
+- THEN the threshold is off and the problem is `ai.usage.turn_tokens: expected a whole number above 0`
