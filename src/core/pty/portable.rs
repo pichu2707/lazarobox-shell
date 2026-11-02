@@ -24,7 +24,10 @@ use std::{
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::{PtyEvent, PtyHandle, PtySink, SpawnSpec};
-use crate::core::pane::PaneSize;
+use crate::core::{
+    ai::tools::panes::{CMDLINE_CAP, Foreground, parse_cmdline},
+    pane::PaneSize,
+};
 
 const READ_CHUNK: usize = 8 * 1024;
 /// How long the waiter lets the reader drain the last output after the child
@@ -99,6 +102,18 @@ impl PtyHandle for PortableHandle {
         let leader = self.master.process_group_leader()?;
         let shell = libc::pid_t::try_from(self.pid?).ok()?;
         Some(leader == shell)
+    }
+
+    fn foreground(&self) -> Option<Foreground> {
+        use std::io::Read;
+        let pgid = self.master.process_group_leader()?;
+        let file = std::fs::File::open(format!("/proc/{pgid}/cmdline")).ok()?;
+        let mut raw = Vec::new();
+        file.take(CMDLINE_CAP as u64).read_to_end(&mut raw).ok()?;
+        Some(Foreground {
+            argv: parse_cmdline(&raw)?,
+            cwd: std::fs::read_link(format!("/proc/{pgid}/cwd")).ok(),
+        })
     }
 
     fn kill(&mut self) {
@@ -404,6 +419,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(pty.shell_in_foreground(), Some(false));
+    }
+
+    // list_panes: the argv of the foreground program is read from /proc.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_foreground_argv_is_the_running_program_with_its_arguments() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        pty.write(b"echo READY\n".to_vec());
+        wait_for(&rx, "READY");
+        pty.write(b"sleep 31 32\n".to_vec());
+        let want = vec!["sleep".to_owned(), "31".to_owned(), "32".to_owned()];
+        let deadline = Instant::now() + TIMEOUT;
+        while pty.foreground().map(|f| f.argv) != Some(want.clone()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let fg = pty.foreground().unwrap();
+        assert_eq!(fg.argv, want);
+        assert!(fg.cwd.is_some());
     }
 
     // Spec: shell exits -> Exited event.

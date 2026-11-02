@@ -2,7 +2,7 @@
 
 use std::{io, path::PathBuf};
 
-use crate::core::pane::PaneSize;
+use crate::core::{ai::tools::panes::Foreground, pane::PaneSize};
 
 pub mod fake;
 pub mod portable;
@@ -108,6 +108,14 @@ pub trait PtyHandle: Send {
     /// gone.
     fn cwd(&self) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
+    }
+    /// The program that owns the terminal now (the foreground process
+    /// group's leader): its argv from `/proc/<pgid>/cmdline` and its folder
+    /// from `/proc/<pgid>/cwd`. Only those two: never the environment. `None`
+    /// when the command line cannot be read (a platform without `/proc`, a
+    /// process that is gone).
+    fn foreground(&self) -> Option<Foreground> {
+        None
     }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);

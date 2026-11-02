@@ -12,6 +12,33 @@ baseline.
 
 ### Added
 
+- `list_panes`, a read-only chat tool that tells the model what each pane
+  runs: its number, whether it is focused, its folder and the foreground
+  program (`nvim prueba.rs`). It is free on local engines; on a cloud engine
+  it asks first and the prompt shows the exact text that would be sent, so the
+  foreground command lines of your panes reach a provider only after your `y`.
+  Arguments are an allowlist, not a denylist: the focused pane shows the
+  program name, flags without their `=value` and paths (starting with `/`,
+  `./`, `../` or `~/`, or naming an existing entry in the program's folder);
+  every other argument is `…`, and `bash -c`, `python -c`, `node -e`, `perl -e`
+  and `ruby -e` show the flag only. Other panes show the program name only.
+  Each argument is capped at 120 characters and each pane at 300, and paths
+  under `$HOME` show as `~/`. The environment of other processes is never
+  read, and the shared state only ever holds redacted text. Linux reads
+  `/proc/<pgid>/cmdline` and `cwd`; on macOS the program and folder are
+  `unknown`. A pane that cannot be read shows `program: unknown`. Existing
+  file names are shown as they are (`--password-file creds.txt` shows
+  `creds.txt`; contents are never read) and only the first 16 arguments of the
+  focused pane are looked up on disk. Every fragment is cleaned like the other
+  prompts (no escape sequences, bidi or zero-width characters), redacted and
+  capped; a program title with spaces or `:` shows as `…`. The text is bounded
+  (5 panes, focused first, then `+N more`) so the prompt stays answerable.
+  An Ollama `*-cloud` model counts as
+  local, so it does not ask.
+- Pin change: `list_panes` joins the legacy tool families, so the default
+  tool list (the MCP `tools/list` bytes, the Ollama and llama.cpp `tools`
+  body and the tools prompt, 865 to 1033 bytes) is no longer the 0.18.0 one.
+  The golden and the registry pins were updated on purpose.
 - `lazarobox-shell --check-install` prints whether the tools can run from this
   install, outside the TUI: exit 0 when the binary and its folder pass the
   trust check, exit 1 with the same reason and `chmod` fix as the chat notice

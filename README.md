@@ -1049,6 +1049,32 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - **Un modelo con Exec puede escribir `.git/hooks`.** Se detecta con las instantáneas de integridad antes y después de cada ejecución (`git hooks or config changed during the run (not reverted)`), pero no se impide ni se revierte. Revisa siempre los ganchos que muestra la revisión del commit.
 - **Git no carga tu configuración.** Los ganchos solo se leen del `.git/hooks` del propio repositorio, el commit no se firma y la identidad se pasa explícitamente.
 
+#### Paneles: `list_panes`
+
+`list_panes` es una herramienta de solo lectura que se ofrece junto a `run_in_pane` y no tiene interruptor propio. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en el panel con foco, el modelo lo ve en lugar de pedirte que pegues el código. Los _workers_ del orquestador no la tienen.
+
+**Qué se envía exactamente.** Una línea por panel, con el número, si tiene el foco, su carpeta (con `~/` en lugar de tu `$HOME`) y el programa en primer plano; por ejemplo `pane 1 (focused) cwd: ~/proyecto program: nvim prueba.rs`. Un panel cuyo proceso no se puede leer dice `program: unknown`. No se envía el contenido de la pantalla ni del _scrollback_, y el entorno de otros procesos no se lee nunca.
+
+**Lista de permitidos, no de prohibidos.** Una línea de comando puede esconder un secreto de muchas formas (`-u usuario:clave`, `-a CLAVE`, una cadena de conexión, una cabecera), así que no se muestra nada que no se sepa inofensivo:
+
+- Del panel con foco se muestra el nombre del programa y, de sus argumentos, solo las opciones (`-x`, `--larga`, sin su `=valor`) y las rutas: las que empiezan por `/`, `./`, `../` o `~/` y las que nombran un archivo o carpeta que existe en la carpeta del programa. Cualquier otro argumento se sustituye por `…`. `ssh -p 22 host` se ve como `ssh -p …`.
+- Con `sh`, `bash`, `zsh`, `fish -c`, `python -c`, `node -e`, `perl -e` o `ruby -e` solo se ve el intérprete y la opción: el código nunca.
+- Una ruta con `?`, `=`, `@` o `:` no se muestra. Lo que queda pasa además por la censura de secretos y de credenciales en URL.
+- Los nombres de archivos y carpetas que **existen** se muestran tal cual: `--password-file creds.txt` muestra `creds.txt` si ese archivo existe (el contenido nunca se lee). Solo se comprueban los 16 primeros argumentos del panel con foco; los demás son `…`.
+- Un programa que se pone a sí mismo un título con espacios o `:` (`nginx: master process ...`) se muestra como `…`.
+- Los demás paneles muestran solo el nombre del programa y la carpeta.
+- Todo fragmento (programa, opciones, rutas, carpetas) se limpia como el resto de avisos (sin secuencias de escape, caracteres bidireccionales ni de ancho cero) y pasa por la censura de secretos; cada argumento se corta a 120 caracteres y cada línea de panel a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
+- El texto se acota para que el aviso se pueda aprobar: como mucho 5 paneles (el que tiene el foco primero) y una línea final `+N more` si hay más; una línea se acorta si hace falta.
+
+**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti. Un modelo `*-cloud` de Ollama cuenta como local: no hay aviso, aunque el modelo se ejecute en la nube de Ollama.
+
+**Límites.**
+
+- Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pgid>/cmdline` y `/proc/<pgid>/cwd`.
+- macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
+- La lista se actualiza cada segundo, así que puede ir un instante por detrás.
+- No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
+
 ### Tools with Ollama
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.

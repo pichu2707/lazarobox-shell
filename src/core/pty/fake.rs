@@ -6,7 +6,7 @@ use std::{
 };
 
 use super::PtyHandle;
-use crate::core::pane::PaneSize;
+use crate::core::{ai::tools::panes::Foreground, pane::PaneSize};
 
 /// What a `FakePty` has been asked to do.
 #[derive(Default, Debug)]
@@ -25,6 +25,8 @@ pub struct FakePty {
     pub foreground: Option<bool>,
     /// What `cwd` answers; `None` is "cannot read".
     pub cwd: Option<std::path::PathBuf>,
+    /// What `foreground` answers; `None` is "cannot read".
+    pub fg: Option<Foreground>,
 }
 
 impl PtyHandle for FakePty {
@@ -47,6 +49,10 @@ impl PtyHandle for FakePty {
 
     fn cwd(&self) -> Option<std::path::PathBuf> {
         self.cwd.clone()
+    }
+
+    fn foreground(&self) -> Option<Foreground> {
+        self.fg.clone()
     }
 
     fn kill(&mut self) {

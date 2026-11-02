@@ -218,7 +218,13 @@ async fn the_request_families_decide_what_the_session_lists_and_accepts() {
     client.send(&list).await;
     assert_eq!(
         tools(client.reply().await.unwrap()),
-        ["find_dir", "list_dir", "read_file", "run_in_pane"]
+        [
+            "find_dir",
+            "list_dir",
+            "read_file",
+            "run_in_pane",
+            "list_panes"
+        ]
     );
 
     let mut read_only = with_tools(&lab);

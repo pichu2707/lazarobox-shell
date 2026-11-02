@@ -293,6 +293,7 @@ pub fn execute_within(
         | Call::EditFile { .. }
         | Call::RunCommand { .. }
         | Call::GitStatus
+        | Call::ListPanes
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
         | Call::GitAdd { .. }

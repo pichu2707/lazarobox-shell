@@ -40,7 +40,7 @@ pub enum Part {
 }
 
 /// The command as rows `width` columns wide, one or more per logical line.
-fn command_rows(command: &str, width: usize) -> Vec<String> {
+pub(crate) fn command_rows(command: &str, width: usize) -> Vec<String> {
     command
         .split('\n')
         .flat_map(|line| {
