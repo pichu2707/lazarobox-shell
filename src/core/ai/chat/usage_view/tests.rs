@@ -179,10 +179,6 @@ fn an_empty_store_says_so_under_the_alpha_header() {
 #[test]
 fn the_header_is_the_first_line_in_every_view() {
     assert_eq!(view(&[row(0, "claude", "s")])[0], "AI usage (alpha)");
-    assert_eq!(
-        session_lines(&Session::default(), &default_billing)[0],
-        "AI usage (alpha)"
-    );
     assert_eq!(UNAVAILABLE_LINE, "usage history is not available");
 }
 
@@ -309,39 +305,6 @@ fn a_session_folds_turns_per_engine_and_model_with_none_not_zero() {
 }
 
 #[test]
-fn history_off_shows_the_session_only_with_the_explaining_line() {
-    let lines = session_lines(&Session::default(), &default_billing);
-    assert_eq!(
-        lines,
-        vec![HEADER, HISTORY_OFF_LINE, EMPTY_LINE],
-        "{lines:?}"
-    );
-    assert_eq!(
-        HISTORY_OFF_LINE,
-        "chat history is off: showing this session only"
-    );
-    let mut session = Session::default();
-    session.add(
-        "claude",
-        Run::Chat,
-        &TurnUsage {
-            input: Some(2),
-            output: Some(4),
-            cost_micros: Some(4_936),
-            model: Some("sonnet".into()),
-            ..TurnUsage::default()
-        },
-    );
-    let lines = session_lines(&session, &default_billing);
-    assert_eq!(lines[2], "this session: 6 tokens · 1 turns");
-    assert_eq!(lines[3], "by engine and model:");
-    assert_eq!(
-        lines[4],
-        "  claude › sonnet: in 2 · out 4 · $0.0049 list-price equivalent"
-    );
-}
-
-#[test]
 fn control_characters_in_ids_never_reach_a_line() {
     let mut r = row(0, "claude", "so\u{1b}[31mnnet\nZZ");
     r.engine = "cla\u{7}ude".into();
@@ -384,8 +347,11 @@ fn a_session_summary_is_partial_too() {
             ..TurnUsage::default()
         },
     );
-    let lines = session_lines(&session, &default_billing);
-    assert_eq!(lines[2], "this session: no data · 1 turns · partial");
+    let lines = report_lines(&[row(0, "claude", "s")], &session, &default_billing);
+    assert!(
+        lines.contains(&"this session: no data · 1 turns · partial".to_owned()),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -440,14 +406,9 @@ fn a_full_session_says_so_instead_of_dropping_silently() {
         session.add("ollama", Run::Chat, &usage);
     }
     assert!(session.full());
-    let shown = session_lines(&session, &default_billing);
-    assert!(shown.contains(&SESSION_FULL_LINE.to_owned()), "{shown:?}");
     let report = report_lines(&[row(0, "claude", "s")], &session, &default_billing);
     assert!(report.contains(&SESSION_FULL_LINE.to_owned()));
-    assert!(
-        !session_lines(&Session::default(), &default_billing)
-            .contains(&SESSION_FULL_LINE.to_owned())
-    );
+    assert!(!view(&[row(0, "claude", "s")]).contains(&SESSION_FULL_LINE.to_owned()));
 }
 
 // Charts (ai-usage, "Charts").
@@ -543,14 +504,6 @@ fn charts_never_carry_dollars() {
     r.costed = 1;
     let shown = charts(&view(&[r]));
     assert!(shown.iter().all(|l| !l.contains('$')), "{shown:?}");
-}
-
-#[test]
-fn the_history_off_view_has_no_charts() {
-    let mut session = Session::default();
-    session.add("ollama", Run::Chat, &tokens(10, 5));
-    let lines = session_lines(&session, &default_billing);
-    assert!(!lines.iter().any(|l| l.contains("per day")));
 }
 
 #[test]

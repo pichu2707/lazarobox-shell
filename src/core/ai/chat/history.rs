@@ -166,7 +166,7 @@ impl ChatState {
         saves.into_iter().chain(usage).collect()
     }
 
-    /// Forgets what is waiting to be saved (history is off).
+    /// Forgets what is waiting to be saved (no store is attached).
     pub fn drop_saves(&mut self) {
         self.outbox.clear();
         self.usage_outbox.clear();

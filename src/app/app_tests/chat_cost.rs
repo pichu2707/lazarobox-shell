@@ -8,8 +8,9 @@ use crate::core::ai::chat::{
     engine::StreamEvent,
     store::{StoreCmd, StoreReply},
     usage::TurnUsage,
-    usage_view::{HEADER, HISTORY_OFF_LINE, UNAVAILABLE_LINE, UsageRow},
+    usage_view::{HEADER, UNAVAILABLE_LINE, UsageRow},
 };
+use crate::core::ai::config::{AiConfig, Assignment, Task};
 
 fn sends(effects: &[Effect]) -> usize {
     effects
@@ -65,14 +66,6 @@ fn today_row() -> UsageRow {
         worker_total: None,
         worker_partial: false,
     }
-}
-
-fn history_off_chat() -> App {
-    let mut a = launched(120, 30).with_ai(ollama());
-    a.update(AppEvent::EnginesDetected(super::chat_history::detection()));
-    press(&mut a, "c");
-    a.update(prompt_for(chat_id()));
-    a
 }
 
 #[test]
@@ -257,9 +250,88 @@ fn other_text_with_cost_in_it_is_a_normal_message() {
     assert_eq!(sends(&ask(&mut a, "what does /cost do")), 1);
 }
 
+fn gemini_row(model: Option<&str>) -> UsageRow {
+    UsageRow {
+        engine: "gemini".into(),
+        model: model.map(str::to_owned),
+        ..today_row()
+    }
+}
+
+fn gemini_chat() -> App {
+    let mut ai = AiConfig::default();
+    ai.set(
+        Task::Chat,
+        Assignment {
+            engine: Some("gemini".into()),
+            model: Some("default".into()),
+        },
+    );
+    let mut a = launched(120, 30).with_ai(ai).with_chat_history();
+    press(&mut a, "c");
+    a.update(prompt_for(chat_id()));
+    listed(&mut a, chat_id(), rows());
+    a.update(key('n'));
+    a
+}
+
 #[test]
-fn history_off_shows_this_session_from_memory_and_asks_the_store_nothing() {
-    let mut a = history_off_chat();
+fn a_mixed_row_is_shown_as_mixed_and_a_null_one_as_unknown() {
+    let mut a = gemini_chat();
+    ask(&mut a, "/cost");
+    let mut claude = gemini_row(Some("mixed"));
+    claude.engine = "claude".into();
+    a.update(answer(Some(vec![
+        gemini_row(Some("mixed")),
+        claude,
+        gemini_row(None),
+    ])));
+    let pairs: Vec<String> = view_lines(&a)
+        .into_iter()
+        .filter(|l| l.starts_with("  gemini › ") || l.starts_with("  claude › "))
+        .collect();
+    assert!(
+        pairs.iter().any(|l| l.starts_with("  gemini › mixed: ")),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.iter().any(|l| l.starts_with("  claude › mixed: ")),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.iter().any(|l| l.starts_with("  gemini › unknown: ")),
+        "{pairs:?}"
+    );
+}
+
+#[test]
+fn the_chat_config_never_relabels_a_stored_row() {
+    let mut a = gemini_chat();
+    assert_eq!(a.status_right(), "gemini › default");
+    ask(&mut a, "/cost");
+    let mut worker = gemini_row(None);
+    worker.workers = 1;
+    a.update(answer(Some(vec![
+        worker,
+        gemini_row(Some("gemini-2.5-pro")),
+    ])));
+    let lines = view_lines(&a);
+    assert!(
+        lines.iter().any(|l| l.starts_with("  gemini › unknown: ")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("  gemini › gemini-2.5-pro: ")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("› default")), "{lines:?}");
+}
+
+#[test]
+fn a_real_turn_with_history_on_shows_this_session_under_the_stored_report() {
+    let mut a = conversation();
     let turn = sent_turn(&ask(&mut a, "hi"));
     a.update(delta(chat_id(), turn, "answer"));
     a.update(AppEvent::Chat(
@@ -273,25 +345,11 @@ fn history_off_shows_this_session_from_memory_and_asks_the_store_nothing() {
         }),
     ));
     a.update(finish(chat_id(), turn));
-    let effects = ask(&mut a, "/cost");
-    assert_eq!(stores(&effects), Vec::new());
-    let lines = view_lines(&a);
-    assert_eq!(lines[0], HEADER);
-    assert_eq!(lines[1], HISTORY_OFF_LINE);
-    assert_eq!(lines[2], "this session: 15 tokens · 1 turns");
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with("  ollama › llama3: in 10 · out 5"))
-    );
-}
-
-#[test]
-fn history_off_without_usage_says_nothing_was_recorded() {
-    let mut a = history_off_chat();
     ask(&mut a, "/cost");
-    assert_eq!(
-        view_lines(&a),
-        vec![HEADER, HISTORY_OFF_LINE, "no usage recorded yet"]
+    a.update(answer(Some(vec![today_row()])));
+    let lines = view_lines(&a);
+    assert!(
+        lines.contains(&"this session: 15 tokens · 1 turns".to_owned()),
+        "{lines:?}"
     );
 }

@@ -78,22 +78,6 @@ fn snapshot_a_narrow_pane_wraps_and_keeps_the_label_and_partial() {
 }
 
 #[test]
-fn snapshot_the_history_off_view() {
-    let chat = chat_with(CostView::with(
-        [
-            "AI usage (alpha)",
-            "chat history is off: showing this session only",
-            "this session: 15 tokens · 1 turns",
-            "by engine and model:",
-            "  ollama › llama3: in 10 · out 5",
-        ]
-        .map(str::to_owned)
-        .to_vec(),
-    ));
-    insta::assert_snapshot!(text(&draw(&chat, 60, 8)));
-}
-
-#[test]
 fn snapshot_no_data_and_partial() {
     let chat = chat_with(CostView::with(
         [

@@ -1121,7 +1121,7 @@ Límites: al reabrir una conversación, las etiquetas extra salen en orden alfab
 La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats guardados (incluidos los borrados):
 
 - `today` y `last 7 days`: tokens y turnos (días locales, desde la medianoche). Los turnos son los del chat; las compactaciones y los resúmenes suman tokens pero no cuentan como turno.
-- `by engine and model`: una línea por motor y modelo, del que más usó al que menos, con `in`, `out` y, si el motor lo cuenta, `cached`.
+- `by engine and model`: una línea por motor y modelo, del que más usó al que menos, con `in`, `out` y, si el motor lo cuenta, `cached`. Si un turno usó varios modelos (por ejemplo el enrutador y el modelo principal de gemini, o los subagentes de claude), el modelo se guarda y se muestra como `mixed` (`gemini › mixed`). Un modelo que nadie informó, o un registro anterior a esto, se muestra como `unknown`.
 - `of which workers`: solo cuando hay registros de workers del orquestador en los últimos 7 días, justo tras `last 7 days`: los tokens de esos workers, que ya están incluidos en `today`, `last 7 days`, `this chat`, los gráficos y la barra de estado (ver «Uso de los workers»). Va en tokens; los dólares, si los hay, salen en las líneas por motor y modelo. `no data` si ninguno informó de su total y `partial` si algún registro está cortado o incompleto.
 - `this chat`: lo de la conversación actual. Si todavía no tiene datos, `this chat: no data`.
 - `this session`: lo que ha gastado este panel desde que se abrió.

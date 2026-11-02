@@ -28,6 +28,14 @@ baseline.
   that child process only, so the binary it installs is not group-writable even
   when the user's umask is 002. The `cargo install` arguments are passed
   unchanged. (#526)
+- `/cost` no longer describes a chat-history-off view: chat history is always
+  on, and an unreadable `chat.db` shows `usage history is not available`.
+
+### Fixed
+
+- `/cost` showed `unknown` for a turn that used several models (gemini's router
+  plus its main model, claude's sub-agents). Such a turn is now stored and shown
+  as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
 
 ## [1.2.0] - 2026-11-02
 
