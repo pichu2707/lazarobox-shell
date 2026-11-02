@@ -469,13 +469,13 @@ fn the_per_day_line_scales_to_the_biggest_day_and_marks_gaps() {
 fn an_unknown_day_is_a_gap_not_the_lowest_bar() {
     let rows = [day(1, "ollama", None), day(0, "ollama", Some(50))];
     let shown = charts(&view(&rows));
-    assert_eq!(shown[1], "······█ max 50");
+    assert_eq!(shown[1], "······█ max 50 *");
 }
 
 #[test]
 fn a_day_mixing_known_and_unknown_records_counts_only_the_known() {
     let rows = [day(0, "ollama", None), day(0, "claude", Some(10))];
-    assert_eq!(charts(&view(&rows))[1], "······█ max 10");
+    assert_eq!(charts(&view(&rows))[1], "······█ max 10 *");
 }
 
 #[test]
@@ -496,7 +496,7 @@ fn engine_bars_follow_the_biggest_and_unknown_says_no_data() {
     assert_eq!(shown[2], "per engine (last 7 days):");
     assert_eq!(shown[3], format!("  claude {} 1000", "█".repeat(20)));
     assert_eq!(shown[4], format!("  ollama {} 250", "█".repeat(5)));
-    assert_eq!(shown[5], "  codex no data");
+    assert_eq!(shown[5], "  codex  no data");
 }
 
 #[test]
@@ -535,4 +535,82 @@ fn the_history_off_view_has_no_charts() {
     session.add("ollama", Run::Chat, &tokens(10, 5));
     let lines = session_lines(&session, &default_billing);
     assert!(!lines.iter().any(|l| l.contains("per day")));
+}
+
+#[test]
+fn a_tiny_known_day_never_looks_like_a_known_zero() {
+    let rows = [day(1, "claude", Some(0)), day(0, "claude", Some(1))];
+    assert_eq!(charts(&view(&rows))[1], "·····▁█ max 1");
+    let rows = [day(1, "claude", Some(1)), day(0, "claude", Some(100_000))];
+    assert_eq!(charts(&view(&rows))[1], "·····▂█ max 100000");
+}
+
+#[test]
+fn a_partial_or_unknown_record_marks_the_day_line_and_its_engine() {
+    let mut cut = day(0, "claude", Some(1000));
+    cut.partial = true;
+    let rows = [cut, day(1, "ollama", Some(250)), day(0, "codex", None)];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "·····▂█ max 1000 *");
+    assert_eq!(shown[3], format!("  claude {} 1000 *", "█".repeat(20)));
+    assert_eq!(shown[4], format!("  ollama {} 250", "█".repeat(5)));
+    assert_eq!(shown[5], "  codex  no data");
+}
+
+#[test]
+fn an_unknown_record_on_a_charted_day_marks_the_line() {
+    let rows = [day(0, "ollama", None), day(0, "claude", Some(10))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "······█ max 10 *");
+    assert_eq!(shown[3], format!("  claude {} 10", "█".repeat(20)));
+    assert_eq!(shown[4], "  ollama no data");
+}
+
+#[test]
+fn complete_records_carry_no_marker() {
+    let shown = charts(&view(&[day(0, "claude", Some(10))]));
+    assert!(shown.iter().all(|l| !l.contains('*')), "{shown:?}");
+}
+
+#[test]
+fn the_days_run_oldest_first() {
+    let rows = [day(6, "claude", Some(400)), day(0, "claude", Some(100))];
+    assert_eq!(charts(&view(&rows))[1], "█·····▂ max 400");
+}
+
+#[test]
+fn day_six_is_charted_and_day_seven_is_not() {
+    let rows = [day(6, "claude", Some(10)), day(7, "ollama", Some(99))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "█······ max 10");
+    assert!(!shown.iter().any(|l| l.contains("ollama")), "{shown:?}");
+}
+
+#[test]
+fn engine_bars_line_up_by_display_width() {
+    let rows = [
+        day(0, "claude", Some(100)),
+        day(0, "オラマ", Some(50)),
+        day(0, "gemini-cli", None),
+    ];
+    let shown = charts(&view(&rows));
+    // "gemini-cli" is the widest name (10 columns); the others pad to it.
+    assert_eq!(shown[3], format!("  claude     {} 100", "█".repeat(20)));
+    assert_eq!(shown[4], format!("  オラマ     {} 50", "█".repeat(10)));
+    assert_eq!(shown[5], "  gemini-cli no data");
+}
+
+#[test]
+fn long_engine_names_are_cut_at_16_columns_and_empty_ones_read_a_question_mark() {
+    let rows = [
+        day(0, "abcdefghijklmnopqrstuvwxyz", Some(10)),
+        day(0, "", Some(10)),
+    ];
+    let shown = charts(&view(&rows));
+    assert!(shown[4].starts_with("  abcdefghijklmno… "), "{shown:?}");
+    assert!(shown[3].starts_with("  ?    "), "{shown:?}");
+    assert_eq!(
+        shown[3].chars().position(|c| c == '█'),
+        shown[4].chars().position(|c| c == '█')
+    );
 }

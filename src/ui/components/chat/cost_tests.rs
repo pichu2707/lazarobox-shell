@@ -165,20 +165,33 @@ fn any_pane_size_draws_without_panicking() {
     }
 }
 
+/// The text lines plus the charts of real rows, built by the fold itself.
 fn with_charts() -> Vec<String> {
-    let mut rows = lines();
-    rows.extend(
-        [
-            "per day (last 7 days, oldest first):",
-            "···▁▂▄█ max 400",
-            "per engine (last 7 days):",
-            "  claude ████████████████████ 1000",
-            "  ollama █████ 250",
-            "  codex no data",
-        ]
-        .map(str::to_owned),
-    );
-    rows
+    use crate::core::ai::chat::usage_view::{Session, UsageRow, report_lines};
+    let day = |days_ago, engine: &str, total: Option<u64>| UsageRow {
+        days_ago,
+        engine: engine.into(),
+        model: Some("m".into()),
+        in_chat: false,
+        turns: 1,
+        records: 1,
+        costed: 0,
+        input: total.map(|_| 1),
+        output: total.map(|_| 1),
+        cache_read: None,
+        cost_micros: None,
+        total,
+        partial: false,
+    };
+    let rows = [
+        day(3, "claude", Some(0)),
+        day(2, "claude", Some(100)),
+        day(1, "claude", Some(200)),
+        day(0, "claude", Some(400)),
+        day(0, "ollama", Some(100)),
+        day(0, "codex", None),
+    ];
+    report_lines(&rows, &Session::default(), &|_| None)
 }
 
 #[test]
@@ -190,7 +203,7 @@ fn snapshot_the_charts_under_the_text_lines() {
 #[test]
 fn snapshot_the_charts_in_a_narrow_pane() {
     let chat = chat_with(CostView::with(with_charts()));
-    insta::assert_snapshot!(text(&draw(&chat, 24, 22)));
+    insta::assert_snapshot!(text(&draw(&chat, 24, 30)));
 }
 
 #[test]
@@ -206,5 +219,10 @@ fn charts_render_without_panic_at_any_width() {
 #[test]
 fn the_chart_lines_are_not_taken_for_this_chat() {
     let view = CostView::with(with_charts());
-    assert!(view.body_rows(60).iter().skip(7).all(|(_, mine)| !mine));
+    let rows = view.body_rows(60);
+    let charts = rows
+        .iter()
+        .position(|(row, _)| row.starts_with("per day"))
+        .expect("charts shown");
+    assert!(rows[charts..].iter().all(|(_, mine)| !mine));
 }
