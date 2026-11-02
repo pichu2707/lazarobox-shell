@@ -434,6 +434,13 @@ pub const DEFAULT_NUM_CTX_CAP: usize = 16_384;
 /// The keep-alive of Ollama unless `keep_alive_minutes` is set.
 pub const DEFAULT_KEEP_ALIVE_MINUTES: u32 = 30;
 
+/// The `num_ctx_cap` values taken: below 1024 a chat has no room, above a
+/// million tokens the number is a typo.
+const NUM_CTX_CAP_RANGE: std::ops::RangeInclusive<i64> = 1_024..=1_048_576;
+/// The `keep_alive_minutes` values taken: 0 unloads at once, 7 days is the
+/// longest.
+const KEEP_ALIVE_RANGE: std::ops::RangeInclusive<i64> = 0..=10_080;
+
 impl Default for OllamaOptions {
     fn default() -> Self {
         Self {
@@ -1302,20 +1309,22 @@ fn read_ollama_options(table: &Table, problems: &mut Vec<String>) -> OllamaOptio
     };
     match server.get("num_ctx_cap") {
         None => {}
-        Some(Value::Integer(n)) if *n > 0 && usize::try_from(*n).is_ok() => {
+        Some(Value::Integer(n)) if NUM_CTX_CAP_RANGE.contains(n) => {
             options.num_ctx_cap = *n as usize;
         }
         Some(_) => problems.push(
-            "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens above 0".to_owned(),
+            "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576"
+                .to_owned(),
         ),
     }
     match server.get("keep_alive_minutes") {
         None => {}
-        Some(Value::Integer(n)) if u32::try_from(*n).is_ok() => {
+        Some(Value::Integer(n)) if KEEP_ALIVE_RANGE.contains(n) => {
             options.keep_alive_minutes = *n as u32;
         }
         Some(_) => problems.push(
-            "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes".to_owned(),
+            "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes from 0 to 10080"
+                .to_owned(),
         ),
     }
     options
@@ -1616,9 +1625,9 @@ mod tests {
     }
 
     const CAP_PROBLEM: &str =
-        "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens above 0";
+        "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576";
     const KEEP_PROBLEM: &str =
-        "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes";
+        "ai.servers.ollama.keep_alive_minutes: expected a whole number of minutes from 0 to 10080";
 
     #[test]
     fn ollama_options_default_to_16384_and_30_minutes() {
@@ -1638,8 +1647,16 @@ mod tests {
     }
 
     #[test]
+    fn the_ollama_limits_are_inclusive() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = 1024\nkeep_alive_minutes = 10080\n";
+        assert_eq!(ollama_of(text), ((1_024, 10_080), vec![]));
+        let top = "[ai.servers.ollama]\nnum_ctx_cap = 1048576\n";
+        assert_eq!(ollama_of(top), ((1_048_576, 30), vec![]));
+    }
+
+    #[test]
     fn a_bad_ollama_cap_falls_back_with_the_exact_problem() {
-        for value in ["\"big\"", "0", "-1", "1.5"] {
+        for value in ["\"big\"", "0", "-1", "1.5", "1023", "1048577"] {
             let text = format!("[ai.servers.ollama]\nnum_ctx_cap = {value}\n");
             assert_eq!(
                 ollama_of(&text),
@@ -1651,7 +1668,7 @@ mod tests {
 
     #[test]
     fn a_bad_keep_alive_falls_back_per_key() {
-        for value in ["1.5", "-1", "\"5\""] {
+        for value in ["1.5", "-1", "\"5\"", "10081", "99999999"] {
             let text =
                 format!("[ai.servers.ollama]\nnum_ctx_cap = 8192\nkeep_alive_minutes = {value}\n");
             assert_eq!(

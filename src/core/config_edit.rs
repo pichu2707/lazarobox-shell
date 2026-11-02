@@ -1601,6 +1601,33 @@ other = 1
         assert!(!out.contains("servers"), "{out:?}");
     }
 
+    // The Ollama cap and keep-alive are never edited by the menu: every save,
+    // also one that edits its neighbour llamacpp table, keeps them byte for
+    // byte, and a file without them gains none.
+    #[test]
+    fn every_save_keeps_the_ollama_options_byte_for_byte_and_never_adds_them() {
+        let ollama = "[ai.servers.ollama]\nnum_ctx_cap = 8192 # my GPU\nkeep_alive_minutes = 0\n";
+        let existing = format!(
+            "[ai]\nengine = \"ollama\"\n\n[ai.servers.llamacpp]\nidle_minutes = 15\n\n{ollama}"
+        );
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit {
+                table: crate::core::config::LLAMACPP_TABLE,
+                key: "idle_minutes",
+                value: "30".into(),
+            },
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(ollama), "{out:?}");
+        assert!(out.contains("idle_minutes = 30"), "{out:?}");
+        let out = apply_edit(Some("[ai]\nnotify = true\n"), &edits).unwrap();
+        assert!(
+            !out.contains("num_ctx_cap") && !out.contains("keep_alive"),
+            "{out:?}"
+        );
+    }
+
     // W2: the saved text re-parses to the same servers and the new keys, and
     // the server block keeps its bytes and its place after the edits.
     #[test]
