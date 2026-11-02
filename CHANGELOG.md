@@ -29,6 +29,22 @@ baseline.
   when the user's umask is 002. The `cargo install` arguments are passed
   unchanged. (#526)
 
+### Fixed
+
+- `Prefix r r` and `Prefix r d` no longer say `No interrupted run to resume or
+  discard` when ORCH was never turned on since the start: the store is asked on
+  the spot (off the UI thread, with a `Looking for interrupted runs` notice) and
+  the next press answers as usual, including `Turn ORCH on in this pane first`.
+  (#501)
+- A refused worker (for example one routed to an ollama model that is not
+  downloaded) now gives the coordinator the reason in the tool result (one
+  redacted line, capped) instead of only `worker N: refused`. (#502)
+- `m` on a refused worker opens the model picker of the engine configured for
+  its task instead of the engine picker; with no engine to take from, it opens
+  the engines and a notice says why. (#502)
+- The failure alert shows the error class, `(setup)` for a refused worker whose
+  engine or model is not available. (#502)
+
 ## [1.2.0] - 2026-11-02
 
 ### Added
