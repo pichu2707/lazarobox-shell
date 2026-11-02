@@ -501,6 +501,9 @@ fn shell_word(path: &Path, home: Option<&Path>) -> Option<String> {
     }
 }
 
+/// Said after the `chmod` when group write is the only cause (issue #526).
+const UMASK_HINT: &str = "(install with umask 022 to keep it)";
+
 /// Longest path a menu row shows whole.
 const BRIEF_CAP: usize = 24;
 
@@ -653,6 +656,11 @@ impl JailRefusal {
                 }
                 let words: Option<Vec<String>> = mine.iter().map(|p| shell_word(p, home)).collect();
                 let fix = match words {
+                    // Group write alone, all fixable by the user: the usual
+                    // `umask 002` that `cargo install` obeys. The `chmod` stays first.
+                    Some(words) if *cause == WriteCause::Group && foreign.is_empty() => {
+                        format!("run: chmod {flags} {} {UMASK_HINT}", words.join(" "))
+                    }
                     Some(words) => format!("run: chmod {flags} {}", words.join(" ")),
                     None => match cause {
                         WriteCause::Group => "remove the group write permission",
