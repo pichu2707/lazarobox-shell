@@ -73,6 +73,9 @@ pub const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 pub const CANNOT_PREPARE_HOME: &str = "cannot prepare the private home of the CLI";
 
+/// The longest reason appended to [`CANNOT_PREPARE_HOME`].
+const REASON_CAP: usize = 160;
+
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
 /// A file the CLI is told about by path sits where its flag would be split.
@@ -102,6 +105,9 @@ pub struct CliEnv {
     /// `$CODEX_HOME`, when it is an absolute path: codex keeps its login and
     /// state there instead of in `~/.codex`.
     pub codex_home: Option<PathBuf>,
+    /// `$GEMINI_CLI_HOME`, when it is an absolute path: gemini keeps its
+    /// state in `<it>/.gemini` instead of `~/.gemini`.
+    pub gemini_home: Option<PathBuf>,
     /// This program's canonical executable, resolved once at startup (inside a
     /// jailed CLI `/proc/self/exe` is node): what an engine runs as its MCP
     /// shim. `None` turns the tools off.
@@ -151,11 +157,17 @@ const GEMINI_TRUST_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
 /// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
-/// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 10] = [
+/// address a keyring login needs) are kept. The API key variables
+/// (`GEMINI_API_KEY`, `GOOGLE_*`, `OPENAI_API_KEY`) pass through on purpose:
+/// they are how the user logs in to the CLI.
+const SCRUBBED: [&str; 13] = [
     GEMINI_TRUST_ENV,
-    // Replaces gemini's system prompt with a file of the user's.
+    // Replace gemini's system prompt, or its settings and trusted folders,
+    // with files of the user's.
     "GEMINI_SYSTEM_MD",
+    "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+    "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+    "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -190,6 +202,9 @@ impl CliEnv {
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
             codex_home: std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
+            gemini_home: std::env::var_os("GEMINI_CLI_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             shim: std::env::current_exe()
@@ -901,6 +916,7 @@ fn jail_plan(
         cli,
         home,
         codex_home: env.codex_home.as_deref().and_then(resolve),
+        gemini_home: env.gemini_home.as_deref().and_then(resolve),
         binary: bin.clone(),
         interpreter,
         loaders,
@@ -1254,6 +1270,12 @@ pub(super) fn runs_jailed(env: &CliEnv, job: &Job) -> bool {
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
+    plan_for(env, job, true)
+}
+
+/// [`plan`]; `private` gives codex and gemini their private home, which only a
+/// chat turn needs.
+fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent> {
     let how = launch(job.jail, env.jail);
     let home = env.home.as_deref();
     let refused = |why: &JailRefusal| StreamEvent::Error(ChatError::Jail(why.hint(home)));
@@ -1286,10 +1308,20 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .then(|| wire_mcp(env, job, &dirs))
         .flatten();
     // codex and gemini keep the user's instructions and skills in their state
-    // folder: the turn gives them a private one (see `home`). A turn that
-    // cannot is refused, never run with the user's own folder.
-    let private = home::prepare(env, job.cli, &dirs.tmp)
-        .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE_HOME.into())))?;
+    // folder: a chat turn gives them a private one (see `home`) and is refused
+    // when it cannot, never run with the user's own folder. The model listing
+    // and `--version` read none of it and get no home.
+    let (private, home_notice) = if private {
+        let prepared = home::prepare(env, job.cli, &dirs.tmp).map_err(|e| {
+            let reason: String = e.to_string().chars().take(REASON_CAP).collect();
+            StreamEvent::Error(ChatError::Failed(format!(
+                "{CANNOT_PREPARE_HOME}: {reason}"
+            )))
+        })?;
+        (prepared.vars, prepared.notice)
+    } else {
+        (Vec::new(), None)
+    };
     let vars = |wired: Option<&Wired>| {
         let mut vars = env.child_vars();
         vars.extend(private.iter().cloned());
@@ -1359,7 +1391,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                             argv,
                             vars: vars(attempt.as_ref()),
                             dirs,
-                            notice,
+                            notice: joined(notice, home_notice),
                             wired: attempt.is_some(),
                             cwd: attempt.and_then(|w| w.cwd),
                         });
@@ -1396,11 +1428,22 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         dirs,
         wired: false,
         cwd: None,
-        notice: tools_off(Some(format!(
-            "{} runs without the jail here: {reason}",
-            job.binary
-        ))),
+        notice: joined(
+            tools_off(Some(format!(
+                "{} runs without the jail here: {reason}",
+                job.binary
+            ))),
+            home_notice,
+        ),
     })
+}
+
+/// Two notices as one line.
+fn joined(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Runs `codex debug models` the way a codex turn starts: the same plan (the
@@ -1442,7 +1485,7 @@ async fn run_codex(
         mcp: None,
         tools: None,
     };
-    let plan = match plan(env, &job) {
+    let plan = match plan_for(env, &job, false) {
         Ok(plan) => plan,
         Err(StreamEvent::Error(ChatError::Jail(why))) => return Err(format!("jail: {why}")),
         Err(StreamEvent::Error(ChatError::Failed(text))) => return Err(text),

@@ -1126,6 +1126,9 @@ pub struct CliLayout {
     pub home: PathBuf,
     /// `$CODEX_HOME`, when set (codex only).
     pub codex_home: Option<PathBuf>,
+    /// `$GEMINI_CLI_HOME`, when set (gemini only): the folder that holds
+    /// `.gemini`.
+    pub gemini_home: Option<PathBuf>,
     /// The canonical CLI path.
     pub binary: PathBuf,
     /// The canonical interpreter file of a script CLI.
@@ -1275,6 +1278,7 @@ pub fn jail_spec_for(
     let given = [&layout.home, &layout.binary, &layout.cwd, &layout.tmp]
         .into_iter()
         .chain(&layout.codex_home)
+        .chain(&layout.gemini_home)
         .chain(&layout.interpreter)
         .chain(&layout.loaders)
         .chain(&layout.lib_dirs)
@@ -1325,7 +1329,14 @@ pub fn jail_spec_for(
                 .unwrap_or_else(|| layout.home.join(".codex")),
             None,
         ),
-        Cli::Gemini => (layout.home.join(".gemini"), None),
+        Cli::Gemini => (
+            layout
+                .gemini_home
+                .as_ref()
+                .unwrap_or(&layout.home)
+                .join(".gemini"),
+            None,
+        ),
     };
     let state = resolved(state);
     // Only a real folder inside the state dir can be carved out: a link, or

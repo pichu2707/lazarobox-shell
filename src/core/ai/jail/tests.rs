@@ -21,6 +21,7 @@ fn layout(cli: Cli, binary: &str, interpreter: Option<&str>) -> CliLayout {
         cli,
         home: p(HOME),
         codex_home: None,
+        gemini_home: None,
         binary: p(binary),
         interpreter: interpreter.map(p),
         loaders: Vec::new(),
@@ -344,6 +345,18 @@ fn codex_home_only_applies_to_codex() {
     let spec = jail_spec(&l).unwrap();
     assert!(spec.rw.contains(&p("/home/u/.gemini")));
     assert!(!every_path(&spec).contains(&Path::new("/srv/codex-state")));
+}
+
+#[test]
+fn gemini_home_override_moves_the_gemini_state_dir_and_only_for_gemini() {
+    let mut l = brew_gemini();
+    l.gemini_home = Some(p("/srv/gemini-home"));
+    let spec = jail_spec(&l).unwrap();
+    assert!(spec.rw.contains(&p("/srv/gemini-home/.gemini")));
+    assert!(!spec.rw.contains(&p("/home/u/.gemini")));
+    let mut l = nvm_codex();
+    l.gemini_home = Some(p("/srv/gemini-home"));
+    assert!(!every_path(&jail_spec(&l).unwrap()).contains(&Path::new("/srv/gemini-home/.gemini")));
 }
 
 #[test]

@@ -20,9 +20,12 @@ baseline.
   login files (nothing is copied or moved) and, for gemini, the one setting
   that names the login type. A turn that cannot prepare it fails with a notice
   instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
-  child environment. Known limit: if codex replaces `auth.json` instead of
-  writing it in place when it refreshes the login, the refresh does not reach
-  the real folder and `codex login` has to be run again.
+  child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
+  the real file. The turn warns before it starts when no login is found, honours
+  `GEMINI_CLI_HOME`, links gemini's `.env`, reads `settings.json` with comments,
+  and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
+  and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
+  (model cache, installation id), which costs a few extra calls.
 
 ## [1.2.0] - 2026-11-02
 

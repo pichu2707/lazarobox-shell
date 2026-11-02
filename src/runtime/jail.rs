@@ -376,6 +376,7 @@ mod tests {
             cli: Cli::Claude,
             home: home.to_path_buf(),
             codex_home: None,
+            gemini_home: None,
             binary: home.join(".local/share/claude/versions/1"),
             interpreter: None,
             loaders: Vec::new(),
