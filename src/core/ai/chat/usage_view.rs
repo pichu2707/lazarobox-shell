@@ -542,7 +542,10 @@ pub fn report_lines(
         ),
     ];
     lines.extend(cache_line("today", rows.iter().filter(|r| r.days_ago == 0)));
-    lines.extend(prefill_line("today", rows.iter().filter(|r| r.days_ago == 0)));
+    lines.extend(prefill_line(
+        "today",
+        rows.iter().filter(|r| r.days_ago == 0),
+    ));
     lines.push(format!("last 7 days: {}", summary(window())));
     lines.extend(cache_line("last 7 days", window()));
     lines.extend(prefill_line("last 7 days", window()));

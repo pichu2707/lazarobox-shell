@@ -452,7 +452,9 @@ pub(crate) fn ensure_usage(conn: &mut Connection) -> Result<(), rusqlite::Error>
             |r| r.get(0),
         )?;
         if !present {
-            tx.execute_batch(&format!("ALTER TABLE turn_usage ADD COLUMN {column} INTEGER"))?;
+            tx.execute_batch(&format!(
+                "ALTER TABLE turn_usage ADD COLUMN {column} INTEGER"
+            ))?;
         }
     }
     tx.commit()

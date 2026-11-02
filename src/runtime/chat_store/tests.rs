@@ -1156,9 +1156,11 @@ fn a_turn_usage_table_without_prefill_columns_gains_them_and_keeps_its_rows() {
     let cols = table_columns(&conn, "turn_usage");
     assert!(cols.contains(&"prefill_ms".to_owned()) && cols.contains(&"load_ms".to_owned()));
     let kept: (i64, Option<i64>, Option<i64>) = conn
-        .query_row("SELECT input, prefill_ms, load_ms FROM turn_usage", [], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
+        .query_row(
+            "SELECT input, prefill_ms, load_ms FROM turn_usage",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .unwrap();
     assert_eq!(kept, (9, None, None));
     // Still v3, and a second open (columns present) is a no-op.

@@ -3389,8 +3389,20 @@ fn a_record_stores_prefill_and_load_and_leaves_missing_ones_null() {
         load_ms,
         ..TurnUsage::default()
     };
-    record_usage(&mut conn, None, ("ollama", "chat", None), &usage(Some(5), Some(115))).unwrap();
-    record_usage(&mut conn, None, ("ollama", "chat", None), &usage(None, None)).unwrap();
+    let _ = record_usage(
+        &mut conn,
+        None,
+        ("ollama", "chat", None),
+        &usage(Some(5), Some(115)),
+    )
+    .unwrap();
+    let _ = record_usage(
+        &mut conn,
+        None,
+        ("ollama", "chat", None),
+        &usage(None, None),
+    )
+    .unwrap();
     let stored: Vec<(Option<i64>, Option<i64>)> = conn
         .prepare("SELECT prefill_ms, load_ms FROM turn_usage ORDER BY id")
         .unwrap()

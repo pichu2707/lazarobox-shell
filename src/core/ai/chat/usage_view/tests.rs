@@ -760,7 +760,10 @@ fn each_period_shows_the_prefill_speed_per_local_engine() {
 #[test]
 fn no_prefill_data_shows_no_line_and_a_gap_marks_it_partial() {
     let lines = before_charts(view(&[prefilled("ollama", None, None, 2)]));
-    assert!(lines.iter().all(|l| !l.starts_with("prefill ")), "{lines:?}");
+    assert!(
+        lines.iter().all(|l| !l.starts_with("prefill ")),
+        "{lines:?}"
+    );
     let lines = before_charts(view(&[prefilled("ollama", Some(5), Some(5_000), 1)]));
     assert!(lines.contains(&"prefill today: ollama 1.0 ms/1k tok · partial".to_owned()));
 }
