@@ -55,6 +55,7 @@ fn request(model: &str) -> ChatRequest {
                 content: "and now?".into(),
             },
         ],
+        ollama: Default::default(),
     }
 }
 
@@ -192,7 +193,10 @@ async fn a_turn_posts_the_pinned_request_and_streams_the_answer() {
     assert_eq!(json["model"], "llama3:8b");
     assert_eq!(json["stream"], true);
     assert_eq!(json["messages"].as_array().unwrap().len(), 4);
-    assert_eq!(json.as_object().unwrap().len(), 3, "no think option");
+    // The live runner adds the keep-alive; no window is known here, so no
+    // `options`; and there is no think option.
+    assert_eq!(json["keep_alive"], "30m");
+    assert_eq!(json.as_object().unwrap().len(), 4);
     // Only the chat POST: nothing pulled a model or fetched anything else.
     assert_eq!(server.connections.load(Ordering::SeqCst), 1);
     assert_eq!(server.requests.lock().unwrap().len(), 1);

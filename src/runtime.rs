@@ -452,6 +452,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    live.set_ollama(app.ai().ollama_options());
     let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
     // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
     // `<data>/run`. Without a private folder every turn runs as text.
@@ -509,6 +510,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     force,
                     live.ports(),
                     Arc::clone(&model_dirs),
+                    live.clone(),
                 );
             }
         }))
@@ -3732,6 +3734,7 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
         };
         let effects = vec![
             Effect::ChatSend {
@@ -4997,6 +5000,7 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
         }
     }
 

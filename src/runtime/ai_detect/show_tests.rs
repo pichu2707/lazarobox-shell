@@ -515,3 +515,38 @@ async fn model_window_matches_the_latest_tag_like_the_other_lookups() {
     assert_eq!(d.model_window("ollama", "tiny:latest"), Some(4_096));
     assert_eq!(d.model_window("ollama", "other"), None);
 }
+
+#[tokio::test]
+async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
+    use crate::runtime::chat::LiveServers;
+    let fake = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", fake.port), None);
+    let (_dir, env) = env();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    spawn_detection(
+        tx,
+        env,
+        Arc::new(ListingCache::new(Arc::new(Instant::now))),
+        Arc::new(ShowCache::default()),
+        false,
+        live.ports(),
+        Arc::from(Vec::new()),
+        live.clone(),
+    );
+    rx.recv().await.expect("a detection");
+    let mut request = crate::core::ai::chat::engine::ChatRequest {
+        engine: "ollama".into(),
+        model: Some("m0:8b".into()),
+        system: String::new(),
+        memory: None,
+        messages: Vec::new(),
+        tools: crate::core::ai::chat::engine::Tools::Off,
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
+        ollama: Default::default(),
+    };
+    live.stamp(&mut request);
+    assert_eq!(request.ollama.num_ctx, Some(8_192));
+}

@@ -58,6 +58,19 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+    /// What only Ollama's chat API reads. Empty unless the runtime stamps it
+    /// on an Ollama turn, so no other engine's bytes depend on it.
+    pub ollama: OllamaWire,
+}
+
+/// The per-turn options Ollama takes beside the messages. Every turn of a
+/// model carries the same values, so Ollama never reloads it because of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct OllamaWire {
+    /// `options.num_ctx`: the context window to load the model with.
+    pub num_ctx: Option<usize>,
+    /// `keep_alive`, in minutes (0 unloads the model after the reply).
+    pub keep_alive_minutes: Option<u32>,
 }
 
 /// What an orchestrator turn hands the runtime beside its request (D5): the

@@ -1387,6 +1387,7 @@ impl ChatState {
                 memory,
                 tools: Tools::Off,
                 messages: context.messages,
+                ollama: Default::default(),
             },
         }
     }

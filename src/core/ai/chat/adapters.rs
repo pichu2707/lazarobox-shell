@@ -425,13 +425,22 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
 }
 
 /// The body both round wires end with: model, messages, stream flag and, when
-/// asked, the registry.
+/// asked, the registry. An Ollama request also adds the keys only its chat API
+/// reads; the OpenAI-compatible servers share this builder and never get them.
 fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
+    if request.engine == "ollama" {
+        if let Some(num_ctx) = request.ollama.num_ctx {
+            body["options"] = json!({"num_ctx": num_ctx});
+        }
+        if let Some(minutes) = request.ollama.keep_alive_minutes {
+            body["keep_alive"] = json!(format!("{minutes}m"));
+        }
+    }
     if tools {
         // An empty list would read as "no tools" to some models and as an
         // error to others: with nothing to offer the key is left out.

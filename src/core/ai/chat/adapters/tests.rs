@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::ai::{
-    chat::engine::{ChatMessage, ChatRequest, Role, Tools},
+    chat::engine::{ChatMessage, ChatRequest, OllamaWire, Role, Tools},
     jail::{Cli, JailPolicy},
     tools::wiring::{McpWire, Secret, Unwire},
 };
@@ -22,6 +22,7 @@ fn request(system: &str) -> ChatRequest {
         system: system.into(),
         memory: None,
         tools: Tools::Off,
+        ollama: OllamaWire::default(),
         messages: vec![
             message(Role::User, "hi"),
             message(Role::Assistant, "hello"),
@@ -131,6 +132,61 @@ fn the_body_holds_the_model_the_system_prompt_the_history_and_the_stream_flag() 
     );
     let keys = body.as_object().unwrap().len();
     assert_eq!(keys, 3, "nothing else: no think, options or keep_alive");
+}
+
+fn ollama_with(num_ctx: Option<usize>, keep_alive_minutes: Option<u32>) -> Value {
+    let mut req = request("be brief");
+    req.ollama = OllamaWire {
+        num_ctx,
+        keep_alive_minutes,
+    };
+    http(Adapter::Ollama.build(&req)).3
+}
+
+#[test]
+fn ollama_options_add_num_ctx_and_keep_alive_and_nothing_else() {
+    let body = ollama_with(Some(16_384), Some(30));
+    assert_eq!(body["options"], json!({"num_ctx": 16_384}));
+    assert_eq!(body["keep_alive"], "30m");
+    assert_eq!(body.as_object().unwrap().len(), 5);
+}
+
+#[test]
+fn an_unknown_window_sends_keep_alive_without_options() {
+    let body = ollama_with(None, Some(30));
+    assert!(body.get("options").is_none());
+    assert_eq!(body["keep_alive"], "30m");
+    assert_eq!(body.as_object().unwrap().len(), 4);
+}
+
+#[test]
+fn zero_keep_alive_is_sent_as_zero_minutes() {
+    assert_eq!(ollama_with(Some(4_096), Some(0))["keep_alive"], "0m");
+}
+
+#[test]
+fn ollama_options_follow_the_request_on_every_turn() {
+    let first = ollama_with(Some(8_192), Some(5));
+    let again = ollama_with(Some(8_192), Some(5));
+    assert_eq!(first, again);
+}
+
+#[test]
+fn other_engines_never_carry_the_ollama_options() {
+    for (adapter, id) in [
+        (Adapter::Llamacpp, "llamacpp"),
+        (Adapter::Lmstudio, "lmstudio"),
+        (Adapter::Vllm, "vllm"),
+    ] {
+        let mut req = request("be brief");
+        req.engine = id.into();
+        let plain = http(adapter.build(&req)).3;
+        req.ollama = OllamaWire {
+            num_ctx: Some(16_384),
+            keep_alive_minutes: Some(30),
+        };
+        assert_eq!(http(adapter.build(&req)).3, plain);
+    }
 }
 
 #[test]

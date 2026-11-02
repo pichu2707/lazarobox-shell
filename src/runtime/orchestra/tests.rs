@@ -960,6 +960,7 @@ async fn a_codex_worker_command_equals_the_chat_command_apart_from_the_prompt() 
             MCP_VERIFIED,
         ),
         families: FamilySet::LEGACY,
+        ollama: Default::default(),
     };
     let job = |request: &ChatRequest| -> Job {
         match adapter_for("codex").unwrap().build(request) {
@@ -2109,6 +2110,7 @@ async fn ctrl_c_cancels_the_orchestrator_turn_and_every_worker() {
         messages: Vec::new(),
         tools: Tools::Off,
         families: FamilySet::LEGACY,
+        ollama: Default::default(),
     };
     chats.send(pane(), 1, request);
     let (run, handle) = lab.start(codex_review());

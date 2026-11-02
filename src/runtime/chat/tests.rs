@@ -53,6 +53,7 @@ pub(super) fn request(system: &str) -> ChatRequest {
         memory: None,
         tools: Tools::Off,
         messages: Vec::new(),
+        ollama: Default::default(),
     }
 }
 

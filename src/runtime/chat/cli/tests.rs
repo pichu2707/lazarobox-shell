@@ -165,6 +165,7 @@ fn request() -> ChatRequest {
             role: Role::User,
             content: "hi".into(),
         }],
+        ollama: Default::default(),
     }
 }
 

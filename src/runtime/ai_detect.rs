@@ -724,9 +724,14 @@ pub fn spawn_detection(
     force: bool,
     ports: ServerPorts,
     model_dirs: Arc<[PathBuf]>,
+    live: super::chat::LiveServers,
 ) {
     spawn_detection_of(tx, async move {
-        detect_all(&env, &cache, &show, force, &ports, &model_dirs).await
+        let detection = detect_all(&env, &cache, &show, force, &ports, &model_dirs).await;
+        // The runtime learns the windows before the app does, so a request
+        // never carries less than the budget assumed.
+        live.set_ollama_windows(detection.ollama_windows());
+        detection
     });
 }
 
