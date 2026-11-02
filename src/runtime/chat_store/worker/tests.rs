@@ -3304,3 +3304,78 @@ fn a_partial_flag_marks_the_worker_figure() {
     );
     let _ = conn;
 }
+
+#[test]
+fn the_cache_share_counts_only_records_that_reported_input_and_cache() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    let ins = |engine: &str, input: Option<i64>, read: Option<i64>, write: Option<i64>| {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, model, role, input, output, cache_read, cache_write)
+             VALUES (?1, ?2, 'm', 'chat', ?3, 1, ?4, ?5)",
+            rusqlite::params![now, engine, input, read, write],
+        )
+        .unwrap();
+    };
+    // Claude: disjoint buckets, the write counts in the base.
+    ins("claude", Some(10), Some(80), Some(10));
+    // A record with no cache report stays out of both sides.
+    ins("claude", Some(500), None, None);
+    // Net input and no write bucket (codex): base = input + read.
+    ins("codex", Some(20), Some(80), None);
+    // Ollama never reports a cache.
+    ins("ollama", Some(7), None, None);
+    let rows = usage_report(&conn, None, now).unwrap();
+    let of = |e: &str| rows.iter().find(|r| r.engine == e).unwrap();
+    assert_eq!(
+        (of("claude").cache_hit, of("claude").cache_base),
+        (Some(80), Some(100))
+    );
+    assert_eq!(
+        (of("codex").cache_hit, of("codex").cache_base),
+        (Some(80), Some(100))
+    );
+    assert_eq!(
+        (of("ollama").cache_hit, of("ollama").cache_base),
+        (None, None)
+    );
+}
+
+#[test]
+fn the_cache_gap_counts_records_without_a_usable_cache_figure() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    let ins = |engine: &str, input: Option<i64>, read: Option<i64>, write: Option<i64>| {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, model, role, input, output, cache_read, cache_write)
+             VALUES (?1, ?2, 'm', 'chat', ?3, 1, ?4, ?5)",
+            rusqlite::params![now, engine, input, read, write],
+        )
+        .unwrap();
+    };
+    // 1 with cache, 2 without: gap 2.
+    ins("codex", Some(20), Some(80), None);
+    ins("codex", Some(5), None, None);
+    ins("codex", None, Some(3), None);
+    // Claude with a read but no write bucket: not counted as a 0 write.
+    ins("claude", Some(10), Some(80), Some(10));
+    ins("claude", Some(10), Some(80), None);
+    let rows = usage_report(&conn, None, now).unwrap();
+    let of = |e: &str| rows.iter().find(|r| r.engine == e).unwrap();
+    assert_eq!(
+        (
+            of("codex").cache_hit,
+            of("codex").cache_base,
+            of("codex").cache_gap
+        ),
+        (Some(80), Some(100), 2)
+    );
+    assert_eq!(
+        (
+            of("claude").cache_hit,
+            of("claude").cache_base,
+            of("claude").cache_gap
+        ),
+        (Some(80), Some(100), 1)
+    );
+}

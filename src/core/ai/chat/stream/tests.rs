@@ -1352,6 +1352,18 @@ mod usage_tests {
     }
 
     #[test]
+    fn llamacpp_prompt_n_is_the_fresh_input_and_cache_n_the_disjoint_cache() {
+        let chunk = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"timings\":{\"prompt_n\":20,\"cache_n\":80,\"predicted_n\":3}}\n\n";
+        let got = usage_of(&sse(&[chunk.as_bytes()])).expect("usage");
+        assert_eq!(
+            (got.input, got.cache_read, got.cache_write),
+            (Some(20), Some(80), None)
+        );
+        let (i, r) = (got.input.unwrap(), got.cache_read.unwrap());
+        assert_eq!(r * 100 / (i + r), 80);
+    }
+
+    #[test]
     fn an_openai_usage_object_on_the_finish_chunk_is_read() {
         let chunk = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n";
         let events = sse(&[chunk.as_bytes()]);
