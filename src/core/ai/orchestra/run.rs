@@ -392,16 +392,14 @@ impl Run {
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
         let code = self.slots[index(id)].spec.task == Task::Code;
-        let refusal =
-            refusal.or_else(|| (code && self.steps.read_only()).then(|| READ_ONLY.to_owned()));
-        if let Some(reason) = refusal {
-            return self.end(
-                now,
-                id,
-                WorkerStatus::Refused,
-                "",
-                Some((ErrorClass::Other, reason)),
-            );
+        // An engine that cannot run is a setup problem; a read-only goal is not.
+        let refusal = refusal
+            .map(|reason| (ErrorClass::Setup, reason))
+            .or_else(|| {
+                (code && self.steps.read_only()).then(|| (ErrorClass::Other, READ_ONLY.to_owned()))
+            });
+        if let Some(error) = refusal {
+            return self.end(now, id, WorkerStatus::Refused, "", Some(error));
         }
         let slot = &mut self.slots[index(id)];
         slot.result = None;

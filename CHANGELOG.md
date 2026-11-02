@@ -37,6 +37,24 @@ baseline.
   plus its main model, claude's sub-agents). Such a turn is now stored and shown
   as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
 
+### Fixed
+
+- `Prefix r r` and `Prefix r d` no longer say `No interrupted run to resume or
+  discard` when ORCH was never turned on since the start: the store is asked on
+  the spot (off the UI thread, with a `Looking for interrupted runs` notice) and
+  the answer completes the key that waited (including `Turn ORCH on in this pane
+  first`). A failed or silent (10 s) read is said and retried by the next press,
+  never reported as `No interrupted run`. (#501)
+- A refused worker (for example one routed to an ollama model that is not
+  downloaded) now gives the coordinator the reason in the tool result (one
+  redacted line, capped) instead of only `worker N: refused`. (#502)
+- `m` on a refused worker opens the model picker of the engine configured for
+  its task instead of the engine picker; with no engine to take from, it opens
+  the engines and a notice says why. (#502)
+- The failure alert shows the error class (`other` is omitted), `(setup)` for a
+  refused worker whose engine or model is not available. The refusal reason
+  given to the coordinator has absolute paths replaced by `<path>`. (#502)
+
 ## [1.2.0] - 2026-11-02
 
 ### Added
