@@ -147,6 +147,11 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
          release nor CARGO_INSTALL_ROOT can change what is installed"
     );
     assert!(spec.report_status);
+    assert_eq!(
+        spec.umask,
+        Some(0o022),
+        "the install child, and only it, runs with umask 022 (issue #526)"
+    );
     assert!(
         spec.env_os.contains(&(
             OsString::from("PATH"),

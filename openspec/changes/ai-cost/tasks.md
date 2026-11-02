@@ -59,8 +59,8 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 - [x] 1c.1 RED+GREEN `parse_command`: `/cost`, `//cost` escaped, trailing text gives the notice `/cost takes no arguments`, composer kept.
 - [x] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
 - [x] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
-- [x] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, header `AI usage (alpha)`, Esc closes; history off shows session-only view from memory with the history-off line.
-- [x] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the history-off line; an "alpha" note in the `/cost` section (figures may be missing or not match the provider's bill depending on engine and account; how to report it via the report skill / GitHub issues); CHANGELOG entry.
+- [x] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, header `AI usage (alpha)`, Esc closes; an unavailable store shows `usage history is not available`.
+- [x] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the unavailable-store line; an "alpha" note in the `/cost` section (figures may be missing or not match the provider's bill depending on engine and account; how to report it via the report skill / GitHub issues); CHANGELOG entry.
 
 ## Slice 2a: Display (PR 2a)
 
@@ -92,7 +92,7 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 - [x] 5.1 RED+GREEN store: `RecordUsage` carries `worker`; the insert writes the `worker` column; the report query folds `role = 'worker'` rows into `UsageRow` worker figures (records, known total, partial); day figures already sum every role (ai-usage: Worker usage).
 - [x] 5.2 RED+GREEN `usage_view`: `of which workers: <T>` after `last 7 days`, only with worker records, `no data` and `partial` rules; `usage_line` coordinator label (ai-usage: The `/cost` view; chat-pane: Per-answer usage line).
 - [x] 5.3 RED+GREEN `runtime/orchestra.rs` `drive`: fold the worker turn's usage into one record, `OrchestraEvent::Usage`, flushed `partial` on failure, cancel or deadline; nothing when the engine reported nothing.
-- [x] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (history off drops it, the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
+- [x] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
 - [x] 5.5 Docs: README (es) documents worker usage and the coordinator label and drops the "workers are not recorded" wording; CHANGELOG entry (alpha).
 
 ## Final manual check (real engines)
@@ -100,5 +100,5 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 - [ ] M.1 claude: tokens and labelled `$` appear in `/cost`; sub-agent turn sums.
 - [ ] M.2 codex and gemini: tokens appear; no dollars in subscription mode.
 - [ ] M.3 ollama and llama.cpp: tokens only, never `$`.
-- [ ] M.4 History off: no rows, `/cost` shows session only; delete a chat and usage survives.
+- [x] M.4 Delete a chat and usage survives. (The history-off half was dropped: chat history is always on.)
 - [ ] M.5 A real orchestrated run: the workers' tokens appear in `/cost` (`of which workers`), in the charts and in `today: N tok`; the coordinator's line reads `usage (coordinator):`.

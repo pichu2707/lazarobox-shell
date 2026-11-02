@@ -378,7 +378,7 @@ pub struct ChatState {
     usage_config: crate::core::ai::config::UsageConfig,
     /// The `/cost` overlay, while it is shown over the conversation.
     cost: Option<cost_view::CostView>,
-    /// What this pane used, kept in memory for `/cost` with the history off.
+    /// What this pane used, kept in memory for the `this session` line of `/cost`.
     session_usage: usage_view::Session,
     /// Usage of ended runs the store has not been told about yet.
     usage_outbox: Vec<usage::Pending>,

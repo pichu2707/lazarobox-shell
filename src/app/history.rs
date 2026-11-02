@@ -75,7 +75,7 @@ impl App {
     }
 
     /// The commands that save what chat `id` sent and answered since the last
-    /// call. With history off nothing is saved and nothing is kept.
+    /// call. Without a store (tests only) nothing is saved and nothing is kept.
     pub(super) fn store_effects(&mut self, id: PaneId) -> Vec<Effect> {
         let open = self.open_conversations();
         let history = self.history;

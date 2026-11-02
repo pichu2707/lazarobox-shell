@@ -612,6 +612,15 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     trust(path, Rule::Jail)
 }
 
+/// `Ok` when the program at `exe` passes the trust check the tools need, else
+/// the same sentence the chat shows when it turns them off (`--check-install`).
+pub fn check_install(exe: &Path, home: Option<&Path>) -> Result<(), String> {
+    interpreter_trust(exe).map(drop).map_err(|(path, why)| {
+        let refusal = JailRefusal::UntrustedInterpreter { path, why };
+        format!("tools would be off: {}", refusal.hint(home))
+    })
+}
+
 /// Whether a path is under a scratch folder.
 fn in_scratch(path: &Path) -> bool {
     is_scratch(path)
