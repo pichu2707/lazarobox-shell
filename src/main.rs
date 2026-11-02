@@ -69,7 +69,13 @@ fn main() -> std::io::Result<()> {
 /// `--check-install`: one line, exit 0 when the tools can run from this binary,
 /// 1 (on stderr) with the reason and the fix when they cannot.
 fn check_install() -> std::io::Result<()> {
-    let exe = std::env::current_exe().and_then(std::fs::canonicalize)?;
+    let exe = match std::env::current_exe().and_then(std::fs::canonicalize) {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("tools would be off: cannot find this program ({error})");
+            std::process::exit(1);
+        }
+    };
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     match lazarobox_shell::runtime::chat::check_install(&exe, home.as_deref()) {
         Ok(()) => out("tools can run: this install is trusted"),

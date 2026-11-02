@@ -182,8 +182,9 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
         .openpty(pty_size(spec.size))
         .map_err(io::Error::other)?;
 
-    let mut cmd = CommandBuilder::new(&spec.program);
-    cmd.args(&spec.args);
+    let (program, args) = spec.launch();
+    let mut cmd = CommandBuilder::new(&program);
+    cmd.args(&args);
     cmd.cwd(&spec.cwd);
     for (key, value) in &spec.env {
         cmd.env(key, value);

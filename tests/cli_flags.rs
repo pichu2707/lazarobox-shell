@@ -98,3 +98,10 @@ fn check_install_exits_0_or_1_and_says_why() {
     let text = String::from_utf8_lossy(&text);
     assert_eq!(text.trim_end().lines().count(), 1, "{text}");
 }
+
+#[test]
+fn help_asked_first_wins_over_check_install() {
+    let out = run(&["--help", "--check-install"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("usage:"));
+}

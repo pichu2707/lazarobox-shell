@@ -27,6 +27,9 @@ pub struct SpawnSpec {
     /// Ask the adapter for a [`PtyEvent::Status`] before `Exited`. Off for
     /// shells: only a pane that runs one job cares how it ended.
     pub report_status: bool,
+    /// A umask for this child only (the app's own is untouched). `None` keeps
+    /// the inherited one.
+    pub umask: Option<u32>,
 }
 
 impl SpawnSpec {
@@ -51,7 +54,24 @@ impl SpawnSpec {
             ],
             size,
             report_status: false,
+            umask: None,
         }
+    }
+
+    /// The program and arguments to start. With a [`umask`](Self::umask) the
+    /// child is `sh -c 'umask NNN && exec "$0" "$@"' sh <program> <args>`: the
+    /// arguments reach the program as they are, never parsed by the shell.
+    pub fn launch(&self) -> (PathBuf, Vec<String>) {
+        let Some(mask) = self.umask else {
+            return (self.program.clone(), self.args.clone());
+        };
+        let mut args = vec![
+            "-c".to_owned(),
+            format!("umask {mask:03o} && exec \"$0\" \"$@\""),
+            self.program.to_string_lossy().into_owned(),
+        ];
+        args.extend(self.args.iter().cloned());
+        (PathBuf::from("/bin/sh"), args)
     }
 }
 
@@ -105,6 +125,42 @@ mod tests {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn a_shell_spec_keeps_the_inherited_umask() {
+        let spec = SpawnSpec::new(Some("/bin/zsh"), "/".into(), SIZE);
+        assert_eq!(spec.umask, None);
+        assert_eq!(spec.launch(), (spec.program.clone(), Vec::<String>::new()));
+    }
+
+    #[test]
+    fn a_umask_wraps_the_program_without_parsing_its_arguments() {
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/usr/bin/cargo".into();
+        spec.args = vec!["install".into(), "a b; $(x)".into()];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        assert_eq!(program, PathBuf::from("/bin/sh"));
+        assert_eq!(
+            args[2..],
+            ["/usr/bin/cargo", "install", "a b; $(x)"].map(String::from)
+        );
+        assert!(args[1].contains("umask 022"), "{args:?}");
+    }
+
+    #[test]
+    fn the_wrapped_child_really_runs_with_that_umask() {
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/bin/sh".into();
+        spec.args = vec!["-c".into(), "umask".into()];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        let out = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0022");
     }
 
     // Spec: SHELL set.

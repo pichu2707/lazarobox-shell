@@ -21,9 +21,13 @@ baseline.
 
 - When group write is the only reason `tools are off` (the usual result of
   `cargo install` under `umask 002`), the notice ends with
-  `(install with umask 022 to keep it)` after the `chmod` command, and the
-  README install and update sections explain why and how to avoid it. The trust
+  `(install with umask 022 to keep it)` before the `chmod` command (which stays
+  last, ready to paste), and the README install and update sections explain why and how to avoid it. The trust
   rule is unchanged. (#526)
+- The in-app update (Updates row) runs its `cargo install` with `umask 022` for
+  that child process only, so the binary it installs is not group-writable even
+  when the user's umask is 002. The `cargo install` arguments are passed
+  unchanged. (#526)
 
 ## [1.2.0] - 2026-11-02
 

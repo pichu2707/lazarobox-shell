@@ -1600,9 +1600,9 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
             &[],
             WriteCause::Group
         ),
-        "~/.cargo/bin and ~/.cargo/bin/lazarobox-shell are writable by its group; \
-         run: chmod g-w ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell' \
-         (install with umask 022 to keep it)"
+        "~/.cargo/bin and ~/.cargo/bin/lazarobox-shell are writable by its group \
+         (install with umask 022 to keep it); \
+         run: chmod g-w ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell'"
     );
     assert_eq!(
         shim_hint(&["/home/u/.cargo/bin"], &[], WriteCause::Others),
@@ -1625,8 +1625,8 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
     };
     assert_eq!(
         outside.hint(home()),
-        "/opt/it's/bin is writable by its group, so /opt/it's/bin/node is not trusted; \
-         run: chmod g-w '/opt/it'\\''s/bin' (install with umask 022 to keep it)"
+        "/opt/it's/bin is writable by its group, so /opt/it's/bin/node is not trusted \
+         (install with umask 022 to keep it); run: chmod g-w '/opt/it'\\''s/bin'"
     );
 }
 
@@ -2990,8 +2990,12 @@ fn the_umask_hint_appears_only_for_a_group_only_cause_the_user_can_fix() {
     const HINT: &str = "(install with umask 022 to keep it)";
     let mine = ["/home/u/.cargo/bin", "/home/u/.cargo/bin/lazarobox-shell"];
     let group = shim_hint(&mine, &[], WriteCause::Group);
-    assert!(group.ends_with(&format!("' {HINT}")), "{group}");
-    assert!(group.contains("run: chmod g-w "), "{group}");
+    // The pasteable command stays last on the line.
+    assert!(
+        group.contains(&format!("group {HINT}; run: chmod g-w ")),
+        "{group}"
+    );
+    assert!(group.ends_with("lazarobox-shell'"), "{group}");
     for cause in [WriteCause::Others, WriteCause::GroupAndOthers] {
         let hint = shim_hint(&mine, &[], cause);
         assert!(!hint.contains("umask"), "{hint}");
