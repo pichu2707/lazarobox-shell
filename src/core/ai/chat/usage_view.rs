@@ -300,6 +300,75 @@ fn pair_lines<'a>(
         .collect()
 }
 
+/// The bar glyphs of the per-day line, lowest first.
+const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+/// The longest engine bar.
+const BAR_MAX: u64 = 20;
+/// A day with nothing known.
+const GAP: char = '·';
+
+/// The two charts of the last 7 days as plain text lines. They fold the same
+/// rows as the text view: a total nobody reported is a gap (`·`, `no data`),
+/// never a low bar, and dollars are never charted. Empty when no row falls
+/// inside the window.
+fn chart_lines(rows: &[UsageRow]) -> Vec<String> {
+    let window: Vec<&UsageRow> = rows.iter().filter(|r| r.days_ago < WINDOW_DAYS).collect();
+    if window.is_empty() {
+        return Vec::new();
+    }
+    let days: Vec<Option<u64>> = (0..WINDOW_DAYS)
+        .rev()
+        .map(|ago| {
+            window
+                .iter()
+                .filter(|r| r.days_ago == ago)
+                .fold(None, |sum, r| add(sum, r.total))
+        })
+        .collect();
+    let max = days.iter().flatten().copied().max();
+    let spark: String = days
+        .iter()
+        .map(|day| match (day, max) {
+            (Some(n), Some(max)) if max > 0 => {
+                let level = u128::from(*n) * 7 / u128::from(max);
+                LEVELS[usize::try_from(level).unwrap_or(7).min(7)]
+            }
+            (Some(_), _) => LEVELS[0],
+            (None, _) => GAP,
+        })
+        .collect();
+    let mut lines = vec![
+        "per day (last 7 days, oldest first):".to_owned(),
+        match max {
+            Some(max) => format!("{spark} max {max}"),
+            None => format!("{spark} no data"),
+        },
+        "per engine (last 7 days):".to_owned(),
+    ];
+    let mut engines: BTreeMap<String, Option<u64>> = BTreeMap::new();
+    for r in &window {
+        let total = engines.entry(ident(&r.engine)).or_default();
+        *total = add(*total, r.total);
+    }
+    let mut engines: Vec<_> = engines.into_iter().collect();
+    // Biggest first; unknown totals last.
+    engines.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let biggest = engines.iter().filter_map(|e| e.1).max().unwrap_or(0);
+    lines.extend(engines.into_iter().map(|(engine, total)| match total {
+        None => format!("  {engine} no data"),
+        Some(n) => {
+            let len = if biggest == 0 {
+                1
+            } else {
+                (u128::from(n) * u128::from(BAR_MAX) / u128::from(biggest)).max(1)
+            };
+            let bar = "█".repeat(usize::try_from(len).unwrap_or(1));
+            format!("  {engine} {bar} {n}")
+        }
+    }));
+    lines
+}
+
 /// The `/cost` view of the store's rows. `session` is what this pane used.
 pub fn report_lines(
     rows: &[UsageRow],
@@ -332,6 +401,7 @@ pub fn report_lines(
             lines.push(SESSION_FULL_LINE.to_owned());
         }
     }
+    lines.extend(chart_lines(rows));
     lines
 }
 

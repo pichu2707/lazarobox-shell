@@ -137,7 +137,11 @@ fn after_a_failed_create_this_chat_has_no_data() {
     let mut row = today_row();
     row.in_chat = false;
     a.update(answer(Some(vec![row])));
-    assert_eq!(view_lines(&a).last().unwrap(), "this chat: no data");
+    assert!(
+        view_lines(&a).iter().any(|l| l == "this chat: no data"),
+        "{:?}",
+        view_lines(&a)
+    );
 }
 
 #[test]

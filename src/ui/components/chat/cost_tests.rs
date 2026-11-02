@@ -164,3 +164,47 @@ fn any_pane_size_draws_without_panicking() {
         }
     }
 }
+
+fn with_charts() -> Vec<String> {
+    let mut rows = lines();
+    rows.extend(
+        [
+            "per day (last 7 days, oldest first):",
+            "···▁▂▄█ max 400",
+            "per engine (last 7 days):",
+            "  claude ████████████████████ 1000",
+            "  ollama █████ 250",
+            "  codex no data",
+        ]
+        .map(str::to_owned),
+    );
+    rows
+}
+
+#[test]
+fn snapshot_the_charts_under_the_text_lines() {
+    let chat = chat_with(CostView::with(with_charts()));
+    insta::assert_snapshot!(text(&draw(&chat, 60, 16)));
+}
+
+#[test]
+fn snapshot_the_charts_in_a_narrow_pane() {
+    let chat = chat_with(CostView::with(with_charts()));
+    insta::assert_snapshot!(text(&draw(&chat, 24, 22)));
+}
+
+#[test]
+fn charts_render_without_panic_at_any_width() {
+    for width in 0..=12 {
+        for height in [0, 1, 2, 5] {
+            let chat = chat_with(CostView::with(with_charts()));
+            draw(&chat, width, height);
+        }
+    }
+}
+
+#[test]
+fn the_chart_lines_are_not_taken_for_this_chat() {
+    let view = CostView::with(with_charts());
+    assert!(view.body_rows(60).iter().skip(7).all(|(_, mine)| !mine));
+}
