@@ -81,7 +81,12 @@ impl TurnUsage {
         self.reasoning = add(self.reasoning, other.reasoning);
         self.cost_micros = add(self.cost_micros, other.cost_micros);
         self.duration_ms = add(self.duration_ms, other.duration_ms);
-        self.prefill_ms = add(self.prefill_ms, other.prefill_ms);
+        // A sum over some of the requests would pair with the whole turn's
+        // prompt tokens: it stays unknown unless every request gave one.
+        self.prefill_ms = self
+            .prefill_ms
+            .zip(other.prefill_ms)
+            .map(|(a, b)| a.saturating_add(b));
         self.load_ms = add(self.load_ms, other.load_ms);
         self.cost_source = self.cost_source.or(other.cost_source);
         self.multi_model |= other.multi_model

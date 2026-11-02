@@ -183,6 +183,11 @@ fn thinking(text: Option<&str>) -> Option<StreamEvent> {
         .map(|t| StreamEvent::ThinkingDelta(t.into()))
 }
 
+/// Nanoseconds to the nearest millisecond.
+fn ns_to_ms(ns: u64) -> u64 {
+    ns.saturating_add(500_000) / 1_000_000
+}
+
 /// What the final line of an Ollama reply says the turn used. Durations are
 /// nanoseconds. Any `cost` field is ignored: a local engine has no dollars.
 /// A line with no count is no data.
@@ -191,8 +196,8 @@ fn ollama_usage(line: &Value) -> Option<TurnUsage> {
         input: count(&line["prompt_eval_count"]),
         output: count(&line["eval_count"]),
         duration_ms: count(&line["total_duration"]).map(|ns| ns / 1_000_000),
-        prefill_ms: count(&line["prompt_eval_duration"]).map(|ns| ns / 1_000_000),
-        load_ms: count(&line["load_duration"]).map(|ns| ns / 1_000_000),
+        prefill_ms: count(&line["prompt_eval_duration"]).map(ns_to_ms),
+        load_ms: count(&line["load_duration"]).map(ns_to_ms),
         model: line["model"].as_str().and_then(model_id),
         ..TurnUsage::default()
     }

@@ -1200,3 +1200,52 @@ fn a_v2_build_still_refuses_and_a_usage_table_does_not_move_the_version() {
     drop(open_as(&db, me()).unwrap());
     assert_eq!(open_with(&db, me(), 2).err(), Some(StoreError::Newer(3)));
 }
+
+#[test]
+fn an_old_column_list_still_works_on_the_migrated_table() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, model, role, worker, input, output, cache_read,
+             cache_write, reasoning, cost_micros, cost_source, duration_ms, partial)
+         VALUES (1, 'ollama', 'm', 'chat', NULL, 1, 2, 3, 4, 5, 6, 'x', 7, 0)",
+        [],
+    )
+    .unwrap();
+    let got: (i64, i64) = conn
+        .query_row(
+            "SELECT input, duration_ms FROM turn_usage WHERE engine = 'ollama'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(got, (1, 7));
+}
+
+#[test]
+fn two_opens_racing_on_an_old_table_end_with_one_column_of_each_name() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    let raw = Connection::open(&db).unwrap();
+    raw.execute_batch(
+        "ALTER TABLE turn_usage DROP COLUMN prefill_ms;
+         ALTER TABLE turn_usage DROP COLUMN load_ms;",
+    )
+    .unwrap();
+    drop(raw);
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let db = db.clone();
+            std::thread::spawn(move || drop(open_as(&db, me()).unwrap()))
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let conn = open_as(&db, me()).unwrap();
+    let cols = table_columns(&conn, "turn_usage");
+    for name in ["prefill_ms", "load_ms"] {
+        assert_eq!(cols.iter().filter(|c| *c == name).count(), 1, "{name}");
+    }
+}

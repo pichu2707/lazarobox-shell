@@ -3440,3 +3440,68 @@ fn the_report_sums_prefill_over_the_full_prompt_and_counts_the_gap() {
     assert_eq!(got("llamacpp"), (Some(10), Some(4599), 0));
     assert_eq!(of("claude").prefill_ms, None);
 }
+
+#[test]
+fn the_report_survives_a_turn_usage_table_without_the_prefill_columns() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    conn.execute_batch(
+        "ALTER TABLE turn_usage DROP COLUMN prefill_ms;
+         ALTER TABLE turn_usage DROP COLUMN load_ms;",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, model, role, input, output, cache_read, cost_micros)
+         VALUES (?1, 'codex', 'm', 'chat', 20, 5, 80, 1234)",
+        [now],
+    )
+    .unwrap();
+    let rows = usage_report(&conn, None, now).unwrap();
+    let r = &rows[0];
+    assert_eq!(
+        (
+            r.input,
+            r.cache_read,
+            r.cost_micros,
+            r.prefill_ms,
+            r.prefill_tokens,
+            r.prefill_gap
+        ),
+        (Some(20), Some(80), Some(1234), None, None, 1)
+    );
+}
+
+#[test]
+fn an_openai_compatible_record_without_a_cache_figure_is_a_prefill_gap() {
+    let (_dir, _worker, conn) = fixture();
+    let now = local(&conn, "");
+    let ins = |engine: &str, read: Option<i64>| {
+        conn.execute(
+            "INSERT INTO turn_usage(ts, engine, model, role, input, output, cache_read, prefill_ms)
+             VALUES (?1, ?2, 'm', 'chat', 100, 1, ?3, 10)",
+            rusqlite::params![now, engine, read],
+        )
+        .unwrap();
+    };
+    ins("llamacpp", Some(900));
+    ins("llamacpp", None);
+    ins("ollama", None);
+    let rows = usage_report(&conn, None, now).unwrap();
+    let of = |e: &str| rows.iter().find(|r| r.engine == e).unwrap();
+    assert_eq!(
+        (
+            of("llamacpp").prefill_ms,
+            of("llamacpp").prefill_tokens,
+            of("llamacpp").prefill_gap
+        ),
+        (Some(10), Some(1000), 1)
+    );
+    assert_eq!(
+        (
+            of("ollama").prefill_ms,
+            of("ollama").prefill_tokens,
+            of("ollama").prefill_gap
+        ),
+        (Some(10), Some(100), 0)
+    );
+}

@@ -1433,8 +1433,10 @@ fn usage_of(events: Vec<StreamEvent>) -> crate::core::ai::chat::usage::TurnUsage
 fn an_ollama_final_line_stores_prefill_and_load_in_ms() {
     // Recorded llama3.2:3b final line: durations are nanoseconds.
     let usage = usage_of(ndjson(&[LLAMA.as_bytes()]));
-    assert_eq!((usage.prefill_ms, usage.load_ms), (Some(25), Some(1719)));
-    // Warm cache hit: 5 ms of prompt eval, the full prompt still counted.
+    assert_eq!((usage.prefill_ms, usage.load_ms), (Some(25), Some(1720)));
+    // Warm cache hit. Hand-written from a live measurement on Ollama 0.30.10
+    // (prompt_eval_count 3631 cold and warm; prompt_eval_duration ~5 ms warm),
+    // not a recorded chunk.
     let line = br#"{"model":"llama3.2:3b","done":true,"done_reason":"stop","total_duration":300000000,"load_duration":115000000,"prompt_eval_count":3631,"prompt_eval_duration":5000000,"eval_count":3,"eval_duration":9000000}
 "#;
     let usage = usage_of(ndjson(&[line]));
@@ -1461,4 +1463,12 @@ fn a_llamacpp_finish_chunk_stores_prompt_ms_as_prefill() {
 "#;
     let usage = usage_of(sse(&[chunk]));
     assert_eq!(usage.prefill_ms, None);
+}
+
+#[test]
+fn ollama_durations_round_to_the_nearest_ms() {
+    let line = br#"{"model":"m","done":true,"prompt_eval_count":9,"prompt_eval_duration":25600000,"load_duration":1499999,"eval_count":2}
+"#;
+    let usage = usage_of(ndjson(&[line]));
+    assert_eq!((usage.prefill_ms, usage.load_ms), (Some(26), Some(1)));
 }
