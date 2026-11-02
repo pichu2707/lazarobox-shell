@@ -1175,7 +1175,7 @@ async fn run_loop(
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
                 }
-                panes.refresh_roster(app.focused());
+                panes.refresh_roster_in_background(app.focused());
             }
             () = anim.tick() => {
                 if step(&mut app, AppEvent::AnimTick, panes) {
@@ -1407,6 +1407,8 @@ struct Panes {
     installer: Option<llama_install::installer::Installer>,
     /// Where the poll writes what the panes run, for `list_panes`.
     roster: Option<(Roster, Option<PathBuf>)>,
+    /// A background refresh of the roster is running.
+    roster_busy: Arc<AtomicBool>,
 }
 
 impl Panes {
@@ -1445,6 +1447,7 @@ impl Panes {
             ollama: None,
             installer: None,
             roster: None,
+            roster_busy: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1454,7 +1457,9 @@ impl Panes {
         self
     }
 
-    /// What the panes run, as raw facts: a few `/proc` reads each.
+    /// What the panes run, as raw facts: a few `/proc` reads each, which do
+    /// not block. Turning them into lines may look files up on disk, so that
+    /// is [`publish_roster`]'s job, off the loop.
     fn roster_facts(&self, focused: PaneId) -> Vec<Facts> {
         (self.handles.iter())
             .map(|(id, handle)| Facts {
@@ -1466,11 +1471,29 @@ impl Panes {
             .collect()
     }
 
-    /// Refreshes the roster for `list_panes`.
+    /// Refreshes the roster for `list_panes` now (tests).
+    #[cfg(test)]
     fn refresh_roster(&self, focused: PaneId) {
         if let Some((roster, home)) = &self.roster {
             publish_roster(roster, home.as_deref(), self.roster_facts(focused));
         }
+    }
+
+    /// Refreshes the roster on the blocking pool, so a stalled mount cannot
+    /// freeze the UI loop. A refresh still running is not stacked on.
+    fn refresh_roster_in_background(&self, focused: PaneId) {
+        let Some((roster, home)) = &self.roster else {
+            return;
+        };
+        if self.roster_busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (roster, home, busy) = (roster.clone(), home.clone(), self.roster_busy.clone());
+        let facts = self.roster_facts(focused);
+        tokio::task::spawn_blocking(move || {
+            publish_roster(&roster, home.as_deref(), facts);
+            busy.store(false, Ordering::Release);
+        });
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -2193,7 +2216,7 @@ fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
 
 /// Stores one already-redacted line per pane, the focused one first and then
 /// in pane order: the raw argv never leaves this function. Looks files up on
-/// disk.
+/// disk, so it runs off the UI loop.
 fn publish_roster(roster: &Roster, home: Option<&Path>, mut facts: Vec<Facts>) {
     facts.sort_by_key(|f| (!f.focused, f.number));
     roster.set(facts.iter().map(|f| panes::line(f, home)).collect());
@@ -4009,6 +4032,32 @@ mod tests {
                 "pane 1 cwd: unknown program: unknown".to_owned(),
             ]
         );
+    }
+
+    // The refresh runs on the blocking pool and is not stacked: one still
+    // running makes the next poll skip.
+    #[tokio::test]
+    async fn the_background_refresh_publishes_and_never_stacks() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.roster_busy.store(true, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        tokio::task::yield_now().await;
+        assert!(
+            roster.lines().is_empty(),
+            "a running refresh was stacked on"
+        );
+        panes.roster_busy.store(false, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        for _ in 0..100 {
+            if !roster.lines().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(roster.lines().len(), 1);
     }
 
     // Spec: per-pane order is preserved through the shared channel.
