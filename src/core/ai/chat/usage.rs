@@ -44,6 +44,11 @@ pub struct TurnUsage {
     pub cost_micros: Option<u64>,
     pub cost_source: Option<CostSource>,
     pub duration_ms: Option<u64>,
+    /// Time a local engine spent processing the prompt: low means the prompt
+    /// cache was hit. Never set by a cloud engine.
+    pub prefill_ms: Option<u64>,
+    /// Time Ollama spent loading the model (its `load_duration`).
+    pub load_ms: Option<u64>,
     /// A sanitized model id.
     pub model: Option<String>,
     /// Some of the turn is not in the sums: a request of it reported no
@@ -76,6 +81,8 @@ impl TurnUsage {
         self.reasoning = add(self.reasoning, other.reasoning);
         self.cost_micros = add(self.cost_micros, other.cost_micros);
         self.duration_ms = add(self.duration_ms, other.duration_ms);
+        self.prefill_ms = add(self.prefill_ms, other.prefill_ms);
+        self.load_ms = add(self.load_ms, other.load_ms);
         self.cost_source = self.cost_source.or(other.cost_source);
         self.multi_model |= other.multi_model
             || matches!((&self.model, &other.model), (Some(a), Some(b)) if a != b);

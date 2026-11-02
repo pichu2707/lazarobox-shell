@@ -191,6 +191,8 @@ fn ollama_usage(line: &Value) -> Option<TurnUsage> {
         input: count(&line["prompt_eval_count"]),
         output: count(&line["eval_count"]),
         duration_ms: count(&line["total_duration"]).map(|ns| ns / 1_000_000),
+        prefill_ms: count(&line["prompt_eval_duration"]).map(|ns| ns / 1_000_000),
+        load_ms: count(&line["load_duration"]).map(|ns| ns / 1_000_000),
         model: line["model"].as_str().and_then(model_id),
         ..TurnUsage::default()
     }
@@ -208,6 +210,10 @@ fn openai_usage(chunk: &Value) -> Option<TurnUsage> {
         input: count(&timings["prompt_n"]),
         output: count(&timings["predicted_n"]),
         cache_read: count(&timings["cache_n"]),
+        prefill_ms: timings["prompt_ms"]
+            .as_f64()
+            .filter(|ms| ms.is_finite() && *ms >= 0.0)
+            .map(|ms| ms.round() as u64),
         duration_ms: match (
             timings["prompt_ms"].as_f64(),
             timings["predicted_ms"].as_f64(),
