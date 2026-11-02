@@ -29,6 +29,8 @@ const NONE_LEFT: &str = "No interrupted run to resume or discard";
 /// Said when the interrupted runs belong to other folders.
 const OTHER_FOLDER: &str =
     "The interrupted runs belong to other folders; open a chat there to resume or discard them";
+/// Said while the store has not yet answered which runs a restart interrupted.
+const LOOKING: &str = "Looking for interrupted runs; press the key again in a moment";
 /// Said when the orchestrator gate is off.
 const GATE_OFF: &str = "The orchestrator is off; enable it in the menu (Ctrl+Space m)";
 /// Said on a pane that is not a chat.
@@ -100,8 +102,28 @@ impl App {
             })
     }
 
+    /// The store was never asked which runs a restart interrupted (ORCH was
+    /// not on yet): asks it now, off the UI thread, and says so. The answer
+    /// names the runs in the pane. `None` when the list is already known or
+    /// the key does not apply here.
+    fn recover_on_demand(&mut self) -> Option<Vec<Effect>> {
+        if !self.orch_gate() || !self.focused_is_chat() {
+            return None;
+        }
+        let effects = self.recover_runs(self.tab().focus);
+        if effects.is_empty() {
+            return None;
+        }
+        self.notice = Some(LOOKING.to_owned());
+        self.dirty = true;
+        Some(effects)
+    }
+
     /// `Prefix r r`: a new run from the newest interrupted one of this folder.
     pub(super) fn resume_run(&mut self) -> Vec<Effect> {
+        if let Some(effects) = self.recover_on_demand() {
+            return effects;
+        }
         let id = self.tab().focus;
         let at = match self.offered_here() {
             Ok(at) => at,
@@ -232,6 +254,9 @@ impl App {
     /// `Prefix r d`: the newest interrupted run of this folder is closed and
     /// not offered again.
     pub(super) fn discard_run(&mut self) -> Vec<Effect> {
+        if let Some(effects) = self.recover_on_demand() {
+            return effects;
+        }
         let at = match self.offered_here() {
             Ok(at) => at,
             Err(text) => {

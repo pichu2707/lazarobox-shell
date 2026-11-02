@@ -668,3 +668,57 @@ fn the_end_of_a_reply_turn_with_a_live_run_does_not_reoffer_a_closed_run() {
         "{said:?}"
     );
 }
+
+fn recovers(effects: &[Effect]) -> usize {
+    (effects.iter())
+        .filter(|e| matches!(e, Effect::Store(StoreCmd::RecoverRuns { .. })))
+        .count()
+}
+
+/// A ready chat whose ORCH was never turned on in this process.
+fn never_orch_app() -> App {
+    let mut ai = orch_ai();
+    ai.orchestrator.acknowledged = true;
+    orch_app_with(ai)
+}
+
+// #501: the answer does not depend on whether ORCH was ever on. The store has
+// not been asked yet, so `r r` asks it and says so instead of "none".
+#[test]
+fn resume_with_orch_never_on_asks_the_store_and_says_so() {
+    let mut a = never_orch_app();
+    let effects = keys(&mut a, "rr");
+    assert_eq!(recovers(&effects), 1);
+    let notice = a.notice().expect("a notice, never silence");
+    assert!(notice.contains("Looking for interrupted runs"), "{notice}");
+    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+    // The answer arrives: the same key now says what the user must do.
+    recovered(&mut a, vec![stored(9, "port the parser")]);
+    let again = keys(&mut a, "rr");
+    assert_eq!(recovers(&again), 0, "asked once per process");
+    assert_eq!(
+        a.notice(),
+        Some("Turn ORCH on in this pane first (Ctrl+O), then resume the run")
+    );
+}
+
+#[test]
+fn discard_with_orch_never_on_asks_the_store_and_says_so() {
+    let mut a = never_orch_app();
+    let effects = keys(&mut a, "rd");
+    assert_eq!(recovers(&effects), 1);
+    assert!(
+        a.notice()
+            .is_some_and(|n| n.contains("Looking for interrupted runs"))
+    );
+}
+
+// Nothing interrupted: once the store answered, the old message stands.
+#[test]
+fn resume_with_nothing_interrupted_still_says_none_after_the_answer() {
+    let mut a = never_orch_app();
+    keys(&mut a, "rr");
+    recovered(&mut a, Vec::new());
+    keys(&mut a, "rr");
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
+}
