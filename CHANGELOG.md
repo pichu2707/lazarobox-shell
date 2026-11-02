@@ -10,6 +10,20 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat with `codex` and `gemini` no longer sends the user's own setup to the
+  provider (#519). Neither CLI has a flag that stops it loading its global
+  instruction files (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) or skills
+  (`~/.gemini/skills/`), so each turn now runs with a private `CODEX_HOME` or
+  `GEMINI_CLI_HOME` inside its wiped temp folder. It holds only symlinks to the
+  login files (nothing is copied or moved) and, for gemini, the one setting
+  that names the login type. A turn that cannot prepare it fails with a notice
+  instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
+  child environment. Known limit: if codex replaces `auth.json` instead of
+  writing it in place when it refreshes the login, the refresh does not reach
+  the real folder and `codex login` has to be run again.
+
 ## [1.2.0] - 2026-11-02
 
 ### Added
