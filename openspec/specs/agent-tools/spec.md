@@ -9,7 +9,8 @@ Terms: "read tool" = `find_dir`, `list_dir`, `read_file`. "Write tool" = `run_in
 ## Requirements
 
 ### Requirement: Tool registry
-There MUST be one registry of tools, the single source of truth for names, argument schemas, descriptions and the read-only or write classification. The same registry MUST serve every adapter (MCP and native). The built-in tools are `find_dir`, `list_dir`, `read_file` (read tools) and `run_in_pane` (write tool). A user MCP tool MUST be added to the registry only under a server-qualified name that cannot equal a built-in name. Registry lookup, argument validation and the path policy MUST be pure functions without IO. A call to an unknown tool, with missing or mistyped arguments, or with unknown extra arguments, MUST return an error result and MUST NOT execute anything.
+There MUST be one registry of tools, the single source of truth for names, argument schemas, descriptions, the family and the read-only or write classification. The same registry MUST serve every adapter (MCP and native). The original built-in tools are `find_dir`, `list_dir`, `read_file` (read tools) and `run_in_pane` (write tool); the `tools/list` entry of each of these four MUST stay byte-identical to release 0.18.0. Further built-in tools (search, write, run and git, see code-search, code-write, command-runner, git-tools) are present only when their family toggle is on. A user MCP tool MUST be added to the registry only under a server-qualified name that cannot equal a built-in name. Registry lookup, argument validation and the path policy MUST be pure functions without IO. A call to an unknown tool, with missing or mistyped arguments, or with unknown extra arguments, MUST return an error result and MUST NOT execute anything.
+(Previously: four built-in tools with one string argument each, and no family.)
 
 #### Scenario: One registry, all engines [auto]
 - GIVEN the registry
@@ -30,6 +31,11 @@ There MUST be one registry of tools, the single source of truth for names, argum
 - GIVEN a user MCP server that exposes a tool named `read_file`
 - WHEN the registry is built
 - THEN the user tool is exposed only under its server-qualified name and the built-in is unchanged
+
+#### Scenario: Original four are byte-identical [auto]
+- GIVEN the 0.18.0 `tools/list` fixture for `find_dir`, `list_dir`, `read_file` and `run_in_pane`
+- WHEN the registry is built with all toggles off
+- THEN those four entries equal the fixture byte for byte
 
 ### Requirement: Read tools and their approval
 `find_dir` and `list_dir` MUST run without asking the user on every engine. `read_file` MUST run without asking on a local engine, and on a cloud engine MUST need an explicit `y` for that call, because the file text goes to the provider; the approval prompt MUST show the sanitized path to be read. A declined, timed-out or cancelled `read_file` approval MUST end as `denied` and no file is opened. The three tools MUST be read-only (no write, no process started, no network), and MUST run off the render thread and the event loop. Each MUST obey the path policy and its caps: `find_dir` searches under `$HOME` for directory names matching a query and returns at most a capped number of paths, bounded in depth and time; `list_dir` returns the capped entries of a directory; `read_file` returns the text of a file up to a size cap. A result that hits a cap MUST say it was truncated. `list_dir` and `find_dir` MUST leave out a name, and in `find_dir` a joined relative path, that secret redaction would change, and `find_dir` MUST NOT enter such a folder; false positives such as `sk-learn-extras` are accepted. When anything was left out the result MUST end with the line `[some names omitted: they look like secrets]`, whatever the query, so it reveals neither which name was left out nor whether a query matched it. When the `read_file` window holds no whitespace to cut at, the result MUST say `[not shown: no safe cut point in the read window]` and show no text. The caps are pinned by design. Results MUST NOT contain a path outside `$HOME` or an excluded path.
@@ -90,7 +96,18 @@ There MUST be one registry of tools, the single source of truth for names, argum
 - THEN the event loop keeps handling events and the call ends at its time bound
 
 ### Requirement: Argument length
-Each built-in tool argument (`path`, `query`, `command`) MUST be at most 4096 bytes of decoded text; a longer one MUST be refused with a too-long error. This bounds the decoded text only: the cap on the raw wire message and the rejection of duplicate JSON keys belong to the raw wire layer (slices 2b and 2e).
+Each argument of the original four built-in tools (`path`, `query`, `command`) MUST be at most 4096 bytes of decoded text; a longer one MUST be refused with a too-long error. A tool added by coding-tools MUST declare its own cap per argument in the registry (for example `write_file` content 32 KiB, `edit_file` fields 16 KiB each, a grep pattern 512 bytes), and an argument over its cap MUST be refused with a too-long error. This bounds the decoded text only: the cap on the raw wire message and the rejection of duplicate JSON keys belong to the raw wire layer.
+(Previously: one 4096-byte cap for every built-in argument.)
+
+#### Scenario: Oversized argument of an original tool [auto]
+- GIVEN a `path` of 4097 bytes, and one of 4096 bytes
+- WHEN the call is parsed
+- THEN the first is refused with a too-long error and the second is accepted
+
+#### Scenario: Per-tool caps [auto]
+- GIVEN `write_file` content of 32 KiB and of 32 KiB + 1 byte
+- WHEN each is parsed
+- THEN the first is accepted and the second is refused with a too-long error
 
 ### Requirement: Path policy
 Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative as input). A path MUST be refused when, after resolving `.`, `..` and every symlink to its real location, it is outside `$HOME`, is `$HOME/.ssh` or `$HOME/.gnupg`, is or lies under any entry of `CREDENTIAL_DIRS` directly under `$HOME` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), or is `$HOME/.config/gh`, `$HOME/.config/gcloud`, `$HOME/.local/share/keyrings`, `$HOME/.local/share/fish/fish_history`, `$HOME/.config/lazarobox` (its `config.toml` holds MCP env tokens) or `$HOME/.local/share/lazarobox` (the app's own store), both at their default XDG place (`XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `GH_CONFIG_DIR` overrides are not followed), or is a file named `.env`, `.env.*`, `.envrc`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`, `.bash_history`, `.zsh_history`, `.zhistory`, `.python_history`, `.node_repl_history`, `.psql_history`, `.mysql_history` or `.sqlite_history` at any depth. The check MUST be made on both the requested path (`~` expanded, a relative input resolved against the origin cwd, `.` and `..` folded by text) and the real path that is opened, and the path is allowed only if both pass. So a symlink inside `$HOME` that points to an excluded or outside path is refused, and so is an excluded name that is itself a symlink to an ordinary place (for example `~/.ssh` linked to `~/dotfiles/ssh`). The real path of every existing secret root (`~/.ssh`, `~/.gnupg`, each `CREDENTIAL_DIRS` entry and each excluded file name directly in `$HOME`) MUST also be resolved, and a real path equal to or under one of those real roots MUST be refused, so the real target of an aliased secret folder (`~/dotfiles/ssh`) and any second link to it are excluded as well. Known limit: a link below `$HOME` depth one named like ANY excluded file (`.env`, `.netrc`, `.npmrc`, a history file...) whose target has an ordinary name is judged by its requested name only, and hard links are not detected here (slice 2b checks `st_nlink`). The resolved roots are a snapshot taken at load: a root created after the load is out of scope for that call, and slice 2b MUST re-check the real path of the opened file descriptor against them. The runtime MUST also pass lazarobox's real config and data folders (honouring `XDG_CONFIG_HOME` and `XDG_DATA_HOME`) as extra roots, resolved with the same fail-closed rules. A `$HOME` whose canonical path is `/`, `/home`, `/Users`, `/usr`, `/var`, `/etc`, `/opt`, `/tmp`, `/bin`, `/lib`, `/proc`, `/sys` or `/dev`, `/run`, `/mnt`, `/media`, `/srv`, `/sbin`, `/boot`, `/lib64`, `/private`, `/private/tmp`, `/private/var`, `/private/etc`, `/System` or `/Library`, compared ASCII case-insensitively per component, MUST be refused (`/root` is allowed). If `$HOME` or any secret root that exists cannot be read (an error other than not-found or not-a-directory, which are skipped as an absent root; for example a permission error or a symlink loop), every call MUST be refused (fail closed). The secret roots MUST be resolved once per tool call, not once per path or listed entry. The deny list is best effort, not complete, and `.envrc` and `.npmrc` are denied at any depth on purpose. Comparison of the excluded names is ASCII case-insensitive. `~user` input, a relative or `/` home and a relative origin MUST be refused. A relative input path is resolved against the chat's origin cwd and then checked like any other. Excluded entries MUST be omitted from `list_dir` and `find_dir` results, and `find_dir` MUST NOT descend into excluded directories. A refusal MUST use one message for excluded, outside and non-existent paths, so the existence of an excluded path is not revealed.
@@ -199,10 +216,11 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 - THEN the key is replaced by the redaction marker
 
 ### Requirement: Approval model
-`find_dir` and `list_dir` MUST run without approval, and `read_file` MUST run without approval only on a local engine (see Read tools and their approval). Every write tool call, and every `read_file` call on a cloud engine, MUST need an explicit user `y` for that call, every time. The only exception is a `run_in_pane` call in a chat whose approval mode is `auto` (see Chat approval mode): it is typed without a prompt and never executed. There MUST be no "always allow", no per-session or per-tool trust, no allowlist and no configuration that approves automatically, and nothing MUST ever execute a command for the user. Tools from a user MCP server MUST always be write tools. Waiting for an answer MUST NEVER end in an approval: a timeout, a cancel, a closed chat, a closed target pane, a lost connection and an app quit all end as `denied`. A chat MUST have at most one pending approval; another write request while one is pending MUST be denied at once with the reason `another approval is pending`.
+`find_dir` and `list_dir` MUST run without approval, and `read_file` and `grep` MUST run without approval only on a local engine (see Read tools and their approval, code-search). `glob` MUST run without approval. Every other tool call MUST need an explicit user `y`, every time, and the approval of the file write tools is the batch review (see code-write): `create_dir`, `write_file` and `edit_file` stage and ask nothing by themselves, and nothing reaches the disk until the user approves the proposed batch as a whole. `run_command`, `git_add` and `git_commit` MUST each need their own `y` (see command-runner, git-tools). The only exception is a `run_in_pane` call in a chat whose approval mode is `auto` (see Chat approval mode): it is typed without a prompt and never executed. The fixed program allow-list of `run_command` bounds the program and is not an approval. There MUST be no "always allow", no per-session or per-tool trust, no configuration that approves automatically, and nothing MUST ever execute a command for the user without a `y`. Tools from a user MCP server MUST always be write tools. Waiting for an answer MUST NEVER end in an approval: a timeout, a cancel, a closed chat, a closed target pane, a lost connection and an app quit all end as `denied`. A chat MUST have at most one pending approval; another write request while one is pending MUST be denied at once with the reason `another approval is pending`.
+(Previously: every write tool call needed its own `y`; there was no staging, no batch review and only `read_file` was a read tool that asked on a cloud engine.)
 
 #### Scenario: No auto approval [auto]
-- GIVEN a write tool call from any engine in a chat in `ask` mode, or an external tool call or a cloud `read_file` in either mode
+- GIVEN a write tool call from any engine in a chat in `ask` mode, or an external tool call, a `run_command` or a cloud `read_file` in either mode
 - WHEN no key is pressed for any length of time (injected clock)
 - THEN the call is never executed
 
@@ -228,13 +246,23 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 
 #### Scenario: Free read tools around a pending approval [auto]
 - GIVEN a pending approval
-- WHEN `find_dir` or `list_dir` is called (or `read_file` on a local engine)
+- WHEN `find_dir`, `list_dir` or `glob` is called (or `read_file` on a local engine)
 - THEN it runs and returns without waiting for the approval
 
 #### Scenario: Second read_file while pending [auto]
 - GIVEN a pending approval on a cloud engine
 - WHEN a `read_file` call arrives
 - THEN it returns `denied` (`another approval is pending`)
+
+#### Scenario: Staging asks nothing, apply needs y [auto]
+- GIVEN `write_file` and `edit_file` calls in a chat
+- WHEN they are dispatched
+- THEN no approval opens and the disk is untouched, and only the review of the proposed batch can write
+
+#### Scenario: Allow-list is not an approval [auto]
+- GIVEN `run_command` with an allow-listed program in any mode
+- WHEN it is dispatched
+- THEN a prompt opens and nothing starts before `y`
 
 ### Requirement: run_in_pane tool
 `run_in_pane` takes a command string and MUST use the pane-commands path: validation, the pending confirm naming the target pane, the accept-time rechecks and the write. The write never sends Enter except for a run decided under pane-execution in `run` mode. In `auto` mode (see Chat approval mode) the pending confirm is skipped and every other step stays, and Enter is never sent. In `run` mode a command that is runnable under pane-execution is written with Enter and the call stays pending until the run settles or times out; any other command takes the normal confirm. The result MUST say what actually happened (the exact texts are pinned in pane-execution, Result contract), and MUST be exactly one of: the typed text `The command was typed into the user's pane. Enter was not pressed: the user runs it themselves.` (typed, not executed), a ran form `ran in pane N — <k> lines` / `ran in pane N — cwd <path>` (with the bounded, wrapped output and, for `cd`, the new cwd), `ran in pane N — still running` (with the output so far), `ran — output not available`, or `denied` (with a short reason). Output, pane content and a cwd MAY be returned only for `ran` and `still running`, only in `run` mode, and only as pane-execution defines; in `ask` and `auto` the result MUST carry no output of the command or of the pane and no cwd. The tool description MUST be neutral and identical in every mode. No result carries an exit status.
@@ -493,3 +521,42 @@ Tool arguments, tool results, file contents, paths returned and commands MUST NO
 - GIVEN a `read_file` of a file holding `SECRET-TOKEN-123` that fails after reading
 - WHEN the error event and the logs are inspected
 - THEN neither contains `SECRET-TOKEN-123`
+
+### Requirement: Tool families
+Every registry entry MUST carry exactly one `Family`: `Read`, `Search`, `Write`, `Exec`, `Git`, `GitWrite` or `Pane`. `Git` holds the read verbs (status, diff, log), and `GitWrite` holds add and commit. The set of tools a session sees MUST be a filter over families. `Toolset::Code` MUST include `Read`, `Search`, `Write`, `Exec`, `Git` and `GitWrite`, and MUST NOT include `Pane` or any external tool. The per-family toggles MUST apply as a second filter: a family whose toggle is off is not registered, offered or executed, even when a toolset includes it.
+
+#### Scenario: Code toolset [auto]
+- GIVEN every toggle on
+- WHEN the registry is filtered for `Toolset::Code`
+- THEN it holds Read, Search, Write, Exec and the Git read tools, and no `run_in_pane` and no external tool
+
+#### Scenario: Toggle is a second filter [auto]
+- GIVEN `Toolset::Code` and the Exec toggle off
+- WHEN the registry is filtered
+- THEN `run_command` is absent
+
+### Requirement: Multi-argument arguments
+Each registry entry MUST declare its arguments (name, kind string, integer, boolean or list of strings, required or optional, byte cap). Validation MUST be per argument: a missing required argument, a wrong type, an unknown extra key, a duplicate key and an over-cap value MUST each return an error result and execute nothing. This MUST hold on the MCP path and on the Ollama path. The generated schema MUST set `additionalProperties` to false.
+
+#### Scenario: Per-argument errors [auto]
+- GIVEN `edit_file` with no `old`, with `old: 5`, with an extra key `mode`, and with a duplicate `path` key
+- WHEN each is dispatched
+- THEN each returns an error result and nothing is staged
+
+#### Scenario: Optional argument [auto]
+- GIVEN `read_file` with and without `start_line`
+- WHEN each is validated
+- THEN both pass
+
+#### Scenario: Same path on both engines [auto]
+- GIVEN a call with a duplicate key
+- WHEN it arrives through MCP and through the Ollama loop
+- THEN both reject it
+
+### Requirement: Off equals 0.18.0
+With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0. A characterization test MUST pin this.
+
+#### Scenario: Characterization [auto]
+- GIVEN all family toggles off
+- WHEN the tool list and an Ollama request are built
+- THEN they equal the stored 0.18.0 fixtures byte for byte
