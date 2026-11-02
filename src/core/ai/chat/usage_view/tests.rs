@@ -24,6 +24,13 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
     }
 }
 
+/// The lines before the charts.
+fn before_charts(mut lines: Vec<String>) -> Vec<String> {
+    let at = lines.iter().position(|l| l.starts_with("per day"));
+    lines.truncate(at.unwrap_or(lines.len()));
+    lines
+}
+
 fn view(rows: &[UsageRow]) -> Vec<String> {
     report_lines(rows, &Session::default(), &default_billing)
 }
@@ -239,7 +246,10 @@ fn this_chat_counts_only_its_rows_over_any_age_and_none_is_no_data() {
     mine.in_chat = true;
     mine.turns = 3;
     let lines = view(&[mine, row(0, "claude", "s")]);
-    assert_eq!(lines.last().unwrap(), "this chat: 120 tokens · 3 turns");
+    assert_eq!(
+        before_charts(lines).last().unwrap(),
+        "this chat: 120 tokens · 3 turns"
+    );
 }
 
 #[test]
@@ -256,7 +266,10 @@ fn a_session_adds_its_own_line_after_the_chat_line() {
         },
     );
     let lines = report_lines(&[row(0, "claude", "s")], &session, &default_billing);
-    assert_eq!(lines.last().unwrap(), "this session: 15 tokens · 1 turns");
+    assert_eq!(
+        before_charts(lines).last().unwrap(),
+        "this session: 15 tokens · 1 turns"
+    );
 }
 
 #[test]
@@ -331,7 +344,12 @@ fn summary_lines_carry_partial_when_any_record_is_partial_or_lacks_a_count() {
     let mut mine = row(0, "claude", "s");
     mine.in_chat = true;
     mine.input = None;
-    assert!(view(&[mine]).last().unwrap().ends_with("· partial"));
+    assert!(
+        before_charts(view(&[mine]))
+            .last()
+            .unwrap()
+            .ends_with("· partial")
+    );
     assert_eq!(
         view(&[row(0, "claude", "s")])[2],
         "last 7 days: 120 tokens · 1 turns"
@@ -413,5 +431,186 @@ fn a_full_session_says_so_instead_of_dropping_silently() {
     assert!(
         !session_lines(&Session::default(), &default_billing)
             .contains(&SESSION_FULL_LINE.to_owned())
+    );
+}
+
+// Charts (ai-usage, "Charts").
+fn day(days_ago: u32, engine: &str, total: Option<u64>) -> UsageRow {
+    UsageRow {
+        total,
+        input: total.map(|_| 1),
+        output: total.map(|_| 1),
+        ..row(days_ago, engine, "m")
+    }
+}
+
+fn charts(lines: &[String]) -> Vec<String> {
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("per day"))
+        .expect("charts shown");
+    lines[at..].to_vec()
+}
+
+#[test]
+fn the_per_day_line_scales_to_the_biggest_day_and_marks_gaps() {
+    let rows = [
+        day(3, "claude", Some(0)),
+        day(2, "claude", Some(100)),
+        day(1, "claude", Some(200)),
+        day(0, "claude", Some(400)),
+    ];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[0], "per day (last 7 days, oldest first):");
+    assert_eq!(shown[1], "···▁▂▄█ max 400");
+}
+
+#[test]
+fn an_unknown_day_is_a_gap_not_the_lowest_bar() {
+    let rows = [day(1, "ollama", None), day(0, "ollama", Some(50))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "······█ max 50 *");
+}
+
+#[test]
+fn a_day_mixing_known_and_unknown_records_counts_only_the_known() {
+    let rows = [day(0, "ollama", None), day(0, "claude", Some(10))];
+    assert_eq!(charts(&view(&rows))[1], "······█ max 10 *");
+}
+
+#[test]
+fn only_zero_days_draw_the_lowest_bar_and_never_divide_by_zero() {
+    let shown = charts(&view(&[day(0, "claude", Some(0))]));
+    assert_eq!(shown[1], "······▁ max 0");
+    assert_eq!(shown[3], "  claude █ 0");
+}
+
+#[test]
+fn engine_bars_follow_the_biggest_and_unknown_says_no_data() {
+    let rows = [
+        day(0, "claude", Some(1000)),
+        day(1, "ollama", Some(250)),
+        day(0, "codex", None),
+    ];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[2], "per engine (last 7 days):");
+    assert_eq!(shown[3], format!("  claude {} 1000", "█".repeat(20)));
+    assert_eq!(shown[4], format!("  ollama {} 250", "█".repeat(5)));
+    assert_eq!(shown[5], "  codex  no data");
+}
+
+#[test]
+fn a_small_engine_still_gets_one_glyph() {
+    let rows = [day(0, "claude", Some(100_000)), day(0, "ollama", Some(1))];
+    assert_eq!(charts(&view(&rows))[4], "  ollama █ 1");
+}
+
+#[test]
+fn days_older_than_the_window_are_not_charted() {
+    let rows = [day(0, "claude", Some(10)), day(8, "ollama", Some(999))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "······█ max 10");
+    assert_eq!(shown.len(), 4, "{shown:?}");
+}
+
+#[test]
+fn no_records_or_none_in_the_window_show_no_charts() {
+    assert!(!view(&[]).iter().any(|l| l.contains("per day")));
+    let old = view(&[day(9, "claude", Some(10))]);
+    assert!(!old.iter().any(|l| l.contains("per day")), "{old:?}");
+}
+
+#[test]
+fn charts_never_carry_dollars() {
+    let mut r = day(0, "claude", Some(10));
+    r.cost_micros = Some(5_000_000);
+    r.costed = 1;
+    let shown = charts(&view(&[r]));
+    assert!(shown.iter().all(|l| !l.contains('$')), "{shown:?}");
+}
+
+#[test]
+fn the_history_off_view_has_no_charts() {
+    let mut session = Session::default();
+    session.add("ollama", Run::Chat, &tokens(10, 5));
+    let lines = session_lines(&session, &default_billing);
+    assert!(!lines.iter().any(|l| l.contains("per day")));
+}
+
+#[test]
+fn a_tiny_known_day_never_looks_like_a_known_zero() {
+    let rows = [day(1, "claude", Some(0)), day(0, "claude", Some(1))];
+    assert_eq!(charts(&view(&rows))[1], "·····▁█ max 1");
+    let rows = [day(1, "claude", Some(1)), day(0, "claude", Some(100_000))];
+    assert_eq!(charts(&view(&rows))[1], "·····▂█ max 100000");
+}
+
+#[test]
+fn a_partial_or_unknown_record_marks_the_day_line_and_its_engine() {
+    let mut cut = day(0, "claude", Some(1000));
+    cut.partial = true;
+    let rows = [cut, day(1, "ollama", Some(250)), day(0, "codex", None)];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "·····▂█ max 1000 *");
+    assert_eq!(shown[3], format!("  claude {} 1000 *", "█".repeat(20)));
+    assert_eq!(shown[4], format!("  ollama {} 250", "█".repeat(5)));
+    assert_eq!(shown[5], "  codex  no data");
+}
+
+#[test]
+fn an_unknown_record_on_a_charted_day_marks_the_line() {
+    let rows = [day(0, "ollama", None), day(0, "claude", Some(10))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "······█ max 10 *");
+    assert_eq!(shown[3], format!("  claude {} 10", "█".repeat(20)));
+    assert_eq!(shown[4], "  ollama no data");
+}
+
+#[test]
+fn complete_records_carry_no_marker() {
+    let shown = charts(&view(&[day(0, "claude", Some(10))]));
+    assert!(shown.iter().all(|l| !l.contains('*')), "{shown:?}");
+}
+
+#[test]
+fn the_days_run_oldest_first() {
+    let rows = [day(6, "claude", Some(400)), day(0, "claude", Some(100))];
+    assert_eq!(charts(&view(&rows))[1], "█·····▂ max 400");
+}
+
+#[test]
+fn day_six_is_charted_and_day_seven_is_not() {
+    let rows = [day(6, "claude", Some(10)), day(7, "ollama", Some(99))];
+    let shown = charts(&view(&rows));
+    assert_eq!(shown[1], "█······ max 10");
+    assert!(!shown.iter().any(|l| l.contains("ollama")), "{shown:?}");
+}
+
+#[test]
+fn engine_bars_line_up_by_display_width() {
+    let rows = [
+        day(0, "claude", Some(100)),
+        day(0, "オラマ", Some(50)),
+        day(0, "gemini-cli", None),
+    ];
+    let shown = charts(&view(&rows));
+    // "gemini-cli" is the widest name (10 columns); the others pad to it.
+    assert_eq!(shown[3], format!("  claude     {} 100", "█".repeat(20)));
+    assert_eq!(shown[4], format!("  オラマ     {} 50", "█".repeat(10)));
+    assert_eq!(shown[5], "  gemini-cli no data");
+}
+
+#[test]
+fn long_engine_names_are_cut_at_16_columns_and_empty_ones_read_a_question_mark() {
+    let rows = [
+        day(0, "abcdefghijklmnopqrstuvwxyz", Some(10)),
+        day(0, "", Some(10)),
+    ];
+    let shown = charts(&view(&rows));
+    assert!(shown[4].starts_with("  abcdefghijklmno… "), "{shown:?}");
+    assert!(shown[3].starts_with("  ?    "), "{shown:?}");
+    assert_eq!(
+        shown[3].chars().position(|c| c == '█'),
+        shown[4].chars().position(|c| c == '█')
     );
 }
