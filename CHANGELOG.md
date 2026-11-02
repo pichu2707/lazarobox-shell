@@ -67,7 +67,9 @@ baseline.
   lazarobox: `list_panes`, `read_file` and the rest failed, and no lazarobox ask
   appeared. codex now passes our calls on (`default_tools_approval_mode =
   "approve"` for the `lazarobox` server only) and they reach lazarobox's own
-  approval, which is unchanged. Checked with codex 0.162.1.
+  approval, which is unchanged. Checked with codex 0.162.1; the key needs codex
+  0.125 or later (older versions reject it and the turn fails with codex's
+  config error).
 - `Ctrl+Space r r` and `Ctrl+Space r d` showed nothing when the answer was
   already known, or when the store answered at once (#501, #527): the notice
   (`No interrupted run to resume or discard`) was set but the screen was not
