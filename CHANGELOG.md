@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-02
+
 ### Added
 
 - `/cost` shows the cache share per engine for today, the last 7 days and this
@@ -1916,7 +1918,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...v1.1.0
