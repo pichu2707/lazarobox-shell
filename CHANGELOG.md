@@ -36,6 +36,31 @@ baseline.
 - `/cost` showed `unknown` for a turn that used several models (gemini's router
   plus its main model, claude's sub-agents). Such a turn is now stored and shown
   as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
+- Chat with `codex` and `gemini` no longer sends the user's own setup to the
+  provider (#519). Neither CLI has a flag that stops it loading its global
+  instruction files (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) or skills
+  (`~/.gemini/skills/`), so each turn now runs with a private `CODEX_HOME` or
+  `GEMINI_CLI_HOME` inside its wiped temp folder. It holds only symlinks to the
+  login files (nothing is copied or moved) and, for gemini, the one setting
+  that names the login type. A turn that cannot prepare it fails with a notice
+  instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
+  child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
+  the real file. The turn warns before it starts when no login is found, honours
+  a validated `GEMINI_CLI_HOME`, rewrites gemini's `.env` with only its login keys (never a link, so `GEMINI_SYSTEM_MD` cannot come back through it), reads `settings.json` with comments,
+  and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
+  and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
+  (model cache, installation id), which costs a few extra calls. A gemini login
+  refreshed during a turn is not saved back (lazarobox never writes credential
+  files), so each turn refreshes the token again, which is a little slower; if
+  Google ever rotated the refresh token, a new `gemini` login would be needed.
+  The login notices show once per run.
+  Neither CLI walks up from its working folder for `AGENTS.md` or `GEMINI.md`
+  any more (`-c project_root_markers=[]` for codex, `context.memoryBoundaryMarkers`
+  set to `[]` for gemini). A value of the gemini `.env` that cannot be rewritten
+  safely is skipped with a notice, never silently; a line that opens a quote it
+  does not close, and the lines up to its closing quote, are skipped with a
+  notice. In the `.env`, `KEY=abc#def` keeps `#def`: only ` #` starts a comment.
+  Empty values do not count as a login.
 
 ### Fixed
 

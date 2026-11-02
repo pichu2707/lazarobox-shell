@@ -542,6 +542,8 @@ fn codex_pinned() -> Vec<String> {
         "include_apply_patch_tool=false",
         "-c",
         "tools.view_image=false",
+        "-c",
+        "project_root_markers=[]",
     ])
 }
 
