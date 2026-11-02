@@ -10,25 +10,8 @@ baseline.
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-11-01
-
 ### Added
 
-- AI usage of orchestrator workers (alpha, slice 5 of #440). Each worker turn
-  is now stored in the usage store with the role `worker`, the worker's
-  engine and model and its `<run>.<worker>` id, under the same rules as a chat
-  turn: nothing is stored with the history off (`/cost` still counts it in
-  `this session`), a count the engine did not report stays `no data`, a worker
-  that failed, was cancelled or ran past its deadline is stored `partial`, a
-  failed write shows `Usage not saved: <reason>` once per run, and deleting the
-  chat keeps the records. They count in `today`, `last 7 days`, the charts, the
-  status bar's `today: N tok` and the day limits; the per-turn limit never
-  fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
-  days` when there are worker records, and on the coordinator's
-  orchestrated turn its usage line reads `usage (coordinator): ...` so it is not taken
-  for the run total. There is no per-worker or per-run breakdown yet. Usage that arrives after
-  its pane was closed is still stored (unlinked); if that write fails there is
-  no pane to tell.
 - The menu's AI tab is split into the tabs Models, Tools, Connectors and
   Chat after Settings, so the popup is 17 rows high instead of 25 (24x16 at least; the Usage row of Settings takes the 17th). `Tab` and
   `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight to
@@ -37,60 +20,6 @@ baseline.
   hint reads `⇥ Tab · 1-5`. A digit or `Tab` that cannot switch tabs now shows
   a notice in the footer (`Tabs are 1-5`, `No other tabs`) instead of doing
   nothing. Nothing changes in `config.toml`.
-- Agent orchestrator (experimental, off by default). One coordinator model
-  splits a job across workers, each running on the engine and model the menu
-  assigns to its task, and every step is recorded. Turn it on with the
-  `Orchestrator` row of the Tools tab (`[ai.orchestrator] enabled`), then press
-  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
-  row picks the coordinator's engine (it falls back to `general`, and Ollama
-  is marked `not recommended`). Workers run in parallel (`max_parallel`,
-  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
-  the chat folder without asking and ask for anything outside it; a `code`
-  worker only stages files, which reach the disk through your batch review. A
-  high-risk change asks your consent first and then gets a lens review and a
-  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
-  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
-  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
-  named after a restart and resumed or discarded with `Ctrl+Space r r` and
-  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
-  recommend API keys for automation and consumer-account logins carry risk; no
-  key is required. Known limit: workers cannot run commands or tests yet, so
-  the coordinator asks you to run them (test-first evidence is planned for
-  1.2). The ODD flow (classify, feature document, one question at a time)
-  depends on the model following its instructions and is not reliable yet; a
-  later version will enforce it. See the README, "Orquestador de agentes".
-- Installed Ollama models in the model picker show a tool mark: `🔧` beside
-  `✓` for a model of 3B parameters or more that declares tool support, and
-  `tools: unreliable` for a smaller one. A model without tool support, or with
-  unknown support or size, shows no mark. The mark is informational (the model
-  stays selectable) and shows even with `[ai.tools] enabled = false`. On
-  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
-- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
-  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
-  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
-  detected and CLI model rows carry none.
-- The Ollama download screens mark models that declare tools: a Popular row
-  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
-  fits this PC, and each Sizes row by its own tag. No new request is made.
-- Ollama detection now sends one `POST /api/show` per installed model to the
-  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
-  2 seconds in total, cached by digest) to read whether it declares tools.
-- Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
-  `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
-  happened, short and action first so it fits an 80-column statusline:
-  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
-  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
-  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
-- `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
-- First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
-  use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
-  again.
-- `install-desktop` asks which terminal to use when run on a TTY without
-  `--terminal`, marks terminals with a test record, and prints notes for WSL.
-- `docs/terminals/` holds the support policy, the checklist and the record
-  templates. A terminal is supported only with a filled record.
-- Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
-  known issues they found; `zutty` joins `RECORDED_TERMINALS`.
 - `/cost` (alpha) in the chat composer opens a view over the conversation,
   headed `AI usage (alpha)`, with the tokens of today and of the last 7 days
   over every stored chat, the usage per engine and model, this chat and this
@@ -148,6 +77,92 @@ baseline.
   gap, never zero, and no dollars are drawn. They wrap like any other line in
   a narrow pane and are not shown with the history off. A ` *` after a figure
   means some turns did not report both counts, so it is a minimum.
+- AI usage of orchestrator workers (alpha, slice 5 of #440). Each worker turn
+  is now stored in the usage store with the role `worker`, the worker's
+  engine and model and its `<run>.<worker>` id, under the same rules as a chat
+  turn: nothing is stored with the history off (`/cost` still counts it in
+  `this session`), a count the engine did not report stays `no data`, a worker
+  that failed, was cancelled or ran past its deadline is stored `partial`, a
+  failed write shows `Usage not saved: <reason>` once per run, and deleting the
+  chat keeps the records. They count in `today`, `last 7 days`, the charts, the
+  status bar's `today: N tok` and the day limits; the per-turn limit never
+  fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
+  days` when there are worker records, and on the coordinator's
+  orchestrated turn its usage line reads `usage (coordinator): ...` so it is not taken
+  for the run total. There is no per-worker or per-run breakdown yet. Usage that arrives after
+  its pane was closed is still stored (unlinked); if that write fails there is
+  no pane to tell.
+
+### Changed
+
+- The `Orchestrator` row of the menu is now in the Tools tab (it was in the AI
+  tab before the tabs split).
+
+### Fixed
+
+- Orchestrator worker rows count the prompt as input plus cache reads and
+  writes, so it means the same for every engine. A worker on llama.cpp now
+  shows its usage, and a failed `claude` worker keeps the usage it reported. A
+  report cut short is marked partial and shows no cost.
+
+## [1.1.0] - 2026-11-01
+
+### Added
+
+- Agent orchestrator (experimental, off by default). One coordinator model
+  splits a job across workers, each running on the engine and model the menu
+  assigns to its task, and every step is recorded. Turn it on with the
+  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
+  row picks the coordinator's engine (it falls back to `general`, and Ollama
+  is marked `not recommended`). Workers run in parallel (`max_parallel`,
+  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
+  the chat folder without asking and ask for anything outside it; a `code`
+  worker only stages files, which reach the disk through your batch review. A
+  high-risk change asks your consent first and then gets a lens review and a
+  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
+  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
+  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
+  named after a restart and resumed or discarded with `Ctrl+Space r r` and
+  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
+  recommend API keys for automation and consumer-account logins carry risk; no
+  key is required. Known limit: workers cannot run commands or tests yet, so
+  the coordinator asks you to run them (test-first evidence is planned for
+  1.2). The ODD flow (classify, feature document, one question at a time)
+  depends on the model following its instructions and is not reliable yet; a
+  later version will enforce it. See the README, "Orquestador de agentes".
+- Installed Ollama models in the model picker show a tool mark: `🔧` beside
+  `✓` for a model of 3B parameters or more that declares tool support, and
+  `tools: unreliable` for a smaller one. A model without tool support, or with
+  unknown support or size, shows no mark. The mark is informational (the model
+  stays selectable) and shows even with `[ai.tools] enabled = false`. On
+  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
+  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
+  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
+  detected and CLI model rows carry none.
+- The Ollama download screens mark models that declare tools: a Popular row
+  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
+  fits this PC, and each Sizes row by its own tag. No new request is made.
+- Ollama detection now sends one `POST /api/show` per installed model to the
+  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
+  2 seconds in total, cached by digest) to read whether it declares tools.
+- Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
+  `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
+  happened, short and action first so it fits an 80-column statusline:
+  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
+  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
+  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
+- `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
+- First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
+  use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
+  again.
+- `install-desktop` asks which terminal to use when run on a TTY without
+  `--terminal`, marks terminals with a test record, and prints notes for WSL.
+- `docs/terminals/` holds the support policy, the checklist and the record
+  templates. A terminal is supported only with a filled record.
+- Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
+  known issues they found; `zutty` joins `RECORDED_TERMINALS`.
 
 ### Fixed
 
@@ -176,10 +191,6 @@ baseline.
   whether the terminal has a test record, and never refuses to install.
 - README: Windows is described as WSL only, and the terminal record policy is
   linked.
-- Orchestrator worker rows count the prompt as input plus cache reads and
-  writes, so it means the same for every engine. A worker on llama.cpp now
-  shows its usage, and a failed `claude` worker keeps the usage it reported. A
-  report cut short is marked partial and shows no cost.
 
 ### Internal
 
