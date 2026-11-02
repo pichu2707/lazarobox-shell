@@ -1085,6 +1085,14 @@ pub enum Row {
         enabled: bool,
         current: bool,
     },
+    /// A limit being typed: the renderer keeps the label when it fits next to
+    /// the value and gives it up for the value (clipped on the left, so the
+    /// cursor stays) when it does not.
+    Edit {
+        label: &'static str,
+        value: String,
+        selected: bool,
+    },
     /// The custom model field and its buffer.
     Field(String),
     /// A plain line of text (the privacy warning).
@@ -2162,15 +2170,17 @@ impl MenuState {
             let ItemKind::Draft(choice) = &item.kind else {
                 continue;
             };
-            // While a limit is typed its value comes first: the label gives
-            // way to a short one so the digits and the cursor stay visible.
-            let editing = at == cursor && self.limit_edit.is_some();
+            if let (Some(field), true) = (&self.limit_edit, at == cursor) {
+                rows.push(Row::Edit {
+                    label: item.label,
+                    value: format!("{field}_"),
+                    selected: true,
+                });
+                continue;
+            }
             rows.push(Row::Item {
-                label: if editing { "Edit" } else { item.label },
-                value: Some(match (&self.limit_edit, at == cursor) {
-                    (Some(field), true) => Cow::Owned(format!("{field}_")),
-                    _ => choice.shown(ai.draft()),
-                }),
+                label: item.label,
+                value: Some(choice.shown(ai.draft())),
                 selected: at == cursor,
                 enabled: true,
             });

@@ -571,3 +571,35 @@ fn raising_the_limit_the_same_day_re_arms_the_note() {
     a.update(recorded_with(Some(6_100), &[]));
     assert_eq!(limit_notes(&a).len(), 2, "the new limit is crossed");
 }
+
+// S-8: the limit is part of the key, so lowering it re-arms the note, and a
+// limit that is switched off and on again does not repeat it.
+#[test]
+fn lowering_the_limit_below_the_total_re_arms_the_note() {
+    let mut a = limited("[ai.usage]\nday_tokens = 5000\n");
+    a.update(recorded_with(Some(5_200), &[]));
+    let mut lowered = ollama();
+    lowered.set_usage(billing_config("[ai.usage]\nday_tokens = 4000\n"));
+    a.ai = lowered;
+    a.update(recorded_with(Some(5_200), &[]));
+    assert_eq!(
+        limit_notes(&a),
+        [
+            "today's usage reached 5200 tokens (limit 5000)",
+            "today's usage reached 5200 tokens (limit 4000)",
+        ]
+    );
+}
+
+#[test]
+fn off_then_on_with_the_same_limit_the_same_day_does_not_repeat_the_note() {
+    let mut a = limited("[ai.usage]\nday_tokens = 5000\n");
+    a.update(recorded_with(Some(5_200), &[]));
+    a.ai = ollama();
+    a.update(recorded_with(Some(5_300), &[]));
+    let mut again = ollama();
+    again.set_usage(billing_config("[ai.usage]\nday_tokens = 5000\n"));
+    a.ai = again;
+    a.update(recorded_with(Some(5_400), &[]));
+    assert_eq!(limit_notes(&a).len(), 1);
+}

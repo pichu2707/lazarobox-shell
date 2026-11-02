@@ -96,6 +96,25 @@ impl MenuPopup<'_> {
                 let text = format!(" {label}{}{value} ", " ".repeat(gap));
                 (text, self.row_style(selected, enabled))
             }
+            &Row::Edit {
+                label,
+                ref value,
+                selected,
+            } => {
+                // The label stays whole when the value fits beside it; if not,
+                // the value wins: `Edit` and the value's tail after a `…`.
+                let (label, value) = if cells(label) + cells(value) + 4 <= width {
+                    (label, value.clone())
+                } else {
+                    let room = width.saturating_sub(cells(EDIT_LABEL) + 4);
+                    (EDIT_LABEL, tail(value, room))
+                };
+                let gap = width
+                    .saturating_sub(cells(label) + cells(&value) + 2)
+                    .max(1);
+                let text = format!(" {label}{}{value} ", " ".repeat(gap));
+                (text, self.row_style(selected, true))
+            }
             Row::Pick {
                 label,
                 mark,
@@ -193,6 +212,18 @@ const CLIP_MARK_FROM: usize = 40;
 /// Suffixes of a task-row value that must survive clipping, outermost last.
 const REQUIRED_MARK: &str = " · download required";
 const NOT_RECOMMENDED_MARK: &str = " · not recommended";
+
+/// The label a limit being typed gives way to when its value needs the room.
+const EDIT_LABEL: &str = "Edit";
+
+/// The last `room` cells of `value`, with a `…` in front when it was cut.
+fn tail(value: &str, room: usize) -> String {
+    if cells(value) <= room {
+        return value.to_owned();
+    }
+    let keep: Vec<char> = value.chars().rev().take(room.saturating_sub(1)).collect();
+    format!("…{}", keep.into_iter().rev().collect::<String>())
+}
 
 /// `value` within `room` cells: a long model name is clipped, its trailing
 /// ` · download required` and ` · not recommended` marks are kept whole.
@@ -886,7 +917,7 @@ mod tests {
                     let start = match row {
                         Row::Title(t) | Row::Text(t) => format!(" {t}"),
                         Row::Field(t) => format!(" {t}"),
-                        Row::Item { label, .. } => format!(" {label}"),
+                        Row::Item { label, .. } | Row::Edit { label, .. } => format!(" {label}"),
                         Row::Pick { label, .. } => format!(" {label}"),
                     };
                     let drawn: String = (inner.x..inner.x + inner.width)
@@ -1567,6 +1598,37 @@ mod tests {
         let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
         assert!(shown.contains("123456789012_"), "{shown}");
         assert!(shown.contains("Esc"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // S-3: with room, the limit keeps its name while it is typed.
+    #[test]
+    fn snapshot_usage_limit_edit_keeps_its_label_with_room() {
+        let mut menu = usage_view();
+        goto_usage_row(&mut menu, "Turn tokens");
+        press(&mut menu, &[KeyCode::Enter]);
+        for c in "4000".chars() {
+            press(&mut menu, &[KeyCode::Char(c)]);
+        }
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("Turn tokens"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // S-4: a stored value too long for the row is clipped from the left, so
+    // the cursor and the tail stay visible.
+    #[test]
+    fn snapshot_usage_limit_edit_of_the_largest_dollar_value_at_the_smallest_popup() {
+        let mut ai = AiConfig::general(Some("ollama"), Some("model1:7b"));
+        ai.usage_mut().set_day_usd_micros(Some(u64::MAX));
+        let mut menu = fresh().with_ai(ai, Some(rich()));
+        tab_key(&mut menu);
+        goto(&mut menu, "Usage (alpha)");
+        press(&mut menu, &[KeyCode::Enter]);
+        goto_usage_row(&mut menu, "Day $");
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+        assert!(shown.contains("…") && shown.contains("551615_"), "{shown}");
         insta::assert_snapshot!(shown);
     }
 

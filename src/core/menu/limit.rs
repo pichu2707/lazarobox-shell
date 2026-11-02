@@ -40,6 +40,10 @@ pub(super) fn parse_limit(field: &str, usd: bool) -> Result<Option<u64>, &'stati
     {
         return Err(NOTICE_LIMIT_EMPTY);
     }
+    // Whole tokens have no fraction.
+    if !usd && field.contains('.') {
+        return Err(NOTICE_LIMIT_KEY);
+    }
     let digits = |t: &str| {
         if t.is_empty() {
             Ok(0)
@@ -49,7 +53,7 @@ pub(super) fn parse_limit(field: &str, usd: bool) -> Result<Option<u64>, &'stati
     };
     let n = if usd {
         if frac.len() > MICRO_DECIMALS {
-            return Err(NOTICE_LIMIT_BIG);
+            return Err(NOTICE_LIMIT_MICROS);
         }
         let micros = digits(&format!("{frac:0<6}"))?;
         digits(whole)?
@@ -86,7 +90,9 @@ pub(super) fn push_limit_char(field: &mut String, c: char, usd: bool) -> Option<
 
 pub(super) const HINT_LIMIT: &str = "digits · Enter · Esc";
 pub(super) const NOTICE_LIMIT_KEY: &str = "Digits only";
-pub(super) const NOTICE_LIMIT_OTHER: &str = "Digits, Enter or Esc only";
+pub(super) const NOTICE_LIMIT_OTHER: &str = "Digits, Backspace, Enter or Esc only";
+pub(super) const NOTICE_LIMIT_MICROS: &str = "At most 6 decimals";
+pub(super) const NOTICE_LIMIT_NOTHING: &str = "Nothing to paste";
 pub(super) const NOTICE_LIMIT_BIG: &str = "That number is too large";
 pub(super) const NOTICE_LIMIT_ENTER: &str = "Enter edits this limit";
 pub(super) const NOTICE_LIMIT_EMPTY: &str = "Type a number, Esc cancels";
@@ -147,8 +153,13 @@ impl MenuState {
             self.notice = Some(NOTICE_USAGE_KEY.to_owned());
             return;
         };
+        let text = text.trim();
+        if text.is_empty() {
+            self.notice = Some(NOTICE_LIMIT_NOTHING.to_owned());
+            return;
+        }
         let mut next = field.clone();
-        for c in text.trim().chars() {
+        for c in text.chars() {
             if let Some(notice) = push_limit_char(&mut next, c, usd) {
                 self.notice = Some(notice.to_owned());
                 return;
@@ -237,6 +248,22 @@ mod tests {
     }
 
     #[test]
+    fn a_fraction_is_no_token_count() {
+        assert!(parse_limit("1.5", false).is_err());
+        assert!(parse_limit("1.", false).is_err());
+        assert_eq!(parse_limit("15", false), Ok(Some(15)));
+    }
+
+    #[test]
+    fn too_many_decimals_have_their_own_notice() {
+        assert_eq!(parse_limit("1.1234567", true), Err("At most 6 decimals"));
+        assert_eq!(
+            parse_limit("18446744073710", true),
+            Err("That number is too large")
+        );
+    }
+
+    #[test]
     fn what_is_shown_parses_back_to_the_same_value() {
         for micros in [1, 5_000, 125_000, 2_500_000, 1_000_000, u64::MAX] {
             let shown = limit_text(Some(micros), true);
@@ -252,7 +279,13 @@ mod tests {
 
     #[test]
     fn a_value_that_does_not_fit_or_is_no_number_is_refused_not_wrapped() {
-        for text in ["18446744073710", "99999999999999999999", "1.1234567", "."] {
+        for text in [
+            "18446744073710",
+            "99999999999999999999",
+            "1.1234567",
+            ".",
+            "1.5.5",
+        ] {
             assert!(parse_limit(text, true).is_err(), "{text}");
         }
         assert!(parse_limit("18446744073709551616", false).is_err());

@@ -8553,7 +8553,11 @@ mod app_tests {
             assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
             // The Usage view says so instead of ignoring it (a limit takes
             // pasted digits while it is edited).
+            let after = format!("{:?}", a.menu());
             if footer_of(&a) == "Esc first to leave Usage" {
+                // Only the notice differs.
+                let told = "notice: Some(\"Esc first to leave Usage\")";
+                assert_eq!(after.replace(told, "notice: None"), format!("{before:?}"));
                 continue;
             }
             assert_eq!(a.menu().cloned(), before);

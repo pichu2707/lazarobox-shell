@@ -30,7 +30,8 @@ fn value_of(menu: &MenuState, wanted: &str) -> String {
                 label,
                 value: Some(value),
                 ..
-            } if label == wanted || label == "Edit" => Some(value.into_owned()),
+            } if label == wanted => Some(value.into_owned()),
+            Row::Edit { label, value, .. } if label == wanted => Some(value),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no row {wanted}"))
@@ -224,14 +225,14 @@ fn while_editing_every_other_key_says_so_and_nothing_leaks() {
     go(&mut m, TURN);
     send(&mut m, key(KeyCode::Enter));
     for (code, notice) in [
-        (KeyCode::Tab, "Digits, Enter or Esc only"),
+        (KeyCode::Tab, "Digits, Backspace, Enter or Esc only"),
         (KeyCode::Char('s'), "Digits only"),
         (KeyCode::Char('j'), "Digits only"),
     ] {
         assert_eq!(send(&mut m, key(code)), MenuCommand::None, "{code:?}");
         assert_eq!(hint(&m), notice, "{code:?}");
     }
-    assert_eq!(selected_label(&m), "Edit", "the row being typed");
+    assert_eq!(selected_label(&m), TURN);
 }
 
 #[test]
@@ -339,4 +340,52 @@ fn backspace_and_esc_clear_a_stale_notice() {
         send(&mut m, key(code));
         assert_ne!(hint(&m), "Digits only", "{code:?}");
     }
+}
+
+// W-2: a paste with nothing to type says so.
+#[test]
+fn an_empty_or_blank_paste_during_an_edit_says_nothing_to_paste() {
+    for text in ["", "  \n\t "] {
+        let mut m = opened();
+        go(&mut m, TURN);
+        send(&mut m, key(KeyCode::Enter));
+        press(&mut m, '7');
+        m.on_paste(text);
+        assert_eq!(hint(&m), "Nothing to paste", "{text:?}");
+        assert_eq!(value_of(&m, TURN), "7_");
+    }
+}
+
+// S-2: every refused key that is not a character shares one text.
+#[test]
+fn every_refused_non_character_key_shares_the_catch_all_notice() {
+    for code in [KeyCode::Tab, KeyCode::Left, KeyCode::F(2), KeyCode::Up] {
+        let mut m = opened();
+        go(&mut m, TURN);
+        send(&mut m, key(KeyCode::Enter));
+        send(&mut m, key(code));
+        assert_eq!(hint(&m), "Digits, Backspace, Enter or Esc only", "{code:?}");
+    }
+    let mut m = opened();
+    go(&mut m, TURN);
+    send(&mut m, key(KeyCode::Enter));
+    let ctrl = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL);
+    m.on_key(&ctrl, false, &mut Config::default());
+    assert_eq!(hint(&m), "Digits, Backspace, Enter or Esc only");
+    assert_eq!(value_of(&m, TURN), "_");
+}
+
+// S-3: the real label stays while the value fits next to it.
+#[test]
+fn the_real_label_stays_in_the_rows_the_menu_hands_out() {
+    let mut m = opened();
+    go(&mut m, TURN);
+    send(&mut m, key(KeyCode::Enter));
+    let rows = m.rows(&Config::default());
+    assert!(
+        rows.iter()
+            .any(|r| matches!(r, Row::Edit { label, value, selected: true }
+            if *label == TURN && value == "_")),
+        "{rows:?}"
+    );
 }
