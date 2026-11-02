@@ -660,6 +660,7 @@ impl AiConfig {
     }
 
     /// This config with the Ollama options `ollama`.
+    #[cfg(test)]
     pub fn with_ollama(mut self, ollama: OllamaOptions) -> Self {
         self.ollama = ollama;
         self

@@ -947,7 +947,7 @@ pub struct App {
     hold: Hold,
     /// The engines whose requests carry tools (`MCP_VERIFIED`).
     tool_engines: &'static [&'static str],
-    /// The Ollama models whose unknown window was already announced this run.
+    /// The Ollama models whose unknown window the status line already told.
     unknown_windows: HashSet<String>,
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,

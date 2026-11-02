@@ -38,9 +38,10 @@ baseline.
   unknown (the 12,000-character cap is reduced by that head). Trimming still
   drops whole user and assistant pairs, oldest first, with the usual marker.
   A message that cannot fit a known window is still sent whole, with a notice,
-  and an Ollama model with an unknown window shows `context window unknown for
-  <model>: using 12,000 characters` once per run. A Modelfile `PARAMETER
-  num_ctx` does not override the cap.
+  and an Ollama model with an unknown window shows `window unknown for
+  <model>: 12k chars` once per run. A Modelfile `PARAMETER
+  num_ctx` does not override the cap when the window is known; when it is
+  unknown no `num_ctx` is sent and the Modelfile value applies.
 
 ## [1.2.1] - 2026-11-02
 

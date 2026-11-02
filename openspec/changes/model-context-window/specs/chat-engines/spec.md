@@ -158,7 +158,12 @@ Each turn MUST send the pinned system prompt followed by the most recent message
 - WHEN the context is built
 - THEN the newest message is still sent whole, with the system prompt, and older messages are omitted
 
+#### Scenario: Over-window notice once per streak [auto]
+- GIVEN several consecutive sends whose newest message and setup pass a known window
+- WHEN each is sent
+- THEN the over-window line shows once, and shows again only after a send that fits
+
 #### Scenario: Unknown Ollama window is visible [auto]
 - GIVEN an Ollama model whose window probe failed
 - WHEN the first turn with it is sent
-- THEN the statusline notice reads `context window unknown for <model>: using 12,000 characters` and the unknown-window budget is used
+- THEN the statusline notice reads `window unknown for <model>: 12k chars` and the unknown-window budget is used

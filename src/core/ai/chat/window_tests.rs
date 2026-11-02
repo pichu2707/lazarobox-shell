@@ -227,3 +227,19 @@ fn the_setup_counts_toward_the_over_window_notice() {
     state.send(&"x".repeat(2_000), &ready(), SYSTEM);
     assert_eq!(over_window_lines(&state).len(), 1);
 }
+
+#[test]
+fn an_overflow_streak_says_so_once_and_again_only_after_a_send_that_fits() {
+    let mut state = chat();
+    state.set_window(Some(1_000));
+    // Three sends past the window with different sizes: one line, not three.
+    for size in [8_000, 9_000, 10_000] {
+        exchange(&mut state, &"x".repeat(size));
+    }
+    assert_eq!(over_window_lines(&state).len(), 1, "{:?}", state.entries());
+    // A send that fits ends the streak; the next overflow is told again.
+    exchange(&mut state, "short");
+    assert_eq!(over_window_lines(&state).len(), 1);
+    exchange(&mut state, &"x".repeat(8_000));
+    assert_eq!(over_window_lines(&state).len(), 2, "{:?}", state.entries());
+}

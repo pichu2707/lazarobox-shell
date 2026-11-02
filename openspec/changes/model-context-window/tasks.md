@@ -64,7 +64,7 @@ Each commit includes its own tests. No attribution lines.
 
 - [x] 5.1 RED: `OVER_WINDOW` shown once via `push_system_once` when head + newest > 100% of known window; `TRUNCATION_MARKER` on real-window trims.
 - [x] 5.2 GREEN: add `OVER_WINDOW` in engine.
-- [x] 5.3 RED: statusline `context window unknown for <model>: using 12,000 characters`, once per model per run.
+- [x] 5.3 RED: statusline `window unknown for <model>: 12k chars`, once per model per run, only marked told when really shown.
 - [x] 5.4 GREEN: App-level HashSet; set `self.notice` (route of `app/tool.rs:250`).
 
 ## Phase 6: Docs (Unit F)

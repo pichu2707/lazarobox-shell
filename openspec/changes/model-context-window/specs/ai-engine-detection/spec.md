@@ -25,6 +25,11 @@ Detection MUST take each Ollama model's max context window from the SAME `POST /
 - WHEN a detection run completes
 - THEN no more `/api/show` calls than the limit were recorded and the remaining models have an unknown window
 
+#### Scenario: A failed probe keeps the last known window [auto]
+- GIVEN a model whose window was read on an earlier run
+- WHEN a later run cannot read it (failed or slow probe)
+- THEN the earlier window is kept, so `num_ctx` does not change and the model is not reloaded; a new answer replaces it, and a model no longer listed drops it
+
 #### Scenario: llama.cpp unchanged [auto]
 - GIVEN a llama-server whose `/props` reports `n_ctx` 4096
 - WHEN detection runs

@@ -516,6 +516,16 @@ impl App {
         self.send_with(id, text, availability, None)
     }
 
+    /// Tells on the status line, once per model, that `model` has no known
+    /// window and characters rule its turns. The model counts as told only
+    /// when the line is really set, and a notice already showing is never
+    /// replaced: the next send tries again.
+    pub(super) fn announce_unknown_window(&mut self, model: String) {
+        if self.notice.is_none() && self.unknown_windows.insert(model.clone()) {
+            self.notice = Some(format!("window unknown for {model}: 12k chars"));
+        }
+    }
+
     /// `send_text`, or with `attach` the continuation turn of that open run
     /// (S4): the composer holds the user's own draft, so it is left alone.
     pub(super) fn send_with(
@@ -583,13 +593,8 @@ impl App {
                 if attach.is_none() {
                     chat.composer_mut().clear();
                 }
-                // Budgeted by characters, not by tokens: say so, once per model.
-                if let Some(model) = unknown
-                    && self.unknown_windows.insert(model.clone())
-                {
-                    self.notice = Some(format!(
-                        "context window unknown for {model}: using 12,000 characters"
-                    ));
+                if let Some(model) = unknown {
+                    self.announce_unknown_window(model);
                 }
                 self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);

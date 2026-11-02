@@ -5,7 +5,7 @@ use super::chat_notes::{ai, plain, type_text};
 use super::*;
 use crate::core::ai::{
     EngineState, ModelFacts, Status,
-    chat::{Entry, engine::Tools},
+    chat::engine::{Finish, StreamEvent},
     config::OllamaOptions,
     marks::Tools as Marks,
 };
@@ -101,32 +101,55 @@ fn an_unknown_window_has_no_fill() {
     let mut a = chat_with(None, 16_384);
     send(&mut a, "hi");
     assert_eq!(percent(&a), None);
-    let _ = (Entry::System(String::new()), Tools::Off);
 }
 
-const UNKNOWN: &str = "context window unknown for llama3:8b: using 12,000 characters";
+const UNKNOWN: &str = "window unknown for llama3:8b: 12k chars";
+
+/// Ends the turn in flight so the next send is allowed.
+fn finish_turn(a: &mut App) {
+    let turn = chat_of(a).turn();
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Delta("ok".into()),
+    ));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+}
 
 #[test]
 fn an_unknown_window_shows_a_statusline_notice_once_per_model() {
     let mut a = chat_with(None, 16_384);
     send(&mut a, "hi");
     assert_eq!(a.notice(), Some(UNKNOWN));
-    // The turn ends, the notice is gone, and the next send is quiet.
-    let turn = chat_of(&a).turn();
-    a.update(AppEvent::Chat(
-        chat_id(),
-        turn,
-        crate::core::ai::chat::engine::StreamEvent::Done(
-            crate::core::ai::chat::engine::Finish::Stop,
-        ),
-    ));
-    a.notice = None;
+    finish_turn(&mut a);
+    // Any key clears the notice, as for every notice; the next send is quiet.
+    a.update(plain(KeyCode::PageUp));
+    assert_eq!(a.notice(), None);
     send(&mut a, "again");
     assert_eq!(a.notice(), None);
 }
 
 #[test]
-fn a_known_window_shows_no_notice() {
+fn a_notice_already_showing_is_kept_and_the_model_is_not_marked_told() {
+    let mut a = chat_with(None, 16_384);
+    a.notice = Some("some other notice".to_owned());
+    a.announce_unknown_window(MODEL.to_owned());
+    assert_eq!(a.notice(), Some("some other notice"), "never overwritten");
+    assert!(a.unknown_windows.is_empty(), "so it is not marked told");
+    a.update(plain(KeyCode::PageUp)); // any key clears the notice
+    a.announce_unknown_window(MODEL.to_owned());
+    assert_eq!(a.notice(), Some(UNKNOWN), "told when the line is free");
+    a.update(plain(KeyCode::PageUp)); // any key clears the notice
+    a.announce_unknown_window(MODEL.to_owned());
+    assert_eq!(a.notice(), None, "and only once");
+}
+
+#[test]
+fn a_known_window_tells_nothing() {
     let mut a = chat_with(Some(8_192), 16_384);
     send(&mut a, "hi");
     assert_eq!(a.notice(), None);

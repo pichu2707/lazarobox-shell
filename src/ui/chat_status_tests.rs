@@ -384,7 +384,7 @@ fn without_a_window_there_is_no_fill_to_show() {
     let line = status(&app);
     assert!(!line.contains("· context"), "{line}");
     // What is shown instead is the notice that the characters rule the turn.
-    assert!(line.contains("context window unknown"), "{line}");
+    assert!(line.contains("window unknown"), "{line}");
 }
 
 #[test]

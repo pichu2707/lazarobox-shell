@@ -374,6 +374,9 @@ pub struct ChatState {
     /// How full the context of the last request was, and the engine and model
     /// it was sent to.
     fill: Option<ContextFill>,
+    /// The last send went over the window and the transcript said so; kept
+    /// until a send that fits, so an overflow streak is told once.
+    over_window_told: bool,
     /// What the tool block and schemas of the turn about to be sent weigh, in
     /// estimated tokens; 0 when it offers none.
     tools_reserve: usize,
@@ -507,6 +510,7 @@ impl ChatState {
             outbox: Vec::new(),
             window: None,
             fill: None,
+            over_window_told: false,
             tools_reserve: 0,
             request_engine: String::new(),
             turn_usage: None,
@@ -1383,9 +1387,14 @@ impl ChatState {
             let setup = budget::estimate_tokens(&system)
                 + budget::estimate_tokens(memory_text)
                 + self.tools_reserve;
-            if setup + newest > window {
-                self.push_system_once(&over_window(setup + newest, window));
+            let over = setup + newest > window;
+            // Once per overflow streak: the numbers change with every send,
+            // so the kind is what is deduplicated, not the text.
+            if over && !self.over_window_told {
+                self.entries
+                    .push(Entry::System(over_window(setup + newest, window)));
             }
+            self.over_window_told = over;
         }
         self.turn += 1;
         self.turn_usage = None;
