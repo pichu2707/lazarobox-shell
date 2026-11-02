@@ -587,3 +587,57 @@ fn the_alert_footer_wraps_on_a_narrow_pane() {
         assert!(words.contains(word), "`{word}` cut off:\n{shown}");
     }
 }
+
+/// A run whose worker 1 was refused before it had an engine (`review` routed
+/// to a model that is not downloaded), on a menu where `review` is `assigned`.
+fn refused_unresolved(assigned: Option<(&str, &str)>) -> App {
+    let mut ai = super::orchestra_send::orch_ai();
+    ai.orchestrator.acknowledged = true;
+    if let Some((engine, model)) = assigned {
+        ai.set(
+            Task::Review,
+            crate::core::ai::config::Assignment {
+                engine: Some(engine.into()),
+                model: Some(model.into()),
+            },
+        );
+    }
+    let mut a = super::orchestra_send::orch_app_with(ai);
+    super::orchestra_send::toggle(&mut a);
+    ask(&mut a, "plan it");
+    let mut refused = super::orchestra_run::row(RUN, 1, WorkerStatus::Refused);
+    if let OrchestraEvent::Worker(row) = &mut refused {
+        row.engine = String::new();
+        row.model = None;
+    }
+    a.update(event(refused));
+    a.update(event(OrchestraEvent::Halted {
+        run: RUN,
+        worker: WorkerId(1),
+        class: ErrorClass::Other,
+        text: "ollama: llama3:8b is not downloaded: download required".into(),
+    }));
+    a
+}
+
+// #502: a refused worker has no engine, but `m` still opens the models of the
+// engine its class is configured with, as the hint promises.
+#[test]
+fn m_on_a_refused_worker_opens_the_models_of_its_configured_engine() {
+    let mut a = refused_unresolved(Some(("ollama", "llama3:8b")));
+    assert_eq!(a.update(key('m')), vec![]);
+    let text = guidance(&a);
+    assert!(text.starts_with("Model for review (ollama)"), "{text}");
+}
+
+// With nothing to take the engine from, the engine picker opens and the
+// notice says why: never a silent change of what the key does.
+#[test]
+fn m_on_a_refused_worker_with_no_engine_anywhere_says_why_it_opens_the_engines() {
+    let mut a = refused_unresolved(None);
+    a.update(key('m'));
+    let text = guidance(&a);
+    assert!(text.starts_with("Engine for review"), "{text}");
+    let notice = a.notice().expect("a notice");
+    assert!(notice.contains("no engine"), "{notice}");
+}

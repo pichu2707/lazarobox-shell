@@ -35,6 +35,10 @@ const NOTICE: &str = "Providers recommend API keys for automation; \
 
 /// The keys of the failure alert after `r retry`: `m` and `p` open the
 /// detached picker, `c` or Esc cancels.
+/// Said when `m` opens the engines because the worker has no engine to take
+/// the models from.
+const NO_ENGINE_FOR_MODEL: &str =
+    "This worker has no engine and none is configured for its task; pick an engine first";
 const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
@@ -550,13 +554,26 @@ impl App {
                 _ => None,
             })
         });
+        let mut unresolved = false;
         let picker = failed.map(|row| {
             let config = chat
                 .orch_overrides()
                 .map_or_else(|| self.ai.clone(), |over| over.apply(&self.ai));
-            let in_use = (row.engine.as_str(), row.model.as_deref());
+            let mut in_use = (row.engine.as_str(), row.model.as_deref());
+            // A refused worker never got an engine: the models offered are
+            // those of the engine its class is configured with.
+            let configured = config.resolve(row.kind).0;
+            if in_use.0.is_empty() {
+                if let Some(engine) = configured.engine.as_deref() {
+                    in_use = (engine, configured.model.as_deref());
+                }
+            }
+            unresolved = change == Change::Model && in_use.0.is_empty();
             FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
         });
+        if unresolved {
+            self.notice = Some(NO_ENGINE_FOR_MODEL.to_owned());
+        }
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             if picker.is_none() {
                 chat.push_system_line("cannot change: that worker is not shown any more".into());
