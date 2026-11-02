@@ -28,7 +28,7 @@ pub struct SpawnSpec {
     /// shells: only a pane that runs one job cares how it ended.
     pub report_status: bool,
     /// A umask for this child only (the app's own is untouched). `None` keeps
-    /// the inherited one.
+    /// the inherited one. Needs a Unix `/bin/sh` (see [`SpawnSpec::launch`]).
     pub umask: Option<u32>,
 }
 
@@ -160,7 +160,36 @@ mod tests {
             .args(args)
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0022");
+        let text = String::from_utf8_lossy(&out.stdout);
+        // A /bin/sh may print `022`: compare the number, not the text.
+        assert_eq!(u32::from_str_radix(text.trim(), 8), Ok(0o22), "{text}");
+    }
+
+    #[test]
+    fn hostile_arguments_reach_the_program_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let pwned = dir.path().join("pwned");
+        let hostile = format!(
+            "a b; $(touch {}) `touch {}` 'q' \"d\"\nnext",
+            pwned.display(),
+            pwned.display()
+        );
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/bin/sh".into();
+        spec.args = vec![
+            "-c".into(),
+            "printf %s \"$1\"".into(),
+            "x".into(),
+            hostile.clone(),
+        ];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        let out = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), hostile);
+        assert!(!pwned.exists(), "an argument was run as a command");
     }
 
     // Spec: SHELL set.
