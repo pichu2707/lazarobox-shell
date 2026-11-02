@@ -532,7 +532,6 @@ async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
         Arc::new(ListingCache::new(Arc::new(Instant::now))),
         Arc::new(ShowCache::default()),
         false,
-        live.ports(),
         Arc::from(Vec::new()),
         live.clone(),
     );

@@ -722,11 +722,12 @@ pub fn spawn_detection(
     cache: Arc<ListingCache>,
     show: Arc<ShowCache>,
     force: bool,
-    ports: ServerPorts,
     model_dirs: Arc<[PathBuf]>,
     live: super::chat::LiveServers,
 ) {
     spawn_detection_of(tx, async move {
+        // The ports as the menu has them now.
+        let ports = live.ports();
         let detection = detect_all(&env, &cache, &show, force, &ports, &model_dirs).await;
         // The runtime learns the windows before the app does, so a request
         // never carries less than the budget assumed.

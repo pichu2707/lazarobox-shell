@@ -508,7 +508,6 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     Arc::clone(&listing_cache),
                     Arc::clone(&show_cache),
                     force,
-                    live.ports(),
                     Arc::clone(&model_dirs),
                     live.clone(),
                 );
