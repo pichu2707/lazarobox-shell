@@ -1149,6 +1149,8 @@ Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 t
 
 Ambas cosas vienen activadas. Se cambian desde el menú (`Ctrl+Espacio` y `m`, pestaña **Settings**, fila `Usage (alpha)`) o a mano en `config.toml`.
 
+Para apagarlas: `line = false` (la línea de uso) y `statusline = false` (el segmento de la barra) bajo `[ai.usage]` en `config.toml`, o los interruptores `Usage line` y `Usage in bar` de esa vista del menú.
+
 **Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con ocho filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado), `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`) y los tres límites `Turn tokens`, `Day tokens` y `Day $` (ver «Límites de uso»; los nombres son cortos para que quepan en el tamaño mínimo: tokens por turno, tokens por día y dólares por día). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor de los interruptores y la facturación (en un límite, `Enter` lo edita); `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
 
 Las claves, en `config.toml`:

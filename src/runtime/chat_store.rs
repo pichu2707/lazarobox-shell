@@ -76,12 +76,6 @@ CREATE TABLE memory_notes (
 CREATE INDEX memory_notes_by_conversation ON memory_notes(conversation_id);
 ";
 
-/// Schema v3 (1.0 freeze) drops the closed-list CHECKs on `profile`, `role` and
-/// `status`, so a new profile, role (`tool`) or status needs no table rebuild
-/// later. The allowed values are validated in Rust when a row is written. Done
-/// with SQLite's documented 12-step ALTER procedure for `conversations`,
-/// `messages` and `tags`; the caller turns foreign keys off around it. Rowids,
-/// ids, the `folder` column and every other constraint are carried over.
 /// The usage table (ai-cost D7). Idempotent, so it runs on every open.
 const SCHEMA_USAGE: &str = "
     CREATE TABLE IF NOT EXISTS turn_usage (
@@ -107,6 +101,12 @@ const SCHEMA_USAGE: &str = "
     CREATE INDEX IF NOT EXISTS turn_usage_by_conversation ON turn_usage(conversation_id);
 ";
 
+/// Schema v3 (1.0 freeze) drops the closed-list CHECKs on `profile`, `role` and
+/// `status`, so a new profile, role (`tool`) or status needs no table rebuild
+/// later. The allowed values are validated in Rust when a row is written. Done
+/// with SQLite's documented 12-step ALTER procedure for `conversations`,
+/// `messages` and `tags`; the caller turns foreign keys off around it. Rowids,
+/// ids, the `folder` column and every other constraint are carried over.
 const SCHEMA_V3: &str = "
 CREATE TABLE new_conversations (
     id         INTEGER PRIMARY KEY,
