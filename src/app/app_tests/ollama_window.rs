@@ -103,3 +103,31 @@ fn an_unknown_window_has_no_fill() {
     assert_eq!(percent(&a), None);
     let _ = (Entry::System(String::new()), Tools::Off);
 }
+
+const UNKNOWN: &str = "context window unknown for llama3:8b: using 12,000 characters";
+
+#[test]
+fn an_unknown_window_shows_a_statusline_notice_once_per_model() {
+    let mut a = chat_with(None, 16_384);
+    send(&mut a, "hi");
+    assert_eq!(a.notice(), Some(UNKNOWN));
+    // The turn ends, the notice is gone, and the next send is quiet.
+    let turn = chat_of(&a).turn();
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        crate::core::ai::chat::engine::StreamEvent::Done(
+            crate::core::ai::chat::engine::Finish::Stop,
+        ),
+    ));
+    a.notice = None;
+    send(&mut a, "again");
+    assert_eq!(a.notice(), None);
+}
+
+#[test]
+fn a_known_window_shows_no_notice() {
+    let mut a = chat_with(Some(8_192), 16_384);
+    send(&mut a, "hi");
+    assert_eq!(a.notice(), None);
+}

@@ -167,7 +167,8 @@ fn no_stream_means_no_indicator_in_any_mode() {
 
 #[test]
 fn a_running_stream_shows_the_indicator_and_the_phase_flips() {
-    let mut app = chat_app();
+    // A known window keeps the unknown-window notice off the status line.
+    let mut app = windowed_app(Some(100_000));
     let turn = send(&mut app, "hi");
     let line = status(&app);
     assert!(line.contains("▰▰▰") && line.contains("thinking"), "{line}");
@@ -381,7 +382,9 @@ fn without_a_window_there_is_no_fill_to_show() {
     let mut app = windowed_app(None);
     send(&mut app, "hi");
     let line = status(&app);
-    assert!(!line.contains("context"), "{line}");
+    assert!(!line.contains("· context"), "{line}");
+    // What is shown instead is the notice that the characters rule the turn.
+    assert!(line.contains("context window unknown"), "{line}");
 }
 
 #[test]

@@ -169,3 +169,61 @@ fn a_trim_drops_whole_pairs_oldest_first_and_starts_on_a_user_message() {
     let context = build_context_tokens(&history, 0);
     assert_eq!(context.messages, history[4..]);
 }
+
+fn over_window_lines(state: &ChatState) -> Vec<String> {
+    state
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::System(line) if line.starts_with("this message and the setup") => {
+                Some(line.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_message_that_cannot_fit_the_window_says_so_once() {
+    let mut state = chat();
+    state.set_window(Some(1_000));
+    // 8,000 characters are about 2,000 tokens, past the 1,000-token window.
+    let SendOutcome::Sent { request, .. } = state.send(&"x".repeat(8_000), &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    // Still sent whole: the server decides, the user was told.
+    assert_eq!(request.messages.last().unwrap().content.len(), 8_000);
+    let lines = over_window_lines(&state);
+    assert_eq!(lines.len(), 1, "{:?}", state.entries());
+    assert!(
+        lines[0].contains("over the 1000-token window"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[0].ends_with("the server may cut them"),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn a_message_that_fits_or_an_unknown_window_say_nothing() {
+    let mut fits = chat();
+    fits.set_window(Some(4_096));
+    exchange(&mut fits, &"x".repeat(400));
+    assert!(over_window_lines(&fits).is_empty());
+    let mut unknown = chat();
+    let _ = exchange(&mut unknown, &"x".repeat(80_000));
+    assert!(over_window_lines(&unknown).is_empty());
+}
+
+#[test]
+fn the_setup_counts_toward_the_over_window_notice() {
+    let mut state = chat();
+    state.set_window(Some(1_000));
+    // The message alone (500 tokens) fits; with 2,000 tokens of tools it does not.
+    state.set_tools_reserve(2_000);
+    state.send(&"x".repeat(2_000), &ready(), SYSTEM);
+    assert_eq!(over_window_lines(&state).len(), 1);
+}

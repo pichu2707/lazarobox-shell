@@ -545,11 +545,15 @@ impl App {
         // window held to the user's cap, through the function the runtime
         // stamps the body with.
         let cap = self.ai.ollama_options().num_ctx_cap;
+        let mut unknown = None;
         let window = match availability {
             Availability::Ready { engine, model } if engine == "ollama" => {
                 let max = model
                     .as_deref()
                     .and_then(|m| self.engines.as_ref()?.model_window(engine, m));
+                if max.is_none() {
+                    unknown = model.clone();
+                }
                 ollama_num_ctx(max, cap)
             }
             Availability::Ready { engine, .. } => {
@@ -578,6 +582,14 @@ impl App {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {
                     chat.composer_mut().clear();
+                }
+                // Budgeted by characters, not by tokens: say so, once per model.
+                if let Some(model) = unknown
+                    && self.unknown_windows.insert(model.clone())
+                {
+                    self.notice = Some(format!(
+                        "context window unknown for {model}: using 12,000 characters"
+                    ));
                 }
                 self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);

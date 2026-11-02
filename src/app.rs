@@ -947,6 +947,8 @@ pub struct App {
     hold: Hold,
     /// The engines whose requests carry tools (`MCP_VERIFIED`).
     tool_engines: &'static [&'static str],
+    /// The Ollama models whose unknown window was already announced this run.
+    unknown_windows: HashSet<String>,
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,
     /// How the tool badge of a model row is drawn (injected).
@@ -1094,6 +1096,7 @@ impl App {
             held_exit: None,
             hold: Hold::default(),
             tool_engines: MCP_VERIFIED,
+            unknown_windows: HashSet::new(),
             utf8_locale: false,
             tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),

@@ -105,6 +105,13 @@ pub const STILL_WAITING: &str = "still waiting for the model…";
 pub const INTERRUPTED: &str = "stream interrupted";
 /// System line shown once, before the oldest message the model still sees.
 pub const TRUNCATION_MARKER: &str = "earlier messages are not sent to the model";
+/// System line for a send whose setup and newest message alone pass a known
+/// context window: it goes whole, and the server may cut it.
+pub fn over_window(tokens: usize, window: usize) -> String {
+    format!(
+        "this message and the setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
+    )
+}
 /// System line for a send while an answer is still streaming.
 pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 /// System line for a send into a full conversation.
@@ -1366,6 +1373,20 @@ impl ChatState {
         // A summary that covers what is out replaces the marker.
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
+        // The newest message is always sent whole: when it and the setup
+        // pass the window, say so instead of cutting silently.
+        if let Some(window) = self.window.filter(|&w| w > 0) {
+            let newest = context
+                .messages
+                .last()
+                .map_or(0, |m| budget::estimate_tokens(&m.content));
+            let setup = budget::estimate_tokens(&system)
+                + budget::estimate_tokens(memory_text)
+                + self.tools_reserve;
+            if setup + newest > window {
+                self.push_system_once(&over_window(setup + newest, window));
+            }
+        }
         self.turn += 1;
         self.turn_usage = None;
         self.clean_end = false;
