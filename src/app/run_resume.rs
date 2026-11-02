@@ -114,10 +114,9 @@ impl App {
         let now = self.now();
         self.dirty = true;
         match &mut self.run_keep.read {
-            RunsRead::Known => {
-                self.dirty = false;
-                None
-            }
+            // Not the first press of an answer: the key goes on and says
+            // its own result; the frame it asks for must not be taken back.
+            RunsRead::Known => None,
             RunsRead::Unknown => {
                 let effects = self.recover_runs(id);
                 self.wait_for_runs(id, key);

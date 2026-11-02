@@ -839,3 +839,61 @@ fn resume_with_nothing_interrupted_still_says_none_after_the_answer() {
     keys(&mut a, "rr");
     assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
+
+// #501 regression (manual test of 1.2.1): the key's answer must reach the
+// screen. A notice that is set but not redrawn leaves the group hint of the
+// key up and the user with no feedback.
+mod feedback_is_drawn {
+    use super::*;
+
+    /// The status bar as drawn now: it must show `needle` and no stale hint.
+    fn shows(a: &mut App, needle: &str) {
+        assert!(a.take_dirty(), "a frame is due: {needle}");
+        assert_eq!(a.input(), InputMode::Terminal, "the key group is over");
+        let bar = a.status_path(120);
+        assert!(bar.contains(needle), "{bar:?}");
+        assert!(
+            !bar.contains("resume interrupted run"),
+            "stale hint: {bar:?}"
+        );
+    }
+
+    fn quiet(a: &mut App) {
+        a.take_dirty();
+    }
+
+    #[test]
+    fn never_on_looking_then_the_answer_are_drawn() {
+        for key in ["rr", "rd"] {
+            let mut a = never_orch_app();
+            quiet(&mut a);
+            keys(&mut a, key);
+            shows(&mut a, "Looking for interrupted runs");
+            recovered(&mut a, Vec::new());
+            shows(&mut a, "No interrupted run to resume or discard");
+        }
+    }
+
+    #[test]
+    fn orch_on_and_known_empty_says_none_and_draws_it() {
+        for key in ["rr", "rd"] {
+            let mut a = never_orch_app();
+            toggle(&mut a);
+            recovered(&mut a, Vec::new());
+            quiet(&mut a);
+            keys(&mut a, key);
+            shows(&mut a, "No interrupted run to resume or discard");
+        }
+    }
+
+    #[test]
+    fn orch_on_with_the_reply_still_to_come_is_drawn() {
+        let mut a = never_orch_app();
+        toggle(&mut a);
+        quiet(&mut a);
+        keys(&mut a, "rr");
+        shows(&mut a, "Looking for interrupted runs");
+        recovered(&mut a, Vec::new());
+        shows(&mut a, "No interrupted run to resume or discard");
+    }
+}
