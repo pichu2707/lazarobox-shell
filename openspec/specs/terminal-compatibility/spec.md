@@ -3,7 +3,7 @@
 ## Purpose
 Make every terminal dependency either work or say clearly that it did not. Support is defined by per-terminal records, not by a tested-in-one-terminal claim.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: First-run prefix probe
 On the first run in a terminal with no remembered probe result, the app MUST ask the user to press `Ctrl+Space`. If `Ctrl+Space` arrives within the probe window, the app MUST remember a pass and show no offer. If `Ctrl+]` (or `Ctrl+5`, the same byte) arrives, the app MUST remember `alias` and show no offer. If a plain space, or any key that is neither printable nor unmodified (for example `Esc`, `Enter`, an arrow, or a modified key), arrives first, the app MUST show a notice offering `Ctrl+]` as the prefix and MUST remember `missed`. An unmodified printable key other than the space bar (letters, digits, symbols) MUST NOT end the probe: the user may be typing, so the probe keeps waiting. If the window passes with no deciding key, the app MUST end the probe, MUST store nothing and MUST show no offer; the probe runs again on the next start. The window MUST be a few seconds (the exact length is left to design) and MUST NOT start before the app is running. The probe MUST NOT block the app: every key reaches the app as usual, and the notice is advice only. The probe MUST NOT use environment heuristics (`WT_SESSION`, WSL, `TERM_PROGRAM`) to decide the result.

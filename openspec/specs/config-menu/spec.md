@@ -2,15 +2,14 @@
 
 ## Purpose
 
-A general in-app menu opened with `Ctrl+Space m`. It has two tabs, "Settings" (rows that map to `config.toml` keys, with static values) and "AI" (a fixed list of tasks, each with an `engine › model` assignment chosen from a picker that shows what is detected and downloaded, see ai-task-models and ai-engine-detection). Changes preview live; `s` saves (see config-persistence), Esc goes back or reverts. Tags: [auto] = `cargo test`; [manual] = real Kitty.
+A general in-app menu opened with `Ctrl+Space m`. It has five tabs: "Settings" (rows that map to `config.toml` keys, with static values), "Models" (a fixed list of tasks, each with an `engine › model` assignment chosen from a picker that shows what is detected and downloaded, see ai-task-models and ai-engine-detection), "Tools", "Connectors" (shown only when it has rows) and "Chat". Changes preview live; `s` saves (see config-persistence), Esc goes back or reverts. Tags: [auto] = `cargo test`; [manual] = real Kitty.
 
-Terms: "task list" is the main menu view (Settings rows and AI rows). "Picker" is the view that replaces it inside the same popup: level 1 lists engines, level 2 lists the models of the chosen engine, and the "custom field" is a text entry reached from a CLI engine's `custom…` row. A "disabled row" is drawn muted, the cursor CAN land on it (so long lists scroll it into view), and Enter on it does nothing. The cursor skips no row of the task list. "Menu tab" is a tab of the config popup (Settings, AI). It is not a pane tab: where the Live preview and revert requirement says "the tab bar MUST be shown while the menu is open", it means the pane tab bar, which is unchanged. "Menu tab bar" is the one-line strip of menu tabs inside the popup. "Body" is the popup content between the borders, excluding the blank row and footer.
+Terms: "task list" is the main menu view (the rows of the active tab). "Picker" is the view that replaces it inside the same popup: level 1 lists engines, level 2 lists the models of the chosen engine, and the "custom field" is a text entry reached from a CLI engine's `custom…` row. A "disabled row" is drawn muted, the cursor CAN land on it (so long lists scroll it into view), and Enter on it does nothing. The cursor skips no row of the task list. "Menu tab" is a tab of the config popup (Settings, Models, Tools, Connectors, Chat). It is not a pane tab: where the Live preview and revert requirement says "the tab bar MUST be shown while the menu is open", it means the pane tab bar, which is unchanged. "Menu tab bar" is the one-line strip of menu tabs inside the popup. "Body" is the popup content between the borders, excluding the blank row and footer.
 
 ## Requirements
 
 ### Requirement: Open and close
 The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`, always on the `Settings` tab, on its first row (`Statusline position`), with the per-tab cursor memory cleared and the picker closed. Opening MUST NOT write to any PTY. The menu MUST close on `s` (after a successful save, or at once when nothing changed) and on Esc at the top level of the task list (after reverting). Esc while a picker is open MUST go back exactly one level (custom field to level 2, level 2 to level 1, level 1 to the task list) and MUST NOT close the menu or revert the draft. This Esc rule takes precedence wherever Esc is described. While open the mode is MENU (see modal-input). Opening captures the current values of the menu-owned settings as the "original" values and as the initial draft.
-(Previously: scenarios named the `AI` tab; text unchanged)
 
 #### Scenario: Open [auto]
 - GIVEN TERMINAL
@@ -44,7 +43,6 @@ The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`,
 
 ### Requirement: Sections and items are data
 Sections, items and tabs MUST come from static descriptor tables; adding a section, a tab or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path where one exists, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). Each row MUST belong to exactly one tab, as in the Tab map: `Settings` (`Statusline position` `statusline.position`: top, bottom; `Tab bar position` `tabbar.position`: top, bottom; `Mouse` `mouse`: on, off, written as the booleans `true` and `false`; `Notify`: auto, desktop, bell, off; `Sound`: off, on; `llama-server idle` `ai.servers.llamacpp.idle_minutes`: 5 min, 15 min, 30 min, never, written as a TOML integer, never = 0; `Updates`: the running version, or the newer one when known; `Feedback`: `bug report or idea`, no key path), `Models` (`Set all tasks` aggregate over the five tasks, no single key path; `general` `ai`; `code` `ai.tasks.code`; `chat` `ai.tasks.chat`; `review` `ai.tasks.review`; `summarize` `ai.tasks.summarize`; `orchestrate` its task table; `Hugging Face`, no key path), `Tools` (`Tools` `ai.tools.enabled`: off, on; `Search`, `Write`, `Exec`, `Git`, `Git write`: off, on, each with its own `ai.tools.<key>`; `Approval` `ai.tools.approval`: ask, auto, run; `Orchestrator` `ai.orchestrator.enabled`: off, on), `Connectors` (no rows) and `Chat` (`Profile` `ai.profile`: analyst, programmer; `Context` `ai.context`: off, on; `Memory` `ai.memory.enabled`: off, on). `Notify`, `Sound` and `llama-server idle` edit the AI draft, so they MUST NOT be shown (and MUST NOT be selectable) when the AI section is not attached; then `Settings` holds `Statusline position`, `Tab bar position`, `Mouse`, `Updates` and `Feedback`, and no other tab exists. Moving a row between tabs MUST NOT change its key path, its values or the config edit it produces.
-(Previously: two tabs, `Settings` with seven rows and a 19-row `AI` tab; the Settings list omitted `Feedback` and the no-AI list omitted `Feedback`)
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor tables
@@ -54,7 +52,7 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 #### Scenario: Settings rows [auto, TestBackend + insta]
 - GIVEN the menu just opened with the AI section attached and `mouse` at its default
 - WHEN rendered on a normal terminal
-- THEN, with no `Settings` title row (the bar names the tab), the Settings tab shows `Statusline position`, `Tab bar position`, `Mouse` (`on`, not muted), `Notify`, `Sound`, `llama-server idle` (`15 min`), `Updates` and `Feedback`, each with its current value, and no Models, Tools or Chat row is drawn
+- THEN, with no `Settings` title row (the bar names the tab), the Settings tab shows `Statusline position`, `Tab bar position`, `Mouse` (`on`, not muted), `Notify`, `Sound`, `llama-server idle` (`15 min`), `Usage (alpha)`, `Updates` and `Feedback`, each with its current value, and no Models, Tools or Chat row is drawn
 
 #### Scenario: Every row is on its tab [auto, TestBackend + insta]
 - GIVEN the AI section attached
@@ -68,7 +66,6 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 
 ### Requirement: Navigation
 `j`, `k`, Down and Up MUST move the selection between the selectable rows of the ACTIVE tab only, in display order, and MUST wrap around at the ends of that tab (from its last row to its first and back); they MUST NOT cross to another tab, because Tab, Shift+Tab and the jump keys are the only way across tabs. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press. The order of each tab is the one in the Tab map: `Settings` ends with `Updates`, `Feedback`; `Models` ends with `orchestrate`, `Hugging Face`; `Tools` ends with `Approval`, `Orchestrator`; `Chat` is `Profile`, `Context`, `Memory`.
-(Previously: two tabs; the `AI` tab order ran from `Set all tasks` to `Hugging Face` in one list; the Settings order omitted `llama-server idle` and `Feedback`)
 
 #### Scenario: Move down and up [auto]
 - GIVEN MENU with the first row selected
@@ -173,7 +170,6 @@ Every change of a draft value MUST be applied immediately to the running layout 
 
 ### Requirement: Input is swallowed
 In MENU every key not listed above MUST be swallowed with no effect. The listed keys are `j`, `k`, Up, Down, `h`, `l`, Left, Right, Space, Enter, `s`, `r`, `t`, `y` (on the Updates command and the warning), `d` (on a Hugging Face row with a saved token), Tab, Shift+Tab (`BackTab` with or without SHIFT, and Tab with SHIFT), the jump keys `1` to `5` (unmodified, at the top level only) and Esc, each with the behavior described in this spec, and inside the custom field typed characters, Backspace and Ctrl+U; in the Hugging Face token field and the Feedback form, Ctrl+O opens their link (see those requirements). Ctrl+Tab and Alt+Tab are unlisted and swallowed; so is any digit with Ctrl or Alt (modified keys stay swallowed as today). At the top level `0` and `6` to `9` are not swallowed silently: they show the footer notice `Tabs are 1-5` (see Jump keys), and Tab or Shift+Tab with a single visible tab shows `No other tabs`. Tab, Shift+Tab and the jump keys are listed at the top level only; in the picker, the custom field and the warning they follow Sub-levels keep the bar inert. The PTY MUST NOT receive any key or paste while the menu is open. Release events MUST be ignored. Ctrl+Space MUST be swallowed (not cancel, not literal NUL), also inside the custom field. Shift is ignored for listed keys (Shift+Space cycles, Shift+Enter cycles or selects like Enter); uppercase letters such as `J`, `S` and `R` are unlisted and swallowed outside the custom field. `r` is listed only for the refresh behavior (see Refresh key) and `s` only for saving (see config-persistence).
-(Previously: no digit was listed; `d` was not mentioned)
 
 #### Scenario: Unknown key [auto]
 - GIVEN MENU
@@ -244,8 +240,7 @@ When a detection cue is active (see Detection cues) the hint of an AI view (task
 - THEN the footer shows the message instead of the hint, and the next key press restores the hint
 
 ### Requirement: Tiny terminals
-The menu MUST never panic at any terminal size down to 0x0, on every visible tab and in every picker view. The popup width is 62 with the AI section (51 without) and its height is the fixed popup height (see Popup height is fixed: `MENU_BODY` 12 plus `CHROME` 4 rows of chrome: two borders, the blank row and the footer, so 16; 17 once the ai-cost `Usage (alpha)` row lands). The full popup needs at least 24 columns by 15 rows (16 with the Usage row), the smallest full popup (the blank row is the first thing dropped); adding a row to the tallest view grows these numbers. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), `s` still saves, and Tab, Shift+Tab and the jump keys still switch tabs. Content that does not fit MUST be clipped, including the menu tab bar, which narrows by the steps of Menu tab bar.
-(Previously: scenarios named the `AI` tab; the bar degraded only as far as the hint)
+The menu MUST never panic at any terminal size down to 0x0, on every visible tab and in every picker view. The popup width is 62 with the AI section (51 without) and its height is the fixed popup height (see Popup height is fixed: `MENU_BODY` 13 plus `CHROME` 4 rows of chrome: two borders, the blank row and the footer, so 17). The full popup needs at least 24 columns by 16 rows, the smallest full popup (the blank row is the first thing dropped); adding a row to the tallest view grows these numbers. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), `s` still saves, and Tab, Shift+Tab and the jump keys still switch tabs. Content that does not fit MUST be clipped, including the menu tab bar, which narrows by the steps of Menu tab bar.
 
 #### Scenario: No panic at any size [auto]
 - GIVEN the menu open on each visible tab, then in each picker view and the warning
@@ -401,7 +396,6 @@ The AI draft (the five task assignments) is captured at open with the other menu
 
 ### Requirement: Models tab
 The Models tab MUST show, as its rows (with no section title row while the tab bar is shown), exactly seven task rows in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, and then the static row `Hugging Face` (see Hugging Face account row). Each task row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks it covers differ, and the marks `· download required`, `(not detected)` and, on `orchestrate` only, `· not recommended` as defined there. The `Hugging Face` row shows its account state. The number of rows MUST never change because of a detection result. The popup MUST show every row of the active tab without clipping on a normal terminal, MUST keep the same size across all tabs and the picker, and the minimum terminal size below which only the one-line fallback is drawn (see Tiny terminals) MUST follow the popup. The detection cues, the `r` refresh key and the task hint apply on the task rows only; on the `Hugging Face` row, on Tools and on Chat rows `r` requests no detection run.
-(Previously: "AI task list", one tab of 19 rows that also held Profile, Context, Memory, Tools, the family switches, Approval and Orchestrator)
 
 #### Scenario: Task rows rendered [auto, TestBackend + insta]
 - GIVEN general is `claude` / `sonnet`, code is `ollama` / `llama3:8b` (ollama available with that model), the other tasks unassigned, no Hugging Face token, and the Models tab active
@@ -704,7 +698,6 @@ The `Mouse` row shows `on` when the draft `mouse` is true and `off` when false, 
 
 ### Requirement: Notify row
 `Notify` is a static row of the `Settings` tab (after `Mouse`, before `Sound`), found by `ItemKind::Notify`, never by position. It edits the AI draft, so it is shown only when the AI section is attached. It reads one of four modes from the AI draft: `auto`, `desktop`, `bell`, `off`. `h`, `l`, arrows, Space and Enter cycle the mode with wrap (an Enter key repeat is ignored like on `Context`), with no relayout and no other effect. `t` tests the notification (see Notify, Sound and Updates keys). The footer is `j/k move · h/l change · t test · s save · Esc cancel`. Only a changed value is an edit (`ai.notify`), placed after the memory edits.
-(Previously: the order scenario stopped at `Updates` and the snapshot scenario named the `AI` tab)
 
 #### Scenario: Row order and navigation [auto]
 - GIVEN the menu with the AI section, Settings tab active
@@ -728,7 +721,6 @@ The `Mouse` row shows `on` when the draft `mouse` is true and `off` when false, 
 
 ### Requirement: Menu tabs
 The popup MUST group its rows into menu tabs. The tabs MUST come from a static table (label, the rows it shows, whether it needs the AI section, whether it is hidden while it has no rows); adding a tab MUST NOT require changing navigation or drawing code. The table order is `Settings`, `Models`, `Tools`, `Connectors`, `Chat`. Without the AI section only `Settings` exists. With it, `Models`, `Tools` and `Chat` exist and `Connectors` is visible only while it has at least one row; it has none today, so it MUST NOT be drawn, MUST NOT be reached by Tab or Shift+Tab, and MUST appear, in its table position between `Tools` and `Chat`, as soon as a row is declared for it (MCP, agent-tools 4a). `Tab` MUST activate the next visible tab; `Tab` with SHIFT and `BackTab` (with or without SHIFT) MUST activate the previous one. Wrap is across the visible tabs (Settings, Models, Tools, Chat, Settings while Connectors is hidden). Ctrl+Tab and Alt+Tab MUST stay swallowed. With one visible tab, Tab and Shift+Tab change nothing and show the footer notice `No other tabs` (cleared by the next key press, like the jump-key notice). A held key repeats like `j`/`k`: Repeat events switch tabs like Press. The cursor MUST be remembered per tab, keyed by the tab and not by its place among the visible ones: leaving a tab and coming back MUST restore the row that was selected there, and a tab becoming visible MUST NOT move the memory of another. Each tab with at least one row starts on its first row. Switching tabs, by Tab or by a jump key, MUST NOT change any draft value and MUST NOT emit `ResizePty`, `WritePty` or a detection run.
-(Previously: tabs `Settings` and `AI`; "An `MCP` tab MUST NOT be listed until agent-tools 4a adds its table entry")
 
 #### Scenario: Tab cycles forward with wrap [auto]
 - GIVEN the AI section attached and the active tab `Settings`
@@ -777,7 +769,6 @@ The popup MUST group its rows into menu tabs. The tabs MUST come from a static t
 
 ### Requirement: Menu tab bar
 The popup MUST draw a one-line menu tab bar as the first body row whenever there are two or more visible tabs. Each label is padded with one space on each side and labels are joined by `│`: BAR = sum of the label cells + 3 x tabs - 1. With the four visible tabs the bar ` Settings │ Models │ Tools │ Chat ` is 34 cells; with Connectors visible, ` Settings │ Models │ Tools │ Connectors │ Chat ` is 47; the `*` of `Settings*` adds one. The active tab MUST be drawn bold, `bg_base` on `primary_cyan` (like the main tab bar, and not like the selected row); idle tabs, the separator and the hint are `text_muted`. The hint `⇥ Tab · 1-5` (11 cells) is right-aligned and ends one column before the inner right edge. With W = inner width (popup width minus 2, where the popup width is the terminal width up to 62), the bar MUST degrade in this order: bar plus hint when W >= BAR + 13; bar only when BAR <= W; only the active tab as ` ‹ Models › ` (its label between `‹` and `›`), clipped, when W < BAR. Below 24 columns the existing one-line fallback applies. The active-only step is reachable in the full popup (a 5-tab bar below 49 columns, or below 50 with `Settings*`; a 4-tab bar below 36 columns, or below 37 with `Settings*`) and MUST be covered by end-to-end scenarios. The bar MUST be clipped to the popup and MUST NOT panic at any size. While an update is waiting (see Updates row) the `Settings` label MUST read `Settings*`. With a single tab (the no-AI path) the bar MUST be hidden and the popup layout MUST be unchanged from before this change. The hint is hidden while a sub-level is open (see Sub-levels keep the bar inert). With tabs shown, section titles are not drawn (the bar names the tab); with the bar hidden, section titles are drawn as before.
-(Previously: two tabs, hint `⇥ Tab` of 5 cells shown from W >= BAR + 7, and the active-only step a guard that three or fewer tabs could not reach)
 
 #### Scenario: Active tab highlighted [auto, TestBackend + insta]
 - GIVEN the menu open on a normal terminal, active tab `Settings`, then Tab pressed
@@ -841,7 +832,6 @@ The popup MUST draw a one-line menu tab bar as the first body row whenever there
 
 ### Requirement: Sub-levels keep the bar inert
 While a sub-level is open (privacy warning, picker level 1 or 2 and its screens, custom field, Hugging Face token field and its prompts, Feedback form) the menu tab bar MUST stay drawn with the same styles, with the active tab unchanged, but WITHOUT the `⇥ Tab · 1-5` hint (it would advertise keys that are swallowed), and MUST be inert: Tab and Shift+Tab (both encodings) and the digits `1` to `5` MUST NOT switch tabs and MUST NOT show a notice there. In the picker lists they are swallowed with no effect. In every text entry (custom field, Hugging Face token field, Feedback fields) a digit MUST be typed like any other character and Tab keeps the meaning that view gives it (the Feedback form moves between fields). The privacy warning MUST keep declining on any key other than an unmodified lowercase `y`, Tab, Shift+Tab and the digits included, and closes only the warning view.
-(Previously: Tab only, active tab named `AI`; the digits did not exist)
 
 #### Scenario: Tab and digits inert in the picker [auto]
 - GIVEN the picker open at level 1, then at level 2
@@ -864,22 +854,20 @@ While a sub-level is open (privacy warning, picker level 1 or 2 and its screens,
 - THEN the warning closes, the draft stays `off`, nothing is acknowledged, and the active tab is still `Chat`
 
 ### Requirement: Popup height is fixed
-The popup body height MUST be the maximum over every view: each visible tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 12 rows: a 1-row bar plus 11 rows for the tallest view (`VIEW_BODY`). The chrome stays 4 rows, so the popup is 16 rows (it was 25 with the 19-row `AI` tab). The views need: the picker 11 (title plus its 10-row viewport), the Settings tab 11 (eight rows, one gap, the two-line note), the Tools tab 9 (eight rows and the reserved caution line), the privacy warning 10, the Models tab 8, the Chat tab 3 and the custom entry 2; the picker and the Settings tab are the binding 11, so the minimum was 24 columns by 15 rows. Adding one row to the Settings tab (the ai-cost `Usage (alpha)` row) makes the Settings tab 12 and the popup 17 rows, and the minimum 24 columns by 16 rows. The single-tab (no-AI) layout keeps its previous size.
-(Previously: `AI` tab of 19 rows plus the caution made the body 21 and the popup 25)
+The popup body height MUST be the maximum over every view: each visible tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 13 rows: a 1-row bar plus 12 rows for the tallest view (`VIEW_BODY`). The chrome stays 4 rows, so the popup is 17 rows (it was 25 with the 19-row `AI` tab). The views need: the picker 11 (title plus its 10-row viewport), the Settings tab 12 (nine rows including `Usage (alpha)`, one gap, the two-line note), the Tools tab 9 (eight rows and the reserved caution line), the privacy warning 10, the Models tab 8, the Chat tab 3 and the custom entry 2; the Settings tab is the binding 12, so the minimum is 24 columns by 16 rows. Adding one more row to the Settings tab makes it 13 and the popup 18 rows. The single-tab (no-AI) layout keeps its previous size.
 
 #### Scenario: Same height across views [auto, TestBackend + insta]
 - GIVEN a normal terminal
 - WHEN the Settings, Models, Tools and Chat tabs, a picker level 1 and 2, the custom field and the warning are rendered
-- THEN the popup border spans 17 rows in all of them (16 before the ai-cost `Usage (alpha)` row; that row takes the extra one)
+- THEN the popup border spans 17 rows in all of them 
 
 #### Scenario: Adding a row grows only the tallest view [auto]
-- GIVEN the height is derived from the tables, with the picker and the Settings tab both at 11
-- WHEN the tallest view is measured, and then a 9th Settings row is added
-- THEN the fixed body equals the tallest view and no view exceeds it, and with the 9th Settings row the popup grows by one row; adding a row to Chat or Models does not change the height
+- GIVEN the height is derived from the tables, with the picker at 11 and the Settings tab at 12
+- WHEN the tallest view is measured, and then a 10th Settings row is added
+- THEN the fixed body equals the tallest view and no view exceeds it, and with the 10th Settings row the popup grows by one row; adding a row to Chat or Models does not change the height
 
 ### Requirement: Update note is Settings-only
 The two-line update note MUST be drawn only on the Settings tab, inside the fixed body in its last 2 rows (just above the blank row and the footer), and MUST NOT appear on Models, Tools, Connectors or Chat or in any sub-level. The note MUST NOT make the popup taller than the fixed height and MUST NOT trigger the fallback. On the single-tab path the note keeps its previous position under the list.
-(Previously: "MUST NOT appear on the AI tab")
 
 #### Scenario: Note on Settings [auto, TestBackend + insta]
 - GIVEN a newer version known, active tab `Settings`
@@ -999,7 +987,6 @@ With llamacpp managed, the llamacpp model picker MUST list the local model files
 
 ### Requirement: Tools row
 The Tools tab MUST hold a static row `Tools` as its first row, before the family rows and `Approval` (key path `ai.tools.enabled`, values `off`, `on`; it reads `on` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter toggle the draft (an Enter repeat is ignored, like on `Context`); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to a stream, a pending approval or a running tool, and it applies from the next turn after a successful save. Esc at the top level restores the draft; `s` saves `ai.tools.enabled` through config-persistence only when it differs. The row order of the tab is `Tools, Search, Write, Exec, Git, Git write, Approval, Orchestrator` (see Sections and items are data); Navigation wraps inside the Tools tab; the popup does not change size (see Popup height is fixed); the descriptor integrity rules extend to the row (`Tools` has key path `ai.tools.enabled`, values `off`, `on`, no duplicate key path).
-(Previously: "a static row after `Memory` and before `Approval`" on the AI tab; Navigation wrapped inside the AI tab)
 
 #### Scenario: Navigation reaches Tools and wraps [auto]
 - GIVEN the Tools tab active with `Orchestrator` selected
@@ -1058,7 +1045,6 @@ The Tools tab MUST hold a static row `Tools` as its first row, before the family
 
 ### Requirement: Approval row
 The Tools tab MUST hold a static row `Approval` after the family rows and before `Orchestrator` (key path `ai.tools.approval`, values `ask`, `auto`, `run`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft `ask`, `auto`, `run`, `ask` (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Entering `run` needs no confirmation. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs, and the value is written explicitly even when it equals the default. The row is shown whatever the `Tools` draft. The popup keeps its size (16 rows and a 24x15 minimum then, 17 and 24x16 with the Usage row; see Popup height is fixed); the descriptor integrity rules extend to the row.
-(Previously: the last row of the AI tab; "With it the AI tab has 11 rows")
 
 Note: when the file holds a bad value (for example `approval = "AUTO"`), the row opens on `ask` and choosing `ask` writes nothing, so the bad value stays in the file until `auto` or `run` is saved. `Tools` behaves the same way. This is accepted (design D18); no force flag exists.
 
@@ -1109,7 +1095,6 @@ Note: when the file holds a bad value (for example `approval = "AUTO"`), the row
 
 ### Requirement: Family toggle rows
 The Tools tab MUST hold five static rows, one per family toggle (Search, Write, Exec, Git, GitWrite), placed after the `Tools` row and before `Approval`. Each reads `off` by default, with values `off`, `on` and the key path of its config key. Each is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter toggle the draft; an Enter repeat is ignored. Changing a draft MUST have no live effect and applies from the next turn after a successful save. Esc restores the draft; `s` saves only the keys that differ. The Write, Exec and GitWrite rows MUST show a one-line caution that the family can change files or run code, in the line reserved at the foot of the Tools tab. Navigation wraps inside the Tools tab, the popup does not change size, and the descriptor integrity rules extend to the new rows (no duplicate key path).
-(Previously: rows of the AI tab)
 
 #### Scenario: Navigation reaches every row [auto]
 - GIVEN the Tools tab with `Tools` selected
@@ -1143,7 +1128,6 @@ The Tools tab MUST hold five static rows, one per family toggle (Search, Write, 
 
 ### Requirement: HF row independent of llama-server [S1]
 The `download from Hugging Face…` row on the llamacpp engine MUST be shown whenever the engine is selectable, including when its state is `not installed`, because the download needs only `curl`. When `llama-server` is not installed the row MUST carry a note that `llama-server` is needed to run downloaded models. Nothing else about the download flow changes.
-(Previously, in the pending hf-download delta: the row was hidden when llamacpp was `not installed`.)
 
 #### Scenario: Row visible when not installed [auto]
 - GIVEN llamacpp `not installed`
@@ -1255,7 +1239,6 @@ The Models tab MUST end with a static row `Hugging Face`, after the `orchestrate
 - `token set (HF_TOKEN)` while `HF_TOKEN` is set.
 
 Enter on the row opens a field with the hint `paste a Hugging Face token`, followed by `create a read token at:` and, on a line of its own, `https://huggingface.co/settings/tokens/new?tokenType=read`. The field draws one `•` per character. Ctrl+O opens that link in the browser through the host's opener (`xdg-open`; on WSL `wslview`, then `rundll32.exe url.dll,FileProtocolHandler`; on macOS `open`), and the footer says `Opened in your browser`; on a host with no opener Ctrl+O copies the link instead. When the opener fails (it exits with an error within 5 seconds of its start; a later exit is the browser's own; the exit of a Windows program such as `rundll32.exe` is not checked), the link is copied, the footer says `The browser did not open: link copied`, and Ctrl+O copies from then on. With `Mouse` on, a left click on the link line does the same as Ctrl+O; any other click in the menu does nothing. With `Mouse` off the host terminal handles clicks itself. The field's footer is `Enter connect · Ctrl+O open link · Ctrl+U clear · Esc back`, or `… Ctrl+O copy link …` with no opener. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back; Esc during the check stops it, and the token is not saved unless the save had already happened. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. With a saved token, `d` offers the same prompt, also when its account is unknown (`disconnect the saved token? (y/n)`), and the footer of such a row is `Enter check · d disconnect · j/k move · s save · Esc cancel`. The row writes no config edit.
-(Previously: the last row of the AI tab, after `Approval`)
 
 #### Scenario: Account row [auto]
 - GIVEN the Models tab
@@ -1424,7 +1407,6 @@ Exactly 3B counts as 3B or more. The marks use the text fallback `tools` on `TER
 
 ### Requirement: Orchestrate row and picker [S1]
 Enter on the `orchestrate` row of the Models tab MUST open the same two-level task picker as the other tasks, with `(default · use general)` as its first entry. In its engine list the server engines MUST carry the status text plus `not recommended` and stay selectable. Choosing an entry changes only `orchestrate`. Enabling the orchestrator from the `Orchestrator` row of the Tools tab while `orchestrate` resolves to no engine MUST be allowed, and an orchestrating pane shows the engine guidance on the next send.
-(Previously: both rows on the AI tab)
 
 #### Scenario: Orchestrator row is the global gate [auto]
 - GIVEN the Tools tab with `Orchestrator` `off`
@@ -1443,7 +1425,6 @@ Enter on the `orchestrate` row of the Models tab MUST open the same two-level ta
 
 ### Requirement: Picker opened from a failure notice [S2]
 When the user picks `change model` or `change provider` in a worker failure alert, the app MUST open the menu task picker for that worker's kind (level 2 of the current engine for `change model`, level 1 for `change provider`), showing the same rows and marks as the menu. The picker starts from the effective assignment in use by the failed worker. A confirmed choice is a *run-scoped override*: it MUST apply until the run ends, MUST NOT modify the menu draft, MUST NOT be saved to the configuration, and MUST NOT make the menu show a pending change. It returns to the alert flow, which relaunches the worker on the override; later workers of that task in the same run use it too (see agent-orchestrator). The override MUST be shown in the run state and on the worker rows. Esc MUST create no override and return to the alert. While the picker is open the run stays paused.
-(Previously: text unchanged; the last scenario said "the AI tab")
 
 #### Scenario: Change model opens level 2 [auto]
 - GIVEN a failed `review` worker on `claude`
@@ -1502,10 +1483,10 @@ Moving rows between tabs MUST NOT change what `s` writes. For the same set of ch
 - THEN the menu closes and the file is not read or written
 
 ### Requirement: Usage row belongs to Settings
-When the ai-cost `Usage (alpha)` row is added, it MUST be declared on the Settings tab, MUST NOT need a new tab or a change to navigation or drawing code, and MUST keep every other row on its tab. The popup grows by the one row that Settings then needs (see Popup height is fixed).
+The `Usage (alpha)` row MUST be declared on the Settings tab, MUST NOT need a new tab or a change to navigation or drawing code, and MUST keep every other row on its tab. With it the Settings tab is the tallest view (see Popup height is fixed).
 
 #### Scenario: Usage is on Settings [auto]
-- GIVEN the ai-cost row declared in the Settings table
+- GIVEN the `Usage (alpha)` row declared in the Settings table
 - WHEN the tab table is validated and the Settings tab is rendered
 - THEN `Usage (alpha)` appears on Settings only, the tab list is unchanged, and the popup is 17 rows high on every tab
 
@@ -1571,7 +1552,7 @@ At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED posit
 - THEN the tabs switch as specified, `4` shows the notice, and nvim receives no keys
 
 ### Requirement: Usage row and view
-The Settings tab MUST hold a static row `Usage (alpha)` after `llama-server idle` and before `Updates` (placement per ai-menu-tabs, "Usage row belongs to Settings"), found by its own `ItemKind`, never by position. Its value reads a summary of the draft: `line on · bar on` (the two toggles as `on`/`off`). `Enter`, `Space`, `h`, `l`, Left or Right open the Usage view (a closed row never ignores a key), a sub-level of Settings; the row adds one line to Settings, so the fixed popup is 17 rows high and its minimum is 24 columns by 16 rows (see Popup height is fixed in ai-menu-tabs), and the view reuses the popup. The view lists, in this order, static rows found by their own kinds:
+The Settings tab MUST hold a static row `Usage (alpha)` after `llama-server idle` and before `Updates` (see Usage row belongs to Settings), found by its own `ItemKind`, never by position. Its value reads a summary of the draft: `line on · bar on` (the two toggles as `on`/`off`). `Enter`, `Space`, `h`, `l`, Left or Right open the Usage view (a closed row never ignores a key), a sub-level of Settings; the row adds one line to Settings, so the fixed popup is 17 rows high and its minimum is 24 columns by 16 rows (see Popup height is fixed), and the view reuses the popup. The view lists, in this order, static rows found by their own kinds:
 1. `Usage line` (`ai.usage.line`, `on`/`off`);
 2. `Usage in bar` (`ai.usage.statusline`, `on`/`off`);
 3. `claude billing`, `codex billing`, `gemini billing` (`ai.usage.billing.<id>`, values `subscription`, `per-token`);

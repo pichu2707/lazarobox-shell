@@ -3,7 +3,7 @@
 ## Purpose
 Launching lazarobox is one step. A TUI always needs a host terminal, so the launcher provides it.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: install-desktop
 `install-desktop` MUST create a desktop entry that launches lazarobox in a host terminal in one step. Its result MUST always be shown to the user: success with the path written, or a failure with the reason. It MUST NOT fail or ignore a problem silently. Running it again MUST leave one valid entry, not duplicates.

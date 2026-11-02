@@ -125,12 +125,11 @@ Ctrl+H MUST act as Backspace in every text field: the chat composer, the note, s
 
 ### Requirement: Prefix key
 Ctrl+Space (reported as NUL 0x00) and Ctrl+] (reported as 0x1D) MUST each enter PREFIX without writing to the PTY. Both keys are fixed; neither is configurable. The prefix keys and the action table MUST be data, not hard-coded branches. Pressing a prefix key again in PREFIX MUST write that key's own literal byte to the focused shell pane (Ctrl+Space writes NUL 0x00, Ctrl+] writes 0x1D) and return to TERMINAL. Pressing the other prefix key in PREFIX does the same: it writes its own literal byte. Esc or an unmapped key in PREFIX returns to TERMINAL, swallowed. When the focused pane is not a shell pane, a repeated prefix key MUST write nothing and MUST show a notice; it MUST NOT be ignored silently.
-(Previously: only Ctrl+Space entered PREFIX; Ctrl+] was an ordinary key sent to the pane)
 
 #### Scenario: Enter PREFIX
 - GIVEN TERMINAL
 - WHEN Ctrl+Space is pressed
-- THEN mode is PREFIX and no WritePty is emitted
+- THEN mode is PREFIX and no WritePty is emitted (the root which-key hint appears in the statusline while PREFIX is pending, and the group hint once a group such as `w` is pending; see statusline)
 
 #### Scenario: Enter PREFIX with the alias [auto]
 - GIVEN TERMINAL
@@ -465,11 +464,13 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
 | Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
+| Ctrl+G | open the review of an orphan write batch (the badge `orphan N · Ctrl+G` names it) |
+| Ctrl+H | Backspace (see TERMINAL mode) |
 | Alt+Down, Alt+Up | with the orchestrator gate on, select the next or previous live worker of the run (see Cancel keys for workers); with the gate off, swallowed |
 | Ctrl+O | with the orchestrator gate on, toggle the pane's ORCH mode (see ORCH toggle key); with the gate off, swallowed like an unlisted key |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. The direct chat chords allowed as exceptions to that rule are Ctrl+G (orphan batch review, coding-tools) and Ctrl+O (ORCH toggle, this change); any other new chat key still lives behind the prefix. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
+The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. The direct chat chords allowed as exceptions to that rule are Ctrl+G (orphan batch review: a direct shortcut on purpose, user decision 2026-10-29; the orphan badge names it, it only acts when an orphan batch exists, and its review still needs full coverage and the arm delay before anything is applied) and Ctrl+O (ORCH toggle); any other new chat key still lives behind the prefix. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
 
 Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y, Ctrl+B and Ctrl+T, and is an open question until confirmed on a real terminal (manual check M8).
 
@@ -824,7 +825,6 @@ The root of the prefix table MUST gain a leaf for the run-in-pane action of pane
 
 ### Requirement: Approval mode binding
 The root of the prefix table MUST gain a leaf on the letter `a` that cycles the approval mode of the focused chat pane, `ask`, `auto`, `run`, back to `ask` (see agent-tools, Chat approval mode), with a non-empty description, left out of the root key hint like `e`. No direct Ctrl+letter key is added and `run` has no key of its own. Entering `run` needs no extra confirmation. On a focused chat pane in any chat view it MUST advance the mode and add a system line naming the new mode and what it does (see chat-pane), also while an approval is pending (which stays pending). On a shell pane, and with tools off, it MUST only show a notice and change nothing. It MUST NEVER write to a PTY.
-(Previously: the leaf toggled between `ask` and `auto`)
 
 #### Scenario: Leaf in the table [auto]
 - GIVEN the prefix table

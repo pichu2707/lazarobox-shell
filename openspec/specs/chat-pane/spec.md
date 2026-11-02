@@ -10,7 +10,6 @@ Terms: "idle" = no stream running; "streaming" = a request was sent and the answ
 
 ### Requirement: Chat pane kind and opening
 `Ctrl+Space c` MUST open a chat: it splits the focused pane to the right exactly like `w v` (same minimum-size refusal, same focus rule), and the new pane is a chat pane. No shell is spawned and no PTY exists for it. The chat MAY be opened from a shell pane or from a chat pane, and several chat panes MAY exist at once in any tab. Opening a chat records the chat folder (the effective cwd of the pane it was opened from, or the current folder of the chat it was opened from), requests an engine detection run (single flight, see ai-engine-detection) and, when the folder is `$HOME`, `/` or unknown, shows the folder picker (see chat-folder) before the conversation list; otherwise it shows the conversation list directly (see chat-history).
-(Previously: recorded the origin cwd and always showed the conversation list first)
 
 #### Scenario: Open from a shell pane [auto]
 - GIVEN one shell pane in TERMINAL
@@ -67,7 +66,6 @@ A chat pane MUST show the transcript above and the composer below. The composer 
 
 ### Requirement: Composer
 The composer MUST accept typed characters, Backspace, Delete, Left, Right, Home and End, and insert a newline on the newline binding (see modal-input). A paste MUST be inserted as text and MUST NOT send the message. Control and format characters other than newline MUST be dropped on input and on paste, and CRLF MUST become a newline. The composer MUST hold at most 8000 characters; input beyond the cap is not accepted. Sending a message that is empty or only whitespace MUST do nothing. While a stream is running a send MUST be refused: the composer text is kept and a system line asks to wait or cancel. A refused or guidance-blocked send MUST keep the composer text. A composer text whose first token is exactly `/cd` MUST be handled as the folder command and not sent to the model (see chat-folder); `/cd` is the only composer command, and any other text starting with `/` is a normal message. A command that is refused keeps the composer text.
-(Previously: no composer command existed; every non-blank text was a message)
 
 #### Scenario: Type and send [auto]
 - GIVEN an idle chat with a ready engine and the composer holding `hello`
@@ -793,7 +791,6 @@ Closing a chat pane that holds a staged or orphan batch MUST discard the batch a
 
 ### Requirement: Approval mode badge and system lines
 A chat pane with tools on in `auto` mode MUST show the badge ` AUTO ` in amber, and in `run` mode the badge ` RUN ` in red, both high contrast, in every chat view, focused or not; `ask` shows none. When the pane is narrower than the badge (below 6 columns for ` AUTO `, below 5 for ` RUN `) the badge MUST shrink to `A` or `R`; the badge text is bold on the base background colour. The badge is system-drawn: never stored, yanked or sent to the model. Changing the mode (see modal-input) MUST add a system line naming the new mode and saying what it does: `ask` asks for each command; `auto` types commands without Enter; `run` types and runs a short list of navigation commands (`cd`, `pwd`, `ls`, `tree`, `mkdir`) and sends their output to the model; the `run` line reads `approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)`. System lines are never stored or sent to the model. After a `cd` ran under pane-execution the transcript MUST show the system line `pane N: <exact command> → <cwd>`.
-(Previously: the `auto` marker was specified only inside agent-tools, in one unspecified high-contrast style, and there was no run mode)
 
 #### Scenario: Badges [auto, TestBackend + insta]
 - GIVEN chats in `auto`, `run` and `ask` with tools on

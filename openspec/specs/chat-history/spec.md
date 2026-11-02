@@ -10,7 +10,6 @@ Terms: "conversation" = an ordered list of messages plus metadata (profile, proj
 
 ### Requirement: Store location and privacy
 Conversations MUST be stored in one SQLite database file under `$XDG_DATA_HOME/lazarobox/`. When `XDG_DATA_HOME` is unset, empty or relative, the base MUST be `$HOME/.local/share`, only when `HOME` is absolute; with neither there is no store and the unavailable rule applies. The directory MUST be created with mode 0700 when missing. The store MUST hold only conversation data (messages, timestamps, profile, tags, the engine and model used, and the last chat folder path) and usage data (counts, timings, engine, model, timestamps; see Usage table); it MUST NOT hold credentials. The store MUST NOT be encrypted, and the README MUST say so, give the file path and how to delete it, say that folder paths are saved in it, and state what usage data the same file holds. Message text MUST NOT be written to any log.
-(Previously: the stored data did not include the chat folder and the README did not mention paths)
 
 #### Scenario: Path resolution [auto]
 - GIVEN `XDG_DATA_HOME=/x` and `HOME=/h`
@@ -249,7 +248,6 @@ In the conversation list, `d` MUST ask for confirmation; only an unmodified lowe
 
 ### Requirement: Resume
 Enter on a list row MUST open that conversation in the pane with its full history: every stored message in order, partial ones marked, with its stored profile and tags. New messages MUST be appended to the same conversation. The engine used MUST be the current assignment of the `chat` task, not the stored one. The system prompt MUST use the conversation's stored profile (see prompt-profiles). A conversation already open in another pane MUST NOT be opened a second time: the list shows the system line `already open in another pane`. The chat folder MUST become the stored folder when it is an acceptable folder that is not broad. When the conversation has no stored folder (older rows), or the stored folder no longer exists, is not a directory, is a secret root, or is broad, the folder MUST be treated as unknown-for-this-chat: the history is shown, a system line says `stored folder not available: <folder>` (or `no stored folder`), and the folder picker (see chat-folder) opens over the conversation; nothing is chosen silently, and Esc leaves the chat in the folder the pane had before the resume. The pane's folder is never changed by a resume that fails.
-(Previously: resume restored history, profile and tags only; the chat kept the origin of the pane)
 
 #### Scenario: Full history restored [auto]
 - GIVEN a stored conversation of 30 messages, the last one partial

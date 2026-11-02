@@ -4,7 +4,7 @@
 
 Defines the orchestrator: one coordinator agent that splits a multi-step job across worker agents, each running on the engine and model the AI menu assigns to its task. It covers the run lifecycle, the orchestration tools, the worker contract, limits, the run-start read scope, approvals, failure alerts and relaunch, the provider notice, the ODD flow and the receipt-driven review (RDD). Handoff persistence is in orchestrator-handoffs. The menu is the single source of truth: lazarobox never picks an engine or a model.
 
-Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] ODD flow, read-only until S7; [S6] usage; [S7] write integration (needs coding-tools M2, merged); [S7b] receipt-driven review (RDD); [S8] ODD test-first evidence (DEFERRED to 1.2, see its requirement); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
+Slice tags: [S1] contract + one read-only worker; [S2] failure alerts; [S3] multiple workers; [S4] handoffs and ledger (see orchestrator-handoffs); [S5] ODD flow, read-only until S7; [S6] usage; [S7] write integration (needs coding-tools M2, merged); [S7b] receipt-driven review (RDD); [S8] ODD test-first evidence (not implemented; deferred to 1.2, see its requirement); [S9] run view and persistence. Tags: [auto] = `cargo test` with a fake `Runner` and paused tokio time; [manual] = real machine.
 
 Product goal: the finished feature MUST let the user build a programming project entirely from the lazarobox chat, without opening an IDE: plan, write code, run tests and review. That end state depends on the coding-tools write tools (M2) and on `run_command` reaching workers (S8). Delta (user decision, 2026-10-31): 1.1.0 ships WITHOUT S8, so the goal is met in 1.1.0 up to plan, staged implementation applied through the batch review, and review; running tests stays with the user until S8 (1.2). coding-tools M3 `run_command` itself shipped in 0.28.0 for chat panes, but no worker toolset has the `Exec` family. The goal is accepted by the end-to-end requirement tagged [S10], as amended below. [S10] is the final slice: user-facing documentation and end-to-end acceptance, after S1..S9. Slices before S10 MUST NOT change the README; the feature stays off by default and undocumented there until S10. Internal docs (openspec, CHANGELOG Internal entries) may change in any slice.
 
@@ -116,7 +116,7 @@ A worker MUST be started from a `WorkerSpec` holding: kind, prompt, the engine a
 - THEN its result records the engine and model it started with
 
 ### Requirement: Refusal on an unavailable engine [S1]
-Before starting a worker, the engine resolved for its kind MUST pass the same availability checks as a chat turn for that task (installed, version, model present, jail where required). When it does not, the spawn MUST end with status `refused`, a structured reason and no process started. lazarobox MUST NOT pick another engine or model. A refusal MUST be handled as a worker failure (see Failure stops the run) and classified `setup`: the failure alert shows `(setup)`. The reason MUST be given to the coordinator in the tool result of the refused worker (one redacted line, capped) instead of only `worker N: refused`, with absolute paths replaced by `<path>`. `m` on a refused worker MUST open the model picker of the engine configured for its task; with no engine to take from it MUST open the engine list and a notice says why. (Since 1.2.1.)
+Before starting a worker, the engine resolved for its kind MUST pass the same availability checks as a chat turn for that task (installed, version, model present, jail where required). When it does not, the spawn MUST end with status `refused`, a structured reason and no process started. lazarobox MUST NOT pick another engine or model. A refusal MUST be handled as a worker failure (see Failure stops the run) and classified `setup`: the failure alert shows `(setup)`. The reason MUST be given to the coordinator in the tool result of the refused worker (one redacted line, capped) instead of only `worker N: refused`, with absolute paths and `~/` paths replaced by `<path>`. `m` on a refused worker MUST open the model picker of the engine configured for its task; with no engine to take from it MUST open the engine list and a notice says why. (Since 1.2.1.)
 
 #### Scenario: No jail refuses [auto]
 - GIVEN `review` is `gemini` and the jail is Unavailable
@@ -454,7 +454,7 @@ Until S7, `implement` MUST produce only drafts and review findings, and the orch
 - WHEN it completes
 - THEN its result is labelled a draft and no file in the workspace changed
 
-### Requirement: ODD test-first evidence [S8] (DEFERRED to 1.2)
+### Requirement: ODD test-first evidence [S8] (not implemented; deferred to 1.2)
 Delta note (user decision, 2026-10-31): this requirement and its two scenarios are NOT part of 1.1.0 and are kept, not deleted, for 1.2. In 1.1.0 no worker and no orchestrator turn is offered `run_command`; `implement` yields staged changes and drafts, `close` reports every test as not run, the `orchestrate` prompts forbid claiming a test ran or passed and ask the user to run it, and RDD (S7b) reviews by reading and does not depend on evidence. Nothing below is implemented or tested yet.
 
 Once `run_command` exists, for a task with a runnable deterministic test the run MUST require failing evidence before the implementation is accepted and passing evidence after it. Evidence MUST come from the `run_command` result, never from worker text alone. A task without a runnable test MUST record an explicit exception with its reason, and is then checked by a review worker instead.
@@ -580,12 +580,12 @@ Worker prompts, worker output, provider error text and paths MUST NOT be written
 - THEN they hold the class and status and none of the prompt, output or error message text
 
 ### Requirement: Resume and discard ask the store on demand [S9]
-`Prefix r r` (resume) and `Prefix r d` (discard) MUST NOT report `No interrupted run to resume or discard` while the run store has not answered. When the interrupted runs are not known yet (for example ORCH was never turned on since the start), the key MUST ask the store on the spot, off the UI thread, and show the notice `Looking for interrupted runs`; the answer MUST complete the key that waited, including `Turn ORCH on in this pane first`. A failed read, or one with no answer within 10 s, MUST be said and retried by the next press, never reported as `No interrupted run`. The key MUST redraw the screen after its answer, also when the answer comes at once, so the notice and the clearing of the `RUN` key hint are shown. (Since 1.2.1.)
+`Prefix r r` (resume) and `Prefix r d` (discard) MUST NOT report `No interrupted run to resume or discard` while the run store has not answered. When the interrupted runs are not known yet (for example ORCH was never turned on since the start), the key MUST ask the store on the spot, off the UI thread, and show the notice `Looking for interrupted runs...`; the answer MUST complete the key that waited, including `Turn ORCH on in this pane first`. A failed read, or one with no answer within 10 s, MUST be said and retried by the next press, never reported as `No interrupted run`. The key MUST redraw the screen after its answer, also when the answer comes at once, so the notice and the clearing of the `RUN` key hint are shown. (Since 1.2.1.)
 
 #### Scenario: The store is asked when the runs are unknown [auto]
 - GIVEN ORCH never turned on since the start and an interrupted run in the store
 - WHEN `Prefix r r` is pressed
-- THEN the notice `Looking for interrupted runs` shows, the store is asked off the UI thread, and the answer completes the resume
+- THEN the notice `Looking for interrupted runs...` shows, the store is asked off the UI thread, and the answer completes the resume
 
 #### Scenario: A silent store is not an empty one [auto]
 - GIVEN a store that does not answer within 10 s

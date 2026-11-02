@@ -8,7 +8,6 @@ Lifecycle of the single PTY child: spawn, environment, I/O, resize, exit, shutdo
 
 ### Requirement: Shell spawn and environment
 The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the pane's requested cwd (the launch cwd for the first pane), with `TERM=xterm-256color` and `COLORTERM=truecolor`, inheriting the rest of the environment. The launch cwd is the start dir (see start-dir): the `--dir` flag, else `[workspace] dir`, else the process working directory. A chat pane MUST NOT spawn a shell.
-(Previously: the launch cwd was always the process working directory)
 
 #### Scenario: SHELL set [auto]
 - GIVEN `$SHELL=/bin/zsh`
@@ -218,7 +217,6 @@ Closing a pane MUST NOT block the UI loop: the SIGHUP / grace / SIGKILL teardown
 
 ### Requirement: Per-pane cwd poll fallback
 The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback for panes that never reported an OSC 7 cwd. The effective cwd of a shell pane MUST be its last valid OSC 7 value if it has ever reported one; otherwise the polled value. Once a pane has reported OSC 7, a poll result MUST NOT override it (the poll may still run). A failed poll MUST keep the last value. Chat panes MUST NOT be polled; their cwd is the chat folder, which changes only through the picker or a confirmed `/cd` (see chat-folder), never by polling.
-(Previously: a chat pane's cwd was the fixed origin cwd)
 
 #### Scenario: Fallback for plain shell [auto, unix PTY]
 - GIVEN a pane whose shell never emits OSC 7 and runs `cd /tmp`
@@ -242,7 +240,6 @@ The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback f
 
 ### Requirement: Inherited working directory from a chat pane
 When the focused pane is a chat pane, a new pane or tab MUST spawn its shell in the chat's current folder (the folder at the moment of the request, including after a `/cd`), with the same fallback chain as for a shell pane (launch cwd, then an absolute `$HOME`, then `/`, the first that exists). A chat whose folder is unknown (no choice made) uses that fallback chain.
-(Previously: the chat's fixed origin cwd)
 
 #### Scenario: Split from a chat inherits its folder [auto]
 - GIVEN a focused chat pane with folder `/tmp`
@@ -327,7 +324,6 @@ On quit, running chat streams MUST be cancelled: server connections closed and C
 
 ### Requirement: Approved writes respect bracketed paste
 A write requested by an approved pane command (see pane-commands) or by a run decided under pane-execution MUST be built from the target pane's current terminal state at the moment of the write: with bracketed paste enabled by the pane's application, the validated command is framed as one bracketed paste (start marker, command, end marker) in a single WritePty; with it disabled, a single-line command is written as plain text and a command with a newline or tab is refused before any byte is written. The command text inside the frame MUST NOT contain the end marker or any ESC (validation refuses it), so the frame cannot be closed early. The write MUST end with the command or the end marker and never add Enter, EXCEPT a run decided under pane-execution in `run` mode, whose single write appends exactly one `\r` after the command or the end marker and nothing else. The write MUST be addressed only to a live shell pane (never a chat pane) and its bytes reach the child unmodified like any other WritePty. Ordinary user typing and user pastes into a shell pane MUST be unchanged by this requirement.
-(Previously: the write never added Enter in any case)
 
 #### Scenario: Framed when enabled [auto]
 - GIVEN the target pane's application enabled bracketed paste (mode 2004)

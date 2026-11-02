@@ -88,7 +88,6 @@ Every copy MUST show a notice, and the notice MUST say honestly what happened:
 - `<tool> failed; not copied: too large for OSC 52 (<reason>)` when the tool failed and the text was too large for OSC 52, so nothing was sent to the terminal.
 
 A copy MUST NOT end without a notice, whichever caller started it (COPY yank, chat copy, feedback, update). The same fallback chain and notices apply to every caller of the copy path.
-(Previously: OSC 52 only, no notice on success)
 
 #### Scenario: Yank emits OSC 52
 - GIVEN the extracted text `hello` and no local tool available

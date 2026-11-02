@@ -1,6 +1,10 @@
 # Model Download Specification (new: Hugging Face downloads)
 
-## ADDED Requirements
+## Purpose
+
+Downloads GGUF models from the Hugging Face hub: the search and popular screens, the file choice, the resumable download, the checks on what was downloaded and the token handling. Every request goes through the system `curl`, and only after the user is in the download flow.
+
+## Requirements
 
 ### Requirement: Hub requests
 Every request of this capability MUST go through the system `curl`, run by name from the `PATH` with no shell, with `-q`, `--silent`, `--show-error`, `--proto =https` and `--proto-redir =https`. It MUST be sent only to `https://huggingface.co` (API requests never follow redirects; downloads follow them with `--location`). It is sent only while the user is in the download flow of config-menu. The API requests are:

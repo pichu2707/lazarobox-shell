@@ -8,7 +8,6 @@ Defines which AI tasks exist, how each task gets an engine and a model, and whic
 
 ### Requirement: Fixed task set [S1]
 The tasks MUST be fixed and ordered: `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`. Task ids are lowercase and are the `config.toml` table names. There is no way to add, rename or remove a task. A task assignment is an engine id plus a model name. A task is "assigned" only when its engine is non-empty; a model without an engine is treated as unassigned (the file keeps it).
-(Previously: five tasks, `orchestrate` did not exist)
 
 #### Scenario: Task set integrity [auto]
 - GIVEN the task table
@@ -124,21 +123,22 @@ For the server engines (`ollama`, `lmstudio`, `llamacpp`, `vllm`) the model list
 - THEN no row has `✓`, `llama3:8b` is shown muted, `●` and not selectable with no `download required` mark, a muted row `engine not detected` is present, and no curated rows are listed
 
 ### Requirement: Curated Ollama catalog
-The code MUST ship a static catalog of well-known Ollama model tags, between 8 and 12 entries, with unique non-empty names. Only Ollama has a curated catalog (lmstudio, llamacpp and vllm have none). The catalog MUST be informational: it is never fetched, never refreshed from any network, and the source and the user documentation MUST say it may be stale. lazarobox MUST NOT pull or install any model through a server, and no chat request MUST ever ask a server to download a model. The only requests it sends are:
+The code MUST ship a static catalog of well-known Ollama model tags, between 8 and 12 entries, with unique non-empty names. Only Ollama has a curated catalog (lmstudio, llamacpp and vllm have none). The catalog MUST be informational: it is never fetched and never refreshed from any network, and the source and the user documentation MUST say it may be stale. It is also the fallback list of the Ollama download flow when the library page cannot be read. lazarobox MUST NOT pull or install any model through a server, except the one `POST /api/pull` of ollama-download, sent after the user confirms it. No chat request MUST ever ask a server to download a model. The only requests lazarobox sends are:
 - the localhost detection requests;
-- the loopback chat requests of chat-engines (sent only when the user sends a chat message);
+- the loopback chat requests of chat-engines, sent only when the user sends a chat message;
 - the update check of the updates feature;
-- the Hugging Face requests of model-download, sent only while the user is in its download flow.
+- the Hugging Face requests of model-download, sent only while the user is in its download flow;
+- the ollama.com and registry.ollama.ai requests and the loopback pull of ollama-download, sent only while the user is in its download flow.
 
-A model file is downloaded only by that flow, after the user confirms it.
+A model is downloaded only by those two flows, after the user confirms it.
 
 #### Scenario: Catalog integrity [auto]
 - GIVEN the curated Ollama catalog
 - WHEN it is validated
 - THEN it has between 8 and 12 entries, all unique and non-empty
 
-#### Scenario: No download path [auto]
-- GIVEN a download-required model
+#### Scenario: No download path outside the flows [auto]
+- GIVEN a download-required model row
 - WHEN the cursor is on it and every key is pressed
 - THEN no request, command or effect is produced and the assignment is unchanged
 
@@ -150,7 +150,7 @@ A model file is downloaded only by that flow, after the user confirms it.
 #### Scenario: Docs say stale [manual]
 - GIVEN the README
 - WHEN it is read
-- THEN it states that the Ollama catalog is informational and may be out of date, that lazarobox never pulls a model through a server, and that a model is downloaded only from the Hugging Face flow, after the user confirms it
+- THEN it states that the Ollama catalog is informational and may be out of date, and that a model is downloaded only from the Hugging Face or the Ollama flow, after the user confirms it
 
 ### Requirement: Model marks on task rows
 Where a task row shows an assigned model of an available server engine, a model not among the detected models MUST carry the suffix ` · download required`; a detected model carries no suffix on the row (`✓` is a picker mark). An assigned engine that is not available (status known) MUST carry the suffix ` (not detected)` after the engine id, and then no model mark is applied. While no detection result exists yet, no suffix or mark is applied. CLI assignments never get a model mark.
@@ -198,7 +198,6 @@ Choosing an engine entry then a selectable model assigns that engine and model t
 
 ### Requirement: Runtime use of every task assignment [S1]
 Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
-(Previously: only the `chat` assignment was used at runtime)
 
 #### Scenario: Effective assignment used [auto]
 - GIVEN `general` is `claude` / `sonnet` and `chat` is `ollama` / `llama3:8b`, both available
