@@ -8808,6 +8808,9 @@ mod app_tests {
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;
 
+    /// The window an Ollama turn is budgeted against (model-context-window).
+    mod ollama_window;
+
     /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
     mod managed_start;
 

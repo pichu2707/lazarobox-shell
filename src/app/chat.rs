@@ -5,6 +5,7 @@ use super::run_view::CLOSE_FIRST;
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
+    adapters::tools_reserve_tokens,
     engine::{Availability, Tools, availability, tools_for},
     folder::{Command, Purpose, parse_command},
     guidance::guidance,
@@ -14,6 +15,7 @@ use crate::core::ai::chat::{
     usage_view::{Billing, today_segment},
     yank,
 };
+use crate::core::ai::window::ollama_num_ctx;
 
 /// What the last store answer said about the local day: the status segment's
 /// figures. They come from the store thread, so drawing never reads SQLite.
@@ -539,7 +541,17 @@ impl App {
             return Vec::new();
         };
         // The engine's own window sizes the turn; unknown keeps the char caps.
+        // For Ollama it is the `num_ctx` the request carries: the model's
+        // window held to the user's cap, through the function the runtime
+        // stamps the body with.
+        let cap = self.ai.ollama_options().num_ctx_cap;
         let window = match availability {
+            Availability::Ready { engine, model } if engine == "ollama" => {
+                let max = model
+                    .as_deref()
+                    .and_then(|m| self.engines.as_ref()?.model_window(engine, m));
+                ollama_num_ctx(max, cap)
+            }
             Availability::Ready { engine, .. } => {
                 self.engines.as_ref().and_then(|d| d.window(engine))
             }
@@ -549,14 +561,19 @@ impl App {
             return Vec::new();
         };
         chat.set_window(window);
-        // The tool schemas weigh on the budget only when the turn offers them.
+        // The tool block and schemas weigh on the budget only when the turn
+        // offers them, for the families it offers.
         let tools = match availability {
             Availability::Ready { engine, .. } => {
                 tools_for(engine, self.ai.tools_enabled(), None, self.tool_engines) != Tools::Off
             }
             _ => false,
         };
-        chat.set_tools_offered(tools);
+        chat.set_tools_reserve(if tools {
+            tools_reserve_tokens(self.ai.families())
+        } else {
+            0
+        });
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {

@@ -66,7 +66,7 @@ fn a_known_window_lets_more_history_through_than_the_cap() {
 fn a_small_window_drops_history_the_cap_would_have_kept() {
     let mut state = chat();
     state.set_window(Some(4_096));
-    state.set_tools_offered(true);
+    state.set_tools_reserve(1_500);
     let long = "x".repeat(2_000);
     let mut last = exchange(&mut state, &long);
     for _ in 0..4 {
@@ -90,7 +90,7 @@ const MODEL: Option<&str> = Some("llama3:8b");
 fn the_fill_counts_the_request_until_the_answer_lands() {
     let mut state = chat();
     state.set_window(Some(10_000));
-    state.set_tools_offered(true);
+    state.set_tools_reserve(1_500);
     let SendOutcome::Sent { turn, .. } = state.send(&"x".repeat(4_000), &ready(), SYSTEM) else {
         panic!("refused");
     };
@@ -140,4 +140,32 @@ fn a_turn_that_does_not_finish_adds_no_answer_to_the_fill() {
     state.apply(turn, StreamEvent::Error(ChatError::Interrupted));
     // 1000 history + 4 system, no tools.
     assert_eq!(state.context_percent(ENGINE, MODEL), Some(10));
+}
+
+#[test]
+fn a_trim_drops_whole_pairs_oldest_first_and_starts_on_a_user_message() {
+    use crate::core::ai::chat::engine::{ChatMessage, Role, build_context_tokens};
+    let msg = |role, text: &str| ChatMessage {
+        role,
+        content: text.into(),
+    };
+    let history = [
+        msg(Role::User, &"1".repeat(400)),
+        msg(Role::Assistant, &"2".repeat(400)),
+        msg(Role::User, &"3".repeat(400)),
+        msg(Role::Assistant, &"4".repeat(400)),
+        msg(Role::User, &"5".repeat(400)),
+    ];
+    // Room for 250 tokens: the newest (100) and one answer (100) fit, but a
+    // window may not start on an answer, so the pair u2 a2 goes whole.
+    let context = build_context_tokens(&history, 250);
+    assert_eq!(context.messages, history[4..]);
+    assert!(context.omitted);
+    // Room for 300: u3 and a4 fit with the newest, and the window starts on u3.
+    let context = build_context_tokens(&history, 300);
+    assert_eq!(context.messages, history[2..]);
+    assert_eq!(context.messages[0].role, Role::User);
+    // The newest alone is kept whole even with no room at all.
+    let context = build_context_tokens(&history, 0);
+    assert_eq!(context.messages, history[4..]);
 }

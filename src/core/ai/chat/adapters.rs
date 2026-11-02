@@ -5,6 +5,7 @@
 use serde_json::{Value, json};
 
 use super::{
+    budget::estimate_tokens,
     engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools},
     prompts,
 };
@@ -12,7 +13,7 @@ use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
-    tools::{registry_with, wiring::McpWire},
+    tools::{ExternalTool, registry::FamilySet, registry_with, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -293,7 +294,16 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
         Tools::On { external, .. } => external.external(),
         Tools::Off => Vec::new(),
     };
-    registry_with(&external, request.families)
+    tools_json(&external, request.families)
+}
+
+/// The built-in tools of `families` as the `tools` array lists them.
+fn offered_tools_of(families: FamilySet) -> Vec<Value> {
+    tools_json(&[], families)
+}
+
+fn tools_json(external: &[ExternalTool], families: FamilySet) -> Vec<Value> {
+    registry_with(external, families)
         .into_iter()
         .map(|t| {
             json!({"type": "function", "function": {
@@ -301,6 +311,15 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
             }})
         })
         .collect()
+}
+
+/// What a turn that offers the built-in tools of `families` adds to the
+/// prompt, in estimated tokens: the tools block of the system prompt plus the
+/// `tools` array. The budget pays it before any history is counted. External
+/// MCP tools are resolved in the runtime and are not counted.
+pub fn tools_reserve_tokens(families: FamilySet) -> usize {
+    let schemas = serde_json::to_string(&offered_tools_of(families)).unwrap_or_default();
+    estimate_tokens(&schemas) + estimate_tokens(&prompts::with_tools("", families))
 }
 
 /// The request after `rounds` of tool calls. `tools` says whether to offer the

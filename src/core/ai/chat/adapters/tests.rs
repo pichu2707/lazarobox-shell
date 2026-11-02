@@ -1957,3 +1957,27 @@ fn only_claude_codex_and_gemini_are_cli_engines() {
         assert!(!is_cli_engine(id), "{id}");
     }
 }
+
+#[test]
+fn the_tools_reserve_weighs_the_block_and_the_schemas_of_the_families() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let legacy = tools_reserve_tokens(FamilySet::LEGACY);
+    // The block plus the read and pane schemas are far from empty.
+    assert!(legacy > 300, "{legacy}");
+    // More families offer more schemas, so the reserve grows.
+    let more = FamilySet::LEGACY
+        .with(Family::Write)
+        .with(Family::Exec)
+        .with(Family::GitWrite);
+    assert!(tools_reserve_tokens(more) > legacy);
+    // It is exactly what a request of those families would carry.
+    let mut req = request("s");
+    req.families = FamilySet::LEGACY;
+    let schemas = serde_json::to_string(&offered_tools_of(FamilySet::LEGACY)).unwrap();
+    let block = crate::core::ai::chat::prompts::with_tools("", FamilySet::LEGACY);
+    assert_eq!(
+        legacy,
+        crate::core::ai::chat::budget::estimate_tokens(&schemas)
+            + crate::core::ai::chat::budget::estimate_tokens(&block)
+    );
+}

@@ -652,6 +652,12 @@ impl AiConfig {
         &self.managed_options
     }
 
+    /// This config with the Ollama options `ollama`.
+    pub fn with_ollama(mut self, ollama: OllamaOptions) -> Self {
+        self.ollama = ollama;
+        self
+    }
+
     /// What lazarobox asks of Ollama on each turn.
     pub fn ollama_options(&self) -> OllamaOptions {
         self.ollama

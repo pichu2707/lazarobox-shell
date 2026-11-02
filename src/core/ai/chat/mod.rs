@@ -367,8 +367,9 @@ pub struct ChatState {
     /// How full the context of the last request was, and the engine and model
     /// it was sent to.
     fill: Option<ContextFill>,
-    /// The turn about to be sent offers tools.
-    tools_offered: bool,
+    /// What the tool block and schemas of the turn about to be sent weigh, in
+    /// estimated tokens; 0 when it offers none.
+    tools_reserve: usize,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// What the last turn used, summed over its `Usage` events. Cleared by
@@ -499,7 +500,7 @@ impl ChatState {
             outbox: Vec::new(),
             window: None,
             fill: None,
-            tools_offered: false,
+            tools_reserve: 0,
             request_engine: String::new(),
             turn_usage: None,
             usage_config: crate::core::ai::config::UsageConfig::default(),
@@ -810,10 +811,10 @@ impl ChatState {
         self.window = window;
     }
 
-    /// Whether the next turn offers tools, which reserves room for their
-    /// schemas in the budget.
-    pub fn set_tools_offered(&mut self, offered: bool) {
-        self.tools_offered = offered;
+    /// What the next turn's tool block and schemas weigh in tokens (0 when it
+    /// offers none), which reserves room for them in the budget.
+    pub fn set_tools_reserve(&mut self, tokens: usize) {
+        self.tools_reserve = tokens;
     }
 
     /// How full the context of the last request was, in percent, when it went
@@ -1327,7 +1328,7 @@ impl ChatState {
                 self.window,
                 &system,
                 memory_text,
-                self.tools_offered,
+                self.tools_reserve,
             );
             (room, compact::context_for(&history, room))
         };
@@ -1352,7 +1353,7 @@ impl ChatState {
             self.window,
             &system,
             memory_text,
-            self.tools_offered,
+            self.tools_reserve,
             &context.messages,
         )
         .map(|fill| ContextFill {
