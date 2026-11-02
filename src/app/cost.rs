@@ -5,7 +5,7 @@
 use super::*;
 use crate::core::ai::chat::{
     cost_view::{CostView, NO_ARGUMENTS},
-    usage_view::{UNAVAILABLE_LINE, UsageRow, report_lines, session_lines},
+    usage_view::{UNAVAILABLE_LINE, UsageRow, report_lines},
 };
 
 impl App {
@@ -25,11 +25,9 @@ impl App {
         }
     }
 
-    /// `/cost`: clears the composer and opens the overlay. With history on the
-    /// store is asked (after the rows still queued, so the view is current);
-    /// with it off the session is told from memory.
+    /// `/cost`: clears the composer and opens the overlay. The store is asked
+    /// (after the rows still queued, so the view is current).
     pub(super) fn cost_submit(&mut self, id: PaneId) -> Vec<Effect> {
-        let history = self.history;
         // The report must see the usage of the turn that just ended.
         let mut effects = self.store_effects(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -37,18 +35,13 @@ impl App {
         };
         chat.composer_mut().clear();
         self.dirty = true;
-        if !history {
-            let lines = session_lines(chat.session_usage(), &|e| self.ai.usage().billing(e));
-            chat.open_cost(CostView::with(lines));
-        } else {
-            // A detached store answers `None` itself: the reply decides.
-            let conversation = chat.conversation();
-            chat.open_cost(CostView::reading());
-            effects.push(Effect::Store(StoreCmd::UsageReport {
-                pane: id,
-                conversation,
-            }));
-        }
+        // A detached store answers `None` itself: the reply decides.
+        let conversation = chat.conversation();
+        chat.open_cost(CostView::reading());
+        effects.push(Effect::Store(StoreCmd::UsageReport {
+            pane: id,
+            conversation,
+        }));
         effects
     }
 
@@ -70,8 +63,31 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
+        // The model the status bar names for the chat engine, for the rows
+        // whose engine reported none (the bar and `/cost` must agree).
+        let (assignment, _) = self.ai.resolve(Task::Chat);
+        let configured = assignment.model.filter(|m| !m.is_empty());
         let lines = match rows {
-            Some(rows) => report_lines(rows, chat.session_usage(), &|e| self.ai.usage().billing(e)),
+            Some(rows) => {
+                let named: Vec<UsageRow> = rows
+                    .iter()
+                    .map(|r| match &configured {
+                        Some(model)
+                            if r.model.is_none()
+                                && assignment.engine.as_deref() == Some(r.engine.as_str()) =>
+                        {
+                            UsageRow {
+                                model: Some(model.clone()),
+                                ..r.clone()
+                            }
+                        }
+                        _ => r.clone(),
+                    })
+                    .collect();
+                report_lines(&named, chat.session_usage(), &|e| {
+                    self.ai.usage().billing(e)
+                })
+            }
             None => vec![UNAVAILABLE_LINE.to_owned()],
         };
         if let Some(view) = chat.cost_mut() {

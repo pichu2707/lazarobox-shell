@@ -5,11 +5,10 @@ use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
     cost_view::READING_LINE,
-    engine::StreamEvent,
     store::{StoreCmd, StoreReply},
-    usage::TurnUsage,
-    usage_view::{HEADER, HISTORY_OFF_LINE, UNAVAILABLE_LINE, UsageRow},
+    usage_view::{HEADER, UNAVAILABLE_LINE, UsageRow},
 };
+use crate::core::ai::config::{AiConfig, Assignment, Task};
 
 fn sends(effects: &[Effect]) -> usize {
     effects
@@ -65,14 +64,6 @@ fn today_row() -> UsageRow {
         worker_total: None,
         worker_partial: false,
     }
-}
-
-fn history_off_chat() -> App {
-    let mut a = launched(120, 30).with_ai(ollama());
-    a.update(AppEvent::EnginesDetected(super::chat_history::detection()));
-    press(&mut a, "c");
-    a.update(prompt_for(chat_id()));
-    a
 }
 
 #[test]
@@ -257,41 +248,61 @@ fn other_text_with_cost_in_it_is_a_normal_message() {
     assert_eq!(sends(&ask(&mut a, "what does /cost do")), 1);
 }
 
+fn gemini_row(model: Option<&str>) -> UsageRow {
+    UsageRow {
+        engine: "gemini".into(),
+        model: model.map(str::to_owned),
+        ..today_row()
+    }
+}
+
+fn gemini_chat() -> App {
+    let mut ai = AiConfig::default();
+    ai.set(
+        Task::Chat,
+        Assignment {
+            engine: Some("gemini".into()),
+            model: Some("default".into()),
+        },
+    );
+    let mut a = launched(120, 30).with_ai(ai).with_chat_history();
+    press(&mut a, "c");
+    a.update(prompt_for(chat_id()));
+    listed(&mut a, chat_id(), rows());
+    a.update(key('n'));
+    a
+}
+
+fn pair_line(a: &App, engine: &str) -> String {
+    view_lines(a)
+        .into_iter()
+        .find(|l| l.starts_with(&format!("  {engine} › ")))
+        .expect("a pair line")
+}
+
 #[test]
-fn history_off_shows_this_session_from_memory_and_asks_the_store_nothing() {
-    let mut a = history_off_chat();
-    let turn = sent_turn(&ask(&mut a, "hi"));
-    a.update(delta(chat_id(), turn, "answer"));
-    a.update(AppEvent::Chat(
-        chat_id(),
-        turn,
-        StreamEvent::usage(TurnUsage {
-            input: Some(10),
-            output: Some(5),
-            model: Some("llama3".into()),
-            ..TurnUsage::default()
-        }),
-    ));
-    a.update(finish(chat_id(), turn));
-    let effects = ask(&mut a, "/cost");
-    assert_eq!(stores(&effects), Vec::new());
-    let lines = view_lines(&a);
-    assert_eq!(lines[0], HEADER);
-    assert_eq!(lines[1], HISTORY_OFF_LINE);
-    assert_eq!(lines[2], "this session: 15 tokens · 1 turns");
+fn a_row_without_a_model_wears_the_label_the_status_bar_shows() {
+    let mut a = gemini_chat();
+    assert_eq!(a.status_right(), "gemini › default");
+    ask(&mut a, "/cost");
+    a.update(answer(Some(vec![gemini_row(None)])));
     assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with("  ollama › llama3: in 10 · out 5"))
+        pair_line(&a, "gemini").starts_with("  gemini › default: "),
+        "{:?}",
+        view_lines(&a)
     );
 }
 
 #[test]
-fn history_off_without_usage_says_nothing_was_recorded() {
-    let mut a = history_off_chat();
+fn a_reported_model_and_other_engines_keep_their_own_label() {
+    let mut a = gemini_chat();
     ask(&mut a, "/cost");
-    assert_eq!(
-        view_lines(&a),
-        vec![HEADER, HISTORY_OFF_LINE, "no usage recorded yet"]
-    );
+    let mut other = gemini_row(None);
+    other.engine = "codex".into();
+    a.update(answer(Some(vec![
+        gemini_row(Some("gemini-2.5-pro")),
+        other,
+    ])));
+    assert!(pair_line(&a, "gemini").starts_with("  gemini › gemini-2.5-pro: "));
+    assert!(pair_line(&a, "codex").starts_with("  codex › unknown: "));
 }

@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- `/cost` named a pair `unknown` when the engine reported no model, while the
+  status bar showed the configured one (`gemini › default`). The chat engine's
+  pair now uses the status bar's model.
+
 ## [1.2.0] - 2026-11-02
 
 ### Added
