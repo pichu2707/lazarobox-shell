@@ -41,7 +41,7 @@ pub enum Toolset { ReadOnly, Code /* S7 */, Orchestrator }
 pub struct WorkerSpec { pub task: Task, pub prompt: String, pub engine: String,
     pub model: Option<String>, pub toolset: Toolset, pub deadline: Duration }
 pub enum WorkerStatus { Queued, Running, Done, Failed, Cancelled, TimedOut, Refused }
-pub enum ErrorClass { RateLimit, Conflict, Auth, Quota, Timeout, JailRefusal, Other } // spec ids: rate_limit, conflict, auth, quota, timeout, jail_refusal, other
+pub enum ErrorClass { RateLimit, Conflict, Auth, Quota, Timeout, JailRefusal, Setup, Other } // spec ids: rate_limit, conflict, auth, quota, timeout, jail_refusal, setup, other
 pub struct WorkerResult { pub status: WorkerStatus, pub text: String /* capped 32 KiB at collect, unwrapped */,
     pub elapsed: Duration, pub error: Option<(ErrorClass, String)> /* Refused carries the refusal reason with class Other */,
     pub usage: Option<Usage> /* S6 */, pub changes: Vec<Change> /* S7 */, pub evidence: Vec<Evidence> /* S8 */ }

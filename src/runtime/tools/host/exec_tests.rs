@@ -79,6 +79,7 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         stages: Arc::default(),
         exec,
         cli_cwds: std::sync::OnceLock::new(),
+        roster: Default::default(),
     });
     World {
         _dir: dir,

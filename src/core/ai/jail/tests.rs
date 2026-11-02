@@ -21,6 +21,7 @@ fn layout(cli: Cli, binary: &str, interpreter: Option<&str>) -> CliLayout {
         cli,
         home: p(HOME),
         codex_home: None,
+        gemini_home: None,
         binary: p(binary),
         interpreter: interpreter.map(p),
         loaders: Vec::new(),
@@ -344,6 +345,18 @@ fn codex_home_only_applies_to_codex() {
     let spec = jail_spec(&l).unwrap();
     assert!(spec.rw.contains(&p("/home/u/.gemini")));
     assert!(!every_path(&spec).contains(&Path::new("/srv/codex-state")));
+}
+
+#[test]
+fn gemini_home_override_moves_the_gemini_state_dir_and_only_for_gemini() {
+    let mut l = brew_gemini();
+    l.gemini_home = Some(p("/srv/gemini-home"));
+    let spec = jail_spec(&l).unwrap();
+    assert!(spec.rw.contains(&p("/srv/gemini-home/.gemini")));
+    assert!(!spec.rw.contains(&p("/home/u/.gemini")));
+    let mut l = nvm_codex();
+    l.gemini_home = Some(p("/srv/gemini-home"));
+    assert!(!every_path(&jail_spec(&l).unwrap()).contains(&Path::new("/srv/gemini-home/.gemini")));
 }
 
 #[test]
@@ -1600,7 +1613,8 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
             &[],
             WriteCause::Group
         ),
-        "~/.cargo/bin and ~/.cargo/bin/lazarobox-shell are writable by its group; \
+        "~/.cargo/bin and ~/.cargo/bin/lazarobox-shell are writable by its group \
+         (install with umask 022 to keep it); \
          run: chmod g-w ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell'"
     );
     assert_eq!(
@@ -1624,8 +1638,8 @@ fn the_refusal_names_every_offending_path_and_one_chmod_for_all() {
     };
     assert_eq!(
         outside.hint(home()),
-        "/opt/it's/bin is writable by its group, so /opt/it's/bin/node is not trusted; \
-         run: chmod g-w '/opt/it'\\''s/bin'"
+        "/opt/it's/bin is writable by its group, so /opt/it's/bin/node is not trusted \
+         (install with umask 022 to keep it); run: chmod g-w '/opt/it'\\''s/bin'"
     );
 }
 
@@ -2980,4 +2994,51 @@ fn shell_word_round_trips_hostile_names_through_a_real_shell() {
         shell_word(Path::new("/home/u"), Some(home_dir)).unwrap(),
         "~"
     );
+}
+
+/// Issue #526: the umask hint appears only when group write is the sole cause
+/// and the user can run the `chmod` themselves; the `chmod` stays first.
+#[test]
+fn the_umask_hint_appears_only_for_a_group_only_cause_the_user_can_fix() {
+    const HINT: &str = "(install with umask 022 to keep it)";
+    let mine = ["/home/u/.cargo/bin", "/home/u/.cargo/bin/lazarobox-shell"];
+    let group = shim_hint(&mine, &[], WriteCause::Group);
+    // The pasteable command stays last on the line.
+    assert!(
+        group.contains(&format!("group {HINT}; run: chmod g-w ")),
+        "{group}"
+    );
+    assert!(group.ends_with("lazarobox-shell'"), "{group}");
+    for cause in [WriteCause::Others, WriteCause::GroupAndOthers] {
+        let hint = shim_hint(&mine, &[], cause);
+        assert!(!hint.contains("umask"), "{hint}");
+    }
+    // Not yours: only the owner can fix it, so a umask hint would mislead.
+    let foreign = shim_hint(&["/usr/local/bin"], &["/usr/local/bin"], WriteCause::Group);
+    assert!(!foreign.contains("umask"), "{foreign}");
+    let mixed = shim_hint(
+        &["/usr/local/bin", "/home/u/.cargo/bin/lazarobox-shell"],
+        &["/usr/local/bin"],
+        WriteCause::Group,
+    );
+    assert!(!mixed.contains("umask"), "{mixed}");
+    // Not writable at all: other refusals never carry it.
+    for why in [
+        Untrusted::Scratch,
+        Untrusted::Unresolvable,
+        Untrusted::Unchecked {
+            path: p("/home/u/.cargo/bin"),
+            kind: std::io::ErrorKind::PermissionDenied,
+        },
+    ] {
+        let hint = JailRefusal::UntrustedInterpreter {
+            path: p("/home/u/.cargo/bin/lazarobox-shell"),
+            why,
+        }
+        .hint(home());
+        assert!(!hint.contains("umask"), "{hint}");
+    }
+    // A path that cannot be quoted gets no chmod and no hint.
+    let odd = shim_hint(&["/home/u/a\u{7}b"], &[], WriteCause::Group);
+    assert!(!odd.contains("umask"), "{odd}");
 }

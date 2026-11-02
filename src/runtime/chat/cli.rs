@@ -23,7 +23,10 @@ use std::{
     os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -34,6 +37,8 @@ use tokio::{
     sync::mpsc,
     time::timeout,
 };
+
+mod home;
 
 use super::fresh_decoder;
 use crate::{
@@ -69,6 +74,11 @@ const READ_SIZE: usize = 16 * 1024;
 /// before its group is killed.
 pub const EXIT_GRACE: Duration = Duration::from_secs(2);
 
+pub const CANNOT_PREPARE_HOME: &str = "cannot prepare the private home of the CLI";
+
+/// The longest reason appended to [`CANNOT_PREPARE_HOME`].
+const REASON_CAP: usize = 160;
+
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
 /// A file the CLI is told about by path sits where its flag would be split.
@@ -98,6 +108,12 @@ pub struct CliEnv {
     /// `$CODEX_HOME`, when it is an absolute path: codex keeps its login and
     /// state there instead of in `~/.codex`.
     pub codex_home: Option<PathBuf>,
+    /// `$GEMINI_CLI_HOME`, when it is an absolute path: gemini keeps its
+    /// state in `<it>/.gemini` instead of `~/.gemini`.
+    pub gemini_home: Option<PathBuf>,
+    /// Which CLIs have already had their login notice in this run (a bit
+    /// each): the notice is shown once, not on every turn. Clones share it.
+    pub noticed: Arc<AtomicU8>,
     /// This program's canonical executable, resolved once at startup (inside a
     /// jailed CLI `/proc/self/exe` is node): what an engine runs as its MCP
     /// shim. `None` turns the tools off.
@@ -147,9 +163,17 @@ const GEMINI_TRUST_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
 /// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
-/// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 9] = [
+/// address a keyring login needs) are kept. The API key variables
+/// (`GEMINI_API_KEY`, `GOOGLE_*`, `OPENAI_API_KEY`) pass through on purpose:
+/// they are how the user logs in to the CLI.
+const SCRUBBED: [&str; 13] = [
     GEMINI_TRUST_ENV,
+    // Replace gemini's system prompt, or its settings and trusted folders,
+    // with files of the user's.
+    "GEMINI_SYSTEM_MD",
+    "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+    "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+    "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -186,6 +210,10 @@ impl CliEnv {
             codex_home: std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
+            gemini_home: std::env::var_os("GEMINI_CLI_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
+            noticed: Arc::default(),
             shim: std::env::current_exe()
                 .and_then(fs::canonicalize)
                 .ok()
@@ -584,6 +612,15 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     trust(path, Rule::Jail)
 }
 
+/// `Ok` when the program at `exe` passes the trust check the tools need, else
+/// the same sentence the chat shows when it turns them off (`--check-install`).
+pub fn check_install(exe: &Path, home: Option<&Path>) -> Result<(), String> {
+    interpreter_trust(exe).map(drop).map_err(|(path, why)| {
+        let refusal = JailRefusal::UntrustedInterpreter { path, why };
+        format!("tools would be off: {}", refusal.hint(home))
+    })
+}
+
 /// Whether a path is under a scratch folder.
 fn in_scratch(path: &Path) -> bool {
     is_scratch(path)
@@ -895,6 +932,13 @@ fn jail_plan(
         cli,
         home,
         codex_home: env.codex_home.as_deref().and_then(resolve),
+        gemini_home: match (cli, env.gemini_home.as_deref()) {
+            (Cli::Gemini, Some(set)) => Some(
+                home::checked_gemini_home(set, env.home.as_deref())
+                    .map_err(JailRefusal::BadGeminiHome)?,
+            ),
+            _ => None,
+        },
         binary: bin.clone(),
         interpreter,
         loaders,
@@ -1100,6 +1144,8 @@ struct Plan {
     wired: bool,
     /// The working folder when it is not the shared empty one.
     cwd: Option<PathBuf>,
+    /// The bit of `CliEnv::noticed` to set once `notice` is delivered.
+    noticed_bit: u8,
 }
 
 impl Plan {
@@ -1248,6 +1294,12 @@ pub(super) fn runs_jailed(env: &CliEnv, job: &Job) -> bool {
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
+    plan_for(env, job, true)
+}
+
+/// [`plan`]; `private` gives codex and gemini their private home, which only a
+/// chat turn needs.
+fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent> {
     let how = launch(job.jail, env.jail);
     let home = env.home.as_deref();
     let refused = |why: &JailRefusal| StreamEvent::Error(ChatError::Jail(why.hint(home)));
@@ -1279,8 +1331,45 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
     let mut wired = (how == Launch::Jailed)
         .then(|| wire_mcp(env, job, &dirs))
         .flatten();
+    // codex and gemini keep the user's instructions and skills in their state
+    // folder: a chat turn gives them a private one (see `home`) and is refused
+    // when it cannot, never run with the user's own folder. The model listing
+    // and `--version` read none of it and get no home.
+    let mut noticed_bit = 0;
+    let (private, home_notice, home_cwd, dotenv) = if private {
+        let prepared = home::prepare(env, job.cli, &dirs.tmp).map_err(|e| {
+            let reason: String = e.to_string().chars().take(REASON_CAP).collect();
+            StreamEvent::Error(ChatError::Failed(format!(
+                "{CANNOT_PREPARE_HOME}: {reason}"
+            )))
+        })?;
+        // The login notice is shown once per run, not on every turn.
+        let bit = match job.cli {
+            Cli::Claude => 0,
+            Cli::Codex => 1,
+            Cli::Gemini => 2,
+        };
+        // Counted as shown only once it is delivered (see `process_turn`).
+        let notice = prepared
+            .notice
+            .filter(|_| env.noticed.load(Ordering::Relaxed) & bit == 0);
+        noticed_bit = if notice.is_some() { bit } else { 0 };
+        (prepared.vars, notice, prepared.cwd, prepared.dotenv)
+    } else {
+        (Vec::new(), None, None, None)
+    };
+    // A wired gemini runs in its own work folder: the private `.env` goes there
+    // too, or the tools are left off.
+    if wired.is_some() && dotenv.is_some() {
+        let had = wired.is_some();
+        wired = with_dotenv(wired, dotenv.as_deref());
+        if had && wired.is_none() {
+            unwrite_mcp(&dirs);
+        }
+    }
     let vars = |wired: Option<&Wired>| {
         let mut vars = env.child_vars();
+        vars.extend(private.iter().cloned());
         vars.extend(wired.into_iter().flat_map(|w| w.vars.iter().cloned()));
         vars
     };
@@ -1347,9 +1436,10 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                             argv,
                             vars: vars(attempt.as_ref()),
                             dirs,
-                            notice,
+                            notice: joined(notice, home_notice),
                             wired: attempt.is_some(),
-                            cwd: attempt.and_then(|w| w.cwd),
+                            cwd: attempt.and_then(|w| w.cwd).or_else(|| home_cwd.clone()),
+                            noticed_bit,
                         });
                     }
                     Err(why) => {
@@ -1383,12 +1473,37 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         vars: vars(None),
         dirs,
         wired: false,
-        cwd: None,
-        notice: tools_off(Some(format!(
-            "{} runs without the jail here: {reason}",
-            job.binary
-        ))),
+        cwd: home_cwd,
+        noticed_bit,
+        notice: joined(
+            tools_off(Some(format!(
+                "{} runs without the jail here: {reason}",
+                job.binary
+            ))),
+            home_notice,
+        ),
     })
+}
+
+/// The wired turn with the private `.env` placed in its work folder, or `None`
+/// (the tools are then left off) when it cannot be written there.
+fn with_dotenv(wired: Option<Wired>, dotenv: Option<&str>) -> Option<Wired> {
+    let (Some(w), Some(text)) = (&wired, dotenv) else {
+        return wired;
+    };
+    let placed = w
+        .cwd
+        .as_ref()
+        .is_none_or(|work| write_private(&work.join(".env"), text.as_bytes()).is_ok());
+    placed.then_some(wired).flatten()
+}
+
+/// Two notices as one line.
+fn joined(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Runs `codex debug models` the way a codex turn starts: the same plan (the
@@ -1430,7 +1545,7 @@ async fn run_codex(
         mcp: None,
         tools: None,
     };
-    let plan = match plan(env, &job) {
+    let plan = match plan_for(env, &job, false) {
         Ok(plan) => plan,
         Err(StreamEvent::Error(ChatError::Jail(why))) => return Err(format!("jail: {why}")),
         Err(StreamEvent::Error(ChatError::Failed(text))) => return Err(text),
@@ -1566,8 +1681,10 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     if !plan.wired {
         unwire(&job);
     }
-    if let Some(line) = plan.notice.take() {
-        send(tx, StreamEvent::Notice(line)).await;
+    if let Some(line) = plan.notice.take()
+        && tx.send(StreamEvent::Notice(line)).await.is_ok()
+    {
+        env.noticed.fetch_or(plan.noticed_bit, Ordering::Relaxed);
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.

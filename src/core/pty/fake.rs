@@ -5,8 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use super::Probe;
 use super::PtyHandle;
-use crate::core::pane::PaneSize;
+use crate::core::{ai::tools::panes::Foreground, pane::PaneSize};
 
 /// What a `FakePty` has been asked to do.
 #[derive(Default, Debug)]
@@ -25,6 +26,11 @@ pub struct FakePty {
     pub foreground: Option<bool>,
     /// What `cwd` answers; `None` is "cannot read".
     pub cwd: Option<std::path::PathBuf>,
+    /// What `foreground` answers; `None` is "cannot read".
+    pub fg: Option<Foreground>,
+    /// When set, the probe waits for it to turn `true` (at most 3 s), as a
+    /// read on a stuck process would.
+    pub probe_wait: Option<Arc<(Mutex<bool>, std::sync::Condvar)>>,
 }
 
 impl PtyHandle for FakePty {
@@ -47,6 +53,20 @@ impl PtyHandle for FakePty {
 
     fn cwd(&self) -> Option<std::path::PathBuf> {
         self.cwd.clone()
+    }
+
+    fn probe(&self) -> Probe {
+        let (cwd, fg, wait) = (self.cwd.clone(), self.fg.clone(), self.probe_wait.clone());
+        Box::new(move || {
+            if let Some(gate) = wait {
+                let open = gate.0.lock().unwrap();
+                drop(
+                    gate.1
+                        .wait_timeout_while(open, std::time::Duration::from_secs(3), |o| !*o),
+                );
+            }
+            (cwd, fg)
+        })
     }
 
     fn kill(&mut self) {

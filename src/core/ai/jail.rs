@@ -411,6 +411,9 @@ pub enum JailRefusal {
     NotCanonical(PathBuf),
     /// A program path the CLI could also write (or the other way round).
     Overlap(PathBuf),
+    /// The user's `$GEMINI_CLI_HOME` is not a folder the jail can open, and
+    /// why.
+    BadGeminiHome(String),
 }
 
 /// Who can write a path the trust check refused.
@@ -500,6 +503,9 @@ fn shell_word(path: &Path, home: Option<&Path>) -> Option<String> {
         None => quoted(path),
     }
 }
+
+/// Said before the `chmod` (the command stays last, to paste) when group write is the only cause (issue #526).
+const UMASK_HINT: &str = "(install with umask 022 to keep it)";
 
 /// Longest path a menu row shows whole.
 const BRIEF_CAP: usize = 24;
@@ -653,6 +659,14 @@ impl JailRefusal {
                 }
                 let words: Option<Vec<String>> = mine.iter().map(|p| shell_word(p, home)).collect();
                 let fix = match words {
+                    // Group write alone, all fixable by the user: the usual
+                    // `umask 002` that `cargo install` obeys. The `chmod` stays last.
+                    Some(words) if *cause == WriteCause::Group && foreign.is_empty() => {
+                        return format!(
+                            "{head} {UMASK_HINT}; run: chmod {flags} {}",
+                            words.join(" ")
+                        );
+                    }
                     Some(words) => format!("run: chmod {flags} {}", words.join(" ")),
                     None => match cause {
                         WriteCause::Group => "remove the group write permission",
@@ -678,6 +692,7 @@ impl JailRefusal {
                 "{} would be both run and written by the jail; keep the CLI and its state in separate folders",
                 at(path)
             ),
+            Self::BadGeminiHome(why) => format!("{}; fix or unset it", one_line(why)),
         }
     }
 
@@ -695,6 +710,7 @@ impl JailRefusal {
             Self::RootTooBroad(path) => format!("{} too broad", brief(path, home)),
             Self::NotCanonical(path) => format!("{} not canonical", brief(path, home)),
             Self::Overlap(path) => format!("{} is run and written", brief(path, home)),
+            Self::BadGeminiHome(_) => "bad $GEMINI_CLI_HOME".to_owned(),
         }
     }
 }
@@ -1126,6 +1142,9 @@ pub struct CliLayout {
     pub home: PathBuf,
     /// `$CODEX_HOME`, when set (codex only).
     pub codex_home: Option<PathBuf>,
+    /// `$GEMINI_CLI_HOME`, when set (gemini only): the folder that holds
+    /// `.gemini`.
+    pub gemini_home: Option<PathBuf>,
     /// The canonical CLI path.
     pub binary: PathBuf,
     /// The canonical interpreter file of a script CLI.
@@ -1275,6 +1294,7 @@ pub fn jail_spec_for(
     let given = [&layout.home, &layout.binary, &layout.cwd, &layout.tmp]
         .into_iter()
         .chain(&layout.codex_home)
+        .chain(&layout.gemini_home)
         .chain(&layout.interpreter)
         .chain(&layout.loaders)
         .chain(&layout.lib_dirs)
@@ -1325,7 +1345,14 @@ pub fn jail_spec_for(
                 .unwrap_or_else(|| layout.home.join(".codex")),
             None,
         ),
-        Cli::Gemini => (layout.home.join(".gemini"), None),
+        Cli::Gemini => (
+            layout
+                .gemini_home
+                .as_ref()
+                .unwrap_or(&layout.home)
+                .join(".gemini"),
+            None,
+        ),
     };
     let state = resolved(state);
     // Only a real folder inside the state dir can be carved out: a link, or

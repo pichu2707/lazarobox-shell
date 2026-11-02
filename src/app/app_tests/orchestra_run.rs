@@ -179,7 +179,7 @@ pub(super) fn halted(run: RunId, text: &str) -> OrchestraEvent {
     OrchestraEvent::Halted {
         run,
         worker: WorkerId(1),
-        class: ErrorClass::Conflict,
+        class: ErrorClass::Other,
         text: text.into(),
     }
 }
@@ -218,7 +218,7 @@ fn a_failure_shows_its_alert_with_the_error_as_it_came() {
         Some(&OrchAlert {
             run: RUN,
             worker: WorkerId(1),
-            class: ErrorClass::Conflict,
+            class: ErrorClass::Other,
             text: "409 conflict: session busy".into(),
         })
     );
@@ -847,4 +847,25 @@ fn a_user_cancel_stops_every_continuation_of_the_run() {
         assert!(attaches(&late).is_none(), "{late:?}");
         b.update(event(OrchestraEvent::Ended { run: RUN }));
     }
+}
+
+// The class is shown when it says something; `other` adds nothing.
+#[test]
+fn the_alert_shows_a_class_that_says_something_and_omits_other() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Failed)));
+    a.update(event(OrchestraEvent::Halted {
+        run: RUN,
+        worker: WorkerId(1),
+        class: ErrorClass::Auth,
+        text: "not logged in".into(),
+    }));
+    let text = a.chat_guidance(chat_id()).unwrap();
+    assert!(text.contains("failed (auth): not logged in"), "{text}");
+    a.update(event(halted(RUN, "boom")));
+    let text = a.chat_guidance(chat_id()).unwrap();
+    assert!(
+        text.contains("failed: boom") && !text.contains("(other)"),
+        "{text}"
+    );
 }

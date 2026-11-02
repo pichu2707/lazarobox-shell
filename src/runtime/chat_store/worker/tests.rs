@@ -2338,6 +2338,71 @@ fn a_count_the_engine_did_not_report_stays_null() {
     assert_eq!(row, (None, Some(5), None, None, None));
 }
 
+/// The `engine`, `role` and `model` of every stored usage row, oldest first.
+fn stored_models(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+    conn.prepare("SELECT engine, role, model FROM turn_usage ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn mixed_usage() -> TurnUsage {
+    TurnUsage {
+        input: Some(3),
+        output: Some(4),
+        multi_model: true,
+        ..TurnUsage::default()
+    }
+}
+
+#[test]
+fn a_multi_model_turn_is_stored_with_the_mixed_marker() {
+    let (_dir, mut worker, conn) = fixture();
+    worker.handle(record_for("gemini", mixed_usage()));
+    worker.handle(record_for("claude", mixed_usage()));
+    assert_eq!(
+        stored_models(&conn),
+        vec![
+            ("gemini".into(), "chat".into(), Some("mixed".into())),
+            ("claude".into(), "chat".into(), Some("mixed".into())),
+        ]
+    );
+}
+
+#[test]
+fn side_and_worker_rows_of_a_multi_model_run_are_marked_too() {
+    let (_dir, mut worker, conn) = fixture();
+    for (role, who) in [("compaction", None), ("worker", Some("r1.w1"))] {
+        worker.handle(StoreCmd::RecordUsage {
+            pane: pane(),
+            conversation: None,
+            engine: "gemini".into(),
+            role: role.into(),
+            worker: who.map(str::to_owned),
+            usage: Box::new(mixed_usage()),
+        });
+    }
+    let models: Vec<_> = stored_models(&conn).into_iter().map(|r| r.2).collect();
+    assert_eq!(models, vec![Some("mixed".into()); 2]);
+}
+
+#[test]
+fn a_single_model_turn_keeps_its_model_and_an_unknown_one_stays_null() {
+    let (_dir, mut worker, conn) = fixture();
+    worker.handle(record_for("ollama", tokens(1, 2)));
+    worker.handle(record_for(
+        "ollama",
+        TurnUsage {
+            output: Some(1),
+            ..TurnUsage::default()
+        },
+    ));
+    let models: Vec<_> = stored_models(&conn).into_iter().map(|r| r.2).collect();
+    assert_eq!(models, vec![Some("llama3".into()), None]);
+}
+
 #[test]
 fn a_row_keeps_its_role_and_flags() {
     let (_dir, mut worker, conn) = fixture();

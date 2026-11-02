@@ -10,6 +10,114 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `list_panes`, a read-only chat tool that tells the model what each pane
+  runs: its number, whether it is focused, its folder and the foreground
+  program (`nvim prueba.rs`). It is free on local engines; on a cloud engine
+  it asks first and the prompt shows the exact text that would be sent, so the
+  foreground command lines of your panes reach a provider only after your `y`.
+  Arguments are an allowlist, not a denylist: the focused pane shows the
+  program name, flags without their `=value` and paths (starting with `/`,
+  `./`, `../` or `~/`, or naming an existing entry in the program's folder);
+  every other argument is `…`, and `bash -c`, `python -c`, `node -e`, `perl -e`
+  and `ruby -e` show the flag only. Other panes show the program name only.
+  Each argument is capped at 120 characters and each pane at 300, and paths
+  under `$HOME` show as `~/`. The environment of other processes is never
+  read, and the shared state only ever holds redacted text. Linux reads
+  `/proc/<pgid>/cmdline` and `cwd`; on macOS the program and folder are
+  `unknown`. A pane that cannot be read shows `program: unknown`. Existing
+  file names are shown as they are (`--password-file creds.txt` shows
+  `creds.txt`; contents are never read) and only the first 16 arguments of the
+  focused pane are looked up on disk. Every fragment is cleaned like the other
+  prompts (no escape sequences, bidi or zero-width characters), redacted and
+  capped; a program title with spaces or `:` shows as `…`. The text is bounded
+  (5 panes, focused first, then `+N more`) so the prompt stays answerable,
+  and the refresh (the `/proc` reads and the disk lookups) runs off the UI
+  loop. A pane list older than 10 s says so in the text, because the refresh
+  may be stuck. An Ollama `*-cloud` model counts as
+  local, so it does not ask.
+- Pin change: `list_panes` joins the legacy tool families, so the default
+  tool list (the MCP `tools/list` bytes, the Ollama and llama.cpp `tools`
+  body and the tools prompt, 865 to 1033 bytes) is no longer the 0.18.0 one.
+  The golden and the registry pins were updated on purpose.
+- `lazarobox-shell --check-install` prints whether the tools can run from this
+  install, outside the TUI: exit 0 when the binary and its folder pass the
+  trust check, exit 1 with the same reason and `chmod` fix as the chat notice
+  otherwise.
+
+### Changed
+
+- When group write is the only reason `tools are off` (the usual result of
+  `cargo install` under `umask 002`), the notice ends with
+  `(install with umask 022 to keep it)` before the `chmod` command (which stays
+  last, ready to paste), and the README install and update sections explain why and how to avoid it. The trust
+  rule is unchanged. (#526)
+- The in-app update (Updates row) runs its `cargo install` with `umask 022` for
+  that child process only, so the binary it installs is not group-writable even
+  when the user's umask is 002. The `cargo install` arguments are passed
+  unchanged. (#526)
+- `/cost` no longer describes a chat-history-off view: chat history is always
+  on, and an unreadable `chat.db` shows `usage history is not available`.
+
+### Fixed
+
+- The tools on the `codex` engine were refused by codex itself (`MCP tool call
+  requires approval, but approval policy is never`), so no call reached
+  lazarobox: `list_panes`, `read_file` and the rest failed, and no lazarobox ask
+  appeared. codex now passes our calls on (`default_tools_approval_mode =
+  "approve"` for the `lazarobox` server only) and they reach lazarobox's own
+  approval, which is unchanged. Checked with codex 0.162.1; the key needs codex
+  0.125 or later (older versions reject it and the turn fails with codex's
+  config error).
+- `Ctrl+Space r r` and `Ctrl+Space r d` showed nothing when the answer was
+  already known, or when the store answered at once (#501, #527): the notice
+  (`No interrupted run to resume or discard`) was set but the screen was not
+  redrawn, so the `RUN` key hint stayed up. The key now always redraws.
+- `/cost` showed `unknown` for a turn that used several models (gemini's router
+  plus its main model, claude's sub-agents). Such a turn is now stored and shown
+  as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
+- Chat with `codex` and `gemini` no longer sends the user's own setup to the
+  provider (#519). Neither CLI has a flag that stops it loading its global
+  instruction files (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) or skills
+  (`~/.gemini/skills/`), so each turn now runs with a private `CODEX_HOME` or
+  `GEMINI_CLI_HOME` inside its wiped temp folder. It holds only symlinks to the
+  login files (nothing is copied or moved) and, for gemini, a `settings.json` with the login type
+  and `context.memoryBoundaryMarkers`. A turn that cannot prepare it fails with a notice
+  instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
+  child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
+  the real file. The turn warns before it starts when no login is found, honours
+  a validated `GEMINI_CLI_HOME`, rewrites gemini's `.env` with only its login keys (never a link, so `GEMINI_SYSTEM_MD` cannot come back through it), reads `settings.json` with comments,
+  and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
+  and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
+  (model cache, installation id), which costs a few extra calls. A gemini login
+  refreshed during a turn is not saved back (lazarobox never writes credential
+  files), so each turn refreshes the token again, which is a little slower; if
+  Google ever rotated the refresh token, a new `gemini` login would be needed.
+  The login notices show once per run.
+  Neither CLI walks up from its working folder for `AGENTS.md` or `GEMINI.md`
+  any more (`-c project_root_markers=[]` for codex, `context.memoryBoundaryMarkers`
+  set to `[]` for gemini). A value of the gemini `.env` that cannot be rewritten
+  safely is skipped with a notice, never silently; a line that opens a quote it
+  does not close, and the lines up to its closing quote, are skipped with a
+  notice. In the `.env`, `KEY=abc#def` keeps `#def`: only ` #` starts a comment.
+  Empty values do not count as a login.
+- `Prefix r r` and `Prefix r d` no longer say `No interrupted run to resume or
+  discard` when ORCH was never turned on since the start: the store is asked on
+  the spot (off the UI thread, with a `Looking for interrupted runs` notice) and
+  the answer completes the key that waited (including `Turn ORCH on in this pane
+  first`). A failed or silent (10 s) read is said and retried by the next press,
+  never reported as `No interrupted run`. (#501)
+- A refused worker (for example one routed to an ollama model that is not
+  downloaded) now gives the coordinator the reason in the tool result (one
+  redacted line, capped) instead of only `worker N: refused`. (#502)
+- `m` on a refused worker opens the model picker of the engine configured for
+  its task instead of the engine picker; with no engine to take from, it opens
+  the engines and a notice says why. (#502)
+- The failure alert shows the error class (`other` is omitted), `(setup)` for a
+  refused worker whose engine or model is not available. The refusal reason
+  given to the coordinator has absolute paths replaced by `<path>`. (#502)
+
 ## [1.2.0] - 2026-11-02
 
 ### Added

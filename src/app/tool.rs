@@ -188,6 +188,7 @@ impl App {
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
             | ApprovalAsk::GitDiff { .. }
+            | ApprovalAsk::Panes { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)

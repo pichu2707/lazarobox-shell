@@ -23,8 +23,11 @@ use std::{
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use super::{PtyEvent, PtyHandle, PtySink, SpawnSpec};
-use crate::core::pane::PaneSize;
+use super::{Probe, PtyEvent, PtyHandle, PtySink, SpawnSpec};
+use crate::core::{
+    ai::tools::panes::{CMDLINE_CAP, Foreground, parse_cmdline},
+    pane::PaneSize,
+};
 
 const READ_CHUNK: usize = 8 * 1024;
 /// How long the waiter lets the reader drain the last output after the child
@@ -58,6 +61,18 @@ impl Events {
             self.send(PtyEvent::Exited);
         }
     }
+}
+
+/// The argv and folder of process group `pgid`, from `/proc`.
+fn read_foreground(pgid: libc::pid_t) -> Option<Foreground> {
+    use std::io::Read;
+    let file = std::fs::File::open(format!("/proc/{pgid}/cmdline")).ok()?;
+    let mut raw = Vec::new();
+    file.take(CMDLINE_CAP as u64).read_to_end(&mut raw).ok()?;
+    Some(Foreground {
+        argv: parse_cmdline(&raw)?,
+        cwd: std::fs::read_link(format!("/proc/{pgid}/cwd")).ok(),
+    })
 }
 
 fn pty_size(size: PaneSize) -> PtySize {
@@ -99,6 +114,15 @@ impl PtyHandle for PortableHandle {
         let leader = self.master.process_group_leader()?;
         let shell = libc::pid_t::try_from(self.pid?).ok()?;
         Some(leader == shell)
+    }
+
+    fn probe(&self) -> Probe {
+        let pid = self.pid;
+        let pgid = self.master.process_group_leader();
+        Box::new(move || {
+            let shell_cwd = pid.and_then(|pid| std::fs::read_link(format!("/proc/{pid}/cwd")).ok());
+            (shell_cwd, pgid.and_then(read_foreground))
+        })
     }
 
     fn kill(&mut self) {
@@ -182,8 +206,9 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
         .openpty(pty_size(spec.size))
         .map_err(io::Error::other)?;
 
-    let mut cmd = CommandBuilder::new(&spec.program);
-    cmd.args(&spec.args);
+    let (program, args) = spec.launch();
+    let mut cmd = CommandBuilder::new(&program);
+    cmd.args(&args);
     cmd.cwd(&spec.cwd);
     for (key, value) in &spec.env {
         cmd.env(key, value);
@@ -403,6 +428,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(pty.shell_in_foreground(), Some(false));
+    }
+
+    // list_panes: the argv of the foreground program is read from /proc.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_foreground_argv_is_the_running_program_with_its_arguments() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        pty.write(b"echo READY\n".to_vec());
+        wait_for(&rx, "READY");
+        pty.write(b"sleep 31 32\n".to_vec());
+        let want = vec!["sleep".to_owned(), "31".to_owned(), "32".to_owned()];
+        let deadline = Instant::now() + TIMEOUT;
+        while pty.probe()().1.map(|f| f.argv) != Some(want.clone()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (shell_cwd, fg) = pty.probe()();
+        let fg = fg.unwrap();
+        assert!(shell_cwd.is_some());
+        assert_eq!(fg.argv, want);
+        assert!(fg.cwd.is_some());
     }
 
     // Spec: shell exits -> Exited event.

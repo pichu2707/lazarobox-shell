@@ -177,6 +177,12 @@ pub fn codex(shim: &Path, wire: &McpWire) -> Option<CodexWiring> {
         ("env_vars", format!("[{}]", toml_string(TOKEN_ENV))),
         ("tool_timeout_sec", CODEX_TOOL_TIMEOUT_SEC.to_string()),
         ("startup_timeout_sec", CODEX_STARTUP_TIMEOUT_SEC.to_string()),
+        // `codex exec` runs with approval policy `never` and our tools have no
+        // MCP annotations, so codex would deny every call itself. lazarobox
+        // is the approval authority: each call still goes through the shim
+        // and the host's own ask (`default_tools_approval_mode`: present since codex ~0.125, checked on
+        // 0.162.1).
+        ("default_tools_approval_mode", toml_string("approve")),
     ];
     Some(CodexWiring {
         args: pairs
@@ -390,6 +396,40 @@ mod tests {
                 .contains(&format!("mcp_servers.lazarobox.env_vars=[\"{TOKEN_ENV}\"]"))
         );
         assert!(!format!("{w:?}").contains(&token), "{w:?}");
+    }
+
+    // codex exec runs with approval policy never, and our tools carry no MCP
+    // annotations: without this codex denies every call itself ("approval
+    // policy is never") and none reaches lazarobox's own ask.
+    #[test]
+    fn codex_leaves_the_approval_of_our_tools_to_lazarobox() {
+        let w = codex_wiring();
+        assert!(
+            w.args.contains(
+                &"mcp_servers.lazarobox.default_tools_approval_mode=\"approve\"".to_owned()
+            ),
+            "{:?}",
+            w.args
+        );
+    }
+
+    #[test]
+    fn the_codex_approval_key_is_set_only_for_our_server() {
+        let w = codex_wiring();
+        let hits: Vec<&String> = w
+            .args
+            .iter()
+            .filter(|a| a.contains("default_tools_approval_mode"))
+            .collect();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].starts_with("mcp_servers.lazarobox."), "{hits:?}");
+        // No global or other-server form of the key.
+        assert!(
+            w.args
+                .iter()
+                .all(|a| !a.starts_with("default_tools_approval_mode")
+                    && !a.starts_with("approval_policy"))
+        );
     }
 
     #[test]

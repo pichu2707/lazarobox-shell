@@ -8,6 +8,8 @@ pub enum Action {
     Run,
     Version,
     Help,
+    /// Print whether the tools can run from this install, then exit.
+    CheckInstall,
     /// An unknown flag, verbatim.
     UnknownOption(String),
     /// An unknown first non-flag argument, verbatim.
@@ -20,14 +22,16 @@ pub enum Action {
 pub const USAGE: &str = "\
 usage: lazarobox-shell [--force] [--check-prefix] [--dir <folder> | --dir=<folder>]
        lazarobox-shell install-desktop [--terminal <cmd>] [--dir <folder>] [--uninstall]
+       lazarobox-shell --check-install
        lazarobox-shell --version | --help
 
-  --force        start even inside a lazarobox pane
-  --dir <folder> start in this folder (also --dir=<folder>)
-  --check-prefix check again whether Ctrl+Space reaches lazarobox
+  --force          start even inside a lazarobox pane
+  --dir <folder>   start in this folder (also --dir=<folder>)
+  --check-prefix   check again whether Ctrl+Space reaches lazarobox
+  --check-install  say whether the tools can run from this install (exit 0 or 1)
   install-desktop  must be the first argument
-  -V, --version  print the version
-  -h, --help     print this help";
+  -V, --version    print the version
+  -h, --help       print this help";
 
 const KNOWN: [&str; 4] = ["install-desktop", "__jail-exec", "__mcp-serve", "__watch"];
 
@@ -55,6 +59,7 @@ pub fn classify(argv: &[String]) -> Action {
         match arg.as_str() {
             "--version" | "-V" => return Action::Version,
             "--help" | "-h" => return Action::Help,
+            "--check-install" => return Action::CheckInstall,
             "--force" | "--check-prefix" => {}
             "--dir" => {
                 it.next_if(|v| !v.starts_with('-'));
@@ -84,6 +89,16 @@ mod tests {
         assert_eq!(c(&["--force"]), Action::Run);
         assert_eq!(c(&["--dir", "/a", "--force"]), Action::Run);
         assert_eq!(c(&["--dir=/a"]), Action::Run);
+    }
+
+    #[test]
+    fn check_install_is_its_own_action() {
+        assert_eq!(c(&["--check-install"]), Action::CheckInstall);
+        assert_eq!(c(&["--force", "--check-install"]), Action::CheckInstall);
+        assert_eq!(c(&["--check-install", "--help"]), Action::CheckInstall);
+        // The first decisive argument wins: help asked first shows help.
+        assert_eq!(c(&["--help", "--check-install"]), Action::Help);
+        assert!(USAGE.contains("--check-install"));
     }
 
     #[test]

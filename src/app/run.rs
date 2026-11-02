@@ -11,8 +11,8 @@ use crate::core::ai::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
-            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS,
-            exec_notice, run_sent_line,
+            PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
+            SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -576,6 +576,15 @@ impl App {
                 target: "send a diff of your repository to the engine".to_owned(),
                 command: format!("git diff{} {path}", if *staged { " --staged" } else { "" }),
                 keys: READ_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            // The text is exactly what is sent, already redacted by the host.
+            ApprovalAsk::Panes { text } => Some(ApprovalPrompt {
+                target: "send what your panes run to the engine".to_owned(),
+                command: text.clone(),
+                keys: PANES_KEYS,
                 armed,
                 why: None,
                 notice: None,

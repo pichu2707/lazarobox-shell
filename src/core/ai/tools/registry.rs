@@ -441,7 +441,8 @@ mod tests {
         }
     }
 
-    // Spec: off equals 0.18.0, so the default set is exactly Read and Pane.
+    // The default set (every toggle off) is exactly Read and Pane. It is no
+    // longer the 0.18.0 tool list: `list_panes` joined the Pane family.
     #[test]
     fn legacy_is_read_and_pane_only() {
         for family in EVERY_FAMILY {

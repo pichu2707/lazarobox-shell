@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::run_store::Awaiting;
+use super::run_store::{Awaiting, READ_TIMED_OUT, RUNS_READ_TIMEOUT, RunsRead, Waiting};
 use super::*;
 use crate::core::ai::{
     chat::engine::Availability,
@@ -29,6 +29,8 @@ const NONE_LEFT: &str = "No interrupted run to resume or discard";
 /// Said when the interrupted runs belong to other folders.
 const OTHER_FOLDER: &str =
     "The interrupted runs belong to other folders; open a chat there to resume or discard them";
+/// Said while the store has not yet answered which runs a restart interrupted.
+pub(super) const LOOKING: &str = "Looking for interrupted runs...";
 /// Said when the orchestrator gate is off.
 const GATE_OFF: &str = "The orchestrator is off; enable it in the menu (Ctrl+Space m)";
 /// Said on a pane that is not a chat.
@@ -100,8 +102,68 @@ impl App {
             })
     }
 
+    /// The store was never asked which runs a restart interrupted (ORCH was
+    /// not on yet): asks it now, off the UI thread, and says so. The answer
+    /// names the runs in the pane. `None` when the list is already known or
+    /// the key does not apply here.
+    fn recover_on_demand(&mut self, key: Waiting) -> Option<Vec<Effect>> {
+        if !self.orch_gate() || !self.focused_is_chat() {
+            return None;
+        }
+        let id = self.tab().focus;
+        let now = self.now();
+        self.dirty = true;
+        match &mut self.run_keep.read {
+            // Not the first press of an answer: the key goes on and says
+            // its own result; the frame it asks for must not be taken back.
+            RunsRead::Known => None,
+            RunsRead::Unknown => {
+                let effects = self.recover_runs(id);
+                self.wait_for_runs(id, key);
+                Some(effects)
+            }
+            RunsRead::Recovering { since, .. }
+                if now.saturating_duration_since(*since) >= RUNS_READ_TIMEOUT =>
+            {
+                self.run_keep.read = RunsRead::Failed {
+                    told: true,
+                    text: READ_TIMED_OUT,
+                };
+                self.notice = Some(READ_TIMED_OUT.to_owned());
+                Some(Vec::new())
+            }
+            RunsRead::Recovering { .. } => {
+                self.wait_for_runs(id, key);
+                Some(Vec::new())
+            }
+            // Said by the first press, retried by the next: never "none".
+            RunsRead::Failed { told, text } if !*told => {
+                *told = true;
+                self.notice = Some((*text).to_owned());
+                Some(Vec::new())
+            }
+            RunsRead::Failed { .. } => {
+                self.run_keep.read = RunsRead::Unknown;
+                let effects = self.recover_runs(id);
+                self.wait_for_runs(id, key);
+                Some(effects)
+            }
+        }
+    }
+
+    /// Remembers `key` for the answer and says the store is being asked.
+    fn wait_for_runs(&mut self, id: PaneId, key: Waiting) {
+        if let RunsRead::Recovering { pending, .. } = &mut self.run_keep.read {
+            *pending = Some((id, key));
+        }
+        self.notice = Some(LOOKING.to_owned());
+    }
+
     /// `Prefix r r`: a new run from the newest interrupted one of this folder.
     pub(super) fn resume_run(&mut self) -> Vec<Effect> {
+        if let Some(effects) = self.recover_on_demand(Waiting::Resume) {
+            return effects;
+        }
         let id = self.tab().focus;
         let at = match self.offered_here() {
             Ok(at) => at,
@@ -232,6 +294,9 @@ impl App {
     /// `Prefix r d`: the newest interrupted run of this folder is closed and
     /// not offered again.
     pub(super) fn discard_run(&mut self) -> Vec<Effect> {
+        if let Some(effects) = self.recover_on_demand(Waiting::Discard) {
+            return effects;
+        }
         let at = match self.offered_here() {
             Ok(at) => at,
             Err(text) => {

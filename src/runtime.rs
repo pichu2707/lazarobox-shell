@@ -60,7 +60,9 @@ pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
+use crate::core::ai::tools::panes::{self, Facts, Roster};
 use crate::core::menu::feedback::{Issue, SendReply};
+use crate::core::pty::Probe;
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
@@ -421,6 +423,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .and_then(Path::parent)
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
+    let roster = tool_host.roster();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
     // Read at startup, like the memory port: detection and chat both use
     // these, so an engine is chatted with where it was detected. Only a menu
@@ -487,6 +490,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let plan = notify::PlanSlot::default();
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
+        .with_roster(roster, env::var_os("HOME").map(PathBuf::from))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
@@ -1172,6 +1176,7 @@ async fn run_loop(
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
                 }
+                panes.refresh_roster_in_background(app.focused());
             }
             () = anim.tick() => {
                 if step(&mut app, AppEvent::AnimTick, panes) {
@@ -1401,6 +1406,12 @@ struct Panes {
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
+    /// Where the poll writes what the panes run, for `list_panes`.
+    roster: Option<(Roster, Option<PathBuf>)>,
+    /// A background refresh of the roster is running.
+    roster_busy: Arc<AtomicBool>,
+    /// Turns the facts of a pane into its line; a test swaps in a slow one.
+    roster_line: RosterLine,
 }
 
 impl Panes {
@@ -1438,7 +1449,55 @@ impl Panes {
             hub: None,
             ollama: None,
             installer: None,
+            roster: None,
+            roster_busy: Arc::new(AtomicBool::new(false)),
+            roster_line: panes::line,
         }
+    }
+
+    /// Sets where the poll writes what the panes run.
+    fn with_roster(mut self, roster: Roster, home: Option<PathBuf>) -> Self {
+        self.roster = Some((roster, home));
+        self
+    }
+
+    /// The cheap step of reading the panes for `list_panes`, on the loop: per
+    /// pane its number, whether it is focused and a [`Probe`] (one ioctl so
+    /// far). The `/proc` reads and the disk lookups run later, off the loop.
+    fn roster_probes(&self, focused: PaneId) -> Vec<(u32, bool, Probe)> {
+        (self.handles.iter())
+            .map(|(id, handle)| (id.number(), *id == focused, handle.probe()))
+            .collect()
+    }
+
+    /// Refreshes the roster for `list_panes` now (tests).
+    #[cfg(test)]
+    fn refresh_roster(&self, focused: PaneId) {
+        if let Some((roster, home)) = &self.roster {
+            let probes = self.roster_probes(focused);
+            publish_roster(roster, home.as_deref(), probes, self.roster_line);
+        }
+    }
+
+    /// Refreshes the roster on the blocking pool, so a stalled mount or a
+    /// stuck process cannot freeze the UI loop. A refresh still running is
+    /// not stacked on.
+    fn refresh_roster_in_background(&self, focused: PaneId) {
+        let Some((roster, home)) = &self.roster else {
+            return;
+        };
+        if self.roster_busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // From here the guard owns the flag: it clears it however the
+        // closure ends, or when it is dropped without running.
+        let busy = BusyGuard(self.roster_busy.clone());
+        let (roster, home, line) = (roster.clone(), home.clone(), self.roster_line);
+        let probes = self.roster_probes(focused);
+        tokio::task::spawn_blocking(move || {
+            let _busy = busy;
+            publish_roster(&roster, home.as_deref(), probes, line);
+        });
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -2157,6 +2216,43 @@ fn drive(
 /// Returns `true` when the app wants to quit.
 fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
     drive(|event| app.update(event), event, panes)
+}
+
+/// Clears the roster's busy flag when dropped.
+struct BusyGuard(Arc<AtomicBool>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Turns the facts of one pane into its line.
+type RosterLine = fn(&Facts, Option<&Path>) -> String;
+
+/// Runs the probes, then stores one already-redacted line per pane, the
+/// focused one first and then in pane order: the raw argv never leaves this
+/// function. It reads `/proc` and looks files up on disk, so it runs off the
+/// UI loop.
+fn publish_roster(
+    roster: &Roster,
+    home: Option<&Path>,
+    probes: Vec<(u32, bool, Probe)>,
+    line: RosterLine,
+) {
+    let mut facts: Vec<Facts> = (probes.into_iter())
+        .map(|(number, focused, probe)| {
+            let (cwd, fg) = probe();
+            Facts {
+                number,
+                focused,
+                cwd,
+                fg,
+            }
+        })
+        .collect();
+    facts.sort_by_key(|f| (!f.focused, f.number));
+    roster.set(facts.iter().map(|f| line(f, home)).collect());
 }
 
 /// The child's current working directory as an event, read from
@@ -3939,6 +4035,190 @@ mod tests {
             events,
             vec![AppEvent::Cwd(id(1), cwd.clone()), AppEvent::Cwd(id(2), cwd)]
         );
+    }
+
+    // list_panes: the poll stores one already-redacted line per live pane, the
+    // focused one first; a pane that cannot be read stays listed with no program.
+    #[test]
+    fn refresh_roster_stores_one_redacted_line_per_pane() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), Some(PathBuf::from("/home/ana"))));
+        panes.spawn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                cwd: Some(PathBuf::from("/home/ana/p")),
+                fg: Some(panes::Foreground {
+                    argv: vec!["nvim".into(), "/home/ana/p/prueba.rs".into()],
+                    cwd: None,
+                }),
+                ..FakePty::default()
+            }))
+        });
+        panes.apply(vec![Effect::SpawnPane(id(2), spec())]);
+        panes.spawn = Box::new(|_, _| Ok(Box::new(FakePty::default())));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.refresh_roster(id(2));
+        assert_eq!(
+            roster.lines(),
+            vec![
+                "pane 2 (focused) cwd: ~/p program: nvim ~/p/prueba.rs".to_owned(),
+                "pane 1 cwd: unknown program: unknown".to_owned(),
+            ]
+        );
+    }
+
+    /// How many times `counting_line` ran.
+    static LINES_BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn counting_line(facts: &Facts, home: Option<&Path>) -> String {
+        LINES_BUILT.fetch_add(1, Ordering::SeqCst);
+        panes::line(facts, home)
+    }
+
+    /// Waits until `done` holds, at most 3 s.
+    async fn until(done: impl Fn() -> bool) {
+        for _ in 0..300 {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    // The refresh runs on the blocking pool and is not stacked: one still
+    // running makes the next poll skip, which the count of builds shows.
+    #[tokio::test]
+    async fn the_background_refresh_publishes_and_never_stacks() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.roster_line = counting_line;
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        LINES_BUILT.store(0, Ordering::SeqCst);
+        panes.roster_busy.store(true, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            LINES_BUILT.load(Ordering::SeqCst),
+            0,
+            "stacked on a running refresh"
+        );
+        panes.roster_busy.store(false, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(LINES_BUILT.load(Ordering::SeqCst), 1);
+        until(|| !panes.roster_busy.load(Ordering::Acquire)).await;
+        assert!(!panes.roster_busy.load(Ordering::Acquire));
+    }
+
+    fn panicking_line(_: &Facts, _: Option<&Path>) -> String {
+        panic!("a lookup blew up");
+    }
+
+    // W1: a refresh that panics must not leave the flag set for ever.
+    #[tokio::test]
+    async fn a_panicking_refresh_frees_the_next_one() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.roster_line = panicking_line;
+        panes.refresh_roster_in_background(id(1));
+        until(|| !panes.roster_busy.load(Ordering::Acquire)).await;
+        assert!(
+            !panes.roster_busy.load(Ordering::Acquire),
+            "the flag stayed set"
+        );
+        panes.roster_line = panes::line;
+        panes.refresh_roster_in_background(id(1));
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
+    }
+
+    /// Open when the slow lookup may finish.
+    static LOOKUP_GATE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+        (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+    /// Closes the gate when a test ends, however it ends.
+    struct ResetGate;
+
+    impl Drop for ResetGate {
+        fn drop(&mut self) {
+            *LOOKUP_GATE.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        }
+    }
+
+    fn open_gate() {
+        *LOOKUP_GATE.0.lock().unwrap() = true;
+        LOOKUP_GATE.1.notify_all();
+    }
+
+    /// A lookup that hangs (a stalled mount) until the gate opens, or 3 s.
+    fn stalled_line(facts: &Facts, home: Option<&Path>) -> String {
+        let (lock, cvar) = &LOOKUP_GATE;
+        let open = lock.lock().unwrap();
+        drop(cvar.wait_timeout_while(open, Duration::from_secs(3), |open| !*open));
+        panes::line(facts, home)
+    }
+
+    // W3b: a lookup that blocks must not stall the loop. The refresh returns
+    // at once and a concurrent timer still fires while the lookup hangs; the
+    // lines arrive when it ends.
+    #[tokio::test]
+    async fn a_blocked_lookup_does_not_stall_the_loop() {
+        let _reset = ResetGate;
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.roster_line = stalled_line;
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let started = Instant::now();
+        panes.refresh_roster_in_background(id(1));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the loop was blocked for {:?}",
+            started.elapsed()
+        );
+        assert!(
+            roster.lines().is_empty(),
+            "published before the lookup ended"
+        );
+        open_gate();
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
+    }
+
+    // S1: the /proc reads are on the blocking pool too: a probe that hangs
+    // (a handle on a stuck process) does not stall the loop either.
+    #[tokio::test]
+    async fn a_blocked_probe_does_not_stall_the_loop() {
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        let held = gate.clone();
+        panes.spawn = Box::new(move |_, _| {
+            Ok(Box::new(FakePty {
+                probe_wait: Some(held.clone()),
+                ..FakePty::default()
+            }))
+        });
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let started = Instant::now();
+        panes.refresh_roster_in_background(id(1));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(roster.lines().is_empty());
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
     }
 
     // Spec: per-pane order is preserved through the shared channel.
