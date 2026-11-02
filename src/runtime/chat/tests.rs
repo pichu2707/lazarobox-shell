@@ -86,16 +86,17 @@ fn reasoning_of(events: &[StreamEvent]) -> String {
 
 #[test]
 fn a_usage_report_passes_the_pipe_untouched() {
-    use crate::core::ai::chat::engine::Usage;
-    let usage = Usage {
-        input: 3,
-        output: 4,
+    use crate::core::ai::chat::usage::TurnUsage;
+    let usage = TurnUsage {
+        input: Some(3),
+        output: Some(4),
         cost_micros: Some(5),
+        ..TurnUsage::default()
     };
     let mut pipe = Pipe::new();
     assert_eq!(
-        pipe.event(StreamEvent::Usage(usage)),
-        [StreamEvent::Usage(usage)]
+        pipe.event(StreamEvent::usage(usage.clone())),
+        [StreamEvent::usage(usage)]
     );
     // It is not a final event: the turn goes on until `Done`.
     assert_eq!(
@@ -1112,4 +1113,35 @@ fn answer_text_that_imitates_a_tool_row_stays_a_delta() {
         out.iter().all(|e| matches!(e, StreamEvent::Delta(_))),
         "{out:?}"
     );
+}
+
+fn usage(input: u64) -> StreamEvent {
+    StreamEvent::usage(crate::core::ai::chat::usage::TurnUsage {
+        input: Some(input),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn usage_passes_through_before_the_end_and_unchanged() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(delta("hi"));
+    out.extend(pipe.event(usage(7)));
+    out.extend(pipe.event(done()));
+    assert_eq!(out, [delta("hi"), usage(7), done()]);
+}
+
+#[test]
+fn usage_is_delivered_before_an_error_too() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(usage(3));
+    out.extend(pipe.event(StreamEvent::Error(ChatError::Interrupted)));
+    assert_eq!(out, [usage(3), StreamEvent::Error(ChatError::Interrupted)]);
+}
+
+#[test]
+fn usage_after_the_final_event_is_dropped() {
+    let mut pipe = Pipe::new();
+    pipe.event(done());
+    assert_eq!(pipe.event(usage(1)), []);
 }

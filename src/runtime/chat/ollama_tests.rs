@@ -1256,3 +1256,191 @@ async fn an_announcement_after_an_empty_answer_ends_the_turn() {
     assert_eq!(next_step_reminders(&events), 0);
     assert_eq!(events.last(), Some(&done()));
 }
+
+// Usage ------------------------------------------------------------------------
+
+fn end_with(extra: Value) -> Value {
+    let mut end = end_line();
+    end.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    end
+}
+
+/// A reply that calls one tool and reports `extra` on its final line.
+fn calls_with(extra: Value) -> Step {
+    lines(&[
+        json!({"message": {"content": "", "tool_calls": [
+            {"function": {"name": "find_dir", "arguments": {"query": "curso"}}}
+        ]}, "done": false}),
+        end_with(extra),
+    ])
+}
+
+fn text_with(content: &str, extra: Value) -> Step {
+    lines(&[
+        json!({"message": {"content": content}, "done": false}),
+        end_with(extra),
+    ])
+}
+
+fn usages(events: &[StreamEvent]) -> Vec<crate::core::ai::chat::usage::TurnUsage> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Usage(u) => Some(crate::core::ai::chat::usage::TurnUsage::clone(u)),
+            _ => None,
+        })
+        .collect()
+}
+
+// Needs the file tools: Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn two_rounds_give_one_summed_usage_before_the_final_event() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text_with(
+            "Found it",
+            json!({"prompt_eval_count": 150, "eval_count": 30}),
+        ),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(250), Some(50), false)
+    );
+    let n = events.len();
+    assert!(matches!(events[n - 2], StreamEvent::Usage(_)), "{events:?}");
+    assert_eq!(events[n - 1], done());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_without_usage_makes_the_turn_partial() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(100), Some(20), true)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_missing_prompt_count_stays_none_and_marks_partial() {
+    let fake = fake(vec![
+        calls_with(json!({"eval_count": 20})),
+        text_with("Found it", json!({"eval_count": 30})),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!((got[0].input, got[0].output), (None, Some(50)));
+    assert!(!got[0].partial);
+}
+
+#[tokio::test]
+async fn a_turn_whose_engine_reports_nothing_has_no_usage_event() {
+    let fake = fake(vec![text("hi")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(usages(&events), []);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_cap_reports_the_usage_of_every_round_as_partial_before_done() {
+    let fake = fake(vec![calls_with(
+        json!({"prompt_eval_count": 10, "eval_count": 2}),
+    )])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    let rounds = ollama::MAX_ROUNDS as u64;
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output),
+        (Some(10 * rounds), Some(2 * rounds))
+    );
+    assert!(got[0].partial);
+    let n = events.len();
+    assert!(matches!(events[n - 3], StreamEvent::Usage(_)), "{events:?}");
+    assert_eq!(events[n - 1], done());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_error_after_a_round_reports_the_usage_before_the_error() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        status(400, "context too long"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!((got[0].input, got[0].partial), (Some(100), true));
+    let n = events.len();
+    assert!(matches!(events[n - 2], StreamEvent::Usage(_)), "{events:?}");
+    assert!(matches!(events[n - 1], StreamEvent::Error(_)));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_that_omits_the_prompt_count_is_a_field_gap_not_a_partial_turn() {
+    // Ollama leaves `prompt_eval_count` out when the prompt was cached.
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text_with("Found it", json!({"eval_count": 30})),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(100), Some(50), false)
+    );
+}
+
+#[tokio::test]
+async fn the_request_the_server_rejected_is_not_a_round_of_the_usage() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text_with(
+            "plain answer",
+            json!({"prompt_eval_count": 12, "eval_count": 34}),
+        ),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(12), Some(34), false)
+    );
+}

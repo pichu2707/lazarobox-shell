@@ -34,11 +34,12 @@
 
 use serde_json::Value;
 
-use super::engine::{ChatError, Finish, StreamEvent, Usage};
+use super::engine::{ChatError, Finish, StreamEvent};
 use super::stream::{
     CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
     malformed, too_long,
 };
+use super::usage::{TurnUsage, count, net_input};
 use crate::core::ai::tools::wiring::SERVER;
 
 /// The failure of a turn in which codex started a tool.
@@ -64,22 +65,6 @@ pub struct CodexDecoder {
     /// The turn has the lazarobox tools wired in: its `mcp_tool_call` items
     /// (and only those) are allowed.
     wired: bool,
-}
-
-/// What `turn.completed` reports as used. `input_tokens` already counts the
-/// cached ones. `None` unless both counts are there: a missing one is not zero.
-fn usage(value: &Value) -> Option<Usage> {
-    let counts = &value["usage"];
-    let (input, output) = (
-        counts["input_tokens"].as_u64(),
-        counts["output_tokens"].as_u64(),
-    );
-    let (input, output) = input.zip(output)?;
-    Some(Usage {
-        input,
-        output,
-        cost_micros: None,
-    })
 }
 
 impl CodexDecoder {
@@ -113,8 +98,8 @@ impl CodexDecoder {
         match value["type"].as_str() {
             Some("item.started" | "item.updated") => self.tool_check(&value),
             Some("item.completed") => self.completed(&value),
-            Some("turn.completed") => usage(&value)
-                .map(StreamEvent::Usage)
+            Some("turn.completed") => usage(&value["usage"])
+                .map(StreamEvent::usage)
                 .into_iter()
                 .chain([StreamEvent::Done(Finish::Stop)])
                 .collect(),
@@ -162,6 +147,21 @@ impl CodexDecoder {
         }
         out
     }
+}
+
+/// What `turn.completed.usage` says the turn used. Codex counts the cache
+/// inside `input_tokens` and the reasoning inside `output_tokens`; there are
+/// no dollars. A usage that holds no count is no data.
+fn usage(usage: &Value) -> Option<TurnUsage> {
+    let cached = count(&usage["cached_input_tokens"]);
+    TurnUsage {
+        input: net_input(count(&usage["input_tokens"]), cached),
+        output: count(&usage["output_tokens"]),
+        cache_read: cached,
+        reasoning: count(&usage["reasoning_output_tokens"]),
+        ..TurnUsage::default()
+    }
+    .reported()
 }
 
 /// The text of a `turn.failed`: the `error.message` inside the API's JSON

@@ -182,13 +182,43 @@ impl App {
             kept = self.keep_end(*run);
         }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            // The spend happened: with history on it is stored unlinked.
+            // There is no pane to tell if that write fails.
+            if let OrchestraEvent::Usage {
+                run,
+                worker,
+                engine,
+                usage,
+            } = event
+                && self.history
+            {
+                kept.push(Effect::Store(StoreCmd::RecordUsage {
+                    pane: id,
+                    conversation: None,
+                    engine,
+                    role: "worker".to_owned(),
+                    worker: Some(format!("{}.{}", run.0, worker.0)),
+                    usage,
+                }));
+            }
             return kept;
         };
         // A worker that is over takes its waiting asks with it.
         let mut over = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
+        // A worker turn's usage waits in the pane for the usage store.
+        let mut usage_saved = false;
         match event {
+            OrchestraEvent::Usage {
+                run,
+                worker,
+                engine,
+                usage,
+            } => {
+                chat.record_worker_usage(WorkerKey { run, worker }, &engine, *usage);
+                usage_saved = true;
+            }
             OrchestraEvent::Worker(mut row) => {
                 let key = WorkerKey {
                     run: row.run,
@@ -342,6 +372,9 @@ impl App {
         }
         self.dirty = true;
         let mut effects = kept;
+        if usage_saved {
+            effects.extend(self.store_effects(id));
+        }
         if let Some((run, item)) = store {
             effects.extend(self.store_item(id, run, item));
         }

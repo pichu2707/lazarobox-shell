@@ -683,3 +683,40 @@ fn a_compaction_run_after_a_clean_end_still_opens_the_review_of_its_batch() {
         vec![Effect::BatchReview(chat_id())]
     );
 }
+
+// ai-cost 1b.4: the run's usage reaches the store with its role.
+#[test]
+fn a_compaction_run_that_reported_usage_is_recorded_with_history_on() {
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    let mut a = app(false, Some("tiny")).with_chat_history();
+    let (turn, _) = until_compaction(&mut a);
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::usage(TurnUsage {
+            output: Some(9),
+            ..TurnUsage::default()
+        }),
+    ));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Delta("- the decision".into()),
+    ));
+    let end = a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let roles: Vec<String> = end
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Store(StoreCmd::RecordUsage { role, usage, .. }) => {
+                assert_eq!(usage.model.as_deref(), Some("tiny"));
+                Some(role.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(roles, vec!["compaction".to_owned()]);
+}

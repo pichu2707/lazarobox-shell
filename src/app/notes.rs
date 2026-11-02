@@ -436,6 +436,8 @@ impl App {
             | StoreReply::DeleteFailed { .. }
             | StoreReply::TagsSaved { .. }
             | StoreReply::TagsFailed { .. }
+            | StoreReply::UsageRecorded { .. }
+            | StoreReply::UsageReport { .. }
             | StoreReply::RecentFolders { .. }
             | StoreReply::RunsRecovered { .. }
             | StoreReply::RunsFailed { .. } => Vec::new(),

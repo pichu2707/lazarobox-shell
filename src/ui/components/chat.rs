@@ -143,7 +143,7 @@ impl<'a> ChatView<'a> {
         if self.approval.is_some() || self.chat.run_view().is_some() {
             return None;
         }
-        if self.chat.list().is_some() {
+        if self.chat.list().is_some() || self.chat.cost().is_some() {
             return None;
         }
         if let Some(editor) = self.chat.note_editor() {
@@ -179,7 +179,7 @@ impl<'a> ChatView<'a> {
             LineKind::Code => Style::default().fg(theme.success_green).bg(theme.bg_panel),
             LineKind::System => base.fg(theme.warning_orange),
             LineKind::Waiting => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
-            LineKind::Mark | LineKind::Reasoning => base.fg(theme.text_muted),
+            LineKind::Mark | LineKind::Reasoning | LineKind::Usage => base.fg(theme.text_muted),
             LineKind::ReasoningHead => base.fg(theme.ai_purple),
             LineKind::Tool => base.fg(theme.info_blue),
             LineKind::ToolAlert => base.fg(theme.warning_orange),
@@ -341,6 +341,7 @@ impl ChatView<'_> {
         self.chat.tag_editor().is_none()
             && self.chat.folder_picker().is_none()
             && self.chat.list().is_none()
+            && self.chat.cost().is_none()
             && self.chat.note_editor().is_none()
             && self.chat.summary_draft().is_none()
             && self.chat.approvals().review().is_some()
@@ -359,6 +360,10 @@ impl ChatView<'_> {
         }
         if let Some(list) = self.chat.list() {
             self.render_list(list, area, buf);
+            return;
+        }
+        if let Some(view) = self.chat.cost() {
+            self.render_cost(view, area, buf);
             return;
         }
         if let Some(editor) = self.chat.note_editor() {
@@ -450,6 +455,9 @@ mod approval;
 mod approval_tests;
 #[cfg(test)]
 mod badge_tests;
+mod cost;
+#[cfg(test)]
+mod cost_tests;
 mod folder;
 #[cfg(test)]
 mod folder_tests;

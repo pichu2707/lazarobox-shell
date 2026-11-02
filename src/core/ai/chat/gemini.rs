@@ -26,11 +26,12 @@
 
 use serde_json::Value;
 
-use super::engine::{ChatError, Finish, StreamEvent, Usage};
+use super::engine::{ChatError, Finish, StreamEvent};
 use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
 };
+use super::usage::{TurnUsage, count, model_id, net_input};
 use crate::core::ai::tools::wiring::GEMINI_TOOL_PREFIX;
 
 /// The failure of a turn in which gemini started a tool.
@@ -103,17 +104,19 @@ impl GeminiDecoder {
     }
 
     fn result(value: &Value) -> Vec<StreamEvent> {
+        let usage = usage(&value["stats"]);
         if value["status"].as_str() == Some("success") {
-            return usage(value)
-                .map(StreamEvent::Usage)
+            return usage
+                .map(StreamEvent::usage)
                 .into_iter()
                 .chain([StreamEvent::Done(Finish::Stop)])
                 .collect();
         }
         let text = value["error"]["message"].as_str().unwrap_or("");
-        vec![StreamEvent::Error(ChatError::Failed(error_message(
-            &unwrap_api_error(text),
-        )))]
+        let error = StreamEvent::Error(ChatError::Failed(error_message(&unwrap_api_error(text))));
+        // A failed request that used nothing is not a record.
+        let spent = usage.filter(|u| !u.idle()).map(StreamEvent::usage);
+        spent.into_iter().chain([error]).collect()
     }
 
     fn lines_events(&mut self, lines: Vec<Result<Vec<u8>, TooLong>>) -> Vec<StreamEvent> {
@@ -129,20 +132,33 @@ impl GeminiDecoder {
     }
 }
 
-/// What the `result` line's `stats` report as used. `input_tokens` already
-/// counts the cached ones. `None` unless both counts are there: a missing one is not zero.
-fn usage(value: &Value) -> Option<Usage> {
-    let stats = &value["stats"];
-    let (input, output) = (
-        stats["input_tokens"].as_u64(),
-        stats["output_tokens"].as_u64(),
-    );
-    let (input, output) = input.zip(output)?;
-    Some(Usage {
+/// What `result.stats` says the turn used. `input_tokens` includes the cached
+/// tokens, so the fresh input is the difference. `total_tokens` is not used:
+/// it is higher than input plus output. No dollars. A `stats` that holds no
+/// count, or is not an object, is no data and never an error.
+fn usage(stats: &Value) -> Option<TurnUsage> {
+    let cached = count(&stats["cached"]);
+    // A `cached` that is there but unreadable leaves the fresh input unknown.
+    let cache_unreadable = !stats["cached"].is_null() && cached.is_none();
+    let input = count(&stats["input"]).or_else(|| {
+        (!cache_unreadable)
+            .then(|| net_input(count(&stats["input_tokens"]), cached))
+            .flatten()
+    });
+    let models = stats["models"].as_object();
+    TurnUsage {
         input,
-        output,
-        cost_micros: None,
-    })
+        output: count(&stats["output_tokens"]),
+        cache_read: cached,
+        duration_ms: count(&stats["duration_ms"]),
+        model: models
+            .filter(|m| m.len() == 1)
+            .and_then(|m| m.keys().next())
+            .and_then(|k| model_id(k)),
+        multi_model: models.is_some_and(|m| m.len() > 1),
+        ..TurnUsage::default()
+    }
+    .reported()
 }
 
 /// Whether a `tool_use` is one of lazarobox's tools. gemini names an MCP tool

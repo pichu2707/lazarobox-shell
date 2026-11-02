@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "text(&draw(&chat, 60, 8))"
+---
+AI usage (alpha)
+chat history is off: showing this session only
+this session: 15 tokens · 1 turns
+by engine and model:
+  ollama › llama3: in 10 · out 5
+
+
+Esc close · ↑↓ scroll

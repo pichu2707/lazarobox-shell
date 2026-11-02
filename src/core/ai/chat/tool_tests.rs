@@ -107,6 +107,7 @@ fn a_row_sits_before_the_answer_it_belongs_to() {
     state.apply(turn, call(2, "list_dir", "~"));
     state.apply(turn, delta(" it."));
     state.apply(turn, result(2, ToolStatus::Ok, "ok"));
+    state.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     state.apply(turn, StreamEvent::Done(Finish::Stop));
     let kinds: Vec<&str> = state
         .entries()

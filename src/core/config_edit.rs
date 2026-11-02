@@ -162,8 +162,8 @@ fn set_root_key(doc: &mut DocumentMut, edit: &ConfigEdit) -> Result<(), EditErro
 
 /// The TOML value of an edit: a boolean key (see [`ConfigEdit::is_flag`])
 /// is written as a TOML boolean, an integer key (see
-/// [`ConfigEdit::is_integer`]) as a number, every other owned key as a
-/// string.
+/// [`ConfigEdit::is_integer`]) or a float key (see [`ConfigEdit::is_float`])
+/// as a number, every other owned key as a string.
 fn edit_value(edit: &ConfigEdit) -> Value {
     if edit.is_flag() {
         Value::from(edit.value == "true")
@@ -171,6 +171,10 @@ fn edit_value(edit: &ConfigEdit) -> Value {
         && let Ok(n) = edit.value.parse::<i64>()
     {
         Value::from(n)
+    } else if edit.is_float()
+        && let Ok(f) = edit.value.parse::<f64>()
+    {
+        Value::from(f)
     } else {
         Value::from(edit.value.as_ref())
     }

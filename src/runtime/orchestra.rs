@@ -53,12 +53,14 @@ use crate::core::{
             INTERRUPTED,
             adapters::{Adapter, adapter_for, is_cli_engine},
             approval::{ApprovalAsk, worker_label},
+            engine::Usage,
             engine::{
                 Answer, CallId, ChatError, ChatMessage, ChatRequest, MCP_VERIFIED, Role,
                 StreamEvent, Tools, locality, tools_for,
             },
             guidance::guidance,
             jail_error,
+            usage::{SideRun, TurnUsage},
         },
         config::{Profile, Task},
         jail,
@@ -400,6 +402,20 @@ impl Tracer {
         let _ = self
             .events
             .send((self.pane, OrchestraEvent::Trace { run, worker, item }));
+    }
+
+    /// What the worker's turn used, for the usage store (ai-cost 5).
+    fn usage(&self, engine: String, usage: TurnUsage) {
+        let (run, worker) = (self.key.run, self.key.worker);
+        let _ = self.events.send((
+            self.pane,
+            OrchestraEvent::Usage {
+                run,
+                worker,
+                engine,
+                usage: Box::new(usage),
+            },
+        ));
     }
 
     /// A line for the pane's transcript about this worker.
@@ -1773,14 +1789,18 @@ impl Turn {
             trace,
         } = self;
         let engine = request.engine.clone();
+        let model = request.model.clone();
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
         let (pending, dispatch) = session.map_or((None, None), |(p, d)| (Some(p), d));
         // The call sits inside the guarded future, as in a chat turn.
         let adapter = Box::pin(async move { runner(request, tx).await });
         let adapter = chat::in_session(adapter, pending, dispatch);
-        let ended = tokio::time::timeout(deadline, drive(adapter, rx, &engine, &trace))
-            .await
-            .ok();
+        let ended = tokio::time::timeout(
+            deadline,
+            drive(adapter, rx, (&engine, model.as_deref()), &trace),
+        )
+        .await
+        .ok();
         // Whatever the turn ended by, its last words reach the transcript.
         trace.flush();
         ended
@@ -1792,9 +1812,10 @@ impl Turn {
 async fn drive(
     adapter: BoxFuture<'static, ()>,
     mut rx: mpsc::Receiver<StreamEvent>,
-    engine: &str,
+    (engine, model): (&str, Option<&str>),
     trace: &Tracer,
 ) -> Vec<WorkerEvent> {
+    let mut held = Held::new(trace, engine, model);
     let run = AssertUnwindSafe(chat::scoped(adapter))
         .catch_unwind()
         .fuse();
@@ -1822,20 +1843,78 @@ async fn drive(
                     trace.text(delta.clone());
                     text.push_str(&delta);
                 }
-                StreamEvent::Usage(usage) => events.push(WorkerEvent::Usage(usage)),
+                StreamEvent::Usage(usage) => {
+                    held.add(usage.as_ref().clone());
+                    // A worker row needs both counts; one the engine did not
+                    // report reads `n/a`, never a partial figure.
+                    if let Some(used) = Usage::from_turn(&usage) {
+                        events.push(WorkerEvent::Usage(used));
+                        // A cut or failed turn must not show a figure that
+                        // looks whole.
+                        if usage.partial {
+                            events.push(WorkerEvent::UsageGap);
+                        }
+                    }
+                }
                 // A capped answer still ends the worker: `collect` caps it
                 // again.
-                StreamEvent::Done(_) | StreamEvent::Error(ChatError::Truncated) => {
+                StreamEvent::Done(_) => {
+                    held.send(false);
+                    events.push(WorkerEvent::Done { text });
+                    return events;
+                }
+                // The answer was cut: what the engine reported is a floor.
+                StreamEvent::Error(ChatError::Truncated) => {
+                    held.send(true);
+                    events.push(WorkerEvent::UsageGap);
                     events.push(WorkerEvent::Done { text });
                     return events;
                 }
                 StreamEvent::Error(error) => {
+                    held.send(true);
                     events.push(failed(engine, error));
                     return events;
                 }
                 _ => {}
             }
         }
+    }
+}
+
+/// The usage a worker turn reported, held until the turn ends so its rounds
+/// leave as one record. A turn that is dropped before its end (the deadline,
+/// a cancel, a panic) sends what it held as partial: the engine reported
+/// less than the turn used, never more.
+struct Held<'a> {
+    trace: &'a Tracer,
+    run: Option<SideRun>,
+}
+
+impl<'a> Held<'a> {
+    fn new(trace: &'a Tracer, engine: &str, model: Option<&str>) -> Self {
+        Self {
+            trace,
+            run: Some(SideRun::new("worker", engine, model)),
+        }
+    }
+
+    fn add(&mut self, usage: TurnUsage) {
+        if let Some(run) = self.run.as_mut() {
+            run.add(usage);
+        }
+    }
+
+    /// Sends the record, if the engine reported any: no data, no record.
+    fn send(&mut self, cut: bool) {
+        if let Some(pending) = self.run.take().and_then(|run| run.end(cut)) {
+            self.trace.usage(pending.engine, pending.usage);
+        }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.send(true);
     }
 }
 

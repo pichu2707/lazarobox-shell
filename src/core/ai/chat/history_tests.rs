@@ -600,3 +600,109 @@ fn keeping_the_known_project_tag_and_adding_extras_does_not_count_as_a_change() 
     state.edit_tags(pane(), Tags::parse("proj, sql"));
     assert!(!state.tags_edited());
 }
+
+// ai-cost 1b.3: usage rows follow the turn.
+
+mod usage_cmds {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    fn usage(input: u64, output: u64) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            input: Some(input),
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    fn recorded(cmds: &[StoreCmd]) -> Vec<(&Option<i64>, &str, &str, &TurnUsage)> {
+        cmds.iter()
+            .filter_map(|cmd| match cmd {
+                StoreCmd::RecordUsage {
+                    conversation,
+                    engine,
+                    role,
+                    usage,
+                    ..
+                } => Some((conversation, engine.as_str(), role.as_str(), usage.as_ref())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_that_reported_usage_is_recorded_once_after_its_answer() {
+        let (mut state, turn) = open_conversation("q");
+        state.apply(turn, delta("a"));
+        state.apply(turn, usage(100, 20));
+        state.apply(turn, done());
+        let out = cmds(&mut state);
+        assert!(matches!(out[0], StoreCmd::Append { .. }));
+        let rows = recorded(&out);
+        assert_eq!(rows.len(), 1);
+        let (conversation, engine, role, got) = rows[0];
+        assert_eq!(
+            (*conversation, engine, role, got.input, got.output),
+            (Some(7), "ollama", "chat", Some(100), Some(20))
+        );
+        assert_eq!(got.model.as_deref(), Some("llama3:8b"));
+        assert!(recorded(&cmds(&mut state)).is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_turn_with_no_reported_usage_records_nothing() {
+        let (mut state, turn) = open_conversation("q");
+        state.apply(turn, delta("a"));
+        state.apply(turn, done());
+        assert!(recorded(&cmds(&mut state)).is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_turn_is_recorded_partial_even_without_an_answer() {
+        let (mut state, turn) = open_conversation("q");
+        state.apply(turn, usage(5, 1));
+        state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
+        let out = cmds(&mut state);
+        let rows = recorded(&out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].1, rows[0].3.partial), ("ollama", true));
+
+        let (mut state, turn) = open_conversation("q");
+        state.apply(turn, delta("par"));
+        state.apply(turn, usage(7, 0));
+        state.cancel();
+        assert!(recorded(&cmds(&mut state))[0].3.partial);
+    }
+
+    #[test]
+    fn a_turn_ending_before_its_conversation_exists_names_only_the_pane() {
+        let mut state = chat();
+        let turn = sent(&mut state, "q");
+        state.apply(turn, delta("a"));
+        state.apply(turn, usage(1, 1));
+        state.apply(turn, done());
+        let out = cmds(&mut state);
+        assert!(matches!(out[0], StoreCmd::Create { .. }));
+        assert_eq!(*recorded(&out)[0].0, None);
+    }
+
+    #[test]
+    fn usage_waiting_to_be_saved_is_dropped_with_the_messages() {
+        let (mut state, turn) = open_conversation("q");
+        state.apply(turn, delta("a"));
+        state.apply(turn, usage(1, 1));
+        state.apply(turn, done());
+        state.drop_saves();
+        assert!(cmds(&mut state).is_empty());
+    }
+
+    #[test]
+    fn a_detached_conversation_still_records_usage_unlinked() {
+        let (mut state, turn) = open_conversation("q");
+        state.detach_store_deleted();
+        state.apply(turn, usage(1, 1));
+        state.apply(turn, done());
+        let out = cmds(&mut state);
+        assert_eq!(*recorded(&out)[0].0, None);
+    }
+}

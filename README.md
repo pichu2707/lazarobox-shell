@@ -276,6 +276,7 @@ En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas
 | Tecla | Acción |
 | :--- | :--- |
 | `Tab` / `Shift+Tab` | Pestaña siguiente / anterior |
+| `1`…`5` | Va a la pestaña con ese número: `1` Settings, `2` Models, `3` Tools, `4` Connectors, `5` Chat |
 | `j` `↓` / `k` `↑` | Fila siguiente / anterior |
 | `l` `→` `Espacio` / `h` `←` | Valor siguiente / anterior de la fila (`Enter` también avanza al siguiente) |
 | `s` | Guarda en `config.toml` (`Enter` nunca guarda ni cierra el menú) |
@@ -354,7 +355,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## ⚙️ Menú: sección Settings
 
-`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en pestañas, **Settings** y **AI**, que se cambian con `Tab` y `Shift+Tab`; `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` no hace nada. Su sección **Settings** tiene, en este orden:
+`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en cinco pestañas, **Settings**, **Models**, **Tools**, **Connectors** y **Chat**, que se cambian con `Tab` y `Shift+Tab` o saltando con `1`…`5` (los números son fijos: `4` es siempre Connectors). **Connectors** no se muestra hasta que tenga filas, así que `Tab` la salta y `4` avisa en el pie de que aún no hay conectores; sin la sección de IA solo existe **Settings** y `2`…`5` avisan de que la sección de IA no está disponible. Un número fuera de `1`…`5` avisa con `Tabs are 1-5` y `Tab` con una sola pestaña avisa con `No other tabs`; el aviso desaparece con la siguiente tecla. `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` y los números no cambian de pestaña (en los campos de texto, un número se escribe como cualquier otro carácter). Su sección **Settings** tiene, en este orden:
 
 | Fila | Qué hace | Clave en `config.toml` |
 | ---- | -------- | ---------------------- |
@@ -364,6 +365,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
+| `Usage (alpha)` | Abre la vista de uso de IA: línea de uso, segmento de la barra de estado y facturación de claude, codex y gemini (ver «Uso de IA»); muestra `line on · bar on` | `[ai.usage]`, `[ai.usage.billing]` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
 | `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
@@ -420,11 +422,11 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **Models** (`2`, o `Tab` desde Settings) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-![Menú de IA: pestaña AI y selector de motor y modelo](docs/assets/ai-menu.gif)
+![Menú de IA: pestaña Models y selector de motor y modelo](docs/assets/ai-menu.gif)
 
-Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval**, **Orchestrator** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **Models** termina con la fila **Hugging Face** (ver «Descargar modelos de Hugging Face»). La pestaña **Tools** (`3`) tiene las filas **Tools**, **Search**, **Write**, **Exec**, **Git**, **Git write**, **Approval** y **Orchestrator**, y la pestaña **Chat** (`5`) tiene **Profile**, **Context** y **Memory**. **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
@@ -520,7 +522,7 @@ La lista de modelos de llamacpp termina en la fila `download from Hugging Face�
 
 **Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, borra su carpeta `models--<owner>--<repo>` (o usa `hf cache delete`).
 
-**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
+**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña Models, `Hugging Face`:
 
 - `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable; `Ctrl+O` lo abre en el navegador, y con `Mouse` activado también basta con hacer clic en esa línea. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada. `Esc` mientras se comprueba la cancela y tampoco guarda el token.
 - El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
@@ -1101,6 +1103,79 @@ Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna pro
 
 Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
 
+### Uso de IA: `/cost` (alfa)
+
+> **Alfa.** Los motores informan del uso en formatos que cambian: las cifras pueden faltar o no coincidir con lo que te factura el proveedor, según el motor y la cuenta. Si ves algo raro, ábrelo como incidencia en [GitHub](https://github.com/pichu2707/lazarobox-shell/issues) (si trabajas con un agente de IA en este repositorio, su skill `report-lazarobox-issue` lo hace por ti, con tu permiso).
+
+`/cost` escrito en el compositor del chat y enviado con `Enter` abre una vista sobre la conversación, como la lista de conversaciones. `Esc` la cierra; las flechas (o `j`/`k`) y `PageUp`/`PageDown` la desplazan, y las líneas largas se parten en vez de cortarse. `Ctrl+C` no la cierra ni cancela nada: avisa de que primero hay que pulsar `Esc`. Es un comando tuyo: no crea un mensaje, no llega al modelo, funciona aunque haya un stream en curso y aunque no haya motor. Con texto detrás (`/cost ahora`) no hace nada, avisa con `/cost takes no arguments` y deja el texto en el compositor. Para enviar de verdad un mensaje que sea `/cost`, escribe `//cost`.
+
+La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats guardados (incluidos los borrados):
+
+- `today` y `last 7 days`: tokens y turnos (días locales, desde la medianoche). Los turnos son los del chat; las compactaciones y los resúmenes suman tokens pero no cuentan como turno.
+- `by engine and model`: una línea por motor y modelo, del que más usó al que menos, con `in`, `out` y, si el motor lo cuenta, `cached`.
+- `of which workers`: solo cuando hay registros de workers del orquestador en los últimos 7 días, justo tras `last 7 days`: los tokens de esos workers, que ya están incluidos en `today`, `last 7 days`, `this chat`, los gráficos y la barra de estado (ver «Uso de los workers»). Va en tokens; los dólares, si los hay, salen en las líneas por motor y modelo. `no data` si ninguno informó de su total y `partial` si algún registro está cortado o incompleto.
+- `this chat`: lo de la conversación actual. Si todavía no tiene datos, `this chat: no data`.
+- `this session`: lo que ha gastado este panel desde que se abrió.
+- Dos gráficos de texto al final (alfa), con los mismos datos que las líneas de arriba y solo si hay registros en los últimos 7 días:
+  - `per day (last 7 days, oldest first):` una línea de 7 símbolos, uno por día local (el más antiguo primero), escalados al día con más tokens conocidos con `▁▂▃▄▅▆▇█` y terminada en `max <N>` (el último símbolo es hoy, que cuenta «hasta ahora»: el día aún no ha terminado). Un día con tokens conocidos nunca baja de `▂`, para que no se confunda con un 0 conocido. Un día sin registros, o cuyos registros no informan su total, es `·` (un hueco, no un valor bajo); un día con 0 tokens conocidos es `▁`.
+  - `per engine (last 7 days):` una línea `  <motor> <barra> <N>` por motor, con la barra de `█` de 1 a 20 símbolos en proporción al motor que más usó; los nombres se alinean al más largo y se cortan con `…` pasados 16 columnas (un nombre vacío es `?`). Un motor sin ningún total conocido muestra `no data` en lugar de barra y número.
+
+**`no data` no es 0.** Si un motor no informa de un valor, la vista dice `no data` y la línea se marca `partial`; nunca se rellena con un cero. `partial` aparece tanto en las líneas por motor y modelo como en las de resumen (`today`, `last 7 days`, `this chat`, `this session`) cuando algún registro está cortado o le falta la entrada o la salida, y también en una línea con dólares si solo parte de sus registros los informó (la cifra es un mínimo). Mientras el historial responde se lee `reading usage…`, y si no se puede leer, `usage history is not available`.
+
+**Los gráficos no inventan datos.** Un recuento que falta es un hueco (`·` o `no data`), nunca un cero. Nunca dibujan dólares: ni el precio de lista ni ningún otro, solo tokens, así que los motores de suscripción y los locales no muestran dinero en ellos. Son líneas de texto normales: en un panel estrecho se parten como las demás y no provocan ningún fallo. Un ` *` tras el número (`claude ████ 1000 *`, o `max N *` en la línea por día) significa que algunos turnos no informaron de los dos recuentos (entrada y salida), así que la cifra es un mínimo. En paneles muy estrechos las barras se parten en varias filas. Con el historial desactivado no hay gráficos, porque la sesión no guarda días. Los gráficos incluyen los tokens de los workers del orquestador, como el resto de `/cost`. Como el resto de `/cost`, están en fase alfa: si ves algo que no cuadra, puedes comunicarlo en los issues de GitHub.
+
+**Dólares.** Solo aparecen si el motor los informa (hoy, claude), con 4 decimales por debajo de un dólar y 2 a partir de él. Por defecto claude, codex y gemini se tratan como `subscription`, así que la cifra se etiqueta `list-price equivalent`: es el precio de lista del motor, no una factura. Los motores locales (ollama, lmstudio, llama.cpp y vllm) enseñan tokens y nunca dólares.
+
+**Privacidad del uso.** Lo que se guarda en `chat.db` son solo cifras: la hora, el motor, el modelo, el rol del turno (`chat`, `compaction`, `summary`…) y el worker si lo hay, los recuentos de tokens, el coste informado, la duración y si quedó cortado. Nunca se guarda texto de mensajes, ni de prompts, ni de respuestas, ni rutas. Los registros de más de 90 días se borran solos, y borrar una conversación deja sus cifras sin enlace a ella pero no las borra. Ninguna cifra sale de tu máquina: ni se envía al motor ni a ningún otro sitio. Con el historial desactivado no se guarda nada.
+
+**Historial desactivado.** El uso se guarda en `chat.db` solo con el historial activado. Con él desactivado no se guarda nada y `/cost` muestra únicamente la sesión actual, leída de la memoria, con la línea `chat history is off: showing this session only`.
+
+#### Uso de los workers del orquestador (alfa)
+
+Cada turno de un worker de una ejecución del orquestador guarda su uso igual que un turno de chat, con el rol `worker`, el motor y el modelo del worker, su identificador (`<ejecución>.<worker>`) y la conversación del panel, si ya está guardada. Las peticiones de un mismo turno se suman en un solo registro. Es la misma tabla, con las mismas reglas:
+
+- **Nunca se inventa una cifra.** Si el motor del worker no informa de nada, no se guarda registro. Si informa a medias, queda `no data` en el recuento que falta y el registro cuenta como `partial`. Un worker que falla, se cancela o agota su plazo después de informar guarda lo que informó, marcado `partial`.
+- **Panel cerrado.** Si el panel ya no es un chat cuando llega el uso de un worker, con el historial activado se guarda igualmente, sin conversación; si esa escritura falla no hay panel donde avisarlo (límite conocido).
+- **Dólares y precio de lista** según el motor del worker y su modo de facturación, como en un turno de chat; un motor local nunca muestra dólares.
+- **Con el historial desactivado no se guarda nada**; `/cost` cuenta a los workers solo en `this session`, desde la memoria. Un registro que no se pudo guardar muestra `Usage not saved: <motivo>` (una vez por ejecución) y la ejecución sigue.
+- **Cuentan en todo**: `today`, `last 7 days`, los gráficos, el segmento `today: N tok` de la barra de estado y los límites por día (`day_tokens` y `day_usd`, este último solo con motores `per-token`). El límite por turno (`turn_tokens`) es del turno del chat y **no** salta por un worker. Borrar la conversación conserva estos registros, igual que los demás. Sigue sin haber desglose por worker ni por ejecución: solo la línea `of which workers`.
+- **La línea de uso del coordinador** bajo su respuesta empieza por `usage (coordinator):` en lugar de `usage:` en el turno orquestado del coordinador, para que no se lea como el total de la ejecución. Los workers se suman aparte en `/cost`.
+
+#### Línea de uso bajo cada respuesta y barra de estado (alfa)
+
+Al terminar un turno, el chat añade bajo la respuesta una línea tenue con lo que el motor informó, por ejemplo `usage: in 2 · out 4 · $0.0049 list-price equivalent`. Tras `in` y `out` aparecen, solo si el motor los informa, `cached`, `reasoning` y los dólares, y al final `partial` si el turno quedó cortado o le faltó alguna petición. Un turno cuyo motor no informó de nada dice `usage: no data` (nunca 0). Tras una cancelación o un error, la línea solo sale si el turno llegó a informar de algún uso. Es una línea de vista: no se guarda, no se envía al motor, no entra en un `yank` de la respuesta y no vuelve al retomar la conversación.
+
+Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 tok`: los tokens de hoy (día local) de todos tus chats y motores, borrados incluidos, sumando entrada y salida de los registros que tienen ambas. Si hoy no hay ningún total conocido, dice `today: no data`. Se lee del historial al abrir el primer chat enfocado (en el hilo del almacén, nunca en el de la interfaz), se refresca cuando se guarda un registro y se vuelve a leer al cambiar el día local: nunca se muestra la cifra de ayer, y hasta la primera lectura el segmento no aparece. Si la lectura falla, se conserva la última cifra, se avisa con `Usage not read: <motivo>` (de nuevo solo si vuelve a fallar tras una lectura buena) y se reintenta al cabo de un minuto; mientras no haya una cifra válida por ese fallo, el segmento dice `today: ?`. Una lectura sin respuesta se da por perdida a los 30 s, y un salto del reloj de más de una hora vuelve a leer. Con el historial desactivado no hay registros que sumar y el segmento no aparece. Solo los motores en modo `per-token` suman dólares al segmento (` · $0.42`); los de `subscription` y los locales nunca. Si la barra va justa, este segmento es lo primero que se oculta, antes que el estado de la memoria, el texto del motor o el indicador de pensamiento.
+
+Ambas cosas vienen activadas. Se cambian desde el menú (`Ctrl+Espacio` y `m`, pestaña **Settings**, fila `Usage (alpha)`) o a mano en `config.toml`.
+
+**Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con ocho filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado), `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`) y los tres límites `Turn tokens`, `Day tokens` y `Day $` (ver «Límites de uso»; los nombres son cortos para que quepan en el tamaño mínimo: tokens por turno, tokens por día y dólares por día). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor de los interruptores y la facturación (en un límite, `Enter` lo edita); `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
+
+Las claves, en `config.toml`:
+
+```toml
+[ai.usage]
+line = true         # línea bajo cada respuesta
+statusline = true   # segmento "today: N tok" en la barra de estado
+
+turn_tokens = 4000  # límite por turno, en tokens (opcional)
+day_tokens = 200000 # límite diario, en tokens (opcional)
+day_usd = 2.5       # límite diario, en dólares (opcional)
+
+[ai.usage.billing]  # solo claude, codex y gemini; por defecto "subscription"
+claude = "per-token"
+```
+
+**Límites de uso (alpha).** Los tres límites son opcionales y, si faltan, están desactivados (`off`). Solo producen una nota tenue en el chat: nunca bloquean, retrasan ni cancelan un envío, y no emiten ningún sonido ni notificación. Aparecen aunque la línea de uso esté desactivada, y son líneas de vista (no se guardan ni se envían al motor).
+
+- `turn_tokens`: si un turno terminado superó el límite (entrada más salida, ambas conocidas), la nota sigue a la línea de uso: `turn used 1200 tokens (limit 1000)`. Sale en cada turno que lo supere; un turno sin total conocido nunca la dispara.
+- `day_tokens`: cuando los tokens conocidos de hoy alcanzan el límite, `today's usage reached 5200 tokens (limit 5000)`.
+- `day_usd`: cuando el gasto de hoy alcanza el límite, `today's spend reached $5.01 (limit $1.00)`. Solo cuenta el gasto de los motores en modo `per-token`; los de `subscription` (precio de lista) y los locales nunca suman.
+
+Las dos notas diarias salen una vez por límite, por día local y por ejecución (si subes el límite el mismo día, la nota puede volver a salir al alcanzar el nuevo). Si al arrancar, en la primera lectura del día, el día ya supera el límite, la nota aparece al inicio, en el panel que hizo esa lectura. Se calculan con las cifras del historial, así que con el historial desactivado no hay notas diarias. En el menú, `Enter` sobre una fila de límite la edita: se aceptan dígitos (y un solo `.` con hasta dos decimales en `Day $`, con un máximo de 12 dígitos), `Enter` confirma, `Esc` cancela y deja el valor anterior, y `0` o un campo vacío significa `off` (la clave se elimina de `config.toml`). Una tecla que no se puede escribir avisa en el pie en vez de ignorarse, y se puede pegar un número. Un valor que ya está en `config.toml` con más decimales de los que se pueden escribir (por ejemplo `day_usd = 0.125`) se muestra tal cual y no se reescribe si no lo cambias. Un valor inválido en el archivo se sustituye por `off` y avisa al arrancar.
+
+`billing` solo cambia cómo se etiqueta una cifra en dólares que el motor ya informó: `"subscription"` la muestra como `list-price equivalent` (precio de lista, no una factura) y `"per-token"` como gasto (`$0.0049`). No cambia ningún recuento ni lo guardado, y se aplica al mostrar, así que cambiarlo reetiqueta también los registros pasados. Una clave de un motor local, o cualquier clave desconocida, se ignora. Un valor inválido se sustituye por el de por defecto y avisa al arrancar con el texto exacto del problema (por ejemplo `ai.usage.line: expected true or false` o `ai.usage.billing.codex: expected "subscription" or "per-token"`).
+
 ### Memoria del proyecto (engram)
 
 El chat puede actuar como cliente de [engram](https://github.com/Gentleman-Programming/engram) y compartir la memoria del proyecto con Claude Code, opencode y otros agentes: al abrir el chat lee el contexto del proyecto, puedes guardar **notas** durante la conversación y generar un **resumen** de la sesión. Es opcional y está **desactivada** por defecto.
@@ -1171,6 +1246,7 @@ Los dos cambios se aplican desde el siguiente mensaje y no tocan un turno que ya
 - **Escritura.** Un worker `code` solo prepara cambios (`create_dir`, `write_file`, `edit_file`) dentro del alcance y los propone él mismo con `propose_batch`; nada llega al disco hasta que apruebas el lote en la revisión de lotes (ver «Escritura: lotes con revisión»), cuya cabecera nombra al worker. Ningún modo de aprobación, tampoco `run`, aprueba un lote. El coordinador solo da por escrito lo que `collect` lista como `applied`; lo demás es un borrador. Los workers `code` usan sus propias herramientas aunque `write` esté en `false` en `[ai.tools]`; los demás workers solo leen.
 - **Revisión de riesgo (RDD).** Un cambio de **riesgo alto** (compilación, CI, dependencias y archivos de bloqueo, formatos de configuración y rutas secretas; el coordinador solo puede subirlo con `raise`, nunca bajarlo) pide **tu consentimiento antes de cualquier revisión** (`y review it · n skip the review`). Con `y`, workers de solo lectura miran el cambio con los criterios que haga falta (`risk`, `resilience`, `readability`, `reliability`), un refutador filtra los bloqueos inferidos y, como mucho, un worker `code` hace una corrección acotada. Con `n`, el cambio pasa a la revisión de lotes marcado **`not reviewed`** y no corre ningún revisor. Todo acaba en un **recibo** (nivel, criterios, hallazgos, corrección, resultado) que se ve en la cabecera de la revisión de lotes. Un recibo nunca aprueba: **la revisión de lotes siempre la decides tú con `y`**.
 - **Fallos.** Si un worker falla, caduca o se rechaza (por ejemplo, motor sin instalar o sin jaula), la ejecución se detiene y se muestra el error del proveedor tal cual, con su clase (`rate_limit`, `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `other`). Los hermanos en marcha terminan su turno y no arranca ninguno nuevo hasta que respondas: `r` reintenta el mismo worker con el error añadido, `m` cambia el modelo, `p` cambia el motor y `c` o `Esc` cancela. `m` y `p` valen solo para esa ejecución: no cambian el menú ni `config.toml`. Nunca hay reintento ni cambio de motor automático.
+- **Uso.** El uso de cada worker se guarda y se suma en `/cost`, los gráficos, la barra de estado y los límites por día (ver «Uso de los workers del orquestador»); la línea de uso del coordinador lleva la etiqueta `usage (coordinator):`.
 - **Final.** La ejecución termina sola cuando acaba el turno del coordinador y no queda ningún worker en cola ni en marcha. El coordinador informa de lo verificado, de cada comprobación fallida, omitida o pendiente y de una línea de riesgo.
 
 **Teclas.** Todas están también en la [referencia de teclas](#referencia-de-teclas-por-vista).
