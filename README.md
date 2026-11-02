@@ -1051,21 +1051,26 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 #### Paneles: `list_panes`
 
-`list_panes` es una herramienta de solo lectura, siempre disponible junto a `run_in_pane` y sin ningún interruptor. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en otro panel, el modelo lo ve en lugar de pedirte que pegues el código. Por cada panel devuelve:
+`list_panes` es una herramienta de solo lectura que se ofrece junto a `run_in_pane` y no tiene interruptor propio. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en el panel con foco, el modelo lo ve en lugar de pedirte que pegues el código. Los _workers_ del orquestador no la tienen.
 
-- el número del panel y si es el que tiene el foco;
-- su carpeta (con `~/` en lugar de tu `$HOME`);
-- el programa en primer plano y sus argumentos, por ejemplo `nvim prueba.rs`.
+**Qué se envía exactamente.** Una línea por panel, con el número, si tiene el foco, su carpeta (con `~/` en lugar de tu `$HOME`) y el programa en primer plano; por ejemplo `pane 1 (focused) cwd: ~/proyecto program: nvim prueba.rs`. Un panel cuyo proceso no se puede leer dice `program: unknown`. No se envía el contenido de la pantalla ni del _scrollback_, y el entorno de otros procesos no se lee nunca.
 
-**Qué se envía al modelo.** Las líneas de comando de los programas en primer plano de todos tus paneles, **también con motores en la nube**. Es una herramienta de solo lectura y **no pregunta** en ningún motor ni modo de aprobación; la fila de la herramienta muestra lo que se envió. Antes de salir, los argumentos pasan por la censura de secretos: se enmascara el valor que sigue a `--password`, `--token` y `-p` (y `-pVALOR`), cualquier `CLAVE=valor` cuya clave contenga `KEY`, `TOKEN`, `SECRET` o `PASS`, y el texto con forma de credencial. Cada argumento se corta a 120 caracteres y cada línea de panel a 300. El entorno de otros procesos no se lee nunca, y no se envía el contenido de la pantalla ni del _scrollback_.
+**Lista de permitidos, no de prohibidos.** Una línea de comando puede esconder un secreto de muchas formas (`-u usuario:clave`, `-a CLAVE`, una cadena de conexión, una cabecera), así que no se muestra nada que no se sepa inofensivo:
+
+- Del panel con foco se muestra el nombre del programa y, de sus argumentos, solo las opciones (`-x`, `--larga`, sin su `=valor`) y las rutas: las que empiezan por `/`, `./`, `../` o `~/` y las que nombran un archivo o carpeta que existe en la carpeta del programa. Cualquier otro argumento se sustituye por `…`. `ssh -p 22 host` se ve como `ssh -p …`.
+- Con `sh`, `bash`, `zsh`, `fish -c`, `python -c`, `node -e`, `perl -e` o `ruby -e` solo se ve el intérprete y la opción: el código nunca.
+- Una ruta con `?`, `=`, `@` o `:` no se muestra. Lo que queda pasa además por la censura de secretos y de credenciales en URL.
+- Los demás paneles muestran solo el nombre del programa y la carpeta.
+- Cada argumento se corta a 120 caracteres y cada línea a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
+
+**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti.
 
 **Límites.**
 
-- Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pid>/cmdline`. En macOS no hay `/proc`: el programa y la carpeta salen como `unknown`, y la herramienta no falla.
-- Un panel cuyo proceso no se puede leer aparece como `program: unknown`.
+- Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pgid>/cmdline` y `/proc/<pgid>/cwd`.
+- macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
 - La lista se actualiza cada segundo, así que puede ir un instante por detrás.
 - No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
-- Los _workers_ del orquestador no la tienen.
 
 ### Tools with Ollama
 
