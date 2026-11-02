@@ -16,8 +16,6 @@ pub const HEADER: &str = "AI usage (alpha)";
 pub const EMPTY_LINE: &str = "no usage recorded yet";
 /// The whole view when the store cannot be read.
 pub const UNAVAILABLE_LINE: &str = "usage history is not available";
-/// Shown when history is off: only this session can be told.
-pub const HISTORY_OFF_LINE: &str = "chat history is off: showing this session only";
 /// Shown when the session held more engine and model pairs than it keeps.
 pub const SESSION_FULL_LINE: &str =
     "session list is full: later engines and models are not counted";
@@ -144,8 +142,8 @@ pub enum Run {
     Side,
 }
 
-/// What this session used, kept in memory so `/cost` can tell it with the
-/// history off. One row per engine and model.
+/// What this session used, kept in memory so `/cost` can add a `this
+/// session` line to the stored report. One row per engine and model.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Session {
     rows: Vec<UsageRow>,
@@ -484,22 +482,6 @@ pub fn report_lines(
         }
     }
     lines.extend(chart_lines(rows));
-    lines
-}
-
-/// The `/cost` view with the history off: this session, from memory.
-pub fn session_lines(session: &Session, billing: &dyn Fn(&str) -> Option<Billing>) -> Vec<String> {
-    let mut lines = vec![HEADER.to_owned(), HISTORY_OFF_LINE.to_owned()];
-    if session.rows().is_empty() {
-        lines.push(EMPTY_LINE.to_owned());
-        return lines;
-    }
-    lines.push(format!("this session: {}", summary(session.rows().iter())));
-    if session.full() {
-        lines.push(SESSION_FULL_LINE.to_owned());
-    }
-    lines.push("by engine and model:".to_owned());
-    lines.extend(pair_lines(session.rows().iter(), billing));
     lines
 }
 
