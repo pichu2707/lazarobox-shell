@@ -2746,6 +2746,9 @@ impl App {
                 spec.program = program.clone();
                 spec.args = args.clone();
                 spec.report_status = true;
+                // Under `umask 002` cargo would leave the binary group-writable
+                // and the next start would turn the tools off (issue #526).
+                spec.umask = Some(0o022);
                 spec.env_os.push(("PATH".into(), path.clone()));
                 spec
             }
