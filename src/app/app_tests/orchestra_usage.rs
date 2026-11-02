@@ -206,3 +206,96 @@ fn with_history_off_the_usage_of_a_pane_that_is_gone_is_not_stored() {
     let (mut a, _) = running();
     assert_eq!(stores(&orphan_usage(&mut a)), Vec::new());
 }
+
+// ---- release follow-ups (verify S1/W2 and S3) ------------------------------
+
+/// A day that ends far in the future, whatever the clock of the test is.
+const FAR: i64 = 32_503_680_000;
+
+fn worker_with_dollars(micros: u64) -> OrchestraEvent {
+    OrchestraEvent::Usage {
+        run: RUN,
+        worker: WorkerId(1),
+        engine: "codex".into(),
+        usage: Box::new(TurnUsage {
+            input: Some(10),
+            output: Some(10),
+            cost_micros: Some(micros),
+            ..TurnUsage::default()
+        }),
+    }
+}
+
+fn day_reply(today: u64, cost: &[(&str, u64)]) -> AppEvent {
+    AppEvent::Store(StoreReply::UsageRecorded {
+        pane: chat_id(),
+        today: Some(today),
+        cost: cost.iter().map(|(e, m)| ((*e).to_owned(), *m)).collect(),
+        until: Some(FAR),
+        read_problem: None,
+        problem: None,
+    })
+}
+
+fn orch_with_usage(config: &str) -> App {
+    let table: toml::Table = config.parse().unwrap();
+    let mut ai = super::orchestra_send::orch_ai();
+    ai.orchestrator.acknowledged = true;
+    ai.set_usage(
+        crate::core::ai::config::read_with_port_env(&table, &mut Vec::new(), None)
+            .usage()
+            .clone(),
+    );
+    let mut a = super::orchestra_send::orch_app_with(ai);
+    a.history = true;
+    a
+}
+
+/// Stores a worker record, then answers it the way the store does: with the
+/// day's sum, which is the worker's dollars under its engine.
+fn worker_spend_notes(config: &str, micros: u64) -> Vec<String> {
+    let mut a = orch_with_usage(config);
+    let effects = a.update(event(worker_with_dollars(micros)));
+    let rows = worker_rows(&effects);
+    assert_eq!(rows.len(), 1, "{effects:?}");
+    let (role, engine, _, usage) = &rows[0];
+    assert_eq!(role, "worker");
+    assert_eq!(usage.cost_micros, Some(micros));
+    a.update(day_reply(20, &[(engine.as_str(), micros)]));
+    systems(chat_of(&a))
+        .into_iter()
+        .filter(|l| l.starts_with("today's"))
+        .collect()
+}
+
+// S1/W2: the dollars of a worker count toward `day_usd` like a chat turn's.
+#[test]
+fn worker_dollars_count_toward_the_day_limit_under_per_token_billing() {
+    let notes = worker_spend_notes(
+        "[ai.usage]\nday_usd = 1.0\n[ai.usage.billing]\ncodex = \"per-token\"\n",
+        2_500_000,
+    );
+    assert_eq!(notes, ["today's spend reached $2.50 (limit $1.00)"]);
+}
+
+#[test]
+fn worker_dollars_never_count_toward_the_day_limit_under_subscription() {
+    let notes = worker_spend_notes("[ai.usage]\nday_usd = 1.0\n", 2_500_000);
+    assert_eq!(notes, Vec::<String>::new());
+}
+
+// S3: the status segment follows the store's day sum after a worker record.
+#[test]
+fn a_worker_record_moves_the_status_segment_from_1000_to_1300_tok() {
+    let mut a = orch_with_usage("");
+    a.update(day_reply(1_000, &[]));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1000 tok"));
+    let effects = a.update(event(worker_used(200, 100)));
+    let rows = worker_rows(&effects);
+    assert_eq!(rows.len(), 1, "{effects:?}");
+    let (_, _, _, usage) = &rows[0];
+    let added = usage.input.unwrap() + usage.output.unwrap();
+    assert_eq!(added, 300);
+    a.update(day_reply(1_000 + added, &[]));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1300 tok"));
+}

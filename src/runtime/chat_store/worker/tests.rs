@@ -3164,6 +3164,19 @@ fn a_worker_row_keeps_its_role_and_worker_id_and_counts_in_the_day() {
     assert_eq!(usage_reply(reply), (Some(155), None));
 }
 
+// S1/W2: the dollars of a worker row are in the day's cost of its engine.
+#[test]
+fn a_worker_row_with_dollars_adds_to_the_days_cost_of_its_engine() {
+    let (_dir, mut worker, _conn) = fixture();
+    let dollars = |micros| TurnUsage {
+        cost_micros: Some(micros),
+        ..tokens(30, 5)
+    };
+    cost_reply(worker.handle(record_for("codex", dollars(400))));
+    let last = cost_reply(worker.handle(worker_record(dollars(600))));
+    assert_eq!(last, [("codex".to_owned(), 1_000)]);
+}
+
 #[test]
 fn the_report_folds_worker_rows_into_the_totals_and_apart() {
     let (_dir, mut worker, conn) = fixture();
