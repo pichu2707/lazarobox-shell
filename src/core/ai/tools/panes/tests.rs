@@ -234,3 +234,135 @@ fn the_roster_hands_back_the_rendered_lines_only() {
     roster.set(vec!["pane 1".to_owned()]);
     assert_eq!(roster.lines(), vec!["pane 1".to_owned()]);
 }
+
+const INVISIBLE: &[char] = &[
+    '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}',
+    '\u{2069}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{2028}', '\u{2029}',
+    '\u{feff}',
+];
+
+fn hostile(text: &str) -> String {
+    text.replace('~', "\u{202e}\u{2066}\u{200b}\u{2028}\u{feff}")
+}
+
+#[test]
+fn hostile_unicode_never_survives_in_a_line() {
+    let dir = hostile("/tmp/~d");
+    let prog = hostile("l~s");
+    let path = hostile("/tmp/a~b");
+    let mut f = facts(1, true, &dir, Some(&[&prog, &path, &hostile("--fl~ag")]));
+    f.fg.as_mut().unwrap().cwd = Some(PathBuf::from(hostile("/other/~x")));
+    let text = line(&f, None);
+    assert!(
+        !text
+            .chars()
+            .any(|c| INVISIBLE.contains(&c) || c.is_control()),
+        "{text:?}"
+    );
+    assert!(text.contains("/tmp/"), "{text}");
+}
+
+#[test]
+fn a_program_title_with_spaces_or_a_colon_is_hidden() {
+    for title in [
+        "nginx: master process /usr/sbin/nginx",
+        "sshd: me@pts/1",
+        "my prog",
+    ] {
+        let text = focused_line(&[title]);
+        assert!(text.ends_with("program: …"), "{text}");
+    }
+}
+
+#[test]
+fn the_program_name_and_the_folders_go_through_redact_tokens() {
+    let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut f = facts(
+        1,
+        true,
+        &format!("/tmp/{secret}"),
+        Some(&[&format!("/bin/{secret}")]),
+    );
+    f.fg.as_mut().unwrap().cwd = Some(PathBuf::from(format!("/srv/{secret}")));
+    assert!(!line(&f, None).contains(secret));
+}
+
+#[test]
+fn at_most_sixteen_arguments_are_looked_up_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..20).map(|n| format!("f{n:02}")).collect();
+    for name in &names {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    let mut words = vec!["cat".to_owned()];
+    words.extend(names.iter().cloned());
+    let out = safe_argv(&words, Some(dir.path()), None);
+    assert_eq!(out.len(), 1 + 16 + 1, "{out:?}");
+    assert_eq!(out.last().map(String::as_str), Some("…"));
+}
+
+#[test]
+fn a_flag_is_capped_like_any_argument() {
+    let long = format!("--{}", "a".repeat(300));
+    let out = safe_argv(&argv(&["tool", &long]), None, None);
+    assert!(out[1].chars().count() <= ARG_CAP, "{}", out[1].len());
+}
+
+fn panes_lines(count: u32) -> Vec<String> {
+    let focused = format!(
+        "pane 1 (focused) cwd: ~/{} program: nvim {}",
+        "d/".repeat(60),
+        "/very/long/path.rs ".repeat(20)
+    );
+    std::iter::once(focused)
+        .chain((2..=count).map(|n| format!("pane {n} cwd: ~/projects/some/where/{n} program: zsh")))
+        .collect()
+}
+
+fn prompt_of(text: String) -> crate::core::ai::chat::approval::ApprovalPrompt {
+    crate::core::ai::chat::approval::ApprovalPrompt {
+        target: "send what your panes run to the engine".into(),
+        command: text,
+        keys: crate::core::ai::chat::approval::PANES_KEYS,
+        armed: true,
+        why: None,
+        notice: None,
+    }
+}
+
+// The ask stays answerable: eight panes and a huge focused line still fit
+// the prompt's row cap, at a wide pane and at a narrow one.
+#[test]
+fn a_big_roster_still_fits_the_approval_prompt() {
+    use crate::core::ai::chat::approval_rows::fits;
+    for count in [1, 3, 5, 8, 40] {
+        let text = render(&panes_lines(count));
+        let prompt = prompt_of(text.clone());
+        for width in [80, PROMPT_COLS] {
+            assert!(fits(&prompt, width, 20), "{count} panes at {width}: {text}");
+        }
+        assert!(text.starts_with("pane 1 (focused)"), "{text}");
+    }
+    // A huge focused line is shortened and crowds the rest out, said plainly.
+    assert!(render(&panes_lines(8)).ends_with("+7 more"));
+    // Short lines: five panes are named and the rest counted.
+    let short: Vec<String> = (1..=8)
+        .map(|n| format!("pane {n} cwd: ~ program: zsh"))
+        .collect();
+    let text = render(&short);
+    assert!(text.lines().count() <= MAX_PANES + 1, "{text}");
+    assert!(
+        text.ends_with("+3 more") || text.ends_with("+4 more"),
+        "{text}"
+    );
+    assert!(fits(&prompt_of(text.clone()), PROMPT_COLS, 20), "{text}");
+}
+
+#[test]
+fn a_roster_that_fits_is_sent_whole() {
+    let lines = vec![
+        "pane 1 (focused) cwd: ~ program: zsh".to_owned(),
+        "pane 2 cwd: ~ program: zsh".to_owned(),
+    ];
+    assert_eq!(render(&lines), lines.join("\n"));
+}

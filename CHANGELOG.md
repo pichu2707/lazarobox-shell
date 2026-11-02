@@ -26,7 +26,15 @@ baseline.
   under `$HOME` show as `~/`. The environment of other processes is never
   read, and the shared state only ever holds redacted text. Linux reads
   `/proc/<pgid>/cmdline` and `cwd`; on macOS the program and folder are
-  `unknown`. A pane that cannot be read shows `program: unknown`.
+  `unknown`. A pane that cannot be read shows `program: unknown`. Existing
+  file names are shown as they are (`--password-file creds.txt` shows
+  `creds.txt`; contents are never read) and only the first 16 arguments of the
+  focused pane are looked up on disk. Every fragment is cleaned like the other
+  prompts (no escape sequences, bidi or zero-width characters), redacted and
+  capped; a program title with spaces or `:` shows as `…`. The text is bounded
+  (5 panes, focused first, then `+N more`) so the prompt stays answerable.
+  An Ollama `*-cloud` model counts as
+  local, so it does not ask.
 - Pin change: `list_panes` joins the legacy tool families, so the default
   tool list (the MCP `tools/list` bytes, the Ollama and llama.cpp `tools`
   body and the tools prompt, 865 to 1033 bytes) is no longer the 0.18.0 one.

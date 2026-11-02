@@ -837,6 +837,8 @@ pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
+/// The keys of the prompt that sends what the panes run.
+pub const PANES_KEYS: &str = "y send it · n deny";
 /// The keys of a search prompt.
 pub const SEARCH_KEYS: &str = "y search · n deny";
 /// The keys of the folder prompt: nothing but `y` changes it.

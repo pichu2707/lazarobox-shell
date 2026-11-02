@@ -1454,27 +1454,23 @@ impl Panes {
         self
     }
 
-    /// Writes one line per live pane, in pane order, for `list_panes`. Each
-    /// line is already redacted (see `panes::line`): the raw argv never
-    /// leaves this function. A fact that cannot be read is left out of its
-    /// line, and the pane stays listed.
-    fn refresh_roster(&self, focused: PaneId) {
-        let Some((roster, home)) = &self.roster else {
-            return;
-        };
-        let mut rows: Vec<(u32, String)> = (self.handles.iter())
-            .map(|(id, handle)| {
-                let facts = Facts {
-                    number: id.number(),
-                    focused: *id == focused,
-                    cwd: handle.cwd(),
-                    fg: handle.foreground(),
-                };
-                (facts.number, panes::line(&facts, home.as_deref()))
+    /// What the panes run, as raw facts: a few `/proc` reads each.
+    fn roster_facts(&self, focused: PaneId) -> Vec<Facts> {
+        (self.handles.iter())
+            .map(|(id, handle)| Facts {
+                number: id.number(),
+                focused: *id == focused,
+                cwd: handle.cwd(),
+                fg: handle.foreground(),
             })
-            .collect();
-        rows.sort_by_key(|row| row.0);
-        roster.set(rows.into_iter().map(|row| row.1).collect());
+            .collect()
+    }
+
+    /// Refreshes the roster for `list_panes`.
+    fn refresh_roster(&self, focused: PaneId) {
+        if let Some((roster, home)) = &self.roster {
+            publish_roster(roster, home.as_deref(), self.roster_facts(focused));
+        }
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -2193,6 +2189,14 @@ fn drive(
 /// Returns `true` when the app wants to quit.
 fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
     drive(|event| app.update(event), event, panes)
+}
+
+/// Stores one already-redacted line per pane, the focused one first and then
+/// in pane order: the raw argv never leaves this function. Looks files up on
+/// disk.
+fn publish_roster(roster: &Roster, home: Option<&Path>, mut facts: Vec<Facts>) {
+    facts.sort_by_key(|f| (!f.focused, f.number));
+    roster.set(facts.iter().map(|f| panes::line(f, home)).collect());
 }
 
 /// The child's current working directory as an event, read from
@@ -3977,8 +3981,8 @@ mod tests {
         );
     }
 
-    // list_panes: the poll stores one already-redacted line per live pane, in
-    // pane order; a pane that cannot be read stays listed with no program.
+    // list_panes: the poll stores one already-redacted line per live pane, the
+    // focused one first; a pane that cannot be read stays listed with no program.
     #[test]
     fn refresh_roster_stores_one_redacted_line_per_pane() {
         let (mut panes, _rx, _rec) = fake_panes(None);
@@ -4001,8 +4005,8 @@ mod tests {
         assert_eq!(
             roster.lines(),
             vec![
-                "pane 1 cwd: unknown program: unknown".to_owned(),
                 "pane 2 (focused) cwd: ~/p program: nvim ~/p/prueba.rs".to_owned(),
+                "pane 1 cwd: unknown program: unknown".to_owned(),
             ]
         );
     }

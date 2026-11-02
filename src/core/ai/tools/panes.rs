@@ -12,14 +12,25 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use crate::core::ai::sanitize::redact_tokens;
+use crate::core::ai::{
+    chat::approval_rows::command_rows,
+    sanitize::{clean, redact_tokens},
+};
 
 /// The longest argument written, in characters.
 pub const ARG_CAP: usize = 120;
 /// The longest line written for one pane, in characters.
 pub const LINE_CAP: usize = 300;
 /// The most bytes of `/proc/<pid>/cmdline` that are looked at.
+/// The width the capped text is guaranteed to fit the approval prompt at.
+pub const PROMPT_COLS: usize = 40;
+/// The most panes the text names.
+pub const MAX_PANES: usize = 5;
 pub const CMDLINE_CAP: usize = 8192;
+/// The most arguments of a pane looked up on disk.
+const MAX_STATS: usize = 16;
+/// The most rows the approval prompt shows of a command.
+const PROMPT_ROWS: usize = 6;
 /// What stands for every argument that is not known to be harmless.
 const HIDDEN: &str = "…";
 
@@ -103,12 +114,19 @@ fn flag(arg: &str) -> Option<&str> {
 /// Whether `arg` is a path worth showing: it says it is one, or it names an
 /// entry that exists in `cwd` (looked at, never followed). Text that could
 /// carry a credential (`?`, `=`, `@`, `:`) never counts.
-fn path_like(arg: &str, cwd: Option<&Path>) -> bool {
+fn path_like(arg: &str, cwd: Option<&Path>, stats: &mut usize) -> bool {
     if arg.is_empty() || arg.contains(['?', '=', '@', ':', '\0']) {
         return false;
     }
-    ["/", "./", "../", "~/"].iter().any(|p| arg.starts_with(p))
-        || cwd.is_some_and(|dir| std::fs::symlink_metadata(dir.join(arg)).is_ok())
+    if ["/", "./", "../", "~/"].iter().any(|p| arg.starts_with(p)) {
+        return true;
+    }
+    // A disk lookup can block (a stalled mount): only a few are made.
+    let Some(dir) = cwd.filter(|_| *stats > 0) else {
+        return false;
+    };
+    *stats -= 1;
+    std::fs::symlink_metadata(dir.join(arg)).is_ok()
 }
 
 /// `argv` as it may be shown: the program's file name, then the flags and the
@@ -119,17 +137,25 @@ pub fn safe_argv(argv: &[String], cwd: Option<&Path>, home: Option<&Path>) -> Ve
     let Some((first, args)) = argv.split_first() else {
         return Vec::new();
     };
+    // A title a program set for itself (`nginx: master process ...`) is free
+    // text, not a name.
     let program = first.rsplit('/').next().unwrap_or(first);
-    let mut out = vec![cap(&flat(program), ARG_CAP)];
+    let name = if first.contains([' ', ':']) {
+        HIDDEN.to_owned()
+    } else {
+        tidy(program, home)
+    };
+    let mut out = vec![cap(&name, ARG_CAP)];
     if let Some(flag) = inline_flag(program, args) {
         out.push(flag);
         return out;
     }
+    let mut stats = MAX_STATS;
     for arg in args {
         let shown = if let Some(name) = flag(arg) {
-            name.to_owned()
-        } else if path_like(arg, cwd) {
-            cap(&flat(&redact_tokens(&tilde(arg, home))), ARG_CAP)
+            cap(&tidy(name, None), ARG_CAP)
+        } else if path_like(arg, cwd, &mut stats) {
+            cap(&tidy(arg, home), ARG_CAP)
         } else {
             HIDDEN.to_owned()
         };
@@ -149,11 +175,15 @@ fn tilde(text: &str, home: Option<&Path>) -> String {
     if text == home { "~".to_owned() } else { text }
 }
 
-/// `text` without control characters.
+/// `text` as one clean line, as the approval prompt writes it: escape
+/// sequences, bidi and zero-width characters and line breaks are gone.
 fn flat(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
+    clean(text).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` shortened under `home`, redacted and made one clean line.
+fn tidy(text: &str, home: Option<&Path>) -> String {
+    flat(&redact_tokens(&tilde(text, home)))
 }
 
 /// `text` cut at `max` characters, with an ellipsis when it was cut.
@@ -170,7 +200,7 @@ fn cap(text: &str, max: usize) -> String {
 /// arguments; any other shows the program's name only. The program's own
 /// folder is shown when it differs from the shell's.
 pub fn line(facts: &Facts, home: Option<&Path>) -> String {
-    let show = |path: &Path| flat(&tilde(&path.to_string_lossy(), home));
+    let show = |path: &Path| tidy(&path.to_string_lossy(), home);
     let cwd = facts
         .cwd
         .as_deref()
@@ -204,12 +234,43 @@ pub fn line(facts: &Facts, home: Option<&Path>) -> String {
     )
 }
 
-/// The text a model gets: the lines of the panes.
+/// The text a model gets, and the user approves: the lines of the panes (the
+/// focused one first), at most [`MAX_PANES`] and always few enough rows for
+/// the approval prompt at [`PROMPT_COLS`] columns, shortening lines and then
+/// leaving panes out (`+N more`) as needed, so the ask stays answerable.
 pub fn render(lines: &[String]) -> String {
     if lines.is_empty() {
         return "no panes".to_owned();
     }
-    lines.join("\n")
+    let mut shown: Vec<String> = Vec::new();
+    for (i, pane) in lines.iter().enumerate().take(MAX_PANES) {
+        let tail = (i + 1 < lines.len()).then(|| format!("+{} more", lines.len() - i - 1));
+        let mut cand = pane.clone();
+        let fits = loop {
+            let text = [
+                shown.clone(),
+                vec![cand.clone()],
+                tail.clone().into_iter().collect(),
+            ]
+            .concat();
+            if command_rows(&text.join("\n"), PROMPT_COLS).len() <= PROMPT_ROWS {
+                break true;
+            }
+            let len = cand.chars().count();
+            if len <= 24 {
+                break false;
+            }
+            cand = cap(&cand, len * 3 / 4);
+        };
+        if !fits && i > 0 {
+            break;
+        }
+        shown.push(cand);
+    }
+    if shown.len() < lines.len() {
+        shown.push(format!("+{} more", lines.len() - shown.len()));
+    }
+    shown.join("\n")
 }
 
 #[cfg(test)]

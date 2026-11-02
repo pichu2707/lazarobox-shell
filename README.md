@@ -1060,10 +1060,13 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - Del panel con foco se muestra el nombre del programa y, de sus argumentos, solo las opciones (`-x`, `--larga`, sin su `=valor`) y las rutas: las que empiezan por `/`, `./`, `../` o `~/` y las que nombran un archivo o carpeta que existe en la carpeta del programa. Cualquier otro argumento se sustituye por `…`. `ssh -p 22 host` se ve como `ssh -p …`.
 - Con `sh`, `bash`, `zsh`, `fish -c`, `python -c`, `node -e`, `perl -e` o `ruby -e` solo se ve el intérprete y la opción: el código nunca.
 - Una ruta con `?`, `=`, `@` o `:` no se muestra. Lo que queda pasa además por la censura de secretos y de credenciales en URL.
+- Los nombres de archivos y carpetas que **existen** se muestran tal cual: `--password-file creds.txt` muestra `creds.txt` si ese archivo existe (el contenido nunca se lee). Solo se comprueban los 16 primeros argumentos del panel con foco; los demás son `…`.
+- Un programa que se pone a sí mismo un título con espacios o `:` (`nginx: master process ...`) se muestra como `…`.
 - Los demás paneles muestran solo el nombre del programa y la carpeta.
-- Cada argumento se corta a 120 caracteres y cada línea a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
+- Todo fragmento (programa, opciones, rutas, carpetas) se limpia como el resto de avisos (sin secuencias de escape, caracteres bidireccionales ni de ancho cero) y pasa por la censura de secretos; cada argumento se corta a 120 caracteres y cada línea de panel a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
+- El texto se acota para que el aviso se pueda aprobar: como mucho 5 paneles (el que tiene el foco primero) y una línea final `+N more` si hay más; una línea se acorta si hace falta.
 
-**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti.
+**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti. Un modelo `*-cloud` de Ollama cuenta como local: no hay aviso, aunque el modelo se ejecute en la nube de Ollama.
 
 **Límites.**
 
