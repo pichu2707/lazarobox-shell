@@ -123,6 +123,13 @@ baseline.
   type (`day_usd = 0.125`) is shown as it is and kept unless you change it. A
   key that cannot be typed shows a footer notice. When the first status read of
   the day finds a day limit already reached, its note shows at startup.
+- Usage charts (alpha). `/cost` ends with two text charts of the last 7 days
+  when there are records: `per day` (one glyph per local day from `▁` to `█`
+  scaled to the biggest day, `·` for a day with no known total, ending in
+  `max <N>`) and `per engine` (a bar of up to 20 `█` per engine, or `no data`
+  when it reported no totals). They chart tokens only: a missing count is a
+  gap, never zero, and no dollars are drawn. They wrap like any other line in
+  a narrow pane and are not shown with the history off.
 
 ### Fixed
 

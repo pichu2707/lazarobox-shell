@@ -83,8 +83,8 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 4: Charts (PR 4)
 
-- [ ] 4.1 RED+GREEN `Sparkline`/`BarChart` in `cost.rs` with snapshot tests; narrow-terminal fallback.
-- [ ] 4.2 Docs: README documents the charts; CHANGELOG entry.
+- [x] 4.1 RED+GREEN `Sparkline`/`BarChart` in `cost.rs` with snapshot tests; narrow-terminal fallback.
+- [x] 4.2 Docs: README documents the charts; CHANGELOG entry.
 
 ## Final manual check (real engines)
 
