@@ -683,23 +683,140 @@ fn never_orch_app() -> App {
 }
 
 // #501: the answer does not depend on whether ORCH was ever on. The store has
-// not been asked yet, so `r r` asks it and says so instead of "none".
+// not been asked yet, so `r r` asks it and says so instead of "none"; the
+// answer completes the key that waited for it.
 #[test]
-fn resume_with_orch_never_on_asks_the_store_and_says_so() {
+fn resume_with_orch_never_on_asks_the_store_and_the_reply_completes_the_key() {
     let mut a = never_orch_app();
     let effects = keys(&mut a, "rr");
     assert_eq!(recovers(&effects), 1);
     let notice = a.notice().expect("a notice, never silence");
     assert!(notice.contains("Looking for interrupted runs"), "{notice}");
-    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
-    // The answer arrives: the same key now says what the user must do.
+    assert!(!notice.contains("again"), "{notice}");
     recovered(&mut a, vec![stored(9, "port the parser")]);
+    assert_eq!(
+        a.notice(),
+        Some("Turn ORCH on in this pane first (Ctrl+O), then resume the run")
+    );
     let again = keys(&mut a, "rr");
     assert_eq!(recovers(&again), 0, "asked once per process");
     assert_eq!(
         a.notice(),
         Some("Turn ORCH on in this pane first (Ctrl+O), then resume the run")
     );
+}
+
+// A second press before the reply asks nothing more and never says "none".
+#[test]
+fn a_double_press_before_the_reply_repeats_the_looking_notice() {
+    let mut a = never_orch_app();
+    assert_eq!(recovers(&keys(&mut a, "rr")), 1);
+    assert_eq!(recovers(&keys(&mut a, "rr")), 0);
+    let notice = a.notice().expect("a notice");
+    assert!(notice.contains("Looking for interrupted runs"), "{notice}");
+}
+
+// The last key pressed while waiting is the one the reply completes.
+#[test]
+fn the_reply_completes_a_pending_discard() {
+    let mut a = interrupted_app_on_demand();
+    keys(&mut a, "rr");
+    keys(&mut a, "rd");
+    let effects = a.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: chat_id(),
+        runs: vec![stored(9, "port the parser")],
+    }));
+    assert_eq!(closes(&effects, 9), 1, "{effects:?}");
+}
+
+/// ORCH on, found interrupted runs only after the key is pressed: the store
+/// was asked by the key, not by the toggle.
+fn interrupted_app_on_demand() -> App {
+    never_orch_app()
+}
+
+// The reply while ORCH is on completes the resume itself.
+#[test]
+fn the_reply_completes_a_pending_resume_with_orch_on() {
+    let mut a = never_orch_app();
+    // Turning ORCH on asks the store; do not answer, press the key instead.
+    toggle(&mut a);
+    assert_eq!(recovers(&keys(&mut a, "rr")), 0);
+    let effects = a.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: chat_id(),
+        runs: vec![stored(9, "port the parser")],
+    }));
+    assert!(turn_of(&effects).is_some(), "{effects:?}");
+}
+
+fn runs_failed() -> AppEvent {
+    AppEvent::Store(StoreReply::RunsFailed {
+        pane: chat_id(),
+        saving: false,
+    })
+}
+
+// A failed read is never read as "none": every first press says it, the next
+// one retries.
+#[test]
+fn after_a_failed_read_a_press_says_so_and_the_next_one_retries() {
+    let mut a = never_orch_app();
+    keys(&mut a, "rr");
+    a.update(runs_failed());
+    assert_eq!(a.notice(), Some("could not read the stored runs"));
+    // The failure was the answer to that press: the next one retries.
+    let retry = keys(&mut a, "rr");
+    assert_eq!(recovers(&retry), 1);
+    assert!(a.notice().is_some_and(|n| n.contains("Looking")));
+    // A second failure, after the pane line was said once, still shows.
+    a.update(runs_failed());
+    assert_eq!(a.notice(), Some("could not read the stored runs"));
+}
+
+#[test]
+fn a_failed_read_with_no_key_waiting_shows_the_notice_on_the_next_press() {
+    let mut a = never_orch_app();
+    toggle(&mut a);
+    a.update(runs_failed());
+    keys(&mut a, "rr");
+    assert_eq!(a.notice(), Some("could not read the stored runs"));
+    assert_eq!(recovers(&keys(&mut a, "rr")), 1, "the next press retries");
+}
+
+// A store that never answers is a failed read after ten seconds.
+#[test]
+fn a_store_that_never_answers_ends_as_a_failed_read() {
+    let mut a = never_orch_app();
+    keys(&mut a, "rr");
+    NOW_MS.with(|n| n.set(n.get() + 11_000));
+    keys(&mut a, "rr");
+    assert_eq!(a.notice(), Some("interrupted runs could not be read"));
+    assert_ne!(a.notice(), Some("No interrupted run to resume or discard"));
+}
+
+// The pane that asked closed before the reply: nothing breaks, the list is
+// known afterwards.
+#[test]
+fn a_reply_after_the_pane_closed_is_harmless() {
+    let mut a = never_orch_app();
+    keys(&mut a, "rr");
+    let mut ids = crate::core::layout::PaneIds::default();
+    let gone = (0..50).map(|_| ids.alloc()).last().unwrap();
+    let effects = a.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: gone,
+        runs: vec![stored(9, "port the parser")],
+    }));
+    assert!(effects.is_empty());
+    assert!(a.notice().is_none_or(|n| !n.contains("Looking")));
+}
+
+// The Looking notice does not outlive the answer.
+#[test]
+fn the_looking_notice_is_replaced_when_the_reply_arrives() {
+    let mut a = never_orch_app();
+    keys(&mut a, "rr");
+    recovered(&mut a, Vec::new());
+    assert_eq!(a.notice(), Some("No interrupted run to resume or discard"));
 }
 
 #[test]

@@ -2031,7 +2031,7 @@ impl App {
             AppEvent::Store(reply) => {
                 let mut effects = self.on_history_reply(&reply);
                 effects.extend(self.on_store_reply(&reply));
-                self.on_runs_reply(&reply);
+                effects.extend(self.on_runs_reply(&reply));
                 effects
             }
             // What was just installed is not news any more.
