@@ -928,7 +928,7 @@ This amends level 1 of the Task picker. An available engine that chat has no ada
 - THEN it reads `detected · not in chat yet · not selectable`
 
 ### Requirement: Stopped servers in the picker
-This amends level 1 and level 2 of the Task picker. Level 1 MUST list, after the available engines and before the assigned engines that are not detected, every server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) whose binary is on PATH but that did not answer on its port, in catalog order, with the status text `not running`, selectable. Such an engine is listed once, even when a task has it assigned. Level 2 of that engine MUST show, after its assigned models (disabled), a note instead of `engine not detected`: `<id> not running on 127.0.0.1:<port> · start it, then press r: <command>`, where `<port>` is the port detection used (see configuration, Server ports) and `<command>` starts that server on that port on `127.0.0.1`: `ollama serve` (or `OLLAMA_HOST=127.0.0.1:<port> ollama serve` off its default port), `lms server start --port <port>`, `llama-server --port <port> -m <model.gguf>`, `vllm serve <model> --host 127.0.0.1 --port <port>`. The note follows the copyable-note rules (wrapped, not selectable, Enter or `y` copies the whole text). lazarobox never runs that command. With the cursor on one of its saved models (disabled), the footer reads `not running · not selectable`. A server that is not installed keeps `engine not detected`.
+This amends level 1 and level 2 of the Task picker. Level 1 MUST list, after the available engines and before the assigned engines that are not detected, every server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) whose binary is on PATH but that did not answer on its port, in catalog order, with the status text `not running`, selectable. Such an engine is listed once, even when a task has it assigned. Level 2 of that engine MUST show, after its assigned models (disabled), a note instead of `engine not detected`: `<id> not running on 127.0.0.1:<port> · start it, then press r: <command>`, where `<port>` is the port detection used (see configuration, Server ports) and `<command>` starts that server on that port on `127.0.0.1`: `ollama serve` (or `OLLAMA_HOST=127.0.0.1:<port> ollama serve` off its default port), `lms server start --port <port>`, `llama-server --port <port> -m <model.gguf>`, `vllm serve <model> --host 127.0.0.1 --port <port>`. The note follows the copyable-note rules (wrapped, not selectable, Enter or `y` copies the whole text). lazarobox never runs that command. With the cursor on one of its saved models (disabled), the footer reads `not running · not selectable`. A server that is not installed keeps `engine not detected`. Exception, llamacpp with something to start (its binary is on PATH and it did not answer, or it is managed): level 2 of llamacpp MUST list first the managed `model` (if any), then the detected local models, each once, labeled with the file name and marked `lazarobox starts it`, selectable; a path that is not valid text is left out. After them come the assigned models that are not among those files, selectable only while the server is managed. With no managed model and no local file, the note to start it by hand stays. Choosing a listed file is specified in Choosing a local model manages llama-server.
 
 #### Scenario: A stopped server is listed [auto, TestBackend + insta]
 - GIVEN ollama and llamacpp installed but not answering, lmstudio not installed, claude available
@@ -939,6 +939,11 @@ This amends level 1 and level 2 of the Task picker. Level 1 MUST list, after the
 - GIVEN `[ai.servers.llamacpp] port = 39080`, llamacpp installed but not answering, and chat assigned to `llamacpp` / `qwen`
 - WHEN level 2 of llamacpp opens
 - THEN it shows `qwen` disabled and current (footer `not running · not selectable`), then the note `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`, and Enter on the note copies it
+
+#### Scenario: A local model is offered [auto]
+- GIVEN llamacpp installed but not answering and `/m/a.gguf` found
+- WHEN level 2 of llamacpp opens
+- THEN `a.gguf` is listed, marked `lazarobox starts it`, selectable, and the start-by-hand note is not shown
 
 #### Scenario: A server that is not installed is unchanged [auto]
 - GIVEN llamacpp not installed
@@ -1663,3 +1668,21 @@ Toggles and billing rows cycle with `h`, `l`, Left, Right, Space and Enter (an E
 - GIVEN the menu in Kitty
 - WHEN `Usage line` is turned off and `Turn tokens` set to 1000 and saved, and a chat answers
 - THEN no usage line appears, the turn note `turn used <N> tokens (limit 1000)` appears when exceeded and the file holds `line = false` and `turn_tokens = 1000` under `[ai.usage]`
+
+### Requirement: Choosing a local model manages llama-server
+Choosing one of those models MUST turn the managed llama-server on in the draft with that path. On save the menu MUST write `managed = true` (a boolean) and `model = "<path>"` under `[ai.servers.llamacpp]`, keeping every other key and comment of that table. llamacpp takes port 39281 unless the table has its own `port`. A model of a running llama-server, or choosing the model already managed, writes nothing under `[ai.servers]`. llama-server loads one model, so choosing one MUST also move to it every task whose own assignment is llamacpp with a model lazarobox starts (the managed one or a local file); a task on any other name keeps it. When, before saving, no task (its own or through general) uses the chosen model any more, the draft MUST go back to the managed server and ports the menu opened with, and the save writes nothing under `[ai.servers]`.
+
+#### Scenario: A second local model moves the first one's tasks [auto]
+- GIVEN `/m/a.gguf` and `/m/b.gguf` found and chat on llamacpp › `/m/a.gguf` in the draft
+- WHEN code chooses `b.gguf`
+- THEN chat and code both read `llamacpp › /m/b.gguf` and the managed model is `/m/b.gguf`
+
+#### Scenario: A changed mind saves nothing [auto]
+- GIVEN chat chose `a.gguf`
+- WHEN chat then chooses ollama › llama3:8b and the menu saves
+- THEN nothing is written under `[ai.servers]` and nothing starts
+
+#### Scenario: Save keeps the port [auto]
+- GIVEN `[ai.servers.llamacpp] port = 39080 # mine`
+- WHEN `/m/my model.gguf` is chosen and saved
+- THEN the file has `port = 39080 # mine`, `managed = true` and that `model`, and reads back managed on port 39080
