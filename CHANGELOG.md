@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-02
+
 ### Added
 
 - `list_panes`, a read-only chat tool that tells the model what each pane
@@ -1901,7 +1903,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...v1.0.1
