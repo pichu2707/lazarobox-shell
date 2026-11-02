@@ -852,7 +852,10 @@ mod feedback_is_drawn {
         assert_eq!(a.input(), InputMode::Terminal, "the key group is over");
         let bar = a.status_path(120);
         assert!(bar.contains(needle), "{bar:?}");
-        assert!(!bar.contains("resume interrupted run"), "stale hint: {bar:?}");
+        assert!(
+            !bar.contains("resume interrupted run"),
+            "stale hint: {bar:?}"
+        );
     }
 
     fn quiet(a: &mut App) {

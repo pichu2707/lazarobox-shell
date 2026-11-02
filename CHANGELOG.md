@@ -62,6 +62,10 @@ baseline.
 
 ### Fixed
 
+- `Ctrl+Space r r` and `Ctrl+Space r d` showed nothing when the answer was
+  already known, or when the store answered at once (#501, #527): the notice
+  (`No interrupted run to resume or discard`) was set but the screen was not
+  redrawn, so the `RUN` key hint stayed up. The key now always redraws.
 - `/cost` showed `unknown` for a turn that used several models (gemini's router
   plus its main model, claude's sub-agents). Such a turn is now stored and shown
   as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
