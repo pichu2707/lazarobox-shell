@@ -61,6 +61,7 @@ fn today_row() -> UsageRow {
         cache_read: None,
         cache_hit: None,
         cache_base: None,
+        cache_gap: 0,
         cost_micros: Some(4_936),
         total: Some(6),
         partial: false,

@@ -165,6 +165,7 @@ fn with_charts() -> Vec<String> {
         cache_read: None,
         cache_hit: None,
         cache_base: None,
+        cache_gap: 0,
         cost_micros: None,
         total,
         partial: false,
@@ -214,4 +215,37 @@ fn the_chart_lines_are_not_taken_for_this_chat() {
         .position(|(row, _)| row.starts_with("per day"))
         .expect("charts shown");
     assert!(rows[charts..].iter().all(|(_, mine)| !mine));
+}
+
+#[test]
+fn snapshot_a_narrow_pane_wraps_a_long_cache_line_and_keeps_partial() {
+    use crate::core::ai::chat::usage_view::{Session, UsageRow, report_lines};
+    let row = |engine: &str, hit, gap| UsageRow {
+        engine: engine.into(),
+        model: Some("m".into()),
+        turns: 1,
+        records: 1,
+        input: Some(10),
+        output: Some(5),
+        cache_read: Some(hit),
+        cache_hit: Some(hit),
+        cache_base: Some(100),
+        cache_gap: gap,
+        total: Some(15),
+        ..UsageRow::default()
+    };
+    let rows = [
+        row("claude", 91, 0),
+        row("codex", 79, 1),
+        row("gemini", 40, 0),
+        row("llamacpp", 5, 0),
+        row("ollama-cloud", 12, 0),
+    ];
+    let billing = |_: &str| None;
+    let mut lines = report_lines(&rows, &Session::default(), &billing);
+    lines.retain(|l| l.starts_with("cache") || l.starts_with("AI usage"));
+    let chat = chat_with(CostView::with(lines));
+    let shown = text(&draw(&chat, 30, 14));
+    assert!(shown.contains("partial"), "{shown}");
+    insta::assert_snapshot!(shown);
 }

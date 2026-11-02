@@ -520,3 +520,15 @@ fn more_than_one_model_is_flagged_and_gets_no_model_name() {
     let got = usage_of(&whole(&result_with(stats))).expect("usage");
     assert_eq!((got.model.clone(), got.multi_model), (None, true));
 }
+
+#[test]
+fn input_100_with_80_cached_is_stored_disjoint_and_is_an_80_percent_share() {
+    let stats = r#"{"input_tokens":100,"output_tokens":1,"cached":80}"#;
+    let got = usage_of(&whole(&result_with(stats))).expect("usage");
+    assert_eq!(
+        (got.input, got.cache_read, got.cache_write),
+        (Some(20), Some(80), None)
+    );
+    let (i, r) = (got.input.unwrap(), got.cache_read.unwrap());
+    assert_eq!(r * 100 / (i + r), 80);
+}

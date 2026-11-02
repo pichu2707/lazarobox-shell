@@ -20,6 +20,7 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
         cache_read: None,
         cache_hit: None,
         cache_base: None,
+        cache_gap: 0,
         cost_micros: None,
         total: Some(120),
         partial: false,
@@ -699,7 +700,35 @@ fn a_reported_zero_hit_is_shown_as_zero_and_days_are_summed() {
 #[test]
 fn an_incomplete_record_marks_the_cache_line_partial() {
     let mut r = cached("claude", Some(1), Some(4));
-    r.partial = true;
+    r.cache_gap = 1;
     let lines = before_charts(view(&[r]));
     assert!(lines.contains(&"cache today: claude 25% · partial".to_owned()));
+}
+
+#[test]
+fn a_row_mixing_records_with_and_without_cache_is_partial() {
+    // 1 record with a cache report, 2 without.
+    let mut r = cached("claude", Some(90), Some(100));
+    r.cache_gap = 2;
+    let lines = before_charts(view(&[r]));
+    assert!(lines.contains(&"cache today: claude 90% · partial".to_owned()));
+    assert!(lines.contains(&"cache last 7 days: claude 90% · partial".to_owned()));
+}
+
+#[test]
+fn a_day_without_cache_data_marks_the_window_partial() {
+    let mut old = cached("codex", None, None);
+    old.days_ago = 2;
+    old.cache_gap = 1;
+    let lines = before_charts(view(&[old, cached("codex", Some(50), Some(100))]));
+    assert!(lines.contains(&"cache last 7 days: codex 50% · partial".to_owned()));
+    assert!(lines.contains(&"cache today: codex 50%".to_owned()));
+}
+
+#[test]
+fn an_incomplete_output_alone_does_not_mark_the_cache_partial() {
+    let mut r = cached("claude", Some(90), Some(100));
+    r.partial = true;
+    let lines = before_charts(view(&[r]));
+    assert!(lines.contains(&"cache today: claude 90%".to_owned()));
 }

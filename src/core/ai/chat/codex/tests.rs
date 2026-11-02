@@ -496,3 +496,15 @@ fn a_text_only_turn_refuses_our_mcp_tool_call_too() {
         assert_eq!(whole(&ours(event)), [failed(TOOL_REFUSED)], "{event}");
     }
 }
+
+#[test]
+fn input_100_with_80_cached_is_stored_disjoint_and_is_an_80_percent_share() {
+    let line = completed_with(r#"{"input_tokens":100,"cached_input_tokens":80,"output_tokens":1}"#);
+    let got = usage_of(&whole(&line)).expect("usage");
+    assert_eq!(
+        (got.input, got.cache_read, got.cache_write),
+        (Some(20), Some(80), None)
+    );
+    let (i, r) = (got.input.unwrap(), got.cache_read.unwrap());
+    assert_eq!(r * 100 / (i + r), 80);
+}

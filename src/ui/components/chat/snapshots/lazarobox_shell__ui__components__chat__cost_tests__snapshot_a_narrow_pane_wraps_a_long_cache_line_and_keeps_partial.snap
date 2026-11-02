@@ -1,0 +1,19 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+assertion_line: 250
+expression: shown
+---
+AI usage (alpha)
+cache today: claude 91% ·
+codex 79% · gemini 40% ·
+llamacpp 5% · ollama-cloud 12%
+· partial
+cache last 7 days: claude 91%
+· codex 79% · gemini 40% ·
+llamacpp 5% · ollama-cloud 12%
+· partial
+
+
+
+
+Esc close · ↑↓ scroll
