@@ -47,6 +47,11 @@ While the focused pane is a chat pane and the `ai.usage.statusline` setting is o
 - WHEN rendered at each width
 - THEN nothing panics, the usage segment disappears before the memory segment, before the engine text is shortened and before any indicator part is dropped, and no part is cut in the middle
 
+#### Scenario: Workers count [auto]
+- GIVEN a displayed total of 1000 tokens
+- WHEN a worker record of 300 tokens is stored
+- THEN the next frame after the store answers shows 1300
+
 #### Scenario: Refresh after a turn [auto]
 - GIVEN a displayed total of 1000 tokens
 - WHEN a turn of 200 tokens is stored

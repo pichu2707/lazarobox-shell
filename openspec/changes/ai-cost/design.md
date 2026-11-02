@@ -22,6 +22,7 @@ Approach A from the proposal, bound by `sdd/ai-cost/premises`. Each decoder read
 | D12 | Interpretation | store billing mode per row / current config | Rows hold facts and config interprets them, so fixing a wrong mode also fixes past rows | **Current config**. `per-token` shows "spent", `subscription` shows "list-price equivalent". Local engines never show dollars |
 | D13 | Status data | poll / reply-driven | Polling wastes work | After each insert the worker answers `UsageRecorded { day, today }`. The status segment and the day threshold read that reply |
 | D14 | Charts | ratatui `Sparkline`/`BarChart` / plain text lines | The spec asks for plain system lines with exact glyphs and no new widget; text wraps with the other lines at any width | **Plain-text `chart_lines` in `usage_view.rs`**, appended to the report; a ` *` marks a figure that includes a partial or unknown record |
+| D15 | Worker usage | per-event rows / one merged row per worker turn; store from the runtime / through the app | The pane already owns history, the off switch and the failed-write notice | `drive` folds the `Usage` events of a worker turn (as `ChatState` does) and sends one `OrchestraEvent::Usage` per turn, flushed `partial` when the turn fails, is cancelled or is cut. The app adds it to the pane's usage outbox as role `worker`, so history off, the conversation link and `Usage not saved` need no new path. The store folds `role = 'worker'` rows into three extra `UsageRow` figures for the `of which workers` line. The coordinator's line is labelled in `ChatState::usage_line_for`. Per-worker and per-run breakdowns are out of scope. |
 
 ## Data Flow
 
@@ -53,7 +54,7 @@ CREATE TABLE IF NOT EXISTS turn_usage (id INTEGER PRIMARY KEY,
 -- indices: (ts), (engine, ts), (conversation_id)
 ```
 
-`role` takes `chat`, `compaction` or `summary`. `worker` is reserved for #435. The table holds no message text. Engine and model ids are identifiers, not message content.
+`role` takes `chat`, `compaction`, `summary` or `worker`. A `worker` row also holds `worker` (`<run>.<worker>`, identifiers only) and is written from the run manager (D15). The table holds no message text. Engine and model ids are identifiers, not message content.
 
 Config (`[ai.usage]`): `answer_line = true` and `status = true`. Thresholds are `turn_tokens` (int), `day_tokens` (int) and `day_usd` (float, compared with **spend** only). An absent threshold means off. `[ai.usage.billing]` defaults `claude`, `codex` and `gemini` to `"subscription"`. A key for a local engine is reported as a config problem. The menu owns the toggles and billing. Thresholds are set in the config file (a menu entry is a follow-up).
 

@@ -14,7 +14,7 @@ Every engine stream already reports usage (tokens, cache, timings; claude also d
 - Per-engine billing mode: `per-token` (dollars = spend) or `subscription` (tokens + dollars labelled "list-price equivalent").
 - Thresholds: per turn (tokens), per day (tokens or $); empty = off; passive note, never blocks.
 - Charts in `/cost` (sparkline/bars).
-- Optional worker/role key on rows for #435.
+- Worker turns of an orchestrator run recorded as `worker` rows (slice 5): in the totals, charts, status segment and day thresholds, with an `of which workers` line in `/cost`; the coordinator's usage line is labelled.
 
 ### Out of Scope
 - Price tables or computed dollars; dollars only when the engine reports them.
