@@ -1409,6 +1409,8 @@ struct Panes {
     roster: Option<(Roster, Option<PathBuf>)>,
     /// A background refresh of the roster is running.
     roster_busy: Arc<AtomicBool>,
+    /// Turns the facts of a pane into its line; a test swaps in a slow one.
+    roster_line: RosterLine,
 }
 
 impl Panes {
@@ -1448,6 +1450,7 @@ impl Panes {
             installer: None,
             roster: None,
             roster_busy: Arc::new(AtomicBool::new(false)),
+            roster_line: panes::line,
         }
     }
 
@@ -1475,7 +1478,8 @@ impl Panes {
     #[cfg(test)]
     fn refresh_roster(&self, focused: PaneId) {
         if let Some((roster, home)) = &self.roster {
-            publish_roster(roster, home.as_deref(), self.roster_facts(focused));
+            let facts = self.roster_facts(focused);
+            publish_roster(roster, home.as_deref(), facts, self.roster_line);
         }
     }
 
@@ -1489,9 +1493,10 @@ impl Panes {
             return;
         }
         let (roster, home, busy) = (roster.clone(), home.clone(), self.roster_busy.clone());
+        let line = self.roster_line;
         let facts = self.roster_facts(focused);
         tokio::task::spawn_blocking(move || {
-            publish_roster(&roster, home.as_deref(), facts);
+            publish_roster(&roster, home.as_deref(), facts, line);
             busy.store(false, Ordering::Release);
         });
     }
@@ -2217,9 +2222,11 @@ fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
 /// Stores one already-redacted line per pane, the focused one first and then
 /// in pane order: the raw argv never leaves this function. Looks files up on
 /// disk, so it runs off the UI loop.
-fn publish_roster(roster: &Roster, home: Option<&Path>, mut facts: Vec<Facts>) {
+type RosterLine = fn(&Facts, Option<&Path>) -> String;
+
+fn publish_roster(roster: &Roster, home: Option<&Path>, mut facts: Vec<Facts>, line: RosterLine) {
     facts.sort_by_key(|f| (!f.focused, f.number));
-    roster.set(facts.iter().map(|f| panes::line(f, home)).collect());
+    roster.set(facts.iter().map(|f| line(f, home)).collect());
 }
 
 /// The child's current working directory as an event, read from
@@ -4052,6 +4059,52 @@ mod tests {
         panes.roster_busy.store(false, Ordering::Release);
         panes.refresh_roster_in_background(id(1));
         for _ in 0..100 {
+            if !roster.lines().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(roster.lines().len(), 1);
+    }
+
+    /// Open when the slow lookup may finish.
+    static LOOKUP_GATE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+        (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+    /// A lookup that hangs (a stalled mount) until the gate opens, or 2 s.
+    fn stalled_line(facts: &Facts, home: Option<&Path>) -> String {
+        let (lock, cvar) = &LOOKUP_GATE;
+        let open = lock.lock().unwrap();
+        drop(cvar.wait_timeout_while(open, Duration::from_secs(2), |open| !*open));
+        panes::line(facts, home)
+    }
+
+    // W3b: a lookup that blocks must not stall the loop. The refresh returns
+    // at once and a concurrent timer still fires while the lookup hangs; the
+    // lines arrive when it ends.
+    #[tokio::test]
+    async fn a_blocked_lookup_does_not_stall_the_loop() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.roster_line = stalled_line;
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        *LOOKUP_GATE.0.lock().unwrap() = false;
+        let started = Instant::now();
+        panes.refresh_roster_in_background(id(1));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the loop was blocked for {:?}",
+            started.elapsed()
+        );
+        assert!(
+            roster.lines().is_empty(),
+            "published before the lookup ended"
+        );
+        *LOOKUP_GATE.0.lock().unwrap() = true;
+        LOOKUP_GATE.1.notify_all();
+        for _ in 0..200 {
             if !roster.lines().is_empty() {
                 break;
             }
