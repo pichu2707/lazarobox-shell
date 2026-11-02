@@ -84,3 +84,22 @@ async fn list_panes_is_refused_without_the_pane_family() {
     let out = host.dispatch(turn).call(Call::ListPanes).await;
     assert!(out.is_error && !out.text.contains("nvim"), "{out:?}");
 }
+
+// A roster that has not been refreshed for a while says so, in the text the
+// user approves and the model gets.
+#[tokio::test]
+async fn a_stale_roster_adds_its_age_to_the_ask_and_the_result() {
+    let (_dir, home, host) = fixture();
+    host.roster().set(lines());
+    host.roster().backdate(Duration::from_secs(30));
+    let (mut turn, _rx) = scope(Locality::Cloud, &home);
+    let asks = Scripted::new(Decision::Sent);
+    turn.approver = asks.clone();
+    let out = host.dispatch(turn).call(Call::ListPanes).await;
+    let asked = asks.asked.lock().unwrap().clone();
+    let [ApprovalAsk::Panes { text }] = asked.as_slice() else {
+        panic!("{asked:?}");
+    };
+    assert!(text.contains("s old; a lookup may be stuck)"), "{text}");
+    assert!(out.text.contains(text.as_str()), "{out:?}");
+}

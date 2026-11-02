@@ -707,7 +707,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // The text is rendered once: what the user reads is what is sent.
             // A local engine keeps it on the machine and is not asked.
             (Call::ListPanes, locality, _) => {
-                let text = panes::render(&host.roster.lines());
+                let text = panes::render_aged(&host.roster.lines(), host.roster.age());
                 ask = ask_for(valid, locality).map(|_| ApprovalAsk::Panes { text: text.clone() });
                 listed = Some(text);
             }

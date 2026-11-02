@@ -10,6 +10,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use crate::core::ai::{
@@ -31,6 +32,8 @@ pub const CMDLINE_CAP: usize = 8192;
 const MAX_STATS: usize = 16;
 /// The most rows the approval prompt shows of a command.
 const PROMPT_ROWS: usize = 6;
+/// A roster older than this says so in the text.
+const STALE: Duration = Duration::from_secs(10);
 /// What stands for every argument that is not known to be harmless.
 const HIDDEN: &str = "…";
 
@@ -55,18 +58,29 @@ pub struct Facts {
 /// The last reading of the panes: one already-redacted line each. Written by
 /// the runtime on its poll, read by the tool host. Raw argv never gets here.
 #[derive(Clone, Default)]
-pub struct Roster(Arc<Mutex<Vec<String>>>);
+pub struct Roster(Arc<Mutex<(Vec<String>, Option<Instant>)>>);
 
 impl Roster {
     pub fn set(&self, lines: Vec<String>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = lines;
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (lines, Some(Instant::now()));
     }
 
     pub fn lines(&self) -> Vec<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        held.0.clone()
+    }
+
+    /// How long ago the lines were set; `None` before the first reading.
+    pub fn age(&self) -> Option<Duration> {
+        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        held.1.map(|at| at.elapsed())
+    }
+
+    /// Makes the lines look `by` older (tests).
+    #[cfg(test)]
+    pub fn backdate(&self, by: Duration) {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        held.1 = held.1.and_then(|at| at.checked_sub(by));
     }
 }
 
@@ -239,9 +253,22 @@ pub fn line(facts: &Facts, home: Option<&Path>) -> String {
 /// the approval prompt at [`PROMPT_COLS`] columns, shortening lines and then
 /// leaving panes out (`+N more`) as needed, so the ask stays answerable.
 pub fn render(lines: &[String]) -> String {
+    render_aged(lines, None)
+}
+
+/// [`render`] for a roster set `age` ago: past ten seconds a last line says
+/// so, because the refresh may be stuck. The line counts for the prompt's
+/// rows like the rest.
+pub fn render_aged(lines: &[String], age: Option<Duration>) -> String {
     if lines.is_empty() {
         return "no panes".to_owned();
     }
+    let note = age.filter(|age| *age > STALE).map(|age| {
+        format!(
+            "(pane list is {}s old; a lookup may be stuck)",
+            age.as_secs()
+        )
+    });
     let mut shown: Vec<String> = Vec::new();
     for (i, pane) in lines.iter().enumerate().take(MAX_PANES) {
         let tail = (i + 1 < lines.len()).then(|| format!("+{} more", lines.len() - i - 1));
@@ -250,7 +277,7 @@ pub fn render(lines: &[String]) -> String {
             let text = [
                 shown.clone(),
                 vec![cand.clone()],
-                tail.clone().into_iter().collect(),
+                tail.iter().chain(&note).cloned().collect(),
             ]
             .concat();
             if command_rows(&text.join("\n"), PROMPT_COLS).len() <= PROMPT_ROWS {
@@ -270,6 +297,7 @@ pub fn render(lines: &[String]) -> String {
     if shown.len() < lines.len() {
         shown.push(format!("+{} more", lines.len() - shown.len()));
     }
+    shown.extend(note);
     shown.join("\n")
 }
 

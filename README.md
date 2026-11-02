@@ -1072,7 +1072,7 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 - Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pgid>/cmdline` y `/proc/<pgid>/cwd`.
 - macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
-- La lista se actualiza cada segundo, así que puede ir un instante por detrás.
+- La lista se actualiza cada segundo, así que puede ir un instante por detrás. La lectura de `/proc` y las comprobaciones de archivos se hacen fuera del bucle de la interfaz; si la lista tiene más de 10 s, el texto añade `(pane list is Ns old; a lookup may be stuck)`.
 - No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
 
 ### Tools with Ollama
