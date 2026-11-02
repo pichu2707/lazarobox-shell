@@ -5,7 +5,9 @@ use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
     cost_view::READING_LINE,
+    engine::StreamEvent,
     store::{StoreCmd, StoreReply},
+    usage::TurnUsage,
     usage_view::{HEADER, UNAVAILABLE_LINE, UsageRow},
 };
 use crate::core::ai::config::{AiConfig, Assignment, Task};
@@ -273,36 +275,81 @@ fn gemini_chat() -> App {
     a
 }
 
-fn pair_line(a: &App, engine: &str) -> String {
-    view_lines(a)
-        .into_iter()
-        .find(|l| l.starts_with(&format!("  {engine} › ")))
-        .expect("a pair line")
-}
-
 #[test]
-fn a_row_without_a_model_wears_the_label_the_status_bar_shows() {
+fn a_mixed_row_is_shown_as_mixed_and_a_null_one_as_unknown() {
     let mut a = gemini_chat();
-    assert_eq!(a.status_right(), "gemini › default");
     ask(&mut a, "/cost");
-    a.update(answer(Some(vec![gemini_row(None)])));
+    let mut claude = gemini_row(Some("mixed"));
+    claude.engine = "claude".into();
+    a.update(answer(Some(vec![
+        gemini_row(Some("mixed")),
+        claude,
+        gemini_row(None),
+    ])));
+    let pairs: Vec<String> = view_lines(&a)
+        .into_iter()
+        .filter(|l| l.starts_with("  gemini › ") || l.starts_with("  claude › "))
+        .collect();
     assert!(
-        pair_line(&a, "gemini").starts_with("  gemini › default: "),
-        "{:?}",
-        view_lines(&a)
+        pairs.iter().any(|l| l.starts_with("  gemini › mixed: ")),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.iter().any(|l| l.starts_with("  claude › mixed: ")),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.iter().any(|l| l.starts_with("  gemini › unknown: ")),
+        "{pairs:?}"
     );
 }
 
 #[test]
-fn a_reported_model_and_other_engines_keep_their_own_label() {
+fn the_chat_config_never_relabels_a_stored_row() {
     let mut a = gemini_chat();
+    assert_eq!(a.status_right(), "gemini › default");
     ask(&mut a, "/cost");
-    let mut other = gemini_row(None);
-    other.engine = "codex".into();
+    let mut worker = gemini_row(None);
+    worker.workers = 1;
     a.update(answer(Some(vec![
+        worker,
         gemini_row(Some("gemini-2.5-pro")),
-        other,
     ])));
-    assert!(pair_line(&a, "gemini").starts_with("  gemini › gemini-2.5-pro: "));
-    assert!(pair_line(&a, "codex").starts_with("  codex › unknown: "));
+    let lines = view_lines(&a);
+    assert!(
+        lines.iter().any(|l| l.starts_with("  gemini › unknown: ")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("  gemini › gemini-2.5-pro: ")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("› default")), "{lines:?}");
+}
+
+#[test]
+fn a_real_turn_with_history_on_shows_this_session_under_the_stored_report() {
+    let mut a = conversation();
+    let turn = sent_turn(&ask(&mut a, "hi"));
+    a.update(delta(chat_id(), turn, "answer"));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::usage(TurnUsage {
+            input: Some(10),
+            output: Some(5),
+            model: Some("llama3".into()),
+            ..TurnUsage::default()
+        }),
+    ));
+    a.update(finish(chat_id(), turn));
+    ask(&mut a, "/cost");
+    a.update(answer(Some(vec![today_row()])));
+    let lines = view_lines(&a);
+    assert!(
+        lines.contains(&"this session: 15 tokens · 1 turns".to_owned()),
+        "{lines:?}"
+    );
 }

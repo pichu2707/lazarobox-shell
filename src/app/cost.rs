@@ -63,31 +63,8 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
-        // The model the status bar names for the chat engine, for the rows
-        // whose engine reported none (the bar and `/cost` must agree).
-        let (assignment, _) = self.ai.resolve(Task::Chat);
-        let configured = assignment.model.filter(|m| !m.is_empty());
         let lines = match rows {
-            Some(rows) => {
-                let named: Vec<UsageRow> = rows
-                    .iter()
-                    .map(|r| match &configured {
-                        Some(model)
-                            if r.model.is_none()
-                                && assignment.engine.as_deref() == Some(r.engine.as_str()) =>
-                        {
-                            UsageRow {
-                                model: Some(model.clone()),
-                                ..r.clone()
-                            }
-                        }
-                        _ => r.clone(),
-                    })
-                    .collect();
-                report_lines(&named, chat.session_usage(), &|e| {
-                    self.ai.usage().billing(e)
-                })
-            }
+            Some(rows) => report_lines(rows, chat.session_usage(), &|e| self.ai.usage().billing(e)),
             None => vec![UNAVAILABLE_LINE.to_owned()],
         };
         if let Some(view) = chat.cost_mut() {

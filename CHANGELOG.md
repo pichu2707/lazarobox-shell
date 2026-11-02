@@ -10,11 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- `/cost` no longer describes a chat-history-off view: chat history is always
+  on, and an unreadable `chat.db` shows `usage history is not available`.
+
 ### Fixed
 
-- `/cost` named a pair `unknown` when the engine reported no model, while the
-  status bar showed the configured one (`gemini › default`). The chat engine's
-  pair now uses the status bar's model.
+- `/cost` showed `unknown` for a turn that used several models (gemini's router
+  plus its main model, claude's sub-agents). Such a turn is now stored and shown
+  as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
 
 ## [1.2.0] - 2026-11-02
 

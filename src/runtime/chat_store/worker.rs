@@ -553,6 +553,9 @@ fn count_of(n: Option<u64>) -> Option<i64> {
 /// have both; `None` when there are none) and the dollars per engine.
 type DayFigures = (Option<u64>, Vec<(String, u64)>);
 
+/// The model stored for a run that used several.
+const MIXED_MODEL: &str = "mixed";
+
 /// Stores one usage row, prunes, and returns today's figures (empty when that
 /// read failed: the row is stored all the same) plus the reason a prune
 /// failed, if it did (the row is kept then).
@@ -564,6 +567,12 @@ fn record_usage(
 ) -> Result<(DayRead, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
+    // A run that used several models names none of them: it is stored as
+    // `mixed`, so `/cost` can tell it from a model nobody reported (NULL).
+    let model = match (&usage.model, usage.multi_model) {
+        (None, true) => Some(MIXED_MODEL),
+        (model, _) => model.as_deref(),
+    };
     // The subselect leaves the link NULL for a conversation that is gone.
     conn.execute(
         "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
@@ -574,7 +583,7 @@ fn record_usage(
             at,
             conversation,
             engine,
-            usage.model,
+            model,
             role,
             count_of(usage.input),
             count_of(usage.output),
