@@ -47,6 +47,7 @@ use super::{
         fs::load_roots,
     },
 };
+use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
         chat::{
@@ -60,6 +61,7 @@ use crate::core::{
             },
             guidance::guidance,
             jail_error,
+            stream::ERROR_CAP,
             usage::{SideRun, TurnUsage},
         },
         config::{Profile, Task},
@@ -1100,8 +1102,16 @@ impl RunManager {
             };
             self.sync(pane, live);
             let status = live.run.status(id).unwrap_or(WorkerStatus::Refused);
+            let mut text = format!("worker {}: {}", id.0, status.label());
+            // A refusal says why, so the coordinator can tell the user.
+            if status == WorkerStatus::Refused {
+                let why = (live.run.result(id)).and_then(|r| r.error.as_ref());
+                if let Some((_, reason)) = why {
+                    text = format!("{text}: {}", refusal_reason(reason));
+                }
+            }
             Outcome {
-                text: format!("worker {}: {}", id.0, status.label()),
+                text,
                 is_error: status == WorkerStatus::Refused,
             }
         });
@@ -1941,6 +1951,14 @@ fn nonce_bytes() -> Option<[u8; 8]> {
         .and_then(|mut file| file.read_exact(&mut bytes))
         .ok()?;
     Some(bytes)
+}
+
+/// A refusal's reason as the coordinator gets it: one line, sanitized, with
+/// any token redacted and at most `ERROR_CAP` characters, like an engine's
+/// error text.
+fn refusal_reason(reason: &str) -> String {
+    let flat = clean(reason).split_whitespace().collect::<Vec<_>>().join(" ");
+    redact_tokens(&flat).chars().take(ERROR_CAP).collect()
 }
 
 fn ids_text(ids: &[WorkerId]) -> String {

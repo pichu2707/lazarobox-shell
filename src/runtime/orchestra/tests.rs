@@ -800,7 +800,8 @@ async fn without_a_jail_a_gemini_worker_is_refused_and_nothing_starts() {
     let mut lab = lab_with(Script::Answer("x"), tooled);
     let (run, handle) = lab.start(roster);
     let spawned = handle.call(spawn(Task::Review, "check")).await;
-    assert_eq!(spawned, error("worker 1: refused"));
+    // The coordinator gets the reason too, not only the status.
+    assert_eq!(spawned, error(format!("worker 1: refused: {reason}")));
     assert!(lab.seen.requests().is_empty(), "no engine contacted");
     let events = lab.sent();
     assert_eq!(status_of(&events[0]), Some(WorkerStatus::Refused));
@@ -827,7 +828,14 @@ async fn a_worker_on_a_model_not_downloaded_is_refused_naming_it() {
     let mut lab = lab(Script::Answer("x"));
     let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
     let spawned = handle.call(spawn(Task::Code, "write it")).await;
-    assert_eq!(spawned, error("worker 1: refused"));
+    assert!(spawned.is_error);
+    assert!(
+        spawned.text.starts_with("worker 1: refused: ")
+            && spawned.text.contains("llama3:70b")
+            && spawned.text.contains("download required"),
+        "{}",
+        spawned.text
+    );
     assert!(lab.seen.requests().is_empty());
     let events = lab.sent();
     let Some(OrchestraEvent::Halted { text, .. }) = events.last() else {
@@ -5234,4 +5242,17 @@ async fn a_cancelled_runs_buffered_text_comes_before_ended() {
         .position(|e| matches!(e, OrchestraEvent::Ended { .. }))
         .expect("ended");
     assert!(text_at < ended_at, "{events:?}");
+}
+
+// The reason is bounded and redacted like any error text: a token in it never
+// reaches the coordinator, and a long one is cut.
+#[test]
+fn a_refusal_reason_is_one_redacted_bounded_line() {
+    let text = refusal_reason(&format!(
+        "no jail:\nsk-ant-api03-{} {}",
+        "a".repeat(40),
+        "x".repeat(1_000)
+    ));
+    assert!(!text.contains('\n') && !text.contains("sk-ant-api03"), "{text}");
+    assert!(text.chars().count() <= 200, "{}", text.chars().count());
 }
