@@ -127,3 +127,16 @@ Hardening details (design, Git section): hooks run only from the repo's own `.gi
 - GIVEN an open commit review
 - WHEN `n` or a cancel ends it
 - THEN the result is `denied` and no commit exists
+
+### Requirement: Git root follows the chat folder
+Git verbs MUST run in the chat folder at the moment of the call. After a folder change the verbs act on the repository of the new folder; a folder that is not a repository gives the usual not-a-repository result, and `$HOME` or `/` as the folder keeps the existing refusal.
+
+#### Scenario: Status in the new repository [auto]
+- GIVEN repositories `/w/a` and `/w/b` and a folder change from `/w/a` to `/w/b`
+- WHEN the status verb is called
+- THEN the result describes `/w/b`
+
+#### Scenario: Not a repository [auto]
+- GIVEN a change to a directory that is not a repository
+- WHEN the status verb is called
+- THEN the usual not-a-repository result is returned

@@ -65,14 +65,14 @@ Order: A1 -> A2 -> B1 -> B2 sequential; A3 any time before B2. Each PR keeps `ca
 
 ## PR A3: start dir (~290, base `main`, independent)
 
-- [ ] 3.1 RED: `core/start.rs` tests: `--dir X`, `--dir=X`, no value, `~`, relative to cwd, file, missing, precedence flag > config > cwd, invalid `--dir` does not fall to config, notice texts. (~0)
-- [ ] 3.2 GREEN: `core/start.rs` (`parse_args`, `resolve -> StartDir{path, notice}`). (~80)
-- [ ] 3.3 RED: `nesting::guarded_start` with `--dir /a` and `--dir=/a` still guarded. (~0)
-- [ ] 3.4 GREEN: skip the value after `--dir` in `core/nesting.rs`. (~15)
-- [ ] 3.5 RED: `[workspace] dir`: absolute, `~`, empty = unset, relative / non-string / non-table notices, missing folder gives `config: workspace.dir: folder not found`; startup notice from invalid `--dir` shown inside the app, no stderr, no exit. (~0)
-- [ ] 3.6 GREEN: `core/config.rs` `read_workspace` + `Parsed.workspace_dir`; `main.rs` and `runtime.rs::run(start)` feed the start dir as launch cwd (no `chdir`) and surface the notice. (~95)
-- [ ] 3.7 RED: `core/desktop.rs` `plan_install(choice, bin, dir)`: `Path=` and `--dir=<dir>` in `Exec` with a dir, neither without; escaping (`\\`, leading `\s`, control chars refused, spaces kept); `install-desktop --dir /nope` fails with one stderr line and writes nothing; reinstall without `--dir` removes both. (~0)
-- [ ] 3.8 GREEN: `Options::Install{terminal, dir}`, `@PATH@` and `@DIR_ARG@` in `desktop/lazarobox.desktop`, `runtime/desktop.rs` validation. (~100)
+- [x] 3.1 RED: `core/start.rs` tests: `--dir X`, `--dir=X`, no value, `~`, relative to cwd, file, missing, precedence flag > config > cwd, invalid `--dir` does not fall to config, notice texts. (~0)
+- [x] 3.2 GREEN: `core/start.rs` (`parse_args`, `resolve -> StartDir{path, notice}`). (~80)
+- [x] 3.3 RED: `nesting::guarded_start` with `--dir /a` and `--dir=/a` still guarded. (~0)
+- [x] 3.4 GREEN: skip the value after `--dir` in `core/nesting.rs`. (~15)
+- [x] 3.5 RED: `[workspace] dir`: absolute, `~`, empty = unset, relative / non-string / non-table notices, missing folder gives `config: workspace.dir: folder not found`; startup notice from invalid `--dir` shown inside the app, no stderr, no exit. (~0)
+- [x] 3.6 GREEN: `core/config.rs` `read_workspace` + `Parsed.workspace_dir`; `main.rs` and `runtime.rs::run(start)` feed the start dir as launch cwd (no `chdir`) and surface the notice. (~95)
+- [x] 3.7 RED: `core/desktop.rs` `plan_install(choice, bin, dir)`: `Path=` and `--dir=<dir>` in `Exec` with a dir, neither without; escaping (`\\`, leading `\s`, control chars refused, spaces kept); `install-desktop --dir /nope` fails with one stderr line and writes nothing; reinstall without `--dir` removes both. (~0)
+- [x] 3.8 GREEN: `Options::Install{terminal, dir}`, `@PATH@` and `@DIR_ARG@` in `desktop/lazarobox.desktop`, `runtime/desktop.rs` validation. (~100)
 
 ## PR B1: picker core (~330, base `main` after A2)
 

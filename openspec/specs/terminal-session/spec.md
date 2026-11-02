@@ -7,7 +7,8 @@ Lifecycle of the single PTY child: spawn, environment, I/O, resize, exit, shutdo
 ## Requirements
 
 ### Requirement: Shell spawn and environment
-The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the pane's requested cwd (the launch cwd for the first pane), with `TERM=xterm-256color` and `COLORTERM=truecolor`, inheriting the rest of the environment. A chat pane MUST NOT spawn a shell.
+The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the pane's requested cwd (the launch cwd for the first pane), with `TERM=xterm-256color` and `COLORTERM=truecolor`, inheriting the rest of the environment. The launch cwd is the start dir (see start-dir): the `--dir` flag, else `[workspace] dir`, else the process working directory. A chat pane MUST NOT spawn a shell.
+(Previously: the launch cwd was always the process working directory)
 
 #### Scenario: SHELL set [auto]
 - GIVEN `$SHELL=/bin/zsh`
@@ -23,6 +24,16 @@ The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the 
 - GIVEN a chat pane is opened
 - WHEN the effects are computed
 - THEN no SpawnPane effect is emitted
+
+#### Scenario: First pane starts in the start dir [auto]
+- GIVEN a start dir `/w/proj` resolved from `--dir` and a process cwd `/h`
+- WHEN the first shell pane is spawned
+- THEN the spawn request names `/w/proj`
+
+#### Scenario: Start dir from the launcher [manual]
+- GIVEN a launcher installed with `install-desktop --dir /w/proj`
+- WHEN lazarobox is started from it
+- THEN the first shell's `pwd` is `/w/proj`
 
 ### Requirement: Nesting guard
 Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its environment. At startup, when `LAZAROBOX` is set and non-empty and `--force` is absent, the system MUST print one line to stderr, exit with status 1 and NOT enter raw mode or the alternate screen. `--force` MUST skip the check, and is recognised only as a top-level flag. The guard MUST apply only to the plain TUI start: any subcommand (for example the internal `__jail-exec`) MUST NOT be subject to it, and a `--force` after a subcommand is not an override. AI CLI children (scrubbed environment) are not marked.
@@ -206,7 +217,8 @@ Closing a pane MUST NOT block the UI loop: the SIGHUP / grace / SIGKILL teardown
 - THEN the ClosePane effect returns immediately, and the child is gone after the grace period
 
 ### Requirement: Per-pane cwd poll fallback
-The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback for panes that never reported an OSC 7 cwd. The effective cwd of a shell pane MUST be its last valid OSC 7 value if it has ever reported one; otherwise the polled value. Once a pane has reported OSC 7, a poll result MUST NOT override it (the poll may still run). A failed poll MUST keep the last value. Chat panes MUST NOT be polled; their cwd is the fixed origin cwd.
+The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback for panes that never reported an OSC 7 cwd. The effective cwd of a shell pane MUST be its last valid OSC 7 value if it has ever reported one; otherwise the polled value. Once a pane has reported OSC 7, a poll result MUST NOT override it (the poll may still run). A failed poll MUST keep the last value. Chat panes MUST NOT be polled; their cwd is the chat folder, which changes only through the picker or a confirmed `/cd` (see chat-folder), never by polling.
+(Previously: a chat pane's cwd was the fixed origin cwd)
 
 #### Scenario: Fallback for plain shell [auto, unix PTY]
 - GIVEN a pane whose shell never emits OSC 7 and runs `cd /tmp`
@@ -221,25 +233,36 @@ The runtime MUST keep the `/proc` cwd poll (~1 s) per shell pane as a fallback f
 #### Scenario: Chat pane is not polled [auto]
 - GIVEN a chat pane opened from `/a`
 - WHEN a poll cycle runs
-- THEN no poll targets the chat pane and its origin cwd is still `/a`
+- THEN no poll targets the chat pane and its folder is still `/a`
+
+#### Scenario: Chat folder changes only by command [auto]
+- GIVEN a chat pane in `/a` whose confirmed `/cd` set `/b`
+- WHEN a poll cycle runs
+- THEN its folder is `/b`
 
 ### Requirement: Inherited working directory from a chat pane
-When the focused pane is a chat pane, a new pane or tab MUST spawn its shell in the chat's origin cwd, with the same fallback chain as for a shell pane (launch cwd, then an absolute `$HOME`, then `/`, the first that exists).
+When the focused pane is a chat pane, a new pane or tab MUST spawn its shell in the chat's current folder (the folder at the moment of the request, including after a `/cd`), with the same fallback chain as for a shell pane (launch cwd, then an absolute `$HOME`, then `/`, the first that exists). A chat whose folder is unknown (no choice made) uses that fallback chain.
+(Previously: the chat's fixed origin cwd)
 
-#### Scenario: Split from a chat inherits its origin cwd [auto]
-- GIVEN a focused chat pane with origin cwd `/tmp`
+#### Scenario: Split from a chat inherits its folder [auto]
+- GIVEN a focused chat pane with folder `/tmp`
 - WHEN `w v` is pressed
 - THEN the SpawnPane effect names `/tmp`
 
 #### Scenario: New tab from a chat [auto]
-- GIVEN a focused chat pane with origin cwd `/tmp`
+- GIVEN a focused chat pane with folder `/tmp`
 - WHEN `t n` is pressed
 - THEN the SpawnPane effect names `/tmp`
 
-#### Scenario: Vanished origin cwd falls back [auto]
-- GIVEN a focused chat pane whose origin cwd was removed
+#### Scenario: Vanished folder falls back [auto]
+- GIVEN a focused chat pane whose folder was removed
 - WHEN a split is requested
 - THEN the SpawnPane effect names the launch cwd, or an absolute `$HOME`, or `/`
+
+#### Scenario: Follows a `/cd` [auto]
+- GIVEN a focused chat pane whose folder was changed from `/a` to `/b`
+- WHEN `w v` is pressed
+- THEN the SpawnPane effect names `/b`
 
 ### Requirement: Animation tick only while streaming
 The animation of the thinking indicator (see statusline) MUST be driven by a single tick source that runs only while at least one chat stream is running in any pane or tab. With no running stream there MUST be no animation timer firing, no tick event and no redraw caused by the indicator, so an idle app costs no extra wakeups or CPU. The tick rate MUST be bounded to at most 12 ticks per second; the proposed value is 10 per second (a 100 ms period), for design to confirm. Several simultaneous streams MUST share one tick source and never raise the rate. The tick MUST start when the first stream starts and MUST stop within one tick period after the last stream ends by final, error, cut, cancel, pane close, tab close or quit. Each tick advances the animation frame and requests at most one redraw; ticks that were missed because the event loop was busy MUST be skipped, not replayed in a burst. Elapsed time MUST NOT depend on the number of ticks.
