@@ -23,7 +23,7 @@ SUGGESTION
 2. Add a log-capture test, or drop the scenario.
 3. Statusline "Workers count" is covered indirectly (store day-sum test a_worker_row_keeps_its_role_and_worker_id_and_counts_in_the_day) - add a direct app-level scenario test.
 Deviations (accepted, documented): slice 3 refused chars show a notice instead of being ignored; day notes may show on first read of the day; charts are plain text not widgets (spec/design D14 aligned).
-Manual pending: M.1 claude, M.2 codex/gemini, M.3 ollama/llama.cpp, M.4 history off + delete, M.5 real orchestrated run.
+Manual pending: M.1 claude, M.2 codex/gemini, M.3 ollama/llama.cpp, M.4 delete keeps usage, M.5 real orchestrated run.
 
 Engram: sdd/ai-cost/verify-report (#3579), project lazarobox-shell.
 
