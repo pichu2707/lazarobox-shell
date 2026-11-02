@@ -89,11 +89,11 @@ No README or CHANGELOG entry: this slice adds nothing the user can see (the priv
 
 ## Slice 5: Worker usage (PR 5)
 
-- [ ] 5.1 RED+GREEN store: `RecordUsage` carries `worker`; the insert writes the `worker` column; the report query folds `role = 'worker'` rows into `UsageRow` worker figures (records, known total, partial); day figures already sum every role (ai-usage: Worker usage).
-- [ ] 5.2 RED+GREEN `usage_view`: `of which workers: <T>` after `last 7 days`, only with worker records, `no data` and `partial` rules; `usage_line` coordinator label (ai-usage: The `/cost` view; chat-pane: Per-answer usage line).
-- [ ] 5.3 RED+GREEN `runtime/orchestra.rs` `drive`: fold the worker turn's usage into one record, `OrchestraEvent::Usage`, flushed `partial` on failure, cancel or deadline; nothing when the engine reported nothing.
-- [ ] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (history off drops it, the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
-- [ ] 5.5 Docs: README (es) documents worker usage and the coordinator label and drops the "workers are not recorded" wording; CHANGELOG entry (alpha).
+- [x] 5.1 RED+GREEN store: `RecordUsage` carries `worker`; the insert writes the `worker` column; the report query folds `role = 'worker'` rows into `UsageRow` worker figures (records, known total, partial); day figures already sum every role (ai-usage: Worker usage).
+- [x] 5.2 RED+GREEN `usage_view`: `of which workers: <T>` after `last 7 days`, only with worker records, `no data` and `partial` rules; `usage_line` coordinator label (ai-usage: The `/cost` view; chat-pane: Per-answer usage line).
+- [x] 5.3 RED+GREEN `runtime/orchestra.rs` `drive`: fold the worker turn's usage into one record, `OrchestraEvent::Usage`, flushed `partial` on failure, cancel or deadline; nothing when the engine reported nothing.
+- [x] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (history off drops it, the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
+- [x] 5.5 Docs: README (es) documents worker usage and the coordinator label and drops the "workers are not recorded" wording; CHANGELOG entry (alpha).
 
 ## Final manual check (real engines)
 

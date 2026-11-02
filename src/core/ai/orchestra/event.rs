@@ -11,7 +11,10 @@ use super::{
     worker::{ErrorClass, WorkerStatus},
 };
 use crate::core::ai::{
-    chat::engine::{CallId, ToolStatus, Usage},
+    chat::{
+        engine::{CallId, ToolStatus, Usage},
+        usage::TurnUsage,
+    },
     config::Task,
 };
 
@@ -82,6 +85,15 @@ pub enum OrchestraEvent {
     },
     /// A worker's status changed.
     Worker(WorkerRow),
+    /// What one worker turn used, summed over its requests: one record for
+    /// the usage store (`partial` when the turn did not end well). Counts and
+    /// identifiers only.
+    Usage {
+        run: RunId,
+        worker: WorkerId,
+        engine: String,
+        usage: Box<TurnUsage>,
+    },
     /// A worker failed: the run waits for the user. `text` is for the alert
     /// only, sanitized and capped by the pipe.
     Halted {

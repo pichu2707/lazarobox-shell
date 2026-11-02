@@ -188,7 +188,18 @@ impl App {
         let mut over = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
+        // A worker turn's usage waits in the pane for the usage store.
+        let mut usage_saved = false;
         match event {
+            OrchestraEvent::Usage {
+                run,
+                worker,
+                engine,
+                usage,
+            } => {
+                chat.record_worker_usage(WorkerKey { run, worker }, &engine, *usage);
+                usage_saved = true;
+            }
             OrchestraEvent::Worker(mut row) => {
                 let key = WorkerKey {
                     run: row.run,
@@ -342,6 +353,9 @@ impl App {
         }
         self.dirty = true;
         let mut effects = kept;
+        if usage_saved {
+            effects.extend(self.store_effects(id));
+        }
         if let Some((run, item)) = store {
             effects.extend(self.store_item(id, run, item));
         }

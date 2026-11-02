@@ -96,7 +96,7 @@ pub fn today_segment(tokens: Option<u64>, spend_micros: Option<u64>) -> String {
 
 /// The records of one engine and model on one local day, folded by the store
 /// thread (or, for a session, by [`Session`]).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct UsageRow {
     /// Local days before today; 0 is today.
     pub days_ago: u32,
@@ -118,6 +118,13 @@ pub struct UsageRow {
     pub total: Option<u64>,
     /// A record was partial or lacked its input or output.
     pub partial: bool,
+    /// How many of the records are worker turns (they are in every figure
+    /// above, but they are not turns).
+    pub workers: u64,
+    /// Sum of the known totals of the worker records alone.
+    pub worker_total: Option<u64>,
+    /// A worker record was partial or lacked its input or output.
+    pub worker_partial: bool,
 }
 
 /// `Some(a + b)` when either is known: a gap is skipped, not counted as 0.
@@ -149,7 +156,8 @@ impl Session {
     /// The most engine and model pairs kept.
     const CAP: usize = 64;
 
-    /// Folds the usage of one finished run in.
+    /// Folds the usage of one finished run in. Worker usage is folded as a
+    /// side run: the session view has no `of which workers` figures.
     pub fn add(&mut self, engine: &str, run: Run, usage: &TurnUsage) {
         let model = usage.model.clone();
         let total = usage
@@ -178,6 +186,7 @@ impl Session {
                     cost_micros: None,
                     total: None,
                     partial: false,
+                    ..UsageRow::default()
                 });
                 self.rows.last_mut().expect("just pushed")
             }
@@ -230,6 +239,30 @@ fn summary<'a>(rows: impl Iterator<Item = &'a UsageRow>) -> String {
     format!("{} · {turns} turns{mark}", tokens(total))
 }
 
+/// `of which workers: <T>` for the rows picked, `None` without a worker
+/// record. A total nobody reported is `no data`, a cut or incomplete record
+/// marks it `partial`.
+fn workers_line<'a>(rows: impl Iterator<Item = &'a UsageRow>) -> Option<String> {
+    let (records, total, partial) = rows.fold((0u64, None, false), |(n, total, partial), r| {
+        (
+            n + r.workers,
+            add(total, r.worker_total),
+            partial || r.worker_partial,
+        )
+    });
+    let mark = if partial { " · partial" } else { "" };
+    (records > 0).then(|| format!("of which workers: {}{mark}", tokens(total)))
+}
+
+/// A usage line as the coordinator's: while a run is live the line under the
+/// coordinator's answer is not the run's total.
+pub fn coordinator_line(line: String) -> String {
+    match line.strip_prefix("usage:") {
+        Some(rest) => format!("usage (coordinator):{rest}"),
+        None => line,
+    }
+}
+
 /// An engine or model id as one line of plain text.
 fn ident(raw: &str) -> String {
     clean(raw)
@@ -260,6 +293,9 @@ fn pair_lines<'a>(
             cost_micros: None,
             total: None,
             partial: false,
+            workers: 0,
+            worker_total: None,
+            worker_partial: false,
             ..r.clone()
         });
         p.turns += r.turns;
@@ -431,8 +467,9 @@ pub fn report_lines(
             summary(rows.iter().filter(|r| r.days_ago == 0))
         ),
         format!("last 7 days: {}", summary(window())),
-        "by engine and model (last 7 days):".to_owned(),
     ];
+    lines.extend(workers_line(window()));
+    lines.push("by engine and model (last 7 days):".to_owned());
     lines.extend(pair_lines(window(), billing));
     let mut mine = rows.iter().filter(|r| r.in_chat).peekable();
     lines.push(if mine.peek().is_some() {

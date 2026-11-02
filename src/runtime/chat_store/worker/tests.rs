@@ -2250,6 +2250,7 @@ fn record(conversation: Option<i64>, usage: TurnUsage) -> StoreCmd {
         conversation,
         engine: "ollama".into(),
         role: "chat".into(),
+        worker: None,
         usage: Box::new(usage),
     }
 }
@@ -2285,6 +2286,7 @@ fn record_for(engine: &str, usage: TurnUsage) -> StoreCmd {
         conversation: None,
         engine: engine.into(),
         role: "chat".into(),
+        worker: None,
         usage: Box::new(usage),
     }
 }
@@ -2348,6 +2350,7 @@ fn a_row_keeps_its_role_and_flags() {
         conversation: None,
         engine: "claude".into(),
         role: "compaction".into(),
+        worker: None,
         usage: Box::new(usage),
     };
     worker.handle(cmd);
@@ -3121,4 +3124,105 @@ fn the_close_of_a_run_survives_a_long_queue() {
         .query_row("SELECT phase FROM runs WHERE id = 3", [], |r| r.get(0))
         .unwrap();
     assert_eq!(phase, "ended");
+}
+
+// ---- worker usage (ai-cost 5.1) --------------------------------------------
+
+fn worker_record(usage: TurnUsage) -> StoreCmd {
+    StoreCmd::RecordUsage {
+        pane: pane(),
+        conversation: None,
+        engine: "codex".into(),
+        role: "worker".into(),
+        worker: Some("3.2".into()),
+        usage: Box::new(usage),
+    }
+}
+
+#[test]
+fn a_worker_row_keeps_its_role_and_worker_id_and_counts_in_the_day() {
+    let (_dir, mut worker, conn) = fixture();
+    worker.handle(record(None, tokens(100, 20)));
+    let reply = worker.handle(worker_record(tokens(30, 5)));
+    let row: (String, Option<String>) = conn
+        .query_row(
+            "SELECT role, worker FROM turn_usage WHERE role = 'worker'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("worker".into(), Some("3.2".into())));
+    let chat_worker: Option<String> = conn
+        .query_row(
+            "SELECT worker FROM turn_usage WHERE role = 'chat'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(chat_worker, None);
+    // The status segment and the day thresholds read this sum.
+    assert_eq!(usage_reply(reply), (Some(155), None));
+}
+
+#[test]
+fn the_report_folds_worker_rows_into_the_totals_and_apart() {
+    let (_dir, mut worker, conn) = fixture();
+    let now = local(&conn, "");
+    put(&conn, at_ts(now, "claude", Some(100), 20));
+    put(
+        &conn,
+        Put {
+            role: "worker",
+            ..at_ts(now, "claude", Some(30), 5)
+        },
+    );
+    // A worker row that lacks its input: its total is unknown, and it is
+    // marked, not counted as 0.
+    put(
+        &conn,
+        Put {
+            role: "worker",
+            ..at_ts(now, "claude", None, 9)
+        },
+    );
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!((row.records, row.turns, row.workers), (3, 1, 2));
+    assert_eq!(row.total, Some(155));
+    assert_eq!(row.worker_total, Some(35));
+    assert!(row.worker_partial);
+}
+
+#[test]
+fn a_report_without_worker_rows_has_no_worker_figures() {
+    let (_dir, mut worker, conn) = fixture();
+    put(&conn, at_ts(local(&conn, ""), "claude", Some(1), 1));
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(
+        (
+            rows[0].workers,
+            rows[0].worker_total,
+            rows[0].worker_partial
+        ),
+        (0, None, false)
+    );
+}
+
+#[test]
+fn a_partial_flag_marks_the_worker_figure() {
+    let (_dir, mut worker, conn) = fixture();
+    let mut usage = tokens(4, 4);
+    usage.partial = true;
+    worker.handle(worker_record(usage));
+    let rows = rows_of(worker.handle(report(None)));
+    assert_eq!(
+        (
+            rows[0].workers,
+            rows[0].worker_total,
+            rows[0].worker_partial
+        ),
+        (1, Some(8), true)
+    );
+    let _ = conn;
 }

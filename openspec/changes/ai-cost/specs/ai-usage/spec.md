@@ -313,7 +313,7 @@ The totals of lines 2, 3 and 5 include the tokens of worker records (see Worker 
 - THEN the claude turn shows tokens and a labelled dollar figure, the ollama turn shows tokens and no dollars
 
 ### Requirement: Worker usage
-When an orchestrator run is live, the usage that each worker turn reports MUST be recorded like a chat turn's, as one record per worker turn (the requests of the turn summed as in Summing per turn), with the role `worker`, the worker's engine and model, the worker id with its run id, and the conversation of the pane when it is saved. A worker whose engine reports nothing writes no record (no data, no row). Counts the engine did not report stay `None`, are stored as NULL and are never estimated or filled from other workers. A worker turn that ended without a final answer (failed, cancelled, timed out or cut) or whose requests lacked usage MUST be recorded as `partial`; a worker usage gap is stored as a partial record, never dropped and never completed. Billing and list-price rules apply by the worker's engine, exactly as for a chat turn (a local engine never shows dollars). Per-worker and per-run breakdowns are out of scope: records are only identifiable in the store.
+When an orchestrator run is live, the usage that each worker turn reports MUST be recorded like a chat turn's, as one record per worker turn (the requests of the turn summed as in Summing per turn), with the role `worker`, the worker's engine and model, the worker id with its run id, and the conversation of the pane when it is saved. A worker whose engine reports nothing writes no record (no data, no row). Counts the engine did not report stay `None`, are stored as NULL and are never estimated or filled from other workers. A worker turn that ended without a final answer (failed, cancelled, timed out or cut) or whose usage the engine marked partial MUST be recorded as `partial`; a worker usage gap is stored as a partial record, never dropped and never completed. A record that lacks its input or output count is stored with NULL there and is read as partial by `/cost`, as for any record. Billing and list-price rules apply by the worker's engine, exactly as for a chat turn (a local engine never shows dollars). Per-worker and per-run breakdowns are out of scope: records are only identifiable in the store.
 Worker records are subject to every rule of the chat records: nothing is written with the history off (the session view in memory still counts them); a failed write is surfaced as `Usage not saved: <reason>` under the once-per-run rule; a deleted conversation keeps its worker records (link dropped); the 90-day retention applies. Worker records count in `today` and `last 7 days`, in the charts and per-engine bars, in the status-bar segment and in the day thresholds (spend included under the `per-token` rule). A worker turn MUST NEVER trigger the per-turn threshold note, which belongs to the chat turn. While a run is live the usage line under the coordinator's answer MUST read `usage (coordinator): ...` (see chat-pane), so it is not read as the run total.
 
 #### Scenario: Worker turn is stored [auto]
@@ -332,9 +332,14 @@ Worker records are subject to every rule of the chat records: nothing is written
 - THEN no record is stored
 
 #### Scenario: Gap is a partial record [auto]
+- GIVEN a worker whose usage the engine marked partial
+- WHEN the turn ends
+- THEN one record is stored with `partial` set
+
+#### Scenario: Missing count stays unknown [auto]
 - GIVEN a worker that reported an output count and no input count
 - WHEN the turn ends
-- THEN one record is stored with a NULL input, the output, and `partial` set
+- THEN one record is stored with a NULL input and the output, and `/cost` reads it as partial
 
 #### Scenario: Failed or cut worker is partial [auto]
 - GIVEN a worker that reported usage and then failed, was cancelled or hit its deadline

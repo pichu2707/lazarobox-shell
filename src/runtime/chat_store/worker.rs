@@ -252,12 +252,18 @@ impl Worker {
                 conversation,
                 engine,
                 role,
+                worker,
                 usage,
             } => {
                 let conversation = conversation.or_else(|| self.created.get(&pane).copied());
                 let earlier = self.usage_problem.take();
                 let saved = match self.conn() {
-                    Ok(conn) => record_usage(conn, conversation, (&engine, &role), &usage),
+                    Ok(conn) => record_usage(
+                        conn,
+                        conversation,
+                        (&engine, &role, worker.as_deref()),
+                        &usage,
+                    ),
                     Err(reason) => Err(reason),
                 };
                 Some(match saved {
@@ -553,17 +559,17 @@ type DayFigures = (Option<u64>, Vec<(String, u64)>);
 fn record_usage(
     conn: &mut Connection,
     conversation: Option<i64>,
-    (engine, role): (&str, &str),
+    (engine, role, worker): (&str, &str, Option<&str>),
     usage: &TurnUsage,
 ) -> Result<(DayRead, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
     // The subselect leaves the link NULL for a conversation that is gone.
     conn.execute(
-        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, input, output,
+        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
              cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial)
-         VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-             ?10, ?11, ?12, ?13, ?14)",
+         VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?15, ?6, ?7, ?8,
+             ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             at,
             conversation,
@@ -579,6 +585,7 @@ fn record_usage(
             usage.cost_source.map(|c| c.id()),
             count_of(usage.duration_ms),
             usage.partial,
+            worker,
         ],
     )
     .map_err(|err| usage_reason(&err).to_owned())?;
@@ -686,7 +693,12 @@ fn usage_report(
                 SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
                 SUM(CASE WHEN input IS NOT NULL AND output IS NOT NULL
                          THEN input + output END),
-                MAX(partial OR input IS NULL OR output IS NULL)
+                MAX(partial OR input IS NULL OR output IS NULL),
+                COALESCE(SUM(role = 'worker'), 0),
+                SUM(CASE WHEN role = 'worker' AND input IS NOT NULL AND output IS NOT NULL
+                         THEN input + output END),
+                COALESCE(MAX(role = 'worker'
+                             AND (partial OR input IS NULL OR output IS NULL)), 0)
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
     )?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
@@ -705,6 +717,9 @@ fn usage_report(
             cost_micros: count(r.get(10)?),
             total: count(r.get(11)?),
             partial: r.get(12)?,
+            workers: count(Some(r.get(13)?)).unwrap_or(0),
+            worker_total: count(r.get(14)?),
+            worker_partial: r.get(15)?,
         })
     })?;
     rows.collect()

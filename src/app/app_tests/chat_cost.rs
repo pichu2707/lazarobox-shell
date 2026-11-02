@@ -61,6 +61,9 @@ fn today_row() -> UsageRow {
         cost_micros: Some(4_936),
         total: Some(6),
         partial: false,
+        workers: 0,
+        worker_total: None,
+        worker_partial: false,
     }
 }
 

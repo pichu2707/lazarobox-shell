@@ -160,6 +160,7 @@ impl ChatState {
                 conversation,
                 engine: pending.engine,
                 role: pending.role.to_owned(),
+                worker: pending.worker,
                 usage: Box::new(pending.usage),
             });
         saves.into_iter().chain(usage).collect()

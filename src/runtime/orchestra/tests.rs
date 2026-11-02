@@ -59,6 +59,10 @@ enum Script {
     UsedOneCount(&'static str),
     /// Streams the text, reports a usage marked partial, then ends.
     UsedPartial(&'static str),
+    /// Reports a usage of 100 in and 10 out, then fails with the message.
+    UsedThenFail(&'static str),
+    /// Reports a usage of 100 in and 10 out, then never ends.
+    UsedThenHang,
     /// Streams the text, then fails with the message.
     Fail(&'static str, &'static str),
     /// The jail refuses the turn with the reason.
@@ -189,6 +193,24 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     let _ = tx.send(StreamEvent::usage(usage)).await;
                     (text, StreamEvent::Done(Finish::Stop))
                 }
+                Script::UsedThenFail(error) => {
+                    let usage = TurnUsage {
+                        input: Some(100),
+                        output: Some(10),
+                        ..TurnUsage::default()
+                    };
+                    let _ = tx.send(StreamEvent::usage(usage)).await;
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::UsedThenHang => {
+                    let usage = TurnUsage {
+                        input: Some(100),
+                        output: Some(10),
+                        ..TurnUsage::default()
+                    };
+                    let _ = tx.send(StreamEvent::usage(usage)).await;
+                    return std::future::pending().await;
+                }
                 Script::Fail(text, error) => {
                     (text, StreamEvent::Error(ChatError::Failed(error.into())))
                 }
@@ -280,6 +302,8 @@ struct Lab {
     manager: Arc<RunManager>,
     seen: Arc<Seen>,
     events: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
+    /// The worker usage records `next` and `untimed` passed over.
+    usages: Vec<OrchestraEvent>,
     /// The orchestrator turn's channel: worker tool rows would land here.
     turn: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
     home: tempfile::TempDir,
@@ -314,6 +338,7 @@ fn lab_over(
         manager,
         seen,
         events,
+        usages: Vec::new(),
         turn: mpsc::channel(TURN_CHANNEL),
         home,
         via,
@@ -362,8 +387,10 @@ impl Lab {
                 .expect("no event")
                 .expect("channel open");
             assert_eq!(from, pane());
-            if !matches!(event, OrchestraEvent::Trace { .. }) {
-                return event;
+            match event {
+                OrchestraEvent::Trace { .. } => {}
+                OrchestraEvent::Usage { .. } => self.usages.push(event),
+                event => return event,
             }
         }
     }
@@ -373,8 +400,10 @@ impl Lab {
     async fn untimed(&mut self) -> OrchestraEvent {
         loop {
             let (_, event) = self.events.recv().await.unwrap();
-            if !matches!(event, OrchestraEvent::Trace { .. }) {
-                return event;
+            match event {
+                OrchestraEvent::Trace { .. } => {}
+                OrchestraEvent::Usage { .. } => self.usages.push(event),
+                event => return event,
             }
         }
     }
@@ -431,6 +460,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Closed { .. }
         | OrchestraEvent::Trace { .. }
+        | OrchestraEvent::Usage { .. }
         | OrchestraEvent::Notice { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
@@ -507,6 +537,114 @@ async fn a_worker_whose_engine_reported_nothing_has_no_usage_on_its_row() {
         panic!("a worker row");
     };
     assert_eq!((done.status, done.usage), (WorkerStatus::Done, None));
+}
+
+/// The usage record a worker turn sent, as (worker, engine, usage).
+fn recorded(lab: &Lab) -> Vec<(WorkerId, String, TurnUsage)> {
+    lab.usages
+        .iter()
+        .map(|event| match event {
+            OrchestraEvent::Usage {
+                worker,
+                engine,
+                usage,
+                ..
+            } => (*worker, engine.clone(), (**usage).clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+// Spec (ai-usage, Worker usage): one record per worker turn, the rounds summed,
+// named by the worker and its engine, with the model of the request.
+#[tokio::test]
+async fn a_worker_turn_sends_one_usage_record_with_its_rounds_summed() {
+    let mut lab = lab(Script::Used("ok"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _done = lab.next().await;
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let (worker, engine, usage) = &sent[0];
+    assert_eq!((*worker, engine.as_str()), (WorkerId(1), "codex"));
+    assert_eq!((usage.input, usage.output), (Some(150), Some(15)));
+    assert_eq!(usage.model.as_deref(), Some("default"));
+    assert!(!usage.partial);
+    let OrchestraEvent::Usage { run: of, .. } = &lab.usages[0] else {
+        panic!("a usage event");
+    };
+    assert_eq!(*of, run);
+}
+
+// A count the engine did not report stays missing: nothing is filled in.
+#[tokio::test]
+async fn a_one_count_worker_usage_keeps_the_missing_count_unknown() {
+    let mut lab = lab(Script::UsedOneCount("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _done = lab.next().await;
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!((sent[0].2.input, sent[0].2.output), (None, Some(7)));
+}
+
+// A gap the engine marked is a partial record, never dropped or completed.
+#[tokio::test]
+async fn a_partial_worker_usage_is_sent_partial() {
+    let mut lab = lab(Script::UsedPartial("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _done = lab.next().await;
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].2.partial);
+}
+
+// No data, no record.
+#[tokio::test]
+async fn a_worker_whose_engine_reported_nothing_sends_no_usage_record() {
+    let mut lab = lab(Script::Answer("ok"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _done = lab.next().await;
+    assert!(recorded(&lab).is_empty());
+}
+
+// A worker that failed after it reported usage used more than it told.
+#[tokio::test]
+async fn a_failed_worker_sends_its_usage_partial() {
+    let mut lab = lab(Script::UsedThenFail("boom"));
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    handle.call(wait(1)).await;
+    let _running = lab.next().await;
+    let _failed = lab.next().await;
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!((sent[0].2.input, sent[0].2.output), (Some(100), Some(10)));
+    assert!(sent[0].2.partial);
+}
+
+// A worker cut off by its deadline keeps the usage it reported, partial.
+#[tokio::test(start_paused = true)]
+async fn a_worker_cut_by_its_deadline_sends_its_usage_partial() {
+    let mut lab = lab(Script::UsedThenHang);
+    let (_run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "p")).await;
+    assert_eq!(status_of(&lab.next().await), Some(WorkerStatus::Running));
+    let ended = lab.untimed().await;
+    assert_eq!(status_of(&ended), Some(WorkerStatus::TimedOut));
+    let sent = recorded(&lab);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].2.partial);
 }
 
 /// The nonce of a wrapped text.
@@ -1281,6 +1419,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Closed { .. }
             | OrchestraEvent::Trace { .. }
+            | OrchestraEvent::Usage { .. }
             | OrchestraEvent::Notice { .. }
             | OrchestraEvent::Unavailable => None,
         })

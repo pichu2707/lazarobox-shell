@@ -151,6 +151,8 @@ pub enum StoreCmd {
         conversation: Option<i64>,
         engine: String,
         role: String,
+        /// `<run>.<worker>` for a `worker` record.
+        worker: Option<String>,
         usage: Box<TurnUsage>,
     },
     /// Reads the stored usage for `/cost`: every record, folded by local day,

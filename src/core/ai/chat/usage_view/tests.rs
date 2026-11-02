@@ -21,6 +21,9 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
         cost_micros: None,
         total: Some(120),
         partial: false,
+        workers: 0,
+        worker_total: None,
+        worker_partial: false,
     }
 }
 
@@ -33,6 +36,19 @@ fn before_charts(mut lines: Vec<String>) -> Vec<String> {
 
 fn view(rows: &[UsageRow]) -> Vec<String> {
     report_lines(rows, &Session::default(), &default_billing)
+}
+
+/// A row of worker records only.
+fn worker_row(days_ago: u32, total: Option<u64>) -> UsageRow {
+    UsageRow {
+        turns: 0,
+        input: total.map(|_| 1),
+        output: total.map(|_| 1),
+        total,
+        workers: 1,
+        worker_total: total,
+        ..row(days_ago, "ollama", "m")
+    }
 }
 
 #[test]
@@ -613,4 +629,76 @@ fn long_engine_names_are_cut_at_16_columns_and_empty_ones_read_a_question_mark()
         shown[3].chars().position(|c| c == '█'),
         shown[4].chars().position(|c| c == '█')
     );
+}
+
+// ---- worker usage (ai-cost 5.2) -------------------------------------------
+
+#[test]
+fn the_workers_line_follows_the_seven_day_total_and_is_part_of_it() {
+    let mut chat = row(0, "claude", "s");
+    chat.total = Some(300);
+    let mut worker = worker_row(0, Some(200));
+    worker.total = Some(200);
+    let lines = view(&[chat, worker]);
+    assert_eq!(lines[1], "today: 500 tokens · 1 turns");
+    assert_eq!(lines[2], "last 7 days: 500 tokens · 1 turns");
+    assert_eq!(lines[3], "of which workers: 200 tokens");
+    assert_eq!(lines[4], "by engine and model (last 7 days):");
+}
+
+#[test]
+fn there_is_no_workers_line_without_worker_records() {
+    assert!(
+        view(&[row(0, "claude", "s")])
+            .iter()
+            .all(|l| !l.starts_with("of which workers"))
+    );
+}
+
+#[test]
+fn the_workers_line_counts_the_window_only_and_adds_the_days_up() {
+    let rows = [
+        worker_row(0, Some(10)),
+        worker_row(6, Some(5)),
+        worker_row(8, Some(1000)),
+    ];
+    assert_eq!(view(&rows)[3], "of which workers: 15 tokens");
+    assert!(
+        view(&[worker_row(8, Some(7))])
+            .iter()
+            .all(|l| !l.starts_with("of which workers"))
+    );
+}
+
+#[test]
+fn the_workers_line_never_invents_a_total_and_marks_a_gap() {
+    let mut gap = worker_row(0, None);
+    gap.output = Some(5);
+    // The store marks a worker row that lacks a count.
+    gap.worker_partial = true;
+    assert_eq!(view(&[gap])[3], "of which workers: no data · partial");
+    let mut cut = worker_row(0, Some(20));
+    cut.worker_partial = true;
+    assert_eq!(view(&[cut])[3], "of which workers: 20 tokens · partial");
+}
+
+#[test]
+fn a_worker_record_is_not_a_turn() {
+    assert_eq!(
+        view(&[worker_row(0, Some(9))])[1],
+        "today: 9 tokens · 0 turns"
+    );
+}
+
+#[test]
+fn the_coordinator_label_replaces_the_usage_prefix_only() {
+    assert_eq!(
+        coordinator_line("usage: in 12 · out 34".to_owned()),
+        "usage (coordinator): in 12 · out 34"
+    );
+    assert_eq!(
+        coordinator_line(usage_line(None, None)),
+        "usage (coordinator): no data"
+    );
+    assert_eq!(coordinator_line("other".to_owned()), "other");
 }
