@@ -33,7 +33,9 @@ baseline.
   prompts (no escape sequences, bidi or zero-width characters), redacted and
   capped; a program title with spaces or `:` shows as `…`. The text is bounded
   (5 panes, focused first, then `+N more`) so the prompt stays answerable,
-  and the refresh runs off the UI loop. An Ollama `*-cloud` model counts as
+  and the refresh (the `/proc` reads and the disk lookups) runs off the UI
+  loop. A pane list older than 10 s says so in the text, because the refresh
+  may be stuck. An Ollama `*-cloud` model counts as
   local, so it does not ask.
 - Pin change: `list_panes` joins the legacy tool families, so the default
   tool list (the MCP `tools/list` bytes, the Ollama and llama.cpp `tools`
