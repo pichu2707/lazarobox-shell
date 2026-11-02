@@ -53,6 +53,9 @@ pub enum ErrorClass {
     Quota,
     Timeout,
     JailRefusal,
+    /// The worker was refused before it started: its engine or model is not
+    /// available (not installed, not downloaded, none assigned, no jail).
+    Setup,
     Other,
 }
 
@@ -66,6 +69,7 @@ impl ErrorClass {
             Self::Quota => "quota",
             Self::Timeout => "timeout",
             Self::JailRefusal => "jail_refusal",
+            Self::Setup => "setup",
             Self::Other => "other",
         }
     }

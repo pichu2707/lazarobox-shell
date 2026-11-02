@@ -1957,7 +1957,10 @@ fn nonce_bytes() -> Option<[u8; 8]> {
 /// any token redacted and at most `ERROR_CAP` characters, like an engine's
 /// error text.
 fn refusal_reason(reason: &str) -> String {
-    let flat = clean(reason).split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = clean(reason)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     redact_tokens(&flat).chars().take(ERROR_CAP).collect()
 }
 

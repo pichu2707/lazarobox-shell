@@ -563,10 +563,10 @@ impl App {
             // A refused worker never got an engine: the models offered are
             // those of the engine its class is configured with.
             let configured = config.resolve(row.kind).0;
-            if in_use.0.is_empty() {
-                if let Some(engine) = configured.engine.as_deref() {
-                    in_use = (engine, configured.model.as_deref());
-                }
+            if in_use.0.is_empty()
+                && let Some(engine) = configured.engine.as_deref()
+            {
+                in_use = (engine, configured.model.as_deref());
             }
             unresolved = change == Change::Model && in_use.0.is_empty();
             FailurePicker::open(row.kind, &config, in_use, self.engines.clone(), change)
@@ -934,7 +934,8 @@ fn alert_text(chat: &ChatState, alert: &OrchAlert) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let mut line = format!("run paused: worker {worker} {ended}: {text}");
+    let class = alert.class.id();
+    let mut line = format!("run paused: worker {worker} {ended} ({class}): {text}");
     let retry = match chat.orch_note() {
         Some(OrchNote::RetryFailed(reason)) => {
             line.push_str(&format!(" \u{b7} retry failed: {reason}"));

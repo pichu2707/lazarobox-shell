@@ -614,7 +614,7 @@ fn refused_unresolved(assigned: Option<(&str, &str)>) -> App {
     a.update(event(OrchestraEvent::Halted {
         run: RUN,
         worker: WorkerId(1),
-        class: ErrorClass::Other,
+        class: ErrorClass::Setup,
         text: "ollama: llama3:8b is not downloaded: download required".into(),
     }));
     a
@@ -640,4 +640,17 @@ fn m_on_a_refused_worker_with_no_engine_anywhere_says_why_it_opens_the_engines()
     assert!(text.starts_with("Engine for review"), "{text}");
     let notice = a.notice().expect("a notice");
     assert!(notice.contains("no engine"), "{notice}");
+}
+
+// #502: the alert of a refusal carries its class like any other failure.
+#[test]
+fn the_alert_of_a_refused_worker_shows_its_setup_class() {
+    let a = refused_unresolved(Some(("ollama", "llama3:8b")));
+    let text = guidance(&a);
+    assert!(
+        text.starts_with(
+            "run paused: worker review no engine refused (setup): ollama: llama3:8b is not downloaded"
+        ),
+        "{text}"
+    );
 }

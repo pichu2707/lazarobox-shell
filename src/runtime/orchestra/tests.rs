@@ -808,7 +808,7 @@ async fn without_a_jail_a_gemini_worker_is_refused_and_nothing_starts() {
     let halted = OrchestraEvent::Halted {
         run,
         worker: WorkerId(1),
-        class: ErrorClass::Other,
+        class: ErrorClass::Setup,
         text: reason,
     };
     assert_eq!(events[1..], [halted]);
@@ -5253,6 +5253,9 @@ fn a_refusal_reason_is_one_redacted_bounded_line() {
         "a".repeat(40),
         "x".repeat(1_000)
     ));
-    assert!(!text.contains('\n') && !text.contains("sk-ant-api03"), "{text}");
+    assert!(
+        !text.contains('\n') && !text.contains("sk-ant-api03"),
+        "{text}"
+    );
     assert!(text.chars().count() <= 200, "{}", text.chars().count());
 }

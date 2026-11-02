@@ -420,7 +420,7 @@ fn worker_rows_follow_their_status_and_stay_out_of_the_next_turn() {
 }
 
 /// What the alert of `alerted` says.
-const ALERT: &str = "run paused: worker review codex>gpt-5 failed: \
+const ALERT: &str = "run paused: worker review codex>gpt-5 failed (conflict): \
      409 conflict: session busy \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel";
 
 // chat-pane / Alert content (S1 part; the class and the change options are
@@ -452,7 +452,7 @@ fn the_alert_names_how_the_worker_ended_on_one_paragraph() {
     assert_eq!(
         a.chat_guidance(chat_id()).as_deref(),
         Some(
-            "run paused: worker review codex>gpt-5 timed_out: no answer in 600 s \
+            "run paused: worker review codex>gpt-5 timed_out (conflict): no answer in 600 s \
              \u{b7} r retry \u{b7} m change model \u{b7} p change provider \u{b7} c/Esc cancel"
         )
     );
