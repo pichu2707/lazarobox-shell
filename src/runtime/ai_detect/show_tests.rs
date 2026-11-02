@@ -615,3 +615,48 @@ async fn a_new_answer_replaces_the_kept_window_and_an_unlisted_model_drops_it() 
     assert_eq!(window_of(&d, "m0:8b"), Some(4_096));
     assert_eq!(live.ollama_windows(), [("m0:8b".to_owned(), 4_096)]);
 }
+
+#[tokio::test]
+async fn bad_replies_leave_only_their_own_window_unknown() {
+    // An oversized reply that starts like a good one: the cap rejects it whole.
+    let mut huge = b"HTTP/1.0 200 OK\r\n\r\n".to_vec();
+    huge.extend_from_slice(
+        br#"{"capabilities":["tools"],"model_info":{"general.architecture":"llama","llama.context_length":8192}}"#,
+    );
+    huge.resize(huge.len() + 1024 * 1024 + 1, b' ');
+    let fake = fake_ollama(tags(&named(6)), Duration::ZERO, move |m| match m {
+        "m0:8b" => Show::Body("{not json".into()),
+        "m1:8b" => with_window("llama", 0),
+        "m2:8b" => with_window("llama", 99_999_999_999),
+        "m3:8b" => Show::Raw(huge.clone()),
+        "m4:8b" => Show::Body(
+            r#"{"capabilities":["tools"],"model_info":{"general.architecture":"llama","llama.context_length":"8192"}}"#
+                .into(),
+        ),
+        _ => with_window("llama", 8_192),
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    for bad in ["m0:8b", "m1:8b", "m2:8b", "m3:8b", "m4:8b"] {
+        assert_eq!(window_of(&d, bad), None, "{bad}");
+    }
+    assert_eq!(
+        window_of(&d, "m5:8b"),
+        Some(8_192),
+        "the others keep theirs"
+    );
+}
+
+#[tokio::test]
+async fn the_call_limit_leaves_the_rest_of_the_windows_unknown() {
+    let fake = fake_ollama(tags(&named(40)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(fake.posts().len(), 32);
+    assert_eq!(window_of(&d, "m0:8b"), Some(8_192));
+    assert_eq!(window_of(&d, "m31:8b"), Some(8_192));
+    assert_eq!(window_of(&d, "m32:8b"), None);
+    assert_eq!(window_of(&d, "m39:8b"), None);
+}

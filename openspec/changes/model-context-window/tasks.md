@@ -88,3 +88,11 @@ Anchor drift found by 0.1 against `origin/main` (4cb10e48), all cosmetic or stru
 - `finish_body` is shared with the OpenAI wire, so the Ollama keys are gated on `request.engine == "ollama"`.
 - `spawn_detection` takes the `LiveServers` and derives the ports from it (clippy `too_many_arguments`).
 - Line numbers in design.md otherwise match by function name.
+
+## Review fixes (W1, W2, W6, S1 to S6)
+
+- W1: `Detection::carry_windows` keeps the last known window per model across runs (failed probe), applied before the Detection reaches both `LiveServers` and the app; unlisted models drop it.
+- W2: `num_ctx_cap` 1024..=1048576 and `keep_alive_minutes` 0..=10080; specs, design and README amended with the new problem texts.
+- W6: kept the status-line notice (spec route); a model is marked told only when the notice is really set, and a showing notice is never replaced.
+- S1 to S6 done. S4, S5 (probe-level) and `with_ollama` `#[cfg(test)]` need no production change; S5 tests were mutation-checked, not RED-first, because the behaviour already existed.
+- W3, W4, W5 untouched (owner decisions).

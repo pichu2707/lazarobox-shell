@@ -197,17 +197,27 @@ mod tests {
     #[test]
     fn the_stamp_is_the_same_on_every_turn_and_zero_keep_alive_is_kept() {
         let live = live();
-        let (mut a, mut b) = (request("ollama", "big:8b"), request("ollama", "big:8b"));
-        live.stamp(&mut a);
-        live.stamp(&mut b);
-        assert_eq!(a.ollama, b.ollama);
+        // Chat, compaction and a worker turn: three requests of one model.
+        let mut turns = [
+            request("ollama", "big:8b"),
+            request("ollama", "big:8b"),
+            request("ollama", "big:8b"),
+        ];
+        for turn in &mut turns {
+            live.stamp(turn);
+        }
+        let want = OllamaWire {
+            num_ctx: Some(16_384),
+            keep_alive_minutes: Some(30),
+        };
+        assert!(turns.iter().all(|t| t.ollama == want), "{turns:?}");
         live.set_ollama(OllamaOptions {
             num_ctx_cap: 8_192,
             keep_alive_minutes: 0,
         });
-        live.stamp(&mut a);
+        live.stamp(&mut turns[0]);
         assert_eq!(
-            (a.ollama.num_ctx, a.ollama.keep_alive_minutes),
+            (turns[0].ollama.num_ctx, turns[0].ollama.keep_alive_minutes),
             (Some(8_192), Some(0))
         );
     }

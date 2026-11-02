@@ -165,13 +165,6 @@ fn zero_keep_alive_is_sent_as_zero_minutes() {
 }
 
 #[test]
-fn ollama_options_follow_the_request_on_every_turn() {
-    let first = ollama_with(Some(8_192), Some(5));
-    let again = ollama_with(Some(8_192), Some(5));
-    assert_eq!(first, again);
-}
-
-#[test]
 fn other_engines_never_carry_the_ollama_options() {
     for (adapter, id) in [
         (Adapter::Llamacpp, "llamacpp"),
@@ -1958,26 +1951,22 @@ fn only_claude_codex_and_gemini_are_cli_engines() {
     }
 }
 
+// The reserve is measured, not a formula: about 800 estimated tokens for the
+// read and pane tools and about 2,000 once write, exec and git write join
+// (the design measured ~1.98k for 15 tools). The bounds catch a reserve that
+// forgets the block, forgets the schemas, or stops growing with the families.
 #[test]
 fn the_tools_reserve_weighs_the_block_and_the_schemas_of_the_families() {
     use crate::core::ai::tools::registry::{Family, FamilySet};
     let legacy = tools_reserve_tokens(FamilySet::LEGACY);
-    // The block plus the read and pane schemas are far from empty.
-    assert!(legacy > 300, "{legacy}");
-    // More families offer more schemas, so the reserve grows.
-    let more = FamilySet::LEGACY
+    assert!((600..=1_200).contains(&legacy), "{legacy}");
+    let coding = FamilySet::LEGACY
         .with(Family::Write)
         .with(Family::Exec)
         .with(Family::GitWrite);
-    assert!(tools_reserve_tokens(more) > legacy);
-    // It is exactly what a request of those families would carry.
-    let mut req = request("s");
-    req.families = FamilySet::LEGACY;
-    let schemas = serde_json::to_string(&offered_tools_of(FamilySet::LEGACY)).unwrap();
-    let block = crate::core::ai::chat::prompts::with_tools("", FamilySet::LEGACY);
-    assert_eq!(
-        legacy,
-        crate::core::ai::chat::budget::estimate_tokens(&schemas)
-            + crate::core::ai::chat::budget::estimate_tokens(&block)
-    );
+    let more = tools_reserve_tokens(coding);
+    assert!((1_500..=3_000).contains(&more), "{more}");
+    // No families: only the tools block is left, still a real cost.
+    let block_only = tools_reserve_tokens(FamilySet::EMPTY);
+    assert!((100..legacy - 200).contains(&block_only), "{block_only}");
 }
