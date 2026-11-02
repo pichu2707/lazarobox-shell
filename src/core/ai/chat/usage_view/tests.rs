@@ -735,3 +735,32 @@ fn an_incomplete_output_alone_does_not_mark_the_cache_partial() {
     let lines = before_charts(view(&[r]));
     assert!(lines.contains(&"cache today: claude 90%".to_owned()));
 }
+
+fn prefilled(engine: &str, ms: Option<u64>, tokens: Option<u64>, gap: u64) -> UsageRow {
+    UsageRow {
+        prefill_ms: ms,
+        prefill_tokens: tokens,
+        prefill_gap: gap,
+        ..row(0, engine, "m")
+    }
+}
+
+#[test]
+fn each_period_shows_the_prefill_speed_per_local_engine() {
+    let mut mine = prefilled("ollama", Some(5), Some(3_600), 0);
+    mine.in_chat = true;
+    let other = prefilled("llamacpp", Some(10), Some(4_599), 0);
+    let lines = before_charts(view(&[mine, other, prefilled("claude", None, None, 1)]));
+    let want = "prefill today: llamacpp 2.2 ms/1k tok · ollama 1.4 ms/1k tok";
+    assert!(lines.contains(&want.to_owned()), "{lines:?}");
+    assert!(lines.contains(&want.replace("today", "last 7 days")));
+    assert!(lines.contains(&"prefill this chat: ollama 1.4 ms/1k tok".to_owned()));
+}
+
+#[test]
+fn no_prefill_data_shows_no_line_and_a_gap_marks_it_partial() {
+    let lines = before_charts(view(&[prefilled("ollama", None, None, 2)]));
+    assert!(lines.iter().all(|l| !l.starts_with("prefill ")), "{lines:?}");
+    let lines = before_charts(view(&[prefilled("ollama", Some(5), Some(5_000), 1)]));
+    assert!(lines.contains(&"prefill today: ollama 1.0 ms/1k tok · partial".to_owned()));
+}

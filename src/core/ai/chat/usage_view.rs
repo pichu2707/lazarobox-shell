@@ -298,6 +298,36 @@ fn cache_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Opti
     (!shares.is_empty()).then(|| format!("cache {label}: {}{mark}", shares.join(" · ")))
 }
 
+/// `prefill <label>: <engine> N ms/1k tok · ...` for the rows picked: the
+/// average time a local engine took to process 1000 prompt tokens, so a low
+/// figure means its prompt cache was hit. `None` when no engine reported a
+/// prefill time. Marked `partial` when a shown engine has records without one.
+fn prefill_line<'a>(label: &str, rows: impl Iterator<Item = &'a UsageRow>) -> Option<String> {
+    // Per engine: milliseconds, prompt tokens and records without a figure.
+    let mut by_engine: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    for r in rows {
+        let e = by_engine.entry(ident(&r.engine)).or_default();
+        e.0 = e.0.saturating_add(r.prefill_ms.unwrap_or(0));
+        e.1 = e.1.saturating_add(r.prefill_tokens.unwrap_or(0));
+        e.2 = e.2.saturating_add(r.prefill_gap);
+    }
+    let shown: Vec<_> = by_engine
+        .into_iter()
+        .filter(|(_, (_, tokens, _))| *tokens > 0)
+        .collect();
+    let partial = shown.iter().any(|(_, (_, _, gap))| *gap > 0);
+    let speeds: Vec<String> = shown
+        .into_iter()
+        .map(|(engine, (ms, tokens, _))| {
+            let (ms, tokens) = (u128::from(ms), u128::from(tokens));
+            let tenths = (ms * 20_000 + tokens) / (2 * tokens);
+            format!("{engine} {}.{} ms/1k tok", tenths / 10, tenths % 10)
+        })
+        .collect();
+    let mark = if partial { " · partial" } else { "" };
+    (!speeds.is_empty()).then(|| format!("prefill {label}: {}{mark}", speeds.join(" · ")))
+}
+
 /// A usage line as the coordinator's: while a run is live the line under the
 /// coordinator's answer is not the run's total.
 pub fn coordinator_line(line: String) -> String {
@@ -512,8 +542,10 @@ pub fn report_lines(
         ),
     ];
     lines.extend(cache_line("today", rows.iter().filter(|r| r.days_ago == 0)));
+    lines.extend(prefill_line("today", rows.iter().filter(|r| r.days_ago == 0)));
     lines.push(format!("last 7 days: {}", summary(window())));
     lines.extend(cache_line("last 7 days", window()));
+    lines.extend(prefill_line("last 7 days", window()));
     lines.extend(workers_line(window()));
     lines.push("by engine and model (last 7 days):".to_owned());
     lines.extend(pair_lines(window(), billing));
@@ -524,6 +556,7 @@ pub fn report_lines(
         "this chat: no data".to_owned()
     });
     lines.extend(cache_line("this chat", rows.iter().filter(|r| r.in_chat)));
+    lines.extend(prefill_line("this chat", rows.iter().filter(|r| r.in_chat)));
     if !session.rows().is_empty() {
         lines.push(format!("this session: {}", summary(session.rows().iter())));
         if session.full() {
