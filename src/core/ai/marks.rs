@@ -42,6 +42,47 @@ pub fn tool_glyph(term: Option<&str>, utf8: bool) -> ToolGlyph {
     }
 }
 
+/// What `[ai] tool_mark` asks for: the terminal rule, or one glyph always.
+/// A terminal with no emoji font draws `🔧` as an empty box and nothing can
+/// detect that, so `text` is the user's way out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GlyphMode {
+    /// The terminal rule of [`tool_glyph`]. The default.
+    #[default]
+    Auto,
+    /// Always the emoji, even on the Linux console or a non-UTF-8 locale.
+    Emoji,
+    /// Always the text badge.
+    Text,
+}
+
+impl GlyphMode {
+    /// The lowercase id: the value of `[ai] tool_mark`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Emoji => "emoji",
+            Self::Text => "text",
+        }
+    }
+
+    /// The mode of an exact id; case-sensitive.
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Auto, Self::Emoji, Self::Text]
+            .into_iter()
+            .find(|m| m.id() == id)
+    }
+
+    /// The glyph for this mode on a terminal.
+    pub fn resolve(self, term: Option<&str>, utf8: bool) -> ToolGlyph {
+        match self {
+            Self::Auto => tool_glyph(term, utf8),
+            Self::Emoji => ToolGlyph::Emoji,
+            Self::Text => ToolGlyph::Text,
+        }
+    }
+}
+
 /// The badge text of a mark; the single place that maps both.
 pub fn badge_text(mark: ToolMark, glyph: ToolGlyph) -> &'static str {
     match (mark, glyph) {
