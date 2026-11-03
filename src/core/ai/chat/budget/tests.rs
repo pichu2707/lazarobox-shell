@@ -219,10 +219,59 @@ fn an_unknown_window_of_a_server_pays_the_head_out_of_the_character_cap() {
 }
 
 #[test]
-fn a_head_larger_than_the_cap_leaves_no_room_but_does_not_underflow() {
+fn a_head_larger_than_the_cap_leaves_the_history_floor_and_does_not_underflow() {
     assert_eq!(
         budget("llamacpp", None, &"s".repeat(20_000), "", RESERVE),
-        Budget::Chars(0)
+        Budget::Chars(UNKNOWN_WINDOW_FLOOR)
+    );
+    assert_eq!(UNKNOWN_WINDOW_FLOOR, 4_000);
+}
+
+#[test]
+fn a_roomy_head_still_leaves_the_cap_minus_the_head() {
+    // 12,000 - 1,000 system - 4 * 500 reserve = 9,000, above the floor.
+    assert_eq!(
+        budget("ollama", None, &"s".repeat(1_000), "", 500),
+        Budget::Chars(9_000)
+    );
+}
+
+#[test]
+fn the_floor_applies_after_the_memory_is_taken_off_and_at_its_edge() {
+    // Memory alone leaves 12,000 - 9,000 = 3,000 before any head: the floor.
+    assert_eq!(
+        budget("ollama", None, "sys", &"m".repeat(9_000), 0),
+        Budget::Chars(UNKNOWN_WINDOW_FLOOR)
+    );
+    // Memory beyond the whole cap does not underflow either.
+    assert_eq!(
+        budget("ollama", None, "", &"m".repeat(20_000), 0),
+        Budget::Chars(UNKNOWN_WINDOW_FLOOR)
+    );
+    // Exactly the floor, and one above it, are kept as computed.
+    assert_eq!(
+        budget("ollama", None, &"s".repeat(8_000), "", 0),
+        Budget::Chars(4_000)
+    );
+    assert_eq!(
+        budget("ollama", None, &"s".repeat(7_999), "", 0),
+        Budget::Chars(4_001)
+    );
+}
+
+#[test]
+fn the_floor_is_for_unknown_windows_of_servers_only() {
+    assert_eq!(
+        budget("claude", None, &"s".repeat(20_000), "", RESERVE),
+        Budget::Chars(CLI_HISTORY_CHARS)
+    );
+    // A known window keeps its own arithmetic: no floor, room may be 0.
+    assert_eq!(
+        budget("ollama", Some(1_000), &"s".repeat(20_000), "", 0),
+        Budget::Tokens {
+            room: 0,
+            window: 1_000
+        }
     );
 }
 

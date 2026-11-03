@@ -5,7 +5,8 @@
 //! (the rest is the reply and slack) once the system prompt, the memory block
 //! and the tool schemas are paid for. Without one, the character caps of
 //! `engine` stand, and a local server pays the same head out of its cap, so
-//! a turn never counts the history alone.
+//! a turn never counts the history alone, and never leaves it under
+//! [`UNKNOWN_WINDOW_FLOOR`] characters.
 
 use super::engine::{ChatMessage, history_chars};
 use crate::core::ai::{CATALOG, Kind};
@@ -15,6 +16,11 @@ pub const CHARS_PER_TOKEN: usize = 4;
 /// The share of the window a prompt may fill, in percent; the rest is left
 /// for the reply.
 pub const PROMPT_SHARE: usize = 75;
+/// The least history, in characters, a local server keeps when its window is
+/// unknown: a big system prompt or tool block cannot squeeze the chat to
+/// nothing, since the real window is not known to be that small. A turn that
+/// does not fit is then the model's to refuse, never a silent empty history.
+pub const UNKNOWN_WINDOW_FLOOR: usize = 4_000;
 /// Estimated tokens of `text`.
 pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(CHARS_PER_TOKEN)
@@ -49,7 +55,7 @@ pub fn budget(
                 .any(|e| e.id == engine && matches!(e.kind, Kind::Server { .. }));
             if server {
                 let head = system.chars().count() + tools_reserve * CHARS_PER_TOKEN;
-                Budget::Chars(cap.saturating_sub(head))
+                Budget::Chars(cap.saturating_sub(head).max(UNKNOWN_WINDOW_FLOOR))
             } else {
                 Budget::Chars(cap)
             }
