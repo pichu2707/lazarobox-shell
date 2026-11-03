@@ -90,6 +90,8 @@ lazarobox-shell install-desktop --uninstall           # lo quita
 
 Funciona con cualquier instalación (`cargo install lazarobox-shell` o desde el código fuente) y con cualquier terminal. El comando escribe `<XDG_DATA_HOME>/applications/lazarobox.desktop` (por defecto `~/.local/share/applications`; `XDG_DATA_HOME` solo se respeta si es una ruta absoluta) y usa rutas absolutas, porque la sesión de escritorio suele no tener `~/.cargo/bin` en el `PATH`. Si el binario se mueve, vuelve a ejecutar el comando.
 
+El lanzador usa el icono `lazarobox`. Como un binario de `cargo install` no trae ficheros aparte, los iconos van incluidos en el binario y `install-desktop` los escribe en el tema hicolor, en `<XDG_DATA_HOME>/icons/hicolor/<tamaño>/apps/lazarobox.png` (256, 128, 48, 32 y 16 píxeles) y `scalable/apps/lazarobox.svg`; `--uninstall` los quita también. Si un icono no se puede escribir, el lanzador se instala igualmente, el comando lo dice en stderr y termina con error (el menú muestra un icono genérico hasta que se repita).
+
 La terminal se elige en este orden:
 
 1. `--terminal <cmd>`.

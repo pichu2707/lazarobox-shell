@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::core::desktop::{
-    ALTERNATIVES, Choice, Entry, FILE_NAME, Options, Parsed, RECORDS_URL, USAGE, applications_dir,
-    choose_terminal, data_home, is_wsl, parse_args, parse_choice, picker_choices, plan_install,
-    target_name,
+    ALTERNATIVES, Choice, Entry, FILE_NAME, ICONS, Options, Parsed, RECORDS_URL, USAGE,
+    applications_dir, choose_terminal, data_home, icon_theme_dir, is_wsl, parse_args, parse_choice,
+    picker_choices, plan_install, target_name,
 };
 
 /// Everything `execute` reads from the outside world.
@@ -34,6 +34,9 @@ pub struct Context<'a> {
     pub lookup: &'a dyn Fn(&str) -> Option<PathBuf>,
     /// Best-effort `update-desktop-database <applications dir>`.
     pub refresh_db: &'a dyn Fn(&Path),
+    /// Best-effort `gtk-update-icon-cache` of `<data>/icons/hicolor`, only
+    /// when that folder already has a cache that would go stale.
+    pub refresh_icons: &'a dyn Fn(&Path),
 }
 
 /// Entry point for `install-desktop <args>`; returns the exit status.
@@ -67,6 +70,22 @@ pub fn main(args: &[OsString]) -> i32 {
                 .status();
         }
     };
+    let refresh_icons = |dir: &Path| {
+        // A theme without a cache is scanned directly, so there is nothing to
+        // refresh (and creating a cache would need an index.theme).
+        if !dir.join("icon-theme.cache").exists() {
+            return;
+        }
+        if let Some(tool) = lookup("gtk-update-icon-cache") {
+            let _ = Command::new(tool)
+                .args(["--force", "--ignore-theme-index"])
+                .arg(dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    };
     let ctx = Context {
         env_terminal: std::env::var("TERMINAL").ok(),
         xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
@@ -81,6 +100,7 @@ pub fn main(args: &[OsString]) -> i32 {
         ),
         lookup: &lookup,
         refresh_db: &refresh_db,
+        refresh_icons: &refresh_icons,
     };
     // Ask only when a person is at the keyboard and reading the screen.
     let stdin = std::io::stdin();
@@ -111,19 +131,22 @@ pub fn execute(
     match options {
         Options::Help => writeln!(out, "{USAGE}").map_err(io_error),
         Options::Uninstall => {
-            match fs::remove_file(&target) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return writeln!(
-                        out,
-                        "Nothing to remove: {} does not exist",
-                        target.display()
-                    )
-                    .map_err(io_error);
-                }
-                Err(e) => return Err(format!("cannot remove {}: {e}", target.display())),
+            let launcher = remove_if_present(&target)?;
+            let icons = remove_icons(&data)?;
+            if launcher {
+                (ctx.refresh_db)(&apps_dir);
             }
-            (ctx.refresh_db)(&apps_dir);
+            if icons {
+                (ctx.refresh_icons)(&icon_theme_dir(&data));
+            }
+            if !launcher && !icons {
+                return writeln!(
+                    out,
+                    "Nothing to remove: {} does not exist",
+                    target.display()
+                )
+                .map_err(io_error);
+            }
             writeln!(out, "Removed {}", target.display()).map_err(io_error)
         }
         Options::Install { terminal, dir } => {
@@ -160,7 +183,7 @@ pub fn execute(
             let existed = fs::symlink_metadata(&target).is_ok();
             let plan = plan_install(&choice, &ctx.exe, dir.as_deref(), ctx.wsl)?;
             notes.extend(plan.notes);
-            write_atomically(&apps_dir, &target, &plan.contents)
+            write_atomically(&target, plan.contents.as_bytes())
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
             (ctx.refresh_db)(&apps_dir);
             let verb = if existed { "Updated" } else { "Installed" };
@@ -170,7 +193,17 @@ pub fn execute(
             for note in notes {
                 writeln!(out, "  note: {note}").map_err(io_error)?;
             }
-            Ok(())
+            // After the launcher: a failed icon never loses the entry, but it
+            // is always reported and makes the exit status non-zero.
+            let failures = install_icons(&data);
+            (ctx.refresh_icons)(&icon_theme_dir(&data));
+            if failures.is_empty() {
+                return Ok(());
+            }
+            Err(format!(
+                "the launcher is installed but its icon is not (the menu shows a generic one): {}",
+                failures.join("; ")
+            ))
         }
     }
 }
@@ -225,12 +258,45 @@ fn io_error(e: std::io::Error) -> String {
     format!("cannot write to stdout: {e}")
 }
 
-/// Writes a temp file next to the target and renames it over: a launcher
-/// never shows up half written, and a symlinked target is replaced instead
-/// of written through.
-fn write_atomically(dir: &Path, target: &Path, contents: &str) -> std::io::Result<()> {
+/// Writes every embedded icon under `data`; returns one message per failure.
+fn install_icons(data: &Path) -> Vec<String> {
+    ICONS
+        .iter()
+        .filter_map(|(relative, bytes)| {
+            let path = data.join(relative);
+            write_atomically(&path, bytes)
+                .err()
+                .map(|e| format!("cannot write icon {}: {e}", path.display()))
+        })
+        .collect()
+}
+
+/// Removes the icons `install_icons` writes; whether any existed.
+fn remove_icons(data: &Path) -> Result<bool, String> {
+    let mut any = false;
+    for (relative, _) in ICONS {
+        any |= remove_if_present(&data.join(relative))?;
+    }
+    Ok(any)
+}
+
+/// Removes a file; `false` when it was not there.
+fn remove_if_present(path: &Path) -> Result<bool, String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("cannot remove {}: {e}", path.display())),
+    }
+}
+
+/// Writes a temp file next to the target and renames it over: a file never
+/// shows up half written, and a symlinked target is replaced instead of
+/// written through. Creates the target's folder.
+fn write_atomically(target: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let result = (|| {
         let open = || {
             fs::OpenOptions::new()
@@ -247,7 +313,7 @@ fn write_atomically(dir: &Path, target: &Path, contents: &str) -> std::io::Resul
             }
             other => other?,
         };
-        file.write_all(contents.as_bytes())?;
+        file.write_all(contents)?;
         file.set_permissions(fs::Permissions::from_mode(0o644))?;
         file.sync_all()?;
         drop(file);

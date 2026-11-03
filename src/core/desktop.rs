@@ -29,6 +29,41 @@ pub const KNOWN_TERMINALS: [&str; 9] = [
     "x-terminal-emulator",
 ];
 
+/// The icons the launcher names with `Icon=lazarobox`, embedded so a
+/// `cargo install` user needs no files on disk: paths relative to the data
+/// directory, in the hicolor theme the desktop searches.
+pub const ICONS: [(&str, &[u8]); 6] = [
+    (
+        "icons/hicolor/256x256/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-256.png"),
+    ),
+    (
+        "icons/hicolor/128x128/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-128.png"),
+    ),
+    (
+        "icons/hicolor/48x48/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-48.png"),
+    ),
+    (
+        "icons/hicolor/32x32/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-32.png"),
+    ),
+    (
+        "icons/hicolor/16x16/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-16.png"),
+    ),
+    (
+        "icons/hicolor/scalable/apps/lazarobox.svg",
+        include_bytes!("../../assets/icon/lazarobox.svg"),
+    ),
+];
+
+/// `<data_home>/icons/hicolor`: the theme folder whose cache may need a refresh.
+pub fn icon_theme_dir(data_home: &Path) -> PathBuf {
+    data_home.join("icons/hicolor")
+}
+
 const TEMPLATE: &str = include_str!("desktop/lazarobox.desktop");
 
 pub const USAGE: &str =

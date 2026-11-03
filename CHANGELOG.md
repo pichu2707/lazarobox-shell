@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The desktop entry now shows the Lazarobox logo. `install-desktop` writes the
+  embedded icons (PNG 256, 128, 48, 32 and 16 px, plus an SVG) to
+  `<XDG_DATA_HOME>/icons/hicolor/` and the entry uses `Icon=lazarobox`;
+  `--uninstall` removes them. A failed icon write is reported and exits with
+  an error, but keeps the installed entry (#268).
+
 ## [1.4.0] - 2026-11-03
 
 ### Added

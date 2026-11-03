@@ -10,6 +10,7 @@ const EXE: &str = "/opt/lazarobox/bin/lazarobox-shell";
 struct Fixture {
     home: tempfile::TempDir,
     refreshed: RefCell<Vec<PathBuf>>,
+    icons_refreshed: RefCell<Vec<PathBuf>>,
 }
 
 impl Fixture {
@@ -17,6 +18,7 @@ impl Fixture {
         Self {
             home: tempfile::tempdir().unwrap(),
             refreshed: RefCell::new(Vec::new()),
+            icons_refreshed: RefCell::new(Vec::new()),
         }
     }
 
@@ -33,6 +35,7 @@ impl Fixture {
                 .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
         };
         let refresh = |dir: &Path| self.refreshed.borrow_mut().push(dir.to_path_buf());
+        let refresh_icons = |dir: &Path| self.icons_refreshed.borrow_mut().push(dir.to_path_buf());
         let ctx = Context {
             env_terminal: env_terminal.map(String::from),
             xdg_data_home: xdg.map(OsString::from),
@@ -42,6 +45,7 @@ impl Fixture {
             wsl: false,
             lookup: &lookup,
             refresh_db: &refresh,
+            refresh_icons: &refresh_icons,
         };
         let mut out = Vec::new();
         let result = execute(options, &ctx, None, &mut out);
@@ -63,6 +67,7 @@ impl Fixture {
                 .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
         };
         let refresh = |_: &Path| {};
+        let refresh_icons = |_: &Path| {};
         let ctx = Context {
             env_terminal: None,
             xdg_data_home: None,
@@ -72,6 +77,7 @@ impl Fixture {
             wsl,
             lookup: &lookup,
             refresh_db: &refresh,
+            refresh_icons: &refresh_icons,
         };
         let mut reader = typed.map(|t| std::io::Cursor::new(t.as_bytes().to_vec()));
         let input = reader.as_mut().map(|r| r as &mut dyn BufRead);
@@ -190,6 +196,7 @@ fn a_build_artefact_exe_is_reported_with_a_note() {
     let fx = Fixture::new();
     let lookup = |_: &str| None;
     let refresh = |_: &Path| {};
+    let refresh_icons = |_: &Path| {};
     let ctx = Context {
         env_terminal: None,
         xdg_data_home: None,
@@ -199,6 +206,7 @@ fn a_build_artefact_exe_is_reported_with_a_note() {
         wsl: false,
         lookup: &lookup,
         refresh_db: &refresh,
+        refresh_icons: &refresh_icons,
     };
     let mut out = Vec::new();
     execute(&install(None), &ctx, None, &mut out).unwrap();
@@ -228,6 +236,7 @@ fn unsafe_binary_path_writes_nothing() {
     let fx = Fixture::new();
     let lookup = |_: &str| None;
     let refresh = |_: &Path| {};
+    let refresh_icons = |_: &Path| {};
     let ctx = Context {
         env_terminal: None,
         xdg_data_home: None,
@@ -237,6 +246,7 @@ fn unsafe_binary_path_writes_nothing() {
         wsl: false,
         lookup: &lookup,
         refresh_db: &refresh,
+        refresh_icons: &refresh_icons,
     };
     assert!(execute(&install(None), &ctx, None, &mut Vec::new()).is_err());
     assert!(!fx.target().exists());
@@ -472,6 +482,7 @@ fn finding_candidates_never_runs_a_terminal() {
     let path_var = std::env::join_paths([&bin]).unwrap();
     let lookup = |cmd: &str| which(cmd, Some(&path_var));
     let refresh = |_: &Path| {};
+    let refresh_icons = |_: &Path| {};
     let ctx = Context {
         env_terminal: Some("zutty".into()),
         xdg_data_home: None,
@@ -481,6 +492,7 @@ fn finding_candidates_never_runs_a_terminal() {
         wsl: false,
         lookup: &lookup,
         refresh_db: &refresh,
+        refresh_icons: &refresh_icons,
     };
     let mut reader = std::io::Cursor::new(b"2\n".to_vec());
     let mut out = Vec::new();
@@ -508,6 +520,7 @@ fn a_symlinked_alternative_is_offered_under_its_target_name() {
     let path_var = std::env::join_paths([&alt_dir]).unwrap();
     let lookup = |cmd: &str| which(cmd, Some(&path_var));
     let refresh = |_: &Path| {};
+    let refresh_icons = |_: &Path| {};
     let ctx = Context {
         env_terminal: None,
         xdg_data_home: None,
@@ -517,6 +530,7 @@ fn a_symlinked_alternative_is_offered_under_its_target_name() {
         wsl: false,
         lookup: &lookup,
         refresh_db: &refresh,
+        refresh_icons: &refresh_icons,
     };
     let mut reader = std::io::Cursor::new(b"\n".to_vec());
     let mut out = Vec::new();
@@ -613,6 +627,7 @@ fn a_failing_reader_is_reported_and_writes_nothing() {
             .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
     };
     let refresh = |_: &Path| {};
+    let refresh_icons = |_: &Path| {};
     let ctx = Context {
         env_terminal: None,
         xdg_data_home: None,
@@ -622,6 +637,7 @@ fn a_failing_reader_is_reported_and_writes_nothing() {
         wsl: false,
         lookup: &lookup,
         refresh_db: &refresh,
+        refresh_icons: &refresh_icons,
     };
     let mut reader = std::io::BufReader::new(Broken);
     let why = execute(&install(None), &ctx, Some(&mut reader), &mut Vec::new()).unwrap_err();
@@ -645,6 +661,7 @@ impl Fixture {
             file.exists().then_some(file)
         };
         let refresh = |_: &Path| {};
+        let refresh_icons = |_: &Path| {};
         let ctx = Context {
             env_terminal: None,
             xdg_data_home: None,
@@ -654,6 +671,7 @@ impl Fixture {
             wsl: false,
             lookup: &lookup,
             refresh_db: &refresh,
+            refresh_icons: &refresh_icons,
         };
         let mut reader = typed.map(|t| std::io::Cursor::new(t.as_bytes().to_vec()));
         let input = reader.as_mut().map(|r| r as &mut dyn BufRead);
@@ -721,4 +739,109 @@ fn the_alternative_linked_to_an_unrecorded_terminal_stays_untested() {
         out.contains("x-terminal-emulator has no test record yet"),
         "{out}"
     );
+}
+
+fn icon_path(fx: &Fixture, relative: &str) -> PathBuf {
+    fx.home.path().join(".local/share").join(relative)
+}
+
+#[test]
+fn install_writes_every_icon_into_the_hicolor_theme() {
+    let fx = Fixture::new();
+    let (result, _) = fx.run(&install(None), None, None, &["kitty"]);
+    result.unwrap();
+    for (relative, bytes) in crate::core::desktop::ICONS {
+        let path = icon_path(&fx, relative);
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "{}", path.display());
+        let leftovers = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0, "{}", path.display());
+    }
+}
+
+#[test]
+fn install_refreshes_the_icon_theme_folder_once() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    assert_eq!(
+        *fx.icons_refreshed.borrow(),
+        [fx.home.path().join(".local/share/icons/hicolor")]
+    );
+}
+
+#[test]
+fn reinstall_replaces_a_changed_icon() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let (relative, bytes) = crate::core::desktop::ICONS[0];
+    let path = icon_path(&fx, relative);
+    fs::write(&path, b"old").unwrap();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn an_icon_failure_is_reported_and_keeps_the_desktop_entry() {
+    let fx = Fixture::new();
+    // `icons` is a regular file, so no icon folder can be created under it.
+    let share = fx.home.path().join(".local/share");
+    fs::create_dir_all(&share).unwrap();
+    fs::write(share.join("icons"), "x").unwrap();
+    let (result, out) = fx.run(&install(None), None, None, &["kitty"]);
+    let why = result.unwrap_err();
+    assert!(
+        why.contains("icon") && why.contains("icons/hicolor"),
+        "{why}"
+    );
+    assert!(fx.target().exists(), "the launcher must survive");
+    assert!(out.contains("Installed"), "{out}");
+}
+
+#[test]
+fn uninstall_removes_the_icons_and_only_them() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let other = icon_path(&fx, "icons/hicolor/48x48/apps/other.png");
+    fs::write(&other, "keep").unwrap();
+    let (result, out) = fx.run(&Options::Uninstall, None, None, &[]);
+    result.unwrap();
+    for (relative, _) in crate::core::desktop::ICONS {
+        assert!(!icon_path(&fx, relative).exists(), "{relative}");
+    }
+    assert!(other.exists());
+    assert!(out.contains("Removed"), "{out}");
+    assert_eq!(
+        *fx.icons_refreshed.borrow(),
+        vec![fx.home.path().join(".local/share/icons/hicolor"); 2]
+    );
+}
+
+#[test]
+fn uninstall_removes_icons_even_when_the_launcher_is_already_gone() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    fs::remove_file(fx.target()).unwrap();
+    let (result, out) = fx.run(&Options::Uninstall, None, None, &[]);
+    result.unwrap();
+    assert!(!icon_path(&fx, crate::core::desktop::ICONS[0].0).exists());
+    assert!(out.contains("Removed"), "{out}");
+}
+
+#[test]
+fn uninstall_with_nothing_installed_still_says_nothing_to_remove() {
+    let fx = Fixture::new();
+    let (result, out) = fx.run(&Options::Uninstall, None, None, &[]);
+    result.unwrap();
+    assert!(out.contains("Nothing to remove"), "{out}");
+    assert!(fx.icons_refreshed.borrow().is_empty());
 }
