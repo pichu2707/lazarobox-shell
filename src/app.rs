@@ -931,6 +931,9 @@ pub struct App {
     /// The chats whose open steps (memory, prompt, list) wait for the folder
     /// to be settled: the probe, or the picker.
     opening: HashSet<PaneId>,
+    /// Chats opened in a folder outside HOME, until their picker closes: Esc
+    /// keeps that folder and says the file tools cannot read it.
+    outside_open: HashSet<PaneId>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -1086,6 +1089,7 @@ impl App {
             home: None,
             resume_folders: HashMap::new(),
             opening: HashSet::new(),
+            outside_open: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
             hostname: None,
