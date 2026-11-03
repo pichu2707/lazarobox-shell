@@ -20,14 +20,18 @@ pub const SLOW_AFTER: Duration = Duration::from_secs(3);
 /// runtime reads this very value for every engine.
 pub const FIRST_BYTE_LIMIT: Duration = Duration::from_secs(120);
 
+/// Once the reply has started, a server turn gives up after this long without
+/// a read. The runtime reads this very value for the server engines.
+pub const IDLE_LIMIT: Duration = Duration::from_secs(60);
+
 /// A user answer holds the turn.
 pub const WAITING_USER: &str = "waiting for your answer…";
 
 /// The suffix of the wait line, as long as `room` columns allow: the seconds
 /// and the limit, or the seconds alone, or nothing.
-pub fn suffix(elapsed: Duration, room: usize) -> Option<String> {
+pub fn suffix(elapsed: Duration, limit: Duration, room: usize) -> Option<String> {
     let secs = elapsed.as_secs();
-    let full = format!(" {secs}s (gives up at {}s)", FIRST_BYTE_LIMIT.as_secs());
+    let full = format!(" {secs}s (gives up at {}s)", limit.as_secs());
     let short = format!(" {secs}s");
     [full, short]
         .into_iter()
@@ -87,16 +91,37 @@ impl ChatState {
         }
     }
 
+    /// The limit the wait line states: the first-byte one, or, once the
+    /// runtime said a read restarted its idle clock, the seconds from the
+    /// anchor at which that clock gives up.
+    pub fn wait_limit(&self) -> Duration {
+        match (self.idle_from, self.wait_since) {
+            (Some(read), Some(since)) => read.saturating_duration_since(since) + IDLE_LIMIT,
+            _ => FIRST_BYTE_LIMIT,
+        }
+    }
+
+    /// The runtime read part of the reply at `now`, and the model has still
+    /// said nothing: its idle clock restarted. Only after `Slow`, and only
+    /// while the line waits for the model; the seconds' anchor is untouched.
+    pub(super) fn clock_read(&mut self, now: Instant) {
+        if matches!(self.phase, Phase::Waiting { slow: true }) && self.wait_since.is_some() {
+            self.idle_from = Some(now);
+        }
+    }
+
     /// The clock said `Slow` at `now`: it started [`SLOW_AFTER`] before.
     pub(super) fn clock_said_slow(&mut self, now: Instant) {
         self.wait_since = Some(now.checked_sub(SLOW_AFTER).unwrap_or(now));
         self.held_since = None;
+        self.idle_from = None;
     }
 
     /// The clock of the request is over or starts again: forget its start.
     pub(super) fn clock_reset(&mut self) {
         self.wait_since = None;
         self.held_since = None;
+        self.idle_from = None;
     }
 
     /// Follows the pauses of the clock: a tool call that waits for the user

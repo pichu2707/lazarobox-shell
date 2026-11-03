@@ -189,6 +189,7 @@ impl Pipe {
         }
         match event {
             StreamEvent::Slow => vec![StreamEvent::Slow],
+            StreamEvent::Reading => vec![StreamEvent::Reading],
             StreamEvent::Notice(text) => {
                 let line = clean(&text)
                     .split_whitespace()

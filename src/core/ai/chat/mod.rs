@@ -327,6 +327,8 @@ pub struct ChatState {
     wait_since: Option<Instant>,
     /// Since when a tool call that waits for the user holds that clock.
     held_since: Option<Instant>,
+    /// The last read the runtime reported while the model was silent.
+    idle_from: Option<Instant>,
     /// The model of the request in flight, as sent.
     request_model: String,
     /// Moves with every change of the transcript.
@@ -485,6 +487,7 @@ impl ChatState {
             started: None,
             wait_since: None,
             held_since: None,
+            idle_from: None,
             request_model: String::new(),
             generation: 0,
             scroll: Scroll::Follow,
@@ -1432,13 +1435,17 @@ impl ChatState {
         if self.summarizing.is_some() {
             return self.apply_summary(event, now);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
+        if !matches!(
+            event,
+            StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_) | StreamEvent::Reading
+        ) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
             StreamEvent::Slow
+                | StreamEvent::Reading
                 | StreamEvent::Notice(_)
                 | StreamEvent::Error(_)
                 | StreamEvent::Usage(_)
@@ -1451,6 +1458,10 @@ impl ChatState {
                     *slow = true;
                     self.clock_said_slow(now);
                 }
+                Follow::Nothing
+            }
+            StreamEvent::Reading => {
+                self.clock_read(now);
                 Follow::Nothing
             }
             StreamEvent::Notice(line) => {

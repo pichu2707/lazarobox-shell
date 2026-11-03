@@ -199,10 +199,13 @@ fn a_cli_turn_states_no_seconds_and_no_limit() {
 #[test]
 fn the_suffix_gives_what_fits() {
     let secs = Duration::from_secs(45);
-    assert_eq!(suffix(secs, 40).as_deref(), Some(" 45s (gives up at 120s)"));
-    assert_eq!(suffix(secs, 22).as_deref(), Some(" 45s"));
-    assert_eq!(suffix(secs, 4).as_deref(), Some(" 45s"));
-    assert_eq!(suffix(secs, 3), None);
+    assert_eq!(
+        suffix(secs, FIRST_BYTE_LIMIT, 40).as_deref(),
+        Some(" 45s (gives up at 120s)")
+    );
+    assert_eq!(suffix(secs, FIRST_BYTE_LIMIT, 22).as_deref(), Some(" 45s"));
+    assert_eq!(suffix(secs, FIRST_BYTE_LIMIT, 4).as_deref(), Some(" 45s"));
+    assert_eq!(suffix(secs, FIRST_BYTE_LIMIT, 3), None);
 }
 
 #[test]
@@ -285,4 +288,78 @@ fn no_run_leaves_its_clock_behind() {
     state.apply_at(turn, StreamEvent::Slow, at(510));
     state.cancel_at(at(520));
     assert_eq!(state.wait_since, None, "summary cancelled");
+}
+
+#[test]
+fn the_limit_is_the_first_byte_one_until_a_read_restarts_the_idle_clock() {
+    let (state, _) = slow_turn("ollama", 10);
+    assert_eq!(state.wait_limit(), FIRST_BYTE_LIMIT);
+}
+
+#[test]
+fn a_read_after_slow_moves_the_limit_to_the_idle_clock_from_that_read() {
+    let (mut state, turn) = slow_turn("ollama", 10);
+    // Anchor at 7; the headers arrive at 20: the turn dies at 20 + 60.
+    state.apply_at(turn, StreamEvent::Reading, at(20));
+    assert_eq!(state.wait_limit(), Duration::from_secs(13 + 60));
+    // A keep-alive at 50 restarts it.
+    state.apply_at(turn, StreamEvent::Reading, at(50));
+    assert_eq!(state.wait_limit(), Duration::from_secs(43 + 60));
+    // The seconds keep counting from the same anchor and the line is the same.
+    assert_eq!(state.wait_elapsed(at(52)), Some(Duration::from_secs(45)));
+    assert_eq!(text(&state).as_deref(), Some(STILL_WAITING));
+}
+
+#[test]
+fn a_read_is_not_a_byte_for_the_model() {
+    let (mut state, turn) = slow_turn("ollama", 10);
+    let generation = state.generation();
+    state.apply_at(turn, StreamEvent::Reading, at(20));
+    assert_eq!(state.phase(), Phase::Waiting { slow: true });
+    assert_eq!(state.generation(), generation);
+    assert!(state.wait_elapsed(at(21)).is_some());
+}
+
+#[test]
+fn a_read_before_slow_changes_nothing() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    state.apply_at(turn, StreamEvent::Reading, at(1));
+    state.apply_at(turn, StreamEvent::Slow, at(10));
+    assert_eq!(state.wait_limit(), FIRST_BYTE_LIMIT);
+}
+
+#[test]
+fn a_new_request_starts_from_the_first_byte_limit_again() {
+    let (mut state, turn) = slow_turn("ollama", 10);
+    state.apply_at(turn, StreamEvent::Reading, at(20));
+    // A tool round, then the next request that is slow in its turn.
+    state.apply_at(turn, call(1, "list_dir"), at(30));
+    assert_eq!(state.wait_limit(), FIRST_BYTE_LIMIT);
+    state.apply_at(turn, done(1), at(31));
+    state.apply_at(turn, StreamEvent::Slow, at(40));
+    state.apply_at(turn, StreamEvent::Reading, at(45));
+    assert_eq!(state.wait_limit(), Duration::from_secs(8 + 60));
+    state.apply_at(turn, call(2, "list_dir"), at(50));
+    state.apply_at(turn, done(2), at(51));
+    state.apply_at(turn, StreamEvent::Slow, at(60));
+    assert_eq!(state.wait_limit(), FIRST_BYTE_LIMIT);
+}
+
+#[test]
+fn the_limit_of_a_summary_follows_its_own_reads() {
+    let (mut state, turn) = summary_after_slow_turn("ollama", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    state.apply_at(turn, StreamEvent::Reading, at(520));
+    assert_eq!(state.wait_limit(), Duration::from_secs(13 + 60));
+    // A read in the summary of another run never leaks: the clock resets.
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(530));
+    assert_eq!(state.wait_limit(), FIRST_BYTE_LIMIT);
+}
+
+#[test]
+fn a_cli_turn_still_states_no_seconds_after_a_read() {
+    let (mut state, turn) = slow_turn("claude", 10);
+    state.apply_at(turn, StreamEvent::Reading, at(20));
+    assert_eq!(state.wait_elapsed(at(30)), None);
 }

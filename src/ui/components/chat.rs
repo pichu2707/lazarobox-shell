@@ -238,7 +238,7 @@ impl<'a> ChatView<'a> {
         };
         let used = text_width(&line.text);
         let room = usize::from(rect.width).saturating_sub(used);
-        if let Some(suffix) = wait_line::suffix(elapsed, room) {
+        if let Some(suffix) = wait_line::suffix(elapsed, self.chat.wait_limit(), room) {
             let x = rect.x + u16::try_from(used).unwrap_or(0);
             buf.set_stringn(x, y, &suffix, room, self.style(LineKind::Waiting));
         }

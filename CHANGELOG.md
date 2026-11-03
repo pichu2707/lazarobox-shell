@@ -18,7 +18,11 @@ baseline.
   seconds the request clock has run and its limit (`still waiting for the
   model… 45s (gives up at 120s)`), counted from the clock's own slow event and
   only while the line waits for the model (not under an approval prompt or a
-  running tool); the CLI engines show neither seconds nor limit. The rolling
+  running tool). When a server sends its headers late and the model is still
+  silent, the runtime reports each read and the limit becomes the 60 s idle
+  limit counted from the last read (`gives up at 73s`), so the line never
+  states a limit the turn no longer has. The CLI engines show neither seconds
+  nor limit. The rolling
   summary run counts from its own clock, not from the last turn (#437).
 
 ### Fixed

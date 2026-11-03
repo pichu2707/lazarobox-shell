@@ -297,6 +297,10 @@ impl Usage {
 pub enum StreamEvent {
     /// No byte arrived yet and the wait is getting long.
     Slow,
+    /// A server reply is being read while the model is still silent: the
+    /// idle clock of the runtime restarted now. Sent only after `Slow`, only
+    /// until the reply says something. It is not a byte of the answer.
+    Reading,
     Delta(String),
     /// Something the user should know about how this turn runs, as one line
     /// (a CLI that runs without its jail). Shown once per pane.

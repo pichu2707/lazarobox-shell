@@ -103,3 +103,25 @@ fn a_cli_wait_line_has_no_seconds_and_no_limit() {
     );
     assert!(!shown.iter().any(|r| r.contains("gives up")), "{shown:?}");
 }
+
+#[test]
+fn the_limit_on_the_line_follows_the_last_read_of_the_runtime() {
+    let mut chat = slow_chat("ollama");
+    let turn = chat.turn();
+    // Headers arrive at 20: the anchor is 7, so the turn gives up at 73 s.
+    chat.apply_at(turn, StreamEvent::Reading, at(20));
+    let shown = rows(&chat, at(52), 80);
+    assert!(
+        shown
+            .iter()
+            .any(|r| r == "still waiting for the model… 45s (gives up at 73s)"),
+        "{shown:?}"
+    );
+    // A later read moves it; the seconds keep their anchor.
+    chat.apply_at(turn, StreamEvent::Reading, at(40));
+    let shown = rows(&chat, at(52), 80);
+    assert!(
+        shown.iter().any(|r| r.ends_with("45s (gives up at 93s)")),
+        "{shown:?}"
+    );
+}

@@ -517,6 +517,7 @@ async fn a_first_byte_slower_than_idle_is_fine() {
         events,
         vec![
             StreamEvent::Slow,
+            StreamEvent::Reading,
             delta("Hel"),
             delta("lo"),
             StreamEvent::Done(Finish::Stop)
@@ -598,6 +599,7 @@ async fn thinking_counts_as_the_first_byte_and_as_activity() {
         events,
         vec![
             StreamEvent::Slow,
+            StreamEvent::Reading,
             thought.clone(),
             thought.clone(),
             thought.clone(),
@@ -936,4 +938,81 @@ fn the_wait_line_reads_the_limits_of_the_real_clock() {
         assert_eq!(timeouts.first_byte, FIRST_BYTE_LIMIT);
         assert_eq!(timeouts.slow, SLOW_AFTER);
     }
+}
+
+// The idle clock after a late head ---------------------------------------------
+
+/// The events of a turn up to now, without waiting for more.
+fn drained(t: &mut Turn) -> Vec<StreamEvent> {
+    let mut out = Vec::new();
+    while let Ok(event) = t.events.try_recv() {
+        out.push(event);
+    }
+    out
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_head_after_slow_says_the_idle_clock_runs_and_the_turn_dies_60_s_after() {
+    let mut t = start_turn();
+    tokio::task::yield_now().await;
+    advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Slow]);
+    t.server.write_all(HEAD).await.unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
+    // Silence from here: the idle limit, not the first-byte one, applies.
+    assert_eq!(t.events.recv().await, Some(failed(STALLED)));
+    assert_eq!(t.start.elapsed(), Duration::from_secs(70));
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_read_while_the_model_is_silent_says_so_and_a_reply_stops_it() {
+    let mut t = start_turn();
+    tokio::task::yield_now().await;
+    advance(Duration::from_secs(5)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Slow]);
+    t.server.write_all(HEAD).await.unwrap();
+    tokio::task::yield_now().await;
+    // A keep-alive the decoder turns into nothing restarts the idle clock.
+    advance(Duration::from_secs(30)).await;
+    t.server.write_all(&chunk("\n")).await.unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(
+        drained(&mut t),
+        vec![StreamEvent::Reading, StreamEvent::Reading]
+    );
+    t.server.write_all(&chunk(HELLO)).await.unwrap();
+    tokio::task::yield_now().await;
+    t.server.write_all(&chunk(HELLO)).await.unwrap();
+    tokio::task::yield_now().await;
+    let events = drained(&mut t);
+    assert_eq!(events.first(), Some(&StreamEvent::Reading));
+    assert!(
+        events[1..]
+            .iter()
+            .all(|e| matches!(e, StreamEvent::Delta(_))),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_head_before_slow_sends_no_reading() {
+    let mut t = start_turn();
+    tokio::task::yield_now().await;
+    t.server.write_all(HEAD).await.unwrap();
+    t.server.write_all(&chunk(HELLO)).await.unwrap();
+    t.server.write_all(&chunk(DONE)).await.unwrap();
+    t.server.write_all(END).await.unwrap();
+    assert_eq!(
+        collect(t.events).await,
+        vec![delta("Hel"), delta("lo"), StreamEvent::Done(Finish::Stop)]
+    );
+}
+
+#[test]
+fn the_idle_limit_is_the_constant_the_wait_line_reads() {
+    use crate::core::ai::chat::wait_line::IDLE_LIMIT;
+    assert_eq!(Timeouts::SERVER.idle, IDLE_LIMIT);
 }

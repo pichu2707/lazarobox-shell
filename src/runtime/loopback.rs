@@ -16,7 +16,7 @@ use crate::core::ai::{
     chat::{
         engine::{ChatError, StreamEvent},
         stream::StreamDecoder,
-        wait_line::{FIRST_BYTE_LIMIT, SLOW_AFTER},
+        wait_line::{FIRST_BYTE_LIMIT, IDLE_LIMIT, SLOW_AFTER},
     },
     http::{Body, Framing, Head, Step, parse_head},
     sanitize::clean,
@@ -73,7 +73,7 @@ impl Timeouts {
     pub const SERVER: Self = Self {
         connect: Duration::from_secs(2),
         first_byte: FIRST_BYTE_LIMIT,
-        idle: Duration::from_secs(60),
+        idle: IDLE_LIMIT,
         total: Duration::from_secs(15 * 60),
         slow: SLOW_AFTER,
         quiet: None,
@@ -209,6 +209,9 @@ pub(crate) struct Wait<'a> {
     /// A byte of the reply has arrived.
     started: bool,
     slow_sent: bool,
+    /// The reply has said something the app counts as an answer: no more
+    /// `Reading` events.
+    settled: bool,
     hold: Hold,
 }
 
@@ -220,6 +223,7 @@ impl<'a> Wait<'a> {
             start: Instant::now(),
             started: false,
             slow_sent: false,
+            settled: false,
             hold: Hold(pending::current().map(|p| p.watch())),
         }
     }
@@ -306,7 +310,27 @@ impl<'a> Wait<'a> {
             Err(_) => return Err(Stop::Failed(INVALID_REPLY)),
         };
         self.started |= n > 0;
+        // The app was told the model is slow, and its limit depends on the
+        // last read: tell it each read until the reply says something (a
+        // keep-alive the decoder turns into nothing restarts the idle clock
+        // too). Awaited, not dropped on a full channel: a lost one would leave
+        // a limit that is too low. A CLI shows no limit, so it gets none.
+        if n > 0 && self.slow_sent && !self.settled && self.timeouts.quiet.is_none() {
+            tx.send(StreamEvent::Reading)
+                .await
+                .map_err(|_| Stop::Cancelled)?;
+        }
         Ok(n)
+    }
+
+    /// The reply said something: reads stop being reported.
+    pub(crate) fn settle(&mut self, events: &[StreamEvent]) {
+        self.settled |= events.iter().any(|event| match event {
+            StreamEvent::Slow | StreamEvent::Reading | StreamEvent::Notice(_) => false,
+            StreamEvent::Usage(_) => false,
+            StreamEvent::Delta(text) | StreamEvent::ThinkingDelta(text) => !text.is_empty(),
+            _ => true,
+        });
     }
 }
 
@@ -367,6 +391,7 @@ where
         if !data.is_empty() {
             let events = decoder.feed(&data);
             data.clear();
+            wait.settle(&events);
             if send_all(tx, events).await? {
                 return Ok(());
             }

@@ -303,6 +303,10 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Reading => {
+                self.clock_read(now);
+                Follow::Nothing
+            }
             StreamEvent::Usage(usage) => {
                 if let Some(run) = self.side_run.as_mut() {
                     run.add(*usage);
