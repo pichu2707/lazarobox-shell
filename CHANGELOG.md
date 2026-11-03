@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-03
+
 ### Added
 
 - Prompt-cache options for the local servers: `[ai.servers.ollama] keep_alive`
@@ -1966,7 +1968,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...v1.2.4
