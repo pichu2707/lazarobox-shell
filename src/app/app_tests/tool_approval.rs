@@ -1253,6 +1253,85 @@ mod guard {
         assert!(a.approval_prompt(id2()).unwrap().armed);
     }
 
+    // A key the prompt does not take is never silent (visible-failure-notices).
+    const ANSWER_FIRST: &str = "Answer the pending confirm first";
+    const JUST_OPENED: &str = "Prompt just opened: answer again in a moment";
+
+    #[test]
+    fn an_answer_in_the_unarmed_window_is_ignored_with_a_notice_and_never_approves() {
+        for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+            let (mut a, _) = asked(run("cd x"));
+            assert_eq!(at(&mut a, 10, answer.clone()), vec![], "{answer:?}");
+            assert_eq!(a.notice(), Some(JUST_OPENED), "{answer:?}");
+            assert!(pending(&a).is_some(), "{answer:?} must not answer");
+        }
+    }
+
+    #[test]
+    fn a_key_the_prompt_does_not_take_says_to_answer_first_and_keeps_the_composer() {
+        let (mut a, _) = asked(run("cd x"));
+        at(&mut a, ms(ARM_DELAY), key('q'));
+        for event in [
+            key('a'),
+            plain(KeyCode::Enter),
+            plain(KeyCode::F(5)),
+            AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        ] {
+            assert_eq!(
+                at(&mut a, ms(ARM_DELAY), event.clone()),
+                vec![],
+                "{event:?}"
+            );
+            assert_eq!(a.notice(), Some(ANSWER_FIRST), "{event:?}");
+        }
+        assert!(pending(&a).is_some());
+        assert_eq!(chat(&a, id2()).composer().text(), "");
+    }
+
+    #[test]
+    fn a_modifier_alone_and_a_repeat_stay_quiet() {
+        use ratatui::crossterm::event::ModifierKeyCode;
+        let (mut a, _) = asked(run("cd x"));
+        let alone = plain(KeyCode::Modifier(ModifierKeyCode::LeftShift));
+        assert_eq!(at(&mut a, ms(ARM_DELAY), alone), vec![]);
+        assert_eq!(a.notice(), None);
+        let held = super::super::chat_live::repeat(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(at(&mut a, ms(ARM_DELAY), held), vec![]);
+        assert_eq!(a.notice(), None);
+    }
+
+    #[test]
+    fn the_keys_that_answer_still_answer_without_a_notice() {
+        for (answer, text) in [
+            (key('n'), "n"),
+            (plain(KeyCode::Esc), "esc"),
+            (key('y'), "y"),
+        ] {
+            let (mut a, _) = asked(run("cd x"));
+            let effects = at(&mut a, ms(ARM_DELAY), answer);
+            assert!(!effects.is_empty(), "{text}");
+            assert_eq!(a.notice(), None, "{text}");
+            assert!(pending(&a).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_paste_under_the_prompt_is_dropped_with_a_notice() {
+        let (mut a, _) = asked(run("cd x"));
+        assert_eq!(at(&mut a, 10, AppEvent::Paste("rm -rf".into())), vec![]);
+        assert_eq!(a.notice(), Some(ANSWER_FIRST));
+        assert!(pending(&a).is_some());
+        assert_eq!(chat(&a, id2()).composer().text(), "");
+    }
+
+    #[test]
+    fn a_paste_never_covers_a_notice_already_showing() {
+        let (mut a, _) = asked(run("cd x"));
+        a = a.with_notice(Some("llama-server ready".into()));
+        at(&mut a, 10, AppEvent::Paste("x".into()));
+        assert_eq!(a.notice(), Some("llama-server ready"));
+    }
+
     // The wait line counts the clock of the request, and a worker's call that
     // waits for the user stops that clock: the tick is where the app sees it.
     #[test]

@@ -398,6 +398,7 @@ impl App {
         // A paste never answers an approval and never lands in the composer
         // while one waits.
         if self.has_approval(id) {
+            self.notify_unless_busy(true, super::run::ANSWER_FIRST);
             return;
         }
         if self.picker_open(id) {

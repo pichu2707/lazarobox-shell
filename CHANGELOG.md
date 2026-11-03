@@ -19,6 +19,14 @@ baseline.
   model… 45s (gives up at 120s)`); the time held for your answer is not
   counted, and the CLI engines show neither seconds nor limit (#437).
 
+### Fixed
+
+- A key the approval prompt does not take, a paste, and an answer that comes
+  before the prompt is armed no longer vanish silently: the footer says
+  `Answer the pending confirm first` or `Prompt just opened: answer again in a
+  moment`. The batch review does the same. The answer keys still never answer
+  an unarmed prompt (#437).
+
 ## [1.4.0] - 2026-11-03
 
 ### Added
