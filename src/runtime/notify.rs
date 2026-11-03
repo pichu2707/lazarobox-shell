@@ -730,7 +730,9 @@ mod tests {
 
     /// A private folder outside `/tmp`, which is never trusted.
     fn lab() -> std::io::Result<tempfile::TempDir> {
-        let dir = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/target"))?;
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/target");
+        fs::create_dir_all(base)?;
+        let dir = tempfile::tempdir_in(base)?;
         // The umask may leave a new folder group-writable.
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755))?;
         Ok(dir)
