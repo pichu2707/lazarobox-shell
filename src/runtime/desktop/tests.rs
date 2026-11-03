@@ -799,10 +799,9 @@ fn an_icon_failure_is_reported_and_keeps_the_desktop_entry() {
     fs::write(share.join("icons"), "x").unwrap();
     let (result, out) = fx.run(&install(None), None, None, &["kitty"]);
     let why = result.unwrap_err();
-    assert!(
-        why.contains("icon") && why.contains("icons/hicolor"),
-        "{why}"
-    );
+    assert!(why.contains("some icons could not be written"), "{why}");
+    assert!(why.contains("icons/hicolor"), "{why}");
+    assert!(!why.contains("generic"), "{why}");
     assert!(fx.target().exists(), "the launcher must survive");
     assert!(out.contains("Installed"), "{out}");
 }
@@ -834,7 +833,76 @@ fn uninstall_removes_icons_even_when_the_launcher_is_already_gone() {
     let (result, out) = fx.run(&Options::Uninstall, None, None, &[]);
     result.unwrap();
     assert!(!icon_path(&fx, crate::core::desktop::ICONS[0].0).exists());
-    assert!(out.contains("Removed"), "{out}");
+    assert!(out.contains("Removed 6 icons"), "{out}");
+    assert!(!out.contains("lazarobox.desktop"), "{out}");
+    assert_eq!(fx.refreshed.borrow().len(), 1, "only the install refreshed");
+}
+
+#[test]
+fn uninstall_names_the_launcher_and_the_icons_it_removed() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    let (_, out) = fx.run(&Options::Uninstall, None, None, &[]);
+    assert!(
+        out.contains(&format!("Removed {}", fx.target().display())),
+        "{out}"
+    );
+    assert!(out.contains("Removed 6 icons"), "{out}");
+}
+
+#[test]
+fn uninstall_tries_every_file_and_still_refreshes_when_one_cannot_go() {
+    let fx = Fixture::new();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    // A non-empty folder where the first icon was: remove_file fails on it.
+    let stuck = icon_path(&fx, crate::core::desktop::ICONS[0].0);
+    fs::remove_file(&stuck).unwrap();
+    fs::create_dir(&stuck).unwrap();
+    fs::write(stuck.join("x"), "x").unwrap();
+    let (result, _) = fx.run(&Options::Uninstall, None, None, &[]);
+    let why = result.unwrap_err();
+    assert!(why.contains(&stuck.display().to_string()), "{why}");
+    assert!(!fx.target().exists());
+    for (relative, _) in &crate::core::desktop::ICONS[1..] {
+        assert!(!icon_path(&fx, relative).exists(), "{relative}");
+    }
+    assert_eq!(fx.refreshed.borrow().len(), 2);
+    assert_eq!(fx.icons_refreshed.borrow().len(), 2);
+}
+
+#[test]
+fn a_failed_atomic_write_leaves_no_temp_file() {
+    let fx = Fixture::new();
+    // The rename fails because the target is a non-empty folder.
+    let target = fx.home.path().join("out/file");
+    fs::create_dir_all(target.join("child")).unwrap();
+    assert!(write_atomically(&target, b"x").is_err());
+    let names: Vec<_> = fs::read_dir(target.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["file"]);
+}
+
+#[test]
+fn a_hung_helper_is_killed_at_the_deadline_and_reported() {
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let started = std::time::Instant::now();
+    let why = run_bounded(cmd, std::time::Duration::from_millis(200)).unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(why.contains("killed"), "{why}");
+}
+
+#[test]
+fn a_quick_helper_is_not_an_error_and_a_missing_one_is() {
+    run_bounded(Command::new("true"), std::time::Duration::from_secs(5)).unwrap();
+    let why = run_bounded(
+        Command::new("/nonexistent/tool"),
+        std::time::Duration::from_secs(5),
+    )
+    .unwrap_err();
+    assert!(why.contains("cannot start"), "{why}");
 }
 
 #[test]

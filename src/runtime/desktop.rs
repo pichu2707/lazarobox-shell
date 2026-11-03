@@ -62,12 +62,7 @@ pub fn main(args: &[OsString]) -> i32 {
     let lookup = |cmd: &str| which(cmd, std::env::var_os("PATH").as_deref());
     let refresh_db = |dir: &Path| {
         if let Some(tool) = lookup("update-desktop-database") {
-            let _ = Command::new(tool)
-                .arg(dir)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            refresh_with(tool, &[dir.as_os_str()]);
         }
     };
     let refresh_icons = |dir: &Path| {
@@ -77,13 +72,8 @@ pub fn main(args: &[OsString]) -> i32 {
             return;
         }
         if let Some(tool) = lookup("gtk-update-icon-cache") {
-            let _ = Command::new(tool)
-                .args(["--force", "--ignore-theme-index"])
-                .arg(dir)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let flags = ["--force", "--ignore-theme-index"].map(OsStr::new);
+            refresh_with(tool, &[flags[0], flags[1], dir.as_os_str()]);
         }
     };
     let ctx = Context {
@@ -131,23 +121,38 @@ pub fn execute(
     match options {
         Options::Help => writeln!(out, "{USAGE}").map_err(io_error),
         Options::Uninstall => {
-            let launcher = remove_if_present(&target)?;
-            let icons = remove_icons(&data)?;
+            let mut errors = Vec::new();
+            let launcher = remove_if_present(&target).unwrap_or_else(|e| {
+                errors.push(e);
+                false
+            });
+            let icons = remove_icons(&data, &mut errors);
             if launcher {
                 (ctx.refresh_db)(&apps_dir);
             }
-            if icons {
+            if icons > 0 {
                 (ctx.refresh_icons)(&icon_theme_dir(&data));
             }
-            if !launcher && !icons {
-                return writeln!(
+            if launcher {
+                writeln!(out, "Removed {}", target.display()).map_err(io_error)?;
+            }
+            if icons > 0 {
+                let theme = icon_theme_dir(&data);
+                writeln!(out, "Removed {icons} icons under {}", theme.display())
+                    .map_err(io_error)?;
+            }
+            if !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
+            if !launcher && icons == 0 {
+                writeln!(
                     out,
                     "Nothing to remove: {} does not exist",
                     target.display()
                 )
-                .map_err(io_error);
+                .map_err(io_error)?;
             }
-            writeln!(out, "Removed {}", target.display()).map_err(io_error)
+            Ok(())
         }
         Options::Install { terminal, dir } => {
             // Checked first: a bad folder writes nothing.
@@ -201,7 +206,7 @@ pub fn execute(
                 return Ok(());
             }
             Err(format!(
-                "the launcher is installed but its icon is not (the menu shows a generic one): {}",
+                "the launcher is installed, but some icons could not be written: {}",
                 failures.join("; ")
             ))
         }
@@ -258,6 +263,51 @@ fn io_error(e: std::io::Error) -> String {
     format!("cannot write to stdout: {e}")
 }
 
+/// Longest a refresh helper may run. A real `gtk-update-icon-cache` on a big
+/// theme on a cold disk takes several seconds, so this is looser than the
+/// 2 s `notify-send` gets; it only has to bound a hang.
+const HELPER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `cmd` with no stdio and waits at most `deadline`; a helper still
+/// running then is killed and reaped. `Err` says why it did not finish. The
+/// exit status is not judged: the helpers are best-effort.
+fn run_bounded(mut cmd: Command, deadline: std::time::Duration) -> Result<(), String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot start: {e}"))?;
+    let end = std::time::Instant::now() + deadline;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if std::time::Instant::now() < end => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("still running after {deadline:?}, killed"));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("cannot wait: {e}"));
+            }
+        }
+    }
+}
+
+/// Runs a refresh helper; a failure is a warning on stderr, never an error.
+fn refresh_with(tool: PathBuf, args: &[&OsStr]) {
+    let mut cmd = Command::new(&tool);
+    cmd.args(args);
+    if let Err(why) = run_bounded(cmd, HELPER_DEADLINE) {
+        eprintln!("warning: {}: {why}", tool.display());
+    }
+}
+
 /// Writes every embedded icon under `data`; returns one message per failure.
 fn install_icons(data: &Path) -> Vec<String> {
     ICONS
@@ -271,13 +321,18 @@ fn install_icons(data: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Removes the icons `install_icons` writes; whether any existed.
-fn remove_icons(data: &Path) -> Result<bool, String> {
-    let mut any = false;
+/// Removes the icons `install_icons` writes, trying every one; returns how
+/// many went and pushes one message per failure.
+fn remove_icons(data: &Path, errors: &mut Vec<String>) -> usize {
+    let mut removed = 0;
     for (relative, _) in ICONS {
-        any |= remove_if_present(&data.join(relative))?;
+        match remove_if_present(&data.join(relative)) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
     }
-    Ok(any)
+    removed
 }
 
 /// Removes a file; `false` when it was not there.
