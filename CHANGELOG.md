@@ -12,6 +12,12 @@ baseline.
 
 ### Added
 
+- The desktop entry now shows the Lazarobox logo. `install-desktop` writes the
+  embedded icons (PNG 256, 128, 48, 32 and 16 px, plus an SVG) to
+  `<XDG_DATA_HOME>/icons/hicolor/` and the entry uses `Icon=lazarobox`;
+  `--uninstall` removes them. A failed icon write is reported and exits with
+  an error, but keeps the installed entry (#268). Existing users must re-run
+  `install-desktop` to get the logo.
 - `[ai] tool_mark` (`"auto"`, `"emoji"` or `"text"`) to force how the tool mark
   is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
   empty box and cannot be detected. A bad value falls back to `"auto"` with a
