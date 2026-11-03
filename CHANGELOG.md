@@ -15,11 +15,79 @@ baseline.
 - Ollama turns now ask for a context window: `options.num_ctx` is the smaller
   of the model's own window (read from the `POST /api/show` reply detection
   already sends, no new request) and `[ai.servers.ollama] num_ctx_cap`
-  (default 16384), and `keep_alive` is `[ai.servers.ollama]
-  keep_alive_minutes` (default 30, `0` unloads after each reply). Every turn of
-  a model sends the same values, so Ollama never reloads it because of them.
-  Neither key is written by the menu; bad values fall back with a startup
-  notice.
+  (default 16384). Every turn of a model sends the same value, so Ollama never
+  reloads it because of it. The menu does not write the key; a bad value falls
+  back with a startup notice.
+
+### Changed
+
+- Ollama turns send `keep_alive = "30m"` when `[ai.servers.ollama] keep_alive`
+  is unset, instead of Ollama's own five minutes; a value set in the file is
+  sent as written. Other engines' requests do not change.
+- The history budget of local servers now counts the system prompt, the tools
+  block and the tool schemas before any message, also when the window is
+  unknown (the 12,000-character cap is reduced by that head, never below 4,000
+  characters). Trimming still drops whole user and assistant pairs, oldest
+  first, with the usual marker. A message that cannot fit a known window is
+  still sent whole, with a notice, and an Ollama model with an unknown window
+  shows `window unknown for <model>: 12k chars` once per run. A Modelfile
+  `PARAMETER num_ctx` does not override the cap when the window is known; when
+  it is unknown no `num_ctx` is sent and the Modelfile value applies.
+
+## [1.4.0] - 2026-11-03
+
+### Added
+
+- Prompt-cache options for the local servers: `[ai.servers.ollama] keep_alive`
+  (how long the model stays loaded after a turn, such as `"30m"` or seconds)
+  and `[ai.servers.llamacpp] cache_prompt`. Unset, nothing is sent and each
+  server keeps its default (#515).
+
+## [1.3.1] - 2026-11-03
+
+### Fixed
+
+- A program that asks for focus reports (mode 1004, as nvim does) now gets
+  `ESC[I` and `ESC[O` when the lazarobox window gains or loses focus, while its
+  pane has the focus. Other panes get nothing (#483).
+
+## [1.3.0] - 2026-11-03
+
+### Added
+
+- `/feedback <text>` in a chat opens the Feedback form with the text written in
+  it: the first line is the title and the rest the description. Nothing reaches
+  the model, and the issue is sent only by the form's `Ctrl+S`. `//feedback`
+  sends a message with one slash less (#551).
+
+## [1.2.4] - 2026-11-03
+
+### Fixed
+
+- `install-desktop` judges `x-terminal-emulator` by the terminal it resolves to:
+  the picker marks it `(tested)` and the note names that terminal when it has a
+  record (#487).
+
+## [1.2.3] - 2026-11-03
+
+### Changed
+
+- Deleting a conversation from the chat list now takes `Del`, then `Enter` to
+  confirm or `Tab` to also delete its notes. `d`, `y` and `a` no longer delete.
+  This is a deliberate exception to the key binding promise of the 1.0
+  stability rules, released as a patch because the old keys could lose data
+  (#491).
+
+### Fixed
+
+- Words typed right after the chat opens on its conversation list can no longer
+  delete a conversation: `day` deleted it, with its notes when they could be
+  deleted (#491).
+
+## [1.2.2] - 2026-11-02
+
+### Added
+
 - `/cost` shows the cache share per engine for today, the last 7 days and this
   chat (`cache today: claude 91% · codex 79%`): cache reads over fresh input,
   cache reads and cache writes. Engines that report no cache show no figure.
@@ -30,18 +98,6 @@ baseline.
   and llama.cpp's `prompt_ms`; a low figure means the prompt cache was hit.
   Ollama's `load_duration` is stored too. Two additive nullable columns of
   `turn_usage`, no schema version change. Visibility only (#515).
-
-### Changed
-
-- The history budget of local servers now counts the system prompt, the tools
-  block and the tool schemas before any message, also when the window is
-  unknown (the 12,000-character cap is reduced by that head). Trimming still
-  drops whole user and assistant pairs, oldest first, with the usual marker.
-  A message that cannot fit a known window is still sent whole, with a notice,
-  and an Ollama model with an unknown window shows `window unknown for
-  <model>: 12k chars` once per run. A Modelfile `PARAMETER
-  num_ctx` does not override the cap when the window is known; when it is
-  unknown no `num_ctx` is sent and the Modelfile value applies.
 
 ## [1.2.1] - 2026-11-02
 
@@ -1936,7 +1992,13 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...v1.3.0
+[1.2.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...v1.2.4
+[1.2.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...v1.1.0

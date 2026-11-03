@@ -931,6 +931,19 @@ When a run turned memory on the pane MUST show `memory on for this run` once per
 - WHEN the run ends
 - THEN `handoffs not persisted` was shown once
 
+### Requirement: The `/feedback` command
+`/feedback` MUST be a user-only composer command, recognized when the composer text, trimmed of surrounding whitespace, is exactly `/feedback` or `/feedback` followed by whitespace (case-sensitive). Sending it MUST NOT create a user message or a request to the engine, MUST clear the composer, and MUST open the Feedback form with the text that follows it (see config-menu). `//feedback` MUST send the message with one slash less.
+
+#### Scenario: The command is not a message [auto]
+- GIVEN an idle chat and the composer holding `/feedback The chat hangs`
+- WHEN it is sent
+- THEN the Feedback form opens holding that text, the composer is empty, the transcript is unchanged and no request starts
+
+#### Scenario: Escaped [auto]
+- GIVEN the composer holding `//feedback is a command`
+- WHEN it is sent
+- THEN the message `/feedback is a command` is sent to the engine and no form opens
+
 ### Requirement: The `/cost` command
 `/cost` MUST be a user-only composer command, recognized when the composer text, trimmed of surrounding whitespace, is exactly `/cost` (case-sensitive). Sending it MUST NOT create a user message, MUST NOT emit ChatSend, MUST NOT start a stream, MUST NOT contact any engine, MUST NOT be stored in the conversation and MUST NOT enter the history of later requests. It clears the composer and appends the `/cost` view (see `ai-usage`) as system lines. It MUST work while a stream is running in the pane (the send-refusal rule does not apply) and in a conversation with no messages. `/cost` followed by anything (`/cost now`) MUST show the system line `/cost takes no arguments` and keep the composer text. The view's lines are system lines: not stored, not sent to an engine, not copied as part of an answer. If the pane has no engine configured, `/cost` still works.
 

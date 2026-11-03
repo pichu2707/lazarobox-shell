@@ -545,6 +545,7 @@ async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
         tools: crate::core::ai::chat::engine::Tools::Off,
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         ollama: Default::default(),
+        cache: Default::default(),
     };
     live.stamp(&mut request);
     assert_eq!(request.ollama.num_ctx, Some(8_192));
@@ -591,6 +592,7 @@ async fn a_failed_probe_on_the_next_run_keeps_the_last_known_window() {
         tools: crate::core::ai::chat::engine::Tools::Off,
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         ollama: Default::default(),
+        cache: Default::default(),
     };
     live.stamp(&mut request);
     assert_eq!(request.ollama.num_ctx, Some(8_192), "so does the wire");

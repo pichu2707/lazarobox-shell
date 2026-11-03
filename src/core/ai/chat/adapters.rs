@@ -10,7 +10,7 @@ use super::{
     prompts,
 };
 use crate::core::ai::{
-    CATALOG, Kind,
+    CATALOG, DEFAULT_KEEP_ALIVE, Kind,
     jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
     tools::{ExternalTool, registry::FamilySet, registry_with, wiring::McpWire},
@@ -443,22 +443,21 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
     finish_body(request, messages, tools)
 }
 
-/// The body both round wires end with: model, messages, stream flag and, when
-/// asked, the registry. An Ollama request also adds the keys only its chat API
-/// reads; the OpenAI-compatible servers share this builder and never get them.
+/// The body both round wires end with: model, messages, stream flag, when
+/// asked the registry, and the options only the server's own API reads: an
+/// Ollama request gets `num_ctx` and `keep_alive`, llama-server the
+/// prompt-cache option when set. The OpenAI-compatible servers share this
+/// builder and never get the Ollama keys.
 fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
-    if request.engine == "ollama" {
-        if let Some(num_ctx) = request.ollama.num_ctx {
-            body["options"] = json!({"num_ctx": num_ctx});
-        }
-        if let Some(minutes) = request.ollama.keep_alive_minutes {
-            body["keep_alive"] = json!(format!("{minutes}m"));
-        }
+    if request.engine == "ollama"
+        && let Some(num_ctx) = request.ollama.num_ctx
+    {
+        body["options"] = json!({"num_ctx": num_ctx});
     }
     if tools {
         // An empty list would read as "no tools" to some models and as an
@@ -467,6 +466,20 @@ fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<
         if !offered.is_empty() {
             body["tools"] = Value::Array(offered);
         }
+    }
+    // Each prompt-cache option goes only to the server that reads it (#515).
+    let cache = &request.cache;
+    match (request.engine.as_str(), cache.cache_prompt) {
+        // Unset, Ollama still keeps the model for DEFAULT_KEEP_ALIVE: its own
+        // five minutes unload it between two turns of a slow chat.
+        ("ollama", _) => {
+            body["keep_alive"] = cache
+                .keep_alive
+                .as_ref()
+                .map_or_else(|| DEFAULT_KEEP_ALIVE.into(), |keep| keep.json());
+        }
+        ("llamacpp", Some(on)) => body["cache_prompt"] = on.into(),
+        _ => {}
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }

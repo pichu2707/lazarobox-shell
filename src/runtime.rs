@@ -453,6 +453,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
     live.set_ollama(app.ai().ollama_options());
+    // Read once at start, like the ports: a change to the file needs a restart.
+    live.set_cache(app.ai().cache_options().clone());
     let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
     // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
     // `<data>/run`. Without a private folder every turn runs as text.
@@ -3726,6 +3728,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
@@ -4978,8 +4981,8 @@ mod tests {
         .await;
         assert!(file_holds(&db, b"ZZ-MARKER-ZZ"));
         let (mut app, mut panes, mut rx) = reopened(&dir).await;
-        app.update(hkey(KeyCode::Char('d'), KeyModifiers::NONE));
-        let delete = app.update(hkey(KeyCode::Char('y'), KeyModifiers::NONE));
+        app.update(hkey(KeyCode::Delete, KeyModifiers::NONE));
+        let delete = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, delete, 1).await;
         panes.shutdown_store(STORE_JOIN_BOUND);
         assert_eq!(stored_messages(&db), Vec::new());
@@ -4992,6 +4995,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),

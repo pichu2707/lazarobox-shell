@@ -155,6 +155,7 @@ fn jail_on() -> JailSupport {
 
 fn request() -> ChatRequest {
     ChatRequest {
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "claude".into(),
         model: Some("sonnet".into()),

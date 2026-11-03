@@ -182,13 +182,16 @@ fn enter_resumes_the_row_under_the_cursor() {
 
 // Spec: Delete confirmed / declined.
 #[test]
-fn d_then_y_deletes_the_row_under_the_cursor() {
+fn delete_then_enter_deletes_the_row_under_the_cursor() {
     let mut list = loaded(None);
     ch(&mut list, 'j');
-    assert_eq!(ch(&mut list, 'd'), ListOutcome::Handled);
+    assert_eq!(press(&mut list, KeyCode::Delete), ListOutcome::Handled);
     assert!(list.confirming());
-    assert_eq!(list.prompt().as_deref(), Some("Delete conversation? (y/n)"));
-    assert_eq!(ch(&mut list, 'y'), ListOutcome::Delete(2));
+    assert_eq!(
+        list.prompt().as_deref(),
+        Some("Delete conversation? ↵ yes · other key no")
+    );
+    assert_eq!(press(&mut list, KeyCode::Enter), ListOutcome::Delete(2));
     assert!(!list.confirming());
 }
 
@@ -207,29 +210,35 @@ fn noted(notes: u32, deletable: bool) -> ListView {
 #[test]
 fn notes_with_memory_and_a_token_offer_a_three_way_prompt() {
     let mut list = noted(3, true);
-    ch(&mut list, 'd');
+    press(&mut list, KeyCode::Delete);
     assert_eq!(
         list.prompt().as_deref(),
-        Some("Delete conversation? y · n · a also delete its 3 notes")
+        Some("Delete conversation? ↵ yes · Tab also delete its 3 notes · other key no")
     );
     let mut one = noted(1, true);
-    ch(&mut one, 'd');
+    press(&mut one, KeyCode::Delete);
     assert_eq!(
         one.prompt().as_deref(),
-        Some("Delete conversation? y · n · a also delete its 1 note")
+        Some("Delete conversation? ↵ yes · Tab also delete its 1 note · other key no")
     );
 }
 
 // Spec (Delete): Delete conversation only / Delete both.
 #[test]
-fn in_the_three_way_prompt_y_keeps_the_notes_and_a_deletes_them() {
+fn in_the_three_way_prompt_enter_keeps_the_notes_and_tab_deletes_them() {
     let mut list = noted(3, true);
-    ch(&mut list, 'd');
-    assert_eq!(ch(&mut list, 'y'), ListOutcome::DeleteKeepNotes(3));
+    press(&mut list, KeyCode::Delete);
+    assert_eq!(
+        press(&mut list, KeyCode::Enter),
+        ListOutcome::DeleteKeepNotes(3)
+    );
     assert!(!list.confirming());
     let mut list = noted(3, true);
-    ch(&mut list, 'd');
-    assert_eq!(ch(&mut list, 'a'), ListOutcome::DeleteWithNotes(3));
+    press(&mut list, KeyCode::Delete);
+    assert_eq!(
+        press(&mut list, KeyCode::Tab),
+        ListOutcome::DeleteWithNotes(3)
+    );
     assert!(!list.confirming());
 }
 
@@ -240,13 +249,17 @@ fn every_other_key_cancels_the_three_way_prompt() {
         KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT),
         KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
     ] {
         let mut list = noted(3, true);
-        ch(&mut list, 'd');
+        press(&mut list, KeyCode::Delete);
         assert_eq!(list.on_key(&key, false), ListOutcome::Handled, "{key:?}");
         assert!(!list.confirming(), "{key:?} cancels the prompt");
         assert_eq!(ids(&list), vec![3, 2, 1], "nothing is removed");
@@ -257,29 +270,29 @@ fn every_other_key_cancels_the_three_way_prompt() {
 #[test]
 fn a_held_key_does_not_answer_the_three_way_prompt() {
     let mut list = noted(3, true);
-    ch(&mut list, 'd');
-    let held = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+    press(&mut list, KeyCode::Delete);
+    let held = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(list.on_key(&held, true), ListOutcome::Handled);
     assert!(list.confirming(), "still asking");
 }
 
-// Spec (Delete): No token / Memory off: the plain prompt, `a` is not offered.
+// Spec (Delete): No token / Memory off: the plain prompt, Tab is not offered.
 #[test]
-fn without_the_offer_the_prompt_is_plain_and_a_cancels() {
+fn without_the_offer_the_prompt_is_plain_and_tab_cancels() {
     for (notes, deletable) in [(3, false), (0, true), (0, false)] {
         let mut list = noted(notes, deletable);
-        ch(&mut list, 'd');
+        press(&mut list, KeyCode::Delete);
         assert_eq!(
             list.prompt().as_deref(),
-            Some("Delete conversation? (y/n)"),
+            Some("Delete conversation? ↵ yes · other key no"),
             "{notes} notes, deletable {deletable}"
         );
-        assert_eq!(ch(&mut list, 'a'), ListOutcome::Handled);
-        assert!(!list.confirming(), "`a` is not an answer here");
+        assert_eq!(press(&mut list, KeyCode::Tab), ListOutcome::Handled);
+        assert!(!list.confirming(), "Tab is not an answer here");
         assert_eq!(ids(&list), vec![3, 2, 1]);
         let mut list = noted(notes, deletable);
-        ch(&mut list, 'd');
-        assert_eq!(ch(&mut list, 'y'), ListOutcome::Delete(3));
+        press(&mut list, KeyCode::Delete);
+        assert_eq!(press(&mut list, KeyCode::Enter), ListOutcome::Delete(3));
     }
 }
 
@@ -300,7 +313,7 @@ fn the_stay_line_gives_the_reason_and_the_count() {
     );
 }
 
-// Spec (Delete): the result line of `a`.
+// Spec (Delete): the result line of Tab.
 #[test]
 fn the_result_line_counts_what_engram_deleted() {
     assert_eq!(
@@ -327,17 +340,18 @@ fn the_result_line_counts_what_engram_deleted() {
 }
 
 #[test]
-fn anything_but_a_plain_lowercase_y_declines() {
+fn anything_but_a_plain_enter_declines() {
     for key in [
         KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT),
-        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
     ] {
         let mut list = loaded(None);
-        ch(&mut list, 'd');
+        press(&mut list, KeyCode::Delete);
         assert_eq!(list.on_key(&key, false), ListOutcome::Handled, "{key:?}");
         assert!(!list.confirming(), "{key:?} cancels the prompt");
         assert_eq!(ids(&list), vec![3, 2, 1], "nothing is removed");
@@ -347,25 +361,25 @@ fn anything_but_a_plain_lowercase_y_declines() {
 #[test]
 fn a_declined_prompt_does_not_act_on_the_key_that_declined_it() {
     let mut list = loaded(None);
-    ch(&mut list, 'd');
+    press(&mut list, KeyCode::Delete);
     // `n` declines the prompt; it does not also start a new conversation.
     assert_eq!(ch(&mut list, 'n'), ListOutcome::Handled);
 }
 
 #[test]
-fn a_held_y_does_not_confirm() {
+fn a_held_enter_does_not_confirm() {
     let mut list = loaded(None);
-    ch(&mut list, 'd');
-    let held = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+    press(&mut list, KeyCode::Delete);
+    let held = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(list.on_key(&held, true), ListOutcome::Handled);
     assert!(list.confirming(), "the prompt is still there");
 }
 
 #[test]
-fn d_on_an_empty_list_asks_nothing() {
+fn delete_on_an_empty_list_asks_nothing() {
     let mut list = ListView::new(None);
     list.set_rows(Vec::new());
-    ch(&mut list, 'd');
+    press(&mut list, KeyCode::Delete);
     assert!(!list.confirming());
 }
 
@@ -376,6 +390,7 @@ fn one_shot_keys_ignore_a_hold() {
         KeyCode::Enter,
         KeyCode::Esc,
         KeyCode::Char('n'),
+        KeyCode::Delete,
         KeyCode::Char('d'),
         KeyCode::Char('a'),
         KeyCode::Char('t'),
@@ -509,7 +524,7 @@ fn t_on_an_empty_list_edits_nothing() {
 #[test]
 fn t_while_a_delete_waits_declines_it() {
     let mut list = loaded(None);
-    ch(&mut list, 'd');
+    press(&mut list, KeyCode::Delete);
     assert_eq!(ch(&mut list, 't'), ListOutcome::Handled);
     assert!(!list.confirming());
 }
@@ -586,4 +601,49 @@ fn the_cursor_stays_on_the_same_row_when_the_order_changes() {
     list.set_tags(1, &Tags::parse("proj"), 1_800_000_000);
     assert_eq!(list.selected().map(|r| r.id), Some(1));
     assert_eq!(list.cursor(), 0);
+}
+
+// Issue #491: words typed right after the list opens never delete.
+#[test]
+fn typing_a_word_and_enter_never_asks_or_deletes() {
+    for word in ["day", "dyslexia", "read\n", "verdad\n", "add\n", "d\n"] {
+        let mut list = noted(3, true);
+        for c in word.chars() {
+            let code = if c == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            };
+            let outcome = press(&mut list, code);
+            assert!(
+                !matches!(
+                    outcome,
+                    ListOutcome::Delete(_)
+                        | ListOutcome::DeleteKeepNotes(_)
+                        | ListOutcome::DeleteWithNotes(_)
+                ),
+                "{word:?} deleted at {c:?}"
+            );
+            assert!(!list.confirming(), "{word:?} asked at {c:?}");
+        }
+    }
+}
+
+// Issue #491: only a plain Delete asks.
+#[test]
+fn a_modified_or_held_delete_asks_nothing() {
+    for mods in [
+        KeyModifiers::SHIFT,
+        KeyModifiers::CONTROL,
+        KeyModifiers::ALT,
+    ] {
+        let mut list = loaded(None);
+        let key = KeyEvent::new(KeyCode::Delete, mods);
+        assert_eq!(list.on_key(&key, false), ListOutcome::Handled, "{mods:?}");
+        assert!(!list.confirming(), "{mods:?}");
+    }
+    let mut list = loaded(None);
+    let held = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+    assert_eq!(list.on_key(&held, true), ListOutcome::Handled);
+    assert!(!list.confirming());
 }

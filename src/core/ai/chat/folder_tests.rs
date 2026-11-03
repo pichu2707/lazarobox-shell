@@ -305,3 +305,32 @@ fn a_double_slash_escapes_cost() {
     );
     assert_eq!(parse_command("//costs"), Command::Plain);
 }
+
+// Issue #551.
+#[test]
+fn feedback_takes_the_text_after_it() {
+    assert_eq!(parse_command("/feedback"), Command::Feedback(String::new()));
+    assert_eq!(
+        parse_command("  /feedback  the chat hangs \n"),
+        Command::Feedback("the chat hangs".to_owned())
+    );
+    assert_eq!(
+        parse_command("/feedback first\nsecond"),
+        Command::Feedback("first\nsecond".to_owned())
+    );
+}
+
+#[test]
+fn feedback_is_case_sensitive_and_other_text_is_plain() {
+    assert_eq!(parse_command("/Feedback x"), Command::Plain);
+    assert_eq!(parse_command("/feedbacks"), Command::Plain);
+    assert_eq!(parse_command("what does /feedback do"), Command::Plain);
+}
+
+#[test]
+fn a_double_slash_escapes_feedback() {
+    assert_eq!(
+        parse_command("//feedback x"),
+        Command::Escaped("/feedback x".to_owned())
+    );
+}

@@ -16,7 +16,7 @@ fn exchange(state: &mut ChatState, size: usize) -> ChatRequest {
     };
     state.apply(turn, StreamEvent::Delta("a".repeat(size)));
     state.apply(turn, StreamEvent::Done(Finish::Stop));
-    request
+    *request
 }
 
 /// A chat whose window dropped its oldest messages: 1000-char messages under

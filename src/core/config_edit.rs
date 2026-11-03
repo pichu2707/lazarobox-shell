@@ -1606,7 +1606,7 @@ other = 1
     // byte, and a file without them gains none.
     #[test]
     fn every_save_keeps_the_ollama_options_byte_for_byte_and_never_adds_them() {
-        let ollama = "[ai.servers.ollama]\nnum_ctx_cap = 8192 # my GPU\nkeep_alive_minutes = 0\n";
+        let ollama = "[ai.servers.ollama]\nnum_ctx_cap = 8192 # my GPU\nkeep_alive = \"5m\"\n";
         let existing = format!(
             "[ai]\nengine = \"ollama\"\n\n[ai.servers.llamacpp]\nidle_minutes = 15\n\n{ollama}"
         );

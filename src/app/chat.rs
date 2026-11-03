@@ -477,6 +477,20 @@ impl App {
             .or_else(|| self.toggle_hint(id))
     }
 
+    /// `/feedback`: clears the composer and opens the Feedback form with
+    /// `words`. Nothing leaves before the Ctrl+S of the form.
+    fn feedback_submit(&mut self, id: PaneId, words: &str) -> Vec<Effect> {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().clear();
+        }
+        let effects = self.open_menu();
+        if let Some(menu) = self.menu.as_mut() {
+            menu.open_feedback(words);
+        }
+        self.dirty = true;
+        effects
+    }
+
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
     fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
@@ -494,6 +508,7 @@ impl App {
                 self.cost_refused(id);
                 return Vec::new();
             }
+            Command::Feedback(words) => return self.feedback_submit(id, &words),
             Command::Escaped(unescaped) => text = unescaped,
             Command::Plain => {}
         }
@@ -600,7 +615,7 @@ impl App {
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(self.turn_effect(id, turn, request, attach));
+                effects.push(self.turn_effect(id, turn, *request, attach));
                 effects
             }
             SendOutcome::Refused => Vec::new(),

@@ -14,7 +14,7 @@ fn exchange(state: &mut ChatState, text: &str) -> ChatRequest {
     };
     state.apply(turn, StreamEvent::Delta("a".repeat(text.chars().count())));
     state.apply(turn, StreamEvent::Done(Finish::Stop));
-    request
+    *request
 }
 
 fn history_chars_of(request: &ChatRequest) -> usize {

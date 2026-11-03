@@ -134,7 +134,7 @@ impl App {
         // Whether notes can be deleted is looked up when the prompt opens, and
         // only when it matters: memory on and the row under the cursor has
         // notes (so a run without memory never reads the environment).
-        let asks = key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::NONE;
+        let asks = key.code == KeyCode::Delete && key.modifiers == KeyModifiers::NONE;
         let deletable = asks && !repeat && self.notes_deletable(id);
         let outcome = self
             .panes

@@ -60,11 +60,14 @@ pub enum Command {
     Cost,
     /// `/cost` followed by text: refused with a notice, nothing is sent.
     CostArgs,
+    /// The user-only `/feedback` command: opens the Feedback form with the
+    /// text that follows it, trimmed.
+    Feedback(String),
 }
 
-/// Reads a composer text. Only the exact tokens `/cd` and `/cost` are commands
-/// (the text is the token, or the token followed by whitespace); `//cd` and
-/// `//cost` escape them.
+/// Reads a composer text. Only the exact tokens `/cd`, `/cost` and `/feedback`
+/// are commands (the text is the token, or the token followed by whitespace);
+/// `//cd`, `//cost` and `//feedback` escape them.
 pub fn parse_command(text: &str) -> Command {
     let text = text.trim();
     let (token, rest) = match text.find(char::is_whitespace) {
@@ -78,7 +81,8 @@ pub fn parse_command(text: &str) -> Command {
         )),
         "/cost" if rest.is_empty() => Command::Cost,
         "/cost" => Command::CostArgs,
-        "//cd" | "//cost" => Command::Escaped(text[1..].to_owned()),
+        "/feedback" => Command::Feedback(rest.to_owned()),
+        "//cd" | "//cost" | "//feedback" => Command::Escaped(text[1..].to_owned()),
         _ => Command::Plain,
     }
 }

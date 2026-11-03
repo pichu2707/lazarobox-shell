@@ -1,5 +1,5 @@
 //! The delete offer of the conversation list (engram-memory M9): the prompt
-//! variants, the notes delete after a confirmed `a`, and the lines that say
+//! variants, the notes delete after a confirmed Tab, and the lines that say
 //! what happened to the notes.
 
 use super::chat_history::{
@@ -102,16 +102,16 @@ fn mem_deleted(ok: usize, failed: usize, refused: bool) -> AppEvent {
 #[test]
 fn the_prompt_offers_the_notes_with_memory_on_and_a_token() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
+    a.update(plain(KeyCode::Delete));
     assert_eq!(
         prompt(&a).as_deref(),
-        Some("Delete conversation? y · n · a also delete its 3 notes")
+        Some("Delete conversation? ↵ yes · Tab also delete its 3 notes · other key no")
     );
     let mut one = listing(true, token, 1);
-    one.update(key('d'));
+    one.update(plain(KeyCode::Delete));
     assert_eq!(
         prompt(&one).as_deref(),
-        Some("Delete conversation? y · n · a also delete its 1 note")
+        Some("Delete conversation? ↵ yes · Tab also delete its 1 note · other key no")
     );
 }
 
@@ -124,10 +124,10 @@ fn the_prompt_is_plain_without_notes_a_token_or_memory() {
         (true, token as fn() -> bool, 0),
     ] {
         let mut a = listing(memory, has_token, notes);
-        a.update(key('d'));
+        a.update(plain(KeyCode::Delete));
         assert_eq!(
             prompt(&a).as_deref(),
-            Some("Delete conversation? (y/n)"),
+            Some("Delete conversation? ↵ yes · other key no"),
             "memory {memory}, {notes} notes"
         );
     }
@@ -147,12 +147,12 @@ fn the_token_is_looked_up_only_for_a_conversation_with_notes_and_memory_on() {
     let reads = || TOKEN_READS.load(std::sync::atomic::Ordering::SeqCst);
     let before = reads();
     let mut off = listing(false, counted_token, 3);
-    off.update(key('d'));
+    off.update(plain(KeyCode::Delete));
     let mut none = listing(true, counted_token, 0);
-    none.update(key('d'));
+    none.update(plain(KeyCode::Delete));
     assert_eq!(reads(), before, "memory off, and no notes: no lookup");
     let mut on = listing(true, counted_token, 2);
-    on.update(key('d'));
+    on.update(plain(KeyCode::Delete));
     assert_eq!(reads(), before + 1);
 }
 
@@ -163,11 +163,13 @@ fn every_other_key_cancels_the_three_way_prompt_with_no_request() {
         key('n'),
         plain(KeyCode::Esc),
         key('x'),
+        key('y'),
+        key('a'),
         code(KeyCode::Char('Y'), KeyModifiers::SHIFT),
         code(KeyCode::Char('A'), KeyModifiers::SHIFT),
     ] {
         let mut a = listing(true, token, 3);
-        a.update(key('d'));
+        a.update(plain(KeyCode::Delete));
         let effects = a.update(ev.clone());
         assert_eq!(stores(&effects), Vec::new(), "{ev:?}");
         assert_eq!(memory_cmds(&effects), Vec::new(), "{ev:?}");
@@ -182,8 +184,8 @@ fn every_other_key_cancels_the_three_way_prompt_with_no_request() {
 #[test]
 fn y_deletes_the_conversation_and_asks_engram_nothing() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    let effects = a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    let effects = a.update(plain(KeyCode::Enter));
     assert_eq!(
         stores(&effects),
         vec![StoreCmd::Delete {
@@ -202,8 +204,8 @@ fn y_deletes_the_conversation_and_asks_engram_nothing() {
 #[test]
 fn a_deletes_the_conversation_and_then_sends_the_notes_to_the_worker() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    let effects = a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    let effects = a.update(plain(KeyCode::Tab));
     assert_eq!(
         stores(&effects),
         vec![StoreCmd::Delete {
@@ -238,8 +240,8 @@ fn a_deletes_the_conversation_and_then_sends_the_notes_to_the_worker() {
 #[test]
 fn the_notes_deleted_are_the_rows_of_the_delete_not_the_list_count() {
     let mut a = listing(true, token, 1);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     let effects = a.update(deleted(30, note_rows(2)));
     let cmds = memory_cmds(&effects);
     let [MemCmd::Delete { notes, .. }] = cmds.as_slice() else {
@@ -252,8 +254,8 @@ fn the_notes_deleted_are_the_rows_of_the_delete_not_the_list_count() {
 #[test]
 fn a_partial_result_says_how_many_went_and_why_the_rest_did_not() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     a.update(deleted(30, note_rows(3)));
     a.update(mem_deleted(2, 1, false));
     assert_eq!(
@@ -270,8 +272,8 @@ fn a_partial_result_says_how_many_went_and_why_the_rest_did_not() {
 #[test]
 fn a_refusal_shows_the_refusal_text() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     a.update(deleted(30, note_rows(3)));
     a.update(mem_deleted(0, 3, true));
     assert_eq!(
@@ -284,8 +286,8 @@ fn a_refusal_shows_the_refusal_text() {
 #[test]
 fn an_unreachable_engram_says_why_and_the_list_is_usable() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     a.update(deleted(30, note_rows(3)));
     a.update(AppEvent::Memory(MemReply::NotesUnavailable {
         pane: chat_id(),
@@ -303,8 +305,8 @@ fn an_unreachable_engram_says_why_and_the_list_is_usable() {
 #[test]
 fn a_delete_that_found_no_note_rows_sends_no_request_and_shows_no_line() {
     let mut a = listing(true, token, 2);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     let effects = a.update(deleted(30, Vec::new()));
     assert_eq!(memory_cmds(&effects), Vec::new());
     assert_eq!(line(&a), None);
@@ -314,16 +316,16 @@ fn a_delete_that_found_no_note_rows_sends_no_request_and_shows_no_line() {
 #[test]
 fn a_failed_delete_makes_no_note_request() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     let effects = a.update(AppEvent::Store(StoreReply::DeleteFailed {
         pane: chat_id(),
     }));
     assert_eq!(memory_cmds(&effects), Vec::new());
     assert_eq!(line(&a).as_deref(), Some(DELETE_FAILED));
     // The choice does not leak into a later delete of the same conversation.
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     let effects = a.update(deleted(30, note_rows(3)));
     assert_eq!(memory_cmds(&effects), Vec::new());
 }
@@ -348,8 +350,8 @@ fn a_notes_result_for_a_pane_that_is_gone_changes_nothing() {
 #[test]
 fn without_a_token_the_notes_stay_and_the_line_says_how_to_delete_them() {
     let mut a = listing(true, no_token, 3);
-    a.update(key('d'));
-    let effects = a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    let effects = a.update(plain(KeyCode::Enter));
     assert_eq!(memory_cmds(&effects), Vec::new());
     let effects = a.update(deleted(30, note_rows(3)));
     assert_eq!(memory_cmds(&effects), Vec::new());
@@ -363,8 +365,8 @@ fn without_a_token_the_notes_stay_and_the_line_says_how_to_delete_them() {
 #[test]
 fn with_memory_off_the_notes_stay_and_the_line_says_so() {
     let mut a = listing(false, token, 2);
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     let effects = a.update(deleted(30, note_rows(2)));
     assert_eq!(memory_cmds(&effects), Vec::new());
     assert_eq!(
@@ -377,8 +379,8 @@ fn with_memory_off_the_notes_stay_and_the_line_says_so() {
 #[test]
 fn a_conversation_without_notes_gets_no_note_line() {
     let mut a = listing(true, token, 0);
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     a.update(deleted(30, Vec::new()));
     assert_eq!(line(&a), None);
     assert_eq!(systems(chat_of(&a)), Vec::<String>::new());
@@ -389,8 +391,8 @@ fn a_conversation_without_notes_gets_no_note_line() {
 #[test]
 fn notes_saved_after_the_list_was_read_stay_and_say_so() {
     let mut a = listing(true, token, 0);
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     let effects = a.update(deleted(30, note_rows(1)));
     assert_eq!(memory_cmds(&effects), Vec::new());
     assert_eq!(
@@ -449,8 +451,8 @@ fn another_commands_unavailable_is_not_taken_for_the_delete_failure() {
         matches!(chat_of(&a).readiness(), Readiness::Resolving { .. }),
         "the view waits for its project"
     );
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     a.update(deleted(30, note_rows(3)));
     a.update(AppEvent::Memory(MemReply::Unavailable {
         epoch: None,
@@ -473,8 +475,8 @@ fn another_commands_unavailable_is_not_taken_for_the_delete_failure() {
 #[test]
 fn the_result_counts_the_real_number_of_notes() {
     let mut a = listing(true, token, 1);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     a.update(deleted(30, note_rows(2)));
     a.update(mem_deleted(2, 0, false));
     assert_eq!(line(&a).as_deref(), Some("deleted 2 notes from engram"));
@@ -484,8 +486,8 @@ fn the_result_counts_the_real_number_of_notes() {
 #[test]
 fn closing_the_pane_forgets_its_pending_delete_choice() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('a'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Tab));
     assert_eq!(a.note_choices.len(), 1);
     press(&mut a, "wq");
     a.update(key('y'));
@@ -496,8 +498,8 @@ fn closing_the_pane_forgets_its_pending_delete_choice() {
 #[test]
 fn closing_the_tab_forgets_the_pending_delete_choices_of_its_panes() {
     let mut a = listing(true, token, 3);
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     assert_eq!(a.note_choices.len(), 1);
     press(&mut a, "tn");
     press(&mut a, "b1");
@@ -505,4 +507,26 @@ fn closing_the_tab_forgets_the_pending_delete_choices_of_its_panes() {
     a.update(key('y'));
     assert_eq!(a.tab_count(), 1);
     assert_eq!(a.note_choices, Vec::new());
+}
+
+// Issue #491: words typed right after the list opens never reach the store
+// or engram, even for a conversation whose notes could be deleted.
+#[test]
+fn typing_right_after_the_list_opens_deletes_nothing() {
+    for word in ["day", "dyslexia", "read", "verdad", "add"] {
+        let mut a = listing(true, token, 3);
+        let mut effects = Vec::new();
+        for c in word.chars() {
+            effects.extend(a.update(key(c)));
+        }
+        effects.extend(a.update(plain(KeyCode::Enter)));
+        assert!(
+            !stores(&effects)
+                .iter()
+                .any(|cmd| matches!(cmd, StoreCmd::Delete { .. })),
+            "{word:?} deleted a conversation"
+        );
+        assert_eq!(memory_cmds(&effects), Vec::new(), "{word:?}");
+        assert!(a.note_choices.is_empty(), "{word:?} chose to delete notes");
+    }
 }

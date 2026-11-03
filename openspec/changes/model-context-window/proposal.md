@@ -8,7 +8,7 @@ lazarobox does not know a local Ollama model's real context window. Ollama silen
 
 ### In Scope
 - Ollama: read `context_length` from `/api/show`, which detection already calls. Send `options.num_ctx = min(model max, num_ctx_cap)`. The cap defaults to 16384 and the owner can override it. The value is stable per model, so Ollama never reloads.
-- Ollama: send `keep_alive`, default 30 minutes, configurable.
+- Ollama: send `keep_alive`, `30m` unless `[ai.servers.ollama] keep_alive` (released in 1.4.0) says otherwise.
 - llama.cpp: reuse the existing `/props` `n_ctx` probe.
 - Windows are kept in RAM and re-read at each engine detection.
 - Budget: subtract the system prompt and the tool schemas in every path, including unknown windows.
@@ -29,7 +29,7 @@ lazarobox does not know a local Ollama model's real context window. Ollama silen
 None
 
 ### Modified Capabilities
-- `chat-engines`: the "Context window" requirement uses the real window when known and counts the system prompt and tools. Overflow trims in blocks with a notice. The Ollama body gains `options.num_ctx` and `keep_alive`.
+- `chat-engines`: the "Context window" requirement uses the real window when known and counts the system prompt and tools. Overflow trims in blocks with a notice. The Ollama body gains `options.num_ctx` and `keep_alive` (`30m` when unset).
 - `ai-engine-detection`: the Ollama window comes from `/api/show`, kept in RAM and refreshed at each detection.
 - `configuration`: two new keys under `[ai.servers.ollama]`.
 - `chat-pane` (if needed): the overflow notice reuses or extends the truncation marker.
@@ -39,8 +39,8 @@ None
 | Item | Default |
 |------|---------|
 | Cap key | `[ai.servers.ollama] num_ctx_cap`, an integer, default 16384. A bad value falls back with a startup notice, the same pattern as `idle_minutes`. |
-| Keep-alive key | `[ai.servers.ollama] keep_alive_minutes`, a whole number of minutes, default 30. It mirrors `ai.servers.llamacpp.idle_minutes`. |
-| Menu | The menu does not write either key (same rule as `args`). |
+| Keep-alive key | The released `[ai.servers.ollama] keep_alive` (duration text or whole seconds). Unset, Ollama turns send `"30m"`. No second key (owner decision). |
+| Menu | The menu does not write `num_ctx_cap` (same rule as `args`). |
 | Trim block | The oldest user+assistant pair, so the window still starts on a user message. |
 
 ## Approach

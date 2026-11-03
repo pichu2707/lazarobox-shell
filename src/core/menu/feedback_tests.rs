@@ -424,3 +424,43 @@ fn only_an_issue_link_of_the_repository_is_accepted() {
         assert_eq!(issue_url(bad, repo), None, "{bad:?}");
     }
 }
+
+fn prefilled(text: &str) -> Feedback {
+    Feedback::prefilled(Facts::default(), text)
+}
+
+// Issue #551: the form needs both fields, so one line fills both.
+#[test]
+fn one_line_of_prefilled_text_is_the_title_and_the_description() {
+    let form = prefilled("The chat hangs");
+    assert_eq!(form.title(), "The chat hangs");
+    assert_eq!(form.description(), "The chat hangs");
+    assert_eq!(form.field(), Field::Kind);
+    assert_eq!(form.kind(), Kind::Bug);
+}
+
+// Issue #551.
+#[test]
+fn the_first_prefilled_line_is_the_title_and_the_rest_the_description() {
+    let form = prefilled("The chat hangs\r\n\r\nAfter a tool call.\nEvery time.");
+    assert_eq!(form.title(), "The chat hangs");
+    assert_eq!(form.description(), "After a tool call.\nEvery time.");
+}
+
+// Issue #551: a first line too long for the title stays whole below it.
+#[test]
+fn a_first_line_longer_than_the_title_is_kept_in_the_description() {
+    let line = "x".repeat(crate::core::menu::feedback::TITLE_CAP + 5);
+    let form = prefilled(&format!("{line}\nmore"));
+    assert_eq!(
+        form.title().chars().count(),
+        crate::core::menu::feedback::TITLE_CAP
+    );
+    assert_eq!(form.description(), format!("{line}\nmore"));
+}
+
+// Issue #551.
+#[test]
+fn no_prefilled_text_is_the_empty_form() {
+    assert_eq!(prefilled("  "), Feedback::new(Facts::default()));
+}

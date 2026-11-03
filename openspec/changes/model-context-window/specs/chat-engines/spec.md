@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Ollama context and keep-alive options
-When the Ollama adapter builds a request it MUST add two fields to the body and nothing else. `options.num_ctx` is `min(model max window, ai.servers.ollama.num_ctx_cap)` and is sent only when the model's max window is known (see ai-engine-detection); when it is unknown, no `options` object is sent. `keep_alive` is always sent, as `<keep_alive_minutes>m`; `keep_alive_minutes = 0` is sent as `0m` and means Ollama unloads the model right after the reply (see configuration). For one model both values MUST be identical on every turn, so Ollama never reloads the model because of them. No other adapter (lmstudio, llamacpp, vllm, claude, codex, gemini) changes its body, argv or stdin.
+When the Ollama adapter builds a request it MUST add two fields to the body and nothing else. `options.num_ctx` is `min(model max window, ai.servers.ollama.num_ctx_cap)` and is sent only when the model's max window is known (see ai-engine-detection); when it is unknown, no `options` object is sent. `keep_alive` is always sent: as written in `[ai.servers.ollama] keep_alive` when that is set, else `"30m"` (see configuration). `keep_alive = 0` (an integer of seconds) is sent as `0s` and means Ollama unloads the model right after the reply. For one model both values MUST be identical on every turn, so Ollama never reloads the model because of them. No other adapter (lmstudio, llamacpp, vllm, claude, codex, gemini) changes its body, argv or stdin.
 
 #### Scenario: Known window is capped [auto]
 - GIVEN a model whose max window is 131072 and a cap of 16384
@@ -21,9 +21,9 @@ When the Ollama adapter builds a request it MUST add two fields to the body and 
 - THEN the body has no `options` and still has `keep_alive`
 
 #### Scenario: Zero keep-alive unloads [auto]
-- GIVEN `keep_alive_minutes = 0`
+- GIVEN `keep_alive = 0`
 - WHEN an Ollama request is recorded
-- THEN `keep_alive` is `0m`
+- THEN `keep_alive` is `0s`
 
 #### Scenario: Stable across turns [auto]
 - GIVEN three turns with the same model and config
@@ -147,6 +147,11 @@ Each turn MUST send the pinned system prompt followed by the most recent message
 - GIVEN a local server with an unknown window and tool schemas of 9,000 characters
 - WHEN the context is built
 - THEN the history budget is 12,000 minus the system prompt and the 9,000 characters, never 12,000
+
+#### Scenario: Unknown window keeps a history floor [auto]
+- GIVEN a local server with an unknown window and a head (memory, system prompt and tool schemas) larger than 12,000 characters
+- WHEN the context is built
+- THEN the history budget is 4,000 characters, never less; with a head that leaves more than 4,000 the budget is 12,000 minus the head, and a CLI or a known window is unaffected
 
 #### Scenario: Character cap for a CLI [auto]
 - GIVEN 40 messages of 5,000 characters each and a CLI engine

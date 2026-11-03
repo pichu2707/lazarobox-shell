@@ -1270,6 +1270,19 @@ The Settings tab MUST end with a row `Feedback` whose value is `bug report or id
 - WHEN its rows are built
 - THEN the last row is `Feedback  bug report or idea`
 
+### Requirement: Feedback form from a chat
+`/feedback`, sent from a chat composer (see chat-pane), MUST open the menu on the Feedback form with its `Feedback` row selected, and the text after the command written in the form. The first line is the title and the rest the description. A text of one line MUST fill both, and a first line longer than the title's limit MUST stay whole in the description. Nothing is sent before the Ctrl+S of the form.
+
+#### Scenario: One line fills both fields [auto]
+- GIVEN a chat composer holding `/feedback The chat hangs`
+- WHEN it is sent and Ctrl+S is pressed in the form
+- THEN one issue is sent, titled `The chat hangs`, whose description is `The chat hangs`
+
+#### Scenario: The form closes to its row [auto]
+- GIVEN the form opened from a chat
+- WHEN Esc is pressed
+- THEN the `Feedback` row is selected and nothing was sent
+
 ### Requirement: Feedback form
 The form shows, under the title `Feedback`:
 - `Kind: Bug report` or `Kind: Idea or goal`;

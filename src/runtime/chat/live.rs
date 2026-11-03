@@ -10,8 +10,8 @@ use std::{
 
 use super::Managed;
 use crate::core::ai::{
-    ServerPorts, catalog::same_model, chat::engine::ChatRequest, config::OllamaOptions,
-    window::ollama_num_ctx,
+    CacheOptions, ServerPorts, catalog::same_model, chat::engine::ChatRequest,
+    config::OllamaOptions, window::ollama_num_ctx,
 };
 
 #[derive(Clone, Default)]
@@ -23,10 +23,12 @@ struct State {
     managed: Option<Arc<Managed>>,
     /// How long the managed server may sit unused; `None` never stops it.
     idle: Option<Duration>,
-    /// The cap and keep-alive every Ollama turn carries.
+    /// The context cap every Ollama turn carries.
     ollama: OllamaOptions,
     /// The own window of each Ollama model detection has read, by name.
     windows: Vec<(String, usize)>,
+    /// The prompt-cache options every turn carries.
+    cache: CacheOptions,
 }
 
 impl LiveServers {
@@ -37,6 +39,7 @@ impl LiveServers {
             idle: None,
             ollama: OllamaOptions::default(),
             windows: Vec::new(),
+            cache: CacheOptions::default(),
         })))
     }
 
@@ -59,6 +62,17 @@ impl LiveServers {
             .clone()
     }
 
+    /// Sets the prompt-cache options every turn carries.
+    pub fn set_cache(&self, cache: CacheOptions) {
+        self.0.write().unwrap_or_else(PoisonError::into_inner).cache = cache;
+    }
+
+    /// The prompt-cache options of the config.
+    pub fn cache(&self) -> CacheOptions {
+        let state = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        state.cache.clone()
+    }
+
     /// Sets how long the managed server may sit unused; `None` never stops it.
     pub fn set_idle(&self, idle: Option<Duration>) {
         self.0.write().unwrap_or_else(PoisonError::into_inner).idle = idle;
@@ -70,7 +84,7 @@ impl LiveServers {
         self.0.write().unwrap_or_else(PoisonError::into_inner).ports = ports;
     }
 
-    /// Sets the cap and keep-alive of Ollama turns.
+    /// Sets the context cap of Ollama turns.
     pub fn set_ollama(&self, options: OllamaOptions) {
         self.0
             .write()
@@ -96,8 +110,8 @@ impl LiveServers {
             .windows = windows;
     }
 
-    /// Puts the Ollama options on `request` when it is an Ollama turn: the
-    /// same values for chat, compaction, summary and worker turns, so the
+    /// Puts the Ollama window on `request` when it is an Ollama turn: the
+    /// same value for chat, compaction, summary and worker turns, so the
     /// model is never reloaded because of them. Other engines are untouched.
     pub fn stamp(&self, request: &mut ChatRequest) {
         if request.engine != "ollama" {
@@ -112,7 +126,6 @@ impl LiveServers {
                 .map(|(_, window)| *window)
         });
         request.ollama.num_ctx = ollama_num_ctx(max, state.ollama.num_ctx_cap);
-        request.ollama.keep_alive_minutes = Some(state.ollama.keep_alive_minutes);
     }
 
     /// Stops the managed server when it was unused for the idle time up to
@@ -153,6 +166,7 @@ mod tests {
             tools: Tools::Off,
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             ollama: OllamaWire::default(),
+            cache: CacheOptions::default(),
         }
     }
 
@@ -160,7 +174,6 @@ mod tests {
         let live = LiveServers::default();
         live.set_ollama(OllamaOptions {
             num_ctx_cap: 16_384,
-            keep_alive_minutes: 30,
         });
         live.set_ollama_windows(vec![
             ("big:8b".into(), 131_072),
@@ -170,15 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn an_ollama_turn_gets_the_capped_window_and_the_keep_alive() {
+    fn an_ollama_turn_gets_the_capped_window() {
         let live = live();
         let mut req = request("ollama", "big:8b");
         live.stamp(&mut req);
         assert_eq!(
             req.ollama,
             OllamaWire {
-                num_ctx: Some(16_384),
-                keep_alive_minutes: Some(30)
+                num_ctx: Some(16_384)
             }
         );
         let mut small = request("ollama", "tiny");
@@ -187,15 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_window_still_sends_the_keep_alive() {
+    fn an_unknown_window_stamps_no_context() {
         let mut req = request("ollama", "mystery:1b");
         live().stamp(&mut req);
-        assert_eq!(req.ollama.num_ctx, None);
-        assert_eq!(req.ollama.keep_alive_minutes, Some(30));
+        assert_eq!(req.ollama, OllamaWire::default());
     }
 
     #[test]
-    fn the_stamp_is_the_same_on_every_turn_and_zero_keep_alive_is_kept() {
+    fn the_stamp_is_the_same_on_every_turn_and_follows_the_cap() {
         let live = live();
         // Chat, compaction and a worker turn: three requests of one model.
         let mut turns = [
@@ -208,18 +219,11 @@ mod tests {
         }
         let want = OllamaWire {
             num_ctx: Some(16_384),
-            keep_alive_minutes: Some(30),
         };
         assert!(turns.iter().all(|t| t.ollama == want), "{turns:?}");
-        live.set_ollama(OllamaOptions {
-            num_ctx_cap: 8_192,
-            keep_alive_minutes: 0,
-        });
+        live.set_ollama(OllamaOptions { num_ctx_cap: 8_192 });
         live.stamp(&mut turns[0]);
-        assert_eq!(
-            (turns[0].ollama.num_ctx, turns[0].ollama.keep_alive_minutes),
-            (Some(8_192), Some(0))
-        );
+        assert_eq!(turns[0].ollama.num_ctx, Some(8_192));
     }
 
     #[test]

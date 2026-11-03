@@ -370,7 +370,7 @@ Notes and conversations have separate lifetimes: a note is distilled knowledge t
 #### Scenario: Offer with a token [auto]
 - GIVEN memory enabled, the token set, and a conversation with 3 note links
 - WHEN `d` is pressed in the list
-- THEN the prompt offers `a` to also delete its 3 notes (see chat-history)
+- THEN the prompt offers Tab to also delete its 3 notes (see chat-history)
 
 #### Scenario: No token, no offer [auto]
 - GIVEN the token unset and 3 note links

@@ -46,6 +46,7 @@ pub(super) fn done() -> StreamEvent {
 
 pub(super) fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
@@ -733,7 +734,7 @@ async fn escapes_split_across_deltas_never_reach_the_chat_state() {
     else {
         panic!("send refused");
     };
-    chats.send(pane(1), turn, request);
+    chats.send(pane(1), turn, *request);
     for (_, id, event) in turn_events(&mut rx).await {
         assert_eq!(state.apply(id, event), Follow::Nothing);
     }
@@ -773,7 +774,7 @@ async fn an_endless_answer_is_cut_at_1_mib_without_a_second_report() {
     else {
         panic!("send refused");
     };
-    chats.send(pane(1), turn, request);
+    chats.send(pane(1), turn, *request);
     let events = turn_events(&mut rx).await;
     for (_, id, event) in events {
         assert_eq!(

@@ -67,8 +67,8 @@ Los paréntesis lanzan un subshell: el `umask 022` solo afecta a ese comando y n
 
 Compatibilidad de plataformas:
 
-- **Linux:** soportado. Es la única plataforma probada.
-- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente en la 1.0. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
+- **Linux:** soportado. Es la única plataforma probada a mano.
+- **macOS:** sin soporte oficial. El CI compila lazarobox y pasa todos sus tests en macOS (arm64 e Intel), y prueba el codex real dentro de la jaula Seatbelt, pero nadie ha usado la interfaz a mano en un Mac. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
 - **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
@@ -246,7 +246,7 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `Enter` | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
 | `n` / `Esc` | Empieza una conversación nueva |
 | `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
-| `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
+| `Supr`, luego `Enter` | Borra la conversación; cualquier otra tecla cancela. Ninguna letra abre ni confirma el borrado, así que escribir nada más abrir el chat no borra nada. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `Tab` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
 | `t` | Edita las etiquetas de la fila |
 
 **Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
@@ -381,6 +381,8 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ### Feedback: fallos e ideas desde el terminal
 
+Desde un chat no hace falta ir al menú: escribe `/feedback <texto>` en el compositor y pulsa `Enter`. Se abre este mismo formulario con la primera línea como título y el resto como descripción; si solo hay una línea, va en los dos campos, y siempre puedes editarlos. El texto no llega al modelo ni se añade a la conversación, y no se publica nada hasta que pulsas `Ctrl+S`. Para enviar al modelo un mensaje que empiece por esa palabra, escribe `//feedback`.
+
 `Enter` sobre **Feedback** abre un formulario corto:
 
 - **Kind**: `Bug report` o `Idea or goal` (`←`/`→`).
@@ -460,17 +462,30 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
-**Ventana de contexto de Ollama.** lazarobox lee la ventana máxima de cada modelo en la misma respuesta `POST /api/show` que ya usa la detección (sin peticiones nuevas) y pide a Ollama `num_ctx` igual al menor valor entre esa ventana y un tope, para que los modelos con ventanas enormes no reserven tanta memoria de vídeo. Cada turno de un mismo modelo lleva los mismos valores, así que Ollama no recarga el modelo entre mensajes. El historial que se envía descuenta el prompt del sistema y las herramientas de la ventana: se omiten primero los mensajes más antiguos, siempre por pares (pregunta y respuesta), y la conversación muestra `earlier messages are not sent to the model`. Si el mensaje más reciente y la configuración ya superan la ventana, se envía igualmente y la conversación lo avisa. Si no se puede leer la ventana de un modelo, no se envía `num_ctx`, el historial se limita a 12.000 caracteres y la barra de estado avisa una vez por modelo (`window unknown for <modelo>: 12k chars`).
+**Ventana de contexto de Ollama.** lazarobox lee la ventana máxima de cada modelo en la misma respuesta `POST /api/show` que ya usa la detección (sin peticiones nuevas) y pide a Ollama `num_ctx` igual al menor valor entre esa ventana y un tope, para que los modelos con ventanas enormes no reserven tanta memoria de vídeo. Cada turno de un mismo modelo lleva los mismos valores, así que Ollama no recarga el modelo entre mensajes. El historial que se envía descuenta el prompt del sistema y las herramientas de la ventana: se omiten primero los mensajes más antiguos, siempre por pares (pregunta y respuesta), y la conversación muestra `earlier messages are not sent to the model`. Si el mensaje más reciente y la configuración ya superan la ventana, se envía igualmente y la conversación lo avisa. Si no se puede leer la ventana de un modelo, no se envía `num_ctx`, el historial se limita a 12.000 caracteres menos lo que ocupan el prompt del sistema y las herramientas (nunca menos de 4.000) y la barra de estado avisa una vez por modelo (`window unknown for <modelo>: 12k chars`).
 
 ```toml
 [ai.servers.ollama]
 num_ctx_cap = 16384        # opcional: tope de tokens de contexto que se piden (por defecto 16384)
-keep_alive_minutes = 30    # opcional: minutos que el modelo sigue cargado tras responder (por defecto 30)
 ```
 
-`num_ctx_cap` es un número entero de 1024 a 1048576. Un tope mayor usa más memoria de vídeo (la caché de contexto crece con él) y deja más historial; uno menor ahorra memoria y recorta antes. `keep_alive_minutes` es un número entero de 0 a 10080 (7 días); `0` descarga el modelo justo después de cada respuesta, y el siguiente mensaje tiene que volver a cargarlo. Un valor incorrecto se cambia por el predeterminado de esa clave con un aviso al arrancar (`ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576`). El menú no escribe ninguna de las dos claves y las conserva al guardar. Cuando lazarobox conoce la ventana del modelo, manda el tope y un `PARAMETER num_ctx` del Modelfile no se respeta. Cuando no la conoce, no envía `num_ctx` y se aplica el valor del Modelfile (o el predeterminado de Ollama). El aviso del mensaje demasiado grande (`this message and the setup are about … tokens`) sale una vez por racha, y de nuevo solo tras un envío que cabe.
+`num_ctx_cap` es un número entero de 1024 a 1048576. Un tope mayor usa más memoria de vídeo (la caché de contexto crece con él) y deja más historial; uno menor ahorra memoria y recorta antes. Un valor incorrecto se cambia por el predeterminado con un aviso al arrancar (`ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576`). El menú no escribe esta clave y la conserva al guardar. El tiempo que el modelo sigue cargado se ajusta con `keep_alive` (abajo). Cuando lazarobox conoce la ventana del modelo, manda el tope y un `PARAMETER num_ctx` del Modelfile no se respeta. Cuando no la conoce, no envía `num_ctx` y se aplica el valor del Modelfile (o el predeterminado de Ollama). El aviso del mensaje demasiado grande (`this message and the setup are about … tokens`) sale una vez por racha, y de nuevo solo tras un envío que cabe.
 
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
+
+**Caché del prompt de Ollama y llama.cpp.** Dos claves opcionales ajustan cómo reutiliza cada servidor el trabajo de un mensaje para el siguiente. Sin `cache_prompt`, lazarobox no envía nada a llama.cpp y usa su valor habitual; sin `keep_alive`, a Ollama le envía `30m`:
+
+```toml
+[ai.servers.ollama]
+keep_alive = "30m"      # cuánto tiempo sigue cargado el modelo tras un mensaje
+
+[ai.servers.llamacpp]
+cache_prompt = true     # reutiliza la parte del prompt que no cambia
+```
+
+- `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Sin la clave, lazarobox envía `30m` a Ollama (Ollama, por su cuenta, lo descarga a los 5 minutos); un valor puesto se envía tal cual.
+- `cache_prompt` es `true` o `false`; se envía tanto al llama-server gestionado como a uno que arranques tú.
+- Cada clave va solo a su servidor, en el chat, los resúmenes, la compactación y los agentes del orquestador. Un valor incorrecto se ignora con un aviso al arrancar. Se leen al arrancar lazarobox: un cambio en el archivo se aplica al reiniciar.
 
 **llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
 
@@ -822,7 +837,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - En sistemas que no son Linux ni macOS no hay jaula. El chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini no arrancan. El mensaje lo indica: `the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat`.
 - **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 10 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
-- **macOS no está soportado oficialmente en la 1.0.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian el estado de soporte de la 1.0.
+- **macOS no está soportado oficialmente.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian por sí solos el estado de soporte.
 - **claude nunca corre dentro de la jaula en macOS.** Guarda su sesión en el llavero (Keychain) y la jaula se lo impediría; en macOS siempre corre sin jaula, solo con sus opciones de solo texto, aunque la comprobación de la jaula falle. El panel lo avisa con `claude runs without the jail here: claude keeps its macOS Keychain login, so it never runs jailed on macOS` y nunca lo trata como «jaula no disponible».
 
 **La jaula en macOS: lo que cambia.**
@@ -1146,7 +1161,7 @@ Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que s
 
 ![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
 
-Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `d` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
+Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `Supr` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
@@ -1273,7 +1288,7 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Volver a una versión anterior:** el esquema de `chat.db` está en la versión 3 (la 2 añadió la memoria; la 3 quita las listas cerradas de perfil, rol y estado para poder ampliarlas sin reconstruir tablas). Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 
-**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`d`, `y`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? y · n · a also delete its N notes`: `y` borra solo la conversación, `a` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `a` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
+**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`Supr`, `Enter`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? ↵ yes · Tab also delete its N notes · other key no`: `Enter` borra solo la conversación, `Tab` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `Tab` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
 
 **Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
 

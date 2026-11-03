@@ -27,10 +27,7 @@ fn chat_of(a: &App) -> &ChatState {
 /// `num_ctx_cap`.
 fn chat_with(window: Option<usize>, cap: usize) -> App {
     let mut config = ai(false);
-    config = config.with_ollama(OllamaOptions {
-        num_ctx_cap: cap,
-        keep_alive_minutes: 30,
-    });
+    config = config.with_ollama(OllamaOptions { num_ctx_cap: cap });
     let mut a = launched(80, 25).with_ai(config);
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {

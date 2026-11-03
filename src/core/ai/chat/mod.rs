@@ -281,7 +281,10 @@ pub enum StreamPhase {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SendOutcome {
     /// The message was appended; the app emits `Effect::ChatSend`.
-    Sent { turn: u64, request: ChatRequest },
+    Sent {
+        turn: u64,
+        request: Box<ChatRequest>,
+    },
     /// Nothing was sent; the caller keeps the composer text.
     Refused,
 }
@@ -1410,7 +1413,8 @@ impl ChatState {
         self.told_sent.clone_from(&told);
         SendOutcome::Sent {
             turn: self.turn,
-            request: ChatRequest {
+            request: Box::new(ChatRequest {
+                cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
@@ -1419,7 +1423,7 @@ impl ChatState {
                 tools: Tools::Off,
                 messages: context.messages,
                 ollama: Default::default(),
-            },
+            }),
         }
     }
 

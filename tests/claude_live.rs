@@ -67,6 +67,7 @@ async fn turn(env: CliEnv, text: &str) -> Vec<StreamEvent> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let mut chats = Chats::new(runner_with(None, env, None), tx);
     let request = ChatRequest {
+        cache: Default::default(),
         engine: "claude".into(),
         model: None,
         system: "Be brief.".into(),
