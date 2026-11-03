@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lazarobox: panther box">
+  <rect width="512" height="512" rx="112" fill="#0A0B0E"/>
+  <path d="M136 430H376Q412 430 412 394V102L336 168H176L100 102V394Q100 430 136 430Z" fill="#07080B" stroke="#00E5FF" stroke-width="24" stroke-linejoin="round"/>
+  <g transform="translate(256 288) scale(0.82) translate(-256 -236)">
+    <path d="M96 218C140 180 200 196 236 262C190 282 130 272 96 218Z" fill="#FFD60A" stroke="#E0A800" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M168 204C180 222 180 248 168 265C156 248 156 222 168 204Z" fill="#06070A"/>
+    <circle cx="178" cy="222" r="5" fill="#FFFFFF"/>
+    <path d="M416 218C372 180 312 196 276 262C322 282 382 272 416 218Z" fill="#FFD60A" stroke="#E0A800" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M344 204C356 222 356 248 344 265C332 248 332 222 344 204Z" fill="#06070A"/>
+    <circle cx="354" cy="222" r="5" fill="#FFFFFF"/>
+  </g>
+</svg>

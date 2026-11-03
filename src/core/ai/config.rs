@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use super::marks::GlyphMode;
 use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, CacheOptions, KeepAlive, Kind, ServerPorts};
 
@@ -404,6 +405,7 @@ pub struct AiConfig {
     context: bool,
     notify: NotifyMode,
     notify_sound: bool,
+    tool_mark: GlyphMode,
     usage: UsageConfig,
     tools: bool,
     approval: ApprovalMode,
@@ -521,6 +523,7 @@ impl Default for AiConfig {
             context: true,
             notify: NotifyMode::Off,
             notify_sound: true,
+            tool_mark: GlyphMode::Auto,
             usage: UsageConfig::default(),
             tools: true,
             approval: ApprovalMode::Ask,
@@ -572,6 +575,11 @@ impl AiConfig {
 
     pub fn set_notify(&mut self, notify: NotifyMode) {
         self.notify = notify;
+    }
+
+    /// `[ai] tool_mark`: how the tool badge is drawn.
+    pub fn tool_mark(&self) -> GlyphMode {
+        self.tool_mark
     }
 
     /// Whether lazarobox plays its own sound with the desktop notification
@@ -869,6 +877,21 @@ fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
+/// Reads `tool_mark`: a missing key is `auto`; anything that is not an exact
+/// id falls back to `auto` with a problem.
+fn read_tool_mark(section: &Table, problems: &mut Vec<String>) -> GlyphMode {
+    match section.get("tool_mark") {
+        None => GlyphMode::Auto,
+        Some(Value::String(id)) if GlyphMode::from_id(id).is_some() => {
+            GlyphMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push("ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned());
+            GlyphMode::Auto
+        }
+    }
+}
+
 /// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
@@ -887,6 +910,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
     config.notify_sound = read_notify_sound(section, problems);
+    config.tool_mark = read_tool_mark(section, problems);
     config.usage = usage::read(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
@@ -2644,6 +2668,44 @@ mod tests {
             let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
             assert_eq!(config.notify(), NotifyMode::Off, "{value}");
             assert_eq!(problems, vec![NOTIFY_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn tool_mark_defaults_to_automatic_and_reads_each_value() {
+        assert_eq!(AiConfig::default().tool_mark(), GlyphMode::Auto);
+        for (value, want) in [
+            ("auto", GlyphMode::Auto),
+            ("emoji", GlyphMode::Emoji),
+            ("text", GlyphMode::Text),
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = \"{value}\"\n"));
+            assert_eq!(config.tool_mark(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new(), "{value}");
+        }
+        let (config, problems) = read_text("[ai]\ncontext = true\n");
+        assert_eq!(config.tool_mark(), GlyphMode::Auto);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_bad_tool_mark_falls_back_to_automatic_with_the_exact_problem() {
+        for value in [
+            "\"Text\"",
+            "\"\"",
+            "\"tools\"",
+            "true",
+            "1",
+            "[1]",
+            "{ a = 1 }",
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = {value}\n"));
+            assert_eq!(config.tool_mark(), GlyphMode::Auto, "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned()],
+                "{value}"
+            );
         }
     }
 

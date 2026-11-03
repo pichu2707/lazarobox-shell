@@ -23,6 +23,29 @@ Launching lazarobox is one step. A TUI always needs a host terminal, so the laun
 - WHEN `install-desktop` runs
 - THEN the message states the failure and the reason, and the exit is non-zero
 
+### Requirement: Launcher icon
+The desktop entry MUST use the themed icon name `lazarobox`, and `install-desktop` MUST make that name resolve by writing the icons embedded in the binary to `<data home>/icons/hicolor/` (`<size>x<size>/apps/lazarobox.png` and `scalable/apps/lazarobox.svg`), so a cargo-installed binary needs no extra files. `--uninstall` MUST remove them. A failed icon write MUST NOT lose the desktop entry and MUST NOT be silent: the message states the failure and the reason, and the exit is non-zero. Refreshing the icon theme cache and the desktop database is best-effort, bounded by a deadline, and a helper that is killed or cannot start is reported as a warning. Because the name resolves through icon themes, an entry copied by hand to a system folder (as WSLg may need) shows the logo only if the icons are copied to the system theme too; the README MUST say so.
+
+#### Scenario: Install writes the icons [auto]
+- GIVEN a Linux session
+- WHEN `install-desktop` runs
+- THEN the entry has `Icon=lazarobox` and every icon exists under `icons/hicolor/` of the data home
+
+#### Scenario: Icon write fails [auto]
+- GIVEN the icon folder cannot be written
+- WHEN `install-desktop` runs
+- THEN the desktop entry is still installed, the message states the failure and the reason, and the exit is non-zero
+
+#### Scenario: Uninstall removes the icons [auto]
+- GIVEN an installed entry
+- WHEN `install-desktop --uninstall` runs
+- THEN the entry and the icons are removed
+
+#### Scenario: The menu shows the logo [manual, desktop menu]
+- GIVEN the entry installed on a desktop with a menu
+- WHEN the user opens the application menu
+- THEN the Lazarobox entry shows the logo
+
 ### Requirement: WSL launch in one step
 In WSL, `install-desktop` MUST use the Linux launcher path, so the user launches lazarobox in one step with no manual "open WSL, then type the command". The result message MUST say where the entry was written. If the host does not list the entry in the Windows Start menu (WSLg), the message and the README MUST say so instead of promising it. A Windows `.exe` launcher is not part of this requirement.
 
