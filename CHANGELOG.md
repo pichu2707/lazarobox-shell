@@ -12,6 +12,9 @@ baseline.
 
 ### Fixed
 
+- The chat prompt now says the file tools only reach the home folder and that
+  the model must report a refusal or failed tool instead of guessing contents
+  (#550).
 - A chat opened in a folder outside the home folder and kept with `Esc` now
   says the file tools cannot read it and what to do (#550).
 
