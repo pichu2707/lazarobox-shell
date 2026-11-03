@@ -550,13 +550,13 @@ impl AiConfig {
         self.notify = notify;
     }
 
-    /// Whether lazarobox plays its own sound with the desktop notification
-    /// (`auto` and `desktop` modes).
     /// `[ai] tool_mark`: how the tool badge is drawn.
     pub fn tool_mark(&self) -> GlyphMode {
         self.tool_mark
     }
 
+    /// Whether lazarobox plays its own sound with the desktop notification
+    /// (`auto` and `desktop` modes).
     pub fn notify_sound(&self) -> bool {
         self.notify_sound
     }
