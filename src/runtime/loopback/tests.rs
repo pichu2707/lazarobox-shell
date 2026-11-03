@@ -1057,3 +1057,34 @@ fn the_idle_and_total_limits_are_the_constants_the_wait_line_reads() {
     let reports = (Timeouts::SERVER.report_reads, Timeouts::CLI.report_reads);
     assert_eq!(reports, (true, false));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_report_dropped_on_a_full_channel_is_sent_by_the_next_read() {
+    let (tx, events) = mpsc::channel(1);
+    tx.try_send(delta("queued")).unwrap();
+    let mut t = start_turn_on(tx, events);
+    settle().await;
+    // The report of the head finds the channel full and is dropped.
+    t.server.write_all(HEAD).await.unwrap();
+    settle().await;
+    assert_eq!(t.events.try_recv(), Ok(delta("queued")));
+    assert_eq!(t.events.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    // No time passed: only a drop that did not count as sent lets this read
+    // report at once.
+    t.server.write_all(&chunk("\n")).await.unwrap();
+    settle().await;
+    assert_eq!(t.events.try_recv(), Ok(StreamEvent::Reading));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_keep_alive_the_decoder_turns_into_nothing_is_still_reported() {
+    let mut t = start_turn();
+    settle().await;
+    t.server.write_all(HEAD).await.unwrap();
+    settle().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
+    advance(Duration::from_secs(30)).await;
+    t.server.write_all(&chunk("\n")).await.unwrap();
+    settle().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
+}
