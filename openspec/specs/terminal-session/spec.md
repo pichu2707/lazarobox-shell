@@ -71,6 +71,19 @@ Bytes written for a pane MUST reach that pane's child unmodified; child output M
 - WHEN `hello\n` is written
 - THEN `hello` appears in that pane's output events within a timeout
 
+### Requirement: Focus reports
+A pane's child that sets mode 1004 (`CSI ? 1004 h`) MUST receive `CSI I` when the window gains focus and `CSI O` when it loses it, while that pane has the focus. A pane that never set the mode, or reset it (`CSI ? 1004 l`), and every unfocused pane MUST receive nothing. A full reset (`ESC c`) does not clear the mode (known limit).
+
+#### Scenario: The pane asked for them [auto]
+- GIVEN the focused pane's child wrote `\x1b[?1004h`
+- WHEN the window loses focus, then gains it
+- THEN the pane receives `\x1b[O`, then `\x1b[I`
+
+#### Scenario: The pane did not ask, or is not focused [auto]
+- GIVEN a pane that never set mode 1004 or reset it, and an unfocused pane that set it
+- WHEN the window focus changes
+- THEN neither receives anything
+
 ### Requirement: Resize
 Each pane's PTY size MUST equal its layout rect (minimum 1x1) after the statusline row and the tab bar row (when visible) are excluded. On any layout or host change, the emulator AND the PTY of a pane MUST be resized, and ResizePty MUST be emitted only for panes whose size changed (no SIGWINCH storm), including panes of inactive tabs (for example when the tab bar appears or disappears, or the host resizes). Panes hidden by zoom keep their last size.
 (Previously: one pane sized (rows - 1) x cols)

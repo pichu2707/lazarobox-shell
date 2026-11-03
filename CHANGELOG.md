@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A program that asks for focus reports (mode 1004, as nvim does) now gets
+  `ESC[I` and `ESC[O` when the lazarobox window gains or loses focus, while its
+  pane has the focus. Other panes get nothing (#483).
+
 ## [1.3.0] - 2026-11-03
 
 ### Added

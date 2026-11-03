@@ -73,7 +73,7 @@ When a chat turn ends (final `Done`, an error event, or the answer cap) the app 
 - THEN no `Effect::Bell` is returned
 
 ### Requirement: Window focus is tracked
-`AppEvent::WindowFocus(bool)` sets the tracked window focus, which starts as focused. It never marks the screen dirty nor emits effects. The runtime MUST map crossterm `FocusGained` / `FocusLost` to it.
+`AppEvent::WindowFocus(bool)` sets the tracked window focus, which starts as focused. It never marks the screen dirty. Its only effect is the focus report of a pane that asked for one (see terminal-session). The runtime MUST map crossterm `FocusGained` / `FocusLost` to it.
 
 #### Scenario: Focus events map [auto]
 - GIVEN crossterm `FocusGained` and `FocusLost`
