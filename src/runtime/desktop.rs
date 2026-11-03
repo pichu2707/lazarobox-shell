@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::core::desktop::{
-    Entry, FILE_NAME, Options, Parsed, RECORDS_URL, USAGE, applications_dir, choose_terminal,
-    data_home, is_wsl, parse_args, parse_choice, picker_choices, plan_install,
+    ALTERNATIVES, Choice, Entry, FILE_NAME, Options, Parsed, RECORDS_URL, USAGE, applications_dir,
+    choose_terminal, data_home, is_wsl, parse_args, parse_choice, picker_choices, plan_install,
+    target_name,
 };
 
 /// Everything `execute` reads from the outside world.
@@ -134,8 +135,8 @@ pub fn execute(
             let (mut choice, mut notes) =
                 choose_terminal(terminal.as_deref(), ctx.env_terminal.as_deref(), ctx.lookup)?;
             if let (None, Some(input)) = (terminal, input) {
-                let alternative = (ctx.lookup)("x-terminal-emulator")
-                    .and_then(|path| fs::canonicalize(path).ok());
+                let alternative =
+                    (ctx.lookup)(ALTERNATIVES).and_then(|path| fs::canonicalize(path).ok());
                 let entries = picker_choices(
                     ctx.env_terminal.as_deref(),
                     ctx.lookup,
@@ -145,6 +146,16 @@ pub fn execute(
                 if let Some(entry) = ask(&entries, input, out)?.filter(|e| !e.default) {
                     choice = entry.choice();
                 }
+            }
+            if let Choice::Terminal {
+                name, path, runs, ..
+            } = &mut choice
+                && name == ALTERNATIVES
+            {
+                *runs = fs::canonicalize(&*path)
+                    .ok()
+                    .as_deref()
+                    .and_then(target_name);
             }
             let existed = fs::symlink_metadata(&target).is_ok();
             let plan = plan_install(&choice, &ctx.exe, dir.as_deref(), ctx.wsl)?;

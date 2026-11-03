@@ -49,6 +49,14 @@ pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
 /// Terminals that have a record under `docs/terminals/<name>/`.
 pub const RECORDED_TERMINALS: [&str; 2] = ["kitty", "zutty"];
 
+/// The Debian alternatives link: the system decides which terminal it runs.
+pub const ALTERNATIVES: &str = "x-terminal-emulator";
+
+/// The recorded terminal an `x-terminal-emulator` entry runs, if any.
+fn recorded_target<'a>(name: &str, runs: Option<&'a str>) -> Option<&'a str> {
+    runs.filter(|target| name == ALTERNATIVES && RECORDED_TERMINALS.contains(target))
+}
+
 /// What the launcher says about the host terminal; `None` is the terminal the
 /// desktop picks (unknown here).
 pub fn terminal_notice(name: Option<&str>) -> String {
@@ -110,6 +118,7 @@ pub fn picker_choices(
     resolved_alternative: Option<PathBuf>,
     automatic: &Choice,
 ) -> Vec<Entry> {
+    let target = resolved_alternative.as_deref().and_then(target_name);
     let wanted = env_terminal
         .filter(|c| !c.is_empty())
         .into_iter()
@@ -130,7 +139,8 @@ pub fn picker_choices(
     for (name, path) in wanted {
         if entries.iter().all(|e| e.name != name) {
             entries.push(Entry {
-                tested: RECORDED_TERMINALS.contains(&name.as_str()),
+                tested: RECORDED_TERMINALS.contains(&name.as_str())
+                    || recorded_target(&name, target.as_deref()).is_some(),
                 default: auto_name == Some(&name),
                 name,
                 path,
@@ -201,6 +211,9 @@ pub enum Choice {
         /// `false` when the name is not in the table (generic `-e`).
         known: bool,
         source: Source,
+        /// What `x-terminal-emulator` resolves to, when known. The record is
+        /// judged on it; `Exec` keeps `path`.
+        runs: Option<String>,
     },
     /// No terminal found: `Terminal=true` and the desktop picks one.
     Fallback,
@@ -340,6 +353,11 @@ pub fn choose_terminal(
     Ok((Choice::Fallback, notes))
 }
 
+/// The terminal a resolved `x-terminal-emulator` path names.
+pub fn target_name(path: &Path) -> Option<String> {
+    Some(base_name(path.to_str()?))
+}
+
 fn base_name(cmd: &str) -> String {
     Path::new(cmd)
         .file_name()
@@ -356,6 +374,7 @@ fn candidate(cmd: &str, path: PathBuf, source: Source) -> Choice {
         path,
         known,
         source,
+        runs: None,
     }
 }
 
@@ -455,7 +474,11 @@ pub fn plan_install(
     }
     let (exec, terminal_flag, wm_class) = match choice {
         Choice::Terminal {
-            name, path, known, ..
+            name,
+            path,
+            known,
+            runs,
+            ..
         } => {
             validate_path(path)?;
             let syntax = exec_syntax(name).unwrap_or(GENERIC);
@@ -465,7 +488,12 @@ pub fn plan_install(
                     path.display()
                 ));
             }
-            notes.push(terminal_notice(Some(name)));
+            notes.push(match recorded_target(name, runs.as_deref()) {
+                Some(target) => {
+                    format!("{name} resolves to {target}, which has a record: {RECORDS_URL}")
+                }
+                None => terminal_notice(Some(name)),
+            });
             let mut words = vec![path.to_string_lossy().into_owned()];
             words.extend(syntax.args.iter().map(|a| a.to_string()));
             words.push(bin_text);

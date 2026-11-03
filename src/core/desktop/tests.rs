@@ -154,6 +154,7 @@ fn flag_accepts_an_absolute_path_and_keys_on_its_basename() {
             path: PathBuf::from("/usr/bin/alacritty"),
             known: true,
             source: Source::Flag,
+            runs: None,
         }
     );
 }
@@ -443,6 +444,7 @@ fn unsafe_terminal_path_is_refused_too() {
         path: PathBuf::from("/opt/my kitty/kitty"),
         known: true,
         source: Source::Flag,
+        runs: None,
     };
     assert!(plan_install(&choice, Path::new(BIN), None, false).is_err());
 }
@@ -634,4 +636,53 @@ fn is_wsl_lives_next_to_the_launcher() {
     assert!(is_wsl(Some("Ubuntu"), None));
     assert!(is_wsl(None, Some("5.15-microsoft-standard-WSL2")));
     assert!(!is_wsl(None, Some("6.8.0-generic")));
+}
+
+// Issue #487: `x-terminal-emulator` is judged by the terminal it resolves to.
+#[test]
+fn picker_judges_the_alternative_by_the_terminal_it_resolves_to() {
+    let tested = |target: Option<&str>| {
+        let list = entries(None, &["x-terminal-emulator"], target);
+        let entry = list.iter().find(|e| e.name == "x-terminal-emulator");
+        entry.unwrap().tested
+    };
+    assert!(tested(Some("/usr/bin/zutty")));
+    assert!(tested(Some("/usr/bin/kitty")));
+    assert!(!tested(Some("/usr/bin/foot")));
+    assert!(!tested(Some("/usr/bin/x-terminal-emulator")));
+    assert!(!tested(None));
+}
+
+fn alternative_running(runs: Option<&str>) -> Plan {
+    let choice = Choice::Terminal {
+        name: "x-terminal-emulator".into(),
+        path: PathBuf::from("/usr/bin/x-terminal-emulator"),
+        known: true,
+        source: Source::Flag,
+        runs: runs.map(str::to_owned),
+    };
+    plan_install(&choice, Path::new(BIN), None, false).unwrap()
+}
+
+// Issue #487: the note names the terminal, and `Exec` keeps the link.
+#[test]
+fn the_note_of_the_alternative_names_the_recorded_terminal_it_runs() {
+    let plan = alternative_running(Some("zutty"));
+    assert_eq!(
+        plan.notes,
+        vec![format!(
+            "x-terminal-emulator resolves to zutty, which has a record: {RECORDS_URL}"
+        )]
+    );
+    assert!(
+        plan.contents
+            .contains("Exec=/usr/bin/x-terminal-emulator -e ")
+    );
+    for runs in [Some("foot"), Some("x-terminal-emulator"), None] {
+        assert_eq!(
+            alternative_running(runs).notes,
+            vec![terminal_notice(Some("x-terminal-emulator"))],
+            "{runs:?}"
+        );
+    }
 }

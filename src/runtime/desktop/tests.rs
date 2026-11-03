@@ -631,3 +631,94 @@ fn a_failing_reader_is_reported_and_writes_nothing() {
     );
     assert!(!fx.target().exists());
 }
+
+impl Fixture {
+    /// A run whose PATH is the real folder `path`, so links resolve.
+    fn run_in(
+        &self,
+        options: &Options,
+        path: &Path,
+        typed: Option<&str>,
+    ) -> (Result<(), String>, String) {
+        let lookup = |cmd: &str| {
+            let file = path.join(cmd);
+            file.exists().then_some(file)
+        };
+        let refresh = |_: &Path| {};
+        let ctx = Context {
+            env_terminal: None,
+            xdg_data_home: None,
+            home: Some(self.home.path().as_os_str().to_owned()),
+            exe: PathBuf::from(EXE),
+            cwd: self.home.path().to_path_buf(),
+            wsl: false,
+            lookup: &lookup,
+            refresh_db: &refresh,
+        };
+        let mut reader = typed.map(|t| std::io::Cursor::new(t.as_bytes().to_vec()));
+        let input = reader.as_mut().map(|r| r as &mut dyn BufRead);
+        let mut out = Vec::new();
+        let result = execute(options, &ctx, input, &mut out);
+        (result, String::from_utf8(out).unwrap())
+    }
+}
+
+/// A PATH folder with `foot` and an `x-terminal-emulator` link to `target`,
+/// as Debian's alternatives leave it.
+fn alternatives_to(target: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(target), "").unwrap();
+    fs::write(dir.path().join("foot"), "").unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join(target),
+        dir.path().join("x-terminal-emulator"),
+    )
+    .unwrap();
+    dir
+}
+
+// Issue #487.
+#[test]
+fn the_alternative_linked_to_a_recorded_terminal_counts_as_tested() {
+    let path = alternatives_to("zutty");
+    let fx = Fixture::new();
+    let (result, out) = fx.run_in(&install(None), path.path(), Some("2\n"));
+    result.unwrap();
+    assert!(out.contains("2) x-terminal-emulator (tested)"), "{out}");
+    assert!(
+        out.contains("note: x-terminal-emulator resolves to zutty, which has a record"),
+        "{out}"
+    );
+    assert!(!out.contains("has no test record"), "{out}");
+    let written = fs::read_to_string(fx.target()).unwrap();
+    let exec = format!("Exec={}/x-terminal-emulator -e ", path.path().display());
+    assert!(written.contains(&exec), "{written}");
+}
+
+// Issue #487: the flag is judged the same way, with no picker.
+#[test]
+fn the_alternative_named_by_the_flag_is_judged_by_its_target() {
+    let path = alternatives_to("zutty");
+    let fx = Fixture::new();
+    let flag = install(Some("x-terminal-emulator"));
+    let (result, out) = fx.run_in(&flag, path.path(), None);
+    result.unwrap();
+    assert!(
+        out.contains("resolves to zutty, which has a record"),
+        "{out}"
+    );
+}
+
+// Issue #487: a link to a terminal without a record stays untested.
+#[test]
+fn the_alternative_linked_to_an_unrecorded_terminal_stays_untested() {
+    let path = alternatives_to("st");
+    let fx = Fixture::new();
+    let (result, out) = fx.run_in(&install(None), path.path(), Some("2\n"));
+    result.unwrap();
+    assert!(out.contains("2) x-terminal-emulator\n"), "{out}");
+    assert!(
+        out.contains("x-terminal-emulator has no test record yet"),
+        "{out}"
+    );
+}
