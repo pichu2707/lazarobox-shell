@@ -12,6 +12,9 @@ baseline.
 
 ### Fixed
 
+- Reading a SQLite file now says it is a database that cannot be read as text
+  and suggests a `sqlite3` command for the user's pane, instead of `the file
+  is not text` (#550).
 - The chat prompt now says the file tools only reach the home folder and that
   the model must report a refusal or failed tool instead of guessing contents
   (#550).

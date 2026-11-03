@@ -96,6 +96,8 @@ pub struct ToolEnv {
 pub enum Failure {
     Refused,
     NotText,
+    /// A file that starts with the SQLite header: binary, but worth saying so.
+    Sqlite,
     Unreadable,
     TimedOut,
     EmptyQuery,
@@ -110,12 +112,31 @@ impl Failure {
         match self {
             Failure::Refused => REFUSED,
             Failure::NotText => "the file is not text",
+            Failure::Sqlite => SQLITE_MESSAGE,
             Failure::Unreadable => "could not read",
             Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
             Failure::BadPattern => "the pattern is not a valid expression",
         }
+    }
+}
+
+/// What a SQLite file is answered with: the user's pane is the way in, and
+/// `sqlite3` is not read-only by name, so it still waits for the user's Enter.
+const SQLITE_MESSAGE: &str = "the file is a SQLite database, not text; propose a sqlite3 command for the user's pane with run_in_pane";
+
+/// The first bytes of every SQLite database.
+const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
+
+/// Why `bytes` are not text, when they hold a NUL byte.
+fn binary(bytes: &[u8]) -> Option<Failure> {
+    if bytes.starts_with(SQLITE_HEADER) {
+        Some(Failure::Sqlite)
+    } else if bytes.contains(&0) {
+        Some(Failure::NotText)
+    } else {
+        None
     }
 }
 
@@ -456,8 +477,8 @@ fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
 /// The start of `bytes` (a file, or a staged text) as far as the cap allows.
 fn head_text(mut bytes: Vec<u8>, limits: &Limits) -> Result<String, Failure> {
     let window = limits.read_bytes + REDACT_MARGIN;
-    if bytes.contains(&0) {
-        return Err(Failure::NotText);
+    if let Some(failure) = binary(&bytes) {
+        return Err(failure);
     }
     let more = bytes.len() > window;
     bytes.truncate(window);
@@ -525,8 +546,8 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
 
 /// [`read_window`] over the bytes themselves.
 fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<String, Failure> {
-    if bytes.contains(&0) {
-        return Err(Failure::NotText);
+    if let Some(failure) = binary(&bytes) {
+        return Err(failure);
     }
     let scan_cut = bytes.len() > PAGE_SCAN;
     bytes.truncate(PAGE_SCAN);
@@ -1265,6 +1286,31 @@ mod tests {
         fs::write(f.home.join("one"), format!("{}\nnext\n", "w".repeat(50))).unwrap();
         let out = page(&env(&f.home), "~/one", 1, 5, &limits);
         assert_eq!(out, format!("{}\n{READ_MARKER}", "w".repeat(20)));
+    }
+
+    #[test]
+    fn a_sqlite_file_gets_its_own_message_and_other_binaries_keep_theirs() {
+        let f = fixture();
+        let mut db = b"SQLite format 3\0".to_vec();
+        db.extend_from_slice(b"SECRET-ROW-1\0\0");
+        fs::write(f.home.join("app.db"), &db).unwrap();
+        fs::write(f.home.join("bin"), b"SQLite format 4\0x").unwrap();
+        let e = env(&f.home);
+        let paged = Call::ReadFile {
+            path: "~/app.db".into(),
+            lines: Some(Lines { start: 1, max: 5 }),
+        };
+        for result in [
+            read(&e, "~/app.db"),
+            execute(&paged, &e, &Limits::default()),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(err, Failure::Sqlite);
+            let text = err.message();
+            assert!(text.contains("SQLite database") && text.contains("sqlite3"));
+            assert!(text.contains("run_in_pane") && !text.contains("SECRET-ROW-1"));
+        }
+        assert_eq!(read(&e, "~/bin").unwrap_err(), Failure::NotText);
     }
 
     #[test]
