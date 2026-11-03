@@ -148,6 +148,40 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// How long Ollama keeps a model loaded after a turn (`keep_alive`), as a
+/// duration text such as `"30m"`: a number of seconds `n` is kept as `"<n>s"`,
+/// which Ollama reads the same. A negative value keeps the model loaded, 0
+/// unloads it at once. A boxed text keeps every chat request small.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct KeepAlive(Box<str>);
+
+impl KeepAlive {
+    /// The duration text Ollama gets.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The value of the request body.
+    pub fn json(&self) -> serde_json::Value {
+        self.as_str().into()
+    }
+}
+
+impl From<&str> for KeepAlive {
+    fn from(text: &str) -> Self {
+        Self(text.into())
+    }
+}
+
+/// The prompt-cache options of the local servers (#515), from
+/// `[ai.servers.ollama] keep_alive` and `[ai.servers.llamacpp]
+/// cache_prompt`. Unset, nothing is sent and each server keeps its default.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct CacheOptions {
+    pub keep_alive: Option<KeepAlive>,
+    pub cache_prompt: Option<bool>,
+}
+
 /// The loopback ports of the server engines: each catalog port, unless
 /// `[ai.servers.<id>] port` replaced it. Detection and chat read the same
 /// value, so an engine is used where it was detected. The host is always

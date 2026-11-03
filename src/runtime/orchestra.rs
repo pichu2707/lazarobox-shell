@@ -1484,6 +1484,7 @@ impl RunManager {
             prompt = format!("{prompt}\n\n{wrapped}");
         }
         let mut request = ChatRequest {
+            cache: Default::default(),
             engine: spec.engine.clone(),
             model: spec.model.clone(),
             // A review worker has the prompt of its lens, not of its kind.

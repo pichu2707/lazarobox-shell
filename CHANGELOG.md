@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Prompt-cache options for the local servers: `[ai.servers.ollama] keep_alive`
+  (how long the model stays loaded after a turn, such as `"30m"` or seconds)
+  and `[ai.servers.llamacpp] cache_prompt`. Unset, nothing is sent and each
+  server keeps its default (#515).
+
 ## [1.3.1] - 2026-11-03
 
 ### Fixed

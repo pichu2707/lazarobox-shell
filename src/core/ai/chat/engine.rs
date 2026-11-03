@@ -58,6 +58,9 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+    /// The prompt-cache options of the local servers, set by the runtime
+    /// from the config when the turn starts; unset leaves them out.
+    pub cache: crate::core::ai::CacheOptions,
 }
 
 /// What an orchestrator turn hands the runtime beside its request (D5): the

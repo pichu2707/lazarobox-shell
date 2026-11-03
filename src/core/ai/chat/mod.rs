@@ -1380,6 +1380,7 @@ impl ChatState {
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
+                cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),

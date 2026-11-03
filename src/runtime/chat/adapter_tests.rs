@@ -35,6 +35,7 @@ fn pane(n: u32) -> PaneId {
 
 fn request(model: &str) -> ChatRequest {
     ChatRequest {
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some(model.into()),
@@ -722,4 +723,32 @@ async fn a_turn_of_another_engine_never_starts_the_managed_server() {
     let (events, _chats) = run_managed(ports, managed.clone(), request("m")).await;
     assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
     assert_eq!(managed.pid().await, None);
+}
+
+// Issue #515: a turn carries the cache options the runtime was given.
+#[tokio::test]
+async fn a_turn_sends_the_cache_options_of_the_live_servers() {
+    let body = "{\"message\":{\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n";
+    let server = Recorder::start(reply(body)).await;
+    let live = LiveServers::new(ServerPorts::every(server.port), None);
+    live.set_cache(crate::core::ai::CacheOptions {
+        keep_alive: Some(crate::core::ai::KeepAlive::from("30m")),
+        cache_prompt: Some(true),
+    });
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(adapter_runner_live(live.clone()), tx).with_live(live);
+    chats.send(pane(1), 1, request("llama3:8b"));
+    loop {
+        let (_, _, event) = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        if matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_)) {
+            assert_eq!(event, StreamEvent::Done(Finish::Stop));
+            break;
+        }
+    }
+    let (_, json) = server.request(0);
+    assert_eq!(json["keep_alive"], "30m");
+    assert!(json.get("cache_prompt").is_none(), "{json}");
 }

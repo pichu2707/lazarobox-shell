@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::ai::{
+    CacheOptions, KeepAlive,
     chat::engine::{ChatMessage, ChatRequest, Role, Tools},
     jail::{Cli, JailPolicy},
     tools::wiring::{McpWire, Secret, Unwire},
@@ -16,6 +17,7 @@ fn message(role: Role, content: &str) -> ChatMessage {
 
 fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
@@ -1900,4 +1902,72 @@ fn only_claude_codex_and_gemini_are_cli_engines() {
     ] {
         assert!(!is_cli_engine(id), "{id}");
     }
+}
+
+// Issue #515: the prompt-cache options, each for its own server.
+
+fn with_cache(
+    engine: &str,
+    keep_alive: Option<KeepAlive>,
+    cache_prompt: Option<bool>,
+) -> ChatRequest {
+    let mut req = request("be brief");
+    req.engine = engine.into();
+    req.cache = CacheOptions {
+        keep_alive,
+        cache_prompt,
+    };
+    req
+}
+
+fn built(engine: &str, req: &ChatRequest) -> Value {
+    http(adapter_for(engine).expect("a server adapter").build(req)).3
+}
+
+#[test]
+fn ollama_sends_keep_alive_when_it_is_set() {
+    let text = with_cache("ollama", Some(KeepAlive::from("30m")), None);
+    assert_eq!(built("ollama", &text)["keep_alive"], json!("30m"));
+    let seconds = with_cache("ollama", Some(KeepAlive::from("-1s")), None);
+    let body = built("ollama", &seconds);
+    assert_eq!(body["keep_alive"], json!("-1s"));
+    assert_eq!(body.as_object().unwrap().len(), 4, "{body}");
+}
+
+#[test]
+fn llamacpp_sends_cache_prompt_when_it_is_set() {
+    for on in [true, false] {
+        let body = built("llamacpp", &with_cache("llamacpp", None, Some(on)));
+        assert_eq!(body["cache_prompt"], json!(on));
+        assert_eq!(body.as_object().unwrap().len(), 4, "{body}");
+    }
+}
+
+#[test]
+fn each_server_ignores_the_option_of_the_other() {
+    let both = |engine| with_cache(engine, Some(KeepAlive::from("30m")), Some(true));
+    assert!(
+        built("ollama", &both("ollama"))
+            .get("cache_prompt")
+            .is_none()
+    );
+    assert!(
+        built("llamacpp", &both("llamacpp"))
+            .get("keep_alive")
+            .is_none()
+    );
+    for engine in ["lmstudio", "vllm"] {
+        let body = built(engine, &both(engine));
+        assert_eq!(body.as_object().unwrap().len(), 3, "{engine}: {body}");
+    }
+}
+
+#[test]
+fn the_tool_rounds_carry_the_cache_options_too() {
+    let ollama = with_cache("ollama", Some(KeepAlive::from("1h")), None);
+    let body: Value = serde_json::from_slice(&ollama_round_body(&ollama, &[], true)).unwrap();
+    assert_eq!(body["keep_alive"], json!("1h"));
+    let llama = with_cache("llamacpp", None, Some(true));
+    let body: Value = serde_json::from_slice(&openai_round_body(&llama, &[], true)).unwrap();
+    assert_eq!(body["cache_prompt"], json!(true));
 }

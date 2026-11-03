@@ -173,6 +173,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
     std::thread::sleep(Duration::from_secs(3));
 
     let request = ChatRequest {
+        cache: Default::default(),
         engine: "codex".into(),
         model: None,
         system: "Answer in one word.".into(),

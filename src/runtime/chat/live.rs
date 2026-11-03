@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::Managed;
-use crate::core::ai::ServerPorts;
+use crate::core::ai::{CacheOptions, ServerPorts};
 
 #[derive(Clone, Default)]
 pub struct LiveServers(Arc<RwLock<State>>);
@@ -20,6 +20,8 @@ struct State {
     managed: Option<Arc<Managed>>,
     /// How long the managed server may sit unused; `None` never stops it.
     idle: Option<Duration>,
+    /// The prompt-cache options every turn carries.
+    cache: CacheOptions,
 }
 
 impl LiveServers {
@@ -28,6 +30,7 @@ impl LiveServers {
             ports,
             managed,
             idle: None,
+            cache: CacheOptions::default(),
         })))
     }
 
@@ -48,6 +51,17 @@ impl LiveServers {
             .unwrap_or_else(PoisonError::into_inner)
             .managed
             .clone()
+    }
+
+    /// Sets the prompt-cache options every turn carries.
+    pub fn set_cache(&self, cache: CacheOptions) {
+        self.0.write().unwrap_or_else(PoisonError::into_inner).cache = cache;
+    }
+
+    /// The prompt-cache options of the config.
+    pub fn cache(&self) -> CacheOptions {
+        let state = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        state.cache.clone()
     }
 
     /// Sets how long the managed server may sit unused; `None` never stops it.
