@@ -601,6 +601,8 @@ Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) está
 
 Al abrir un chat, si su carpeta es **amplia o desconocida** (`$HOME`, un ancestro de `$HOME` como `/home`, `/`, una carpeta del sistema o fuera de `$HOME`, o un panel que no ha informado de su carpeta) aparece el selector antes de la lista de conversaciones. Con una carpeta de proyecto el chat se abre como siempre. Ninguna carpeta se elige sin que pulses una tecla, tampoco la última usada.
 
+Las herramientas de lectura del chat solo llegan a `$HOME`. Si el chat se abrió en una carpeta fuera de `$HOME` (por ejemplo `/mnt/c/...` en WSL) y cierras el selector con `Esc`, el chat se queda en ella y avisa con `the file tools cannot read <carpeta>: it is outside your home folder; move the project under it or use /cd <folder>`. Esa frontera no cambia: mueve el proyecto bajo tu carpeta personal o cambia de carpeta con `/cd`.
+
 Candidatos, cada uno una vez y nunca `$HOME`: la última carpeta usada (preseleccionada), la raíz git de los paneles de la pestaña, las carpetas recientes del historial y el último cwd de shell. Como mucho 12 filas. Si no hay ninguno, queda solo el campo de ruta.
 
 Las teclas del selector están en [«Referencia de teclas por vista»](#referencia-de-teclas-por-vista).

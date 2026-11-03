@@ -299,7 +299,12 @@ impl App {
         }
         match result {
             Ok(probed) if probed.verdict == Verdict::Concrete => self.finish_open(id),
-            _ => self.open_folder_picker(id),
+            result => {
+                if matches!(&result, Ok(p) if p.verdict == Verdict::Outside) {
+                    self.outside_open.insert(id);
+                }
+                self.open_folder_picker(id)
+            }
         }
     }
 
@@ -328,6 +333,7 @@ impl App {
             return Vec::new();
         }
         chat.close_folder_picker();
+        self.outside_open.remove(&id);
         let mut effects = if chat.origin_cwd() == Some(&path) {
             Vec::new()
         } else {
@@ -349,6 +355,12 @@ impl App {
         chat.push_system_line(format!(
             "chat folder is {folder}; use /cd <folder> to change it"
         ));
+        if self.outside_open.remove(&id) {
+            chat.push_system_line(format!(
+                "the file tools cannot read {folder}: it is outside your home folder; \
+                 move the project under it or use /cd <folder>"
+            ));
+        }
         self.finish_open(id)
     }
 

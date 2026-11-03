@@ -352,6 +352,7 @@ impl App {
         self.resume_folders.remove(&id);
         self.cd_requests.remove(&id);
         self.opening.remove(&id);
+        self.outside_open.remove(&id);
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.

@@ -10,6 +10,11 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A chat opened in a folder outside the home folder and kept with `Esc` now
+  says the file tools cannot read it and what to do (#550).
+
 ## [1.4.0] - 2026-11-03
 
 ### Added

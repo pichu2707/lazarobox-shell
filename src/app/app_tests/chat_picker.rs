@@ -675,3 +675,36 @@ fn settling_only_answers_the_probe_of_the_pane_that_opened() {
     a.update_settled(key('x'));
     assert!(picker_open(&a));
 }
+
+#[test]
+fn esc_over_an_outside_folder_says_the_file_tools_cannot_read_it() {
+    let mut a = app();
+    open(&mut a);
+    answer(&mut a, Purpose::Open, judged(LAUNCH, Verdict::Outside));
+    a.update(key_code(KeyCode::Esc));
+    assert!(systems(&a).contains(&format!(
+        "the file tools cannot read {LAUNCH}: it is outside your home folder; \
+         move the project under it or use /cd <folder>"
+    )));
+}
+
+#[test]
+fn esc_over_a_broad_folder_inside_home_adds_no_outside_line() {
+    let mut a = app();
+    broad(&mut a);
+    a.update(key_code(KeyCode::Esc));
+    assert!(!systems(&a).iter().any(|l| l.contains("cannot read")));
+}
+
+#[test]
+fn picking_another_folder_after_an_outside_open_adds_no_outside_line() {
+    let mut a = app();
+    open(&mut a);
+    answer(&mut a, Purpose::Open, judged(LAUNCH, Verdict::Outside));
+    with_rows(&mut a);
+    a.update(enter());
+    answer_pick(&mut a, judged("/w/b", Verdict::Concrete));
+    assert!(!systems(&a).iter().any(|l| l.contains("cannot read")));
+    a.update(key_code(KeyCode::Esc));
+    assert!(!systems(&a).iter().any(|l| l.contains("cannot read")));
+}
