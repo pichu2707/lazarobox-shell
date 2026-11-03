@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-03
+
 ### Changed
 
 - Deleting a conversation from the chat list now takes `Del`, then `Enter` to
@@ -1932,7 +1934,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...v1.2.0
