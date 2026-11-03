@@ -126,7 +126,7 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
         if !out.is_empty() {
             out.push(blank());
         }
-        push_wrapped(&mut out, LineKind::Waiting, "", "", text, width);
+        push_wrapped(&mut out, LineKind::Waiting, "", "", &text, width);
     }
     (out, starts)
 }

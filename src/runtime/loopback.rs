@@ -16,6 +16,7 @@ use crate::core::ai::{
     chat::{
         engine::{ChatError, StreamEvent},
         stream::StreamDecoder,
+        wait_line::{FIRST_BYTE_LIMIT, SLOW_AFTER},
     },
     http::{Body, Framing, Head, Step, parse_head},
     sanitize::clean,
@@ -71,10 +72,10 @@ impl Timeouts {
     /// What a server turn gets.
     pub const SERVER: Self = Self {
         connect: Duration::from_secs(2),
-        first_byte: Duration::from_secs(120),
+        first_byte: FIRST_BYTE_LIMIT,
         idle: Duration::from_secs(60),
         total: Duration::from_secs(15 * 60),
-        slow: Duration::from_secs(3),
+        slow: SLOW_AFTER,
         quiet: None,
     };
 
@@ -86,10 +87,10 @@ impl Timeouts {
     /// `connect` is not used.
     pub const CLI: Self = Self {
         connect: Duration::from_secs(2),
-        first_byte: Duration::from_secs(120),
+        first_byte: FIRST_BYTE_LIMIT,
         idle: Duration::from_secs(300),
         total: Duration::from_secs(15 * 60),
-        slow: Duration::from_secs(3),
+        slow: SLOW_AFTER,
         quiet: Some(Duration::from_secs(10)),
     };
 }

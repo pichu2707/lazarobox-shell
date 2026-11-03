@@ -1253,6 +1253,46 @@ mod guard {
         assert!(a.approval_prompt(id2()).unwrap().armed);
     }
 
+    // The wait line counts the clock of the request, and a worker's call that
+    // waits for the user stops that clock: the tick is where the app sees it.
+    #[test]
+    fn the_anim_tick_follows_the_pause_of_a_tool_call_that_waits_for_the_user() {
+        use std::time::Duration;
+        NOW_MS.with(|n| n.set(0));
+        let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
+        a.update(key('q'));
+        let turn = enter_turn(&mut a);
+        // The chat applies stream events on its own clock: hand it the mock's.
+        NOW_MS.with(|n| n.set(10_000));
+        let said = mock_now();
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .apply_at(turn, StreamEvent::Slow, said);
+        let waits = |a: &mut App, ms: u64| {
+            NOW_MS.with(|n| n.set(ms));
+            let now = mock_now();
+            a.focused_state_mut().chat_mut().unwrap().wait_elapsed(now)
+        };
+        assert_eq!(waits(&mut a, 12_000), Some(Duration::from_secs(5)));
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .approvals_mut()
+            .request_call(run("cd x"), turn, CallId(9), None)
+            .unwrap();
+        at(&mut a, 20_000, AppEvent::AnimTick);
+        let id = pending(&a).map(|_| chat(&a, id2()).approvals().pending().unwrap().id());
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .approvals_mut()
+            .withdraw(id.unwrap());
+        at(&mut a, 40_000, AppEvent::AnimTick);
+        // Slow said 3 s at t = 10 s: started at 7 s, held 20 s.
+        assert_eq!(waits(&mut a, 50_000), Some(Duration::from_secs(23)));
+    }
+
     // The confirm the user opens with `Prefix e` is theirs: no delay.
     #[test]
     fn the_users_own_confirm_answers_at_once() {

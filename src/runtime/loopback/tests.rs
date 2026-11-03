@@ -928,3 +928,12 @@ async fn a_server_silent_after_its_first_bytes_sends_no_hint() {
     assert!(matches!(out.read().await, Err(Stop::Failed(STALLED))));
     assert!(out.nothing_sent());
 }
+
+#[test]
+fn the_wait_line_reads_the_limits_of_the_real_clock() {
+    use crate::core::ai::chat::wait_line::{FIRST_BYTE_LIMIT, SLOW_AFTER};
+    for timeouts in [Timeouts::SERVER, Timeouts::CLI] {
+        assert_eq!(timeouts.first_byte, FIRST_BYTE_LIMIT);
+        assert_eq!(timeouts.slow, SLOW_AFTER);
+    }
+}

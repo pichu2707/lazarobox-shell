@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- The wait line of a chat turn says what it waits for: `waiting for your
+  answer…` under an approval prompt, `running <tool>…` while a tool runs, and
+  the model otherwise. For a local server engine the long wait adds the
+  seconds the request clock has run and its limit (`still waiting for the
+  model… 45s (gives up at 120s)`); the time held for your answer is not
+  counted, and the CLI engines show neither seconds nor limit (#437).
+
 ## [1.4.0] - 2026-11-03
 
 ### Added

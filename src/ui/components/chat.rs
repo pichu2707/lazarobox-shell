@@ -23,6 +23,7 @@ use crate::{
             guidance::guidance_rows,
             review::Badge,
             transcript::{Line, LineKind},
+            wait_line,
             wrap::{text_width, wrap_words},
         },
         config::ApprovalMode,
@@ -221,6 +222,25 @@ impl<'a> ChatView<'a> {
             if span.contains(line, col) || (wide && span.contains(line, col + 1)) {
                 cell.modifier.insert(Modifier::REVERSED);
             }
+        }
+    }
+
+    /// The seconds the wait line has run, after its last row. They change
+    /// every second, so they are drawn here and never cached with the lines;
+    /// only what fits is drawn, so the row count never changes.
+    fn draw_wait_suffix(&self, buf: &mut Buffer, rect: Rect, y: u16, line: &Line) {
+        let Some(now) = self.now else { return };
+        if line.kind != LineKind::Waiting {
+            return;
+        }
+        let Some(elapsed) = self.chat.wait_elapsed(now) else {
+            return;
+        };
+        let used = text_width(&line.text);
+        let room = usize::from(rect.width).saturating_sub(used);
+        if let Some(suffix) = wait_line::suffix(elapsed, room) {
+            let x = rect.x + u16::try_from(used).unwrap_or(0);
+            buf.set_stringn(x, y, &suffix, room, self.style(LineKind::Waiting));
         }
     }
 
@@ -423,6 +443,9 @@ impl ChatView<'_> {
             for (row, line) in lines.iter().skip(top).take(height).enumerate() {
                 let y = transcript.y + u16::try_from(row).unwrap_or(0);
                 self.draw_line(buf, transcript, y, line);
+                if top + row + 1 == lines.len() {
+                    self.draw_wait_suffix(buf, transcript, y, line);
+                }
                 self.draw_selection(buf, transcript, y, top + row);
             }
         }
@@ -486,3 +509,5 @@ mod tags;
 mod tests;
 #[cfg(test)]
 mod tool_tests;
+#[cfg(test)]
+mod wait_line_tests;

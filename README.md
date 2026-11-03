@@ -590,6 +590,8 @@ Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del w
 
 Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) están en la [referencia de teclas](#referencia-de-teclas-por-vista).
 
+**La línea de espera.** Mientras no llega ningún byte de la respuesta, la última línea de la conversación dice a quién se espera: `waiting for the model…` (pasados 3 s sin respuesta, `still waiting for the model…`), `running <herramienta>…` mientras una herramienta corre, o `waiting for your answer…` mientras hay un aviso de aprobación abierto. Con un servidor local (Ollama, llama.cpp, LM Studio, vLLM) la línea de espera larga añade los segundos que lleva el reloj de la petición y su límite, por ejemplo `still waiting for the model… 45s (gives up at 120s)`; el reloj se detiene mientras una llamada espera tu respuesta y empieza de nuevo con cada petición que sigue a una herramienta. Con claude, codex y gemini no se muestran segundos ni límite: su límite de inactividad (300 s) se reinicia con cada lectura, que lazarobox no ve desde el panel. En un panel estrecho la línea se acorta (primero se omite el límite, luego los segundos) y nunca cambia de altura.
+
 **La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
 
 - Empieza en la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Un `cd` posterior en un shell no la mueve: se cambia con el selector al abrir el chat o con `/cd` (más abajo).
