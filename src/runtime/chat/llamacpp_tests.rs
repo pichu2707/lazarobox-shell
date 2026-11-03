@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    ollama::{NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
+    ollama::{NO_TOOLS_NOTICE, OLLAMA_NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
     ollama_tests::{Lab, OK_HEAD, Step, ask, direct, fake, lab, text},
     tests::done,
     *,
@@ -185,11 +185,11 @@ fn the_openai_profile_rejects_only_4xx_and_5xx_that_name_the_jinja_flag() {
 }
 
 #[test]
-fn the_ollama_profile_keeps_the_plain_400_and_no_notice() {
+fn the_ollama_profile_keeps_the_plain_400_and_has_its_own_notice() {
     assert!(Profile::Ollama.rejected("HTTP 400: nope"));
     assert!(!Profile::Ollama.rejected("HTTP 500: tools param requires --jinja flag"));
     assert!(!Profile::Ollama.rejected("HTTP 422: tools"));
-    assert_eq!(Profile::Ollama.notice(), None);
+    assert_eq!(Profile::Ollama.notice(), Some(OLLAMA_NO_TOOLS_NOTICE));
     assert_eq!(Profile::OpenAi.notice(), Some(NO_TOOLS_NOTICE));
 }
 

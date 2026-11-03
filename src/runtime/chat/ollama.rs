@@ -84,6 +84,11 @@ const REJECTED: &str = "HTTP 400";
 pub const NO_TOOLS_NOTICE: &str =
     "llama-server refused tools (start it with --jinja): answering as plain text";
 
+/// The line a pane gets once when Ollama answers 400 to `tools` and the turn
+/// goes on as text (the model may not support tools).
+pub const OLLAMA_NO_TOOLS_NOTICE: &str =
+    "Ollama refused tools (the model may not support them): answering as plain text";
+
 /// The wire a tool loop speaks: Ollama's own (`/api/chat`, NDJSON) or the
 /// OpenAI chat-completions one (`/v1/chat/completions`, SSE) of llama.cpp.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,7 +125,7 @@ impl Profile {
     /// The line sent before the retry as text, if this wire says anything.
     pub(super) fn notice(self) -> Option<&'static str> {
         match self {
-            Profile::Ollama => None,
+            Profile::Ollama => Some(OLLAMA_NO_TOOLS_NOTICE),
             Profile::OpenAi => Some(NO_TOOLS_NOTICE),
         }
     }

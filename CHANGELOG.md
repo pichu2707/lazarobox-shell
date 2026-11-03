@@ -12,6 +12,8 @@ baseline.
 
 ### Fixed
 
+- A turn that Ollama retries without tools because it refused them now tells the
+  user once per pane, as llama.cpp already did (#550).
 - Reading a SQLite file now says it is a database that cannot be read as text
   and suggests a `sqlite3` command for the user's pane, instead of `the file
   is not text` (#550).
