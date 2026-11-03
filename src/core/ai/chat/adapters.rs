@@ -424,8 +424,8 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
     finish_body(request, messages, tools)
 }
 
-/// The body both round wires end with: model, messages, stream flag and, when
-/// asked, the registry.
+/// The body both round wires end with: model, messages, stream flag, when
+/// asked the registry, and the prompt-cache option of the server when set.
 fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
@@ -439,6 +439,17 @@ fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<
         if !offered.is_empty() {
             body["tools"] = Value::Array(offered);
         }
+    }
+    // Each prompt-cache option goes only to the server that reads it (#515).
+    let cache = &request.cache;
+    match (
+        request.engine.as_str(),
+        &cache.keep_alive,
+        cache.cache_prompt,
+    ) {
+        ("ollama", Some(keep_alive), _) => body["keep_alive"] = keep_alive.json(),
+        ("llamacpp", _, Some(on)) => body["cache_prompt"] = on.into(),
+        _ => {}
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }

@@ -330,6 +330,19 @@ The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lm
 - WHEN the menu saves
 - THEN config.toml holds `idle_minutes = 30` under `[ai.servers.llamacpp]` and its other keys are kept
 
+### Requirement: Prompt-cache options of the local servers
+`[ai.servers.ollama] keep_alive` and `[ai.servers.llamacpp] cache_prompt` MAY be set (#515). `keep_alive` MUST be a Go duration as Ollama reads it (an optional sign, then numbers each with a unit `ns`, `us`, `µs`, `ms`, `s`, `m` or `h`, or a bare `0`) or a TOML integer of seconds; `cache_prompt` MUST be a boolean. Any other value is left out with the problem `ai.servers.ollama.keep_alive: expected a duration such as "30m" or a whole number of seconds` or `ai.servers.llamacpp.cache_prompt: expected true or false`. Unset, nothing is sent. Set, every request to that server (chat, summary, compaction, tool rounds, orchestrator workers) MUST carry `keep_alive` (the text; an integer `n` as `"<n>s"`) or `cache_prompt`, and no other server MUST receive it. Both are read at startup; the menu MUST keep them when it saves the table.
+
+#### Scenario: Unset [auto]
+- GIVEN no `keep_alive` and no `cache_prompt`
+- WHEN a turn is sent to Ollama
+- THEN its body holds only `model`, `messages` and `stream`
+
+#### Scenario: Each to its server [auto]
+- GIVEN `keep_alive = "30m"` and `cache_prompt = true`
+- WHEN turns go to Ollama, llama.cpp, LM Studio and vLLM
+- THEN Ollama's body holds `"keep_alive": "30m"`, llama.cpp's `"cache_prompt": true`, and the others neither
+
 ### Requirement: Tools key
 The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`). It is the off switch of all agent tools: the run action of pane-commands, the built-in tools, the lazarobox MCP server and the user MCP servers (see agent-tools). A wrong type falls back to `true` for that key only and reports `ai.tools.enabled: expected a boolean`; a non-table `ai.tools` reports `ai.tools: expected a table` and uses the default. Unknown keys under `ai.tools` MUST be ignored. The key is read at startup and when changed from the config menu; a change takes effect at the next turn, never on a stream or approval already running. No secret is part of the schema.
 

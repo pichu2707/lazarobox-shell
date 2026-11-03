@@ -945,6 +945,7 @@ async fn a_codex_worker_command_equals_the_chat_command_apart_from_the_prompt() 
     handle.call(wait(1)).await;
     let worker = lab.seen.requests().remove(0);
     let chat = ChatRequest {
+        cache: Default::default(),
         engine: "codex".into(),
         model: Some("default".into()),
         system: load_prompt(None, Profile::Programmer, Task::Chat).text,
@@ -2102,6 +2103,7 @@ async fn ctrl_c_cancels_the_orchestrator_turn_and_every_worker() {
     let (tx, mut chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let mut chats = chat::Chats::new(turn_runner, tx).with_orchestra(lab.manager.clone());
     let request = ChatRequest {
+        cache: Default::default(),
         engine: "claude".into(),
         model: Some("opus".into()),
         system: String::new(),

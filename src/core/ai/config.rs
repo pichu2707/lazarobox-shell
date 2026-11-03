@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 use super::tools::registry::{Family, FamilySet};
-use super::{CATALOG, Kind, ServerPorts};
+use super::{CATALOG, CacheOptions, KeepAlive, Kind, ServerPorts};
 
 mod usage;
 pub use usage::UsageConfig;
@@ -413,6 +413,7 @@ pub struct AiConfig {
     servers: ServerPorts,
     managed: Option<ManagedServer>,
     managed_options: ManagedOptions,
+    cache: CacheOptions,
     pub memory: MemoryConfig,
     pub orchestrator: OrchestratorConfig,
 }
@@ -503,6 +504,7 @@ impl Default for AiConfig {
             servers: ServerPorts::default(),
             managed: None,
             managed_options: ManagedOptions::default(),
+            cache: CacheOptions::default(),
             memory: MemoryConfig::default(),
             orchestrator: OrchestratorConfig::default(),
         }
@@ -618,6 +620,11 @@ impl AiConfig {
     /// The llama-server lazarobox starts itself, when it is turned on.
     pub fn managed(&self) -> Option<&ManagedServer> {
         self.managed.as_ref()
+    }
+
+    /// The prompt-cache options of the local servers.
+    pub fn cache_options(&self) -> &CacheOptions {
+        &self.cache
     }
 
     /// How lazarobox runs its llama-server.
@@ -877,7 +884,12 @@ pub fn read_with_port_env(
     config.compaction = read_compaction(table, problems);
     config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
-    (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
+    (
+        config.servers,
+        config.managed,
+        config.managed_options,
+        config.cache,
+    ) = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config.orchestrator = read_orchestrator(table, problems);
     config
@@ -1184,8 +1196,9 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
-/// Reads `[ai.servers.<id>] port` for the server engines, and `managed`,
-/// `model`, `args` and `idle_minutes` for llamacpp. A wrong port falls back on its own, with a problem:
+/// Reads `[ai.servers.<id>] port` for the server engines, `keep_alive` for
+/// ollama, and `managed`, `model`, `args`, `idle_minutes` and `cache_prompt`
+/// for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
 /// ignored, like unknown names under `ai.tasks`. The menu writes only
@@ -1193,18 +1206,24 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
 fn read_servers(
     table: &Table,
     problems: &mut Vec<String>,
-) -> (ServerPorts, Option<ManagedServer>, ManagedOptions) {
+) -> (
+    ServerPorts,
+    Option<ManagedServer>,
+    ManagedOptions,
+    CacheOptions,
+) {
     let mut ports = ServerPorts::default();
     let mut managed = None;
     let mut options = ManagedOptions::default();
+    let mut cache = CacheOptions::default();
     let section = match table.get("ai").and_then(Value::as_table) {
-        None => return (ports, managed, options),
+        None => return (ports, managed, options, cache),
         Some(ai) => match ai.get("servers") {
-            None => return (ports, managed, options),
+            None => return (ports, managed, options, cache),
             Some(Value::Table(section)) => section,
             Some(_) => {
                 problems.push("ai.servers: expected a table".to_owned());
-                return (ports, managed, options);
+                return (ports, managed, options, cache);
             }
         },
     };
@@ -1238,12 +1257,78 @@ fn read_servers(
             fallback = managed.as_ref().map(|_| MANAGED_PORT);
             options.args = read_managed_args(server, problems);
             options.idle_minutes = read_idle_minutes(server, problems);
+            cache.cache_prompt = read_cache_prompt(server, problems);
+        }
+        if id == "ollama" {
+            cache.keep_alive = read_keep_alive(server, problems);
         }
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
     }
-    (ports, managed, options)
+    (ports, managed, options, cache)
+}
+
+/// `keep_alive` of `[ai.servers.ollama]`: a duration as Ollama reads it
+/// (`"30m"`, `"1h30m"`, `"-1m"`), or a whole number of seconds. Anything else
+/// is left out, with a problem, so the server default applies.
+fn read_keep_alive(server: &Table, problems: &mut Vec<String>) -> Option<KeepAlive> {
+    match server.get("keep_alive") {
+        None => None,
+        Some(Value::Integer(seconds)) => Some(KeepAlive::from(format!("{seconds}s").as_str())),
+        Some(Value::String(text)) if is_duration(text) => Some(KeepAlive::from(text.as_str())),
+        Some(_) => {
+            problems.push(
+                "ai.servers.ollama.keep_alive: expected a duration such as \"30m\" or a whole number of seconds"
+                    .to_owned(),
+            );
+            None
+        }
+    }
+}
+
+/// Whether `text` is a Go duration, the form Ollama parses: an optional
+/// sign, then numbers each followed by a unit (`ns`, `us`, `µs`, `ms`, `s`,
+/// `m`, `h`), or a bare `0`.
+fn is_duration(text: &str) -> bool {
+    let mut rest = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if rest == "0" {
+        return true;
+    }
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
+        let number = &rest[..end];
+        if number.is_empty() || number == "." || number.matches('.').count() > 1 {
+            return false;
+        }
+        rest = &rest[end..];
+        let Some(unit) = ["ns", "us", "µs", "ms", "h", "m", "s"]
+            .into_iter()
+            .find(|unit| rest.starts_with(unit))
+        else {
+            return false;
+        };
+        rest = &rest[unit.len()..];
+    }
+    true
+}
+
+/// `cache_prompt` of `[ai.servers.llamacpp]`: a boolean; anything else is
+/// left out, with a problem.
+fn read_cache_prompt(server: &Table, problems: &mut Vec<String>) -> Option<bool> {
+    match server.get("cache_prompt") {
+        None => None,
+        Some(Value::Boolean(on)) => Some(*on),
+        Some(_) => {
+            problems.push("ai.servers.llamacpp.cache_prompt: expected true or false".to_owned());
+            None
+        }
+    }
 }
 
 /// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
@@ -1554,6 +1639,87 @@ mod tests {
         };
         assert_eq!(idle(0).idle(), None);
         assert_eq!(idle(5).idle(), Some(std::time::Duration::from_secs(300)));
+    }
+
+    /// The prompt-cache options and the problems of `text`.
+    fn cache_of(text: &str) -> (CacheOptions, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.cache_options().clone(), problems)
+    }
+
+    // Issue #515: unset, nothing is sent and the servers keep their defaults.
+    #[test]
+    fn the_cache_options_are_unset_by_default() {
+        assert_eq!(cache_of(""), (CacheOptions::default(), vec![]));
+        let other_keys =
+            "[ai.servers.ollama]\nport = 11500\n[ai.servers.llamacpp]\nidle_minutes = 5\n";
+        assert_eq!(cache_of(other_keys), (CacheOptions::default(), vec![]));
+    }
+
+    // Issue #515.
+    #[test]
+    fn keep_alive_is_a_duration_or_a_number_of_seconds() {
+        let set = |v: &str| cache_of(&format!("[ai.servers.ollama]\nkeep_alive = {v}\n"));
+        let keep = |k| CacheOptions {
+            keep_alive: Some(k),
+            ..CacheOptions::default()
+        };
+        for text in ["30m", "1h30m", "-1m", "45s", "0", "2.5h"] {
+            assert_eq!(
+                set(&format!("\"{text}\"")),
+                (keep(KeepAlive::from(text)), vec![]),
+                "{text}"
+            );
+        }
+        assert_eq!(set("-1"), (keep(KeepAlive::from("-1s")), vec![]));
+        assert_eq!(set("600"), (keep(KeepAlive::from("600s")), vec![]));
+    }
+
+    // Issue #515: a wrong value is left out, so the server default applies.
+    #[test]
+    fn a_wrong_keep_alive_is_left_out_with_a_problem() {
+        let problem = "ai.servers.ollama.keep_alive: expected a duration such as \"30m\" or a whole number of seconds".to_owned();
+        for value in [
+            "\"30 minutes\"",
+            "\"m\"",
+            "\"\"",
+            "\"-1\"",
+            "1.5",
+            "true",
+            "[1]",
+        ] {
+            assert_eq!(
+                cache_of(&format!("[ai.servers.ollama]\nkeep_alive = {value}\n")),
+                (CacheOptions::default(), vec![problem.clone()]),
+                "{value}"
+            );
+        }
+    }
+
+    // Issue #515.
+    #[test]
+    fn cache_prompt_is_a_boolean() {
+        let set = |v: &str| cache_of(&format!("[ai.servers.llamacpp]\ncache_prompt = {v}\n"));
+        let cache = |on| CacheOptions {
+            cache_prompt: Some(on),
+            ..CacheOptions::default()
+        };
+        assert_eq!(set("true"), (cache(true), vec![]));
+        assert_eq!(set("false"), (cache(false), vec![]));
+        assert_eq!(
+            set("\"yes\""),
+            (
+                CacheOptions::default(),
+                vec!["ai.servers.llamacpp.cache_prompt: expected true or false".to_owned()]
+            )
+        );
+    }
+
+    // Issue #515: each key belongs to its own server.
+    #[test]
+    fn each_cache_option_is_read_only_under_its_server() {
+        let swapped = "[ai.servers.llamacpp]\nkeep_alive = \"30m\"\n[ai.servers.ollama]\ncache_prompt = true\n";
+        assert_eq!(cache_of(swapped), (CacheOptions::default(), vec![]));
     }
 
     // Spec S8: the menu steps through 5, 15, 30 minutes and never; a value

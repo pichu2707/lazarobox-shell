@@ -385,12 +385,14 @@ pub fn runner_managed(
     runner_live(LiveServers::new(ports, managed), cli, tools)
 }
 
-/// [`runner_managed`] reading the ports and the managed llama-server when
-/// each turn starts, so a server the menu turns on is used at once.
+/// [`runner_managed`] reading the ports, the managed llama-server and the
+/// prompt-cache options when each turn starts, so a server the menu turns on
+/// is used at once.
 pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
-    Arc::new(move |request, tx| {
+    Arc::new(move |mut request, tx| {
         let cli = cli.clone();
         let tools = tools.clone();
+        request.cache = live.cache();
         let port = live.ports().port(&request.engine);
         let managed = live.managed().filter(|_| request.engine == "llamacpp");
         Box::pin(async move {

@@ -464,6 +464,20 @@ Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o 
 
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
 
+**Caché del prompt de Ollama y llama.cpp.** Dos claves opcionales ajustan cómo reutiliza cada servidor el trabajo de un mensaje para el siguiente. Si no las pones, lazarobox no envía nada y cada servidor usa su valor habitual:
+
+```toml
+[ai.servers.ollama]
+keep_alive = "30m"      # cuánto tiempo sigue cargado el modelo tras un mensaje
+
+[ai.servers.llamacpp]
+cache_prompt = true     # reutiliza la parte del prompt que no cambia
+```
+
+- `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Ollama, sin ella, lo descarga a los 5 minutos.
+- `cache_prompt` es `true` o `false`; se envía tanto al llama-server gestionado como a uno que arranques tú.
+- Cada clave va solo a su servidor, en el chat, los resúmenes, la compactación y los agentes del orquestador. Un valor incorrecto se ignora con un aviso al arrancar. Se leen al arrancar lazarobox: un cambio en el archivo se aplica al reiniciar.
+
 **llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
 
 ```toml
