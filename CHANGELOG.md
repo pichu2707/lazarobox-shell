@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- `install-desktop` judges `x-terminal-emulator` by the terminal it resolves to:
+  the picker marks it `(tested)` and the note names that terminal when it has a
+  record (#487).
+
 ## [1.2.3] - 2026-11-03
 
 ### Changed

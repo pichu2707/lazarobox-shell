@@ -85,12 +85,22 @@ In WSL, `install-desktop` MUST use the Linux launcher path, so the user launches
 - THEN the terminal binary is not executed
 
 ### Requirement: Record-aware notice
-Any launcher or startup notice about the host terminal MUST say whether the terminal has a record under `docs/terminals/`. It MUST NOT say "tested in Kitty". A terminal without a record MUST be called untested, and MUST NOT be refused.
+Any launcher or startup notice about the host terminal MUST say whether the terminal has a record under `docs/terminals/`. It MUST NOT say "tested in Kitty". A terminal without a record MUST be called untested, and MUST NOT be refused. `x-terminal-emulator` MUST be judged by the terminal it resolves to, in the picker and in the notice, while `Exec` keeps `x-terminal-emulator`.
 
 #### Scenario: Terminal with a record [auto]
 - GIVEN the host terminal is one with a record
 - WHEN the notice is built
 - THEN it says the terminal has a record
+
+#### Scenario: x-terminal-emulator resolves to a terminal with a record [auto]
+- GIVEN `x-terminal-emulator` links to `zutty`, which has a record
+- WHEN the picker lists it and the user picks it
+- THEN the entry is marked tested, the note reads `x-terminal-emulator resolves to zutty, which has a record: <link>`, and `Exec` keeps `x-terminal-emulator`
+
+#### Scenario: x-terminal-emulator resolves to a terminal without a record [auto]
+- GIVEN `x-terminal-emulator` links to a terminal with no record
+- WHEN the picker lists it and the user picks it
+- THEN the entry is not marked tested and the note says `x-terminal-emulator has no test record yet`
 
 #### Scenario: Terminal without a record [auto]
 - GIVEN the host terminal has no record
