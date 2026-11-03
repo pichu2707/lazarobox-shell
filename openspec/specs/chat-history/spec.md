@@ -179,17 +179,22 @@ The store MUST keep at most 200 conversations. When a new conversation would mak
 - THEN the second line reports 2 notes and no engram request is made
 
 ### Requirement: Delete
-In the conversation list, `d` MUST ask for confirmation; only an unmodified lowercase key listed in the prompt confirms, any other key cancels. With no notes to offer, the prompt is `Delete conversation? (y/n)` and `y` confirms. When the conversation has note rows, memory is on and a token is present (`ENGRAM_HTTP_TOKEN` set and non-empty; the app knows only that it is present), the prompt is `Delete conversation? y · n · a also delete its N notes` (`its 1 note`): `y` deletes the conversation and keeps the notes, `a` deletes the conversation and then its notes, anything else cancels. If notes exist but memory is off, or the token is missing, the prompt is the plain one and, after a confirmed delete, one system line says why the notes stay (see chat-memory). Confirming MUST remove the conversation and all its messages (securely, see above) and refresh the list; the delete transaction returns the `(project, observation id)` rows of the conversation's notes before they are cascaded. If another pane has that conversation open, that pane keeps working, further messages are not persisted, and its transcript shows the system line `conversation deleted; new messages are not saved`. For `a`, the notes are deleted afterwards (see engram-client) and never affect the conversation delete, which has already happened. The result is one system line: `deleted N notes from engram`, `deleted K of N notes from engram` or `could not delete notes: <short reason>`; a refusal that is part of a partial result is appended after a semicolon (`deleted 2 of 3 notes from engram; engram refused the delete (check ENGRAM_HTTP_TOKEN)`). For `a`, every note row the delete transaction returns is deleted, which can be more than the N the prompt showed when a note was saved after the list was read; the result line counts the real N. A delete that cannot run at all (memory unavailable, queue full) has its own failure reply and is shown as `could not delete notes: <reason>`; it is never mixed up with the failure of a project or context request. A conversation whose notes the list did not know (saved after the list was read) gets the plain prompt and the line `its N notes stay in engram (they were saved after the list was read)`.
+In the conversation list, an unmodified Delete key MUST ask for confirmation, and no printable key may open the prompt or confirm it, because keys typed right after the list opens reach it. Only an unmodified key named in the prompt confirms, any other key cancels. With no notes to offer, the prompt is `Delete conversation? ↵ yes · other key no` and Enter confirms. When the conversation has note rows, memory is on and a token is present (`ENGRAM_HTTP_TOKEN` set and non-empty; the app knows only that it is present), the prompt is `Delete conversation? ↵ yes · Tab also delete its N notes · other key no` (`its 1 note`): Enter deletes the conversation and keeps the notes, Tab deletes the conversation and then its notes, anything else cancels. If notes exist but memory is off, or the token is missing, the prompt is the plain one and, after a confirmed delete, one system line says why the notes stay (see chat-memory). Confirming MUST remove the conversation and all its messages (securely, see above) and refresh the list; the delete transaction returns the `(project, observation id)` rows of the conversation's notes before they are cascaded. If another pane has that conversation open, that pane keeps working, further messages are not persisted, and its transcript shows the system line `conversation deleted; new messages are not saved`. For Tab, the notes are deleted afterwards (see engram-client) and never affect the conversation delete, which has already happened. The result is one system line: `deleted N notes from engram`, `deleted K of N notes from engram` or `could not delete notes: <short reason>`; a refusal that is part of a partial result is appended after a semicolon (`deleted 2 of 3 notes from engram; engram refused the delete (check ENGRAM_HTTP_TOKEN)`). For Tab, every note row the delete transaction returns is deleted, which can be more than the N the prompt showed when a note was saved after the list was read; the result line counts the real N. A delete that cannot run at all (memory unavailable, queue full) has its own failure reply and is shown as `could not delete notes: <reason>`; it is never mixed up with the failure of a project or context request. A conversation whose notes the list did not know (saved after the list was read) gets the plain prompt and the line `its N notes stay in engram (they were saved after the list was read)`.
 
 #### Scenario: Delete confirmed [auto]
 - GIVEN a list with three conversations and the cursor on the second
-- WHEN `d` then `y` are pressed
+- WHEN Delete then Enter are pressed
 - THEN the second conversation and its messages are removed and two rows remain
 
 #### Scenario: Delete declined [auto]
-- GIVEN the prompt `Delete conversation? (y/n)`
-- WHEN `n`, Esc, `x` or `Y` is pressed
+- GIVEN the prompt `Delete conversation? ↵ yes · other key no`
+- WHEN `n`, Esc, `x`, `y` or `Y` is pressed
 - THEN nothing is removed
+
+#### Scenario: Typing right after the list opens deletes nothing [auto]
+- GIVEN a list opened on a conversation with notes that could be deleted
+- WHEN `day`, `dyslexia`, `read` then Enter, or `verdad` then Enter arrive
+- THEN no prompt opens, no conversation is deleted and no engram request is made
 
 #### Scenario: Deleted while open elsewhere [auto]
 - GIVEN a conversation open in a chat pane and deleted from another pane's list
@@ -203,47 +208,47 @@ In the conversation list, `d` MUST ask for confirmation; only an unmodified lowe
 
 #### Scenario: Three-way prompt with a token [auto]
 - GIVEN memory on, a token present and a conversation with 3 note rows
-- WHEN `d` is pressed
-- THEN the prompt reads `Delete conversation? y · n · a also delete its 3 notes`
+- WHEN Delete is pressed
+- THEN the prompt reads `Delete conversation? ↵ yes · Tab also delete its 3 notes · other key no`
 
 #### Scenario: Delete both [auto]
 - GIVEN that prompt and a fake engram
-- WHEN `a` is pressed
+- WHEN Tab is pressed
 - THEN the conversation is removed, three `DELETE` requests with `expected_project` and the bearer token are sent, and the line `deleted 3 notes from engram` is shown
 
 #### Scenario: Delete conversation only [auto]
 - GIVEN that prompt
-- WHEN `y` is pressed
+- WHEN Enter is pressed
 - THEN the conversation is removed, no engram request is made and its note rows are gone
 
 #### Scenario: Other keys cancel the three-way prompt [auto]
 - GIVEN that prompt
-- WHEN `n`, Esc, `x`, `Y` and `A` are pressed in separate runs
+- WHEN `n`, Esc, `x`, `y`, `a`, `Y` and `A` are pressed in separate runs
 - THEN nothing is removed and no request is made
 
 #### Scenario: No token [auto]
 - GIVEN memory on, no token and 3 note rows
-- WHEN `d` then `y` are pressed
+- WHEN Delete then Enter are pressed
 - THEN the prompt was the plain one, no request is made and the line `its 3 notes stay in engram (set ENGRAM_HTTP_TOKEN to delete them)` is shown
 
 #### Scenario: Memory off [auto]
 - GIVEN memory off and 2 note rows
-- WHEN `d` then `y` are pressed
+- WHEN Delete then Enter are pressed
 - THEN the line reads `its 2 notes stay in engram (memory is off)` and no request is made
 
 #### Scenario: Partial result [auto]
 - GIVEN three notes of which the fake engram refuses one with 403
-- WHEN `a` is pressed
+- WHEN Tab is pressed
 - THEN the line reads `deleted 2 of 3 notes from engram` and the conversation stays deleted
 
 #### Scenario: Engram unreachable [auto]
-- GIVEN `a` pressed and nothing on the memory port
+- GIVEN Tab pressed and nothing on the memory port
 - WHEN the deletes run
 - THEN the line starts with `could not delete notes:` and the list is usable
 
 #### Scenario: Conversation without notes [auto]
 - GIVEN a conversation with no note rows
-- WHEN `d` then `y` are pressed
+- WHEN Delete then Enter are pressed
 - THEN the prompt is the plain one and no note line appears
 
 ### Requirement: Resume

@@ -68,6 +68,13 @@ fn press(chat: &mut ChatState, c: char) {
         .on_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), false);
 }
 
+fn press_delete(chat: &mut ChatState) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    chat.list_mut()
+        .unwrap()
+        .on_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), false);
+}
+
 #[test]
 fn the_list_takes_the_place_of_the_conversation() {
     let mut chat = listing();
@@ -159,9 +166,9 @@ fn a_cursor_below_the_window_scrolls_the_rows() {
 #[test]
 fn the_delete_prompt_takes_the_last_row() {
     let mut chat = listing();
-    press(&mut chat, 'd');
+    press_delete(&mut chat);
     let shown = rows(&draw(&chat, 60, 12));
-    assert_eq!(shown[11], "Delete conversation? (y/n)");
+    assert_eq!(shown[11], "Delete conversation? ↵ yes · other key no");
 }
 
 #[test]
@@ -173,11 +180,11 @@ fn the_three_way_prompt_takes_the_last_row_and_is_cut_on_a_narrow_pane() {
     noted.notes = 3;
     list.set_rows(vec![noted]);
     list.set_notes_deletable(true);
-    press(&mut chat, 'd');
-    let wide = rows(&draw(&chat, 70, 12));
+    press_delete(&mut chat);
+    let wide = rows(&draw(&chat, 80, 12));
     assert_eq!(
         wide[11],
-        "Delete conversation? y · n · a also delete its 3 notes"
+        "Delete conversation? ↵ yes · Tab also delete its 3 notes · other key no"
     );
     // A narrow pane clips the prompt instead of panicking.
     let narrow = rows(&draw(&chat, 20, 6));
@@ -272,7 +279,7 @@ fn snapshot_a_long_message_in_40_columns() {
 #[test]
 fn snapshot_the_delete_prompt() {
     let mut chat = listing();
-    press(&mut chat, 'd');
+    press_delete(&mut chat);
     insta::assert_snapshot!(text(&draw(&chat, 60, 10)));
 }
 
