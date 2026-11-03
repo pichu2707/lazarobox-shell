@@ -455,6 +455,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    live.set_ollama(app.ai().ollama_options());
     // Read once at start, like the ports: a change to the file needs a restart.
     live.set_cache(app.ai().cache_options().clone());
     let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
@@ -512,8 +513,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                     Arc::clone(&listing_cache),
                     Arc::clone(&show_cache),
                     force,
-                    live.ports(),
                     Arc::clone(&model_dirs),
+                    live.clone(),
                 );
             }
         }))
@@ -3738,6 +3739,7 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
         };
         let effects = vec![
             Effect::ChatSend {
@@ -5004,6 +5006,7 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
         }
     }
 

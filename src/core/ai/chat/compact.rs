@@ -271,6 +271,7 @@ impl ChatState {
                     role: Role::User,
                     content,
                 }],
+                ollama: Default::default(),
             },
         ))
     }

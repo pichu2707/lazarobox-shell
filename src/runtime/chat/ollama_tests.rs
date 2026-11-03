@@ -343,7 +343,10 @@ async fn a_turn_without_tools_is_one_plain_request() {
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 1);
     assert!(bodies[0].get("tools").is_none());
-    let Invocation::Http { body, .. } = Adapter::Ollama.build(&ask(&lab, false)) else {
+    // The adapter adds the default keep-alive; no window is known to this
+    // lab, so no `num_ctx`.
+    let sent = ask(&lab, false);
+    let Invocation::Http { body, .. } = Adapter::Ollama.build(&sent) else {
         panic!("ollama is an http engine");
     };
     assert_eq!(bodies[0], serde_json::from_slice::<Value>(&body).unwrap());
@@ -710,7 +713,7 @@ async fn tool_messages_are_not_part_of_the_next_turns_history() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }

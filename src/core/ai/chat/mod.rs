@@ -105,6 +105,13 @@ pub const STILL_WAITING: &str = "still waiting for the model…";
 pub const INTERRUPTED: &str = "stream interrupted";
 /// System line shown once, before the oldest message the model still sees.
 pub const TRUNCATION_MARKER: &str = "earlier messages are not sent to the model";
+/// System line for a send whose setup and newest message alone pass a known
+/// context window: it goes whole, and the server may cut it.
+pub fn over_window(tokens: usize, window: usize) -> String {
+    format!(
+        "this message and the setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
+    )
+}
 /// System line for a send while an answer is still streaming.
 pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 /// System line for a send into a full conversation.
@@ -274,7 +281,10 @@ pub enum StreamPhase {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SendOutcome {
     /// The message was appended; the app emits `Effect::ChatSend`.
-    Sent { turn: u64, request: ChatRequest },
+    Sent {
+        turn: u64,
+        request: Box<ChatRequest>,
+    },
     /// Nothing was sent; the caller keeps the composer text.
     Refused,
 }
@@ -367,8 +377,12 @@ pub struct ChatState {
     /// How full the context of the last request was, and the engine and model
     /// it was sent to.
     fill: Option<ContextFill>,
-    /// The turn about to be sent offers tools.
-    tools_offered: bool,
+    /// The last send went over the window and the transcript said so; kept
+    /// until a send that fits, so an overflow streak is told once.
+    over_window_told: bool,
+    /// What the tool block and schemas of the turn about to be sent weigh, in
+    /// estimated tokens; 0 when it offers none.
+    tools_reserve: usize,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// What the last turn used, summed over its `Usage` events. Cleared by
@@ -499,7 +513,8 @@ impl ChatState {
             outbox: Vec::new(),
             window: None,
             fill: None,
-            tools_offered: false,
+            over_window_told: false,
+            tools_reserve: 0,
             request_engine: String::new(),
             turn_usage: None,
             usage_config: crate::core::ai::config::UsageConfig::default(),
@@ -810,10 +825,10 @@ impl ChatState {
         self.window = window;
     }
 
-    /// Whether the next turn offers tools, which reserves room for their
-    /// schemas in the budget.
-    pub fn set_tools_offered(&mut self, offered: bool) {
-        self.tools_offered = offered;
+    /// What the next turn's tool block and schemas weigh in tokens (0 when it
+    /// offers none), which reserves room for them in the budget.
+    pub fn set_tools_reserve(&mut self, tokens: usize) {
+        self.tools_reserve = tokens;
     }
 
     /// How full the context of the last request was, in percent, when it went
@@ -1327,7 +1342,7 @@ impl ChatState {
                 self.window,
                 &system,
                 memory_text,
-                self.tools_offered,
+                self.tools_reserve,
             );
             (room, compact::context_for(&history, room))
         };
@@ -1352,7 +1367,7 @@ impl ChatState {
             self.window,
             &system,
             memory_text,
-            self.tools_offered,
+            self.tools_reserve,
             &context.messages,
         )
         .map(|fill| ContextFill {
@@ -1365,6 +1380,25 @@ impl ChatState {
         // A summary that covers what is out replaces the marker.
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
+        // The newest message is always sent whole: when it and the setup
+        // pass the window, say so instead of cutting silently.
+        if let Some(window) = self.window.filter(|&w| w > 0) {
+            let newest = context
+                .messages
+                .last()
+                .map_or(0, |m| budget::estimate_tokens(&m.content));
+            let setup = budget::estimate_tokens(&system)
+                + budget::estimate_tokens(memory_text)
+                + self.tools_reserve;
+            let over = setup + newest > window;
+            // Once per overflow streak: the numbers change with every send,
+            // so the kind is what is deduplicated, not the text.
+            if over && !self.over_window_told {
+                self.entries
+                    .push(Entry::System(over_window(setup + newest, window)));
+            }
+            self.over_window_told = over;
+        }
         self.turn += 1;
         self.turn_usage = None;
         self.clean_end = false;
@@ -1379,7 +1413,7 @@ impl ChatState {
         self.told_sent.clone_from(&told);
         SendOutcome::Sent {
             turn: self.turn,
-            request: ChatRequest {
+            request: Box::new(ChatRequest {
                 cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
@@ -1388,7 +1422,8 @@ impl ChatState {
                 memory,
                 tools: Tools::Off,
                 messages: context.messages,
-            },
+                ollama: Default::default(),
+            }),
         }
     }
 

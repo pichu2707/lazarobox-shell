@@ -1499,6 +1499,7 @@ impl RunManager {
             }],
             tools: tools_for(&spec.engine, true, Some(live.origin.clone()), MCP_VERIFIED),
             families: spec.toolset.families(),
+            ollama: Default::default(),
         };
         let key = WorkerKey {
             run: live.run.id(),

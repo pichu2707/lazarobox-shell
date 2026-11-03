@@ -5,14 +5,15 @@
 use serde_json::{Value, json};
 
 use super::{
+    budget::estimate_tokens,
     engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools},
     prompts,
 };
 use crate::core::ai::{
-    CATALOG, Kind,
+    CATALOG, DEFAULT_KEEP_ALIVE, Kind,
     jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
-    tools::{registry_with, wiring::McpWire},
+    tools::{ExternalTool, registry::FamilySet, registry_with, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -293,7 +294,16 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
         Tools::On { external, .. } => external.external(),
         Tools::Off => Vec::new(),
     };
-    registry_with(&external, request.families)
+    tools_json(&external, request.families)
+}
+
+/// The built-in tools of `families` as the `tools` array lists them.
+fn offered_tools_of(families: FamilySet) -> Vec<Value> {
+    tools_json(&[], families)
+}
+
+fn tools_json(external: &[ExternalTool], families: FamilySet) -> Vec<Value> {
+    registry_with(external, families)
         .into_iter()
         .map(|t| {
             json!({"type": "function", "function": {
@@ -301,6 +311,15 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
             }})
         })
         .collect()
+}
+
+/// What a turn that offers the built-in tools of `families` adds to the
+/// prompt, in estimated tokens: the tools block of the system prompt plus the
+/// `tools` array. The budget pays it before any history is counted. External
+/// MCP tools are resolved in the runtime and are not counted.
+pub fn tools_reserve_tokens(families: FamilySet) -> usize {
+    let schemas = serde_json::to_string(&offered_tools_of(families)).unwrap_or_default();
+    estimate_tokens(&schemas) + estimate_tokens(&prompts::with_tools("", families))
 }
 
 /// The request after `rounds` of tool calls. `tools` says whether to offer the
@@ -425,13 +444,21 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
 }
 
 /// The body both round wires end with: model, messages, stream flag, when
-/// asked the registry, and the prompt-cache option of the server when set.
+/// asked the registry, and the options only the server's own API reads: an
+/// Ollama request gets `num_ctx` and `keep_alive`, llama-server the
+/// prompt-cache option when set. The OpenAI-compatible servers share this
+/// builder and never get the Ollama keys.
 fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
+    if request.engine == "ollama"
+        && let Some(num_ctx) = request.ollama.num_ctx
+    {
+        body["options"] = json!({"num_ctx": num_ctx});
+    }
     if tools {
         // An empty list would read as "no tools" to some models and as an
         // error to others: with nothing to offer the key is left out.
@@ -442,13 +469,16 @@ fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<
     }
     // Each prompt-cache option goes only to the server that reads it (#515).
     let cache = &request.cache;
-    match (
-        request.engine.as_str(),
-        &cache.keep_alive,
-        cache.cache_prompt,
-    ) {
-        ("ollama", Some(keep_alive), _) => body["keep_alive"] = keep_alive.json(),
-        ("llamacpp", _, Some(on)) => body["cache_prompt"] = on.into(),
+    match (request.engine.as_str(), cache.cache_prompt) {
+        // Unset, Ollama still keeps the model for DEFAULT_KEEP_ALIVE: its own
+        // five minutes unload it between two turns of a slow chat.
+        ("ollama", _) => {
+            body["keep_alive"] = cache
+                .keep_alive
+                .as_ref()
+                .map_or_else(|| DEFAULT_KEEP_ALIVE.into(), |keep| keep.json());
+        }
+        ("llamacpp", Some(on)) => body["cache_prompt"] = on.into(),
         _ => {}
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")

@@ -261,6 +261,7 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
                 role: Role::User,
                 content: "hi".into(),
             }],
+            ollama: Default::default(),
         };
         let Invocation::Http { body, .. } = Adapter::Ollama.build(&request) else {
             panic!("ollama builds an HTTP invocation");
@@ -269,8 +270,9 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
     };
     let on = body_for(true);
     let off = body_for(false);
-    assert_eq!(on.as_object().unwrap().len(), 3);
-    assert_eq!(off.as_object().unwrap().len(), 3);
+    // model, messages, stream and the default keep_alive.
+    assert_eq!(on.as_object().unwrap().len(), 4);
+    assert_eq!(off.as_object().unwrap().len(), 4);
     let on_system = on["messages"][0]["content"].as_str().unwrap();
     let off_system = off["messages"][0]["content"].as_str().unwrap();
     assert!(on_system.contains("- git branch: feat/x"), "{on_system}");

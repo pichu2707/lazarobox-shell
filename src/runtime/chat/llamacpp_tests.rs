@@ -522,7 +522,7 @@ async fn tool_messages_are_not_kept_for_the_next_llamacpp_turn() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }
@@ -659,7 +659,7 @@ async fn llamacpp_turn(lab: &mut Lab, state: &mut ChatState, text: &str) {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }

@@ -396,18 +396,18 @@ async fn the_other_servers_never_get_a_post() {
 #[test]
 fn the_cache_keeps_only_answers_and_clears_when_full() {
     let cache = ShowCache::default();
-    cache.put("a", Tools::Yes);
-    cache.put("b", Tools::No);
-    cache.put("c", Tools::Unknown);
-    assert_eq!(cache.get("a"), Some(Tools::Yes));
-    assert_eq!(cache.get("b"), Some(Tools::No));
+    cache.put("a", (Tools::Yes, Some(8192)));
+    cache.put("b", (Tools::No, None));
+    cache.put("c", (Tools::Unknown, Some(4096)));
+    assert_eq!(cache.get("a"), Some((Tools::Yes, Some(8192))));
+    assert_eq!(cache.get("b"), Some((Tools::No, None)));
     assert_eq!(cache.get("c"), None);
     for i in 0..256 {
-        cache.put(&format!("k{i}"), Tools::Yes);
+        cache.put(&format!("k{i}"), (Tools::Yes, None));
     }
     // The 257th insert found it full: everything went, then it was stored.
     assert_eq!(cache.get("a"), None);
-    assert_eq!(cache.get("k255"), Some(Tools::Yes));
+    assert_eq!(cache.get("k255"), Some((Tools::Yes, None)));
 }
 
 /// A llama.cpp double: lists a model, never answers `/props` (the window
@@ -453,4 +453,212 @@ async fn a_hung_show_overlaps_the_other_slow_probes() {
         took >= Duration::from_millis(900) && took < Duration::from_millis(1500),
         "{took:?}"
     );
+}
+
+fn with_window(arch: &str, length: u64) -> Show {
+    Show::Body(format!(
+        r#"{{"capabilities":["tools"],"model_info":{{"general.architecture":"{arch}","{arch}.context_length":{length}}}}}"#
+    ))
+}
+
+fn window_of(d: &Detection, name: &str) -> Option<usize> {
+    d.facts("ollama", name).unwrap().window
+}
+
+#[tokio::test]
+async fn one_show_reply_fills_the_tools_and_the_window() {
+    let fake = fake_ollama(tags(&named(2)), Duration::ZERO, |m| match m {
+        "m0:8b" => with_window("llama", 131_072),
+        _ => caps(r#""tools""#),
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(fake.posts().len(), 2, "no extra call for the window");
+    assert_eq!(tools_of(&d, "m0:8b"), Tools::Yes);
+    assert_eq!(window_of(&d, "m0:8b"), Some(131_072));
+    assert_eq!(d.model_window("ollama", "m0:8b"), Some(131_072));
+    assert_eq!(window_of(&d, "m1:8b"), None, "no model_info is unknown");
+    assert_eq!(d.model_window("ollama", "m1:8b"), None);
+}
+
+#[tokio::test]
+async fn the_window_is_cached_by_digest_with_the_tools() {
+    let cache = ShowCache::default();
+    let first = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("qwen3", 40_960)
+    })
+    .await;
+    detect(first.port, &cache).await;
+    let second = fake_ollama(tags(&named(1)), Duration::ZERO, |_| caps(r#""completion""#)).await;
+    let d = detect(second.port, &cache).await;
+    assert!(second.posts().is_empty(), "a cache hit makes no call");
+    assert_eq!(window_of(&d, "m0:8b"), Some(40_960));
+    assert_eq!(tools_of(&d, "m0:8b"), Tools::Yes);
+}
+
+#[tokio::test]
+async fn a_failed_probe_leaves_the_window_unknown() {
+    let fake = fake_ollama(tags(&named(1)), Duration::ZERO, |_| Show::Status(500)).await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(window_of(&d, "m0:8b"), None);
+}
+
+#[tokio::test]
+async fn model_window_matches_the_latest_tag_like_the_other_lookups() {
+    let models = vec![("tiny:latest".to_owned(), "1B", "dl".to_owned())];
+    let fake = fake_ollama(tags(&models), Duration::ZERO, |_| {
+        with_window("llama", 4_096)
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(d.model_window("ollama", "tiny"), Some(4_096));
+    assert_eq!(d.model_window("ollama", "tiny:latest"), Some(4_096));
+    assert_eq!(d.model_window("ollama", "other"), None);
+}
+
+#[tokio::test]
+async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
+    use crate::runtime::chat::LiveServers;
+    let fake = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", fake.port), None);
+    let (_dir, env) = env();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    spawn_detection(
+        tx,
+        env,
+        Arc::new(ListingCache::new(Arc::new(Instant::now))),
+        Arc::new(ShowCache::default()),
+        false,
+        Arc::from(Vec::new()),
+        live.clone(),
+    );
+    rx.recv().await.expect("a detection");
+    let mut request = crate::core::ai::chat::engine::ChatRequest {
+        engine: "ollama".into(),
+        model: Some("m0:8b".into()),
+        system: String::new(),
+        memory: None,
+        messages: Vec::new(),
+        tools: crate::core::ai::chat::engine::Tools::Off,
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
+        ollama: Default::default(),
+        cache: Default::default(),
+    };
+    live.stamp(&mut request);
+    assert_eq!(request.ollama.num_ctx, Some(8_192));
+}
+
+/// Runs one detection of `models` through `spawn_detection` with `cache`,
+/// feeding `live`, and returns what the app would receive.
+async fn rerun(live: &crate::runtime::chat::LiveServers, cache: &Arc<ShowCache>) -> Detection {
+    let (_dir, env) = env();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    spawn_detection(
+        tx,
+        env,
+        Arc::new(ListingCache::new(Arc::new(Instant::now))),
+        cache.clone(),
+        true,
+        Arc::from(Vec::new()),
+        live.clone(),
+    );
+    rx.recv().await.expect("a detection")
+}
+
+#[tokio::test]
+async fn a_failed_probe_on_the_next_run_keeps_the_last_known_window() {
+    use crate::runtime::chat::LiveServers;
+    let good = fake_ollama(tags(&named(2)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", good.port), None);
+    let first = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&first, "m0:8b"), Some(8_192));
+    // Same models, but every probe fails now and nothing is cached.
+    let flaky = fake_ollama(tags(&named(2)), Duration::ZERO, |_| Show::Status(500)).await;
+    live.set_ports(ServerPorts::default().with("ollama", flaky.port));
+    let second = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&second, "m0:8b"), Some(8_192), "the app keeps it");
+    let mut request = crate::core::ai::chat::engine::ChatRequest {
+        engine: "ollama".into(),
+        model: Some("m0:8b".into()),
+        system: String::new(),
+        memory: None,
+        messages: Vec::new(),
+        tools: crate::core::ai::chat::engine::Tools::Off,
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
+        ollama: Default::default(),
+        cache: Default::default(),
+    };
+    live.stamp(&mut request);
+    assert_eq!(request.ollama.num_ctx, Some(8_192), "so does the wire");
+}
+
+#[tokio::test]
+async fn a_new_answer_replaces_the_kept_window_and_an_unlisted_model_drops_it() {
+    use crate::runtime::chat::LiveServers;
+    let one = fake_ollama(tags(&named(2)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let live = LiveServers::new(ServerPorts::default().with("ollama", one.port), None);
+    rerun(&live, &Arc::new(ShowCache::default())).await;
+    // m1 is gone from the listing; m0 answers with a new window.
+    let next = fake_ollama(tags(&named(1)), Duration::ZERO, |_| {
+        with_window("llama", 4_096)
+    })
+    .await;
+    live.set_ports(ServerPorts::default().with("ollama", next.port));
+    let d = rerun(&live, &Arc::new(ShowCache::default())).await;
+    assert_eq!(window_of(&d, "m0:8b"), Some(4_096));
+    assert_eq!(live.ollama_windows(), [("m0:8b".to_owned(), 4_096)]);
+}
+
+#[tokio::test]
+async fn bad_replies_leave_only_their_own_window_unknown() {
+    // An oversized reply that starts like a good one: the cap rejects it whole.
+    let mut huge = b"HTTP/1.0 200 OK\r\n\r\n".to_vec();
+    huge.extend_from_slice(
+        br#"{"capabilities":["tools"],"model_info":{"general.architecture":"llama","llama.context_length":8192}}"#,
+    );
+    huge.resize(huge.len() + 1024 * 1024 + 1, b' ');
+    let fake = fake_ollama(tags(&named(6)), Duration::ZERO, move |m| match m {
+        "m0:8b" => Show::Body("{not json".into()),
+        "m1:8b" => with_window("llama", 0),
+        "m2:8b" => with_window("llama", 99_999_999_999),
+        "m3:8b" => Show::Raw(huge.clone()),
+        "m4:8b" => Show::Body(
+            r#"{"capabilities":["tools"],"model_info":{"general.architecture":"llama","llama.context_length":"8192"}}"#
+                .into(),
+        ),
+        _ => with_window("llama", 8_192),
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    for bad in ["m0:8b", "m1:8b", "m2:8b", "m3:8b", "m4:8b"] {
+        assert_eq!(window_of(&d, bad), None, "{bad}");
+    }
+    assert_eq!(
+        window_of(&d, "m5:8b"),
+        Some(8_192),
+        "the others keep theirs"
+    );
+}
+
+#[tokio::test]
+async fn the_call_limit_leaves_the_rest_of_the_windows_unknown() {
+    let fake = fake_ollama(tags(&named(40)), Duration::ZERO, |_| {
+        with_window("llama", 8_192)
+    })
+    .await;
+    let d = detect(fake.port, &ShowCache::default()).await;
+    assert_eq!(fake.posts().len(), 32);
+    assert_eq!(window_of(&d, "m0:8b"), Some(8_192));
+    assert_eq!(window_of(&d, "m31:8b"), Some(8_192));
+    assert_eq!(window_of(&d, "m32:8b"), None);
+    assert_eq!(window_of(&d, "m39:8b"), None);
 }

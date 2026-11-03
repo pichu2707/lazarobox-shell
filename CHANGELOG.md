@@ -12,6 +12,12 @@ baseline.
 
 ### Added
 
+- Ollama turns now ask for a context window: `options.num_ctx` is the smaller
+  of the model's own window (read from the `POST /api/show` reply detection
+  already sends, no new request) and `[ai.servers.ollama] num_ctx_cap`
+  (default 16384). Every turn of a model sends the same value, so Ollama never
+  reloads it because of it. The menu does not write the key; a bad value falls
+  back with a startup notice.
 - The desktop entry now shows the Lazarobox logo. `install-desktop` writes the
   embedded icons (PNG 256, 128, 48, 32 and 16 px, plus an SVG) to
   `<XDG_DATA_HOME>/icons/hicolor/` and the entry uses `Icon=lazarobox`;
@@ -22,6 +28,21 @@ baseline.
   is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
   empty box and cannot be detected. A bad value falls back to `"auto"` with a
   startup notice (#488).
+
+### Changed
+
+- Ollama turns send `keep_alive = "30m"` when `[ai.servers.ollama] keep_alive`
+  is unset, instead of Ollama's own five minutes; a value set in the file is
+  sent as written. Other engines' requests do not change.
+- The history budget of local servers now counts the system prompt, the tools
+  block and the tool schemas before any message, also when the window is
+  unknown (the 12,000-character cap is reduced by that head, never below 4,000
+  characters). Trimming still drops whole user and assistant pairs, oldest
+  first, with the usual marker. A message that cannot fit a known window is
+  still sent whole, with a notice, and an Ollama model with an unknown window
+  shows `window unknown for <model>: 12k chars` once per run. A Modelfile
+  `PARAMETER num_ctx` does not override the cap when the window is known; when
+  it is unknown no `num_ctx` is sent and the Modelfile value applies.
 
 ### Fixed
 

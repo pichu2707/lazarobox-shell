@@ -58,9 +58,21 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+    /// What only Ollama's chat API reads. Empty unless the runtime stamps it
+    /// on an Ollama turn, so no other engine's bytes depend on it.
+    pub ollama: OllamaWire,
     /// The prompt-cache options of the local servers, set by the runtime
-    /// from the config when the turn starts; unset leaves them out.
+    /// from the config when the turn starts. Ollama's `keep_alive` is sent
+    /// unset too, as [`DEFAULT_KEEP_ALIVE`](crate::core::ai::DEFAULT_KEEP_ALIVE).
     pub cache: crate::core::ai::CacheOptions,
+}
+
+/// The per-turn options Ollama takes beside the messages. Every turn of a
+/// model carries the same value, so Ollama never reloads it because of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct OllamaWire {
+    /// `options.num_ctx`: the context window to load the model with.
+    pub num_ctx: Option<usize>,
 }
 
 /// What an orchestrator turn hands the runtime beside its request (D5): the

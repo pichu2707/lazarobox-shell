@@ -468,9 +468,18 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
+**Ventana de contexto de Ollama.** lazarobox lee la ventana máxima de cada modelo en la misma respuesta `POST /api/show` que ya usa la detección (sin peticiones nuevas) y pide a Ollama `num_ctx` igual al menor valor entre esa ventana y un tope, para que los modelos con ventanas enormes no reserven tanta memoria de vídeo. Cada turno de un mismo modelo lleva los mismos valores, así que Ollama no recarga el modelo entre mensajes. El historial que se envía descuenta el prompt del sistema y las herramientas de la ventana: se omiten primero los mensajes más antiguos, siempre por pares (pregunta y respuesta), y la conversación muestra `earlier messages are not sent to the model`. Si el mensaje más reciente y la configuración ya superan la ventana, se envía igualmente y la conversación lo avisa. Si no se puede leer la ventana de un modelo, no se envía `num_ctx`, el historial se limita a 12.000 caracteres menos lo que ocupan el prompt del sistema y las herramientas (nunca menos de 4.000) y la barra de estado avisa una vez por modelo (`window unknown for <modelo>: 12k chars`).
+
+```toml
+[ai.servers.ollama]
+num_ctx_cap = 16384        # opcional: tope de tokens de contexto que se piden (por defecto 16384)
+```
+
+`num_ctx_cap` es un número entero de 1024 a 1048576. Un tope mayor usa más memoria de vídeo (la caché de contexto crece con él) y deja más historial; uno menor ahorra memoria y recorta antes. Un valor incorrecto se cambia por el predeterminado con un aviso al arrancar (`ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576`). El menú no escribe esta clave y la conserva al guardar. El tiempo que el modelo sigue cargado se ajusta con `keep_alive` (abajo). Cuando lazarobox conoce la ventana del modelo, manda el tope y un `PARAMETER num_ctx` del Modelfile no se respeta. Cuando no la conoce, no envía `num_ctx` y se aplica el valor del Modelfile (o el predeterminado de Ollama). El aviso del mensaje demasiado grande (`this message and the setup are about … tokens`) sale una vez por racha, y de nuevo solo tras un envío que cabe.
+
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
 
-**Caché del prompt de Ollama y llama.cpp.** Dos claves opcionales ajustan cómo reutiliza cada servidor el trabajo de un mensaje para el siguiente. Si no las pones, lazarobox no envía nada y cada servidor usa su valor habitual:
+**Caché del prompt de Ollama y llama.cpp.** Dos claves opcionales ajustan cómo reutiliza cada servidor el trabajo de un mensaje para el siguiente. Sin `cache_prompt`, lazarobox no envía nada a llama.cpp y usa su valor habitual; sin `keep_alive`, a Ollama le envía `30m`:
 
 ```toml
 [ai.servers.ollama]
@@ -480,7 +489,7 @@ keep_alive = "30m"      # cuánto tiempo sigue cargado el modelo tras un mensaje
 cache_prompt = true     # reutiliza la parte del prompt que no cambia
 ```
 
-- `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Ollama, sin ella, lo descarga a los 5 minutos.
+- `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Sin la clave, lazarobox envía `30m` a Ollama (Ollama, por su cuenta, lo descarga a los 5 minutos); un valor puesto se envía tal cual.
 - `cache_prompt` es `true` o `false`; se envía tanto al llama-server gestionado como a uno que arranques tú.
 - Cada clave va solo a su servidor, en el chat, los resúmenes, la compactación y los agentes del orquestador. Un valor incorrecto se ignora con un aviso al arrancar. Se leen al arrancar lazarobox: un cambio en el archivo se aplica al reiniciar.
 

@@ -16,11 +16,11 @@ fn exchange(state: &mut ChatState, size: usize) -> ChatRequest {
     };
     state.apply(turn, StreamEvent::Delta("a".repeat(size)));
     state.apply(turn, StreamEvent::Done(Finish::Stop));
-    request
+    *request
 }
 
 /// A chat whose window dropped its oldest messages: 1000-char messages under
-/// the 12k server cap keep about 12.
+/// the 12k server cap (less the system prompt) keep about 11.
 fn overflowing(exchanges: usize) -> ChatState {
     let mut state = chat();
     for _ in 0..exchanges {
@@ -124,7 +124,9 @@ fn a_chat_that_never_overflowed_is_not_compacted() {
 
 #[test]
 fn fewer_than_the_floor_of_dropped_messages_is_not_worth_a_call() {
-    let mut state = overflowing(7);
+    // 12 messages of 1000 characters under the 12k cap less the system prompt:
+    // 11 fit, and the leading assistant goes too, so 2 are dropped.
+    let mut state = overflowing(6);
     assert!(state.begin_compaction(&ready()).is_none());
 }
 

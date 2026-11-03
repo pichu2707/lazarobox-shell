@@ -285,6 +285,7 @@ impl ChatState {
                 memory: None,
                 tools: Tools::Off,
                 messages,
+                ollama: Default::default(),
             },
         ))
     }

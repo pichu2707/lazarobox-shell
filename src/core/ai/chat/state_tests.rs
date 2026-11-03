@@ -16,7 +16,7 @@ pub(super) fn chat() -> ChatState {
 
 pub(super) fn sent(state: &mut ChatState, text: &str) -> (u64, ChatRequest) {
     match state.send(text, &ready(), SYSTEM) {
-        SendOutcome::Sent { turn, request } => (turn, request),
+        SendOutcome::Sent { turn, request } => (turn, *request),
         SendOutcome::Refused => panic!("send of {text:?} was refused"),
     }
 }
