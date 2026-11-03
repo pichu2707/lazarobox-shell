@@ -522,8 +522,8 @@ Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is ru
 
 #### Scenario: Keys in the list view [auto]
 - GIVEN the conversation list shown in a chat pane
-- WHEN `j`, `d` and `y` are pressed
-- THEN the cursor moves, the delete confirmation shows and `y` confirms it, and nothing is typed into a composer
+- WHEN `j`, Delete and Enter are pressed
+- THEN the cursor moves, the delete confirmation shows and Enter confirms it, and nothing is typed into a composer
 
 #### Scenario: Real keys in Kitty [manual, Kitty]
 - GIVEN the app in Kitty with a chat pane focused

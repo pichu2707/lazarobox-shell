@@ -162,8 +162,8 @@ fn escape_discards_and_sends_nothing() {
     assert_eq!(effects, Vec::new());
     assert!(!editor_open(&a));
     assert_eq!(list_of(&a).tags_of(30), Some(Tags::parse("proj, sql, etl")));
-    // The list is back: `d` asks again for a delete.
-    a.update(key('d'));
+    // The list is back: Delete asks again for a delete.
+    a.update(plain(KeyCode::Delete));
     assert!(list_of(&a).confirming());
 }
 
@@ -490,7 +490,7 @@ fn prefix_t_capital_in_the_list_does_nothing() {
 #[test]
 fn a_delete_prompt_is_not_interrupted_by_the_tag_key() {
     let mut a = tag_listing();
-    a.update(key('d'));
+    a.update(plain(KeyCode::Delete));
     press(&mut a, "T");
     assert!(!editor_open(&a));
     // `t` is not a yes: the prompt closes and nothing is deleted.

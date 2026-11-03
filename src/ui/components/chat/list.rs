@@ -67,9 +67,9 @@ impl ChatView<'_> {
             put(buf, last, line, base.fg(theme.warning_orange));
         } else {
             let hint = if list.project().is_some() {
-                "↵ open · n new · d delete · t tags · a all projects"
+                "↵ open · n new · Del delete · t tags · a all projects"
             } else {
-                "↵ open · n new · d delete · t tags"
+                "↵ open · n new · Del delete · t tags"
             };
             put(buf, last, hint, muted);
         }

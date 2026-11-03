@@ -912,13 +912,13 @@ fn a_failed_resume_says_so_in_the_list() {
 
 // Spec (Delete): Delete confirmed.
 #[test]
-fn d_then_y_deletes_the_conversation_and_the_row_goes() {
+fn delete_then_enter_deletes_the_conversation_and_the_row_goes() {
     let mut a = listing();
     a.update(key('j'));
-    let ask_effects = a.update(key('d'));
+    let ask_effects = a.update(plain(KeyCode::Delete));
     assert_eq!(ask_effects, Vec::new());
     assert!(chat_of(&a).list().unwrap().confirming());
-    let effects = a.update(key('y'));
+    let effects = a.update(plain(KeyCode::Enter));
     assert_eq!(
         stores(&effects),
         vec![StoreCmd::Delete {
@@ -948,7 +948,7 @@ fn any_other_key_declines_the_delete() {
         code(KeyCode::Char('Y'), KeyModifiers::SHIFT),
     ] {
         let mut a = listing();
-        a.update(key('d'));
+        a.update(plain(KeyCode::Delete));
         let effects = a.update(ev);
         assert_eq!(stores(&effects), Vec::new());
         assert!(!chat_of(&a).list().unwrap().confirming());
@@ -971,8 +971,8 @@ fn deleting_a_conversation_open_elsewhere_stops_its_pane_saving() {
     let b = second_chat();
     a.update(prompt_for(b));
     listed(&mut a, b, rows());
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     a.update(AppEvent::Store(StoreReply::Deleted {
         pane: b,
         conversation: 30,
@@ -991,8 +991,8 @@ fn deleting_a_conversation_open_elsewhere_stops_its_pane_saving() {
 #[test]
 fn a_failed_delete_keeps_the_row_and_says_so() {
     let mut a = listing();
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     a.update(AppEvent::Store(StoreReply::DeleteFailed {
         pane: chat_id(),
     }));
@@ -1064,8 +1064,8 @@ fn a_delete_removes_the_row_from_every_open_list() {
     let b = second_chat();
     a.update(prompt_for(b));
     listed(&mut a, b, rows());
-    a.update(key('d'));
-    a.update(key('y'));
+    a.update(plain(KeyCode::Delete));
+    a.update(plain(KeyCode::Enter));
     a.update(AppEvent::Store(StoreReply::Deleted {
         pane: b,
         conversation: 30,

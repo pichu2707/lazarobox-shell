@@ -7,7 +7,7 @@ use super::{store::ConvRow, tags::Tags, wrap::text_width};
 use crate::core::ai::sanitize::{clean, is_format};
 
 /// The prompt shown while a delete waits for its answer.
-pub const DELETE_PROMPT: &str = "Delete conversation? (y/n)";
+pub const DELETE_PROMPT: &str = "Delete conversation? ↵ yes · other key no";
 /// What the user sees of a refused note delete.
 const NOTES_REFUSED: &str = "engram refused the delete (check ENGRAM_HTTP_TOKEN)";
 /// System line when a conversation is open in another pane.
@@ -79,7 +79,7 @@ impl ListView {
 
     /// Tells the list whether notes can be deleted in engram (memory on and a
     /// token present), so the delete prompt of a conversation with notes can
-    /// offer it. The app sets it before each key; it is read when `d` is
+    /// offer it. The app sets it before each key; it is read when Delete is
     /// pressed.
     pub fn set_notes_deletable(&mut self, deletable: bool) {
         self.notes_deletable = deletable;
@@ -163,8 +163,12 @@ impl ListView {
     pub fn prompt(&self) -> Option<String> {
         self.confirming.map(|(_, offered)| match offered {
             0 => DELETE_PROMPT.to_owned(),
-            1 => "Delete conversation? y · n · a also delete its 1 note".to_owned(),
-            n => format!("Delete conversation? y · n · a also delete its {n} notes"),
+            1 => {
+                "Delete conversation? ↵ yes · Tab also delete its 1 note · other key no".to_owned()
+            }
+            n => {
+                format!("Delete conversation? ↵ yes · Tab also delete its {n} notes · other key no")
+            }
         })
     }
 
@@ -223,7 +227,9 @@ impl ListView {
 
     /// One key. Everything is consumed: nothing here reaches a composer or a
     /// PTY, and Ctrl+C never quits. `repeat` marks a held key, which moves the
-    /// cursor but never decides anything.
+    /// cursor but never decides anything. No printable key opens or answers
+    /// the delete prompt: the list takes keys typed right after it opens, so
+    /// words meant for the composer must not be able to delete anything.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool) -> ListOutcome {
         if let Some((id, offered)) = self.confirming {
             if repeat {
@@ -234,9 +240,9 @@ impl ListView {
                 return ListOutcome::Handled;
             }
             return match (key.code, offered) {
-                (KeyCode::Char('y'), 0) => ListOutcome::Delete(id),
-                (KeyCode::Char('y'), _) => ListOutcome::DeleteKeepNotes(id),
-                (KeyCode::Char('a'), 1..) => ListOutcome::DeleteWithNotes(id),
+                (KeyCode::Enter, 0) => ListOutcome::Delete(id),
+                (KeyCode::Enter, _) => ListOutcome::DeleteKeepNotes(id),
+                (KeyCode::Tab, 1..) => ListOutcome::DeleteWithNotes(id),
                 _ => ListOutcome::Handled,
             };
         }
@@ -255,7 +261,7 @@ impl ListView {
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => return ListOutcome::New,
-            KeyCode::Char('d') => {
+            KeyCode::Delete => {
                 let deletable = self.notes_deletable;
                 self.confirming = self
                     .selected()

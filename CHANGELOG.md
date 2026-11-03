@@ -10,6 +10,20 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- Deleting a conversation from the chat list now takes `Del`, then `Enter` to
+  confirm or `Tab` to also delete its notes. `d`, `y` and `a` no longer delete.
+  This is a deliberate exception to the key binding promise of the 1.0
+  stability rules, released as a patch because the old keys could lose data
+  (#491).
+
+### Fixed
+
+- Words typed right after the chat opens on its conversation list can no longer
+  delete a conversation: `day` deleted it, with its notes when they could be
+  deleted (#491).
+
 ## [1.2.2] - 2026-11-02
 
 ### Added

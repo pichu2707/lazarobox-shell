@@ -4976,8 +4976,8 @@ mod tests {
         .await;
         assert!(file_holds(&db, b"ZZ-MARKER-ZZ"));
         let (mut app, mut panes, mut rx) = reopened(&dir).await;
-        app.update(hkey(KeyCode::Char('d'), KeyModifiers::NONE));
-        let delete = app.update(hkey(KeyCode::Char('y'), KeyModifiers::NONE));
+        app.update(hkey(KeyCode::Delete, KeyModifiers::NONE));
+        let delete = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, delete, 1).await;
         panes.shutdown_store(STORE_JOIN_BOUND);
         assert_eq!(stored_messages(&db), Vec::new());

@@ -246,7 +246,7 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 | `Enter` | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
 | `n` / `Esc` | Empieza una conversación nueva |
 | `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
-| `d`, luego `y` | Borra la conversación; cualquier otra tecla cancela. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `a` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
+| `Supr`, luego `Enter` | Borra la conversación; cualquier otra tecla cancela. Ninguna letra abre ni confirma el borrado, así que escribir nada más abrir el chat no borra nada. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `Tab` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
 | `t` | Edita las etiquetas de la fila |
 
 **Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
@@ -1136,7 +1136,7 @@ Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que s
 
 ![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
 
-Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `d` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
+Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `Supr` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
@@ -1263,7 +1263,7 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Volver a una versión anterior:** el esquema de `chat.db` está en la versión 3 (la 2 añadió la memoria; la 3 quita las listas cerradas de perfil, rol y estado para poder ampliarlas sin reconstruir tablas). Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 
-**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`d`, `y`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? y · n · a also delete its N notes`: `y` borra solo la conversación, `a` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `a` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
+**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`Supr`, `Enter`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? ↵ yes · Tab also delete its N notes · other key no`: `Enter` borra solo la conversación, `Tab` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `Tab` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
 
 **Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
 
