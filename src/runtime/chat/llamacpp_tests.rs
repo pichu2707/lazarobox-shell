@@ -191,6 +191,10 @@ fn the_ollama_profile_keeps_the_plain_400_and_has_its_own_notice() {
     assert!(!Profile::Ollama.rejected("HTTP 422: tools"));
     assert_eq!(Profile::Ollama.notice(), Some(OLLAMA_NO_TOOLS_NOTICE));
     assert_eq!(Profile::OpenAi.notice(), Some(NO_TOOLS_NOTICE));
+    assert_eq!(
+        OLLAMA_NO_TOOLS_NOTICE,
+        "Ollama answered 400 to a request with tools: retrying without them"
+    );
 }
 
 #[tokio::test]

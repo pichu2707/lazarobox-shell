@@ -684,7 +684,7 @@ fn esc_over_an_outside_folder_says_the_file_tools_cannot_read_it() {
     a.update(key_code(KeyCode::Esc));
     assert!(systems(&a).contains(&format!(
         "the file tools cannot read {LAUNCH}: it is outside your home folder; \
-         move the project under it or use /cd <folder>"
+         move the project into your home folder, or use /cd with a folder inside it"
     )));
 }
 

@@ -124,7 +124,7 @@ impl Failure {
 
 /// What a SQLite file is answered with: the user's pane is the way in, and
 /// `sqlite3` is not read-only by name, so it still waits for the user's Enter.
-const SQLITE_MESSAGE: &str = "the file is a SQLite database, not text; propose a sqlite3 command for the user's pane with run_in_pane";
+const SQLITE_MESSAGE: &str = "the file is a SQLite database, not text; propose a sqlite3 command for the user to run in their pane";
 
 /// The first bytes of every SQLite database.
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
@@ -1308,7 +1308,11 @@ mod tests {
             assert_eq!(err, Failure::Sqlite);
             let text = err.message();
             assert!(text.contains("SQLite database") && text.contains("sqlite3"));
-            assert!(text.contains("run_in_pane") && !text.contains("SECRET-ROW-1"));
+            assert!(
+                text.contains("for the user to run in their pane")
+                    && !text.contains("SECRET-ROW-1")
+            );
+            assert!(!text.contains("run_in_pane"));
         }
         assert_eq!(read(&e, "~/bin").unwrap_err(), Failure::NotText);
     }

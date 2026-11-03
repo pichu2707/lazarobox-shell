@@ -358,7 +358,7 @@ impl App {
         if self.outside_open.remove(&id) {
             chat.push_system_line(format!(
                 "the file tools cannot read {folder}: it is outside your home folder; \
-                 move the project under it or use /cd <folder>"
+                 move the project into your home folder, or use /cd with a folder inside it"
             ));
         }
         self.finish_open(id)
