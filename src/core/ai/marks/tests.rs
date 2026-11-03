@@ -105,3 +105,50 @@ fn linux_console_variants_and_dumb_terminals_get_text() {
 fn a_term_that_only_contains_linux_still_gets_the_emoji() {
     assert_eq!(tool_glyph(Some("xterm-linux"), true), ToolGlyph::Emoji);
 }
+
+#[test]
+fn automatic_keeps_the_terminal_rule() {
+    assert_eq!(
+        GlyphMode::Auto.resolve(Some("xterm-256color"), true),
+        ToolGlyph::Emoji
+    );
+    assert_eq!(
+        GlyphMode::Auto.resolve(Some("linux"), true),
+        ToolGlyph::Text
+    );
+    assert_eq!(
+        GlyphMode::Auto.resolve(Some("xterm-256color"), false),
+        ToolGlyph::Text
+    );
+}
+
+#[test]
+fn text_wins_on_every_terminal() {
+    for (term, utf8) in [
+        (Some("xterm-256color"), true),
+        (Some("linux"), true),
+        (None, false),
+    ] {
+        assert_eq!(GlyphMode::Text.resolve(term, utf8), ToolGlyph::Text);
+    }
+}
+
+#[test]
+fn emoji_is_forced_even_on_the_linux_console_and_non_utf8() {
+    for (term, utf8) in [
+        (Some("xterm-256color"), true),
+        (Some("linux"), true),
+        (None, false),
+    ] {
+        assert_eq!(GlyphMode::Emoji.resolve(term, utf8), ToolGlyph::Emoji);
+    }
+}
+
+#[test]
+fn glyph_mode_ids_round_trip_and_are_case_sensitive() {
+    for mode in [GlyphMode::Auto, GlyphMode::Emoji, GlyphMode::Text] {
+        assert_eq!(GlyphMode::from_id(mode.id()), Some(mode));
+    }
+    assert_eq!(GlyphMode::from_id("Text"), None);
+    assert_eq!(GlyphMode::default(), GlyphMode::Auto);
+}

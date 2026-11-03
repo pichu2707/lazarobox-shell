@@ -321,7 +321,7 @@ In the engine list of a picker, the engine rows `claude`, `codex` and `gemini` M
 - THEN the row reads `codex (not detected)` with no tool mark
 
 ### Requirement: Tool mark text fallback
-The tool mark MUST render as the emoji `🔧` only when the terminal can show it. When `TERM=linux`, or the locale is not UTF-8, every place that would show `🔧` MUST show the text `tools` instead. `tools: unreliable` is plain text and does not change. The choice MUST be made in one place, so every screen (engine rows, installed model rows, Ollama download screens) agrees. The fallback MUST NOT change selectability or alignment: rows stay within their width.
+Unless `[ai] tool_mark` overrides it (see the configuration spec), the tool mark MUST render as the emoji `🔧` only when the terminal can show it. When `TERM=linux`, or the locale is not UTF-8, every place that would show `🔧` MUST show the text `tools` instead. `tools: unreliable` is plain text and does not change. The choice MUST be made in one place, so every screen (engine rows, installed model rows, Ollama download screens) agrees. The fallback MUST NOT change selectability or alignment: rows stay within their width.
 
 #### Scenario: Linux console [auto]
 - GIVEN `TERM=linux` and a model with capability `tools` and size 8B

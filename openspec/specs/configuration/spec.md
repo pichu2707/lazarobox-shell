@@ -253,6 +253,24 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 - WHEN the config is read
 - THEN notify is `false` and the problem is `ai.notify: expected a boolean`
 
+### Requirement: The tool mark key
+`[ai] tool_mark` is the string `"auto"`, `"emoji"` or `"text"` (compared exactly, lowercase). A missing key is `"auto"`: the glyph follows the terminal rule (text on `TERM=linux`, `linux-*`, `dumb` and non-UTF-8 locales, the emoji otherwise). `"text"` always draws the text badge and `"emoji"` always draws the emoji, even on the Linux console or a non-UTF-8 locale. It applies to every place a tool mark is drawn (see ai-task-models, Tool marks on installed Ollama models) and is read at startup. Any other value or type falls back to `"auto"` and reports `ai.tool_mark: expected "auto", "emoji" or "text"`, after the `ai.notify_sound` problem in the notice order. It is independent of every other `[ai]` key.
+
+#### Scenario: Default and explicit values [auto]
+- GIVEN no `tool_mark`, or `tool_mark = "auto"`, `"emoji"` or `"text"`
+- WHEN the config is read
+- THEN the mode is `auto` (missing) or the written one, and there is no problem
+
+#### Scenario: Bad value [auto]
+- GIVEN `[ai]\ntool_mark = "Text"` (or `""`, a boolean, an integer, or a table)
+- WHEN the config is read
+- THEN the mode is `auto` and the problem is `ai.tool_mark: expected "auto", "emoji" or "text"`
+
+#### Scenario: Text wins [auto]
+- GIVEN `tool_mark = "text"` on `TERM=xterm-256color` with a UTF-8 locale
+- WHEN a tool mark is drawn
+- THEN it reads `tools`
+
 ### Requirement: Managed llama-server
 `[ai.servers.llamacpp]` MAY hold `managed` (boolean, default `false`) and `model` (string, the path of the model file `llama-server` loads, used as written: it SHOULD be absolute, since `~` is not expanded and a relative path is read from lazarobox's working directory). With `managed = true` and a non-empty `model`, lazarobox manages the server (see chat-engines), and llamacpp's port defaults to 39281 instead of 8080; `port` still overrides it. Under any other server id, `managed` and `model` MUST be ignored like any unknown key. A wrong value MUST leave the server unmanaged and report one problem under the existing startup-notice rules: `ai.servers.llamacpp.managed: expected true or false`, `ai.servers.llamacpp.model: expected a path to a model file` (also when `managed` is off), or `ai.servers.llamacpp.model: required when managed = true` (missing or empty).
 

@@ -18,6 +18,25 @@ baseline.
   `--uninstall` removes them. A failed icon write is reported and exits with
   an error, but keeps the installed entry (#268). Existing users must re-run
   `install-desktop` to get the logo.
+- `[ai] tool_mark` (`"auto"`, `"emoji"` or `"text"`) to force how the tool mark
+  is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
+  empty box and cannot be detected. A bad value falls back to `"auto"` with a
+  startup notice (#488).
+
+### Fixed
+
+- A turn that Ollama retries without tools after a 400 now tells the user once
+  per pane, without claiming the model lacks tool support, as llama.cpp already
+  did (#550).
+- Reading a SQLite file now says it is a database that cannot be read as text
+  and suggests a `sqlite3` command for the user to run in their pane, instead
+  of `the file is not text` (#550).
+- The chat prompt now says the file tools only reach the home folder and that
+  the model must report a refusal or failed tool instead of guessing contents
+  (#550).
+- A chat opened in a folder outside the home folder and kept with `Esc` now
+  says the file tools cannot read it and that the project must move into the
+  home folder (`/cd` refuses folders outside it) (#550).
 
 ## [1.4.0] - 2026-11-03
 

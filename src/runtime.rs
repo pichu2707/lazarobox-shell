@@ -99,7 +99,6 @@ use crate::{
                 store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
-            marks,
             memory::port::MemReply,
             orchestra::SessionKey,
         },
@@ -270,18 +269,22 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         env::var("LC_CTYPE").ok().as_deref(),
         env::var("LANG").ok().as_deref(),
     );
-    let mut app = started
+    let app = started
         .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
         .with_utf8_locale(utf8)
-        .with_tool_glyph(marks::tool_glyph(env::var("TERM").ok().as_deref(), utf8))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)
         .with_host(feedback::host_facts())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
+    let glyph = app
+        .ai()
+        .tool_mark()
+        .resolve(env::var("TERM").ok().as_deref(), utf8);
+    let mut app = app.with_tool_glyph(glyph);
     let (id, spec) = app.initial_spawn();
 
     let shutdown = Shutdown::new()?;
