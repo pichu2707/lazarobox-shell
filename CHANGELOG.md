@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-03
+
 ### Fixed
 
 - `install-desktop` judges `x-terminal-emulator` by the terminal it resolves to:
@@ -1940,7 +1942,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
