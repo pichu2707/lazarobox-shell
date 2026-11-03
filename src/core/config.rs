@@ -986,4 +986,22 @@ mod tests {
         assert_eq!(dir, None);
         assert!(notice.unwrap().starts_with("config (2 problems): "));
     }
+    // A bad Ollama cap reaches the startup notice, whole, and the keep-alive
+    // next to it is still respected.
+    #[test]
+    fn a_bad_ollama_option_reaches_the_startup_notice() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = \"big\"\nkeep_alive = \"5m\"\n";
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(
+            notice.as_deref(),
+            Some(
+                "config: ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576"
+            )
+        );
+        assert_eq!(ai.ollama_options().num_ctx_cap, 16_384);
+        assert_eq!(
+            ai.cache_options().keep_alive,
+            Some(crate::core::ai::KeepAlive::from("5m"))
+        );
+    }
 }

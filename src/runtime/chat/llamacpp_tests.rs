@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    ollama::{NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
+    ollama::{NO_TOOLS_NOTICE, OLLAMA_NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
     ollama_tests::{Lab, OK_HEAD, Step, ask, direct, fake, lab, text},
     tests::done,
     *,
@@ -188,12 +188,16 @@ fn the_openai_profile_rejects_only_4xx_and_5xx_that_name_the_jinja_flag() {
 }
 
 #[test]
-fn the_ollama_profile_keeps_the_plain_400_and_no_notice() {
+fn the_ollama_profile_keeps_the_plain_400_and_has_its_own_notice() {
     assert!(Profile::Ollama.rejected("HTTP 400: nope"));
     assert!(!Profile::Ollama.rejected("HTTP 500: tools param requires --jinja flag"));
     assert!(!Profile::Ollama.rejected("HTTP 422: tools"));
-    assert_eq!(Profile::Ollama.notice(), None);
+    assert_eq!(Profile::Ollama.notice(), Some(OLLAMA_NO_TOOLS_NOTICE));
     assert_eq!(Profile::OpenAi.notice(), Some(NO_TOOLS_NOTICE));
+    assert_eq!(
+        OLLAMA_NO_TOOLS_NOTICE,
+        "Ollama answered 400 to a request with tools: retrying without them"
+    );
 }
 
 #[tokio::test]
@@ -521,7 +525,7 @@ async fn tool_messages_are_not_kept_for_the_next_llamacpp_turn() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }
@@ -658,7 +662,7 @@ async fn llamacpp_turn(lab: &mut Lab, state: &mut ChatState, text: &str) {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }

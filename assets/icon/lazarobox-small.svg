@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-label="Lazarobox: panther box, small sizes">
+  <rect width="16" height="16" rx="3" fill="#0A0B0E"/>
+  <path d="M3 13.5H13Q14 13.5 14 12.5V2.5L11 5H5L2 2.5V12.5Q2 13.5 3 13.5Z" fill="#07080B" stroke="#00E5FF" stroke-width="1.2" stroke-linejoin="round"/>
+  <rect x="4" y="8" width="3" height="2" fill="#FFD60A"/>
+  <rect x="9" y="8" width="3" height="2" fill="#FFD60A"/>
+</svg>

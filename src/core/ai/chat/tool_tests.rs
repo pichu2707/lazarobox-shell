@@ -288,6 +288,7 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
         memory: None,
         tools: Tools::Off,
         messages: Vec::new(),
+        ollama: Default::default(),
     };
     for (req, want) in [
         (request("ollama", "claude-sonnet"), Locality::Local),

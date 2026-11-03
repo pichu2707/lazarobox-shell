@@ -78,6 +78,7 @@ async fn turn(env: CliEnv, text: &str) -> Vec<StreamEvent> {
             role: Role::User,
             content: text.into(),
         }],
+        ollama: Default::default(),
     };
     chats.send(PaneId::FIRST, 1, request);
     let mut events = Vec::new();

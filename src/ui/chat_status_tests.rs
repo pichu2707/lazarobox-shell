@@ -167,7 +167,8 @@ fn no_stream_means_no_indicator_in_any_mode() {
 
 #[test]
 fn a_running_stream_shows_the_indicator_and_the_phase_flips() {
-    let mut app = chat_app();
+    // A known window keeps the unknown-window notice off the status line.
+    let mut app = windowed_app(Some(100_000));
     let turn = send(&mut app, "hi");
     let line = status(&app);
     assert!(line.contains("▰▰▰") && line.contains("thinking"), "{line}");
@@ -329,15 +330,26 @@ fn memory_off_and_a_shell_pane_show_no_memory_text() {
 
 // chat-memory S1 / S2: the context fill ----------------------------------------
 
+/// What the default tool families weigh in the budget of a turn.
+fn tools_reserve() -> usize {
+    crate::core::ai::chat::adapters::tools_reserve_tokens(ollama().families())
+}
+
 /// A chat whose engine reports a context window of `window` tokens.
 fn windowed_app(window: Option<usize>) -> App {
     let mut app = App::new(COLS, ROWS)
         .with_env(Some("/bin/zsh"), None, "/srv/app".into())
         .with_ai(ollama());
-    app.update(AppEvent::EnginesDetected(Detection {
-        windows: window.map(|w| ("ollama", w)).into_iter().collect(),
-        ..ready_detection()
-    }));
+    let mut detection = ready_detection();
+    detection.model_facts = vec![crate::core::ai::ModelFacts {
+        engine: "ollama",
+        name: "llama3:8b".into(),
+        params: None,
+        digest: None,
+        tools: crate::core::ai::marks::Tools::Yes,
+        window,
+    }];
+    app.update(AppEvent::EnginesDetected(detection));
     prefixed(&mut app, "c");
     app.update(AppEvent::PromptReady(
         chat_id(),
@@ -358,9 +370,11 @@ fn a_chat_shows_no_fill_before_its_first_send() {
 fn the_fill_is_the_share_of_the_engines_window_after_a_send() {
     let mut app = windowed_app(Some(10_000));
     send(&mut app, "hi");
-    // 1 history + 2 system + 1500 tools reserve = 1503 of 10000.
+    // 1 history + 2 system + the tools reserve of the default families.
+    let used = 3 + tools_reserve();
     let line = status(&app);
-    assert!(line.contains("ollama › llama3:8b · context 15%"), "{line}");
+    let expected = format!("ollama › llama3:8b · context {}%", used * 100 / 10_000);
+    assert!(line.contains(&expected), "{line}");
 }
 
 #[test]
@@ -368,7 +382,9 @@ fn without_a_window_there_is_no_fill_to_show() {
     let mut app = windowed_app(None);
     send(&mut app, "hi");
     let line = status(&app);
-    assert!(!line.contains("context"), "{line}");
+    assert!(!line.contains("· context"), "{line}");
+    // What is shown instead is the notice that the characters rule the turn.
+    assert!(line.contains("window unknown"), "{line}");
 }
 
 #[test]
@@ -376,8 +392,8 @@ fn a_smaller_window_fills_faster() {
     let mut app = windowed_app(Some(3_000));
     send(&mut app, "hi");
     let line = status(&app);
-    // 1503 of 3000.
-    assert!(line.contains("context 50%"), "{line}");
+    let expected = format!("context {}%", (3 + tools_reserve()) * 100 / 3_000);
+    assert!(line.contains(&expected), "{line}");
 }
 
 #[test]
@@ -443,8 +459,8 @@ fn second_request_messages(window: Option<usize>) -> usize {
 fn the_detected_window_sizes_the_turn_sent_by_the_app() {
     // Unknown: the character cap keeps the whole exchange (3 messages).
     assert_eq!(second_request_messages(None), 3);
-    // 1000 * 75% = 750 tokens, less the 1500 tools reserve: no room, so only
-    // the newest message goes.
+    // 1000 * 75% = 750 tokens, less the tools reserve: no room, so only the
+    // newest message goes.
     assert_eq!(second_request_messages(Some(1_000)), 1);
     // A roomy window keeps everything.
     assert_eq!(second_request_messages(Some(100_000)), 3);

@@ -22,7 +22,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{tests::done, *};
+use super::{ollama::OLLAMA_NO_TOOLS_NOTICE, tests::done, *};
 use crate::{
     core::ai::{
         chat::{
@@ -349,7 +349,10 @@ async fn a_turn_without_tools_is_one_plain_request() {
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 1);
     assert!(bodies[0].get("tools").is_none());
-    let Invocation::Http { body, .. } = Adapter::Ollama.build(&ask(&lab, false)) else {
+    // The adapter adds the default keep-alive; no window is known to this
+    // lab, so no `num_ctx`.
+    let sent = ask(&lab, false);
+    let Invocation::Http { body, .. } = Adapter::Ollama.build(&sent) else {
         panic!("ollama is an http engine");
     };
     assert_eq!(bodies[0], serde_json::from_slice::<Value>(&body).unwrap());
@@ -503,7 +506,14 @@ async fn a_400_on_a_request_with_tools_retries_once_without_tools() {
     let mut lab = lab(fake.port);
     lab.chats.send(pane(1), 1, ask(&lab, true));
     let events = finish(&mut lab.rx).await;
-    assert_eq!(events, [StreamEvent::Delta("plain answer".into()), done()]);
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()),
+            StreamEvent::Delta("plain answer".into()),
+            done()
+        ]
+    );
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 2);
     assert!(bodies[0]["tools"].is_array());
@@ -531,7 +541,10 @@ async fn calls_in_the_reply_to_the_retry_are_not_run() {
     let mut lab = lab(fake.port);
     lab.chats.send(pane(1), 1, ask(&lab, true));
     let events = finish(&mut lab.rx).await;
-    assert_eq!(events, [done()]);
+    assert_eq!(
+        events,
+        [StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()), done()]
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(fake.bodies().len(), 2, "no request follows");
 }
@@ -575,10 +588,10 @@ async fn the_retry_is_made_once_and_only_for_a_400() {
     );
 }
 
-// The fallback of Ollama stays a plain 400, with no notice: a 5xx that names
-// tools or jinja is an ordinary error there.
+// The fallback of Ollama stays a plain 400 and says so once: a 5xx that names
+// tools or jinja is an ordinary error there, with no notice.
 #[tokio::test]
-async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice() {
+async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_adds_no_notice_for_it() {
     let server_error = fake(vec![status(500, "tools param requires --jinja flag")]).await;
     let mut lab_a = lab(server_error.port);
     lab_a.chats.send(pane(1), 1, ask(&lab_a, true));
@@ -593,7 +606,14 @@ async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice
     let mut lab_b = lab(rejected.port);
     lab_b.chats.send(pane(1), 1, ask(&lab_b, true));
     let events = finish(&mut lab_b.rx).await;
-    assert_eq!(events, [StreamEvent::Delta("plain".into()), done()]);
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()),
+            StreamEvent::Delta("plain".into()),
+            done()
+        ]
+    );
 }
 
 // Approvals --------------------------------------------------------------------
@@ -699,7 +719,7 @@ async fn tool_messages_are_not_part_of_the_next_turns_history() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }

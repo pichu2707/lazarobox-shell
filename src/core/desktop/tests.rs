@@ -686,3 +686,39 @@ fn the_note_of_the_alternative_names_the_recorded_terminal_it_runs() {
         );
     }
 }
+
+#[test]
+fn the_launcher_names_the_themed_icon_it_installs() {
+    let plan = plan_for("kitty");
+    assert!(
+        plan.contents.contains("\nIcon=lazarobox\n"),
+        "{}",
+        plan.contents
+    );
+    assert!(!plan.contents.contains("utilities-terminal"));
+}
+
+#[test]
+fn icons_are_hicolor_apps_files_named_after_the_icon() {
+    let paths: Vec<&str> = ICONS.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        paths,
+        [
+            "icons/hicolor/256x256/apps/lazarobox.png",
+            "icons/hicolor/128x128/apps/lazarobox.png",
+            "icons/hicolor/48x48/apps/lazarobox.png",
+            "icons/hicolor/32x32/apps/lazarobox.png",
+            "icons/hicolor/16x16/apps/lazarobox.png",
+            "icons/hicolor/scalable/apps/lazarobox.svg",
+        ]
+    );
+    for (path, bytes) in ICONS {
+        let png = path.ends_with(".png");
+        assert!(!bytes.is_empty(), "{path} is empty");
+        assert_eq!(png, bytes.starts_with(b"\x89PNG"), "{path}");
+        assert_eq!(
+            !png,
+            bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml")
+        );
+    }
+}

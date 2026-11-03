@@ -23,6 +23,8 @@ exclude = [
     "/RELEASING.md",
     "/odd/",
     "/.codegraph/",
+    "/assets/icon/lazarobox.ico",
+    "/assets/icon/lazarobox-small.svg",
 ]
 
 [dependencies]

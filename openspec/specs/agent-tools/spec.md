@@ -84,6 +84,11 @@ There MUST be one registry of tools, the single source of truth for names, argum
 - WHEN `read_file` is called
 - THEN an error result says the file is not text and no bytes are returned
 
+#### Scenario: SQLite database refused with its own message [auto]
+- GIVEN a file that starts with the SQLite header `SQLite format 3\0`
+- WHEN `read_file` is called
+- THEN an error result says the file is a SQLite database that cannot be read as text, names `sqlite3` and `run_in_pane`, and no bytes are returned
+
 #### Scenario: No process, no network, no write [auto]
 - GIVEN the read tools run against a recording sandbox
 - WHEN each is called

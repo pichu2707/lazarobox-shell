@@ -931,6 +931,9 @@ pub struct App {
     /// The chats whose open steps (memory, prompt, list) wait for the folder
     /// to be settled: the probe, or the picker.
     opening: HashSet<PaneId>,
+    /// Chats opened in a folder outside HOME, until their picker closes: Esc
+    /// keeps that folder and says the file tools cannot read it.
+    outside_open: HashSet<PaneId>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
     /// Whether a directory exists. Injected so the core does no IO; the runtime
@@ -947,6 +950,8 @@ pub struct App {
     hold: Hold,
     /// The engines whose requests carry tools (`MCP_VERIFIED`).
     tool_engines: &'static [&'static str],
+    /// The Ollama models whose unknown window the status line already told.
+    unknown_windows: HashSet<String>,
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,
     /// How the tool badge of a model row is drawn (injected).
@@ -1086,6 +1091,7 @@ impl App {
             home: None,
             resume_folders: HashMap::new(),
             opening: HashSet::new(),
+            outside_open: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
             hostname: None,
@@ -1094,6 +1100,7 @@ impl App {
             held_exit: None,
             hold: Hold::default(),
             tool_engines: MCP_VERIFIED,
+            unknown_windows: HashSet::new(),
             utf8_locale: false,
             tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
@@ -1692,7 +1699,7 @@ impl App {
                 vec![Effect::ChatSend {
                     pane: id,
                     turn,
-                    request,
+                    request: *request,
                 }]
             }
             SendOutcome::Refused => Vec::new(),
@@ -8866,6 +8873,9 @@ mod app_tests {
 
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;
+
+    /// The window an Ollama turn is budgeted against (model-context-window).
+    mod ollama_window;
 
     /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
     mod managed_start;

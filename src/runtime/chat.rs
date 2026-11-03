@@ -393,6 +393,7 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
     Arc::new(move |mut request, tx| {
         let cli = cli.clone();
         let tools = tools.clone();
+        live.stamp(&mut request);
         request.cache = live.cache();
         let port = live.ports().port(&request.engine);
         let managed = live.managed().filter(|_| request.engine == "llamacpp");

@@ -10,8 +10,39 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Ollama turns now ask for a context window: `options.num_ctx` is the smaller
+  of the model's own window (read from the `POST /api/show` reply detection
+  already sends, no new request) and `[ai.servers.ollama] num_ctx_cap`
+  (default 16384). Every turn of a model sends the same value, so Ollama never
+  reloads it because of it. The menu does not write the key; a bad value falls
+  back with a startup notice.
+- The desktop entry now shows the Lazarobox logo. `install-desktop` writes the
+  embedded icons (PNG 256, 128, 48, 32 and 16 px, plus an SVG) to
+  `<XDG_DATA_HOME>/icons/hicolor/` and the entry uses `Icon=lazarobox`;
+  `--uninstall` removes them. A failed icon write is reported and exits with
+  an error, but keeps the installed entry (#268). Existing users must re-run
+  `install-desktop` to get the logo.
+- `[ai] tool_mark` (`"auto"`, `"emoji"` or `"text"`) to force how the tool mark
+  is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
+  empty box and cannot be detected. A bad value falls back to `"auto"` with a
+  startup notice (#488).
+
 ### Changed
 
+- Ollama turns send `keep_alive = "30m"` when `[ai.servers.ollama] keep_alive`
+  is unset, instead of Ollama's own five minutes; a value set in the file is
+  sent as written. Other engines' requests do not change.
+- The history budget of local servers now counts the system prompt, the tools
+  block and the tool schemas before any message, also when the window is
+  unknown (the 12,000-character cap is reduced by that head, never below 4,000
+  characters). Trimming still drops whole user and assistant pairs, oldest
+  first, with the usual marker. A message that cannot fit a known window is
+  still sent whole, with a notice, and an Ollama model with an unknown window
+  shows `window unknown for <model>: 12k chars` once per run. A Modelfile
+  `PARAMETER num_ctx` does not override the cap when the window is known; when
+  it is unknown no `num_ctx` is sent and the Modelfile value applies.
 - The wait line of a chat turn says what it waits for: `waiting for your
   answer…` under an approval prompt, `running <tool>…` while a tool runs, and
   the model otherwise. For a local server engine the long wait adds the
@@ -29,6 +60,18 @@ baseline.
 
 ### Fixed
 
+- A turn that Ollama retries without tools after a 400 now tells the user once
+  per pane, without claiming the model lacks tool support, as llama.cpp already
+  did (#550).
+- Reading a SQLite file now says it is a database that cannot be read as text
+  and suggests a `sqlite3` command for the user to run in their pane, instead
+  of `the file is not text` (#550).
+- The chat prompt now says the file tools only reach the home folder and that
+  the model must report a refusal or failed tool instead of guessing contents
+  (#550).
+- A chat opened in a folder outside the home folder and kept with `Esc` now
+  says the file tools cannot read it and that the project must move into the
+  home folder (`/cd` refuses folders outside it) (#550).
 - A key the approval prompt does not take, a paste, and an answer that comes
   before the prompt is armed no longer vanish silently: the footer says
   `Answer the pending confirm first` or `Prompt just opened: answer again in a

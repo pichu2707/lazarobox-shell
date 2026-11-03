@@ -24,7 +24,7 @@ fn at(base: Instant, ms: u64) -> Instant {
 
 fn sent_at(state: &mut ChatState, body: &str, now: Instant) -> (u64, ChatRequest) {
     match state.send_at(body, &ready(), "sys", now) {
-        SendOutcome::Sent { turn, request } => (turn, request),
+        SendOutcome::Sent { turn, request } => (turn, *request),
         SendOutcome::Refused => panic!("send refused"),
     }
 }

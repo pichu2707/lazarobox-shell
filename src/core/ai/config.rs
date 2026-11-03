@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use super::marks::GlyphMode;
 use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, CacheOptions, KeepAlive, Kind, ServerPorts};
 
@@ -404,6 +405,7 @@ pub struct AiConfig {
     context: bool,
     notify: NotifyMode,
     notify_sound: bool,
+    tool_mark: GlyphMode,
     usage: UsageConfig,
     tools: bool,
     approval: ApprovalMode,
@@ -413,9 +415,35 @@ pub struct AiConfig {
     servers: ServerPorts,
     managed: Option<ManagedServer>,
     managed_options: ManagedOptions,
+    ollama: OllamaOptions,
     cache: CacheOptions,
     pub memory: MemoryConfig,
     pub orchestrator: OrchestratorConfig,
+}
+
+/// What lazarobox asks of Ollama on each turn, from `[ai.servers.ollama]`.
+/// The menu does not write `num_ctx_cap`. The keep-alive is not here: it is
+/// `keep_alive` of [`CacheOptions`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OllamaOptions {
+    /// The most tokens of context to ask for (`num_ctx` is the smaller of this
+    /// and the model's own window).
+    pub num_ctx_cap: usize,
+}
+
+/// The `num_ctx` cap of Ollama unless `num_ctx_cap` is set.
+pub const DEFAULT_NUM_CTX_CAP: usize = 16_384;
+
+/// The `num_ctx_cap` values taken: below 1024 a chat has no room, above a
+/// million tokens the number is a typo.
+const NUM_CTX_CAP_RANGE: std::ops::RangeInclusive<i64> = 1_024..=1_048_576;
+
+impl Default for OllamaOptions {
+    fn default() -> Self {
+        Self {
+            num_ctx_cap: DEFAULT_NUM_CTX_CAP,
+        }
+    }
 }
 
 /// The port of a llama-server that lazarobox starts itself, unless
@@ -495,6 +523,7 @@ impl Default for AiConfig {
             context: true,
             notify: NotifyMode::Off,
             notify_sound: true,
+            tool_mark: GlyphMode::Auto,
             usage: UsageConfig::default(),
             tools: true,
             approval: ApprovalMode::Ask,
@@ -504,6 +533,7 @@ impl Default for AiConfig {
             servers: ServerPorts::default(),
             managed: None,
             managed_options: ManagedOptions::default(),
+            ollama: OllamaOptions::default(),
             cache: CacheOptions::default(),
             memory: MemoryConfig::default(),
             orchestrator: OrchestratorConfig::default(),
@@ -545,6 +575,11 @@ impl AiConfig {
 
     pub fn set_notify(&mut self, notify: NotifyMode) {
         self.notify = notify;
+    }
+
+    /// `[ai] tool_mark`: how the tool badge is drawn.
+    pub fn tool_mark(&self) -> GlyphMode {
+        self.tool_mark
     }
 
     /// Whether lazarobox plays its own sound with the desktop notification
@@ -630,6 +665,18 @@ impl AiConfig {
     /// How lazarobox runs its llama-server.
     pub fn managed_options(&self) -> &ManagedOptions {
         &self.managed_options
+    }
+
+    /// This config with the Ollama options `ollama`.
+    #[cfg(test)]
+    pub fn with_ollama(mut self, ollama: OllamaOptions) -> Self {
+        self.ollama = ollama;
+        self
+    }
+
+    /// What lazarobox asks of Ollama on each turn.
+    pub fn ollama_options(&self) -> OllamaOptions {
+        self.ollama
     }
 
     /// Sets the idle time of the managed llama-server; 0 never stops it.
@@ -830,6 +877,21 @@ fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
+/// Reads `tool_mark`: a missing key is `auto`; anything that is not an exact
+/// id falls back to `auto` with a problem.
+fn read_tool_mark(section: &Table, problems: &mut Vec<String>) -> GlyphMode {
+    match section.get("tool_mark") {
+        None => GlyphMode::Auto,
+        Some(Value::String(id)) if GlyphMode::from_id(id).is_some() => {
+            GlyphMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push("ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned());
+            GlyphMode::Auto
+        }
+    }
+}
+
 /// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
@@ -848,6 +910,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
     config.notify_sound = read_notify_sound(section, problems);
+    config.tool_mark = read_tool_mark(section, problems);
     config.usage = usage::read(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
@@ -890,6 +953,7 @@ pub fn read_with_port_env(
         config.managed_options,
         config.cache,
     ) = read_servers(table, problems);
+    config.ollama = read_ollama_options(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config.orchestrator = read_orchestrator(table, problems);
     config
@@ -1331,6 +1395,33 @@ fn read_cache_prompt(server: &Table, problems: &mut Vec<String>) -> Option<bool>
     }
 }
 
+/// `num_ctx_cap` of `[ai.servers.ollama]`, with its fallback and problem. A broken `ai.servers` table is reported by
+/// [`read_servers`].
+fn read_ollama_options(table: &Table, problems: &mut Vec<String>) -> OllamaOptions {
+    let mut options = OllamaOptions::default();
+    let Some(server) = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("servers"))
+        .and_then(Value::as_table)
+        .and_then(|servers| servers.get("ollama"))
+        .and_then(Value::as_table)
+    else {
+        return options;
+    };
+    match server.get("num_ctx_cap") {
+        None => {}
+        Some(Value::Integer(n)) if NUM_CTX_CAP_RANGE.contains(n) => {
+            options.num_ctx_cap = *n as usize;
+        }
+        Some(_) => problems.push(
+            "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576"
+                .to_owned(),
+        ),
+    }
+    options
+}
+
 /// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
 /// for never; anything else falls back to [`DEFAULT_IDLE_MINUTES`].
 fn read_idle_minutes(server: &Table, problems: &mut Vec<String>) -> u32 {
@@ -1613,6 +1704,50 @@ mod tests {
                     vec![],
                     vec!["ai.servers.llamacpp.args: expected a list of strings".to_owned()]
                 ),
+                "{value}"
+            );
+        }
+    }
+
+    /// The Ollama cap and problems of `text`.
+    fn ollama_of(text: &str) -> (usize, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.ollama_options().num_ctx_cap, problems)
+    }
+
+    const CAP_PROBLEM: &str =
+        "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576";
+
+    #[test]
+    fn ollama_options_default_to_a_16384_cap() {
+        assert_eq!(ollama_of(""), (16_384, vec![]));
+        assert_eq!(
+            ollama_of("[ai.servers.ollama]\nport = 11500\n"),
+            (16_384, vec![])
+        );
+    }
+
+    #[test]
+    fn ollama_options_accept_a_valid_cap() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = 8192\n";
+        assert_eq!(ollama_of(text), (8192, vec![]));
+    }
+
+    #[test]
+    fn the_ollama_limits_are_inclusive() {
+        let low = "[ai.servers.ollama]\nnum_ctx_cap = 1024\n";
+        assert_eq!(ollama_of(low), (1_024, vec![]));
+        let top = "[ai.servers.ollama]\nnum_ctx_cap = 1048576\n";
+        assert_eq!(ollama_of(top), (1_048_576, vec![]));
+    }
+
+    #[test]
+    fn a_bad_ollama_cap_falls_back_with_the_exact_problem() {
+        for value in ["\"big\"", "0", "-1", "1.5", "1023", "1048577"] {
+            let text = format!("[ai.servers.ollama]\nnum_ctx_cap = {value}\n");
+            assert_eq!(
+                ollama_of(&text),
+                (16_384, vec![CAP_PROBLEM.to_owned()]),
                 "{value}"
             );
         }
@@ -2533,6 +2668,44 @@ mod tests {
             let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
             assert_eq!(config.notify(), NotifyMode::Off, "{value}");
             assert_eq!(problems, vec![NOTIFY_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn tool_mark_defaults_to_automatic_and_reads_each_value() {
+        assert_eq!(AiConfig::default().tool_mark(), GlyphMode::Auto);
+        for (value, want) in [
+            ("auto", GlyphMode::Auto),
+            ("emoji", GlyphMode::Emoji),
+            ("text", GlyphMode::Text),
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = \"{value}\"\n"));
+            assert_eq!(config.tool_mark(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new(), "{value}");
+        }
+        let (config, problems) = read_text("[ai]\ncontext = true\n");
+        assert_eq!(config.tool_mark(), GlyphMode::Auto);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_bad_tool_mark_falls_back_to_automatic_with_the_exact_problem() {
+        for value in [
+            "\"Text\"",
+            "\"\"",
+            "\"tools\"",
+            "true",
+            "1",
+            "[1]",
+            "{ a = 1 }",
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = {value}\n"));
+            assert_eq!(config.tool_mark(), GlyphMode::Auto, "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned()],
+                "{value}"
+            );
         }
     }
 

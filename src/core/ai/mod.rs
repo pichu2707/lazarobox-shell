@@ -173,9 +173,15 @@ impl From<&str> for KeepAlive {
     }
 }
 
+/// What Ollama gets as `keep_alive` when `[ai.servers.ollama] keep_alive` is
+/// unset: its own default of five minutes unloads the model between two turns
+/// of a chat that is read slowly.
+pub const DEFAULT_KEEP_ALIVE: &str = "30m";
+
 /// The prompt-cache options of the local servers (#515), from
 /// `[ai.servers.ollama] keep_alive` and `[ai.servers.llamacpp]
-/// cache_prompt`. Unset, nothing is sent and each server keeps its default.
+/// cache_prompt`. Unset, `cache_prompt` sends nothing and llama-server keeps
+/// its default; an unset `keep_alive` sends [`DEFAULT_KEEP_ALIVE`] to Ollama.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct CacheOptions {
     pub keep_alive: Option<KeepAlive>,
@@ -319,6 +325,9 @@ pub struct ModelFacts {
     /// The listing's digest: the key of the tool-support cache.
     pub digest: Option<String>,
     pub tools: marks::Tools,
+    /// The model's own maximum context window in tokens, from the same
+    /// `POST /api/show` reply as `tools`; `None` when the probe did not say.
+    pub window: Option<usize>,
 }
 
 impl Detection {
@@ -327,6 +336,39 @@ impl Detection {
         self.model_facts
             .iter()
             .find(|f| f.engine == engine && f.name == name)
+    }
+
+    /// The maximum context window of model `name` of engine `engine`, with
+    /// the same `:latest` rule as [`catalog::same_model`].
+    pub fn model_window(&self, engine: &str, name: &str) -> Option<usize> {
+        self.model_facts
+            .iter()
+            .find(|f| f.engine == engine && catalog::same_model(engine, &f.name, name))
+            .and_then(|f| f.window)
+    }
+
+    /// The known windows of the Ollama models, by listed name.
+    pub fn ollama_windows(&self) -> Vec<(String, usize)> {
+        self.model_facts
+            .iter()
+            .filter(|f| f.engine == "ollama")
+            .filter_map(|f| Some((f.name.clone(), f.window?)))
+            .collect()
+    }
+
+    /// Gives a listed Ollama model the window it had in `before` when this
+    /// run could not read one (a probe that failed or timed out), so a flaky
+    /// run never turns a known window into an unknown one and `num_ctx` stays
+    /// the same. A new answer wins, and a model no longer listed is not kept.
+    pub fn carry_windows(&mut self, before: &[(String, usize)]) {
+        for facts in self.model_facts.iter_mut().filter(|f| f.engine == "ollama") {
+            if facts.window.is_none() {
+                facts.window = before
+                    .iter()
+                    .find(|(name, _)| catalog::same_model("ollama", name, &facts.name))
+                    .map(|(_, window)| *window);
+            }
+        }
     }
 
     /// The context window of engine `id` in tokens, when it reported one.
@@ -702,6 +744,41 @@ mod tests {
     }
 
     const OLLAMA_OK: &str = r#"{"models":[{"name":"llama3:8b"},{"name":"qwen2.5:7b"}]}"#;
+    fn facts_with(name: &str, window: Option<usize>) -> ModelFacts {
+        ModelFacts {
+            engine: "ollama",
+            name: name.into(),
+            params: None,
+            digest: None,
+            tools: marks::Tools::Unknown,
+            window,
+        }
+    }
+
+    #[test]
+    fn carrying_windows_fills_only_the_listed_models_that_lost_theirs() {
+        let mut next = Detection {
+            model_facts: vec![
+                facts_with("a:1b", None),
+                facts_with("b:1b", Some(4_096)),
+                facts_with("c:1b", None),
+                facts_with("d", None),
+            ],
+            ..Default::default()
+        };
+        let before = [
+            ("a:1b".to_owned(), 8_192),
+            ("b:1b".to_owned(), 2_048),
+            ("gone:1b".to_owned(), 1_024),
+            ("d:latest".to_owned(), 512),
+        ];
+        next.carry_windows(&before);
+        let got: Vec<Option<usize>> = next.model_facts.iter().map(|f| f.window).collect();
+        // a keeps its old one, b keeps its new answer, c had none, d matches
+        // `:latest`, and the unlisted model is not added back.
+        assert_eq!(got, [Some(8_192), Some(4_096), None, Some(512)]);
+    }
+
     #[test]
     fn reduce_leaves_facts_empty_without_a_probe() {
         assert!(reduce(&[]).model_facts.is_empty());

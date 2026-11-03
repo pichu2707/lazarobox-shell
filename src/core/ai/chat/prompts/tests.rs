@@ -361,6 +361,13 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(text.contains(needle), "{needle}");
     }
     assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    // The reach of the file tools and what to do after a refusal.
+    for needle in [
+        "only reach the user's home folder",
+        "After a refusal or a failed tool, say so; never guess or invent contents",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
     // After S4b the output of a command that ran comes back.
     assert!(!text.contains("unless the user pastes"));
     assert!(!text.contains("except through those commands"));
@@ -369,7 +376,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(!text.contains(mode), "{mode}");
     }
     assert!(
-        text.lines().count() == 1 && text.len() <= 1033 + 16,
+        text.lines().count() == 1 && text.len() <= 1033 + 16 + 160,
         "{}",
         text.len()
     );
