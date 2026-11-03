@@ -43,6 +43,7 @@ pub mod tool;
 pub mod transcript;
 pub mod usage;
 pub mod usage_view;
+pub mod wait_line;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
@@ -331,6 +332,13 @@ pub struct ChatState {
     composer: Composer,
     /// When the stream in flight was sent.
     started: Option<Instant>,
+    /// When the clock of the request in flight started, as its `Slow` event
+    /// says; `None` before it. See [`wait_line`].
+    wait_since: Option<Instant>,
+    /// Since when a tool call that waits for the user holds that clock.
+    held_since: Option<Instant>,
+    /// The last read the runtime reported while the model was silent.
+    idle_from: Option<Instant>,
     /// The model of the request in flight, as sent.
     request_model: String,
     /// Moves with every change of the transcript.
@@ -491,6 +499,9 @@ impl ChatState {
             turn: 0,
             composer: Composer::new(),
             started: None,
+            wait_since: None,
+            held_since: None,
+            idle_from: None,
             request_model: String::new(),
             generation: 0,
             scroll: Scroll::Follow,
@@ -956,7 +967,9 @@ impl ChatState {
         &self.approvals
     }
 
+    /// The wait line names an approval, so any change of it rebuilds the lines.
     pub fn approvals_mut(&mut self) -> &mut approval::Approvals {
+        self.generation += 1;
         &mut self.approvals
     }
 
@@ -1151,17 +1164,6 @@ impl ChatState {
     /// The id events of the turn in flight must carry.
     pub fn turn(&self) -> u64 {
         self.turn
-    }
-
-    /// The waiting text, while no byte of the answer has arrived.
-    pub fn waiting_text(&self) -> Option<&'static str> {
-        match self.phase {
-            // Reasoning counts as the first byte: its block replaces the text.
-            Phase::Waiting { .. } if self.live_reasoning().is_some() => None,
-            Phase::Waiting { slow: false } => Some(WAITING),
-            Phase::Waiting { slow: true } => Some(STILL_WAITING),
-            Phase::Idle | Phase::Streaming => None,
-        }
     }
 
     /// Where the stream is: `Thinking` from the send until the first
@@ -1406,6 +1408,7 @@ impl ChatState {
         self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
+        self.clock_reset();
         self.request_model = model.clone().unwrap_or_default();
         self.request_engine = engine.clone();
         self.generation += 1;
@@ -1465,15 +1468,19 @@ impl ChatState {
             return Follow::Nothing;
         }
         if self.summarizing.is_some() {
-            return self.apply_summary(event);
+            return self.apply_summary(event, now);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
+        if !matches!(
+            event,
+            StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_) | StreamEvent::Reading
+        ) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
             StreamEvent::Slow
+                | StreamEvent::Reading
                 | StreamEvent::Notice(_)
                 | StreamEvent::Error(_)
                 | StreamEvent::Usage(_)
@@ -1484,7 +1491,12 @@ impl ChatState {
             StreamEvent::Slow => {
                 if let Phase::Waiting { slow } = &mut self.phase {
                     *slow = true;
+                    self.clock_said_slow(now);
                 }
+                Follow::Nothing
+            }
+            StreamEvent::Reading => {
+                self.clock_read(now);
                 Follow::Nothing
             }
             StreamEvent::Notice(line) => {
@@ -1728,6 +1740,7 @@ impl ChatState {
         }
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.request_engine.clear();
     }

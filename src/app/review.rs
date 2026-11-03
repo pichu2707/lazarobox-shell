@@ -9,6 +9,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use super::{
+    run::{ANSWER_FIRST, JUST_OPENED},
     tool::{CANCELLED, DECLINED},
     *,
 };
@@ -208,7 +209,14 @@ impl App {
                 self.dirty = true;
             }
         }
-        if repeat || (answers && !self.review_answerable(id)) {
+        if repeat {
+            return Vec::new();
+        }
+        if answers && !self.review_answerable(id) {
+            // A `y` has its own hint in the view.
+            if key.code != KeyCode::Char('y') {
+                self.ignored_key(&key, JUST_OPENED);
+            }
             return Vec::new();
         }
         match (key.code, key.modifiers) {
@@ -219,7 +227,10 @@ impl App {
                 effects.extend(self.chat_cancel_key(id));
                 effects
             }
-            _ => Vec::new(),
+            _ => {
+                self.ignored_key(&key, ANSWER_FIRST);
+                Vec::new()
+            }
         }
     }
 

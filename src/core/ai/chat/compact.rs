@@ -310,6 +310,7 @@ impl ChatState {
                 }
             }
             StreamEvent::Slow
+            | StreamEvent::Reading
             | StreamEvent::Notice(_)
             | StreamEvent::ThinkingDelta(_)
             | StreamEvent::ToolCall { .. }

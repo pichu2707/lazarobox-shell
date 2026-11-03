@@ -16,6 +16,7 @@ use crate::core::ai::{
     chat::{
         engine::{ChatError, StreamEvent},
         stream::StreamDecoder,
+        wait_line::{FIRST_BYTE_LIMIT, IDLE_LIMIT, SLOW_AFTER, TOTAL_LIMIT},
     },
     http::{Body, Framing, Head, Step, parse_head},
     sanitize::clean,
@@ -47,6 +48,9 @@ pub const TOO_LONG: &str = "the turn took too long";
 pub const INVALID_REPLY: &str = "invalid reply from the engine";
 pub const REFUSED: &str = "refused: chat requests go to the loopback engine paths only";
 
+/// A `Reading` event goes out at most this often.
+const READING_EVERY: Duration = Duration::from_secs(1);
+
 /// The time limits of one turn. Passed in, so tests run them on the paused
 /// tokio clock instead of waiting.
 #[derive(Clone, Copy, Debug)]
@@ -65,17 +69,21 @@ pub struct Timeouts {
     /// shares the single `Slow` budget with the pre-first-byte hint. `None`
     /// sends none.
     pub quiet: Option<Duration>,
+    /// Report the reads to the app (`Reading`, at most once per second): a
+    /// server turn whose wait line states the idle limit. A CLI shows none.
+    pub report_reads: bool,
 }
 
 impl Timeouts {
     /// What a server turn gets.
     pub const SERVER: Self = Self {
         connect: Duration::from_secs(2),
-        first_byte: Duration::from_secs(120),
-        idle: Duration::from_secs(60),
-        total: Duration::from_secs(15 * 60),
-        slow: Duration::from_secs(3),
+        first_byte: FIRST_BYTE_LIMIT,
+        idle: IDLE_LIMIT,
+        total: TOTAL_LIMIT,
+        slow: SLOW_AFTER,
         quiet: None,
+        report_reads: true,
     };
 
     /// What a CLI turn gets: a CLI starts slower than a loaded server and may
@@ -86,11 +94,12 @@ impl Timeouts {
     /// `connect` is not used.
     pub const CLI: Self = Self {
         connect: Duration::from_secs(2),
-        first_byte: Duration::from_secs(120),
+        first_byte: FIRST_BYTE_LIMIT,
         idle: Duration::from_secs(300),
-        total: Duration::from_secs(15 * 60),
-        slow: Duration::from_secs(3),
+        total: TOTAL_LIMIT,
+        slow: SLOW_AFTER,
         quiet: Some(Duration::from_secs(10)),
+        report_reads: false,
     };
 }
 
@@ -208,6 +217,8 @@ pub(crate) struct Wait<'a> {
     /// A byte of the reply has arrived.
     started: bool,
     slow_sent: bool,
+    /// When the last `Reading` event went out.
+    last_reading: Option<Instant>,
     hold: Hold,
 }
 
@@ -219,6 +230,7 @@ impl<'a> Wait<'a> {
             start: Instant::now(),
             started: false,
             slow_sent: false,
+            last_reading: None,
             hold: Hold(pending::current().map(|p| p.watch())),
         }
     }
@@ -305,6 +317,25 @@ impl<'a> Wait<'a> {
             Err(_) => return Err(Stop::Failed(INVALID_REPLY)),
         };
         self.started |= n > 0;
+        // The wait line states the limit of the idle clock, which restarts at
+        // every read; the runtime cannot know which reads the app sees as an
+        // answer (held text, ignored reasoning), so it reports them all, at
+        // most once per [`READING_EVERY`]. Best effort: a full channel drops
+        // the report and the next read sends it again, so the app's last read
+        // is never newer than the real one (the limit shown can only be low,
+        // by the throttle). A CLI shows no limit, so it gets none.
+        if n > 0 && self.timeouts.report_reads {
+            let due = self
+                .last_reading
+                .is_none_or(|at| at.elapsed() >= READING_EVERY);
+            if due {
+                match tx.try_send(StreamEvent::Reading) {
+                    Ok(()) => self.last_reading = Some(Instant::now()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => return Err(Stop::Cancelled),
+                }
+            }
+        }
         Ok(n)
     }
 }

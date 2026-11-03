@@ -252,6 +252,13 @@ impl App {
     /// only while a stream runs (a late tick after the last one ended is
     /// dropped).
     pub(super) fn on_anim_tick(&mut self) -> Vec<Effect> {
+        // The wait line counts the time the model is waited for: a tool call
+        // that waits for the user pauses that clock, and the tick is where
+        // the pause is noticed.
+        let now = (self.clock)();
+        for chat in self.panes.values_mut().filter_map(PaneState::chat_mut) {
+            chat.observe_hold(now);
+        }
         if self.animating() {
             self.anim_frame = self.anim_frame.wrapping_add(1);
             self.dirty = true;
@@ -393,6 +400,7 @@ impl App {
         // A paste never answers an approval and never lands in the composer
         // while one waits.
         if self.has_approval(id) {
+            self.notify_unless_busy(true, super::run::ANSWER_FIRST);
             return;
         }
         if self.picker_open(id) {

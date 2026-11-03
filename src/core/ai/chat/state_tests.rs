@@ -80,7 +80,7 @@ fn send_appends_the_user_message_and_builds_the_request() {
         }]
     );
     assert_eq!(state.phase(), Phase::Waiting { slow: false });
-    assert_eq!(state.waiting_text(), Some(WAITING));
+    assert_eq!(state.waiting_text().as_deref(), Some(WAITING));
 }
 #[test]
 fn blank_and_whitespace_sends_are_refused_silently() {

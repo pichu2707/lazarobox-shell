@@ -123,6 +123,7 @@ impl Lab {
                 total: Duration::from_secs(30),
                 slow: Duration::from_secs(20),
                 quiet: None,
+                report_reads: false,
             },
             grace: Duration::from_secs(2),
             codex_home: None,

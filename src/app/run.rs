@@ -31,7 +31,9 @@ const NO_COMMAND: &str = "No runnable command in the last answer";
 const NO_SHELL: &str = "No shell pane in this tab";
 const TARGET_GONE: &str = "That pane is gone: press p to pick another";
 const NO_PASTE_MODE: &str = "The shell cannot take a multi-line command safely";
-const ANSWER_FIRST: &str = "Answer the pending confirm first";
+pub(super) const ANSWER_FIRST: &str = "Answer the pending confirm first";
+/// An answer key that came before the prompt could take it.
+pub(super) const JUST_OPENED: &str = "Prompt just opened: answer again in a moment";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
 const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
@@ -140,6 +142,7 @@ impl App {
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
         if answers && !self.approval_armed(id) {
+            self.ignored_key(&key, JUST_OPENED);
             return Vec::new();
         }
         match (key.code, key.modifiers) {
@@ -154,7 +157,28 @@ impl App {
                 effects.extend(self.chat_cancel_key(id));
                 effects
             }
-            _ => Vec::new(),
+            _ => {
+                self.ignored_key(&key, ANSWER_FIRST);
+                Vec::new()
+            }
+        }
+    }
+
+    /// A key a prompt swallows says so, so it is never a silent failure. A
+    /// modifier alone is no key, and a reason already on the line stays.
+    pub(super) fn ignored_key(&mut self, key: &KeyEvent, text: &str) {
+        let alone = matches!(
+            key.code,
+            KeyCode::Modifier(_) | KeyCode::CapsLock | KeyCode::ScrollLock | KeyCode::NumLock
+        );
+        self.notify_unless_busy(!alone, text);
+    }
+
+    /// Shows `text` when `wanted` and the footer says nothing else.
+    pub(super) fn notify_unless_busy(&mut self, wanted: bool, text: &str) {
+        if wanted && self.notice.is_none() {
+            self.notice = Some(text.to_owned());
+            self.dirty = true;
         }
     }
 

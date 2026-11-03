@@ -237,6 +237,40 @@ fn scrolling_keys_mark_rows_seen_and_other_keys_do_nothing() {
 }
 
 #[test]
+fn a_key_the_review_swallows_says_to_answer_first() {
+    let (mut a, _) = asked(100);
+    for other in [key('a'), plain(KeyCode::Enter), key(' ')] {
+        assert_eq!(at(&mut a, 8, other.clone()), vec![], "{other:?}");
+        assert_eq!(
+            a.notice(),
+            Some("Answer the pending confirm first"),
+            "{other:?}"
+        );
+    }
+    let modifier = plain(KeyCode::Modifier(
+        ratatui::crossterm::event::ModifierKeyCode::LeftShift,
+    ));
+    at(&mut a, 9, modifier);
+    assert_eq!(a.notice(), None, "a modifier alone is no key");
+    let held = super::chat_live::repeat(KeyCode::Char('a'), KeyModifiers::NONE);
+    at(&mut a, 9, held);
+    assert_eq!(a.notice(), None, "a repeat stays quiet");
+}
+
+#[test]
+fn n_and_esc_inside_the_review_delay_say_the_prompt_just_opened() {
+    for rejecting in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, _) = asked(5);
+        assert_eq!(at(&mut a, 10, rejecting.clone()), vec![], "{rejecting:?}");
+        assert_eq!(
+            a.notice(),
+            Some("Prompt just opened: answer again in a moment"),
+            "{rejecting:?}"
+        );
+    }
+}
+
+#[test]
 fn n_and_esc_reject_the_whole_batch_with_a_system_line() {
     for rejecting in [key('n'), plain(KeyCode::Esc)] {
         let (mut a, turn) = asked(5);

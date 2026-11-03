@@ -309,6 +309,11 @@ impl Usage {
 pub enum StreamEvent {
     /// No byte arrived yet and the wait is getting long.
     Slow,
+    /// The runtime read part of a server reply, so its idle clock restarted
+    /// now. Sent for any read, at most once per second and best effort, for
+    /// the whole reply, whatever the app does with its content. It is not a
+    /// byte of the answer.
+    Reading,
     Delta(String),
     /// Something the user should know about how this turn runs, as one line
     /// (a CLI that runs without its jail). Shown once per pane.

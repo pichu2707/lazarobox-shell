@@ -37,6 +37,7 @@ impl Timeouts {
         total: Duration::from_secs(24 * 60 * 60),
         slow: Duration::from_secs(120),
         quiet: None,
+        report_reads: false,
     };
 }
 

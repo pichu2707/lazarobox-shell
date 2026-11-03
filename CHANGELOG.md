@@ -43,6 +43,20 @@ baseline.
   shows `window unknown for <model>: 12k chars` once per run. A Modelfile
   `PARAMETER num_ctx` does not override the cap when the window is known; when
   it is unknown no `num_ctx` is sent and the Modelfile value applies.
+- The wait line of a chat turn says what it waits for: `waiting for your
+  answer…` under an approval prompt, `running <tool>…` while a tool runs, and
+  the model otherwise. For a local server engine the long wait adds the
+  seconds the request clock has run and its limit (`still waiting for the
+  model… 45s (gives up at 120s)`), counted from the clock's own slow event and
+  only while the line waits for the model (not under an approval prompt or a
+  running tool). Once the server starts to answer, the runtime reports its
+  reads (at most one per second, dropped if the channel is full) and the limit
+  shown is the 60 s idle limit counted from the last read the app knows, up to
+  one second low, and capped at the 15 minute limit of the whole turn (`gives
+  up at 73s`). Known gap: in the no-tools retry the first seconds of the new
+  request still show the previous limit. The CLI engines show neither seconds
+  nor limit. The rolling summary run counts from its own clock, not from the
+  last turn (#437).
 
 ### Fixed
 
@@ -58,6 +72,12 @@ baseline.
 - A chat opened in a folder outside the home folder and kept with `Esc` now
   says the file tools cannot read it and that the project must move into the
   home folder (`/cd` refuses folders outside it) (#550).
+- A key the approval prompt does not take, a paste, and an answer that comes
+  before the prompt is armed no longer vanish silently: the footer says
+  `Answer the pending confirm first` or `Prompt just opened: answer again in a
+  moment`. The batch review does the same, except that an early `y` keeps its
+  own hint in the view and shows no such notice. The answer keys still never
+  answer an unarmed prompt (#437).
 
 ## [1.4.0] - 2026-11-03
 

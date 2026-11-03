@@ -59,7 +59,10 @@ async fn turn(lab: &Lab, port: u16, profile: Profile, tools: bool) -> Vec<Stream
     let drain = async {
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
-            events.push(event);
+            // The read reports are timing, not content.
+            if event != StreamEvent::Reading {
+                events.push(event);
+            }
         }
         events
     };
