@@ -167,6 +167,11 @@ impl SideRun {
         }
     }
 
+    /// The engine the run was sent to.
+    pub fn engine(&self) -> &str {
+        &self.engine
+    }
+
     /// A `Usage` event of the run.
     pub fn add(&mut self, mut usage: TurnUsage) {
         if usage.model.is_none() && !usage.multi_model {

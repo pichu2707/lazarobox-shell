@@ -1430,7 +1430,7 @@ impl ChatState {
             return Follow::Nothing;
         }
         if self.summarizing.is_some() {
-            return self.apply_summary(event);
+            return self.apply_summary(event, now);
         }
         if !matches!(event, StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_)) {
             self.generation += 1;
@@ -1694,6 +1694,7 @@ impl ChatState {
         }
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.request_engine.clear();
     }

@@ -69,11 +69,22 @@ impl ChatState {
     pub fn wait_elapsed(&self, now: Instant) -> Option<Duration> {
         let waits_for_model = matches!(self.phase, Phase::Waiting { slow: true })
             && self.waiting_text().as_deref() == Some(STILL_WAITING);
-        if !waits_for_model || is_cli_engine(&self.request_engine) || self.held_since.is_some() {
+        if !waits_for_model || is_cli_engine(self.wait_engine()) || self.held_since.is_some() {
             return None;
         }
         self.wait_since
             .map(|since| now.saturating_duration_since(since))
+    }
+
+    /// The engine the request in flight went to. A summary run does not set
+    /// `request_engine` (the usage, the auto-run scope and the llama.cpp
+    /// restart check read it as the engine of a chat turn), so its engine is
+    /// the one of its side run.
+    fn wait_engine(&self) -> &str {
+        match (&self.summarizing, &self.side_run) {
+            (Some(_), Some(run)) => run.engine(),
+            _ => &self.request_engine,
+        }
     }
 
     /// The clock said `Slow` at `now`: it started [`SLOW_AFTER`] before.

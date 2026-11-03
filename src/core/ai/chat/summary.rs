@@ -270,6 +270,9 @@ impl ChatState {
         self.turn += 1;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
+        // The summary has a clock of its own: an anchor left by the last turn
+        // is not its start.
+        self.clock_reset();
         self.request_model = model.clone().unwrap_or_default();
         self.summarizing = Some(String::new());
         self.side_run = Some(SideRun::new("summary", engine, model.as_deref()));
@@ -291,11 +294,12 @@ impl ChatState {
 
     /// One event of the summary run: thinking is dropped, text is collected
     /// and the draft opens when the run ends well.
-    pub(super) fn apply_summary(&mut self, event: StreamEvent) -> Follow {
+    pub(super) fn apply_summary(&mut self, event: StreamEvent, now: Instant) -> Follow {
         match event {
             StreamEvent::Slow => {
                 if let Phase::Waiting { slow } = &mut self.phase {
                     *slow = true;
+                    self.clock_said_slow(now);
                 }
                 Follow::Nothing
             }
@@ -362,6 +366,7 @@ impl ChatState {
         let text = self.summarizing.take().unwrap_or_default();
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.generation += 1;
         match failure {
@@ -387,6 +392,7 @@ impl ChatState {
         self.summarizing = None;
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.turn += 1;
         self.generation += 1;

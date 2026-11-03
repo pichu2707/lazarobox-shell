@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::super::{
     approval::{ApprovalAsk, Origin},
-    engine::{CallId, ToolStatus},
+    engine::{CallId, Finish, ToolStatus},
     state_tests::{SYSTEM, chat, sent},
     transcript::{self, LineKind},
     *,
@@ -216,4 +216,73 @@ fn the_wait_row_keeps_its_height_whatever_the_width() {
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r| r.text.chars().count() <= width));
     }
+}
+
+/// A chat whose first turn on `turn_engine` said `Slow` at second 10 and then
+/// ended with an answer, with a summary of it begun at second 500 on
+/// `summary_engine`.
+fn summary_after_slow_turn(turn_engine: &str, summary_engine: &str) -> (ChatState, u64) {
+    let (mut state, turn) = slow_turn(turn_engine, 10);
+    state.apply_at(turn, StreamEvent::Delta("a".into()), at(20));
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(21));
+    let availability = Availability::Ready {
+        engine: summary_engine.into(),
+        model: Some("m".into()),
+    };
+    let (turn, _) = state
+        .begin_summary_at(&availability, at(500))
+        .expect("a summary request");
+    (state, turn)
+}
+
+#[test]
+fn a_summary_does_not_inherit_the_anchor_of_an_earlier_turn() {
+    let (mut state, turn) = summary_after_slow_turn("ollama", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    // The summary's clock said Slow at 510 (started at 507), not at 7.
+    assert_eq!(state.wait_elapsed(at(512)), Some(Duration::from_secs(5)));
+}
+
+#[test]
+fn the_seconds_of_a_summary_count_from_its_own_slow_event() {
+    let (mut state, turn) = summary_after_slow_turn("ollama", "llamacpp");
+    assert_eq!(state.wait_elapsed(at(505)), None, "not slow yet");
+    state.apply_at(turn, StreamEvent::Slow, at(530));
+    assert_eq!(state.wait_elapsed(at(530)), Some(Duration::from_secs(3)));
+    assert_eq!(state.wait_elapsed(at(575)), Some(Duration::from_secs(48)));
+}
+
+#[test]
+fn a_summary_on_a_cli_engine_states_no_seconds() {
+    // The turn engine is a server, so a stale request engine would not hide them.
+    for engine in ["claude", "codex", "gemini"] {
+        let (mut state, turn) = summary_after_slow_turn("ollama", engine);
+        state.apply_at(turn, StreamEvent::Slow, at(510));
+        assert_eq!(text(&state).as_deref(), Some(STILL_WAITING), "{engine}");
+        assert_eq!(state.wait_elapsed(at(520)), None, "{engine}");
+    }
+}
+
+#[test]
+fn a_server_summary_after_a_cli_turn_states_its_seconds() {
+    let (mut state, turn) = summary_after_slow_turn("claude", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    assert_eq!(state.wait_elapsed(at(512)), Some(Duration::from_secs(5)));
+}
+
+#[test]
+fn no_run_leaves_its_clock_behind() {
+    // The end of a turn.
+    let (mut state, turn) = slow_turn("ollama", 10);
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(20));
+    assert_eq!(state.wait_since, None, "turn end");
+    // The end of a summary and its cancellation.
+    let (mut state, turn) = summary_after_slow_turn("ollama", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(520));
+    assert_eq!(state.wait_since, None, "summary end");
+    let (mut state, turn) = summary_after_slow_turn("ollama", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    state.cancel_at(at(520));
+    assert_eq!(state.wait_since, None, "summary cancelled");
 }
