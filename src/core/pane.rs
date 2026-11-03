@@ -115,6 +115,8 @@ struct Responder {
     cwd: Option<PathBuf>,
     /// This machine's hostname, accepted in OSC 7 URIs besides `localhost`.
     host: Option<String>,
+    /// Mode 1004: the child wants `CSI I` / `CSI O` when focus changes.
+    focus_reports: bool,
 }
 
 impl Callbacks for Responder {
@@ -150,6 +152,11 @@ impl Callbacks for Responder {
                 }
                 _ => {}
             },
+            // vt100 hands over each DEC mode it does not know, with every
+            // param of the sequence; only mode 1004 is kept.
+            (Some(b'?'), None, 'h' | 'l') if params.iter().any(|p| p.first() == Some(&1004)) => {
+                self.focus_reports = c == 'h';
+            }
             // DECSCUSR: never replies; unknown Ps leaves the shape unchanged.
             (Some(b' '), None, 'q') => {
                 if let Some(shape) = CursorShape::from_decscusr(first) {
@@ -444,6 +451,14 @@ impl Pane {
         }
     }
 
+    /// Whether the child asked for focus reports (`CSI ? 1004 h`).
+    ///
+    /// Known limit: a full reset (`ESC c`) is handled inside vt100 and does
+    /// not clear it, as it would in xterm.
+    pub fn focus_reports(&self) -> bool {
+        self.parser.callbacks().focus_reports
+    }
+
     /// The mouse protocol the child enabled and the screen it is on.
     pub fn mouse_facts(&self) -> MouseFacts {
         let screen = self.parser.screen();
@@ -550,6 +565,38 @@ mod tests {
     }
 
     // Spec: mode tracking.
+    // Issue #483.
+    #[test]
+    fn focus_reports_follow_mode_1004() {
+        let mut p = pane(3, 10);
+        assert!(!p.focus_reports());
+        assert_eq!(p.feed(b"\x1b[?1004h"), Vec::<u8>::new());
+        assert!(p.focus_reports());
+        p.feed(b"\x1b[?1004l");
+        assert!(!p.focus_reports());
+    }
+
+    // Issue #483: one sequence may set several modes, 1004 among them.
+    #[test]
+    fn focus_reports_are_read_among_other_modes() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b[?2004;1004h");
+        assert!(p.focus_reports() && p.modes().bracketed_paste);
+        p.feed(b"\x1b[?1004;2004l");
+        assert!(!p.focus_reports() && !p.modes().bracketed_paste);
+    }
+
+    // Issue #483: other DEC private modes leave it as it was.
+    #[test]
+    fn other_modes_leave_focus_reports_alone() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b[?1004h\x1b[?1234l\x1b[?2004l\x1b[1004l");
+        assert!(p.focus_reports());
+        p.feed(b"\x1b[?1234h\x1b[1004h");
+        p.feed(b"\x1b[?1004l\x1b[?1234h");
+        assert!(!p.focus_reports());
+    }
+
     #[test]
     fn modes_track_application_cursor_and_bracketed_paste() {
         let mut p = pane(3, 10);

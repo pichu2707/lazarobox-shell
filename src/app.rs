@@ -1608,6 +1608,20 @@ impl App {
 
     // The focus always names a live pane: `split` focuses what it adds, and
     // `remove_pane` moves the focus off a pane before dropping it.
+    /// Passes a window focus change to the focused pane, when its program
+    /// asked for focus reports (mode 1004). The other panes keep theirs.
+    fn report_window_focus(&self, focused: bool) -> Vec<Effect> {
+        let asked = self
+            .focused_state()
+            .pty()
+            .is_some_and(|pty| pty.emu.focus_reports());
+        if !asked {
+            return Vec::new();
+        }
+        let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+        vec![Effect::WritePty(self.tab().focus, report.to_vec())]
+    }
+
     fn focused_state(&self) -> &PaneState {
         &self.panes[&self.tab().focus]
     }
@@ -2103,7 +2117,7 @@ impl App {
             }
             AppEvent::WindowFocus(focused) => {
                 self.window_focused = focused;
-                Vec::new()
+                self.report_window_focus(focused)
             }
             AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
             AppEvent::Badges(badges) => self.sync_batches(&badges),
@@ -5633,6 +5647,51 @@ mod app_tests {
         assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
         a.update(key('q'));
         assert_eq!(a.cursor_shape(), shape(CursorKind::Underline, true));
+    }
+
+    // --- Issue #483: focus reports reach the pane that asked for them ---
+
+    fn window_focus(a: &mut App, focused: bool) -> Vec<Effect> {
+        a.update(AppEvent::WindowFocus(focused))
+    }
+
+    fn pane_output(a: &mut App, id: PaneId, bytes: &[u8]) {
+        a.update(AppEvent::Pty(id, PtyEvent::Output(bytes.to_vec())));
+    }
+
+    #[test]
+    fn a_pane_with_mode_1004_gets_the_window_focus_reports() {
+        let mut a = app();
+        pane_output(&mut a, PaneId::FIRST, b"\x1b[?1004h");
+        assert_eq!(
+            window_focus(&mut a, false),
+            vec![Effect::WritePty(PaneId::FIRST, b"\x1b[O".to_vec())]
+        );
+        assert_eq!(
+            window_focus(&mut a, true),
+            vec![Effect::WritePty(PaneId::FIRST, b"\x1b[I".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_pane_without_mode_1004_gets_no_focus_report() {
+        let mut a = app();
+        assert_eq!(window_focus(&mut a, false), vec![]);
+        pane_output(&mut a, PaneId::FIRST, b"\x1b[?1004h\x1b[?1004l");
+        assert_eq!(window_focus(&mut a, true), vec![]);
+    }
+
+    // Only the focused pane: the others did not gain or lose anything.
+    #[test]
+    fn an_unfocused_pane_with_mode_1004_gets_no_focus_report() {
+        let mut a = split_right();
+        pane_output(&mut a, PaneId::FIRST, b"\x1b[?1004h");
+        assert_eq!(window_focus(&mut a, false), vec![]);
+        pane_output(&mut a, id2(), b"\x1b[?1004h");
+        assert_eq!(
+            window_focus(&mut a, false),
+            vec![Effect::WritePty(id2(), b"\x1b[O".to_vec())]
+        );
     }
 
     // --- S5a: split and focus ---
