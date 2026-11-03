@@ -16,16 +16,19 @@ baseline.
   answer…` under an approval prompt, `running <tool>…` while a tool runs, and
   the model otherwise. For a local server engine the long wait adds the
   seconds the request clock has run and its limit (`still waiting for the
-  model… 45s (gives up at 120s)`); the time held for your answer is not
-  counted, and the CLI engines show neither seconds nor limit (#437).
+  model… 45s (gives up at 120s)`), counted from the clock's own slow event and
+  only while the line waits for the model (not under an approval prompt or a
+  running tool); the CLI engines show neither seconds nor limit. The rolling
+  summary run counts from its own clock, not from the last turn (#437).
 
 ### Fixed
 
 - A key the approval prompt does not take, a paste, and an answer that comes
   before the prompt is armed no longer vanish silently: the footer says
   `Answer the pending confirm first` or `Prompt just opened: answer again in a
-  moment`. The batch review does the same. The answer keys still never answer
-  an unarmed prompt (#437).
+  moment`. The batch review does the same, except that an early `y` keeps its
+  own hint in the view and shows no such notice. The answer keys still never
+  answer an unarmed prompt (#437).
 
 ## [1.4.0] - 2026-11-03
 
