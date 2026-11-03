@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `[ai] tool_mark` (`"auto"`, `"emoji"` or `"text"`) to force how the tool mark
+  is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
+  empty box and cannot be detected. A bad value falls back to `"auto"` with a
+  startup notice (#488).
+
 ### Fixed
 
 - A turn that Ollama retries without tools after a 400 now tells the user once
