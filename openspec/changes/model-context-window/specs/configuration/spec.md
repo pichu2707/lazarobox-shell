@@ -36,10 +36,15 @@
 - WHEN a turn is sent to Ollama
 - THEN its body holds `model`, `messages`, `stream` and `"keep_alive": "30m"`, and no other server's body changes
 
-#### Scenario: Explicit keep-alive is sent as written [auto]
-- GIVEN `keep_alive = "5m"` (or `0`, `-1`, `"1h"`)
+#### Scenario: Explicit keep-alive replaces the default [auto]
+- GIVEN `keep_alive = "5m"` (or `"1h"`, `"0"`)
 - WHEN a turn is sent to Ollama
-- THEN its body holds that value in place of `"30m"`
+- THEN its body holds that text as written in place of `"30m"`
+
+#### Scenario: A whole number of seconds is sent as a duration [auto]
+- GIVEN `keep_alive = 0` (or `-1`)
+- WHEN a turn is sent to Ollama
+- THEN its body holds `"0s"` (or `"-1s"`) in place of `"30m"`
 
 #### Scenario: Each to its server [auto]
 - GIVEN `keep_alive = "30m"` and `cache_prompt = true`
