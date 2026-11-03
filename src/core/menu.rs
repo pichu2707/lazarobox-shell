@@ -1260,6 +1260,21 @@ impl MenuState {
         matches!(self.selected_kind(), Some(ItemKind::Feedback))
     }
 
+    /// Opens the Feedback form with `text` written in it (`/feedback` in a
+    /// chat). Its row is selected first, so the form closes back to it.
+    pub fn open_feedback(&mut self, text: &str) {
+        let is_row = |item: &Item| matches!(item.kind, ItemKind::Feedback);
+        let tab = table().iter().position(|tab| {
+            let mut items = tab.sections.iter().flat_map(|section| section.items.iter());
+            items.any(is_row)
+        });
+        if let Some(tab) = tab {
+            self.go_to_tab(tab);
+            self.selected = self.tab_items().position(is_row);
+        }
+        self.feedback = Some(feedback::Feedback::prefilled(self.facts.clone(), text));
+    }
+
     /// Whether the Feedback form, or what became of it, is shown.
     fn feedback_open(&self) -> bool {
         self.feedback.is_some() || self.feedback_done.is_some()

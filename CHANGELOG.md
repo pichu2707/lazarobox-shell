@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `/feedback <text>` in a chat opens the Feedback form with the text written in
+  it: the first line is the title and the rest the description. Nothing reaches
+  the model, and the issue is sent only by the form's `Ctrl+S`. `//feedback`
+  sends a message with one slash less (#551).
+
 ## [1.2.4] - 2026-11-03
 
 ### Fixed

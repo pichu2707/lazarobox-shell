@@ -346,6 +346,21 @@ impl Feedback {
         }
     }
 
+    /// The form opened with `text` already written for it: the first line is
+    /// the title and the rest the description. The form needs both, so a text
+    /// of one line fills both, and a first line too long for the title stays
+    /// whole in the description.
+    pub fn prefilled(facts: Facts, text: &str) -> Self {
+        let mut form = Self::new(facts);
+        let text = text.trim();
+        let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+        let (first, rest) = (first.trim(), rest.trim());
+        form.title.paste(first);
+        let whole = rest.is_empty() || first.chars().count() > TITLE_CAP;
+        form.description.paste(if whole { text } else { rest });
+        form
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }

@@ -381,6 +381,8 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ### Feedback: fallos e ideas desde el terminal
 
+Desde un chat no hace falta ir al menú: escribe `/feedback <texto>` en el compositor y pulsa `Enter`. Se abre este mismo formulario con la primera línea como título y el resto como descripción; si solo hay una línea, va en los dos campos, y siempre puedes editarlos. El texto no llega al modelo ni se añade a la conversación, y no se publica nada hasta que pulsas `Ctrl+S`. Para enviar al modelo un mensaje que empiece por esa palabra, escribe `//feedback`.
+
 `Enter` sobre **Feedback** abre un formulario corto:
 
 - **Kind**: `Bug report` o `Idea or goal` (`←`/`→`).
