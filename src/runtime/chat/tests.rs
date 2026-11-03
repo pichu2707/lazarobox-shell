@@ -389,10 +389,16 @@ fn chats(runner: Runner) -> (Chats, mpsc::Receiver<Tagged>) {
 }
 
 async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
-    timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("an event within 5 s")
-        .expect("the channel is open")
+    loop {
+        let tagged = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an event within 5 s")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            return tagged;
+        }
+    }
 }
 
 /// Events up to and including the final one of the turn.

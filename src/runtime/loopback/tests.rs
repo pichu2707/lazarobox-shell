@@ -40,10 +40,21 @@ fn failed(text: &str) -> StreamEvent {
 
 async fn collect(mut rx: mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
     let mut events = Vec::new();
-    while let Some(event) = rx.recv().await {
+    while let Some(event) = content(&mut rx).await {
         events.push(event);
     }
     events
+}
+
+/// The next event that is not a read report (`Reading` is timing, not
+/// content; the tests of the report itself read the channel directly).
+async fn content(rx: &mut mpsc::Receiver<StreamEvent>) -> Option<StreamEvent> {
+    loop {
+        match rx.recv().await {
+            Some(StreamEvent::Reading) => {}
+            other => return other,
+        }
+    }
 }
 
 // A real loopback server ------------------------------------------------------
@@ -331,12 +342,15 @@ async fn a_chunked_reply_is_relayed_as_it_arrives() {
     fake.send(HEAD);
     fake.send(&chunk(HELLO));
     // The first delta is here while the reply is still open.
-    assert_eq!(rx.recv().await, Some(delta("Hel")));
+    assert_eq!(content(&mut rx).await, Some(delta("Hel")));
     assert!(!task.is_finished());
     fake.send(&chunk(DONE));
-    assert_eq!(rx.recv().await, Some(delta("lo")));
+    assert_eq!(content(&mut rx).await, Some(delta("lo")));
     fake.send(END);
-    assert_eq!(rx.recv().await, Some(StreamEvent::Done(Finish::Stop)));
+    assert_eq!(
+        content(&mut rx).await,
+        Some(StreamEvent::Done(Finish::Stop))
+    );
     task.await.unwrap();
 }
 
@@ -510,14 +524,13 @@ async fn a_first_byte_slower_than_idle_is_fine() {
         std::future::pending::<()>().await;
     });
     let mut events = Vec::new();
-    while let Some(e) = t.events.recv().await {
+    while let Some(e) = content(&mut t.events).await {
         events.push(e);
     }
     assert_eq!(
         events,
         vec![
             StreamEvent::Slow,
-            StreamEvent::Reading,
             delta("Hel"),
             delta("lo"),
             StreamEvent::Done(Finish::Stop)
@@ -529,9 +542,9 @@ async fn a_first_byte_slower_than_idle_is_fine() {
 #[tokio::test(start_paused = true)]
 async fn no_first_byte_in_120_s_is_no_answer() {
     let mut t = start_turn();
-    assert_eq!(t.events.recv().await, Some(StreamEvent::Slow));
-    assert_eq!(t.events.recv().await, Some(failed(NO_ANSWER)));
-    assert_eq!(t.events.recv().await, None);
+    assert_eq!(content(&mut t.events).await, Some(StreamEvent::Slow));
+    assert_eq!(content(&mut t.events).await, Some(failed(NO_ANSWER)));
+    assert_eq!(content(&mut t.events).await, None);
     assert_eq!(t.start.elapsed(), Duration::from_secs(120));
     // The socket is closed: the server end reads the request, then EOF.
     let mut rest = Vec::new();
@@ -544,9 +557,9 @@ async fn a_stream_silent_for_60_s_is_stalled_and_the_socket_closes() {
     let mut t = start_turn();
     t.server.write_all(HEAD).await.unwrap();
     t.server.write_all(&chunk(HELLO)).await.unwrap();
-    assert_eq!(t.events.recv().await, Some(delta("Hel")));
+    assert_eq!(content(&mut t.events).await, Some(delta("Hel")));
     let delivered = Instant::now();
-    assert_eq!(t.events.recv().await, Some(failed(STALLED)));
+    assert_eq!(content(&mut t.events).await, Some(failed(STALLED)));
     assert_eq!(delivered.elapsed(), Duration::from_secs(60));
     t.task.await.unwrap();
     let mut rest = Vec::new();
@@ -561,13 +574,16 @@ async fn a_stream_alive_every_59_s_is_not_stalled() {
     server.write_all(HEAD).await.unwrap();
     for _ in 0..3 {
         server.write_all(&chunk(HELLO)).await.unwrap();
-        assert_eq!(t.events.recv().await, Some(delta("Hel")));
+        assert_eq!(content(&mut t.events).await, Some(delta("Hel")));
         tokio::time::sleep(Duration::from_secs(59)).await;
     }
     server.write_all(&chunk(DONE)).await.unwrap();
     server.write_all(END).await.unwrap();
-    assert_eq!(t.events.recv().await, Some(delta("lo")));
-    assert_eq!(t.events.recv().await, Some(StreamEvent::Done(Finish::Stop)));
+    assert_eq!(content(&mut t.events).await, Some(delta("lo")));
+    assert_eq!(
+        content(&mut t.events).await,
+        Some(StreamEvent::Done(Finish::Stop))
+    );
 }
 
 // Characterization: the transport counts bytes, so reasoning needs no special
@@ -591,7 +607,7 @@ async fn thinking_counts_as_the_first_byte_and_as_activity() {
         std::future::pending::<()>().await;
     });
     let mut events = Vec::new();
-    while let Some(e) = t.events.recv().await {
+    while let Some(e) = content(&mut t.events).await {
         events.push(e);
     }
     let thought = StreamEvent::ThinkingDelta("hm".into());
@@ -599,7 +615,6 @@ async fn thinking_counts_as_the_first_byte_and_as_activity() {
         events,
         vec![
             StreamEvent::Slow,
-            StreamEvent::Reading,
             thought.clone(),
             thought.clone(),
             thought.clone(),
@@ -624,7 +639,7 @@ async fn a_turn_that_keeps_streaming_ends_at_15_minutes() {
         }
     });
     let mut last = None;
-    while let Some(e) = t.events.recv().await {
+    while let Some(e) = content(&mut t.events).await {
         last = Some(e);
     }
     assert_eq!(last, Some(failed(TOO_LONG)));
@@ -657,6 +672,8 @@ async fn no_slow_event_once_a_byte_arrived() {
     tokio::task::yield_now().await;
     advance(Duration::from_millis(3500)).await;
     tokio::task::yield_now().await;
+    // Only the report of that read: no `Slow`.
+    assert_eq!(t.events.try_recv(), Ok(StreamEvent::Reading));
     assert_eq!(t.events.try_recv(), Err(mpsc::error::TryRecvError::Empty));
     t.task.abort();
 }
@@ -671,9 +688,9 @@ async fn a_full_channel_does_not_hold_back_the_first_byte_limit() {
     tokio::task::yield_now().await;
     advance(Duration::from_secs(121)).await;
     tokio::task::yield_now().await;
-    assert_eq!(t.events.recv().await, Some(delta("queued")));
-    assert_eq!(t.events.recv().await, Some(failed(NO_ANSWER)));
-    assert_eq!(t.events.recv().await, None);
+    assert_eq!(content(&mut t.events).await, Some(delta("queued")));
+    assert_eq!(content(&mut t.events).await, Some(failed(NO_ANSWER)));
+    assert_eq!(content(&mut t.events).await, None);
     t.task.await.unwrap();
 }
 
@@ -928,6 +945,8 @@ async fn a_server_silent_after_its_first_bytes_sends_no_hint() {
     let mut out = Stdout::new(&Timeouts::SERVER);
     out.start().await;
     assert!(matches!(out.read().await, Err(Stop::Failed(STALLED))));
+    // The report of the first bytes, and no `Slow` after it.
+    assert_eq!(out.events.try_recv(), Ok(StreamEvent::Reading));
     assert!(out.nothing_sent());
 }
 
@@ -951,68 +970,90 @@ fn drained(t: &mut Turn) -> Vec<StreamEvent> {
     out
 }
 
+async fn settle() {
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test(start_paused = true)]
-async fn a_head_after_slow_says_the_idle_clock_runs_and_the_turn_dies_60_s_after() {
+async fn a_head_after_slow_is_reported_and_the_turn_dies_60_s_after() {
     let mut t = start_turn();
-    tokio::task::yield_now().await;
+    settle().await;
     advance(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
+    settle().await;
     assert_eq!(drained(&mut t), vec![StreamEvent::Slow]);
     t.server.write_all(HEAD).await.unwrap();
-    tokio::task::yield_now().await;
+    settle().await;
     assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
     // Silence from here: the idle limit, not the first-byte one, applies.
-    assert_eq!(t.events.recv().await, Some(failed(STALLED)));
+    assert_eq!(content(&mut t.events).await, Some(failed(STALLED)));
     assert_eq!(t.start.elapsed(), Duration::from_secs(70));
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_read_while_the_model_is_silent_says_so_and_a_reply_stops_it() {
+async fn a_head_before_slow_is_reported_too() {
     let mut t = start_turn();
-    tokio::task::yield_now().await;
-    advance(Duration::from_secs(5)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(drained(&mut t), vec![StreamEvent::Slow]);
+    settle().await;
     t.server.write_all(HEAD).await.unwrap();
-    tokio::task::yield_now().await;
-    // A keep-alive the decoder turns into nothing restarts the idle clock.
-    advance(Duration::from_secs(30)).await;
-    t.server.write_all(&chunk("\n")).await.unwrap();
-    tokio::task::yield_now().await;
-    assert_eq!(
-        drained(&mut t),
-        vec![StreamEvent::Reading, StreamEvent::Reading]
-    );
-    t.server.write_all(&chunk(HELLO)).await.unwrap();
-    tokio::task::yield_now().await;
-    t.server.write_all(&chunk(HELLO)).await.unwrap();
-    tokio::task::yield_now().await;
-    let events = drained(&mut t);
-    assert_eq!(events.first(), Some(&StreamEvent::Reading));
-    assert!(
-        events[1..]
-            .iter()
-            .all(|e| matches!(e, StreamEvent::Delta(_))),
-        "{events:?}"
-    );
+    settle().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_head_before_slow_sends_no_reading() {
+async fn many_fast_reads_send_at_most_one_report_per_second() {
     let mut t = start_turn();
-    tokio::task::yield_now().await;
+    settle().await;
+    t.server.write_all(HEAD).await.unwrap();
+    settle().await;
+    assert_eq!(drained(&mut t), vec![StreamEvent::Reading]);
+    // 50 reads in 500 ms: nothing more.
+    for _ in 0..50 {
+        t.server.write_all(&chunk(HELLO)).await.unwrap();
+        settle().await;
+        advance(Duration::from_millis(10)).await;
+    }
+    let reports = drained(&mut t)
+        .into_iter()
+        .filter(|e| *e == StreamEvent::Reading)
+        .count();
+    assert_eq!(reports, 0, "inside the first second");
+    // A read a second after the last report is reported again.
+    advance(Duration::from_secs(1)).await;
+    t.server.write_all(&chunk(HELLO)).await.unwrap();
+    settle().await;
+    let reports = drained(&mut t)
+        .into_iter()
+        .filter(|e| *e == StreamEvent::Reading)
+        .count();
+    assert_eq!(reports, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reads_keep_being_reported_after_the_reply_has_text() {
+    let mut t = start_turn();
+    settle().await;
     t.server.write_all(HEAD).await.unwrap();
     t.server.write_all(&chunk(HELLO)).await.unwrap();
-    t.server.write_all(&chunk(DONE)).await.unwrap();
-    t.server.write_all(END).await.unwrap();
-    assert_eq!(
-        collect(t.events).await,
-        vec![delta("Hel"), delta("lo"), StreamEvent::Done(Finish::Stop)]
-    );
+    settle().await;
+    let first = drained(&mut t);
+    assert!(first.contains(&StreamEvent::Reading), "{first:?}");
+    assert!(first.contains(&delta("Hel")), "{first:?}");
+    // The app may hold that text back (a tool round): later reads still count.
+    advance(Duration::from_secs(30)).await;
+    t.server.write_all(&chunk(HELLO)).await.unwrap();
+    settle().await;
+    let later = drained(&mut t);
+    assert!(later.contains(&StreamEvent::Reading), "{later:?}");
 }
 
 #[test]
-fn the_idle_limit_is_the_constant_the_wait_line_reads() {
-    use crate::core::ai::chat::wait_line::IDLE_LIMIT;
+fn the_idle_and_total_limits_are_the_constants_the_wait_line_reads() {
+    use crate::core::ai::chat::wait_line::{IDLE_LIMIT, TOTAL_LIMIT};
+    for timeouts in [Timeouts::SERVER, Timeouts::CLI] {
+        assert_eq!(timeouts.total, TOTAL_LIMIT);
+    }
     assert_eq!(Timeouts::SERVER.idle, IDLE_LIMIT);
+    let reports = (Timeouts::SERVER.report_reads, Timeouts::CLI.report_reads);
+    assert_eq!(reports, (true, false));
 }

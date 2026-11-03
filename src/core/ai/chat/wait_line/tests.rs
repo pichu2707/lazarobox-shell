@@ -363,3 +363,38 @@ fn a_cli_turn_still_states_no_seconds_after_a_read() {
     state.apply_at(turn, StreamEvent::Reading, at(20));
     assert_eq!(state.wait_elapsed(at(30)), None);
 }
+
+#[test]
+fn the_limit_never_passes_the_total_limit_of_the_turn() {
+    use super::TOTAL_LIMIT;
+    let (mut state, turn) = slow_turn("ollama", 10);
+    // Anchor at 7 s; a read at 880 s would give 873 + 60 s, past the end.
+    state.apply_at(turn, StreamEvent::Reading, at(880));
+    let limit = state.wait_limit().as_secs();
+    let room = (TOTAL_LIMIT - Duration::from_secs(7)).as_secs();
+    assert!((room - 1..=room).contains(&limit), "{limit} vs {room}");
+    // The first-byte limit is capped too.
+    let (state, _) = slow_turn("ollama", 890);
+    assert!(state.wait_limit() < FIRST_BYTE_LIMIT);
+}
+
+#[test]
+fn a_summary_that_only_thinks_still_follows_the_reads() {
+    let (mut state, turn) = summary_after_slow_turn("ollama", "ollama");
+    state.apply_at(turn, StreamEvent::Slow, at(510));
+    state.apply_at(turn, StreamEvent::Reading, at(520));
+    state.apply_at(turn, StreamEvent::ThinkingDelta("hm".into()), at(521));
+    // Reasoning is ignored by the summary: the line still waits for the model.
+    assert_eq!(text(&state).as_deref(), Some(STILL_WAITING));
+    state.apply_at(turn, StreamEvent::Reading, at(560));
+    assert_eq!(state.wait_limit(), Duration::from_secs(53 + 60));
+}
+
+#[test]
+fn reads_of_a_round_whose_own_slow_never_came_move_the_limit() {
+    // A retry whose bytes arrive before its 3 s sends no `Slow` of its own.
+    let (mut state, turn) = slow_turn("ollama", 10);
+    state.apply_at(turn, StreamEvent::Reading, at(20));
+    state.apply_at(turn, StreamEvent::Reading, at(100));
+    assert_eq!(state.wait_limit(), Duration::from_secs(93 + 60));
+}

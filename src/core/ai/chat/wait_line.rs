@@ -24,6 +24,10 @@ pub const FIRST_BYTE_LIMIT: Duration = Duration::from_secs(120);
 /// a read. The runtime reads this very value for the server engines.
 pub const IDLE_LIMIT: Duration = Duration::from_secs(60);
 
+/// A turn ends after this long in all, whatever it receives. The runtime
+/// reads this very value; it runs from the send, over every tool round.
+pub const TOTAL_LIMIT: Duration = Duration::from_secs(15 * 60);
+
 /// A user answer holds the turn.
 pub const WAITING_USER: &str = "waiting for your answer…";
 
@@ -95,10 +99,18 @@ impl ChatState {
     /// runtime said a read restarted its idle clock, the seconds from the
     /// anchor at which that clock gives up.
     pub fn wait_limit(&self) -> Duration {
-        match (self.idle_from, self.wait_since) {
-            (Some(read), Some(since)) => read.saturating_duration_since(since) + IDLE_LIMIT,
-            _ => FIRST_BYTE_LIMIT,
-        }
+        let (Some(since), read) = (self.wait_since, self.idle_from) else {
+            return FIRST_BYTE_LIMIT;
+        };
+        let clock = match read {
+            Some(read) => read.saturating_duration_since(since) + IDLE_LIMIT,
+            None => FIRST_BYTE_LIMIT,
+        };
+        // The total limit runs from the send, over every round of the turn.
+        let total = self.started.map_or(TOTAL_LIMIT, |sent| {
+            TOTAL_LIMIT.saturating_sub(since.saturating_duration_since(sent))
+        });
+        clock.min(total)
     }
 
     /// The runtime read part of the reply at `now`, and the model has still

@@ -238,10 +238,16 @@ pub(super) fn ask(lab: &Lab, tools: bool) -> ChatRequest {
 }
 
 pub(super) async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
-    timeout(Duration::from_secs(10), rx.recv())
-        .await
-        .expect("an event within 10 s")
-        .expect("the channel is open")
+    loop {
+        let tagged = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            return tagged;
+        }
+    }
 }
 
 /// Events up to and including the final one.

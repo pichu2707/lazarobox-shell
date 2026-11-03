@@ -137,6 +137,9 @@ async fn run(port: u16, req: ChatRequest) -> Vec<StreamEvent> {
             .await
             .expect("an event within 10 s")
             .expect("the channel is open");
+        if event == StreamEvent::Reading {
+            continue;
+        }
         let last = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
         events.push(event);
         if last {
@@ -501,10 +504,16 @@ async fn cancelling_while_the_model_thinks_closes_the_connection_and_ends_the_ev
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
     let mut chats = Chats::new(adapter_runner_at(Some(port)), tx);
     chats.send(pane(1), 1, request("qwen3:14b"));
-    let (_, turn, first) = timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("the thinking delta arrives")
-        .expect("the channel is open");
+    let (_, turn, first) = loop {
+        let tagged = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the thinking delta arrives")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            break tagged;
+        }
+    };
     assert_eq!(
         (turn, first),
         (1, StreamEvent::ThinkingDelta("Let me".into()))
@@ -542,6 +551,9 @@ async fn run_managed(
             .await
             .expect("an event within 10 s")
             .expect("the channel is open");
+        if event == StreamEvent::Reading {
+            continue;
+        }
         let last = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
         events.push(event);
         if last {
