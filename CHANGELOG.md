@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-03
+
 ### Added
 
 - `/feedback <text>` in a chat opens the Feedback form with the text written in
@@ -1949,7 +1951,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
