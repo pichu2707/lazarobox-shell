@@ -8832,6 +8832,7 @@ mod app_tests {
 
     /// The `/cost` command and its overlay (ai-cost 1c).
     mod chat_cost;
+    mod chat_feedback;
 
     /// Worker usage records and the coordinator's usage line (ai-cost 5).
     mod orchestra_usage;

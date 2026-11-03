@@ -431,3 +431,18 @@ fn the_attached_facts_wrap_and_are_never_cut() {
         assert!(line.chars().count() <= 48, "{line}");
     }
 }
+
+// Issue #551: from any tab, the form opens filled and closes to its row.
+#[test]
+fn open_feedback_shows_the_text_and_closes_to_the_feedback_row() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback("The chat hangs");
+    let shown = texts(&m);
+    assert!(
+        shown.iter().any(|line| line.contains("The chat hangs")),
+        "{shown:?}"
+    );
+    send(&mut m, KeyCode::Esc);
+    assert!(!m.feedback_open());
+    assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
+}
