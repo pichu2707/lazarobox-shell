@@ -536,6 +536,11 @@ A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally 
 - WHEN the worker is selected and the transcript key is pressed
 - THEN a full-pane read-only view shows its output and tool rows, cleaned of control characters, bounded to the last 128 KiB, following new output until scrolled
 
+#### Scenario: A worker prompt over its Ollama window [#557, auto]
+- GIVEN a worker on Ollama whose system prompt, prompt and offered tools are estimated over the `num_ctx` its turn is stamped with
+- WHEN its turn starts
+- THEN its transcript begins with the system row `the worker prompt and setup are about <tokens> tokens, over the <window>-token window: the server may cut them`, and the turn still runs; a worker that fits, or whose window is unknown, gets no row
+
 #### Scenario: Restart shows an interrupted run [S9, auto]
 - GIVEN a stored run with one running worker when lazarobox quit
 - WHEN lazarobox starts again
