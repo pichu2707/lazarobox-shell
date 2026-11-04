@@ -445,6 +445,9 @@ pub struct ChatState {
     block_why: BlockWhy,
     /// The flag is up and its marker row was not asked of the store yet.
     github_unmarked: bool,
+    /// The user granted the GitHub tools to this chat with `/github`. Never
+    /// stored: it ends with the pane, a resume and the events of the spec.
+    github_granted: bool,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -561,6 +564,7 @@ impl ChatState {
             github_read: false,
             block_why: BlockWhy::Marker,
             github_unmarked: false,
+            github_granted: false,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
@@ -902,6 +906,21 @@ impl ChatState {
     /// Whether the conversation read GitHub text. Nothing lifts it.
     pub fn github_read(&self) -> bool {
         self.github_read
+    }
+
+    /// Whether the user granted the GitHub tools to this chat.
+    pub fn github_granted(&self) -> bool {
+        self.github_granted
+    }
+
+    pub fn set_github_granted(&mut self, granted: bool) {
+        self.github_granted = granted;
+    }
+
+    /// The tokens the tool block and schemas reserve in the next turn.
+    #[cfg(test)]
+    pub fn tools_reserve(&self) -> usize {
+        self.tools_reserve
     }
 
     /// Why the conversation is blocked; `None` when it is not.

@@ -273,6 +273,8 @@ impl ChatState {
         self.compaction.reset();
         self.end_side_run(true);
         self.store = super::store::PaneStore::open(conversation);
+        // A resumed conversation opens with no grant.
+        self.github_granted = false;
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;
         self.generation += 1;

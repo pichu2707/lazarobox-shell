@@ -594,6 +594,7 @@ impl App {
             }
             _ => None,
         };
+        let families = self.offered_families(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -607,7 +608,7 @@ impl App {
             _ => false,
         };
         chat.set_tools_reserve(if tools {
-            tools_reserve_tokens(self.ai.families())
+            tools_reserve_tokens(families)
         } else {
             0
         });

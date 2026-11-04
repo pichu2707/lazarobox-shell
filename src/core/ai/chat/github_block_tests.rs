@@ -6,6 +6,7 @@ use super::{
     engine::{CallId, Finish, ToolStatus},
     state_tests::{chat, systems},
     store::{StoreCmd, StoreReply, StoredMessage},
+    tags::Tags,
     *,
 };
 use crate::core::layout::PaneId;
@@ -306,4 +307,22 @@ fn the_block_reason_follows_what_happened() {
     let mut fresh = chat();
     fresh.note_github_read();
     assert_eq!(fresh.block_why(), Some(BlockWhy::Marker));
+}
+
+// Spec (The chat grant, Resume has no grant): a resumed conversation opens
+// with no grant, and the grant is never stored.
+#[test]
+fn a_resume_ends_the_grant() {
+    let mut state = chat();
+    assert!(!state.github_granted());
+    state.set_github_granted(true);
+    assert!(state.github_granted());
+    state.resume_into(
+        7,
+        crate::core::ai::config::Profile::Programmer,
+        Tags::default(),
+        Vec::new(),
+    );
+    assert!(!state.github_granted());
+    assert_eq!(state.store_cmds(pane(), &[]), vec![], "nothing to store");
 }

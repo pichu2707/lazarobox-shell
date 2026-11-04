@@ -491,6 +491,7 @@ impl App {
     /// saved toggles, and the chat remembers that it may hold a tool session
     /// to end.
     pub(super) fn offer_tools(&mut self, id: PaneId, request: &mut ChatRequest) {
+        let families = self.offered_families(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
@@ -503,7 +504,7 @@ impl App {
         request.families = if request.tools == Tools::Off {
             FamilySet::LEGACY
         } else {
-            self.ai.families()
+            families
         };
         request.github_read = request.tools != Tools::Off && chat.github_read();
         chat.set_tool_session(request.tools != Tools::Off);

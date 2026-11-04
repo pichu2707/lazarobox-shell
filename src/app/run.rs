@@ -54,6 +54,9 @@ impl App {
     /// blocks; tools on shows it again.
     pub(super) fn sync_tools(&mut self) -> Vec<Effect> {
         let on = self.ai.tools_enabled();
+        if !on {
+            self.end_all_grants(github::TOOLS_ENDED);
+        }
         let mut effects = Vec::new();
         for (&id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
