@@ -343,3 +343,21 @@ fn the_wrapped_rows_are_kept_until_the_transcript_or_the_width_changes() {
     assert!(!std::sync::Arc::ptr_eq(&again, &state.run_view_rows(80)));
     assert!(state.run_view_rows(80).iter().any(|l| l.text == "more"));
 }
+
+// #557: a notice about how the worker's turn runs is a system row, before the
+// answer, and a new attempt drops it with the rest.
+#[test]
+fn a_notice_is_a_system_row_and_a_new_attempt_drops_it() {
+    let mut state = viewing(1);
+    state.trace(
+        RUN,
+        WorkerId(1),
+        TraceItem::Notice("over the window".into()),
+    );
+    state.trace(RUN, WorkerId(1), text("answer"));
+    let lines = state.run_view_rows(80);
+    assert_eq!(rows(&state), ["over the window", "answer"]);
+    assert_eq!(lines[0].kind, LineKind::System);
+    state.trace(RUN, WorkerId(1), TraceItem::Begin);
+    assert_eq!(rows(&state), [NO_OUTPUT]);
+}

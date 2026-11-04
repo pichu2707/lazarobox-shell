@@ -594,6 +594,8 @@ pub struct RunManager {
     /// Where a test says what the staged diff text is.
     #[cfg(test)]
     diff: Option<fn() -> crate::core::ai::orchestra::changes::StagedDiff>,
+    /// What the runner stamps each turn from; `None` tells no window.
+    live: Option<crate::runtime::chat::LiveServers>,
 }
 
 impl RunManager {
@@ -616,12 +618,20 @@ impl RunManager {
             restage: None,
             #[cfg(test)]
             diff: None,
+            live: None,
         }
     }
 
     /// Lets workers run their tools through `host`, with session sockets in
     /// the first of `dirs` that is a private folder of ours. Without it a
     /// worker runs as text and its run's read scope grants nothing.
+    /// The live server state the runner stamps turns from, read here to
+    /// tell a worker whose prompt passes its Ollama window (#557).
+    pub fn with_live(mut self, live: crate::runtime::chat::LiveServers) -> Self {
+        self.live = Some(live);
+        self
+    }
+
     pub fn with_tools(mut self, host: Arc<ToolHost>, dirs: Vec<PathBuf>) -> Self {
         self.tooling = Some(Tooling {
             host,
@@ -1521,6 +1531,17 @@ impl RunManager {
         let session = self
             .open_session(pane, key, &spec, views, &mut request, route)
             .map(|dispatch| (live.pending.clone(), dispatch));
+        // The one message goes whole and Ollama cuts what passes its window
+        // without saying so: the trace says it (#557). The runner stamps the
+        // same window again, from the same state.
+        if let Some(servers) = &self.live {
+            servers.stamp(&mut request);
+        }
+        if let Some((tokens, window)) = crate::core::ai::chat::budget::over_window(&request) {
+            trace.send(TraceItem::Notice(
+                crate::core::ai::chat::worker_over_window(tokens, window),
+            ));
+        }
         let turn = Turn {
             runner: self.runner.clone(),
             request,
