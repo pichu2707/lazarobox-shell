@@ -212,6 +212,8 @@ pub struct ToolHost {
     cli_cwds: std::sync::OnceLock<Arc<[PathBuf]>>,
     /// The last reading of the panes, filled by the runtime's poll.
     roster: Roster,
+    /// The login PATH and the fork cache of the GitHub tools.
+    gh: github::Gh,
 }
 
 impl ToolHost {
@@ -241,7 +243,14 @@ impl ToolHost {
             exec: exec::Exec::system(),
             cli_cwds: std::sync::OnceLock::new(),
             roster: Roster::default(),
+            gh: github::Gh::default(),
         })
+    }
+
+    /// The login PATH, where `gh` is looked up and what it runs with. Set
+    /// once, at start; a second call changes nothing.
+    pub fn set_gh_path(&self, path: OsString) {
+        self.gh.set_path(path);
     }
 
     /// Where the runtime puts what the panes run, for `list_panes`.
@@ -558,6 +567,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // How an answer of the approval mode is taken: only as the facts this
     // ask carried allow.
     let mut unprompted = Unprompted::Never;
+    // A GitHub read: what the checks before the prompt found, the keys the
+    // answer is remembered under, and a decline made earlier in this turn.
+    let mut github_plan = None;
+    let mut github_keys = None;
+    let mut declined = false;
     if let Ok(valid) = &checked {
         let home = host.home.as_deref().map(Path::new);
         let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
@@ -711,6 +725,22 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 ask = ask_for(valid, locality).map(|_| ApprovalAsk::Panes { text: text.clone() });
                 listed = Some(text);
             }
+            // The repository, `gh` and the folder are judged before anything
+            // is asked: a refusal opens no prompt and starts nothing.
+            (Call::Github(gh), _, _) => match github::plan(&host, &scope).await {
+                Ok(planned) => {
+                    match github::consent(&scope, gh, &planned.slug) {
+                        github::Consent::Free => {}
+                        github::Consent::Declined => declined = true,
+                        github::Consent::Ask(question, yes, no) => {
+                            ask = Some(question);
+                            github_keys = Some((yes, no));
+                        }
+                    }
+                    github_plan = Some(planned);
+                }
+                Err(why) => checked = Err(why.into()),
+            },
             (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
@@ -766,6 +796,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
+        Ok(_) if declined => ended(
+            ToolStatus::Denied,
+            format!("denied: {}", github::DECLINED),
+            github::DECLINED,
+        ),
         Ok(call) => {
             let answer = match pending {
                 Some(pending) => pending.await,
@@ -781,6 +816,24 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 Answer::Decided(decision) => {
                     if let (Some(shown), Decision::Sent) = (approves, decision) {
                         files::lock_set(&scope.allowed).insert(shown);
+                    }
+                    // A decline holds for the rest of the turn, also against a
+                    // parallel call asked before it: the key is read again.
+                    let mut decision = decision;
+                    if let Some((yes, no)) = github_keys {
+                        let mut allowed = files::lock_set(&scope.allowed);
+                        match decision {
+                            Decision::Sent if allowed.contains(&no) => {
+                                decision = Decision::Denied(github::DECLINED);
+                            }
+                            Decision::Sent => {
+                                allowed.insert(yes);
+                            }
+                            Decision::Denied(_) => {
+                                allowed.insert(no);
+                            }
+                            _ => {}
+                        }
                     }
                     decision
                 }
@@ -849,6 +902,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         let reason = refusal_text(ToolError::UnknownTool);
                         ended(ToolStatus::Error, reason.to_owned(), reason)
                     }
+                },
+                // After the consent, if the engine needed one: `gh` starts here.
+                (Decision::Sent, Call::Github(gh)) => match github_plan.take() {
+                    Some(planned) => github::run(&host, &scope, &gh, planned).await,
+                    None => ended(ToolStatus::Error, CANCELLED.to_owned(), CANCELLED),
                 },
                 // Read-only metadata of the panes: it never asked.
                 (Decision::Sent, Call::ListPanes) => list_panes(listed.take().unwrap_or_default()),
@@ -922,6 +980,7 @@ mod exec;
 mod files;
 mod gate;
 mod git;
+mod github;
 mod orphan;
 mod review;
 
@@ -935,6 +994,8 @@ mod files_tests;
 mod gate_tests;
 #[cfg(test)]
 mod git_tests;
+#[cfg(test)]
+mod github_run_tests;
 #[cfg(test)]
 mod github_tests;
 #[cfg(test)]
