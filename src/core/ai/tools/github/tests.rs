@@ -59,6 +59,13 @@ fn slug_of_refuses_every_other_host_and_every_odd_name() {
         "https://github.com/o",
         "https://github.com/o/r?x=1",
         "file:///github.com/o/r",
+        "https://evil.com\\@github.com/o/r",
+        "https://evil.com\\@github.com/o/r.git",
+        "https://github.com/o/r\\x",
+        "https://evil.com /@github.com/o/r",
+        "https://github.com/o/r @x",
+        "https://github.com/o@x/r",
+        "git@github.com:o/r@x",
         "github.com",
         "",
     ] {

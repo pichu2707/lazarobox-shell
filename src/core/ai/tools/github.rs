@@ -159,6 +159,10 @@ fn valid(part: &str, max: usize, dots: bool) -> bool {
 /// user or token in the URL is dropped, never kept.
 pub fn slug_of(url: &str) -> Option<Slug> {
     let url = url.trim();
+    // A backslash or a blank can make a parser read another host than ours.
+    if url.contains(|c: char| c == '\\' || c.is_whitespace()) {
+        return None;
+    }
     let (authority, path) = match ["https://", "ssh://", "git://"]
         .iter()
         .find_map(|scheme| url.strip_prefix(scheme))
@@ -167,6 +171,9 @@ pub fn slug_of(url: &str) -> Option<Slug> {
         None if url.contains("://") => return None,
         None => url.split_once(':')?,
     };
+    if path.contains('@') {
+        return None;
+    }
     let host = authority.rsplit('@').next()?;
     if !host.eq_ignore_ascii_case("github.com") {
         return None;
