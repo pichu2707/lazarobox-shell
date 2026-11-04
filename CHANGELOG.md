@@ -27,7 +27,8 @@ baseline.
   resume; it is kept as a marker row, so an older build opening that
   conversation shows its "not shown" notice for it and does not enforce the
   block. A conversation with saved messages this build does not know opens
-  blocked as well.
+  blocked as well, and every text of that block says so instead of claiming
+  GitHub was read.
 
 ### Fixed
 

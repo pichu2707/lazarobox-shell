@@ -6,6 +6,7 @@ use super::{
     engine::{CallId, Finish, ToolStatus},
     state_tests::{chat, systems},
     store::{StoreCmd, StoreReply, StoredMessage},
+    tags::Tags,
     *,
 };
 use crate::core::layout::PaneId;
@@ -264,4 +265,64 @@ fn a_resume_for_newer_rows_blocks_with_its_own_line() {
     assert!(!lines.contains(&GITHUB_BLOCK_LINE), "{lines:?}");
     assert!(!NEWER_BLOCK_LINE.contains("GitHub"));
     assert!(NEWER_BLOCK_LINE.is_ascii() && NEWER_BLOCK_LINE.len() <= 80);
+}
+
+// Never show an untrue notice: the block of rows from a newer version says so
+// in every line it owns, and the GitHub block keeps its wording.
+#[test]
+fn every_text_of_the_newer_rows_block_is_true() {
+    let newer = BlockWhy::NewerRows;
+    for text in [newer.reason(), newer.read_ask(), newer.run_line()] {
+        assert!(!text.contains("GitHub"), "{text}");
+        assert!(text.contains("newer version"), "{text}");
+        assert!(text.is_ascii() && text.len() <= 80, "{text}");
+    }
+    let github = BlockWhy::Marker;
+    assert_eq!(github.reason(), approval::GITHUB_READ);
+    assert_eq!(github.read_ask(), approval::GITHUB_READ_ASK);
+    assert_eq!(github.run_line(), approval::RUN_BLOCKED_LINE);
+    assert_ne!(newer.reason(), github.reason());
+    assert_ne!(newer.read_ask(), github.read_ask());
+    assert_ne!(newer.run_line(), github.run_line());
+}
+
+// The reason follows the facts: a conversation blocked by newer rows that then
+// reads GitHub text is blocked for GitHub too, and says so once.
+#[test]
+fn the_block_reason_follows_what_happened() {
+    let mut state = chat();
+    assert_eq!(state.block_why(), None);
+    state.adopt_github_read(BlockWhy::NewerRows);
+    assert_eq!(state.block_why(), Some(BlockWhy::NewerRows));
+    assert!(state.note_github_read(), "the first real read is news");
+    assert_eq!(state.block_why(), Some(BlockWhy::Marker));
+    assert_eq!(
+        systems(&state)
+            .iter()
+            .filter(|l| **l == GITHUB_BLOCK_LINE)
+            .count(),
+        1
+    );
+    assert!(!state.note_github_read(), "the second is not");
+    let mut fresh = chat();
+    fresh.note_github_read();
+    assert_eq!(fresh.block_why(), Some(BlockWhy::Marker));
+}
+
+// Spec (The chat grant, Resume has no grant): a resumed conversation opens
+// with no grant, and the grant is never stored.
+#[test]
+fn a_resume_ends_the_grant() {
+    let mut state = chat();
+    assert!(!state.github_granted());
+    state.set_github_granted(true);
+    assert!(state.github_granted());
+    state.resume_into(
+        7,
+        crate::core::ai::config::Profile::Programmer,
+        Tags::default(),
+        Vec::new(),
+    );
+    assert!(!state.github_granted());
+    assert_eq!(state.store_cmds(pane(), &[]), vec![], "nothing to store");
 }

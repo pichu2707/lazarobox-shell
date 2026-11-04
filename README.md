@@ -1137,7 +1137,7 @@ Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las p
 - La barra muestra `RUN OFF` en lugar de `RUN`, y una línea del sistema lo explica.
 - El bloqueo sobrevive a cambiar de modo, a las respuestas del modelo y a cerrar y reanudar la conversación. Una conversación nueva no está bloqueada.
 - Con un motor en la nube (o un modelo de Ollama `*-cloud`), `read_file` y `grep` también preguntan cada vez, incluso dentro de la carpeta del proyecto.
-- Una conversación con mensajes de un rol que esta versión no conoce (los escribió una versión más nueva) también se abre bloqueada, porque pueden contener texto de GitHub que no se ve; la línea del sistema lo dice así: `auto-run is off here: messages from a newer version; commands are only typed`.
+- Una conversación con mensajes de un rol que esta versión no conoce (los escribió una versión más nueva) también se abre bloqueada, porque pueden contener texto de GitHub que no se ve. Como no se sabe que se leyera GitHub, ningún texto lo afirma: la línea del sistema es `auto-run is off here: messages from a newer version; commands are only typed`, el aviso de `y` en el modo `run` dice `auto-run is off: messages from a newer version`, y la línea del cambio de modo dice `blocked: messages from a newer version`. Si luego esa conversación lee GitHub de verdad, los textos pasan a decirlo.
 - Se guarda como una fila marcadora en tu historial. Una versión anterior de lazarobox que abra esa conversación mostrará el aviso «saved message(s) from a newer version are not shown» y no aplicará el bloqueo.
 
 ### Tools with Ollama

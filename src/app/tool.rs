@@ -12,8 +12,8 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, RUN_BLOCKED_LINE, Route,
-        answers_itself, blocked_read_reason, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, Route, answers_itself,
+        blocked_read_reason, counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -159,8 +159,9 @@ impl App {
         // the user's `y`.
         let chat = self.panes.get(&id).and_then(PaneState::chat_state);
         let mode = chat.map(ChatState::approval_mode);
-        let blocked = chat.is_some_and(ChatState::github_read);
-        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode, blocked)) {
+        let blocked = chat.and_then(ChatState::block_why);
+        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode, blocked.is_some()))
+        {
             return vec![Effect::ToolDecision {
                 pane: id,
                 worker,
@@ -302,7 +303,7 @@ impl App {
             paused: chat.run_paused(),
             dirty: pty.is_some_and(|pty| pty.user_dirty),
             utf8: self.utf8_locale,
-            github_read: chat.github_read(),
+            github_read: chat.block_why(),
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }
@@ -356,12 +357,12 @@ impl App {
         };
         let mode = chat.approval_mode().cycled(true);
         chat.set_approval_mode(mode);
-        let blocked = chat.github_read();
-        chat.push_system_line(match mode {
-            ApprovalMode::Run if blocked => RUN_BLOCKED_LINE.to_owned(),
-            ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
-            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
-            ApprovalMode::Ask => "approval: ask".to_owned(),
+        let blocked = chat.block_why();
+        chat.push_system_line(match (mode, blocked) {
+            (ApprovalMode::Run, Some(why)) => why.run_line().to_owned(),
+            (ApprovalMode::Auto, _) => "approval: auto (commands are typed, never run)".to_owned(),
+            (ApprovalMode::Run, None) => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
+            (ApprovalMode::Ask, _) => "approval: ask".to_owned(),
         });
         self.dirty = true;
         Vec::new()
@@ -490,6 +491,7 @@ impl App {
     /// saved toggles, and the chat remembers that it may hold a tool session
     /// to end.
     pub(super) fn offer_tools(&mut self, id: PaneId, request: &mut ChatRequest) {
+        let families = self.offered_families(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
@@ -502,7 +504,7 @@ impl App {
         request.families = if request.tools == Tools::Off {
             FamilySet::LEGACY
         } else {
-            self.ai.families()
+            families
         };
         request.github_read = request.tools != Tools::Off && chat.github_read();
         chat.set_tool_session(request.tools != Tools::Off);

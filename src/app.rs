@@ -62,6 +62,7 @@ mod compact;
 mod context;
 mod cost;
 mod folder;
+mod github;
 mod handoff;
 mod history;
 mod hub;
@@ -2269,7 +2270,12 @@ impl App {
                 Outcome::Saved => {
                     saved_over =
                         Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
+                    let github = self.ai.toggle(crate::core::ai::config::ToolToggle::Github);
                     self.ai = menu.ai_draft();
+                    // Turning the saved toggle off takes the tools from every chat.
+                    if github && !self.ai.toggle(crate::core::ai::config::ToolToggle::Github) {
+                        self.end_all_grants(github::TOGGLE_ENDED);
+                    }
                 }
             }
             if !self.ai.memory.active() {
@@ -8851,6 +8857,8 @@ mod app_tests {
 
     /// The auto-run block after a GitHub read.
     mod github_block;
+    /// The chat grant of the GitHub tools and where it ends.
+    mod github_grant;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;
