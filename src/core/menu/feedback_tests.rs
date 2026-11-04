@@ -2,11 +2,13 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use unicode_width::UnicodeWidthStr;
+
 use super::feedback::{
     DESCRIPTION_REQUIRED, Facts, Feedback, Field, HINT_SIMILAR, HINT_TEXT, Issue, Kind,
-    NO_GH_TOO_LONG, Outcome, REDACTED, Request, SENDING, SIMILAR, SIMILAR_ADD, SIMILAR_NEW,
-    Similar, TITLE_REQUIRED, TOO_LONG, comment_body, comment_url, gh_message, host, issue_url,
-    search_query, similar,
+    NO_GH_TOO_LONG, Outcome, REDACTED, Request, SEARCHING, SENDING, SIMILAR, SIMILAR_ADD,
+    SIMILAR_NEW, Similar, TITLE_REQUIRED, TOO_LONG, comment_body, comment_url, gh_message, host,
+    issue_url, search_query, similar,
 };
 
 const ISSUES: &str = "https://github.com/pichu2707/lazarobox-shell/issues/new";
@@ -310,8 +312,10 @@ fn ctrl_s_sends_the_bug_report_shaped_like_the_issue_form() {
         }))
     );
     assert!(form.sending());
-    assert_eq!(form.hint(), SENDING);
-    assert_eq!(SENDING, "Sending to GitHub…");
+    // #588: nothing is sent yet: the search comes first.
+    assert_eq!(form.hint(), SEARCHING);
+    assert_eq!(SEARCHING, "Looking for similar issues, then sending…");
+    assert!(SEARCHING.chars().count() <= 48);
     assert_eq!(form.error(), None);
 }
 
@@ -609,7 +613,8 @@ fn enter_adds_the_report_to_the_selected_issue() {
     assert_eq!(issue.title, "Scroll jumps");
     assert!(issue.body.contains("It jumps"));
     assert!(form.sending());
-    assert_eq!(form.similar_issues(), None);
+    // #588: the list stays for a comment that fails.
+    assert!(form.similar_issues().is_some());
 }
 
 // S3: Ctrl+S on the list creates the issue anyway; Esc goes back to the
@@ -649,4 +654,83 @@ fn no_similar_issue_keeps_the_fields() {
     assert!(!form.sending());
     assert_eq!(form.lines()[0], "  Kind: Bug report");
     assert_eq!(form.hint(), HINT_TEXT);
+}
+
+// #588: once the search is over, the footer says what is really happening.
+#[test]
+fn the_list_sends_with_the_sending_footer() {
+    let mut form = with_similar(&[(583, "Scroll jumps up")]);
+    assert!(matches!(
+        ctrl_s(&mut form),
+        Outcome::Send(Request::Create(_))
+    ));
+    assert_eq!(form.hint(), SENDING);
+    assert_eq!(SENDING, "Sending to GitHub…");
+    let mut form = with_similar(&[(583, "Scroll jumps up")]);
+    form.on_key(&key(KeyCode::Enter), false);
+    assert_eq!(form.hint(), SENDING);
+}
+
+// #588: a comment that fails leaves the list as it was, with the issue chosen
+// and why, so Enter adds to the same issue again. Nothing opens a new one.
+#[test]
+fn a_failed_comment_keeps_the_chosen_issue() {
+    let mut form = with_similar(&[(583, "Scroll jumps up"), (540, "Scroll jumps down")]);
+    form.on_key(&key(KeyCode::Down), false);
+    assert!(matches!(
+        form.on_key(&key(KeyCode::Enter), false),
+        Outcome::Send(Request::Comment { number: 540, .. })
+    ));
+    assert_eq!(form.lines()[2], "› #540 Scroll jumps down");
+    form.failed("not logged in");
+    assert!(!form.sending());
+    assert_eq!(form.error(), Some("gh: not logged in"));
+    assert_eq!(form.lines()[2], "› #540 Scroll jumps down");
+    assert_eq!(form.hint(), HINT_SIMILAR);
+    assert!(matches!(
+        form.on_key(&key(KeyCode::Enter), false),
+        Outcome::Send(Request::Comment { number: 540, .. })
+    ));
+    assert_eq!(form.error(), None);
+}
+
+// The other sends from the list still go back to the fields when they fail.
+#[test]
+fn a_failed_create_from_the_list_shows_the_fields() {
+    let mut form = with_similar(&[(583, "Scroll jumps up")]);
+    ctrl_s(&mut form);
+    form.failed("boom");
+    assert_eq!(form.similar_issues(), None);
+    assert_eq!(form.error(), Some("gh: boom"));
+}
+
+// #588: a long title is cut to the row, by columns: `#1 ` and 46 in all, with
+// the `…`, and a double-width character never passes the edge.
+#[test]
+fn a_long_title_is_cut_to_the_row_by_display_columns() {
+    let long = "x".repeat(100);
+    let wide = "\u{6f22}".repeat(100);
+    let form = with_similar(&[(1, long.as_str()), (2, wide.as_str())]);
+    let lines = form.lines();
+    let ascii = lines[1].strip_prefix("› ").unwrap();
+    assert_eq!(ascii, format!("#1 {}…", "x".repeat(42)));
+    assert_eq!(UnicodeWidthStr::width(ascii), 46);
+    let cjk = lines[2].strip_prefix("  ").unwrap();
+    assert_eq!(cjk, format!("#2 {}…", "\u{6f22}".repeat(21)));
+    assert_eq!(UnicodeWidthStr::width(cjk), 46);
+    // One column short of a wide character: the row ends a column early.
+    let odd = format!("y{}", "\u{6f22}".repeat(100));
+    let form = with_similar(&[(1, odd.as_str())]);
+    let row = form.lines()[1].clone();
+    let row = row.strip_prefix("› ").unwrap();
+    assert_eq!(row, format!("#1 y{}…", "\u{6f22}".repeat(20)));
+    assert_eq!(UnicodeWidthStr::width(row), 45);
+}
+
+// A title that fits is left whole, wide or not.
+#[test]
+fn a_title_that_fits_the_row_is_not_cut() {
+    let exact = "z".repeat(43);
+    let form = with_similar(&[(1, exact.as_str())]);
+    assert_eq!(form.lines()[1], format!("› #1 {exact}"));
 }

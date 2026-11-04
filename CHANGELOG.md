@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Feedback no longer sends you to file a new issue when a comment on an existing
+  one finds `gh` missing or not logged in: the form says so and keeps the chosen
+  issue, so `Enter` tries it again. The same goes for any failed comment. Long
+  titles in the list of similar issues are cut by display columns, so
+  double-width characters stay on the row, and the footer says it is looking for
+  similar issues during the search (#588).
+
 ## [1.6.0] - 2026-11-04
 
 ### Added
