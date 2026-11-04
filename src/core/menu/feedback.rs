@@ -222,27 +222,44 @@ pub enum SendReply {
     NoGh,
 }
 
-/// `message` of `gh` as one footer line: escape sequences and control
-/// characters dropped, blanks folded, cut to the footer width.
-pub fn gh_message(message: &str) -> String {
+/// `text` from GitHub or `gh` as plain words: CSI sequences (after
+/// `ESC [` or `U+009B`) and bidi format characters dropped, other control
+/// characters turned into blanks, blanks folded.
+fn plain_words(text: &str) -> String {
     let mut plain = String::new();
-    let mut chars = message.chars();
+    let mut chars = text.chars();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            // A CSI sequence ends at its final byte, `@` to `~`.
-            if chars.clone().next() == Some('[') {
+        let csi = c == '\u{9b}' || (c == '\u{1b}' && chars.clone().next() == Some('['));
+        if csi {
+            if c == '\u{1b}' {
                 chars.next();
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
+            }
+            // A CSI sequence ends at its final byte, `@` to `~`.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
                 }
             }
             continue;
         }
+        if c == '\u{1b}' || is_bidi_format(c) {
+            continue;
+        }
         plain.push(if c.is_control() { ' ' } else { c });
     }
-    let words = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The characters that reorder text on screen: marks, embeddings,
+/// overrides and isolates.
+fn is_bidi_format(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `message` of `gh` as one footer line: see [`plain_words`], cut to the
+/// footer width.
+pub fn gh_message(message: &str) -> String {
+    let words = plain_words(message);
     if words.is_empty() {
         return "gh failed".to_owned();
     }
@@ -324,26 +341,22 @@ pub fn comment_body(issue: &Issue) -> String {
 }
 
 /// The comment's link from what `gh issue comment` printed: exactly one
-/// line, `https://github.com/<repo>/issues/<number>#issuecomment-<id>`.
-pub fn comment_url(stdout: &str, repo: &str) -> Option<String> {
+/// line, `https://github.com/<repo>/issues/<number>#issuecomment-<id>`, on
+/// the issue `number` the report was added to.
+pub fn comment_url(stdout: &str, repo: &str, number: u64) -> Option<String> {
     let line = stdout.strip_suffix('\n').unwrap_or(stdout);
     let (issue, id) = line.split_once("#issuecomment-")?;
     let ok = issue_url(issue, repo).is_some()
+        && issue.ends_with(&format!("/issues/{number}"))
         && !id.is_empty()
         && id.bytes().all(|b| b.is_ascii_digit());
     ok.then(|| line.to_owned())
 }
 
-/// `text` as one row of the form: control characters and escape sequences
-/// dropped, blanks folded, cut to `width` columns with `…`.
+/// `text` as one row of the form: see [`plain_words`], cut to `width`
+/// characters with `…`.
 fn one_row(text: &str, width: usize) -> String {
-    let words = text
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let words = plain_words(text);
     if words.chars().count() <= width {
         return words;
     }

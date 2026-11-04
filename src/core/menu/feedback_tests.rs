@@ -541,14 +541,19 @@ fn the_comment_is_the_title_and_the_issue_body() {
 fn only_a_comment_link_of_the_repository_is_accepted() {
     let repo = "pichu2707/lazarobox-shell";
     let url = "https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-123";
-    assert_eq!(comment_url(&format!("{url}\n"), repo).as_deref(), Some(url));
+    assert_eq!(
+        comment_url(&format!("{url}\n"), repo, 583).as_deref(),
+        Some(url)
+    );
+    // A comment on another issue than the one chosen is not the answer.
+    assert_eq!(comment_url(url, repo, 12), None);
     for out in [
         "https://github.com/pichu2707/lazarobox-shell/issues/583",
         "https://github.com/other/repo/issues/583#issuecomment-1",
         "https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-x",
         "done",
     ] {
-        assert_eq!(comment_url(out, repo), None, "{out}");
+        assert_eq!(comment_url(out, repo, 583), None, "{out}");
     }
 }
 
@@ -573,7 +578,7 @@ fn similar_issues_are_listed_instead_of_the_fields() {
         [
             SIMILAR,
             "› #583 Scroll jumps up",
-            "  #540 Scroll [31m jumps down",
+            "  #540 Scroll jumps down",
             "",
             SIMILAR_ADD,
             SIMILAR_NEW,
@@ -583,7 +588,7 @@ fn similar_issues_are_listed_instead_of_the_fields() {
     assert!(HINT_SIMILAR.chars().count() <= 48);
     send(&mut form, KeyCode::Down);
     send(&mut form, KeyCode::Down);
-    assert_eq!(form.lines()[2], "› #540 Scroll [31m jumps down");
+    assert_eq!(form.lines()[2], "› #540 Scroll jumps down");
     send(&mut form, KeyCode::Up);
     assert_eq!(form.lines()[1], "› #583 Scroll jumps up");
     // Typing does not reach the fields while the list is shown.
@@ -623,6 +628,17 @@ fn ctrl_s_on_the_list_creates_and_esc_goes_back() {
     assert_eq!(form.hint(), HINT_TEXT);
     // A second Esc closes the form as before.
     assert_eq!(send(&mut form, KeyCode::Esc), Outcome::Close);
+}
+
+// GitHub titles are untrusted: escape sequences and bidi overrides are
+// dropped whole, not only their control character.
+#[test]
+fn similar_titles_lose_escape_sequences_and_bidi_overrides() {
+    let form = with_similar(&[(
+        1,
+        "\u{1b}[31mred\u{1b}[0m \u{202e}txt.exe \u{9b}2Jx \u{7}bell",
+    )]);
+    assert_eq!(form.lines()[1], "› #1 red txt.exe x bell");
 }
 
 // S3: an empty answer is the form as before.

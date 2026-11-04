@@ -65,18 +65,20 @@ async fn send_with(
     let Some(program) = which("gh", Some(path)) else {
         return SendReply::NoGh;
     };
+    // One limit for the whole request: a slow search leaves the create
+    // only what is left of it.
+    let deadline = Instant::now() + timeout;
     match request {
         Request::Find(issue) => {
-            match find(&program, issue, Instant::now() + search_timeout).await {
+            let search = (Instant::now() + search_timeout).min(deadline);
+            match find(&program, issue, search).await {
                 Found::Some(issues) => SendReply::Similar(issues),
                 Found::NotLoggedIn => SendReply::NoGh,
-                Found::None => create(&program, issue, Instant::now() + timeout).await,
+                Found::None => create(&program, issue, deadline).await,
             }
         }
-        Request::Create(issue) => create(&program, issue, Instant::now() + timeout).await,
-        Request::Comment { issue, number } => {
-            comment(&program, issue, *number, Instant::now() + timeout).await
-        }
+        Request::Create(issue) => create(&program, issue, deadline).await,
+        Request::Comment { issue, number } => comment(&program, issue, *number, deadline).await,
     }
 }
 
@@ -136,18 +138,18 @@ fn listed(stdout: &str) -> Vec<Similar> {
 
 /// Adds `issue` to the issue `number` as a comment.
 async fn comment(program: &Path, issue: &Issue, number: u64, deadline: Instant) -> SendReply {
-    let number = number.to_string();
+    let shown = number.to_string();
     let args = [
         "issue",
         "comment",
-        &number,
+        &shown,
         "--repo",
         &issue.repo,
         "--body-file",
         "-",
     ];
     match run(program, &args, Some(&comment_body(issue)), deadline).await {
-        Run::Printed(stdout) => match comment_url(&stdout, &issue.repo) {
+        Run::Printed(stdout) => match comment_url(&stdout, &issue.repo, number) {
             Some(url) => SendReply::Commented(url),
             None => SendReply::Failed(NO_COMMENT_LINK.to_owned()),
         },
@@ -595,5 +597,24 @@ mod tests {
         let dir = fake(&format!("cat > /dev/null\necho '{URL}'\n"));
         let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
         assert!(matches!(reply, SendReply::Failed(_)), "{reply:?}");
+    }
+
+    // Spec (Sending with gh): gh is killed 30 seconds after Ctrl+S, the
+    // search included: a slow search leaves the create only the rest.
+    #[tokio::test]
+    async fn the_search_and_the_create_share_one_time_limit() {
+        // The search hangs past its own limit, then the create hangs too.
+        let dir = fake("cat > /dev/null\nexec sleep 30\n");
+        let start = Instant::now();
+        let reply = send_with(
+            dir.path().as_os_str(),
+            &Request::Find(issue("Scroll jumps", "b")),
+            Duration::from_millis(500),
+            Duration::from_millis(800),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(matches!(reply, SendReply::Failed(_)), "{reply:?}");
+        assert!(elapsed < Duration::from_millis(1100), "{elapsed:?}");
     }
 }
