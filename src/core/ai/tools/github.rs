@@ -188,6 +188,25 @@ pub fn slug_of(url: &str) -> Option<Slug> {
     })
 }
 
+/// Whether the turn of `engine` and `model` sends tool results off this
+/// machine although its adapter is local: an Ollama model named `*-cloud` or
+/// tagged `cloud` is served by Ollama's cloud. A missing model counts as
+/// cloud (fail closed). Other engines are judged by their kind, never by a
+/// name. Compared ASCII case-insensitively.
+pub fn forwards_off_machine(engine: &str, model: Option<&str>) -> bool {
+    if engine != "ollama" {
+        return false;
+    }
+    let Some(model) = model.filter(|m| !m.is_empty()) else {
+        return true;
+    };
+    let model = model.to_ascii_lowercase();
+    model.ends_with("-cloud")
+        || model
+            .rsplit_once(':')
+            .is_some_and(|(_, tag)| tag == "cloud")
+}
+
 const ISSUE_FIELDS: &str = "number,title,state,author,labels,body";
 const PR_FIELDS: &str = "number,title,state,isDraft,author,labels,body,baseRefName,headRefName,files,changedFiles,additions,deletions,statusCheckRollup";
 

@@ -5,6 +5,7 @@
 use super::chat::{DayNote, UsageToday, per_token_spend};
 use super::*;
 use crate::core::ai::chat::{
+    BlockWhy,
     list::{
         DELETE_FAILED, LIST_FAILED, ListOutcome, NotesStay, OPEN_ELSEWHERE, RESUME_FAILED,
         notes_result_line, notes_stay_line,
@@ -581,8 +582,13 @@ impl App {
             chat.push_system(skipped_line(skipped));
         }
         // The marker row is stored already: the conversation opens blocked.
+        // So does one with rows of a role this build does not know: a newer
+        // build may have written tool-derived text there.
+        // The marker's line wins: that one is known to be true.
         if github_read {
-            chat.adopt_github_read();
+            chat.adopt_github_read(BlockWhy::Marker);
+        } else if skipped > 0 {
+            chat.adopt_github_read(BlockWhy::NewerRows);
         }
         // The pair its notes were written under is reused before the first
         // write: engram rejects a session under another project, and the

@@ -85,6 +85,7 @@ async fn turn(env: CliEnv, model: Option<String>, text: &str) -> Vec<StreamEvent
             content: text.into(),
         }],
         ollama: Default::default(),
+        github_read: false,
     };
     chats.send(PaneId::FIRST, 1, request);
     let mut events = Vec::new();

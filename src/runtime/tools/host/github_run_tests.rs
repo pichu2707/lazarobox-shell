@@ -195,7 +195,19 @@ async fn gh_runs_the_fixed_argv_from_the_root_with_a_clean_environment() {
     let rig = rig(Some(ORIGIN), LIST);
     let (out, events) = one(&rig, list()).await;
     assert!(!out.is_error, "{out:?}");
-    assert!(out.text.contains("untrusted-tool-output"), "{}", out.text);
+    // Spec (Issue list): the three issues, inside the untrusted-data wrapper.
+    assert!(
+        out.text.starts_with("<untrusted-tool-output id="),
+        "{}",
+        out.text
+    );
+    let issues = out.text.lines().filter(|l| l.starts_with('#')).count();
+    assert_eq!(issues, 3, "{}", out.text);
+    assert!(
+        out.text.contains("GitHub issues of o/r (open), 3 shown:"),
+        "{}",
+        out.text
+    );
     let slug = crate::core::ai::tools::github::slug_of(ORIGIN).unwrap();
     let call = GhCall::IssueList {
         state: State::Open,
@@ -699,4 +711,42 @@ async fn started_comes_before_the_result_and_the_next_rounds_call() {
         shape(&drain(&mut rx)).0,
         ["call", "started", "result", "call", "started", "result"]
     );
+}
+
+// Spec (Ollama cloud model asks): an Ollama `*-cloud` model is a local
+// adapter that counts as cloud for a GitHub read, and once `gh` has started
+// the bit that makes its file reads ask is up for the next call.
+#[tokio::test]
+async fn an_ollama_cloud_model_asks_for_a_github_read_and_the_start_blocks_its_reads() {
+    use std::sync::atomic::Ordering;
+    let rig = rig(Some(ORIGIN), LIST);
+    let approver = watch(&rig, Decision::Sent);
+    let (tx, _rx) = mpsc::channel(64);
+    let mut scope = TurnScope::new(tx, Locality::Local, rig.proj.clone());
+    scope.ollama_cloud = true;
+    scope.approver = approver.clone();
+    scope.families = FamilySet::LEGACY.with(Family::Github);
+    let scope = Arc::new(scope);
+    assert!(!scope.github_read.load(Ordering::Relaxed));
+    let out = execute(rig.host.clone(), scope.clone(), list()).await;
+    assert!(!out.is_error, "{out:?}");
+    let seen = approver.seen.lock().unwrap().clone();
+    assert!(
+        matches!(&seen[..], [(ApprovalAsk::GithubRead { repo, ollama_cloud: true, .. }, false)] if repo == "o/r"),
+        "{seen:?}"
+    );
+    assert!(scope.github_read.load(Ordering::Relaxed));
+    // A refused call starts nothing and leaves the bit down.
+    let none = rig_with(None, LIST, "true", Duration::from_secs(30));
+    let (tx, _rx) = mpsc::channel(64);
+    let mut refused = TurnScope::new(tx, Locality::Local, none.proj.clone());
+    refused.ollama_cloud = true;
+    refused.families = FamilySet::LEGACY.with(Family::Github);
+    let refused = Arc::new(refused);
+    assert!(
+        execute(none.host.clone(), refused.clone(), list())
+            .await
+            .is_error
+    );
+    assert!(!refused.github_read.load(Ordering::Relaxed));
 }

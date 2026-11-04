@@ -2,7 +2,7 @@
 //! the flag of the conversation, its system line and the marker it saves.
 
 use super::{
-    approval::GITHUB_BLOCK_LINE,
+    approval::{GITHUB_BLOCK_LINE, NEWER_BLOCK_LINE},
     engine::{CallId, Finish, ToolStatus},
     state_tests::{chat, systems},
     store::{StoreCmd, StoreReply, StoredMessage},
@@ -240,7 +240,7 @@ fn a_detached_store_writes_nothing_but_the_flag_holds() {
 #[test]
 fn a_resumed_blocked_conversation_is_blocked_and_says_so() {
     let mut state = chat();
-    state.adopt_github_read();
+    state.adopt_github_read(BlockWhy::Marker);
     assert!(state.github_read());
     assert_eq!(
         systems(&state)
@@ -250,4 +250,18 @@ fn a_resumed_blocked_conversation_is_blocked_and_says_so() {
         1
     );
     assert_eq!(state.store_cmds(pane(), &[]), vec![]);
+}
+
+// Resume with rows of a role this build does not know: blocked, with its own
+// truthful line, never the GitHub one.
+#[test]
+fn a_resume_for_newer_rows_blocks_with_its_own_line() {
+    let mut state = chat();
+    state.adopt_github_read(BlockWhy::NewerRows);
+    assert!(state.github_read());
+    let lines = systems(&state);
+    assert_eq!(lines.iter().filter(|l| **l == NEWER_BLOCK_LINE).count(), 1);
+    assert!(!lines.contains(&GITHUB_BLOCK_LINE), "{lines:?}");
+    assert!(!NEWER_BLOCK_LINE.contains("GitHub"));
+    assert!(NEWER_BLOCK_LINE.is_ascii() && NEWER_BLOCK_LINE.len() <= 80);
 }

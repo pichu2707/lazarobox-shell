@@ -49,7 +49,7 @@ resume: messages row role='github_read' → StoreReply::Resumed.github_read → 
 | Marker write fails, nothing later is stored | Blocked live, `SAVE_FAILED_LINE` shows, and the store holds no text from after the read |
 | Crash before the marker | The answer is saved only at turn end or close, so no tainted text is stored either. `Resumed` holds no CLI session id, so nothing returns through an engine |
 | Resume query fails | `ResumeFailed`: nothing opens |
-| Unknown role rows (`skipped > 0`) | Treated as blocked: a newer build may have written tool-derived rows |
+| Unknown role rows (`skipped > 0`) | Treated as blocked: a newer build may have written tool-derived rows. The system line is its own (`NEWER_BLOCK_LINE`), because nothing says GitHub was read; the marker's line wins when both apply |
 | History off or store detached | Live flag only; the conversation cannot be resumed |
 | A second lazarobox process has it open | Not blocked until its next resume, and it does not hold the issue text until then (residual) |
 

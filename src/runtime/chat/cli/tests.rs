@@ -168,6 +168,7 @@ fn request() -> ChatRequest {
             content: "hi".into(),
         }],
         ollama: Default::default(),
+        github_read: false,
     }
 }
 

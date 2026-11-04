@@ -58,6 +58,11 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+    /// The conversation read GitHub text: set by the app for every turn that
+    /// offers tools. Only the runtime reads it, to make an Ollama `*-cloud`
+    /// model ask for a file read; no adapter does, so the bytes an engine
+    /// receives do not depend on it.
+    pub github_read: bool,
     /// What only Ollama's chat API reads. Empty unless the runtime stamps it
     /// on an Ollama turn, so no other engine's bytes depend on it.
     pub ollama: OllamaWire,

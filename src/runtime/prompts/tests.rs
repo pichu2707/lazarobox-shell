@@ -262,6 +262,7 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
                 content: "hi".into(),
             }],
             ollama: Default::default(),
+            github_read: false,
         };
         let Invocation::Http { body, .. } = Adapter::Ollama.build(&request) else {
             panic!("ollama builds an HTTP invocation");

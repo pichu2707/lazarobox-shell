@@ -1500,6 +1500,7 @@ impl RunManager {
             tools: tools_for(&spec.engine, true, Some(live.origin.clone()), MCP_VERIFIED),
             families: spec.toolset.families(),
             ollama: Default::default(),
+            github_read: false,
         };
         let key = WorkerKey {
             run: live.run.id(),
@@ -1582,6 +1583,8 @@ impl RunManager {
                 label: worker_label(spec.task, &spec.engine, model),
             }),
             cli: is_cli_engine(&request.engine),
+            ollama_cloud: false,
+            github_read: Default::default(),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

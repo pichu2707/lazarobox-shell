@@ -9,8 +9,8 @@ use crate::core::ai::{
     chat::{
         Entry,
         approval::{
-            ApprovalAsk, GITHUB_BLOCK_LINE, GITHUB_READ, GITHUB_READ_ASK, RUN_KEYS, RUN_NOW_KEYS,
-            Reach,
+            ApprovalAsk, GITHUB_BLOCK_LINE, GITHUB_READ, GITHUB_READ_ASK, NEWER_BLOCK_LINE,
+            RUN_KEYS, RUN_NOW_KEYS, Reach,
         },
         engine::{CallId, Decision, StreamEvent, ToolStatus},
     },
@@ -354,4 +354,63 @@ fn with_history_off_the_flag_still_blocks_and_nothing_is_stored() {
     assert!(effects.iter().all(|e| !matches!(e, Effect::Store(_))));
     assert!(chat_of(&a).github_read());
     assert_eq!(announce(&mut a, turn, 1, run("pwd")), vec![]);
+}
+
+// Spec (Resume stays blocked): a newer build may have written rows this one
+// does not know; they may hold tool-derived text, so the conversation opens
+// blocked. A conversation with none and no marker does not (see above).
+#[test]
+fn a_resumed_conversation_with_unknown_rows_opens_blocked() {
+    use super::chat_history::{chat_id, listing, resumed};
+    for skipped in [1, 3] {
+        let mut a = listing();
+        let mut event = resumed(chat_id(), 30, "programmer");
+        if let AppEvent::Store(StoreReply::Resumed { skipped: n, .. }) = &mut event {
+            *n = skipped;
+        }
+        a.update_settled(event);
+        let chat = a
+            .panes
+            .get(&chat_id())
+            .and_then(PaneState::chat_state)
+            .unwrap();
+        assert!(chat.github_read(), "{skipped} unknown rows");
+        let count = |line: &str| {
+            (chat.entries().iter())
+                .filter(|e| matches!(e, Entry::System(l) if l == line))
+                .count()
+        };
+        // Its own line: GitHub text is not known to have been read.
+        assert_eq!(count(NEWER_BLOCK_LINE), 1, "{skipped} unknown rows");
+        assert_eq!(count(GITHUB_BLOCK_LINE), 0, "{skipped} unknown rows");
+    }
+}
+
+// A marker row wins: the conversation did read GitHub, whatever else it holds.
+#[test]
+fn a_marker_and_unknown_rows_show_the_github_line() {
+    use super::chat_history::{chat_id, listing, resumed};
+    let mut a = listing();
+    let mut event = resumed(chat_id(), 30, "programmer");
+    if let AppEvent::Store(StoreReply::Resumed {
+        skipped,
+        github_read,
+        ..
+    }) = &mut event
+    {
+        (*skipped, *github_read) = (2, true);
+    }
+    a.update_settled(event);
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    let count = |line: &str| {
+        (chat.entries().iter())
+            .filter(|e| matches!(e, Entry::System(l) if l == line))
+            .count()
+    };
+    assert_eq!(count(GITHUB_BLOCK_LINE), 1);
+    assert_eq!(count(NEWER_BLOCK_LINE), 0);
 }

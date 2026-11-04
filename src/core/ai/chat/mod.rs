@@ -66,6 +66,15 @@ use crate::core::{
     },
     layout::PaneId,
 };
+/// Why a resumed conversation opens blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWhy {
+    /// Its marker row is stored: GitHub text was read.
+    Marker,
+    /// Rows of a role this build does not know: nothing says what they hold.
+    NewerRows,
+}
+
 use composer::Composer;
 use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
@@ -904,12 +913,18 @@ impl ChatState {
         true
     }
 
-    /// A resumed conversation holds the marker: it opens blocked and says so.
-    /// The marker is stored already.
-    pub fn adopt_github_read(&mut self) {
+    /// A resumed conversation opens blocked and says why. The marker, when
+    /// there is one, is stored already.
+    pub fn adopt_github_read(&mut self, why: BlockWhy) {
         if !self.github_read {
             self.github_read = true;
-            self.push_system_line(approval::GITHUB_BLOCK_LINE.to_owned());
+            self.push_system_line(
+                match why {
+                    BlockWhy::Marker => approval::GITHUB_BLOCK_LINE,
+                    BlockWhy::NewerRows => approval::NEWER_BLOCK_LINE,
+                }
+                .to_owned(),
+            );
         }
     }
 
@@ -1459,6 +1474,7 @@ impl ChatState {
                 tools: Tools::Off,
                 messages: context.messages,
                 ollama: Default::default(),
+                github_read: false,
             }),
         }
     }

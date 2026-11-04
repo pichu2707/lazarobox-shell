@@ -57,6 +57,7 @@ fn request(model: &str) -> ChatRequest {
             },
         ],
         ollama: Default::default(),
+        github_read: false,
     }
 }
 
