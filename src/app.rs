@@ -947,6 +947,8 @@ pub struct App {
     /// The chats whose open steps (memory, prompt, list) wait for the folder
     /// to be settled: the probe, or the picker.
     opening: HashSet<PaneId>,
+    /// The folder of the `/github` probe in flight, one per pane.
+    github_probing: HashMap<PaneId, PathBuf>,
     /// Chats opened in a folder outside HOME, until their picker closes: Esc
     /// keeps that folder and says the file tools cannot read it.
     outside_open: HashSet<PaneId>,
@@ -1107,6 +1109,7 @@ impl App {
             home: None,
             resume_folders: HashMap::new(),
             opening: HashSet::new(),
+            github_probing: HashMap::new(),
             outside_open: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,

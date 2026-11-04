@@ -654,6 +654,57 @@ fn a_resume_withdraws_a_pending_dialog_with_a_line() {
     assert!(!has_line(&a, "cancelled"), "no second line");
 }
 
+// -- review fixes: refusals known at submit ----------------------------------
+
+#[test]
+fn an_engine_without_tools_refuses_with_a_line_and_no_dialog() {
+    let mut a = launched(80, 25).with_ai(super::chat_live::ollama());
+    press(&mut a, "c");
+    super::run_pane::answer(&mut a, id2(), "hi");
+    assert_eq!(submit(&mut a, "/github"), vec![]);
+    assert!(
+        has_line(&a, "/github refused: the engine offers no tools"),
+        "{:?}",
+        lines(&a)
+    );
+    assert_eq!(composer(&a), "");
+    assert_eq!(pending(&a), None);
+}
+
+#[test]
+fn an_orchestrating_chat_refuses_with_a_line_and_no_dialog() {
+    let mut a = tools_app();
+    a.ai.orchestrator.enabled = true;
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_orch(true);
+    assert_eq!(submit(&mut a, "/github"), vec![]);
+    assert!(
+        has_line(&a, "/github refused: this chat is orchestrating"),
+        "{:?}",
+        lines(&a)
+    );
+    assert_eq!(pending(&a), None);
+}
+
+#[test]
+fn turning_orchestration_on_with_a_grant_says_it_is_not_offered() {
+    let mut a = tools_app();
+    a.ai.orchestrator.enabled = true;
+    a.chat_toggle_orch(id2());
+    assert!(!lines(&a).iter().any(|l| l.contains("orchestrated")));
+    a.chat_toggle_orch(id2());
+    grant(&mut a, id2());
+    a.chat_toggle_orch(id2());
+    assert!(
+        lines(&a).iter().any(|l| l.contains("orchestrated")),
+        "{:?}",
+        lines(&a)
+    );
+}
+
 // -- review fixes: Ctrl+C, focus ---------------------------------------------
 
 #[test]
@@ -690,4 +741,72 @@ fn gaining_the_focus_arms_the_dialog_again() {
     wait_for_arming();
     a.update(key('y'));
     assert!(granted(&a, id2()));
+}
+
+// -- review fixes: the probe says what it does and what it drops -------------
+
+#[test]
+fn the_command_says_it_is_checking_and_one_probe_runs_per_pane() {
+    let mut a = tools_app();
+    assert_eq!(submit(&mut a, "/github"), vec![probe_effect(&a, true)]);
+    assert!(has_line(&a, "checking origin..."));
+    // A second command meanwhile: a line, no second probe.
+    assert_eq!(submit(&mut a, "/github"), vec![]);
+    assert!(has_line(&a, "/github refused: still checking the origin"));
+    assert_eq!(composer(&a), "");
+    // The answer frees it.
+    answer(&mut a, slug("https://github.com/o/r.git"));
+    a.update(key('n'));
+    wait_for_arming();
+    a.update(key('n'));
+    assert_eq!(submit(&mut a, "/github"), vec![probe_effect(&a, true)]);
+}
+
+#[test]
+fn a_dropped_answer_says_why() {
+    type Change = fn(&mut App);
+    let cases: [(&str, Change); 3] = [
+        ("tools are off", |a| a.ai.set_tools_enabled(false)),
+        ("already on", |a| a.ai.set_toggle(ToolToggle::Github, true)),
+        ("already on", |a| grant(a, id2())),
+    ];
+    for (why, change) in cases {
+        let mut a = tools_app();
+        submit(&mut a, "/github");
+        change(&mut a);
+        assert_eq!(answer(&mut a, slug("https://github.com/o/r.git")), vec![]);
+        assert_eq!(pending(&a), None, "{why}");
+        assert!(
+            lines(&a)
+                .iter()
+                .any(|l| l.starts_with(CANCELLED_PREFIX) && l.contains(why)),
+            "{why}: {:?}",
+            lines(&a)
+        );
+    }
+}
+
+#[test]
+fn a_dropped_answer_for_a_closed_pane_or_a_hint_says_nothing() {
+    let mut a = tools_app();
+    submit(&mut a, "/github");
+    let gone = a.update(AppEvent::OriginProbed {
+        pane: PaneId::for_test(99),
+        folder: PathBuf::from("/x"),
+        dialog: true,
+        repo: slug("https://github.com/o/r.git"),
+    });
+    assert_eq!(gone, vec![]);
+    let hint = a.update(AppEvent::OriginProbed {
+        pane: id2(),
+        folder: PathBuf::from("/elsewhere"),
+        dialog: false,
+        repo: slug("https://github.com/o/r.git"),
+    });
+    assert_eq!(hint, vec![]);
+    assert!(
+        lines(&a).iter().all(|l| !l.starts_with(CANCELLED_PREFIX)),
+        "{:?}",
+        lines(&a)
+    );
 }

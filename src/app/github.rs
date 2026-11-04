@@ -3,8 +3,11 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::approval::{
-        Approval, ApprovalAsk, GITHUB_DECLINED_LINE, GITHUB_GRANTED_LINE, Origin, Reply,
+    chat::{
+        approval::{
+            Approval, ApprovalAsk, GITHUB_DECLINED_LINE, GITHUB_GRANTED_LINE, Origin, Reply,
+        },
+        engine::{Availability, Tools, tools_for},
     },
     config::ToolToggle,
     tools::{
@@ -22,15 +25,22 @@ pub(super) const TOGGLE_ENDED: &str =
     "GitHub tools are off because the GitHub toggle was turned off";
 const NO_ARGUMENTS: &str = "/github takes no arguments";
 const NO_FOLDER: &str = "/github refused: this chat has no folder";
+const CHECKING: &str = "checking origin...";
+const STILL_CHECKING: &str = "/github refused: still checking the origin";
 /// The line of a dialog that was withdrawn, or an answer that was dropped.
 const CANCELLED: &str = "/github cancelled: ";
 const REFUSED: &str = "/github refused: ";
 /// Why `/github` does not apply to a chat now.
 const R_TOOLS_OFF: &str = "tools are off";
+const R_ORCHESTRATING: &str = "this chat is orchestrating";
+const R_NO_TOOLS: &str = "the engine offers no tools";
 const R_ALREADY_ON: &str = "the GitHub tools are already on";
 const R_FOLDER: &str = "the folder changed";
 const R_LIST_OPEN: &str = "the conversation list is open";
 pub(super) const R_RESUMED: &str = "a conversation was resumed";
+/// What turning ORCH on says to a chat that holds a grant.
+pub(super) const ORCH_KEEPS_GRANT: &str =
+    "GitHub grant kept, but orchestrated turns do not offer GitHub tools";
 
 impl App {
     /// The families chat `id` offers its next turn: the saved toggles plus the
@@ -50,8 +60,9 @@ impl App {
 
     /// The folder of chat `id` changed: a grant was for the old repository.
     pub(super) fn end_grant_for_folder(&mut self, id: PaneId) {
-        // A dialog names the old repository.
+        // A dialog names the old repository; so does a probe still on its way.
         self.withdraw_github_dialog(id, R_FOLDER);
+        self.github_probing.remove(&id);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
             && chat.github_granted()
         {
@@ -85,6 +96,7 @@ impl App {
     /// known now says why at once; the dialog opens from the answer.
     pub(super) fn github_submit(&mut self, id: PaneId) -> Vec<Effect> {
         let blocker = self.github_blocker(id);
+        let probing = self.github_probing.contains_key(&id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -99,6 +111,8 @@ impl App {
         let folder = chat.origin_cwd().map(Path::to_path_buf);
         let refusal = if let Some(why) = blocker {
             Some(format!("{REFUSED}{why}"))
+        } else if probing {
+            Some(STILL_CHECKING.to_owned())
         } else if folder.is_none() {
             Some(NO_FOLDER.to_owned())
         } else {
@@ -111,6 +125,8 @@ impl App {
         let Some(folder) = folder else {
             return Vec::new();
         };
+        chat.push_system_line(CHECKING.to_owned());
+        self.github_probing.insert(id, folder.clone());
         vec![Effect::ProbeOrigin {
             pane: id,
             folder,
@@ -118,18 +134,32 @@ impl App {
         }]
     }
 
-    /// Why `/github` does not apply to chat `id` now, or `None`: tools off or
-    /// the tools already on.
+    /// Why `/github` does not apply to chat `id` now, or `None`: tools off,
+    /// an orchestrating chat (its turns never offer the family), an engine
+    /// that offers no tools, or the tools already on.
     fn github_blocker(&self, id: PaneId) -> Option<&'static str> {
         let granted = (self.panes.get(&id).and_then(PaneState::chat_state))
             .is_some_and(ChatState::github_granted);
         if !self.ai.tools_enabled() {
             Some(R_TOOLS_OFF)
+        } else if self.orchestrating(id) {
+            Some(R_ORCHESTRATING)
+        } else if !self.offers_tools(id) {
+            Some(R_NO_TOOLS)
         } else if self.ai.toggle(ToolToggle::Github) || granted {
             Some(R_ALREADY_ON)
         } else {
             None
         }
+    }
+
+    /// Whether the engine a turn of chat `id` goes to offers tools.
+    fn offers_tools(&self, id: PaneId) -> bool {
+        matches!(
+            self.turn_availability(id),
+            Availability::Ready { engine, .. }
+                if tools_for(&engine, true, None, self.tool_engines) != Tools::Off
+        )
     }
 
     /// The origin of `folder` was read. For `/github`: a repository on GitHub
@@ -142,6 +172,10 @@ impl App {
         dialog: bool,
         repo: GhRepo,
     ) -> Vec<Effect> {
+        // The probe of the dialog is over, whatever comes of its answer.
+        if dialog && self.github_probing.get(&id).is_some_and(|f| f == folder) {
+            self.github_probing.remove(&id);
+        }
         let armed = (self.clock)()
             + ApprovalAsk::GithubGrant {
                 repo: String::new(),
@@ -158,10 +192,12 @@ impl App {
         if !dialog {
             return Vec::new();
         }
-        // The user typed the command: an answer for another folder, or over
-        // the open list, says why instead of vanishing.
+        // The user typed the command: an answer that cannot open the dialog
+        // says why instead of vanishing.
         let dropped = if !current {
             Some(R_FOLDER)
+        } else if let Some(why) = blocker {
+            Some(why)
         } else if list {
             Some(R_LIST_OPEN)
         } else {
@@ -170,10 +206,6 @@ impl App {
         self.dirty = true;
         if let Some(why) = dropped {
             chat.push_system_line(format!("{CANCELLED}{why}"));
-            return Vec::new();
-        }
-        // A chat that cannot be granted now drops the answer.
-        if blocker.is_some() {
             return Vec::new();
         }
         match repo {
