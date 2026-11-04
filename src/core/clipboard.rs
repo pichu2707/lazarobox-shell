@@ -15,6 +15,26 @@ pub enum Tool {
     Xsel,
     /// `clip.exe` (the Windows clipboard, through the WSL interop).
     ClipExe,
+    /// `powershell.exe` running `Set-Clipboard` (WSL interop).
+    PowerShell,
+}
+
+/// The `powershell.exe` script: stdin read as UTF-8 becomes the clipboard.
+const SET_CLIPBOARD: &str = "[Console]::InputEncoding = [Text.Encoding]::UTF8; \
+    Set-Clipboard -Value ([Console]::In.ReadToEnd())";
+
+/// `text` with every `\n` that has no `\r` before it turned into `\r\n`.
+fn crlf(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut prev = None;
+    for c in text.chars() {
+        if c == '\n' && prev != Some('\r') {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = Some(c);
+    }
+    out
 }
 
 /// What the environment says about where lazarobox runs.
@@ -52,6 +72,7 @@ impl Tool {
             Self::Xclip => "xclip",
             Self::Xsel => "xsel",
             Self::ClipExe => "clip.exe",
+            Self::PowerShell => "powershell.exe",
         }
     }
 
@@ -61,19 +82,27 @@ impl Tool {
             Self::Xclip => &["-selection", "clipboard"],
             Self::Xsel => &["--clipboard", "--input"],
             Self::WlCopy | Self::ClipExe => &[],
+            Self::PowerShell => &["-NoProfile", "-NonInteractive", "-Command", SET_CLIPBOARD],
         }
     }
 
     /// The bytes written to the tool's stdin for `text`.
     ///
-    /// `clip.exe` reads UTF-16LE with a byte order mark. That is not yet
-    /// verified on a real Windows Terminal (see the WSL record).
+    /// Probed on WSL2: `clip.exe` keeps a UTF-16LE byte order mark in the
+    /// clipboard as a U+FEFF character (pasted as `<feff>` in Vim), but
+    /// without one it misreads short non-ASCII text, so the mark is only
+    /// sent when the text needs it. `powershell.exe` reads UTF-8 and stores
+    /// the exact text; its line ends become `\r\n`, as `clip.exe` made them.
     pub fn payload(self, text: &str) -> Vec<u8> {
         match self {
-            Self::ClipExe => [0xFF, 0xFE]
-                .into_iter()
-                .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
-                .collect(),
+            Self::ClipExe => {
+                let mark: &[u8] = if text.is_ascii() { &[] } else { &[0xFF, 0xFE] };
+                mark.iter()
+                    .copied()
+                    .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+                    .collect()
+            }
+            Self::PowerShell => crlf(text).into_bytes(),
             _ => text.as_bytes().to_vec(),
         }
     }
@@ -82,7 +111,7 @@ impl Tool {
 /// The tools that fit `session`, best first. Over SSH there are none: the
 /// local clipboard is not the one the user is looking at.
 pub fn candidates(session: Session) -> Vec<Tool> {
-    use Tool::{ClipExe, WlCopy, Xclip, Xsel};
+    use Tool::{ClipExe, PowerShell, WlCopy, Xclip, Xsel};
     if session.ssh {
         return Vec::new();
     }
@@ -94,8 +123,9 @@ pub fn candidates(session: Session) -> Vec<Tool> {
     } else {
         Vec::new()
     };
+    // `Set-Clipboard` stores the exact text; `clip.exe` is the fallback.
     if session.wsl {
-        [vec![ClipExe], linux].concat()
+        [vec![PowerShell, ClipExe], linux].concat()
     } else {
         linux
     }
@@ -158,17 +188,18 @@ mod tests {
 
     #[test]
     fn wsl_offers_the_windows_clipboard_then_the_tools_its_display_fits() {
+        use Tool::{ClipExe, PowerShell, WlCopy, Xclip, Xsel};
         assert_eq!(
             candidates(session(false, true, false, false)),
-            vec![Tool::ClipExe]
+            vec![PowerShell, ClipExe]
         );
         assert_eq!(
             candidates(session(false, true, true, true)),
-            vec![Tool::ClipExe, Tool::WlCopy, Tool::Xclip, Tool::Xsel]
+            vec![PowerShell, ClipExe, WlCopy, Xclip, Xsel]
         );
         assert_eq!(
             candidates(session(false, true, false, true)),
-            vec![Tool::ClipExe, Tool::Xclip, Tool::Xsel]
+            vec![PowerShell, ClipExe, Xclip, Xsel]
         );
     }
 
@@ -231,6 +262,7 @@ mod tests {
         assert_eq!(Tool::Xclip.name(), "xclip");
         assert_eq!(Tool::Xsel.name(), "xsel");
         assert_eq!(Tool::ClipExe.name(), "clip.exe");
+        assert_eq!(Tool::PowerShell.name(), "powershell.exe");
     }
 
     #[test]
@@ -239,13 +271,36 @@ mod tests {
         assert_eq!(Tool::Xclip.payload("hi"), b"hi");
     }
 
-    /// Unverified until the Windows Terminal record (task 4.7).
+    /// Probed on WSL2: `clip.exe` keeps a byte order mark as a U+FEFF
+    /// character in the clipboard, but needs it to read short non-ASCII
+    /// text (a lone `ñ` became `±`), so it only gets one for non-ASCII text.
     #[test]
-    fn clip_exe_gets_utf16le_with_a_byte_order_mark() {
+    fn clip_exe_gets_utf16le_with_a_byte_order_mark_only_for_non_ascii() {
         assert_eq!(
             Tool::ClipExe.payload("a漢😀"),
             [0xFF, 0xFE, 0x61, 0x00, 0x22, 0x6F, 0x3D, 0xD8, 0x00, 0xDE]
         );
+        assert_eq!(Tool::ClipExe.payload("ab"), [0x61, 0x00, 0x62, 0x00]);
+    }
+
+    /// Probed on WSL2: `Set-Clipboard` fed UTF-8 stores the exact text, with
+    /// no U+FEFF, and keeps line ends as given; `clip.exe` turned `\n` into
+    /// `\r\n`, so the payload does the same.
+    #[test]
+    fn powershell_gets_utf8_with_windows_line_ends_and_no_byte_order_mark() {
+        assert_eq!(
+            Tool::PowerShell.payload("a\nb\r\nñ漢😀\n"),
+            "a\r\nb\r\nñ漢😀\r\n".as_bytes()
+        );
+        assert_eq!(Tool::PowerShell.payload("ñ"), "ñ".as_bytes());
+    }
+
+    #[test]
+    fn powershell_reads_utf8_from_stdin_into_the_clipboard() {
+        let args = Tool::PowerShell.args();
+        assert_eq!(args[..3], ["-NoProfile", "-NonInteractive", "-Command"]);
+        assert!(args[3].contains("[Console]::InputEncoding = [Text.Encoding]::UTF8"));
+        assert!(args[3].contains("Set-Clipboard -Value ([Console]::In.ReadToEnd())"));
     }
 
     #[test]
@@ -286,6 +341,9 @@ mod tests {
             osc52_only(true),
             failed(Tool::ClipExe, reason),
             failed_too_large(Tool::ClipExe, reason),
+            failed(Tool::PowerShell, reason),
+            failed_too_large(Tool::PowerShell, reason),
+            copying(Tool::PowerShell),
             failed(Tool::Xclip, "exit code 255"),
             copying(Tool::Xsel),
             copied(Tool::Xsel),
@@ -299,7 +357,7 @@ mod tests {
         let long = failed(Tool::ClipExe, &"x".repeat(80));
         let shown: String = long.chars().take(ROOM_AT_80).collect();
         assert!(shown.contains("sent via OSC 52"), "{shown:?}");
-        let long = failed_too_large(Tool::ClipExe, &"x".repeat(80));
+        let long = failed_too_large(Tool::PowerShell, &"x".repeat(80));
         let shown: String = long.chars().take(ROOM_AT_80).collect();
         assert!(shown.contains("too large for OSC 52"), "{shown:?}");
     }

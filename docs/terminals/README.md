@@ -66,7 +66,7 @@ above all for every `fail`.
 | Truecolor and box-drawing glyphs | pending | |
 | Glyph width of the tool mark (once model-marks ships) | pending | |
 | `install-desktop` launcher, or the WSL start | pending | |
-| `clip.exe` text is UTF-16LE and pastes correctly (WSL only) | pending | |
+| Windows clipboard (`powershell.exe`, else `clip.exe`) pastes the exact text, no `<feff>` (WSL only) | pending | |
 
 ## Adding a record
 

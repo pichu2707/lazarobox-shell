@@ -5285,3 +5285,51 @@ fn a_refusal_reason_masks_paths() {
     // A bare slash inside a word is not a path.
     assert!(refusal_reason("and/or 1/2").contains("and/or 1/2"));
 }
+
+/// A run of one review worker on Ollama model `llama3:8b`, whose window the
+/// live servers know as `window` tokens.
+async fn ollama_review_trace(window: usize) -> Vec<TraceItem> {
+    let live = crate::runtime::chat::LiveServers::new(Default::default(), None);
+    live.set_ollama_windows(vec![("llama3:8b".into(), window)]);
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Review, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let mut lab = lab_with(Script::Answer("found it"), |manager, _| {
+        manager.with_live(live)
+    });
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    traced(&lab.sent(), 1)
+}
+
+// #557: Ollama cuts a prompt over its window without saying so; the worker's
+// trace says it, with the numbers, before the answer.
+#[tokio::test]
+async fn an_ollama_worker_whose_prompt_passes_its_window_says_so_in_its_trace() {
+    let items = ollama_review_trace(1).await;
+    let [
+        TraceItem::Begin,
+        TraceItem::Notice(notice),
+        TraceItem::Text(answer),
+    ] = &items[..]
+    else {
+        panic!("{items:?}");
+    };
+    assert!(
+        notice.starts_with("the worker prompt and setup are about ")
+            && notice.ends_with(" tokens, over the 1-token window: the server may cut them"),
+        "{notice}"
+    );
+    assert_eq!(answer, "found it");
+}
+
+#[tokio::test]
+async fn an_ollama_worker_whose_prompt_fits_gets_no_notice() {
+    assert_eq!(
+        ollama_review_trace(1_000_000).await,
+        [TraceItem::Begin, TraceItem::Text("found it".into())]
+    );
+}

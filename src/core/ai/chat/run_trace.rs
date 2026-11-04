@@ -29,6 +29,7 @@ pub const NO_OUTPUT: &str = "(no output yet)";
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Part {
     Text(String),
+    Notice(String),
     Tool {
         id: CallId,
         call: String,
@@ -57,6 +58,11 @@ impl WorkerTrace {
         *self.rows.get_mut() = None;
         match item {
             TraceItem::Begin => *self = Self::default(),
+            TraceItem::Notice(text) => {
+                let text = clip(&one_line(&text));
+                self.bytes += text.len();
+                self.parts.push_back(Part::Notice(text));
+            }
             TraceItem::Text(piece) => {
                 let piece = clean(&piece);
                 self.bytes += piece.len();
@@ -163,6 +169,9 @@ impl WorkerTrace {
                         assistant_rows(text, width, false, &mut out);
                     }
                 }
+                Part::Notice(text) => {
+                    push_wrapped(&mut out, LineKind::System, "", "", text, width);
+                }
                 Part::Tool { call, result, .. } => {
                     push_wrapped(&mut out, LineKind::Tool, TOOL_PREFIX, "  ", call, width);
                     if let Some((status, summary)) = result {
@@ -186,7 +195,7 @@ impl WorkerTrace {
 
 fn part_bytes(part: &Part) -> usize {
     match part {
-        Part::Text(text) => text.len(),
+        Part::Text(text) | Part::Notice(text) => text.len(),
         Part::Tool { call, result, .. } => {
             call.len() + result.as_ref().map_or(0, |(_, text)| text.len())
         }
