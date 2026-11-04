@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Overwriting an existing environment template no longer tells the model what it
+  holds. `write_file` over an existing `.env.example` (or `.sample`,
+  `.template`, `.dist`) answered "staged" or "use edit_file" depending on a
+  secret-looking run, CRLF or size, with no ask. It now asks first like
+  `edit_file` does, once per file per turn, and a denial gives the same answer
+  whatever the file holds. A worker, which cannot be asked, gets the usual
+  refusal. Creating a new template is unchanged. Refs #583.
+
 ## [1.7.0] - 2026-11-04
 
 ### Added

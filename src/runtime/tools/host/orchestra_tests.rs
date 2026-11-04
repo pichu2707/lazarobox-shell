@@ -1847,6 +1847,48 @@ async fn a_worker_writes_an_env_template_but_cannot_probe_one_with_edit() {
     assert!(!staged.is_error, "{staged:?}");
 }
 
+// #583: a worker cannot be asked, so a write over an existing template gets
+// one refusal whatever the file holds. A new template still stages.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_worker_write_over_an_existing_env_template_is_refused_whatever_it_holds() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let app = home.join("dev/app");
+    let files = [
+        (".env.plain.example", "A=1\n".to_owned()),
+        (
+            ".env.secret.example",
+            "KEY=sk-abcDEF1234567890abcdef\n".to_owned(),
+        ),
+        (".env.crlf.example", "A=1\r\nB=2\r\n".to_owned()),
+        (".env.big.example", "A=1\n".repeat(30_000)),
+    ];
+    for (name, content) in &files {
+        std::fs::write(app.join(name), content).unwrap();
+    }
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let d = writer(
+        &host,
+        Locality::Cloud,
+        &home,
+        handle,
+        Scripted::new(Decision::Unprompted),
+    );
+    let mut answers = Vec::new();
+    for (name, _) in &files {
+        answers.push(d.call(write_call(name, "x\n")).await);
+    }
+    assert!(answers.iter().all(|a| a.is_error), "{answers:?}");
+    assert!(
+        answers.iter().all(|a| a.text == answers[0].text),
+        "{answers:?}"
+    );
+    assert!(answers[0].text.starts_with(REFUSED), "{answers:?}");
+    let fresh = d.call(write_call(".env.new.example", "A=1\n")).await;
+    assert!(!fresh.is_error, "{fresh:?}");
+}
+
 // #583: a review worker's read tools refuse an env template, so its prompt
 // names the file and carries none of its text, whatever `allow` says.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1855,15 +1897,14 @@ async fn a_review_prompt_never_carries_an_env_template() {
     let (_dir, home, host) = fixture();
     project(&home);
     let app = home.join("dev/app");
-    std::fs::write(app.join(".env.sample"), "OLD=kept\n").unwrap();
     let handle = Scoped::over(&home, &["~/dev/app"]);
     let user = Scripted::new(Decision::Unprompted);
     let w = writer(&host, Locality::Cloud, &home, handle, user);
-    let staged = w.call(write_call(".env.sample", "A=1\n")).await;
+    let staged = w.call(write_call(".env.sample", "NEW=kept\n")).await;
     assert!(!staged.is_error, "{staged:?}");
     let key = StageKey::Pane(PANE);
     let diff = host.staged_diff(key, &app, |_| true).await.unwrap();
     assert!(diff.files.is_empty(), "{diff:?}");
-    assert!(!format!("{diff:?}").contains("OLD=kept"), "{diff:?}");
+    assert!(!format!("{diff:?}").contains("NEW=kept"), "{diff:?}");
     assert_eq!(diff.skipped, [".env.sample"]);
 }
