@@ -1320,6 +1320,28 @@ async fn writes_in_a_concrete_folder_keep_the_uniform_text() {
     }
 }
 
+// #438: a `$HOME` reached through a symlink still shows the chat's folder as
+// `~/…`: the origin is a real path, so it is compared with the real home.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_symlinked_home_still_shows_the_folder_from_tilde() {
+    let w = world();
+    let home = w.proj.parent().unwrap();
+    let link = home.parent().unwrap().join("home-link");
+    std::os::unix::fs::symlink(home, &link).unwrap();
+    let host = ToolHost::new(Some(link.into()), None, None, Limits::default());
+    let (tx, _rx) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+    scope.approver = Script::new(Decision::Sent);
+    scope.families = on();
+    scope.stage_key = Some(key());
+    let d = host.dispatch(scope);
+    let out = d.call(write("../escape.txt", "t")).await;
+    assert_eq!(out.text, HINTED);
+    let out = d.call(write("gone/x.txt", "t")).await;
+    assert_eq!(out.text, missing("gone"));
+}
+
 // local-model-writes D2: once the policy allowed the path, a parent folder
 // that does not exist is named, as the model wrote it.
 #[cfg(target_os = "linux")]
@@ -1342,7 +1364,7 @@ async fn a_missing_parent_folder_is_named_after_the_policy_passed() {
     // A link on the way, in the root or out of it or dangling, is never named.
     std::os::unix::fs::symlink(w.proj.join("gone"), w.proj.join("dangling")).unwrap();
     std::os::unix::fs::symlink("/tmp", w.proj.join("out")).unwrap();
-    for path in ["dangling/x.txt", "out/missing/x.txt"] {
+    for path in ["dangling/x.txt", "dangling/sub/x.txt", "out/missing/x.txt"] {
         let linked = d.call(write(path, "t")).await;
         assert_eq!(linked.text, HINTED, "{path}");
     }

@@ -352,14 +352,19 @@ fn on_disk(
     probed
 }
 
-/// The chat's folder as a write refusal names it: `$HOME` shown as `~`.
+/// The chat's folder as a write refusal names it: `$HOME` shown as `~`. The
+/// origin is usually a real path, so a `$HOME` reached through a symlink is
+/// also compared by its real path.
 fn chat_folder(env: &ToolEnv) -> String {
     let home = env
         .home
         .as_deref()
         .map(Path::new)
         .filter(|home| home.parent().is_some());
-    let shown = match home.and_then(|home| env.origin.strip_prefix(home).ok()) {
+    let real_home = home.and_then(|home| home.canonicalize().ok());
+    let rest = (home.into_iter().chain(real_home.as_deref()))
+        .find_map(|home| env.origin.strip_prefix(home).ok());
+    let shown = match rest {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => env.origin.display().to_string(),
@@ -372,14 +377,20 @@ fn chat_folder(env: &ToolEnv) -> String {
         .collect()
 }
 
+/// `(paths are relative to the chat's folder <folder>)`, the hint every
+/// write refusal about a path ends with (local-model-writes D2).
+fn relative_hint(env: &ToolEnv) -> String {
+    format!(
+        "(paths are relative to the chat's folder {})",
+        chat_folder(env)
+    )
+}
+
 /// The one text of every write refusal, with the chat's folder, so a model
 /// learns where its paths start (local-model-writes D2). It is the same for
 /// every reason: a model cannot tell an excluded path from a missing one.
 fn refused_in(env: &ToolEnv) -> String {
-    format!(
-        "{REFUSED} (paths are relative to the chat's folder {})",
-        chat_folder(env)
-    )
+    format!("{REFUSED} {}", relative_hint(env))
 }
 
 /// The refusal of every write when the chat's folder is itself too broad
@@ -402,6 +413,15 @@ fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
 /// The refusal of a write whose parent folder does not exist, for a path the
 /// policy already allowed (so `list_dir` would show the same). `None` when
 /// the parent is there or anything else is wrong with it.
+///
+/// This relies on an invariant of the caller: it runs only after
+/// `resolve_write` passed the path. The probe whose error leads here
+/// (`open_target`) does refuse for reasons of its own, such as a link, a hard
+/// link, a folder or a denied name. Each of those is about an entry that
+/// exists, so its parent is never `NotFound`, and the policy it applies is the
+/// one `resolve_write` already passed with the same roots. If a probe ever
+/// refused a path in a folder that does not exist, this text would tell an
+/// excluded path from a missing one, which the uniform refusal must never do.
 fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
     match real.parent()?.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -410,8 +430,8 @@ fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
     let shown = Path::new(path).parent()?.to_str()?.trim_end_matches('/');
     (!shown.is_empty()).then(|| {
         format!(
-            "{REFUSED}: the folder {shown}/ does not exist (paths are relative to the chat's folder {})",
-            chat_folder(env)
+            "{REFUSED}: the folder {shown}/ does not exist {}",
+            relative_hint(env)
         )
     })
 }

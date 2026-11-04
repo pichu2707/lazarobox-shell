@@ -32,6 +32,8 @@ baseline.
 
 ### Fixed
 
+- When `$HOME` is reached through a symlink, a refused write now names the
+  chat's folder as `~/…` instead of its full real path (#438).
 - An orchestra worker on Ollama whose prompt and setup pass the model's
   window now says so at the top of its transcript, with the estimated tokens
   and the window, instead of Ollama cutting the prompt silently (#557).
