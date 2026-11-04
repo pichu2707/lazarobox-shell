@@ -29,6 +29,13 @@ baseline.
   block. A conversation with saved messages this build does not know opens
   blocked as well.
 
+### Fixed
+
+- In WSL, text copied with `y` no longer pastes with a `<feff>` in front.
+  `clip.exe` kept the byte order mark as a character, so lazarobox now copies
+  with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls
+  back to `clip.exe`, which only gets the mark for non-ASCII text.
+
 ## [1.5.0] - 2026-11-03
 
 ### Added

@@ -33,4 +33,4 @@ exists. Copy the template into `<version>-<date>.md` and fill it in.
 | Truecolor and box-drawing glyphs | pending | |
 | Glyph width of the tool mark (once model-marks ships) | pending | |
 | WSL start, or `install-desktop` entry in the Windows Start menu (WSLg) in one step | pending | |
-| `clip.exe` text is UTF-16LE and pastes correctly | pending | |
+| Windows clipboard (`powershell.exe`, else `clip.exe`) pastes the exact text, no `<feff>` | pending | |
