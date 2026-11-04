@@ -501,7 +501,7 @@ impl App {
 
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
-    fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
+    pub(super) fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
         let availability = self.turn_availability(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -514,6 +514,11 @@ impl App {
             Command::Cost => return self.cost_submit(id),
             Command::CostArgs => {
                 self.cost_refused(id);
+                return Vec::new();
+            }
+            Command::Github => return self.github_submit(id),
+            Command::GithubArgs => {
+                self.github_refused(id);
                 return Vec::new();
             }
             Command::Feedback(words) => return self.feedback_submit(id, &words),

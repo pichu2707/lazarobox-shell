@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use super::{Outcome, ToolHost, ToolStatus, TurnScope, ended, files::lock_set, git::find_git};
+use super::{Outcome, ToolHost, ToolStatus, TurnScope, ended, files::lock_set, git::locate_git};
 use crate::{
     core::ai::{
         chat::{
@@ -21,13 +21,13 @@ use crate::{
         },
         tools::{
             Call, Locality,
-            github::{self as pure, GhCall, Slug, render},
+            github::{self as pure, GhCall, GhRepo, Slug, render},
         },
     },
     runtime::{
         desktop::which,
         tools::{
-            git::{Origin, origin_url},
+            git::repo_of,
             new_nonce,
             runner::{Run, Split, spawn_capped},
         },
@@ -38,14 +38,8 @@ use crate::{
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// The most stdout read from `gh`; a longer reply is refused, never cut.
 const STDOUT_CAP: usize = 4 * 1024 * 1024;
-/// The system places a git is looked for when the login PATH has none.
-const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/local/bin";
-
-const NO_ORIGIN: &str = "this folder has no origin remote";
-const NO_REPO: &str =
-    "the folder has no repository, or git refused it (ownership or a broken config)";
-const NOT_GITHUB: &str = "origin is not on GitHub (only github.com is supported)";
-const ORIGIN_FAILED: &str = "could not read origin";
+/// What a folder whose git cannot be found or run says.
+const UNREADABLE_ORIGIN: &str = "could not read origin";
 const NO_GH: &str =
     "gh is not installed: install the GitHub CLI (https://cli.github.com) and try again";
 const START_FAILED: &str = "gh could not be started";
@@ -109,16 +103,10 @@ pub(super) struct Planned {
 /// Nothing is started and nothing is asked on a refusal.
 pub(super) async fn plan(host: &ToolHost, scope: &TurnScope) -> Result<Planned, &'static str> {
     let path = host.gh.path();
-    let git = find_git(&path)
-        .or_else(|| find_git(OsStr::new(SYSTEM_PATH)))
-        .ok_or(ORIGIN_FAILED)?;
-    let found = origin_url(&git, &scope.origin, host.home.as_deref())
-        .await
-        .map_err(|_| ORIGIN_FAILED)?;
-    let slug = match found {
-        Origin::Url(url) => pure::slug_of(&url).ok_or(NOT_GITHUB)?,
-        Origin::NoOrigin => return Err(NO_ORIGIN),
-        Origin::NotARepo => return Err(NO_REPO),
+    let git = locate_git(&path).ok_or(UNREADABLE_ORIGIN)?;
+    let slug = match repo_of(&git, &scope.origin, host.home.as_deref()).await {
+        GhRepo::Found(slug) => slug,
+        refused => return Err(refused.refusal().unwrap_or(UNREADABLE_ORIGIN)),
     };
     let program = which("gh", Some(&path)).ok_or(NO_GH)?;
     Ok(Planned { slug, program })

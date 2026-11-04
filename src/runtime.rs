@@ -60,7 +60,10 @@ pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
-use crate::core::ai::tools::panes::{self, Facts, Roster};
+use crate::core::ai::tools::{
+    github::GhRepo,
+    panes::{self, Facts, Roster},
+};
 use crate::core::menu::feedback::{Issue, SendReply};
 use crate::core::pty::Probe;
 use ai_detect::spawn_detection;
@@ -501,7 +504,10 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_roster(roster, env::var_os("HOME").map(PathBuf::from))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
-        .with_folder_probes(folder::Prober::new(run_check::process_env(), folder_tx))
+        .with_folder_probes(
+            folder::Prober::new(run_check::process_env(), folder_tx)
+                .with_path(cli_env.path.clone()),
+        )
         .with_config_path(config_path)
         .with_probe_dir(probe_dir)
         .with_update_checker(Box::new(check_update))
@@ -1125,6 +1131,9 @@ async fn run_loop(
                     }
                     folder::Answer::Many(pane, id, found, busy) => {
                         AppEvent::FoldersProbed { pane, id, found, busy }
+                    }
+                    folder::Answer::Origin(pane, folder, dialog, repo) => {
+                        AppEvent::OriginProbed { pane, folder, dialog, repo }
                     }
                     folder::Answer::Completed(pane, id, text, found) => {
                         AppEvent::FolderCompleted { pane, id, text, found }
@@ -1951,6 +1960,20 @@ impl Panes {
                         pane,
                         purpose,
                         result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeOrigin {
+                    pane,
+                    folder,
+                    dialog,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_origin(pane, folder, dialog),
+                    // No runtime to read it with: nothing can be granted.
+                    None => feedback.push(AppEvent::OriginProbed {
+                        pane,
+                        folder,
+                        dialog,
+                        repo: GhRepo::Unreadable,
                     }),
                 },
                 Effect::ProbeFolders {

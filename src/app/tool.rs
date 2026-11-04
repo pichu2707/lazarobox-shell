@@ -12,8 +12,8 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, Route, answers_itself,
-        blocked_read_reason, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, GITHUB_GRANT_DENIED, Origin, QUEUE_FULL, Route,
+        answers_itself, blocked_read_reason, counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -143,6 +143,10 @@ impl App {
         ask: ApprovalAsk,
     ) -> Vec<Effect> {
         let worker = ask.worker();
+        // Only the user's `/github` opens the grant dialog, never a tool call.
+        if matches!(ask, ApprovalAsk::GithubGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, GITHUB_GRANT_DENIED);
+        }
         if !self.ai.tools_enabled() {
             return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
         }
@@ -191,6 +195,7 @@ impl App {
             | ApprovalAsk::GitDiff { .. }
             | ApprovalAsk::Panes { .. }
             | ApprovalAsk::GithubRead { .. }
+            | ApprovalAsk::GithubGrant { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)

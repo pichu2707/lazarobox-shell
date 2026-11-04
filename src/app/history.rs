@@ -564,6 +564,8 @@ impl App {
             self.set_list_line(id, OPEN_ELSEWHERE);
             return Vec::new();
         }
+        // A dialog read for the conversation that leaves is not for this one.
+        self.withdraw_github_dialog(id, github::R_RESUMED);
         let mode = self.ai.approval();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();

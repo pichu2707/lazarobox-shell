@@ -19,6 +19,7 @@ use crate::core::ai::toolchain::env::scrub;
 use crate::core::ai::toolchain::{Layout, Refusal, Vars, toolchain_spec};
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::git::{self as pure, GitDir, GitError, Identity};
+use crate::core::ai::tools::github::{GhRepo, slug_of};
 use crate::runtime::tools::integrity::{self, Change};
 use crate::runtime::tools::open::open_beneath;
 use crate::runtime::tools::runner::{AfterOnDrop, Done, Run, Unreported, spawn_core, watched};
@@ -543,6 +544,17 @@ pub async fn origin_url(git: &Path, dir: &Path, home: Option<&OsStr>) -> Result<
         Some(1) => Ok(Origin::NoOrigin),
         Some(128) => Ok(Origin::NotARepo),
         _ => Err(Fault::Preflight),
+    }
+}
+
+/// The GitHub repository of the folder `dir`, from its `origin`: the one
+/// reading the GitHub tools and `/github` share.
+pub async fn repo_of(git: &Path, dir: &Path, home: Option<&OsStr>) -> GhRepo {
+    match origin_url(git, dir, home).await {
+        Ok(Origin::Url(url)) => slug_of(&url).map_or(GhRepo::NotGithub, GhRepo::Found),
+        Ok(Origin::NoOrigin) => GhRepo::NoOrigin,
+        Ok(Origin::NotARepo) => GhRepo::NoRepo,
+        Err(_) => GhRepo::Unreadable,
     }
 }
 

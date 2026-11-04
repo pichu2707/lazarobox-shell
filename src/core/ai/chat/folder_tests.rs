@@ -306,6 +306,44 @@ fn a_double_slash_escapes_cost() {
     assert_eq!(parse_command("//costs"), Command::Plain);
 }
 
+// ---- /github (chat-pane: The /github command) -----------------------------
+
+#[test]
+fn the_exact_token_github_is_the_command() {
+    assert_eq!(parse_command("/github"), Command::Github);
+    assert_eq!(parse_command("  /github \n"), Command::Github);
+}
+
+#[test]
+fn github_with_anything_after_it_is_refused_like_cost() {
+    assert_eq!(parse_command("/github now"), Command::GithubArgs);
+    assert_eq!(parse_command("/github\tx y"), Command::GithubArgs);
+}
+
+#[test]
+fn github_is_case_sensitive_and_other_text_is_plain() {
+    assert_eq!(parse_command("/Github"), Command::Plain);
+    assert_eq!(parse_command("/githubs"), Command::Plain);
+    assert_eq!(parse_command("what does /github do"), Command::Plain);
+    assert_eq!(
+        parse_command("please enable the github tools"),
+        Command::Plain
+    );
+}
+
+#[test]
+fn a_double_slash_escapes_github() {
+    assert_eq!(
+        parse_command("//github"),
+        Command::Escaped("/github".into())
+    );
+    assert_eq!(
+        parse_command("//github is a command"),
+        Command::Escaped("/github is a command".into())
+    );
+    assert_eq!(parse_command("//githubs"), Command::Plain);
+}
+
 // Issue #551.
 #[test]
 fn feedback_takes_the_text_after_it() {

@@ -1,0 +1,20 @@
+---
+source: src/ui/components/chat/approval_tests.rs
+expression: shot
+---
+› how?
+
+Try this:
+```bash
+cd ~/dev/curso-rust
+```
+
+
+
+
+Let this chat read GitHub?
+owner/a-fairly-long-repository-name
+the model may read this repo's issues and PRs, for this chat only
+a cloud engine still asks before each turn's first read
+after the first read, commands are typed, never run
+y allow | n or Esc decline

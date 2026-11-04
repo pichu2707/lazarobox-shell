@@ -155,6 +155,47 @@ fn valid(part: &str, max: usize, dots: bool) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || (dots && matches!(b, b'.' | b'_')))
 }
 
+/// What the `origin` of a folder says about GitHub, read by lazarobox and
+/// never by the model. Every refusal has one fixed sentence.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum GhRepo {
+    Found(Slug),
+    /// A repository without a remote named `origin`.
+    NoOrigin,
+    /// Not inside a repository, or one git refuses (ownership, broken config).
+    NoRepo,
+    /// `origin` is not on `github.com`.
+    NotGithub,
+    /// git could not be run or read.
+    Unreadable,
+}
+
+impl GhRepo {
+    /// The sentence that says why there is no repository; `None` for a found
+    /// one.
+    pub fn refusal(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Found(_) => return None,
+            Self::NoOrigin => "this folder has no origin remote",
+            Self::NoRepo => {
+                "the folder has no repository, or git refused it (ownership or a broken config)"
+            }
+            Self::NotGithub => "origin is not on GitHub (only github.com is supported)",
+            Self::Unreadable => "could not read origin",
+        })
+    }
+}
+
+impl fmt::Display for GhRepo {
+    /// The `owner/name`, or the sentence that says why there is none.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Found(slug) => slug.fmt(f),
+            other => f.write_str(other.refusal().unwrap_or_default()),
+        }
+    }
+}
+
 /// The repository of an `origin` URL, only when the host is exactly
 /// `github.com`: https, `ssh://`, `git://` and the `git@host:path` form. A
 /// user or token in the URL is dropped, never kept.
