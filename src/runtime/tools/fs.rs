@@ -320,6 +320,7 @@ pub fn execute_within(
         | Call::GitAdd { .. }
         | Call::GitCommit { .. }
         | Call::ProposeBatch
+        | Call::Github(_)
         | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }

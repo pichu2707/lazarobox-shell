@@ -364,6 +364,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::GitLog { .. }
         // The host reads the index and builds the commit review itself.
         | Call::GitCommit { .. }
+        | Call::Github(_)
         | Call::Orchestra(_) => None,
     }
 }

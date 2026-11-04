@@ -19,12 +19,14 @@ pub enum Family {
     Pane,
     /// The orchestrator's `spawn_agent`, `wait`, `collect` and `cancel`.
     Orchestra,
+    /// The three read-only GitHub tools, run through `gh` on the host.
+    Github,
 }
 
 /// Which families are on: a bitset, one bit per [`Family`]. The single gate
 /// for what is offered and what a call may name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FamilySet(u8);
+pub struct FamilySet(u16);
 
 impl FamilySet {
     pub const EMPTY: FamilySet = FamilySet(0);
@@ -33,11 +35,11 @@ impl FamilySet {
 
     /// This set plus `family`.
     pub const fn with(self, family: Family) -> FamilySet {
-        FamilySet(self.0 | 1 << family as u8)
+        FamilySet(self.0 | 1 << family as u16)
     }
 
     pub const fn contains(self, family: Family) -> bool {
-        self.0 & (1 << family as u8) != 0
+        self.0 & (1 << family as u16) != 0
     }
 }
 
@@ -413,7 +415,7 @@ mod tests {
         assert!(without["properties"].get("timeout_secs").is_none());
     }
 
-    const EVERY_FAMILY: [Family; 8] = [
+    const EVERY_FAMILY: [Family; 9] = [
         Family::Read,
         Family::Search,
         Family::Write,
@@ -422,6 +424,7 @@ mod tests {
         Family::GitWrite,
         Family::Pane,
         Family::Orchestra,
+        Family::Github,
     ];
 
     // Spec (agent-tools, tool families): one bit per family, so the two git
