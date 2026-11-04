@@ -42,6 +42,14 @@ const READ_SLACK: usize = 16 * 1024;
 /// Covers connect, write and read of one loopback request.
 pub const HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 
+/// Longest the connect of one loopback request may take. A server that
+/// listens answers it in about a millisecond, a closed port refuses it at
+/// once; only a connect nobody answers waits. Under WSL's mirrored
+/// networking that is every port below the ephemeral range that nothing in
+/// Linux listens on (#584), so an engine that is not running would cost the
+/// whole [`HTTP_TIMEOUT`] of each detection.
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// Longest `--version` is allowed to run before the child is killed.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -91,9 +99,8 @@ pub async fn http_post_show(port: u16, model: &str) -> Option<(u16, Vec<u8>)> {
 async fn exchange(port: u16, request: &str) -> Option<(u16, Vec<u8>)> {
     // HTTP/1.0 with `Connection: close`: the reply ends at EOF. The host is
     // fixed, so no request can leave the machine.
-    let mut stream = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)))
-        .await
-        .ok()?;
+    let connect = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)));
+    let mut stream = timeout(CONNECT_TIMEOUT, connect).await.ok()?.ok()?;
     stream.write_all(request.as_bytes()).await.ok()?;
     // Headers fit well inside the slack; a longer reply is cut and rejected.
     let mut raw = Vec::new();
@@ -952,6 +959,23 @@ mod tests {
             http_get(refused.port(), "/api/tags"),
         )
         .await;
+        assert_eq!(answer, Ok(None));
+    }
+
+    // #584: a connect that is never answered (WSL mirrored networking drops
+    // it for a port nothing listens on) is given up long before the request's
+    // time limit. A listener whose accept queue is full drops it the same way
+    // on Linux.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn http_get_gives_up_on_an_unanswered_connect_quickly() {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The first connect fills the queue; the next ones get no answer.
+        let _held = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let answer = tokio::time::timeout(HTTP_TIMEOUT / 2, http_get(port, "/api/tags")).await;
         assert_eq!(answer, Ok(None));
     }
 
