@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-04
+
 ### Added
 
 - Feedback looks for open issues like yours before creating one. `Ctrl+S` first
@@ -2126,7 +2128,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.1...v1.4.0
