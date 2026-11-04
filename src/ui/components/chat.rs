@@ -290,6 +290,11 @@ impl ChatView<'_> {
     /// drawn in every view. Returns the column it starts at.
     fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) -> u16 {
         let (text, short, colour) = match mode {
+            // A blocked conversation never runs a command: the marker must not
+            // look like the active one. ASCII, for a Linux console.
+            ApprovalMode::Run if self.chat.github_read() => {
+                (" RUN OFF ", "r", self.theme.warning_orange)
+            }
             ApprovalMode::Run => (" RUN ", "R", self.theme.error_red),
             ApprovalMode::Auto => (" AUTO ", "A", self.theme.warning_orange),
             // `mode_badge` never yields `ask`.

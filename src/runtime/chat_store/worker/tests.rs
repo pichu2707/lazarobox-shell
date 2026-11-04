@@ -44,6 +44,7 @@ fn msg(role: Role, text: &str, status: MsgStatus) -> StoredMessage {
         status,
         engine: "ollama".into(),
         model: Some("llama3".into()),
+        github_read: false,
     }
 }
 
@@ -3503,5 +3504,178 @@ fn an_openai_compatible_record_without_a_cache_figure_is_a_prefill_gap() {
             of("ollama").prefill_gap
         ),
         (Some(10), Some(100), 0)
+    );
+}
+
+// ---- the GitHub marker (pane-execution, Resume stays blocked) -------------
+
+fn mark(conversation: Option<i64>) -> StoreCmd {
+    StoreCmd::MarkGithubRead {
+        pane: pane(),
+        conversation,
+    }
+}
+
+fn marker_rows(conn: &Connection, id: i64) -> Vec<(String, String, String)> {
+    conn.prepare(
+        "SELECT role, content, status FROM messages
+         WHERE conversation_id = ?1 AND role = 'github_read'",
+    )
+    .unwrap()
+    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+fn read_github(text: &str) -> StoredMessage {
+    StoredMessage {
+        github_read: true,
+        ..user(text)
+    }
+}
+
+fn resumed_flags(reply: Option<StoreReply>) -> (bool, usize, usize) {
+    match reply {
+        Some(StoreReply::Resumed {
+            github_read,
+            skipped,
+            messages,
+            ..
+        }) => (github_read, skipped, messages.len()),
+        other => panic!("expected Resumed, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_marker_is_one_complete_empty_row_and_is_idempotent() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(worker.handle(mark(Some(id))), None);
+    assert_eq!(worker.handle(mark(Some(id))), None);
+    assert_eq!(
+        marker_rows(&conn, id),
+        vec![("github_read".into(), String::new(), "complete".into())]
+    );
+}
+
+#[test]
+fn the_marker_is_not_listed_not_a_message_and_not_skipped() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(append(id, reply_msg("a", MsgStatus::Complete)));
+    worker.handle(mark(Some(id)));
+    let rows = listed(worker.handle(list()));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].first, "q");
+    assert_eq!(resumed_flags(worker.handle(resume(id))), (true, 0, 2));
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 3, "no schema change");
+}
+
+#[test]
+fn a_conversation_without_the_marker_resumes_unblocked() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(resumed_flags(worker.handle(resume(id))), (false, 0, 1));
+}
+
+#[test]
+fn the_marker_without_an_id_resolves_through_the_pane() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(worker.handle(mark(None)), None);
+    assert_eq!(marker_rows(&conn, id).len(), 1);
+}
+
+#[test]
+fn a_marker_for_a_missing_conversation_is_a_failed_write() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.handle(mark(Some(4_242)));
+    assert!(
+        matches!(reply, Some(StoreReply::Failed { .. })),
+        "{reply:?}"
+    );
+}
+
+// A row of a blocked conversation brings the marker in its own transaction.
+#[test]
+fn a_blocked_row_carries_the_marker_once_in_its_own_transaction() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(append(id, read_github("again")));
+    worker.handle(append(id, read_github("and again")));
+    assert_eq!(marker_rows(&conn, id).len(), 1);
+    assert_eq!(rows(&conn, id).len(), 4);
+    let first = created_id(worker.handle(create(read_github("fresh"), vec![])));
+    assert_eq!(marker_rows(&conn, first).len(), 1);
+}
+
+// The Create path: the marker precedes the first row in the same transaction,
+// and a resume from it stays blocked.
+#[test]
+fn a_create_with_the_marker_stores_it_before_the_first_row_and_resumes_blocked() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(read_github("fresh"), vec![])));
+    let order: Vec<(i64, String)> = conn
+        .prepare("SELECT seq, role FROM messages WHERE conversation_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        order,
+        vec![(1, "github_read".to_owned()), (2, "user".to_owned())]
+    );
+    assert_eq!(resumed_flags(worker.handle(resume(id))), (true, 0, 1));
+}
+
+#[test]
+fn deleting_the_conversation_takes_the_marker_and_a_reused_id_starts_clean() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(mark(Some(id)));
+    assert!(matches!(
+        worker.handle(delete(id)),
+        Some(StoreReply::Deleted { .. })
+    ));
+    assert_eq!(count(&conn, "messages"), 0);
+    let again = created_id(worker.handle(create(user("new"), vec![])));
+    assert_eq!(marker_rows(&conn, again), vec![]);
+    assert_eq!(resumed_flags(worker.handle(resume(again))), (false, 0, 1));
+}
+
+// Round trip on a temporary file: mark, close the store, reopen the same
+// file, resume. An older build at schema 3 opens it and skips the row.
+#[test]
+fn the_block_survives_closing_and_reopening_the_store() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let id = {
+        let mut worker = worker_at(&db);
+        let id = created_id(worker.handle(create(user("q"), vec![])));
+        worker.handle(mark(Some(id)));
+        id
+    };
+    let mut reopened = worker_at(&db);
+    assert_eq!(resumed_flags(reopened.handle(resume(id))), (true, 0, 1));
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&db).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the database stays private");
+
+    let older = crate::runtime::chat_store::open_with(&db, me(), 3).expect("schema 3 opens");
+    let unknown: i64 = older
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE role NOT IN ('user', 'assistant')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unknown, 1,
+        "an older build counts it as a row it does not know"
     );
 }

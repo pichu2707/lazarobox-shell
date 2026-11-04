@@ -430,6 +430,10 @@ pub struct ChatState {
     auto_typed: u8,
     /// Consecutive grammar or policy fallbacks of `run` (D23).
     run_fallbacks: u8,
+    /// The conversation read GitHub text: no command of it runs, for good.
+    github_read: bool,
+    /// The flag is up and its marker row was not asked of the store yet.
+    github_unmarked: bool,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -543,6 +547,8 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             run_fallbacks: 0,
+            github_read: false,
+            github_unmarked: false,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
@@ -879,6 +885,32 @@ impl ChatState {
     /// One more command was typed without a prompt in this turn.
     pub fn note_auto_typed(&mut self) {
         self.auto_typed = self.auto_typed.saturating_add(1);
+    }
+
+    /// Whether the conversation read GitHub text. Nothing lifts it.
+    pub fn github_read(&self) -> bool {
+        self.github_read
+    }
+
+    /// `gh` was started for this conversation: it is blocked from now on and
+    /// says so. `true` when this call started the block.
+    pub fn note_github_read(&mut self) -> bool {
+        if self.github_read {
+            return false;
+        }
+        self.github_read = true;
+        self.github_unmarked = true;
+        self.push_system_line(approval::GITHUB_BLOCK_LINE.to_owned());
+        true
+    }
+
+    /// A resumed conversation holds the marker: it opens blocked and says so.
+    /// The marker is stored already.
+    pub fn adopt_github_read(&mut self) {
+        if !self.github_read {
+            self.github_read = true;
+            self.push_system_line(approval::GITHUB_BLOCK_LINE.to_owned());
+        }
     }
 
     /// Whether `run` is paused for the rest of the turn (D23).
@@ -1310,6 +1342,7 @@ impl ChatState {
             status: MsgStatus::Complete,
             engine: engine.clone(),
             model: model.clone(),
+            github_read: false,
         });
         // A user message nobody answered (cancelled while waiting, or an
         // error before any text) stays in the transcript but is not sent:
@@ -1532,6 +1565,8 @@ impl ChatState {
                 self.tool_result(id, status, summary);
                 Follow::Nothing
             }
+            // The app tracks it before `apply`, so a stale event blocks too.
+            StreamEvent::GithubStarted => Follow::Nothing,
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {
                     self.generation += 1;
@@ -1727,6 +1762,7 @@ impl ChatState {
                 status,
                 engine: std::mem::take(&mut self.request_engine),
                 model: (!self.request_model.is_empty()).then(|| self.request_model.clone()),
+                github_read: false,
             });
         }
         if let Some(line) = line {
@@ -1817,6 +1853,8 @@ mod context_tests;
 mod folder_picker_tests;
 #[cfg(test)]
 mod folder_tests;
+#[cfg(test)]
+mod github_block_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]

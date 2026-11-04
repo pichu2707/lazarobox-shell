@@ -87,6 +87,7 @@ fn the_first_send_creates_the_conversation_with_profile_tag_and_message() {
                 status: MsgStatus::Complete,
                 engine: "ollama".into(),
                 model: Some("llama3:8b".into()),
+                github_read: false,
             },
             origin: None,
             folder: None,

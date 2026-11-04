@@ -224,6 +224,8 @@ impl Pipe {
                 status,
                 summary: clip(&summary),
             }],
+            // A fixed event of the host, with no text.
+            StreamEvent::GithubStarted => vec![StreamEvent::GithubStarted],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             // The engine's own report: counts and ids, no text to filter.

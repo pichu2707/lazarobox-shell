@@ -457,6 +457,7 @@ fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
         session: None,
         folder: None,
         skipped: 0,
+        github_read: false,
     }));
     press(&mut a, "T");
     assert_eq!(editor_text(&a), "proj, sql");

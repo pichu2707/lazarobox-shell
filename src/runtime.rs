@@ -4326,6 +4326,7 @@ mod tests {
             status,
             engine: "ollama".into(),
             model: None,
+            github_read: false,
         }
     }
 

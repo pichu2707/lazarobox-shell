@@ -332,6 +332,7 @@ impl App {
                 session,
                 folder,
                 skipped,
+                github_read,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
@@ -343,7 +344,7 @@ impl App {
                     profile,
                     tags,
                     messages,
-                    (session, folder, *skipped),
+                    (session, folder, *skipped, *github_read),
                 )
             }
             StoreReply::ResumeFailed { pane } => {
@@ -548,7 +549,12 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
-        (session, folder, skipped): (&Option<(String, String)>, &Option<PathBuf>, usize),
+        (session, folder, skipped, github_read): (
+            &Option<(String, String)>,
+            &Option<PathBuf>,
+            usize,
+            bool,
+        ),
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -573,6 +579,10 @@ impl App {
         }
         if skipped > 0 {
             chat.push_system(skipped_line(skipped));
+        }
+        // The marker row is stored already: the conversation opens blocked.
+        if github_read {
+            chat.adopt_github_read();
         }
         // The pair its notes were written under is reused before the first
         // write: engram rejects a session under another project, and the

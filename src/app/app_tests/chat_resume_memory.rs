@@ -47,6 +47,7 @@ fn resumed_with(session: Option<(&str, &str)>) -> AppEvent {
         session: session.map(|(id, project)| (id.to_owned(), project.to_owned())),
         folder: None,
         skipped: 0,
+        github_read: false,
     })
 }
 

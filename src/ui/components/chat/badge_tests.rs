@@ -341,3 +341,28 @@ fn the_layout_gives_up_a_row_only_while_a_badge_is_drawn() {
     assert_eq!(badged.transcript.height + 1, bare.transcript.height);
     assert_eq!(badged.composer, bare.composer);
 }
+
+// Spec (pane-execution, Marker does not promise a run): a blocked chat in
+// `run` does not wear the active marker, in ASCII for a Linux console.
+#[test]
+fn a_blocked_chat_in_run_wears_a_marker_that_promises_no_run() {
+    let mut chat = chat_in(ApprovalMode::Run);
+    chat.note_github_read();
+    let buf = draw(&chat, 30, 6);
+    assert_badge_of(&buf, " RUN OFF ", theme().warning_orange);
+    assert!(row(&buf, 0).is_ascii());
+    assert!(!row(&buf, 0).ends_with(" RUN "));
+    // At 80 columns the whole word fits, and the narrow form is one letter.
+    assert_badge_of(&draw(&chat, 80, 6), " RUN OFF ", theme().warning_orange);
+    assert_eq!(draw(&chat, 8, 4)[(7, 0)].symbol(), "r");
+    // The bar at 80 columns, as drawn.
+    let shot = (0..2)
+        .map(|y| row(&draw(&chat, 80, 6), y).trim_end().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("blocked_run_marker_80x6", shot);
+    // Auto is unchanged: it never ran a command by itself.
+    let mut auto = chat_in(ApprovalMode::Auto);
+    auto.note_github_read();
+    assert_badge(&draw(&auto, 30, 6));
+}

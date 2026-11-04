@@ -12,8 +12,8 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, Route, answers_itself,
-        counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, RUN_BLOCKED_LINE, Route,
+        answers_itself, blocked_read_reason, counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -157,10 +157,10 @@ impl App {
         // A read or a search the mode answers needs no overlay, so a pending
         // approval does not stand in its way. A reply that lets it go is not
         // the user's `y`.
-        let mode = (self.panes.get(&id))
-            .and_then(PaneState::chat_state)
-            .map(ChatState::approval_mode);
-        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode)) {
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        let mode = chat.map(ChatState::approval_mode);
+        let blocked = chat.is_some_and(ChatState::github_read);
+        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode, blocked)) {
             return vec![Effect::ToolDecision {
                 pane: id,
                 worker,
@@ -195,7 +195,7 @@ impl App {
             | ApprovalAsk::Consent { .. }
             | ApprovalAsk::Folder { .. } => None,
         };
-        let mut why = None;
+        let mut why = blocked_read_reason(&ask, blocked).map(str::to_owned);
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
             match self.auto_route(id, target, &ask, false) {
                 Route::AutoType => return self.auto_type(id, (turn, call), target, command),
@@ -301,6 +301,7 @@ impl App {
             paused: chat.run_paused(),
             dirty: pty.is_some_and(|pty| pty.user_dirty),
             utf8: self.utf8_locale,
+            github_read: chat.github_read(),
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }
@@ -354,7 +355,9 @@ impl App {
         };
         let mode = chat.approval_mode().cycled(true);
         chat.set_approval_mode(mode);
+        let blocked = chat.github_read();
         chat.push_system_line(match mode {
+            ApprovalMode::Run if blocked => RUN_BLOCKED_LINE.to_owned(),
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
             ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),
