@@ -8,7 +8,8 @@
 //! a turn never counts the history alone, and never leaves it under
 //! [`UNKNOWN_WINDOW_FLOOR`] characters.
 
-use super::engine::{ChatMessage, history_chars};
+use super::adapters::tools_reserve_tokens;
+use super::engine::{ChatMessage, ChatRequest, Tools, history_chars};
 use crate::core::ai::{CATALOG, Kind};
 
 /// Characters per token of the estimate: coarse, but the same for every model.
@@ -104,6 +105,26 @@ pub fn fill(
         used: history + estimate_tokens(system) + estimate_tokens(memory) + tools_reserve,
         capacity,
     })
+}
+
+/// `Some((tokens, window))` when `request` passes the Ollama window it is
+/// stamped with: its system prompt, memory block, messages and, when it
+/// offers tools, their block and schemas. `None` when it fits or no window
+/// is known. For a turn sent whole, such as a worker's one message (#557):
+/// Ollama cuts what does not fit without saying so.
+pub fn over_window(request: &ChatRequest) -> Option<(usize, usize)> {
+    let window = request.ollama.num_ctx.filter(|&w| w > 0)?;
+    let tools = match request.tools {
+        Tools::On { .. } => tools_reserve_tokens(request.families),
+        Tools::Off => 0,
+    };
+    let tokens = estimate_tokens(&request.system)
+        + request.memory.as_deref().map_or(0, estimate_tokens)
+        + (request.messages.iter())
+            .map(|m| estimate_tokens(&m.content))
+            .sum::<usize>()
+        + tools;
+    (tokens > window).then_some((tokens, window))
 }
 
 #[cfg(test)]

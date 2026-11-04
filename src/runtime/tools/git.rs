@@ -9,7 +9,7 @@
 //! outside the jail (`git config` only reads values), and checks that git is
 //! 2.32 or newer, as `GIT_CONFIG_GLOBAL` needs.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -490,6 +490,60 @@ async fn config(ctx: &Ctx, read: Read<'_>) -> Result<(Result<Identity, GitError>
         }
     }
     Ok((Identity::new(&name, &email), hooks))
+}
+
+/// What `origin_url` found in the repository's own config.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The raw value of `remote.origin.url`.
+    Url(String),
+    /// A repository without a remote named `origin`.
+    NoOrigin,
+    /// Git exited 128: not inside a repository, or one git refuses (a foreign
+    /// owner, a broken config).
+    NotARepo,
+}
+
+/// The raw `remote.origin.url` of the repository holding `dir`, read from its
+/// own config only (`--local`): a global value is not an origin, and
+/// `git remote get-url` would apply `insteadOf`. Nothing runs but `git
+/// config`, which only reads; a linked worktree reads the common config.
+/// Without `--local`, exit 1 means both "no origin" and "no repository", so
+/// the flag is what tells them apart (exit 128 outside a repository). The
+/// message is localized, so only the exit code is read.
+pub async fn origin_url(git: &Path, dir: &Path, home: Option<&OsStr>) -> Result<Origin, Fault> {
+    let mut env: Vec<(OsString, OsString)> = vec![
+        ("LC_ALL".into(), "C".into()),
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ];
+    env.extend(home.map(|home| ("HOME".into(), home.to_owned())));
+    let done = spawn_core(Run {
+        program: git.to_owned(),
+        argv: ["config", "--local", "-z", "--get", "remote.origin.url"]
+            .map(OsString::from)
+            .to_vec(),
+        cwd: dir.to_owned(),
+        env,
+        timeout: Duration::from_secs(10),
+    })
+    .await?;
+    let ended = &done.ended;
+    if ended.timed_out || done.capture.truncated() {
+        return Err(Fault::Preflight);
+    }
+    match ended.exit {
+        Some(0) => {
+            let bytes = done.capture.bytes();
+            let text = String::from_utf8_lossy(&bytes);
+            Ok(Origin::Url(
+                text.split('\0').next().unwrap_or("").to_owned(),
+            ))
+        }
+        Some(1) => Ok(Origin::NoOrigin),
+        Some(128) => Ok(Origin::NotARepo),
+        _ => Err(Fault::Preflight),
+    }
 }
 
 /// What a status call gave.

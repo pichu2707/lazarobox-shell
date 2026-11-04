@@ -414,6 +414,118 @@ async fn spawn_with(run: Run, status: Option<io::PipeWriter>) -> io::Result<Done
     })
 }
 
+/// What [`spawn_capped`] read. `over` says stdout went past its cap: the group
+/// was killed and `stdout` holds only the first `cap` bytes, which a caller
+/// must not parse.
+#[derive(Debug)]
+pub struct Split {
+    pub ended: Ended,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub over: bool,
+}
+
+/// The most stderr bytes [`spawn_capped`] keeps; the rest is read and dropped.
+pub const STDERR_CAP: usize = 8 * 1024;
+
+/// One pipe of [`spawn_capped`]: the first `cap` bytes read, and whether more
+/// came.
+struct Lane {
+    kept: Vec<u8>,
+    cap: usize,
+    over: bool,
+    open: bool,
+    chunk: Vec<u8>,
+}
+
+impl Lane {
+    fn new(cap: usize) -> Self {
+        Self {
+            kept: Vec::new(),
+            cap,
+            over: false,
+            open: true,
+            chunk: vec![0; CHUNK],
+        }
+    }
+
+    fn feed(&mut self, read: io::Result<usize>) {
+        match read {
+            Ok(n) if n > 0 => {
+                let room = self.cap - self.kept.len();
+                self.kept.extend_from_slice(&self.chunk[..n.min(room)]);
+                self.over |= n > room;
+            }
+            _ => self.open = false,
+        }
+    }
+}
+
+/// Reads both pipes until both end, or until stdout goes past its cap.
+async fn pump(out: &mut Lane, out_pipe: &mut Receiver, err: &mut Lane, err_pipe: &mut Receiver) {
+    while (out.open || err.open) && !out.over {
+        tokio::select! {
+            read = out_pipe.read(&mut out.chunk), if out.open => out.feed(read),
+            read = err_pipe.read(&mut err.chunk), if err.open => err.feed(read),
+        }
+    }
+}
+
+/// Starts `run` like [`spawn_core`], but with stdout and stderr on separate
+/// pipes: stdout stops at `stdout_cap` (the group is killed, `over` is set),
+/// stderr keeps its first [`STDERR_CAP`] bytes. Dropping the future kills the
+/// whole process group.
+pub async fn spawn_capped(run: Run, stdout_cap: usize) -> io::Result<Split> {
+    let ((out_r, out_w), (err_r, err_w)) = (io::pipe()?, io::pipe()?);
+    let mut command = Command::new(&run.program);
+    command
+        .args(&run.argv)
+        .current_dir(&run.cwd)
+        .env_clear()
+        .envs(run.env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null())
+        .stdout(out_w)
+        .stderr(err_w)
+        .kill_on_drop(true)
+        .process_group(0);
+    let mut child = spawn(&mut command).await?;
+    // The command holds the write ends: until it is gone the pipes never end.
+    drop(command);
+    let pid = child.id().and_then(|id| libc::pid_t::try_from(id).ok());
+    let Some(mut group) = pid.and_then(GroupKill::new) else {
+        return Err(io::Error::other("could not own the process group"));
+    };
+    let pid = pid.expect("a group exists only for a known pid");
+    let receiver = |fd: io::PipeReader| Receiver::from_file(File::from(OwnedFd::from(fd)));
+    let (mut out_pipe, mut err_pipe) = (receiver(out_r)?, receiver(err_r)?);
+    let (mut out, mut err) = (Lane::new(stdout_cap), Lane::new(STDERR_CAP));
+    let exit = wait_exit_unreaped(pid);
+    let deadline = tokio::time::sleep(run.timeout);
+    tokio::pin!(exit, deadline);
+    let mut timed_out = false;
+    tokio::select! {
+        () = pump(&mut out, &mut out_pipe, &mut err, &mut err_pipe) => {}
+        _ = &mut exit => {}
+        _ = &mut deadline => timed_out = true,
+    }
+    let status = bounded(group.kill_and_reap(&mut child), REAP).await?;
+    // What was written last is still in the pipes: at most what a pipe holds,
+    // so a flood is not read on.
+    let rest = pump(&mut out, &mut out_pipe, &mut err, &mut err_pipe);
+    let _ = tokio::time::timeout(DRAIN, rest).await;
+    Ok(Split {
+        ended: Ended {
+            exit: status.code(),
+            signal: status.signal(),
+            timed_out,
+            cancelled: false,
+        },
+        stdout: out.kept,
+        stderr: err.kept,
+        over: out.over,
+    })
+}
+
 /// How long the final kill-and-reap may take. After SIGKILL it is immediate;
 /// a process stuck in the kernel is not, and must not hold the caller.
 const REAP: Duration = Duration::from_secs(5);

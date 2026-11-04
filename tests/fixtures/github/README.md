@@ -22,3 +22,22 @@ Facts the fixtures settled (they win over the design):
 - A `CheckRun` has `name`, `status` (`COMPLETED`, `IN_PROGRESS`, `QUEUED`) and `conclusion` (`SUCCESS`, `SKIPPED`, `CANCELLED`, `NEUTRAL`, `FAILURE`; empty while running). A `StatusContext` has `context` and `state`.
 - `--repo github.com/O/R` is accepted by `issue list`, `issue view`, `pr view`; `gh repo view github.com/O/R` works.
 - A `gh` alias cannot shadow `issue`, `pr` or `repo`: `gh alias set` refuses with "already a gh command or extension" (gh 2.96.0, temporary config, verified by the coordinator).
+
+## Failure recordings (PR 3, read-only, gh 2.96.0)
+
+`*.stderr` is the stderr; `*.exit` is the exit code.
+
+| Files | Recorded with | Facts |
+|---|---|---|
+| `not-found-issue.*` | `gh issue view 99999999 --repo github.com/pichu2707/lazarobox-shell --json number` | exit 1, `GraphQL: Could not resolve to an issue or pull request with the number of 99999999. (repository.issue)` |
+| `not-found-pr.*` | same with `gh pr view` | exit 1, `GraphQL: Could not resolve to a PullRequest with the number of 99999999. (repository.pullRequest)` |
+| `logged-out.*` | `GH_TOKEN`/`GITHUB_TOKEN` unset and a temporary empty `GH_CONFIG_DIR` | exit 4, stderr names `gh auth login` |
+
+The matcher for "not found" is exit 1 plus the substring `with the number of`; a repository that cannot be resolved
+says `Could not resolve to a Repository`, which does not match, so it stays a generic failure.
+
+`git config -z --get remote.origin.url` exits 1 both with no `origin` and OUTSIDE a repository (it falls back to
+the global config), so it cannot tell them apart. `git config --local -z --get remote.origin.url` exits 1 with no
+`origin` and 128 outside a repository; a repository git refuses as dubious ownership also gives 128
+(`GIT_TEST_ASSUME_DIFFERENT_OWNER=1`). The message is localized (it came out in Spanish), so only the exit code is
+read. A linked worktree and a subfolder both return the common config's value. git 2.47.3.

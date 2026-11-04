@@ -59,6 +59,9 @@ pub enum TraceItem {
     Begin,
     /// A piece of the worker's answer.
     Text(String),
+    /// A line about how the worker's turn runs, shown as a system row: its
+    /// prompt passes the model's window (#557).
+    Notice(String),
     /// A tool call of the worker.
     Call {
         id: CallId,
