@@ -85,35 +85,35 @@ Branch: `feat/github-read-block` from `main`. Inert: no tool exists, so nothing 
 
 ### Phase 1: Block flag and event (Unit B)
 
-- [ ] 1.1 RED `src/core/ai/chat/approval.rs` tests: `route_run` with `AutoCtx.github_read` gives `Route::Prompt(Some(Fallback{ why: GITHUB_READ }))` for a command that would run, checked first; the block does not count toward `MAX_RUN_FALLBACKS` (`counts_toward_pause` exclusion); `auto` and `ask` routes unchanged. Spec: Auto-run block, "Auto and ask unchanged", "Later turns stay blocked".
-- [ ] 1.2 GREEN: `AutoCtx.github_read`, `GITHUB_READ`, route check, exclusion.
-- [ ] 1.3 RED chat state tests (`chat/mod.rs`): `GithubStarted` sets `github_read`, also when the event is stale (`live` false); a non-gh tool event does not; an `Error` result after it keeps the flag; a call refused before the spawn sends no event. Spec: "Block starts at the first read", "Refused calls do not start the block", "Started calls that fail still block".
-- [ ] 1.4 GREEN: the `GithubStarted` tool event (name confirmed in apply), tracking in `on_chat` before `apply`; `auto_route` fills the ctx. Nothing sends the event yet, so the test builds it directly.
-- [ ] 1.5 RED app tests in the `tool_run_y.rs` style: flag up, keys line is `RUN_KEYS`; `y` produces `WritePty` with no `\r` and `Decision::Sent` with the not-run line; a prompt opened before the read changes on the next frame; a `Checked` in flight falls back through `auto_route(.., true)`; no key does nothing. Spec: "y does not run it".
-- [ ] 1.6 GREEN: `y_run_blocker` takes the chat id and returns `GITHUB_READ` first; `pending_prompt` and `approve_run` use `RUN_KEYS`; `auto_run` guard types instead of adding `\r`; `toggle_approval` run line says commands are typed while blocked.
-- [ ] 1.7 RED: `auto` mode while blocked types without a prompt and never sends `\r`; `ask` already only types. Spec: "Auto and ask unchanged". GREEN: only if the test fails.
-- [ ] 1.8 RED+GREEN "Nothing lifts it": toggle off, mode cycled `ask` then `run`, a tool result saying "auto-run is back on": the next `run_in_pane` still prompts and `y` sends no Enter. Pin test, no new code expected.
-- [ ] 1.9 RED+GREEN system line when the block starts (per C4: any mode) and when a blocked conversation is resumed; not stored, not sent. Spec: "Block starts at the first read", "Resume stays blocked".
-- [ ] 1.10 RED `TestBackend` + insta at 80 columns and `TERM=linux`: a blocked chat in `run` does not draw the active ` RUN ` marker and shows that auto-run is blocked, ASCII on the console. GREEN: bar marker. Spec: "Marker does not promise a run".
+- [x] 1.1 RED `src/core/ai/chat/approval.rs` tests: `route_run` with `AutoCtx.github_read` gives `Route::Prompt(Some(Fallback{ why: GITHUB_READ }))` for a command that would run, checked first; the block does not count toward `MAX_RUN_FALLBACKS` (`counts_toward_pause` exclusion); `auto` and `ask` routes unchanged. Spec: Auto-run block, "Auto and ask unchanged", "Later turns stay blocked".
+- [x] 1.2 GREEN: `AutoCtx.github_read`, `GITHUB_READ`, route check, exclusion.
+- [x] 1.3 RED chat state tests (`chat/mod.rs`): `GithubStarted` sets `github_read`, also when the event is stale (`live` false); a non-gh tool event does not; an `Error` result after it keeps the flag; a call refused before the spawn sends no event. Spec: "Block starts at the first read", "Refused calls do not start the block", "Started calls that fail still block".
+- [x] 1.4 GREEN: the `GithubStarted` tool event (name confirmed in apply), tracking in `on_chat` before `apply`; `auto_route` fills the ctx. Nothing sends the event yet, so the test builds it directly.
+- [x] 1.5 RED app tests in the `tool_run_y.rs` style: flag up, keys line is `RUN_KEYS`; `y` produces `WritePty` with no `\r` and `Decision::Sent` with the not-run line; a prompt opened before the read changes on the next frame; a `Checked` in flight falls back through `auto_route(.., true)`; no key does nothing. Spec: "y does not run it".
+- [x] 1.6 GREEN: `y_run_blocker` takes the chat id and returns `GITHUB_READ` first; `pending_prompt` and `approve_run` use `RUN_KEYS`; `auto_run` guard types instead of adding `\r`; `toggle_approval` run line says commands are typed while blocked.
+- [x] 1.7 RED: `auto` mode while blocked types without a prompt and never sends `\r`; `ask` already only types. Spec: "Auto and ask unchanged". GREEN: only if the test fails.
+- [x] 1.8 RED+GREEN "Nothing lifts it": toggle off, mode cycled `ask` then `run`, a tool result saying "auto-run is back on": the next `run_in_pane` still prompts and `y` sends no Enter. Pin test, no new code expected.
+- [x] 1.9 RED+GREEN system line when the block starts (per C4: any mode) and when a blocked conversation is resumed; not stored, not sent. Spec: "Block starts at the first read", "Resume stays blocked".
+- [x] 1.10 RED `TestBackend` + insta at 80 columns and `TERM=linux`: a blocked chat in `run` does not draw the active ` RUN ` marker and shows that auto-run is blocked, ASCII on the console. GREEN: bar marker. Spec: "Marker does not promise a run".
 
 ### Phase 2: Reads while blocked (Unit C)
 
-- [ ] 1.11 RED `answers_itself(ask, mode, blocked)` tests: `Read`/`Search` is `None` in `ask`, `auto` and `run` for in-root cloud paths when blocked; unblocked rows unchanged; `Reach::Refused`/`Unshowable` stay free; local engine unchanged. Spec: "Run mode asks for an in-root read", "Ask and auto mode ask each time", "Local engine unchanged".
-- [ ] 1.12 GREEN: new parameter, `app/tool.rs` passes `chat.github_read`, prompt reason `GITHUB_READ_ASK` through `Fallback{ why }`.
-- [ ] 1.13 RED app test: one `y` answers one call; a second `read_file` opens its own prompt; the rule applies from the next round of the same turn; the guard's refusal returns without a prompt. Spec: "Ask and auto mode ask each time".
+- [x] 1.11 RED `answers_itself(ask, mode, blocked)` tests: `Read`/`Search` is `None` in `ask`, `auto` and `run` for in-root cloud paths when blocked; unblocked rows unchanged; `Reach::Refused`/`Unshowable` stay free; local engine unchanged. Spec: "Run mode asks for an in-root read", "Ask and auto mode ask each time", "Local engine unchanged".
+- [x] 1.12 GREEN: new parameter, `app/tool.rs` passes `chat.github_read`, prompt reason `GITHUB_READ_ASK` through `Fallback{ why }`.
+- [x] 1.13 RED app test: one `y` answers one call; a second `read_file` opens its own prompt; the rule applies from the next round of the same turn; the guard's refusal returns without a prompt. Spec: "Ask and auto mode ask each time".
 
 ### Phase 3: Marker row (Unit D)
 
-- [ ] 1.14 RED store tests (temporary database only, never the real `chat.db`): `MarkGithubRead` inserts one row `role='github_read'`, `content=''`, `status='complete'`; idempotent (`WHERE NOT EXISTS`); not listed by `list`; not returned in `messages`; not counted in `skipped`; `user_version` still 3. Spec: "Resume stays blocked".
-- [ ] 1.15 RED: opening the same database with `open_with(.., 3)` as an older build works and shows its "not shown" notice.
-- [ ] 1.16 RED: `StoredMessage.github_read` set once the flag is up, so every later `append`/`create` carries the marker in its own transaction; a failing marker with a later row cannot leave that row unmarked; deleting a conversation cascades the marker, and a reused id starts clean.
-- [ ] 1.17 GREEN: `StoreCmd::MarkGithubRead`, `github_read` fields in `chat/store.rs`, marker insert and panic table in `worker.rs`, `store_cmds` in `history.rs`.
-- [ ] 1.18 RED **resume test with a temporary database**: build a conversation, set the flag, close the store, reopen the same temp file, resume: `StoreReply::Resumed.github_read` is true, the block system line shows (1.9), `y` still only types (no `\r`), and `read_file` on a cloud engine in `run` asks (1.11). A conversation with no marker resumes unblocked; a new conversation is not blocked. Spec: "Resume stays blocked", "Other conversations are not blocked", "Resume keeps it". GREEN: `resume` reads the marker, `on_resumed` sets the flag.
-- [ ] 1.19 RED+GREEN "History off or store detached": the live flag still blocks, nothing is written.
+- [x] 1.14 RED store tests (temporary database only, never the real `chat.db`): `MarkGithubRead` inserts one row `role='github_read'`, `content=''`, `status='complete'`; idempotent (`WHERE NOT EXISTS`); not listed by `list`; not returned in `messages`; not counted in `skipped`; `user_version` still 3. Spec: "Resume stays blocked".
+- [x] 1.15 RED: opening the same database with `open_with(.., 3)` as an older build works and shows its "not shown" notice.
+- [x] 1.16 RED: `StoredMessage.github_read` set once the flag is up, so every later `append`/`create` carries the marker in its own transaction; a failing marker with a later row cannot leave that row unmarked; deleting a conversation cascades the marker, and a reused id starts clean.
+- [x] 1.17 GREEN: `StoreCmd::MarkGithubRead`, `github_read` fields in `chat/store.rs`, marker insert and panic table in `worker.rs`, `store_cmds` in `history.rs`.
+- [x] 1.18 RED **resume test with a temporary database**: build a conversation, set the flag, close the store, reopen the same temp file, resume: `StoreReply::Resumed.github_read` is true, the block system line shows (1.9), `y` still only types (no `\r`), and `read_file` on a cloud engine in `run` asks (1.11). A conversation with no marker resumes unblocked; a new conversation is not blocked. Spec: "Resume stays blocked", "Other conversations are not blocked", "Resume keeps it". GREEN: `resume` reads the marker, `on_resumed` sets the flag.
+- [x] 1.19 RED+GREEN "History off or store detached": the live flag still blocks, nothing is written.
 
 ### Phase 4: PR 1 close
 
-- [ ] 1.20 `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Confirm `chat.db` `user_version` is 3 and mode 0600 in the tests that open a temp database. Measure production lines. Open PR to `main`, wait for green CI, merge.
+- [x] 1.20 (checks only; opening the PR, CI and merge are the coordinator's) `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Confirm `chat.db` `user_version` is 3 and mode 0600 in the tests that open a temp database. Measure production lines. Open PR to `main`, wait for green CI, merge.
 - [ ] 1.21 Chain Context in the PR body: dependency diagram with the current PR marked, start/end, follow-ups (PR 2 to 4), out of scope. No CHANGELOG entry (nothing user-visible).
 
 ## PR 2: Pure core (target ~340 production lines)
@@ -244,3 +244,15 @@ Decisions for C1 to C6 (spec wording wins; design.md amended to match):
 - C4: system line on the first read in any mode and on resume of a blocked conversation; design section 2 amended. Both lines ASCII.
 - C5: one grant notice with the three facts; design grant dialog section amended (PR 4).
 - C6: distinct "the folder has no repository" refusal; design section 6 amended (PR 3).
+
+### PR 1 (Units B, C, D)
+
+Implemented in one code commit (the three units share hunks in approval.rs, app/tool.rs and chat/mod.rs, and the `github_read` field of `StoredMessage` touches test constructors in six files). Names as built:
+- `StreamEvent::GithubStarted` (new variant; tracked in `App::on_chat` before `apply`, passed through `runtime::chat::Pipe`). `ChatState::{github_read, note_github_read, adopt_github_read}`.
+- `approval.rs`: `GITHUB_READ`, `GITHUB_READ_ASK`, `GITHUB_BLOCK_LINE` ("auto-run is off for this conversation: it read GitHub text; commands are typed, never run", shown at the start and on resume, ASCII), `AutoCtx.github_read`, `answers_itself(ask, mode, blocked)`, `blocked_read_reason`.
+- Marker: `StoreCmd::MarkGithubRead`, `StoredMessage.github_read`, `StoreReply::Resumed.github_read`, role `github_read` in `worker.rs`; `user_version` stays 3. `store_cmds` stamps every outgoing row with the flag, and sends `MarkGithubRead` only when the conversation exists (a fresh one marks itself through its first row).
+- Bar marker: ` RUN OFF ` (one letter `r` when narrow) replaces ` RUN ` for a blocked chat in `run`; `Prefix a` run line says blocked.
+
+Deviations: (1) Task 1.10 asserts the drawn buffer (text, colours, ASCII) instead of an insta snapshot: the badge is plain ASCII and TERM is not read by the badge code, so a snapshot would add a file and no information. (2) Task 1.8 has no GitHub toggle yet (PR 3); the test cycles the mode and sends a tool result that says "auto-run is back on". (3) `WorkerRead` (an orchestrator worker's read) is not covered by the blocked-read rule: only the chat's own `Read`/`Search` asks are. (4) Units B, C, D are one commit. (5) `y_run_blocker` and the pending prompt now take the chat id.
+
+Sizes: about 246 production lines added and 26 removed (comments and doc lines included), under the 215-240 plan plus the system lines; tests, fixtures and docs excluded.
