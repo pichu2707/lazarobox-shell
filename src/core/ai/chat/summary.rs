@@ -289,6 +289,7 @@ impl ChatState {
                 tools: Tools::Off,
                 messages,
                 ollama: Default::default(),
+                github_read: false,
             },
         ))
     }

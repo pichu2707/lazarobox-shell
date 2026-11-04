@@ -7,6 +7,7 @@ use super::chat_live::{ollama, plain};
 use super::run_pane::{enter_turn, one_shell_and_a_chat};
 use super::*;
 use crate::core::ai::chat::{
+    BlockWhy,
     approval::{ANOTHER_PENDING, ApprovalAsk, Origin},
     engine::{CallId, Decision, Finish, StreamEvent, ToolStatus, Tools},
 };
@@ -874,6 +875,26 @@ fn a_turn_offers_the_families_of_the_toggles() {
     );
 }
 
+// Spec (config-menu, Toggle is saved): with the toggle on the next turn offers
+// the GitHub family, and with it off again the set is the legacy one.
+#[test]
+fn the_github_toggle_adds_its_family_and_turning_it_off_removes_it() {
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY.with(Family::Github)
+    );
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    ai.set_toggle(ToolToggle::Github, false);
+    assert_eq!(families_of_a_turn(ai), FamilySet::LEGACY);
+    // The master switch wins: no tools, no GitHub family.
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(families_of_a_turn_on(ai, &[]), FamilySet::LEGACY);
+}
+
 #[test]
 fn a_turn_without_tools_offers_no_coding_family() {
     let mut ai = ollama();
@@ -891,6 +912,29 @@ fn an_unverified_engine_or_tools_off_send_tools_off() {
         panic!("{effects:?}")
     };
     assert_eq!(request.tools, Tools::Off);
+}
+
+// The runtime asks for reads of a blocked conversation on an Ollama `*-cloud`
+// model from this bit; it is set only for a turn that offers tools.
+#[test]
+fn a_turn_tells_the_runtime_whether_the_conversation_read_github() {
+    for (blocked, want) in [(false, false), (true, true)] {
+        let mut a = launched(80, 25)
+            .with_ai(ollama())
+            .with_tool_engines(&["ollama"]);
+        press(&mut a, "c");
+        super::run_pane::answer(&mut a, id2(), "hi");
+        if blocked {
+            super::tool_run::chat_mut(&mut a).adopt_github_read(BlockWhy::Marker);
+        }
+        a.update(key('q'));
+        let effects = a.update(plain(KeyCode::Enter));
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("{effects:?}")
+        };
+        assert_ne!(request.tools, Tools::Off);
+        assert_eq!(request.github_read, want, "blocked {blocked}");
+    }
 }
 
 #[test]

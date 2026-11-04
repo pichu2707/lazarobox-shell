@@ -29,13 +29,14 @@ const MODELS: [&str; 8] = [
     "Hugging Face",
 ];
 
-const TOOLS: [&str; 8] = [
+const TOOLS: [&str; 9] = [
     "Tools",
     "Search",
     "Write",
     "Exec",
     "Git",
     "Git write",
+    "GitHub",
     "Approval",
     "Orchestrator",
 ];

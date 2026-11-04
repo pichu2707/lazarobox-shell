@@ -45,7 +45,7 @@ fn approval_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (config-menu, Tools tab): the row follows Tools and the five family
+// Spec (config-menu, Tools tab): the row follows Tools and the six family
 // rows, ahead of the `Orchestrator` gate, and is found by its kind.
 #[test]
 fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
@@ -54,7 +54,8 @@ fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
     assert_eq!(approval.label, "Approval");
     assert!(matches!(&approval.kind, ItemKind::Draft(c) if c.key() == "approval"));
     assert_eq!(items[items.len() - 1].label, "Orchestrator");
-    assert_eq!(items[items.len() - 3].label, "Git write");
+    assert_eq!(items[items.len() - 3].label, "GitHub");
+    assert_eq!(items[items.len() - 4].label, "Git write");
     let count = items
         .iter()
         .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "approval"))
@@ -63,8 +64,8 @@ fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_tools_tab_holds_eight_rows() {
-    assert_eq!(TOOLS_SECTION.items.len(), 8);
+fn the_tools_tab_holds_nine_rows() {
+    assert_eq!(TOOLS_SECTION.items.len(), 9);
 }
 
 #[test]
@@ -79,7 +80,10 @@ fn navigation_goes_family_rows_approval_gate_then_wraps_to_the_first_tools_row()
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "GitHub");
+    press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Git write");
+    press(&mut m, 'j');
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Approval");
     assert_eq!(m.active_tab(), 2);

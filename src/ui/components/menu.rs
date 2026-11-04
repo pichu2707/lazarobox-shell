@@ -1712,9 +1712,28 @@ mod tests {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
+    // Spec (config-menu, GitHub row): drawn whole at 80 columns, and the row
+    // itself is plain ASCII so a `linux` console draws it as it is.
+    #[test]
+    fn snapshot_github_row_at_80_columns() {
+        let mut menu = ai_tab();
+        goto(&mut menu, "GitHub");
+        let buf = draw(80, POPUP_H, &menu);
+        insta::assert_snapshot!(text(&buf));
+        let rows = lines(&buf);
+        let row = rows.iter().find(|l| l.contains("GitHub")).unwrap();
+        let inner = row.trim().trim_matches('\u{2502}');
+        assert!(inner.is_ascii(), "{row:?}");
+        assert!(inner.trim_end().ends_with("off"), "{row:?}");
+        assert_eq!(rows.iter().filter(|l| l.contains("Can change")).count(), 0);
+        let hint = "Reads issues and PRs; locks auto-run in that chat";
+        assert_eq!(rows.iter().filter(|l| l.contains(hint)).count(), 1);
+    }
+
     #[test]
     fn the_caution_shows_only_on_the_risky_family_rows_and_keeps_the_size() {
         let caution = "Can change files or run code";
+        let hint = "Reads issues and PRs; locks auto-run in that chat";
         let mut sizes = Vec::new();
         for (label, shown) in [
             ("Search", false),
@@ -1722,12 +1741,18 @@ mod tests {
             ("Exec", true),
             ("Git", false),
             ("Git write", true),
+            ("GitHub", false),
             ("Tools", false),
         ] {
             let mut menu = ai_tab();
             goto(&mut menu, label);
             let l = lines(&draw(62, POPUP_H, &menu));
             assert_eq!(l.iter().any(|row| row.contains(caution)), shown, "{label}");
+            assert_eq!(
+                l.iter().any(|row| row.contains(hint)),
+                label == "GitHub",
+                "{label}"
+            );
             sizes.push(l.len());
         }
         sizes.dedup();

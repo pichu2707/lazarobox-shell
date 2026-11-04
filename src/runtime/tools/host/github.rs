@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, OnceLock, atomic::Ordering},
     time::Duration,
 };
 
@@ -136,7 +136,9 @@ pub(super) enum Consent {
 /// Cloud consent, once per repository and turn: `github:<slug>` is an
 /// accepted one, `github-denied:<slug>` a declined one.
 pub(super) fn consent(scope: &TurnScope, call: &GhCall, slug: &Slug) -> Consent {
-    if scope.locality != Locality::Cloud {
+    // An Ollama `*-cloud` model counts as cloud here, and says so.
+    let ollama_cloud = scope.locality != Locality::Cloud;
+    if scope.locality != Locality::Cloud && !scope.ollama_cloud {
         return Consent::Free;
     }
     let (yes, no) = (format!("github:{slug}"), format!("github-denied:{slug}"));
@@ -150,9 +152,7 @@ pub(super) fn consent(scope: &TurnScope, call: &GhCall, slug: &Slug) -> Consent 
         }
     }
     match ask_for(&Call::Github(*call), Locality::Cloud) {
-        Some(ApprovalAsk::GithubRead {
-            what, ollama_cloud, ..
-        }) => Consent::Ask(
+        Some(ApprovalAsk::GithubRead { what, .. }) => Consent::Ask(
             ApprovalAsk::GithubRead {
                 repo: slug.to_string(),
                 what,
@@ -314,6 +314,8 @@ pub(super) async fn run(
     if scope.events.send(StreamEvent::GithubStarted).await.is_err() {
         return ended(ToolStatus::Error, CANCELLED.to_owned(), CANCELLED);
     }
+    // From the next call on, the conversation's file reads ask on `*-cloud`.
+    scope.github_read.store(true, Ordering::Relaxed);
     let note = fork_note(host, &planned).await;
     let split = match gh(host, &planned, pure::argv(call, &planned.slug)).await {
         Ok(split) => split,

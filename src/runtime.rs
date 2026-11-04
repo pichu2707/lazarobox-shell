@@ -3743,6 +3743,7 @@ mod tests {
             tools: Tools::Off,
             messages: Vec::new(),
             ollama: Default::default(),
+            github_read: false,
         };
         let effects = vec![
             Effect::ChatSend {
@@ -5011,6 +5012,7 @@ mod tests {
             tools: Tools::Off,
             messages: Vec::new(),
             ollama: Default::default(),
+            github_read: false,
         }
     }
 

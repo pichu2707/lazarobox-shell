@@ -587,6 +587,11 @@ pub const GITHUB_READ: &str = "auto-run is off: this conversation read GitHub te
 /// Linux console.
 pub const GITHUB_BLOCK_LINE: &str =
     "auto-run is off here: GitHub text was read; commands are only typed";
+/// The line shown when a conversation with rows of a role this build does not
+/// know is resumed: a newer build may have written GitHub text there, so it
+/// is blocked, but nothing says GitHub was read. ASCII.
+pub const NEWER_BLOCK_LINE: &str =
+    "auto-run is off here: messages from a newer version; commands are only typed";
 /// The line of the approval toggle to `run` in a blocked conversation.
 pub const RUN_BLOCKED_LINE: &str =
     "approval: run (blocked: GitHub text was read; commands are only typed)";
@@ -1778,6 +1783,7 @@ mod tests {
     fn the_github_lines_fit_80_columns() {
         for line in [
             GITHUB_BLOCK_LINE,
+            NEWER_BLOCK_LINE,
             RUN_BLOCKED_LINE,
             GITHUB_READ,
             GITHUB_READ_ASK,

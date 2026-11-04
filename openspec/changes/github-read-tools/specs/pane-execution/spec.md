@@ -25,6 +25,12 @@ From the first GitHub read in a conversation until that conversation ends, no `r
 - WHEN the model calls `run_in_pane` with `ls`
 - THEN the prompt opens with the reason and the block system line was shown on open
 
+#### Scenario: Resume with rows of a newer version [auto]
+- GIVEN a conversation with `skipped > 0` (rows of a role this build does not know) and no marker row, resumed
+- WHEN it opens
+- THEN it is blocked, as a newer build's rows may carry text this build cannot see, and the system line says `auto-run is off here: messages from a newer version; commands are only typed` (ASCII, at most 80 columns), not that GitHub text was read
+- AND a conversation with both a marker row and `skipped > 0` shows the GitHub line
+
 #### Scenario: Other conversations are not blocked [auto]
 - GIVEN a blocked conversation, then a new conversation in the same pane, and another resumed conversation that never read GitHub text
 - WHEN the model calls `run_in_pane` with `pwd` in each

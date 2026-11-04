@@ -55,6 +55,7 @@ pub(super) fn request(system: &str) -> ChatRequest {
         tools: Tools::Off,
         messages: Vec::new(),
         ollama: Default::default(),
+        github_read: false,
     }
 }
 

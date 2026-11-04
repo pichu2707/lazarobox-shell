@@ -288,6 +288,7 @@ fn worker_request(system_chars: usize, prompt_chars: usize, num_ctx: Option<usiz
     use crate::core::ai::tools::registry::FamilySet;
     ChatRequest {
         cache: Default::default(),
+        github_read: false,
         families: FamilySet::EMPTY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),

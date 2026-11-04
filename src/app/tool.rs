@@ -504,6 +504,7 @@ impl App {
         } else {
             self.ai.families()
         };
+        request.github_read = request.tools != Tools::Off && chat.github_read();
         chat.set_tool_session(request.tools != Tools::Off);
     }
 
