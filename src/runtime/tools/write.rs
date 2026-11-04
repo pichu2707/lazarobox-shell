@@ -77,12 +77,13 @@ mod unix {
     };
 
     /// The parent folder of `real`, opened beneath HOME and judged on its own
-    /// descriptor, plus the file name. `real` is judged first as well.
+    /// descriptor, plus the file name. `real` is judged first as well, as the
+    /// target of a write ([`SecretRoots::judge_write`]).
     fn open_parent(roots: &SecretRoots, real: &Path) -> Result<(OwnedFd, CString), WriteError> {
         let (Some(dir), Some(name)) = (real.parent(), real.file_name()) else {
             return Err(WriteError::Refused);
         };
-        if !roots.judge_real(real) {
+        if !roots.judge_write(real) {
             return Err(WriteError::Refused);
         }
         let fd = open_checked_errno(roots, dir, true)
@@ -123,7 +124,7 @@ mod unix {
             Err(_) => return Err(WriteError::Refused), // ELOOP: a link in the last place
         };
         match fd_path(&fd) {
-            Ok(opened) if opened == real && roots.judge_real(&opened) => {}
+            Ok(opened) if opened == real && roots.judge_write(&opened) => {}
             _ => return Err(WriteError::Refused),
         }
         let file = File::from(fd);
@@ -145,8 +146,11 @@ mod unix {
 
     /// Makes the folder `real` (one level: its parent must exist) with the
     /// default mode. The parent is opened with no symlink; `mkdirat` itself
-    /// never follows one.
+    /// never follows one. An env template's name is for a file, not a folder.
     pub fn make_dir(roots: &SecretRoots, real: &Path) -> Result<(), WriteError> {
+        if !roots.judge_real(real) {
+            return Err(WriteError::Refused);
+        }
         let (dir, name) = open_parent(roots, real)?;
         // SAFETY: `name` is NUL-terminated and `dir` is an open descriptor.
         if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
@@ -225,6 +229,9 @@ mod unix {
     /// Removes the empty folder `real`. A link, a file or a folder with
     /// content is left alone (`unlinkat` with `AT_REMOVEDIR` never follows).
     pub fn delete_dir(roots: &SecretRoots, real: &Path) -> Result<(), WriteError> {
+        if !roots.judge_real(real) {
+            return Err(WriteError::Refused);
+        }
         let (dir, name) = open_parent(roots, real)?;
         unlink(&dir, &name, libc::AT_REMOVEDIR)?;
         sync_dir(&dir);
@@ -527,6 +534,35 @@ mod unix {
             assert_eq!(got.unwrap_err(), WriteError::Refused);
             let outside = open_target(&f.roots, Path::new("/etc/hostname"));
             assert_eq!(outside.unwrap_err(), WriteError::Refused);
+        }
+
+        // #583: the primitives agree with `resolve_write` on an env template:
+        // it is the one env name a file write may touch. Real env names, and
+        // a folder with a template's name, stay refused.
+        #[test]
+        fn an_env_template_is_a_file_target_and_nothing_else_of_its_kind_is() {
+            let f = fx();
+            let template = f.home.join("proj/.env.example");
+            assert!(open_target(&f.roots, &template).unwrap().is_none());
+            create_file(&f.roots, &template, b"A=1\n").unwrap();
+            replace_file(&f.roots, &template, b"A=1\n", b"A=2\n").unwrap();
+            assert_eq!(std::fs::read(&template).unwrap(), b"A=2\n");
+            delete_file(&f.roots, &template, b"A=2\n").unwrap();
+            assert!(!template.exists());
+            let real = f.home.join("proj/.env");
+            assert_eq!(
+                create_file(&f.roots, &real, b"A=1\n").unwrap_err(),
+                WriteError::Refused
+            );
+            assert_eq!(
+                make_dir(&f.roots, &template).unwrap_err(),
+                WriteError::Refused
+            );
+            std::fs::create_dir(&template).unwrap();
+            assert_eq!(
+                delete_dir(&f.roots, &template).unwrap_err(),
+                WriteError::Refused
+            );
         }
 
         // Wb.2: the writes

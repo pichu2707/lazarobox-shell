@@ -1370,3 +1370,127 @@ async fn a_missing_parent_folder_is_named_after_the_policy_passed() {
     }
     assert_eq!(w.staged(), 0);
 }
+
+// #583: an env template reaches the user's review like any other write:
+// staging asks nothing and writes nothing, and a denied batch leaves no file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_env_template_stops_at_the_review_and_a_denial_writes_nothing() {
+    let w = world();
+    let approver = Script::new(Decision::Denied("no"));
+    let (d, _rx) = w.turn(approver.clone());
+    let staged = d.call(write(".env.example", "A=1\n")).await;
+    assert!(
+        !staged.is_error && staged.text.starts_with("staged .env.example"),
+        "{staged:?}"
+    );
+    assert!(approver.asks().is_empty(), "staging asks nothing");
+    assert!(!w.proj.join(".env.example").exists());
+    d.call(Call::ProposeBatch).await;
+    assert_eq!(approver.asks().len(), 1, "the batch asks the user");
+    assert!(!w.proj.join(".env.example").exists());
+}
+
+// #583: with the user's answer the template is written, and a read of it is
+// still refused.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_approved_env_template_is_written_and_stays_unreadable() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    d.call(write(".env.example", "A=1\n")).await;
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.text.starts_with("applied 1 paths:"), "{out:?}");
+    assert_eq!(approver.asks().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join(".env.example")).unwrap(),
+        "A=1\n"
+    );
+    assert!(d.call(read(".env.example")).await.is_error);
+}
+
+// #583: an existing template can be changed, by write_file and by edit_file,
+// again only through the review.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_existing_env_template_is_replaced_and_edited_after_the_answer() {
+    let w = world();
+    let (replace, edited) = (w.proj.join(".env.sample"), w.proj.join(".env.dist"));
+    std::fs::write(&replace, "OLD=1\n").unwrap();
+    std::fs::write(&edited, "A=1\nB=2\n").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write(".env.sample", "NEW=1\n")).await.is_error);
+    assert!(!d.call(edit(".env.dist", "B=2", "B=3")).await.is_error);
+    assert_eq!(std::fs::read_to_string(&replace).unwrap(), "OLD=1\n");
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.text.starts_with("applied 2 paths:"), "{out:?}");
+    assert_eq!(std::fs::read_to_string(&replace).unwrap(), "NEW=1\n");
+    assert_eq!(std::fs::read_to_string(&edited).unwrap(), "A=1\nB=3\n");
+}
+
+// #583: the folder of a template can be new in the same batch, and a missing
+// one is named.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_env_template_can_go_in_a_folder_of_the_same_batch() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    d.call(folder("web")).await;
+    d.call(write("web/.env.example", "A=1\n")).await;
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.text.starts_with("applied 2 paths:"), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("web/.env.example")).unwrap(),
+        "A=1\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_env_template_below_a_missing_folder_names_the_folder() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    let out = d.call(write("gone/.env.example", "A=1\n")).await;
+    assert_eq!(out.text, missing("gone"));
+    assert_eq!(w.staged(), 0);
+}
+
+// #583: the opening is for the template's own name. Real env files, a folder
+// with a template's name, and a link in its place stay refused.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn real_env_files_folders_and_links_stay_refused() {
+    let w = world();
+    std::fs::write(w.proj.join("secret.txt"), "s").unwrap();
+    std::os::unix::fs::symlink(w.proj.join("secret.txt"), w.proj.join(".env.sample")).unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    for path in [".env", ".env.local", "web/.env", ".env.sample"] {
+        let out = d.call(write(path, "A=1\n")).await;
+        assert_eq!(out.text, HINTED, "{path}");
+    }
+    let out = d.call(folder(".env.example")).await;
+    assert_eq!(out.text, HINTED);
+    assert_eq!(w.staged(), 0);
+    assert!(approver.asks().is_empty());
+    assert!(!w.proj.join(".env").exists());
+    assert!(!w.proj.join(".env.example").exists());
+}
+
+// #583: `~/.env -> proj/.env.example` makes the template the real target of a
+// secret: judging it by its folder alone must not open it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_template_behind_a_secret_link_of_home_stays_refused() {
+    let w = world();
+    let target = w.proj.join(".env.example");
+    std::fs::write(&target, "A=1\n").unwrap();
+    let home = w.proj.parent().unwrap();
+    std::os::unix::fs::symlink(&target, home.join(".env")).unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    let out = d.call(write(".env.example", "B=2\n")).await;
+    assert_eq!(out.text, HINTED);
+    assert_eq!(w.staged(), 0);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "A=1\n");
+}
