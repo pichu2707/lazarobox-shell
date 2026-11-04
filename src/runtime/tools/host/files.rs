@@ -115,6 +115,7 @@ pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
         || (call.is_exec() && !scope.families.contains(Family::Exec))
         || (call.is_git() && !scope.families.contains(Family::Git))
         || (call.is_git_write() && !scope.families.contains(Family::GitWrite))
+        || (call.is_github() && !scope.families.contains(Family::Github))
         || (matches!(call, Call::ListPanes) && !scope.families.contains(Family::Pane))
     {
         return Err(refusal_text(ToolError::UnknownTool));

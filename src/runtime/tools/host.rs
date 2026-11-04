@@ -936,6 +936,8 @@ mod gate_tests;
 #[cfg(test)]
 mod git_tests;
 #[cfg(test)]
+mod github_tests;
+#[cfg(test)]
 mod orchestra_tests;
 #[cfg(test)]
 mod panes_tests;
