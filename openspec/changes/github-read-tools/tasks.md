@@ -114,7 +114,7 @@ Branch: `feat/github-read-block` from `main`. Inert: no tool exists, so nothing 
 ### Phase 4: PR 1 close
 
 - [x] 1.20 (checks only; opening the PR, CI and merge are the coordinator's) `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Confirm `chat.db` `user_version` is 3 and mode 0600 in the tests that open a temp database. Measure production lines. Open PR to `main`, wait for green CI, merge.
-- [ ] 1.21 Chain Context in the PR body: dependency diagram with the current PR marked, start/end, follow-ups (PR 2 to 4), out of scope. No CHANGELOG entry (nothing user-visible).
+- [x] 1.21 (done through the merged chain PRs #564 to #580) Chain Context in the PR body: dependency diagram with the current PR marked, start/end, follow-ups (PR 2 to 4), out of scope. No CHANGELOG entry (nothing user-visible).
 
 ## PR 2: Pure core (target ~340 production lines)
 
@@ -215,9 +215,9 @@ Branch: `feat/github-read-grant` from `main` after PR 3 merged.
 
 ## Verify (after PR 4, by the verify phase)
 
-- [ ] V.1 Every spec scenario maps to at least one test above; list any scenario without a test.
-- [ ] V.2 No test touches the real `chat.db`, config or network; `git grep -n "chat.db"` in new tests shows only temporary paths.
-- [ ] V.3 The "no `git_push`" test and the byte-identical request test pass with the toggle off.
+- [x] V.1 Every spec scenario maps to at least one test above; list any scenario without a test.
+- [x] V.2 No test touches the real `chat.db`, config or network; `git grep -n "chat.db"` in new tests shows only temporary paths.
+- [x] V.3 The "no `git_push`" test and the byte-identical request test pass with the toggle off.
 
 ## Owner-only manual checklist (NOT blocking any merge or release)
 
@@ -330,3 +330,22 @@ Results: `cargo test` 9437 passed, 0 failed, 6 ignored (after the review fixes);
 Review fixes (judgment day on PR 4, each folded into its commit): (1) `y` on the dialog needs `prompt_fits`, like `approve()`; otherwise the notice `Pane too small to show it all` and the dialog stays. (2) `ApprovalAsk::GithubGrant` holds the `folder` it was read for; `y` refuses and withdraws the dialog with `/github cancelled: the folder changed` when the chat left it; `change_folder` (also restore) and a resume withdraw an open dialog with a line; a probe answer with the history list open is `/github cancelled: the conversation list is open`. (3) `/github` refuses with a line, no dialog, when tools are off, the chat is orchestrating, the engine offers no tools (the same `offers_tools` the hint uses), or the tools are on; turning ORCH on with a live grant says the grant is kept but not offered. A missing or logged-out `gh` stays a read-time message. (4) Ctrl+C and focus: see deviation 3 above; the dialog arms again when its pane gains the focus (`set_focus_in`); a tab switch does not re-arm. (5) The submit shows `checking origin...`, one probe per pane (`github_probing`, keyed by folder), a second `/github` gets `still checking the origin`, a dropped answer shows `/github cancelled: <why>` (a closed pane and the hint probe stay silent). (6) `close_approval` no longer adds `cancelled` for the dialog. (7) `end_all_grants(line)` says in each chat that held a grant why it ended (`tools were turned off`, `the GitHub toggle was turned off`). (8) `ChatState::tools_reserve` is `#[cfg(test)]`. (9) The README and CHANGELOG hunks about the newer-rows texts moved from the `/github` commit to the truthful-lines fix. Left as is: the hint still shows in an orchestrating chat whose orchestrate engine offers tools (it is guidance only; `/github` then refuses with its line); a grant is not pinned to the slug (design, Residual risks).
 
 Sizes after the review fixes (production lines added/removed, comments included, rustfmt applied; tests, snapshots, docs excluded, inline test modules not separated): A (fix + L) 220/51; B1 (command, probe, dialog and its guards) 478/38; B2 (refusals, probe lines) 50/11; B 517/38 in all; C (hint) 155/3. B is over the 400 guard in both shapes: the cut B1 | B2 is clean and each commit passes `cargo test` and clippy on its own, but it only moves 50 lines. Going under 400 would mean moving the dialog guards (fits, folder binding, withdraw on folder change and resume, Ctrl+C, focus re-arm; about 110 lines) to a second commit, which would leave the dialog of the first without them; not done.
+
+### Test-gap batch (after verify, branch `test/github-read-gaps`)
+
+Closes the gaps of the verify report (W3, S1, S2, S3 and the seven scenarios without a dedicated test) and two defects found by a fresh review. Strict TDD: where a test passed at once because the code was right, a short mutation of production code was run, shown to fail the test, and reverted.
+
+| Item | Result | Test | Mutation that killed it |
+|------|--------|------|-------------------------|
+| A | added | `tools::tests::a_verb_outside_the_boundary_is_an_unknown_tool_with_github_on` (`git_push`, `git_reset`, `git_run`, `gh_pr_merge`, `gh_issue_create`, `gh_api`, `gh`; the three reads are all there is) | renamed `gh_pr_view` to `gh_pr_merge` in the table |
+| B | added | `adapters::tests::the_body_with_the_github_toggle_off_is_the_legacy_body` (ollama round body at `LEGACY` has no `github`/`gh_` text; adding the family changes only the three `gh_` entries of `tools`) | `Family::Github` added to `FamilySet::LEGACY` |
+| C | added | `github::tests::no_role_toolset_lists_or_parses_a_github_tool` (ReadOnly, Code, Orchestrator: no list entry, every GitHub name unknown) and `orchestra_send::an_orchestrator_turn_never_offers_the_github_family` (toggle on, orchestrating pane) | `Family::Github` added to `Toolset::Code`; orchestrator request keeps the pane families |
+| D | added (resume was already covered at chat level by `github_block_tests::a_resume_ends_the_grant`) | `github_grant::the_grant_ends_when_the_pane_ends`, `a_resume_into_a_pane_with_a_grant_leaves_no_grant` (app level) | `github_granted` true on a new chat; the reset removed from `resume_into` |
+| E | Esc, cancel and "another approval is pending" were already covered (`tool_approval::a_declined_github_read_is_denied_and_frees_the_chat`, `a_pending_github_consent_refuses_a_second_ask`); `denied` for a timeout is covered by `a_declined_consent_is_denied_and_the_turn_is_not_asked_again` (`Denied("timed out")`); there is no approval timer in the code, so a timeout cannot reach the approval path. Added: consent right after a grant | `github_run_tests::a_cloud_engine_asks_on_the_first_read_right_after_a_grant` | the cloud-ask condition forced to `true` skips the ask |
+| F | added | `config::tests::an_old_file_with_no_github_key_reads_it_as_off`, `the_master_switch_off_offers_nothing_even_with_github_on` | missing key read as `true`; master switch ignored for GitHub |
+| G | added | `approval_tests::nine_j_presses_walk_the_tools_tab_and_wrap` | `step_selection` without wrap |
+| H | reachable (the menu opens over the dialog and a save turns tools off), fixed | `github_command::a_save_turning_tools_off_withdraws_the_dialog_and_says_so`, red first on the missing line | red before the fix |
+| I | reachable (the engine can lose its tools, or the toggle come on, while the dialog is open), fixed | `github_command::y_after_the_engine_lost_its_tools_grants_nothing_and_says_why`, red first (a grant happened) | red before the fix |
+
+Fixes: `sync_tools` withdraws a `/github` dialog when tools go off and prints `/github cancelled: tools are off` (reuses `withdraw_github_dialog`); `on_github_key` checks `github_blocker` before granting and withdraws the dialog with the blocker text (`/github cancelled: the engine offers no tools` or `... the GitHub tools are already on`), never `GITHUB_GRANTED_LINE`. No CHANGELOG line: `/github` is unreleased and its entry already covers the dialog.
+
