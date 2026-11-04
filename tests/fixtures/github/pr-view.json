@@ -1,0 +1,90 @@
+{
+  "additions": 3,
+  "author": {
+    "id": "MDQ6VXNlcjU0Nzg0MjE2",
+    "is_bot": false,
+    "login": "pichu2707",
+    "name": "Javi Lazaro"
+  },
+  "baseRefName": "main",
+  "body": "## What changed\n\n`lab()` in the notify tests makes its temp folders inside `<manifest>/target` but never created that folder. It now creates it first. Test-only.\n\n## Why\n\nWith `CARGO_TARGET_DIR` outside the worktree, a fresh worktree has no `target` folder, so most notify tests fail with `NotFound`. Only `world_with()` in `exec_tests.rs` creates the folder, so the result depends on test order, and a failed run could pass on the next one.\n\n## How it was tested\n\nFrom a worktree with no `target` folder and `CARGO_TARGET_DIR` set elsewhere, `cargo test --locked --lib runtime::notify`:\n\n- Before: 8 passed, 42 failed.\n- After: 50 passed, 0 failed.\n\n`cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` pass.\n",
+  "changedFiles": 1,
+  "deletions": 1,
+  "files": [
+    {
+      "path": "src/runtime/notify.rs",
+      "additions": 3,
+      "deletions": 1,
+      "changeType": "MODIFIED"
+    }
+  ],
+  "headRefName": "test/notify-target-folder",
+  "isDraft": false,
+  "labels": [],
+  "number": 559,
+  "state": "MERGED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:16:00Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41719006983/job/126206475359",
+      "name": "Linux (x86_64)",
+      "startedAt": "2026-11-03T21:08:14Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:18:36Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41719006983/job/126206474717",
+      "name": "macOS (arm64)",
+      "startedAt": "2026-11-03T21:08:34Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:24:34Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41719006983/job/126206475517",
+      "name": "macOS (Intel x86_64)",
+      "startedAt": "2026-11-03T21:08:15Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:08:11Z",
+      "conclusion": "SKIPPED",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41719006983/job/126206477866",
+      "name": "Real codex (${{ matrix.name }})",
+      "startedAt": "2026-11-03T21:08:11Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:09:12Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41719006983/job/126206475410",
+      "name": "MSRV (1.88)",
+      "startedAt": "2026-11-03T21:08:14Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-03T21:08:11Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "name": "GitGuardian Security Checks",
+      "startedAt": "2026-11-03T21:08:10Z",
+      "status": "COMPLETED",
+      "workflowName": ""
+    }
+  ],
+  "title": "test(notify): create the target folder the test lab uses",
+  "url": "https://github.com/pichu2707/lazarobox-shell/pull/559"
+}

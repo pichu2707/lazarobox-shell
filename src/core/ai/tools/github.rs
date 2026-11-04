@@ -11,6 +11,7 @@ use super::{
     registry::{ArgDef, ArgKind, ArgValue, Parsed},
 };
 
+pub mod render;
 #[cfg(test)]
 mod tests;
 
@@ -187,8 +188,8 @@ pub fn slug_of(url: &str) -> Option<Slug> {
     })
 }
 
-const ISSUE_FIELDS: &str = "number,title,state,author,labels,body,createdAt,updatedAt,url";
-const PR_FIELDS: &str = "number,title,state,isDraft,author,body,baseRefName,headRefName,files,changedFiles,additions,deletions,statusCheckRollup,url";
+const ISSUE_FIELDS: &str = "number,title,state,author,labels,body";
+const PR_FIELDS: &str = "number,title,state,isDraft,author,labels,body,baseRefName,headRefName,files,changedFiles,additions,deletions,statusCheckRollup";
 
 /// The exact `gh` argument vector of a call. `--repo` carries the host, so a
 /// user logged in elsewhere cannot redirect it. The list asks for one more

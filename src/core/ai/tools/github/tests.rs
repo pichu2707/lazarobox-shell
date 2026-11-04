@@ -102,17 +102,17 @@ fn argv_is_the_exact_vector_of_each_call() {
     );
     assert_eq!(
         args(view(12, false)).join(" "),
-        "issue view 12 --repo github.com/o/r --json number,title,state,author,labels,body,createdAt,updatedAt,url"
+        "issue view 12 --repo github.com/o/r --json number,title,state,author,labels,body"
     );
     assert!(
         args(view(12, true))
             .last()
             .unwrap()
-            .ends_with(",url,comments")
+            .ends_with(",body,comments")
     );
     assert_eq!(
         args(GhCall::PrView { number: 9 }).join(" "),
-        "pr view 9 --repo github.com/o/r --json number,title,state,isDraft,author,body,baseRefName,headRefName,files,changedFiles,additions,deletions,statusCheckRollup,url"
+        "pr view 9 --repo github.com/o/r --json number,title,state,isDraft,author,labels,body,baseRefName,headRefName,files,changedFiles,additions,deletions,statusCheckRollup"
     );
     assert_eq!(
         fork_argv(&slug()).join(" "),

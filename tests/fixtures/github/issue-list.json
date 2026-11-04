@@ -1,0 +1,62 @@
+[
+  {
+    "author": {
+      "id": "MDQ6VXNlcjU0Nzg0MjE2",
+      "is_bot": false,
+      "login": "pichu2707",
+      "name": "Javi Lazaro"
+    },
+    "labels": [
+      {
+        "id": "LA_kwDOU7WyEc8AAAAC60_pvg",
+        "name": "enhancement",
+        "description": "New feature or request",
+        "color": "a2eeef"
+      }
+    ],
+    "number": 561,
+    "state": "OPEN",
+    "title": "chat: remove the app-side hold tracking from the wait line",
+    "updatedAt": "2026-11-03T21:46:32Z"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjU0Nzg0MjE2",
+      "is_bot": false,
+      "login": "pichu2707",
+      "name": "Javi Lazaro"
+    },
+    "labels": [
+      {
+        "id": "LA_kwDOU7WyEc8AAAAC60_pvg",
+        "name": "enhancement",
+        "description": "New feature or request",
+        "color": "a2eeef"
+      }
+    ],
+    "number": 557,
+    "state": "OPEN",
+    "title": "orchestra: tell when a worker prompt does not fit the model window",
+    "updatedAt": "2026-11-03T19:49:48Z"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjU0Nzg0MjE2",
+      "is_bot": false,
+      "login": "pichu2707",
+      "name": "Javi Lazaro"
+    },
+    "labels": [
+      {
+        "id": "LA_kwDOU7WyEc8AAAAC60_pvg",
+        "name": "enhancement",
+        "description": "New feature or request",
+        "color": "a2eeef"
+      }
+    ],
+    "number": 556,
+    "state": "OPEN",
+    "title": "chat: count external MCP tool schemas in the context budget",
+    "updatedAt": "2026-11-03T19:49:46Z"
+  }
+]
