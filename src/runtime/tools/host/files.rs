@@ -415,13 +415,15 @@ fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
 /// the parent is there or anything else is wrong with it.
 ///
 /// This relies on an invariant of the caller: it runs only after
-/// `resolve_write` passed the path. The probe whose error leads here
-/// (`open_target`) does refuse for reasons of its own, such as a link, a hard
-/// link, a folder or a denied name. Each of those is about an entry that
-/// exists, so its parent is never `NotFound`, and the policy it applies is the
-/// one `resolve_write` already passed with the same roots. If a probe ever
-/// refused a path in a folder that does not exist, this text would tell an
-/// excluded path from a missing one, which the uniform refusal must never do.
+/// `resolve_write` allowed the path, so the folder it names is one the model
+/// could see anyway with `list_dir`, and it never names an excluded path. The
+/// probe whose error leads here (`open_target`) may refuse for reasons of its
+/// own: a link, a hard link or a folder (entries that exist, so their parent
+/// is not `NotFound`), or a name rule judged on the full path before anything
+/// is opened. The name rule can meet a missing parent: an env template such as
+/// `gone/.env.example` passes `resolve_write`, which judges it by its folder,
+/// and the probe then refuses it by name. The text names `gone/`, which the
+/// policy allows, so the missing folder is still the honest reason.
 fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
     match real.parent()?.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
