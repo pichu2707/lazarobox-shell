@@ -214,6 +214,33 @@ fn without_the_family_every_github_name_is_an_unknown_tool() {
     }
 }
 
+// Spec (Availability, Workers have none): a role's toolset is fixed, so no
+// saved toggle reaches it: its list holds no GitHub tool and its parse refuses
+// every GitHub name as unknown.
+#[test]
+fn no_role_toolset_lists_or_parses_a_github_tool() {
+    use crate::core::ai::orchestra::Toolset;
+    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+        let set = toolset.families();
+        assert!(!set.contains(Family::Github), "{toolset:?}");
+        let listed = crate::core::ai::tools::registry_for(toolset);
+        assert!(!listed.is_empty(), "{toolset:?}");
+        assert!(listed.iter().all(|t| !t.name.starts_with("gh_")));
+        for name in NAMES {
+            let call = parse_call_in(name, &json!({"number": 1}), &Qualified::default(), set);
+            assert_eq!(call, Err(ToolError::UnknownTool), "{toolset:?} {name}");
+        }
+    }
+    // Triangulation: the same call parses once the family is in the set.
+    let call = parse_call_in(
+        "gh_pr_view",
+        &json!({"number": 1}),
+        &Qualified::default(),
+        Toolset::ReadOnly.families().with(Family::Github),
+    );
+    assert_eq!(call, Ok(Call::Github(GhCall::PrView { number: 1 })));
+}
+
 #[test]
 fn a_call_row_shows_the_comments_option() {
     let row = |a| parsed("gh_issue_view", a).unwrap().argument().into_owned();

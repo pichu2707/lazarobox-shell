@@ -32,7 +32,7 @@ const STILL_CHECKING: &str = "/github refused: still checking the origin";
 const CANCELLED: &str = "/github cancelled: ";
 const REFUSED: &str = "/github refused: ";
 /// Why `/github` does not apply to a chat now.
-const R_TOOLS_OFF: &str = "tools are off";
+pub(super) const R_TOOLS_OFF: &str = "tools are off";
 const R_ORCHESTRATING: &str = "this chat is orchestrating";
 const R_NO_TOOLS: &str = "the engine offers no tools";
 const R_ALREADY_ON: &str = "the GitHub tools are already on";
@@ -336,6 +336,12 @@ impl App {
         if grants {
             if self.github_folder_moved(id) {
                 self.withdraw_github_dialog(id, R_FOLDER);
+                return Vec::new();
+            }
+            // The chat can no longer take the grant (the engine lost its
+            // tools, the toggle came on): say why instead of "tools on".
+            if let Some(why) = self.github_blocker(id) {
+                self.withdraw_github_dialog(id, why);
                 return Vec::new();
             }
             if !self.prompt_fits(id) {

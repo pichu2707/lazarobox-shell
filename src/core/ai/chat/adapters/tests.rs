@@ -1458,6 +1458,37 @@ fn ollama_offers_only_the_families_of_the_request() {
     assert!(names(FamilySet::EMPTY).is_empty());
 }
 
+// Spec (github-tools, Availability, Off by default; V.3): with the toggle off
+// a request is the legacy one. The body of the 0.18.0 set carries no GitHub
+// word anywhere, and adding the family changes the `tools` list by the three
+// `gh_` entries and nothing else in the body.
+#[test]
+fn the_body_with_the_github_toggle_off_is_the_legacy_body() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let body = |families: FamilySet| {
+        let mut req = request("be brief");
+        req.families = families;
+        req.tools = Tools::On {
+            origin: None,
+            mcp: None,
+            external: Box::default(),
+        };
+        body_of(ollama_round_body(&req, &[], true))
+    };
+    let off = body(FamilySet::LEGACY);
+    let text = off.to_string().to_lowercase();
+    assert!(!text.contains("github") && !text.contains("gh_"), "{text}");
+    assert_eq!(off["tools"].as_array().map(Vec::len), Some(5));
+
+    let on = body(FamilySet::LEGACY.with(Family::Github));
+    let is_gh = |t: &Value| t["function"]["name"].as_str().unwrap().starts_with("gh_");
+    let mut rest = on.clone();
+    let tools = rest["tools"].as_array_mut().unwrap();
+    assert_eq!(tools.iter().filter(|t| is_gh(t)).count(), 3);
+    tools.retain(|t| !is_gh(t));
+    assert_eq!(rest, off, "only the three gh_ tools differ");
+}
+
 // T.6: with nothing to offer, the `tools` key is left out of the body rather
 // than sent as an empty list.
 #[test]

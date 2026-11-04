@@ -89,6 +89,26 @@ fn navigation_goes_family_rows_approval_gate_then_wraps_to_the_first_tools_row()
     assert_eq!(m.active_tab(), 2);
 }
 
+// Spec (config-menu, Tools tab): nine `j` presses from the first row visit
+// every row, GitHub among them, and come back to the first (the tab wraps on
+// its own rows).
+#[test]
+fn nine_j_presses_walk_the_tools_tab_and_wrap() {
+    let mut m = open_with(ApprovalMode::Ask);
+    m.goto("Tools");
+    let mut walked = vec![selected_label(&m)];
+    for _ in 0..9 {
+        press(&mut m, 'j');
+        walked.push(selected_label(&m));
+    }
+    let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels.len(), 9);
+    assert_eq!(walked[..9], labels[..], "every row, in order");
+    assert!(walked[..9].contains(&"GitHub"));
+    assert_eq!(walked[9], labels[0], "the ninth press wraps");
+    assert_eq!(m.active_tab(), 2, "still in the Tools tab");
+}
+
 #[test]
 fn the_row_reads_ask_auto_or_run_and_needs_the_ai_section() {
     assert_eq!(

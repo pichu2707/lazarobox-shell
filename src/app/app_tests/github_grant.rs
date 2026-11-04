@@ -195,7 +195,7 @@ fn tools_off_says_so_in_each_chat_that_held_a_grant() {
     assert_eq!(count(&a, bare, TOOLS_LINE), 0, "{:?}", lines(&a, bare));
 }
 
-fn save(a: &mut App, draft: AiConfig) {
+pub(super) fn save(a: &mut App, draft: AiConfig) {
     a.menu = Some(MenuState::open(&a.config).with_ai(draft, a.engines.clone()));
     a.input = InputMode::Menu;
     a.update(AppEvent::ConfigSaved);
@@ -250,4 +250,35 @@ fn a_change_of_engine_keeps_the_grant() {
     assert!(granted(&a, id2()));
     let (_, request) = send(&mut a);
     assert!(request.families.contains(Family::Github));
+}
+
+// Spec (The chat grant, Grant ends with the pane): the grant lives in the
+// pane's state, so closing the pane drops it and a new pane does not inherit
+// it, even one opened right after in the same tab.
+#[test]
+fn the_grant_ends_when_the_pane_ends() {
+    let mut a = tools_app();
+    grant(&mut a, id2());
+    assert!(a.offered_families(id2()).contains(Family::Github));
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert!(!a.panes.contains_key(&id2()), "the pane is closed");
+    press(&mut a, "c");
+    let fresh = a.focused();
+    assert!(a.panes.contains_key(&fresh));
+    assert!(!granted(&a, fresh));
+    assert!(!a.offered_families(fresh).contains(Family::Github));
+}
+
+// Spec (Resume has no grant): resuming a conversation into a pane that holds a
+// grant ends it, and the next turn offers the saved set.
+#[test]
+fn a_resume_into_a_pane_with_a_grant_leaves_no_grant() {
+    use super::chat_history::{chat_id, listing, resumed};
+    let mut a = listing().with_tool_engines(&["ollama"]);
+    grant(&mut a, chat_id());
+    assert!(granted(&a, chat_id()));
+    a.update_settled(resumed(chat_id(), 30, "programmer"));
+    assert!(!granted(&a, chat_id()));
+    assert_eq!(a.offered_families(chat_id()), a.ai.families());
 }

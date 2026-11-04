@@ -610,6 +610,31 @@ async fn a_cloud_engine_asks_once_per_repository_and_turn_before_gh_starts() {
     assert_eq!(approver.seen.lock().unwrap().len(), 2);
 }
 
+// Spec (Cloud consent: separate from the grant): a chat that was just granted
+// offers the saved toggles plus the GitHub family (what `/github` yields with
+// the toggle off), and the first read of its first cloud turn still asks
+// before `gh` starts.
+#[tokio::test]
+async fn a_cloud_engine_asks_on_the_first_read_right_after_a_grant() {
+    let rig = rig(Some(ORIGIN), LIST);
+    let approver = watch(&rig, Decision::Sent);
+    let (tx, _rx) = mpsc::channel(64);
+    let mut scope = TurnScope::new(tx, Locality::Cloud, rig.proj.clone());
+    scope.approver = approver.clone();
+    let saved = crate::core::ai::config::AiConfig::default().families();
+    assert!(!saved.contains(Family::Github), "the toggle is off");
+    scope.families = saved.with(Family::Github);
+    let dispatch = rig.host.dispatch(scope);
+    assert!(!dispatch.call(list()).await.is_error);
+    assert!(!dispatch.call(list()).await.is_error);
+    let seen = approver.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(
+        matches!(&seen[0], (ApprovalAsk::GithubRead { repo, .. }, false) if repo == "o/r"),
+        "{seen:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_local_engine_never_asks() {
     let rig = rig(Some(ORIGIN), LIST);

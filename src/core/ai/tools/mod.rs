@@ -2212,6 +2212,40 @@ mod tests {
         }
     }
 
+    // Spec (git-tools, Verb boundary; github-tools, Availability): turning the
+    // GitHub family on adds the three read tools and no verb: a write verb
+    // stays unknown, and the tools that arrive are `gh_` reads only.
+    #[test]
+    fn a_verb_outside_the_boundary_is_an_unknown_tool_with_github_on() {
+        let all = git_set()
+            .with(Family::GitWrite)
+            .with(Family::Exec)
+            .with(Family::Github);
+        for name in [
+            "git_push",
+            "git_reset",
+            "git_run",
+            "gh_pr_merge",
+            "gh_issue_create",
+            "gh_api",
+            "gh",
+        ] {
+            assert_eq!(
+                parse_write(name, json!({"args": ["x"]}), all),
+                Err(ToolError::UnknownTool),
+                "{name}"
+            );
+            assert!(!names(&registry_with(&[], all)).contains(&name));
+        }
+        // Triangulation: the three reads are there, and they are all there is.
+        let listed = registry_with(&[], all);
+        let github: Vec<&str> = names(&listed)
+            .into_iter()
+            .filter(|n| n.starts_with("gh"))
+            .collect();
+        assert_eq!(github, ["gh_issue_list", "gh_issue_view", "gh_pr_view"]);
+    }
+
     // The schema is the table: no `shell` string, and the shape errors are the
     // ones of the other tools.
     #[test]

@@ -2927,6 +2927,35 @@ mod tests {
         );
     }
 
+    // Spec (configuration, Old file with no key): a file written before the
+    // GitHub toggle existed reads it as off, with no problem, and the other
+    // keys keep their values.
+    #[test]
+    fn an_old_file_with_no_github_key_reads_it_as_off() {
+        let (config, problems) =
+            read_text("[ai.tools]\nenabled = true\nsearch = true\ngit_write = true\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!config.toggle(ToolToggle::Github));
+        assert!(config.toggle(ToolToggle::Search) && config.toggle(ToolToggle::GitWrite));
+        assert!(!config.families().contains(Family::Github));
+        // Triangulation: the same file with the key offers it.
+        let (config, _) = read_text("[ai.tools]\nenabled = true\nsearch = true\ngithub = true\n");
+        assert!(config.families().contains(Family::Github));
+    }
+
+    // Spec (configuration, enabled=false with github=true): the master switch
+    // wins; the saved key is kept for when tools come back on.
+    #[test]
+    fn the_master_switch_off_offers_nothing_even_with_github_on() {
+        let (mut config, problems) = read_text("[ai.tools]\nenabled = false\ngithub = true\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!config.tools_enabled());
+        assert!(config.toggle(ToolToggle::Github), "the key is kept");
+        assert_eq!(config.families(), FamilySet::LEGACY);
+        config.set_tools_enabled(true);
+        assert_eq!(config.families(), FamilySet::LEGACY.with(Family::Github));
+    }
+
     #[test]
     fn the_git_toggles_are_independent() {
         let (config, _) = read_text("[ai.tools]\ngit = false\ngit_write = true\n");

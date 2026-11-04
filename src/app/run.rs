@@ -56,6 +56,11 @@ impl App {
         let on = self.ai.tools_enabled();
         if !on {
             self.end_all_grants(github::TOOLS_ENDED);
+            // A dialog of `/github` goes with them, and says so.
+            let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+            for id in ids {
+                self.withdraw_github_dialog(id, github::R_TOOLS_OFF);
+            }
         }
         let mut effects = Vec::new();
         for (&id, state) in &mut self.panes {
