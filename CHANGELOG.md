@@ -12,6 +12,13 @@ baseline.
 
 ### Fixed
 
+- Overwriting an existing environment template no longer tells the model what it
+  holds. `write_file` over an existing `.env.example` (or `.sample`,
+  `.template`, `.dist`) answered "staged" or "use edit_file" depending on a
+  secret-looking run, CRLF or size, with no ask. It now asks first like
+  `edit_file` does, once per file per turn, and a denial gives the same answer
+  whatever the file holds. A worker, which cannot be asked, gets the usual
+  refusal. Creating a new template is unchanged. Refs #583.
 - Turning ORCH on (`Ctrl+O`) now says in the chat that, in this mode, the chat
   itself cannot write files, run commands or read GitHub, even with those
   tools on in the AI menu: a `code` worker writes, through the batch review,

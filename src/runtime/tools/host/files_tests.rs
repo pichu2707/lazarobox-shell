@@ -1526,6 +1526,115 @@ async fn a_local_edit_of_an_env_template_asks_once_per_turn() {
     assert_eq!(approver.asks().len(), 1);
 }
 
+/// Existing templates that `write_file` used to answer differently for: a
+/// plain one, one with a secret-looking run, one with CRLF and one over the
+/// read cap (#583).
+fn template_contents() -> Vec<(&'static str, String)> {
+    vec![
+        (".env.plain.example", "A=1\n".to_owned()),
+        (
+            ".env.secret.example",
+            "KEY=sk-abcDEF1234567890abcdef\n".to_owned(),
+        ),
+        (".env.crlf.example", "A=1\r\nB=2\r\n".to_owned()),
+        (".env.big.example", "A=1\n".repeat(30_000)),
+    ]
+}
+
+// #583: `write_file` on an existing template answered "staged" or "use
+// edit_file" by what the file holds, with no ask. It asks first now, like an
+// edit, and a denial is the same whatever the file holds.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_write_over_an_existing_env_template_asks_first_and_a_denial_tells_nothing() {
+    let w = world();
+    for (name, content) in template_contents() {
+        std::fs::write(w.proj.join(name), content).unwrap();
+    }
+    let approver = Script::new(Decision::Denied("no"));
+    let (d, _rx) = w.turn(approver.clone());
+    let mut answers = Vec::new();
+    for (name, _) in template_contents() {
+        answers.push(d.call(write(name, "x\n")).await);
+    }
+    assert_eq!(approver.asks().len(), 4, "each denied write asks");
+    assert!(matches!(approver.asks()[0], ApprovalAsk::Read { .. }));
+    assert!(
+        answers.iter().all(|a| a.text == answers[0].text),
+        "{answers:?}"
+    );
+    assert!(answers[0].text.starts_with("denied"), "{answers:?}");
+    assert_eq!(w.staged(), 0);
+}
+
+// #583: the approval mode never answers for the user here, so an `ask` or
+// `auto` run gets the same denial and nothing is staged.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_unprompted_answer_does_not_let_a_write_over_a_template_through() {
+    let w = world();
+    for (name, content) in template_contents() {
+        std::fs::write(w.proj.join(name), content).unwrap();
+    }
+    let (d, _rx) = w.turn(Script::new(Decision::Unprompted));
+    let mut answers = Vec::new();
+    for (name, _) in template_contents() {
+        answers.push(d.call(write(name, "x\n")).await);
+    }
+    assert!(
+        answers.iter().all(|a| a.text == answers[0].text),
+        "{answers:?}"
+    );
+    assert!(answers[0].text.starts_with("denied"), "{answers:?}");
+    assert_eq!(w.staged(), 0);
+}
+
+// #583: with the user's yes the write stages as it did, and the yes covers
+// the file for the turn.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_allowed_write_over_an_env_template_stages_and_asks_once_per_turn() {
+    let w = world();
+    std::fs::write(w.proj.join(".env.example"), "A=1\n").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    assert!(!d.call(write(".env.example", "A=2\n")).await.is_error);
+    assert!(!d.call(write(".env.example", "A=3\n")).await.is_error);
+    d.call(Call::ProposeBatch).await;
+    assert_eq!(
+        approver.asks().len(),
+        2,
+        "one for the file, one for the batch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join(".env.example")).unwrap(),
+        "A=3\n"
+    );
+}
+
+// #583: staging itself never tells the content of a template that nobody
+// allowed, even if the file appeared after the ask was decided.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn staging_a_write_over_an_unallowed_template_refuses_whatever_it_holds() {
+    let w = world();
+    for (name, content) in template_contents() {
+        std::fs::write(w.proj.join(name), content).unwrap();
+    }
+    let env = w.host.env(&w.proj);
+    let mut answers = Vec::new();
+    for (name, _) in template_contents() {
+        let call = write(name, "x\n");
+        let out = files::stage_with_probe(&w.host.stages, key(), &env, &call, |roots, real| {
+            crate::runtime::tools::stage::disk_bytes(roots, real)
+        });
+        answers.push(out);
+    }
+    assert!(answers.iter().all(|a| a == &answers[0]), "{answers:?}");
+    assert!(answers[0].is_err(), "{answers:?}");
+    assert_eq!(w.staged(), 0);
+}
+
 // The ask is for the template alone: a local edit of an ordinary file stays
 // free, and one the policy refuses opens no prompt.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
