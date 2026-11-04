@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-04
+
 ### Fixed
 
 - Overwriting an existing environment template no longer tells the model what it
@@ -2143,7 +2145,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.4.0...v1.5.0
