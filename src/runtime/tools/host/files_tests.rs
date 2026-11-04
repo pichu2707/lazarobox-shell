@@ -1561,4 +1561,3 @@ async fn a_path_that_steps_back_to_an_env_template_is_refused() {
     }
     assert_eq!(w.staged(), 0);
 }
-
