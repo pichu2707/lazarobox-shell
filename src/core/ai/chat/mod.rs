@@ -441,6 +441,8 @@ pub struct ChatState {
     run_fallbacks: u8,
     /// The conversation read GitHub text: no command of it runs, for good.
     github_read: bool,
+    /// Why the conversation is blocked, while `github_read` holds.
+    block_why: BlockWhy,
     /// The flag is up and its marker row was not asked of the store yet.
     github_unmarked: bool,
     /// What the model has yet to hear about a user-side answer to a batch it
@@ -557,6 +559,7 @@ impl ChatState {
             auto_typed: 0,
             run_fallbacks: 0,
             github_read: false,
+            block_why: BlockWhy::Marker,
             github_unmarked: false,
             told: Vec::new(),
             told_sent: Vec::new(),
@@ -901,13 +904,21 @@ impl ChatState {
         self.github_read
     }
 
+    /// Why the conversation is blocked; `None` when it is not.
+    pub fn block_why(&self) -> Option<BlockWhy> {
+        self.github_read.then_some(self.block_why)
+    }
+
     /// `gh` was started for this conversation: it is blocked from now on and
-    /// says so. `true` when this call started the block.
+    /// says so. `true` when this call told the user something new: the start
+    /// of the block, or GitHub text read in a conversation that was blocked
+    /// only for rows of a newer version.
     pub fn note_github_read(&mut self) -> bool {
-        if self.github_read {
+        if self.github_read && self.block_why == BlockWhy::Marker {
             return false;
         }
         self.github_read = true;
+        self.block_why = BlockWhy::Marker;
         self.github_unmarked = true;
         self.push_system_line(approval::GITHUB_BLOCK_LINE.to_owned());
         true
@@ -918,6 +929,7 @@ impl ChatState {
     pub fn adopt_github_read(&mut self, why: BlockWhy) {
         if !self.github_read {
             self.github_read = true;
+            self.block_why = why;
             self.push_system_line(
                 match why {
                     BlockWhy::Marker => approval::GITHUB_BLOCK_LINE,

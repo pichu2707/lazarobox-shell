@@ -10,9 +10,9 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, GITHUB_READ, HALF_TYPED, MULTI_LINE, NO_CWD,
-            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
-            RUNNING, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
+            PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
+            SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -302,10 +302,10 @@ impl App {
     /// the focus and the shown tab are for runs nobody approved.
     fn y_run_blocker(&self, chat: PaneId, target: PaneId, command: &str) -> Option<&'static str> {
         let pty = self.panes.get(&target).and_then(PaneState::pty);
-        let blocked = (self.panes.get(&chat).and_then(PaneState::chat_state))
-            .is_some_and(ChatState::github_read);
-        Some(if blocked {
-            GITHUB_READ
+        let blocked =
+            (self.panes.get(&chat).and_then(PaneState::chat_state)).and_then(ChatState::block_why);
+        Some(if let Some(why) = blocked {
+            why.reason()
         } else if command.contains('\n') {
             MULTI_LINE
         } else if !self.cwd_readable || pty.is_none_or(|pty| pty.proc_cwd.is_none()) {
@@ -559,9 +559,9 @@ impl App {
                 // which `run` checks before any other reason.
                 if approval.call().is_some()
                     && chat.approval_mode() == ApprovalMode::Run
-                    && chat.github_read()
+                    && let Some(block) = chat.block_why()
                 {
-                    why = Some(GITHUB_READ.to_owned());
+                    why = Some(block.reason().to_owned());
                 }
                 // Only a model's command runs on `y`, only in `run` mode, and
                 // only when nothing would make `y` type it instead.
