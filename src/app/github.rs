@@ -8,6 +8,7 @@ use crate::core::ai::{
             Approval, ApprovalAsk, GITHUB_DECLINED_LINE, GITHUB_GRANTED_LINE, Origin, Reply,
         },
         engine::{Availability, Tools, tools_for},
+        guidance::github_hint,
     },
     config::ToolToggle,
     tools::{
@@ -190,6 +191,17 @@ impl App {
         let current = chat.origin_cwd() == Some(folder);
         let open = chat.approvals().pending().is_some();
         if !dialog {
+            // The hint's answer: kept for the folder it was read for.
+            match repo {
+                GhRepo::Found(slug) if current => {
+                    self.github_repos.insert(id, slug.to_string());
+                }
+                _ if current => {
+                    self.github_repos.remove(&id);
+                }
+                _ => {}
+            }
+            self.dirty = true;
             return Vec::new();
         }
         // The user typed the command: an answer that cannot open the dialog
@@ -225,6 +237,70 @@ impl App {
             )),
         }
         Vec::new()
+    }
+
+    /// The hint that suggests `/github` for chat `id`, or `None`: it needs
+    /// tools on, an engine that offers them, the toggle off, no grant, a
+    /// GitHub `origin` read for the folder the chat is in, and a
+    /// repository not told yet. It is guidance above the composer: not a
+    /// message, never stored, never sent.
+    pub(super) fn github_hint(&self, id: PaneId) -> Option<String> {
+        let state = self.panes.get(&id)?;
+        let chat = state.chat_state()?;
+        let repo = self.github_repos.get(&id)?;
+        let offers = self.offers_tools(id);
+        (self.ai.tools_enabled()
+            && !self.ai.toggle(ToolToggle::Github)
+            && !chat.github_granted()
+            && offers
+            && !self.github_hinted.contains(&(id, repo.clone())))
+        .then(|| github_hint(repo, usize::from(state.size.cols)))
+    }
+
+    /// Chat `id` is sending: a hint that was showing is told, and stays gone.
+    pub(super) fn tell_github_hint(&mut self, id: PaneId) {
+        if self.github_hint(id).is_some()
+            && let Some(repo) = self.github_repos.get(&id)
+        {
+            self.github_hinted.insert((id, repo.clone()));
+        }
+    }
+
+    /// Asks the runtime for the `origin` of chat `id`'s folder when the hint
+    /// could show there and it was not asked for that folder yet.
+    pub(super) fn probe_hint(&mut self, id: PaneId) -> Option<Effect> {
+        if !self.ai.tools_enabled() || self.ai.toggle(ToolToggle::Github) {
+            return None;
+        }
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state)?;
+        let folder = chat.origin_cwd()?.to_path_buf();
+        if chat.github_granted() || self.github_probed.get(&id) == Some(&folder) {
+            return None;
+        }
+        self.github_probed.insert(id, folder.clone());
+        Some(Effect::ProbeOrigin {
+            pane: id,
+            folder,
+            dialog: false,
+        })
+    }
+
+    /// The probes of every chat the hint could show in.
+    pub(super) fn probe_hints(&mut self) -> Vec<Effect> {
+        let chats: Vec<PaneId> = (self.panes.iter())
+            .filter(|(_, state)| state.chat_state().is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        chats
+            .into_iter()
+            .filter_map(|id| self.probe_hint(id))
+            .collect()
+    }
+
+    /// The folder of chat `id` changed: what was read for the old one is stale.
+    pub(super) fn forget_github_repo(&mut self, id: PaneId) {
+        self.github_repos.remove(&id);
+        self.github_probed.remove(&id);
     }
 
     /// Whether the approval waiting in chat `id` is the `/github` dialog.
@@ -272,7 +348,12 @@ impl App {
         } else {
             Reply::Decline
         };
-        self.close_approval(id, reply);
+        // Answered: the hint has nothing left to say about this repository.
+        if let Some(approval) = self.close_approval(id, reply)
+            && let ApprovalAsk::GithubGrant { repo, .. } = approval.ask()
+        {
+            self.github_hinted.insert((id, repo.clone()));
+        }
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.set_github_granted(grants);
             chat.push_system_line(

@@ -85,6 +85,8 @@ impl App {
             // The session ends and answers its calls: no run is left to wait for.
             self.drop_run_slots(|_| true);
         }
+        // A toggle turned off, or tools turned on, may let the hint show.
+        effects.extend(self.probe_hints());
         self.dirty = true;
         effects
     }

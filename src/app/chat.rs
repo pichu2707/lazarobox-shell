@@ -482,6 +482,7 @@ impl App {
         }
         self.orch_refusal(id)
             .or_else(|| guidance(&self.turn_availability(id)))
+            .or_else(|| self.github_hint(id))
             .or_else(|| self.toggle_hint(id))
     }
 
@@ -600,6 +601,7 @@ impl App {
             _ => None,
         };
         let families = self.offered_families(id);
+        self.tell_github_hint(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };

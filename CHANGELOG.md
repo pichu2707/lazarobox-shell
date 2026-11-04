@@ -30,6 +30,11 @@ baseline.
   resume, a folder change, tools off or the saved toggle going off. A cloud
   engine still asks before the first read of each turn. `//github` sends the
   text, and `/github` followed by words says `/github takes no arguments`.
+- A quiet hint above the chat composer suggests `/github` and names the
+  repository (`Type /github to let this chat read owner/name's issues and
+  PRs`) when tools are on, the GitHub toggle is off and the folder's `origin`
+  is on github.com. One line, ASCII, shortened by dropping the name first;
+  shown once per pane and repository, never stored or sent to the model.
 - After a GitHub read, commands of that conversation wait for your Enter for
   the rest of the conversation, in every approval mode: `run_in_pane` only
   types, `y` types without Enter, and the bar shows `RUN OFF`. On a cloud

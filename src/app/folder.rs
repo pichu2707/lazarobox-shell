@@ -80,6 +80,7 @@ impl App {
         // A resume answer still on its way must not undo this choice.
         self.resume_folders.remove(&id);
         self.end_grant_for_folder(id);
+        self.forget_github_repo(id);
         let history = self.history && !restore;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -115,6 +116,7 @@ impl App {
             effects.push(Effect::EndToolSession(id));
         }
         effects.extend(self.begin_memory(id));
+        effects.extend(self.probe_hint(id));
         self.dirty = true;
         effects
     }
@@ -354,6 +356,8 @@ impl App {
         self.cd_requests.remove(&id);
         self.opening.remove(&id);
         self.outside_open.remove(&id);
+        self.forget_github_repo(id);
+        self.github_hinted.retain(|(pane, _)| *pane != id);
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.
