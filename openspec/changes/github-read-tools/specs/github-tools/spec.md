@@ -80,7 +80,7 @@ The repository MUST be the `origin` of the chat's folder at the moment of the ca
 #### Scenario: Not a git folder [auto]
 - GIVEN a chat folder that is not in a git repository
 - WHEN any GitHub tool is called
-- THEN the result is an error that says the folder has no repository and `gh` is not started
+- THEN the result is an error that says the folder has no repository, or that git refused it (ownership or a broken config), because git exits 128 for all of them, and `gh` is not started
 
 #### Scenario: Non-GitHub origin [auto]
 - GIVEN `origin` set to `https://gitlab.com/o/r.git`, and in another run to `https://ghe.example.com/o/r.git`

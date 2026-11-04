@@ -426,6 +426,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .and_then(Path::parent)
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
+    // `gh` is found, and runs, on the same login PATH as the engines.
+    tool_host.set_gh_path(cli_env.path.clone());
     let roster = tool_host.roster();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
     // Read at startup, like the memory port: detection and chat both use

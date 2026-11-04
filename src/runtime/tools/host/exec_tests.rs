@@ -80,6 +80,7 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         exec,
         cli_cwds: std::sync::OnceLock::new(),
         roster: Default::default(),
+        gh: Default::default(),
     });
     World {
         _dir: dir,
