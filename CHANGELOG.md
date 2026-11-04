@@ -10,8 +10,22 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Feedback looks for open issues like yours before creating one. `Ctrl+S` first
+  searches the repository's open issues with the key words of the title. When
+  some share at least two of them, the form lists them: `Enter` adds your
+  report to the chosen one as a comment instead of opening a duplicate, and
+  `Ctrl+S` creates the issue anyway. With nothing similar, or when the search
+  fails or takes more than 10 seconds, the issue is created as before.
+
 ### Fixed
 
+- Under WSL with `networkingMode=mirrored`, engine detection no longer waits
+  800 ms for engines that are not running (LM Studio, vLLM…). There a connect
+  to a port nothing listens on is never answered, so detection now gives up a
+  connect after 200 ms; a running server answers it in about a millisecond
+  (#584).
 - Feedback no longer sends you to file a new issue when a comment on an existing
   one finds `gh` missing or not logged in: the form says so and keeps the chosen
   issue, so `Enter` tries it again. The same goes for any failed comment. Long
@@ -28,12 +42,6 @@ baseline.
 
 ### Added
 
-- Feedback looks for open issues like yours before creating one. `Ctrl+S` first
-  searches the repository's open issues with the key words of the title. When
-  some share at least two of them, the form lists them: `Enter` adds your
-  report to the chosen one as a comment instead of opening a duplicate, and
-  `Ctrl+S` creates the issue anyway. With nothing similar, or when the search
-  fails or takes more than 10 seconds, the issue is created as before.
 - GitHub read tools, off by default: `gh_issue_list`, `gh_issue_view` and
   `gh_pr_view` read the issues and pull requests of the repository in the
   chat folder's `origin`, through your own `gh` login. Turn them on with
@@ -69,11 +77,6 @@ baseline.
 
 ### Fixed
 
-- Under WSL with `networkingMode=mirrored`, engine detection no longer waits
-  800 ms for engines that are not running (LM Studio, vLLM…). There a connect
-  to a port nothing listens on is never answered, so detection now gives up a
-  connect after 200 ms; a running server answers it in about a millisecond
-  (#584).
 - When `$HOME` is reached through a symlink, a refused write now names the
   chat's folder as `~/…` instead of its full real path (#438).
 - The chat's context budget now counts the schemas of external MCP tools.
