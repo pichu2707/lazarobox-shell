@@ -348,10 +348,12 @@ pub enum Effect {
     /// Open this link in the browser through the host's opener. Only emitted
     /// when the runtime said it has one (see [`App::with_opener`]).
     OpenUrl(String),
-    /// Send the Feedback issue with the user's `gh` (open-links S4), off
-    /// the loop; the runtime answers with one `AppEvent::IssueSent`. Only
-    /// emitted on the user's Ctrl+S, one at a time.
-    SendIssue(Box<crate::core::menu::feedback::Issue>),
+    /// Send the Feedback request with the user's `gh` (open-links S4): find
+    /// similar open issues (and create the issue when there are none),
+    /// create it, or add it to one as a comment. Off the loop; the runtime
+    /// answers with one `AppEvent::IssueSent`. Only emitted on the user's
+    /// Ctrl+S or Enter, one at a time.
+    SendIssue(Box<crate::core::menu::feedback::Request>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even

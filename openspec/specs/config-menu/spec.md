@@ -1356,11 +1356,51 @@ Both keys check the form first: the title and the description are required, and 
 - AND Ctrl+S still sends the same text
 
 ### Requirement: Sending with gh
-The app MUST send only on the user's Ctrl+S, and only through the user's own `gh`: lazarobox stores no GitHub token. `gh` is found on the login PATH the engines use and run with no shell, as `gh issue create --repo <owner/repo> --title <title> --body-file - --label <bug|idea>`, the body on stdin, stdout and stderr captured, the environment inherited. It runs off the UI thread and is killed 30 seconds after Ctrl+S, the retry without labels included. One send at a time: while it runs, every key of the form, Ctrl+S and Esc included, does nothing.
+The app MUST send only on the user's Ctrl+S (or Enter on a similar issue, see Similar issues before sending), and only through the user's own `gh`: lazarobox stores no GitHub token. `gh` is found on the login PATH the engines use and run with no shell, as `gh issue create --repo <owner/repo> --title <title> --body-file - --label <bug|idea>`, the body on stdin, stdout and stderr captured, the environment inherited. It runs off the UI thread and is killed 30 seconds after Ctrl+S, the retry without labels included. One send at a time: while it runs, every key of the form, Ctrl+S and Esc included, does nothing.
 
 The issue keeps the shape of the repository's issue forms: one `### <label>` section per filled field (`What happened` for a bug report, `The idea` for an idea), and `### Environment` with the facts when attached. The label `bug` or `idea` is asked for; GitHub keeps it only for users with write access, so a failure naming a label or a permission is tried once more without the label. Project 17 is not set from the app.
 
 `gh` is taken as missing when it is not on PATH, and as not logged in when it exits with code 4 or its message names `gh auth login`.
+
+### Requirement: Similar issues before sending
+Before it creates an issue, Ctrl+S MUST look for open issues like it, so a user does not file a duplicate. The search runs `gh issue list --repo <owner/repo> --state open --limit 20 --search "<words> in:title,body" --json number,title`.
+- **The words:** the key words of the title, joined by `OR`, at most six of them. A key word has only letters and digits, is lowercase, is three characters or more, and is not a common word such as `the` or `para`. No search qualifier, quote or parenthesis of the title reaches the query. A title with no key word is not searched.
+- **What counts as similar:** an issue whose title shares two key words with the new title, or one when the title has only one. At most five are kept, in the search's order.
+- **The search's own limit:** it is cut after 10 seconds. A search that fails, times out, prints something else or finds nothing similar is not an error: the issue is created as before. A search refused for the login is `No gh`.
+
+When similar issues are found, nothing is sent yet. The form replaces its fields with them:
+- `Open issues like this one on GitHub:`;
+- one row per issue, `#<number> <title>`, the selected one marked `›`, the title cleaned of control characters and cut to the row with `…`;
+- `Enter adds your report to the selected one.` and `Ctrl+S creates a new issue anyway.`
+
+The footer reads `↑/↓ pick · Enter add · Ctrl+S new · Esc back`. Its keys:
+- `↑`/`↓` select.
+- Enter adds the report to the selected issue as a comment: `gh issue comment <number> --repo <owner/repo> --body-file -`, with `**<title>**`, a blank line, and the body the issue would have had on stdin. No issue is created.
+- Ctrl+S creates the issue anyway, as in Sending with gh.
+- Esc goes back to the fields as typed.
+
+Typing and pasting do nothing while the list is shown.
+
+#### Scenario: Similar issue found [auto]
+- GIVEN an open issue `#583 Scroll jumps to the top` and the title `Scroll jumps`
+- WHEN Ctrl+S is pressed
+- THEN the form lists `› #583 Scroll jumps to the top` and nothing is created
+
+#### Scenario: Report added to an existing issue [auto]
+- GIVEN the similar issues are listed
+- WHEN Enter is pressed on `#583`
+- THEN `gh issue comment 583` gets the report on stdin
+- AND when `gh` prints one line `https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-<id>`, the view reads `Added to the existing issue:` and that link, which Ctrl+O opens, as for a sent issue
+- AND any other output counts as a failure
+
+#### Scenario: Nothing similar [auto]
+- WHEN the search finds no similar issue, fails, prints something that is not the list, or takes more than 10 seconds
+- THEN the issue is created as in Sending with gh
+
+#### Scenario: Created anyway [auto]
+- GIVEN the similar issues are listed
+- WHEN Ctrl+S is pressed
+- THEN the issue is created and its link shown as in Sent
 
 #### Scenario: Sent [auto]
 - GIVEN Ctrl+S was pressed

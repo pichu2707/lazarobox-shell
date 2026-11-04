@@ -8,6 +8,11 @@
 //! The title and the description go through the redaction pass before any
 //! issue or link is made; a change stays in the form, so the user sees what
 //! was masked before pressing Ctrl+S again.
+//!
+//! Ctrl+S first asks for the open issues like the new one (issue
+//! duplicates): when GitHub has some, the form lists them, Enter adds the
+//! report to the chosen one as a comment, and Ctrl+S again creates the issue
+//! anyway. With none, the runtime creates the issue at once.
 
 use crate::core::desktop::is_wsl;
 use std::borrow::Cow;
@@ -83,6 +88,28 @@ pub const NO_GH_COPIED: [&str; 3] = [
 
 /// The view once the issue is created: its link has a row of its own.
 pub const SENT: &str = "Sent:";
+/// The view once the report is added to an existing issue.
+pub const COMMENTED: &str = "Added to the existing issue:";
+
+/// The most similar issues listed.
+pub const SIMILAR_CAP: usize = 5;
+/// The view when GitHub has open issues like the new one.
+pub const SIMILAR: &str = "Open issues like this one on GitHub:";
+pub const SIMILAR_ADD: &str = "Enter adds your report to the selected one.";
+pub const SIMILAR_NEW: &str = "Ctrl+S creates a new issue anyway.";
+/// The footer of the similar issues.
+pub const HINT_SIMILAR: &str = "↑/↓ pick · Enter add · Ctrl+S new · Esc back";
+
+/// The most words of the title a search asks for: GitHub takes at most five
+/// `OR` in one query.
+const SEARCH_WORDS: usize = 6;
+/// The words of a title that say nothing about the problem.
+const STOP_WORDS: [&str; 44] = [
+    "the", "and", "for", "with", "when", "from", "that", "this", "not", "are", "was", "but", "its",
+    "into", "does", "can", "all", "any", "has", "have", "how", "why", "what", "after", "una",
+    "uno", "los", "las", "del", "que", "con", "por", "para", "cuando", "como", "pero", "sin",
+    "más", "mas", "hay", "este", "esta", "eso", "no",
+];
 
 /// The columns the form wraps its text to: the narrow popup's 48, less the
 /// indent.
@@ -151,11 +178,44 @@ pub struct Issue {
     pub labels: Vec<String>,
 }
 
+/// One open issue GitHub found like the new one. Its title is GitHub's
+/// text, untrusted: the form cleans it before showing it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Similar {
+    pub number: u64,
+    pub title: String,
+}
+
+/// What Ctrl+S asks the runtime to do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Request {
+    /// Look for open issues like `0` (see [`search_query`] and
+    /// [`similar`]); with none, create it.
+    Find(Issue),
+    /// Create the issue, over the similar ones the user saw.
+    Create(Issue),
+    /// Add the report to the open issue `number`, as a comment (see
+    /// [`comment_body`]).
+    Comment { issue: Issue, number: u64 },
+}
+
+impl Request {
+    pub fn issue(&self) -> &Issue {
+        match self {
+            Request::Find(issue) | Request::Create(issue) | Request::Comment { issue, .. } => issue,
+        }
+    }
+}
+
 /// What became of a send, from the runtime.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SendReply {
     /// Created: the issue's link.
     Sent(String),
+    /// Added to an existing issue: the comment's link.
+    Commented(String),
+    /// Open issues like the new one, nothing sent yet.
+    Similar(Vec<Similar>),
     /// `gh` failed: its message, raw (the form sanitizes it).
     Failed(String),
     /// `gh` is not installed or not logged in.
@@ -205,6 +265,91 @@ pub fn issue_url(stdout: &str, repo: &str) -> Option<String> {
         && !number.is_empty()
         && number.bytes().all(|b| b.is_ascii_digit());
     ok.then(|| line.to_owned())
+}
+
+/// The words of a title a search keys on: letters and digits only (so no
+/// search qualifier gets through), lowercase, three characters or more, no
+/// [`STOP_WORDS`], each once, in order.
+fn key_words(title: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in title.split(|c: char| !c.is_alphanumeric()) {
+        let word = word.to_lowercase();
+        if word.chars().count() >= 3
+            && !STOP_WORDS.contains(&word.as_str())
+            && !words.contains(&word)
+        {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// The `gh issue list --search` query for the issues like `title`: its first
+/// [`SEARCH_WORDS`] key words joined by `OR`, in the titles and bodies.
+/// `None` when the title has no key word to search for.
+pub fn search_query(title: &str) -> Option<String> {
+    let words = key_words(title);
+    if words.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = words
+        .iter()
+        .take(SEARCH_WORDS)
+        .map(String::as_str)
+        .collect();
+    Some(format!("{} in:title,body", words.join(" OR ")))
+}
+
+/// Of the issues a search `found`, those like `title`: their titles share
+/// two key words with it (one, when the title has only one), at most
+/// [`SIMILAR_CAP`], in the search's order. An `OR` search finds many issues
+/// that share one common word; they are not shown.
+pub fn similar(title: &str, found: Vec<Similar>) -> Vec<Similar> {
+    let words = key_words(title);
+    let need = words.len().clamp(1, 2);
+    found
+        .into_iter()
+        .filter(|issue| {
+            let theirs = key_words(&issue.title);
+            words.iter().filter(|w| theirs.contains(w)).count() >= need
+        })
+        .take(SIMILAR_CAP)
+        .collect()
+}
+
+/// The comment that adds `issue` to an existing one: its title in bold, then
+/// the body the issue would have had.
+pub fn comment_body(issue: &Issue) -> String {
+    format!("**{}**\n\n{}", issue.title, issue.body)
+}
+
+/// The comment's link from what `gh issue comment` printed: exactly one
+/// line, `https://github.com/<repo>/issues/<number>#issuecomment-<id>`.
+pub fn comment_url(stdout: &str, repo: &str) -> Option<String> {
+    let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+    let (issue, id) = line.split_once("#issuecomment-")?;
+    let ok = issue_url(issue, repo).is_some()
+        && !id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| line.to_owned())
+}
+
+/// `text` as one row of the form: control characters and escape sequences
+/// dropped, blanks folded, cut to `width` columns with `…`.
+fn one_row(text: &str, width: usize) -> String {
+    let words = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if words.chars().count() <= width {
+        return words;
+    }
+    let mut cut: String = words.chars().take(width - 1).collect();
+    cut.push('…');
+    cut
 }
 
 /// What lazarobox knows of where it runs. Never a path, a name or a key.
@@ -310,8 +455,9 @@ pub enum Field {
 pub enum Outcome {
     /// Consumed; only a redraw.
     Handled,
-    /// Ctrl+S: the issue to send; the form waits for the answer.
-    Send(Issue),
+    /// Ctrl+S, or Enter on a similar issue: what to send; the form waits for
+    /// the answer.
+    Send(Request),
     /// Ctrl+O: the link to open in the browser.
     Open(String),
     /// Esc: back to the row.
@@ -330,6 +476,9 @@ pub struct Feedback {
     error: Option<Cow<'static, str>>,
     /// An issue is being sent: every key waits for the answer.
     sending: bool,
+    /// The open issues like this one, and the one selected: shown instead of
+    /// the fields until Esc, Enter or Ctrl+S.
+    similar: Option<(Vec<Similar>, usize)>,
 }
 
 impl Feedback {
@@ -343,6 +492,7 @@ impl Feedback {
             field: Field::Kind,
             error: None,
             sending: false,
+            similar: None,
         }
     }
 
@@ -386,8 +536,23 @@ impl Feedback {
     }
 
     /// The lines of the form under its title: the focused field marked
-    /// with `›`, and the cursor drawn as `▏` in the focused text field.
+    /// with `›`, and the cursor drawn as `▏` in the focused text field. With
+    /// similar issues found, those instead, the selected one marked.
     pub fn lines(&self) -> Vec<String> {
+        if let Some((issues, at)) = &self.similar {
+            let mut lines = vec![SIMILAR.to_owned()];
+            for (i, issue) in issues.iter().enumerate() {
+                let mark = if i == *at { "› " } else { "  " };
+                let row = format!("#{} {}", issue.number, issue.title);
+                lines.push(format!("{mark}{}", one_row(&row, TEXT_WIDTH)));
+            }
+            lines.extend([
+                String::new(),
+                SIMILAR_ADD.to_owned(),
+                SIMILAR_NEW.to_owned(),
+            ]);
+            return lines;
+        }
         let mark = |field| if self.field == field { "› " } else { "  " };
         let mut lines = vec![format!("{}Kind: {}", mark(Field::Kind), self.kind.label())];
         lines.push(format!("{}Title", mark(Field::Title)));
@@ -416,6 +581,9 @@ impl Feedback {
         if self.sending {
             return SENDING;
         }
+        if self.similar.is_some() {
+            return HINT_SIMILAR;
+        }
         match self.field {
             Field::Kind => HINT_KIND,
             Field::Title | Field::Description => HINT_TEXT,
@@ -432,6 +600,20 @@ impl Feedback {
     /// Whether an issue is being sent.
     pub fn sending(&self) -> bool {
         self.sending
+    }
+
+    /// GitHub has open issues like this one (at most [`SIMILAR_CAP`] are
+    /// kept): the form lists them, the first selected. None is the same as a
+    /// failed search: the form is as before.
+    pub fn found(&mut self, issues: Vec<Similar>) {
+        self.sending = false;
+        let issues: Vec<Similar> = issues.into_iter().take(SIMILAR_CAP).collect();
+        self.similar = (!issues.is_empty()).then_some((issues, 0));
+    }
+
+    /// The open issues listed, if any.
+    pub fn similar_issues(&self) -> Option<&[Similar]> {
+        self.similar.as_ref().map(|(issues, _)| issues.as_slice())
     }
 
     /// The send failed: the form is kept as typed, with `gh`'s message
@@ -459,6 +641,9 @@ impl Feedback {
         if self.sending {
             return Outcome::Handled;
         }
+        if self.similar.is_some() {
+            return self.on_similar_key(key, repeat);
+        }
         let (code, mods) = (key.code, key.modifiers);
         if code == KeyCode::Esc && mods == KeyModifiers::NONE {
             return if repeat {
@@ -471,7 +656,7 @@ impl Feedback {
         match code {
             KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
                 if !repeat {
-                    return self.issue().map_or(Outcome::Handled, Outcome::Send);
+                    return self.send(Request::Find);
                 }
             }
             KeyCode::Char('o') if mods == KeyModifiers::CONTROL => {
@@ -511,10 +696,44 @@ impl Feedback {
         Outcome::Handled
     }
 
+    /// A key while the similar issues are listed: ↑/↓ select, Enter adds
+    /// the report to the selected one, Ctrl+S creates the issue anyway, Esc
+    /// goes back to the fields as they were.
+    fn on_similar_key(&mut self, key: &KeyEvent, repeat: bool) -> Outcome {
+        let Some((issues, at)) = &mut self.similar else {
+            return Outcome::Handled;
+        };
+        match (key.code, key.modifiers) {
+            (KeyCode::Up, KeyModifiers::NONE) => *at = at.saturating_sub(1),
+            (KeyCode::Down, KeyModifiers::NONE) => *at = (*at + 1).min(issues.len() - 1),
+            _ if repeat => {}
+            (KeyCode::Esc, KeyModifiers::NONE) => self.similar = None,
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                let number = issues[*at].number;
+                return self.send(|issue| Request::Comment { issue, number });
+            }
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => return self.send(Request::Create),
+            _ => {}
+        }
+        Outcome::Handled
+    }
+
+    /// The issue made into `request`, and the form sending; or nothing,
+    /// with why, when the issue cannot be made.
+    fn send(&mut self, request: impl FnOnce(Issue) -> Request) -> Outcome {
+        let Some(issue) = self.issue() else {
+            self.similar = None;
+            return Outcome::Handled;
+        };
+        self.similar = None;
+        self.sending = true;
+        Outcome::Send(request(issue))
+    }
+
     /// A paste into the focused text field. The title is one line: a
     /// newline becomes a space.
     pub fn paste(&mut self, text: &str) {
-        if self.sending {
+        if self.sending || self.similar.is_some() {
             return;
         }
         match self.field {
@@ -549,8 +768,7 @@ impl Feedback {
         self.error = None;
     }
 
-    /// Ctrl+S: the issue to send, or `None` with why there is none. On
-    /// `Some` the form is sending.
+    /// Ctrl+S: the issue to send, or `None` with why there is none.
     fn issue(&mut self) -> Option<Issue> {
         let (title, description) = self.checked()?;
         let (section, label) = self.kind.section();
@@ -564,7 +782,6 @@ impl Feedback {
             self.error = Some(Cow::Borrowed(TOO_LONG_BODY));
             return None;
         }
-        self.sending = true;
         Some(Issue {
             repo: repo().to_owned(),
             title: title.trim().to_owned(),

@@ -3,8 +3,10 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::feedback::{
-    DESCRIPTION_REQUIRED, Facts, Feedback, Field, Issue, Kind, NO_GH_TOO_LONG, Outcome, REDACTED,
-    SENDING, TITLE_REQUIRED, TOO_LONG, gh_message, host, issue_url,
+    DESCRIPTION_REQUIRED, Facts, Feedback, Field, HINT_SIMILAR, HINT_TEXT, Issue, Kind,
+    NO_GH_TOO_LONG, Outcome, REDACTED, Request, SENDING, SIMILAR, SIMILAR_ADD, SIMILAR_NEW,
+    Similar, TITLE_REQUIRED, TOO_LONG, comment_body, comment_url, gh_message, host, issue_url,
+    search_query, similar,
 };
 
 const ISSUES: &str = "https://github.com/pichu2707/lazarobox-shell/issues/new";
@@ -48,7 +50,7 @@ fn ctrl_o(form: &mut Feedback) -> Outcome {
 /// The issue Ctrl+S sends, or a panic.
 fn sent(form: &mut Feedback) -> Issue {
     match ctrl_s(form) {
-        Outcome::Send(issue) => issue,
+        Outcome::Send(Request::Find(issue)) => issue,
         other => panic!("not sent: {other:?}"),
     }
 }
@@ -300,12 +302,12 @@ fn ctrl_s_sends_the_bug_report_shaped_like_the_issue_form() {
     let mut form = filled(Kind::Bug);
     assert_eq!(
         ctrl_s(&mut form),
-        Outcome::Send(Issue {
+        Outcome::Send(Request::Find(Issue {
             repo: "pichu2707/lazarobox-shell".to_owned(),
             title: "Scroll jumps".to_owned(),
             body: format!("### What happened\n\nIt jumps\nto the top & back\n\n{ENVIRONMENT}"),
             labels: vec!["bug".to_owned()],
-        })
+        }))
     );
     assert!(form.sending());
     assert_eq!(form.hint(), SENDING);
@@ -463,4 +465,172 @@ fn a_first_line_longer_than_the_title_is_kept_in_the_description() {
 #[test]
 fn no_prefilled_text_is_the_empty_form() {
     assert_eq!(prefilled("  "), Feedback::new(Facts::default()));
+}
+
+// Issue duplicates: what the search keys on, and what it keeps.
+
+fn found(issues: &[(u64, &str)]) -> Vec<Similar> {
+    (issues.iter())
+        .map(|(number, title)| Similar {
+            number: *number,
+            title: (*title).to_owned(),
+        })
+        .collect()
+}
+
+#[test]
+fn the_search_ors_the_key_words_of_the_title() {
+    assert_eq!(
+        search_query("Scroll jumps to the top").as_deref(),
+        Some("scroll OR jumps OR top in:title,body")
+    );
+    assert_eq!(
+        search_query("¿Por qué el menú se cierra?").as_deref(),
+        Some("qué OR menú OR cierra in:title,body")
+    );
+    // Only letters and digits reach the query: no qualifier, quote or
+    // parenthesis of the title gets through.
+    let query = search_query("repo:other/x \"is:closed\" (label:bug) crash").unwrap();
+    assert_eq!(
+        query,
+        "repo OR other OR closed OR label OR bug OR crash in:title,body"
+    );
+    // At most six words, so at most five OR.
+    let long = search_query("one1 two2 three3 four4 five5 six6 seven7").unwrap();
+    assert_eq!(long.matches(" OR ").count(), 5);
+    assert_eq!(search_query("a: b, to"), None);
+}
+
+#[test]
+fn only_issues_sharing_two_key_words_are_similar() {
+    let title = "write: an env template is refused";
+    let issues = found(&[
+        (
+            583,
+            "write: an env template like .env.example is refused without asking",
+        ),
+        (540, "Goal: storage management for users"),
+        (12, "env var not read"),
+        (77, "Refused write in a template folder"),
+    ]);
+    let kept: Vec<u64> = similar(title, issues).iter().map(|s| s.number).collect();
+    assert_eq!(kept, [583, 77], "one shared word (`env`) is not enough");
+    // A title of one key word needs only that one.
+    let kept = similar("Crash", found(&[(1, "crash on start"), (2, "slow")]));
+    assert_eq!(kept.iter().map(|s| s.number).collect::<Vec<_>>(), [1]);
+    // At most five.
+    let many: Vec<(u64, &str)> = (1..=8).map(|n| (n, "env template refused")).collect();
+    assert_eq!(similar(title, found(&many)).len(), 5);
+}
+
+#[test]
+fn the_comment_is_the_title_and_the_issue_body() {
+    let issue = Issue {
+        repo: "o/r".to_owned(),
+        title: "Scroll jumps".to_owned(),
+        body: "### What happened\n\nIt jumps".to_owned(),
+        labels: vec!["bug".to_owned()],
+    };
+    assert_eq!(
+        comment_body(&issue),
+        "**Scroll jumps**\n\n### What happened\n\nIt jumps"
+    );
+}
+
+#[test]
+fn only_a_comment_link_of_the_repository_is_accepted() {
+    let repo = "pichu2707/lazarobox-shell";
+    let url = "https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-123";
+    assert_eq!(comment_url(&format!("{url}\n"), repo).as_deref(), Some(url));
+    for out in [
+        "https://github.com/pichu2707/lazarobox-shell/issues/583",
+        "https://github.com/other/repo/issues/583#issuecomment-1",
+        "https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-x",
+        "done",
+    ] {
+        assert_eq!(comment_url(out, repo), None, "{out}");
+    }
+}
+
+/// A filled form after its Ctrl+S, told GitHub has `issues` like it.
+fn with_similar(issues: &[(u64, &str)]) -> Feedback {
+    let mut form = filled(Kind::Bug);
+    sent(&mut form);
+    form.found(found(issues));
+    form
+}
+
+// S3: similar issues replace the fields, the first selected; ↑/↓ move.
+#[test]
+fn similar_issues_are_listed_instead_of_the_fields() {
+    let mut form = with_similar(&[
+        (583, "Scroll jumps up"),
+        (540, "Scroll\u{1b}[31m jumps\n down"),
+    ]);
+    assert!(!form.sending());
+    assert_eq!(
+        form.lines(),
+        [
+            SIMILAR,
+            "› #583 Scroll jumps up",
+            "  #540 Scroll [31m jumps down",
+            "",
+            SIMILAR_ADD,
+            SIMILAR_NEW,
+        ]
+    );
+    assert_eq!(form.hint(), HINT_SIMILAR);
+    assert!(HINT_SIMILAR.chars().count() <= 48);
+    send(&mut form, KeyCode::Down);
+    send(&mut form, KeyCode::Down);
+    assert_eq!(form.lines()[2], "› #540 Scroll [31m jumps down");
+    send(&mut form, KeyCode::Up);
+    assert_eq!(form.lines()[1], "› #583 Scroll jumps up");
+    // Typing does not reach the fields while the list is shown.
+    send(&mut form, KeyCode::Char('x'));
+    form.paste("pasted");
+    assert_eq!(form.title(), "Scroll jumps");
+}
+
+// S2: Enter adds the report to the selected issue, with no new issue.
+#[test]
+fn enter_adds_the_report_to_the_selected_issue() {
+    let mut form = with_similar(&[(583, "a"), (540, "b")]);
+    send(&mut form, KeyCode::Down);
+    let Outcome::Send(Request::Comment { issue, number }) = send(&mut form, KeyCode::Enter) else {
+        panic!("not a comment");
+    };
+    assert_eq!(number, 540);
+    assert_eq!(issue.title, "Scroll jumps");
+    assert!(issue.body.contains("It jumps"));
+    assert!(form.sending());
+    assert_eq!(form.similar_issues(), None);
+}
+
+// S3: Ctrl+S on the list creates the issue anyway; Esc goes back to the
+// fields as typed.
+#[test]
+fn ctrl_s_on_the_list_creates_and_esc_goes_back() {
+    let mut form = with_similar(&[(583, "a")]);
+    let Outcome::Send(Request::Create(issue)) = ctrl_s(&mut form) else {
+        panic!("not created");
+    };
+    assert_eq!(issue.title, "Scroll jumps");
+    let mut form = with_similar(&[(583, "a")]);
+    assert_eq!(send(&mut form, KeyCode::Esc), Outcome::Handled);
+    assert_eq!(form.similar_issues(), None);
+    assert_eq!(form.title(), "Scroll jumps");
+    assert_eq!(form.hint(), HINT_TEXT);
+    // A second Esc closes the form as before.
+    assert_eq!(send(&mut form, KeyCode::Esc), Outcome::Close);
+}
+
+// S3: an empty answer is the form as before.
+#[test]
+fn no_similar_issue_keeps_the_fields() {
+    let form = with_similar(&[]);
+    assert_eq!(form.similar_issues(), None);
+    assert!(!form.sending());
+    assert_eq!(form.lines()[0], "  Kind: Bug report");
+    assert_eq!(form.hint(), HINT_TEXT);
 }
