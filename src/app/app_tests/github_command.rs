@@ -4,14 +4,14 @@
 use std::path::PathBuf;
 
 use super::chat_live::{composer, type_text};
-use super::github_grant::{grant, granted, tools_app};
+use super::github_grant::{grant, granted, save, tools_app};
 use super::run_pane::chat;
 use super::tool_approval::{announce_now, pending};
 use super::*;
 use crate::core::ai::{
     chat::{
         Entry, Msg, MsgStatus,
-        approval::{ApprovalAsk, GITHUB_GRANT_KEYS},
+        approval::{ApprovalAsk, GITHUB_GRANT_KEYS, GITHUB_GRANTED_LINE},
         engine::{CallId, Decision, Finish, Role, StreamEvent, ToolStatus},
     },
     config::ToolToggle,
@@ -809,4 +809,55 @@ fn a_dropped_answer_for_a_closed_pane_or_a_hint_says_nothing() {
         "{:?}",
         lines(&a)
     );
+}
+
+// The project rule: a dialog that vanishes says so. The menu opens over the
+// dialog, so a save that turns the tools off is a way to lose it.
+#[test]
+fn a_save_turning_tools_off_withdraws_the_dialog_and_says_so() {
+    let mut a = tools_app();
+    dialog(&mut a);
+    press(&mut a, "m");
+    assert_eq!(a.input(), InputMode::Menu, "the menu opens over the dialog");
+    let mut draft = a.ai.clone();
+    draft.set_tools_enabled(false);
+    save(&mut a, draft);
+    assert_eq!(pending(&a), None, "the dialog is gone");
+    assert!(!granted(&a, id2()));
+    assert!(
+        has_line(&a, "/github cancelled: tools are off"),
+        "{:?}",
+        lines(&a)
+    );
+}
+
+// A `y` never says "tools on from next message" when they would not be: the
+// reason the command could not apply now is told, and nothing is granted.
+#[test]
+fn y_after_the_engine_lost_its_tools_grants_nothing_and_says_why() {
+    type Change = fn(&mut App);
+    let cases: [(&str, Change); 2] = [
+        ("the engine offers no tools", |a| a.tool_engines = &[]),
+        ("the GitHub tools are already on", |a| {
+            a.ai.set_toggle(ToolToggle::Github, true)
+        }),
+    ];
+    for (why, change) in cases {
+        let mut a = tools_app();
+        dialog(&mut a);
+        change(&mut a);
+        wait_for_arming();
+        a.update(key('y'));
+        assert!(!granted(&a, id2()), "{why}");
+        assert_eq!(pending(&a), None, "{why}");
+        assert!(
+            has_line(&a, &format!("/github cancelled: {why}")),
+            "{why}: {:?}",
+            lines(&a)
+        );
+        assert!(!has_line(&a, GITHUB_GRANTED_LINE), "{why}");
+        assert!(
+            !a.offered_families(id2()).contains(Family::Github) || a.ai.toggle(ToolToggle::Github)
+        );
+    }
 }
