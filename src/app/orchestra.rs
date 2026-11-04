@@ -56,6 +56,15 @@ const HINT_OFF: &str = "Ctrl+O: stop orchestrating";
 pub(super) const HINT_RUN: &str =
     "A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode";
 
+/// Said in the pane when ORCH turns on. The coordinator is offered the read
+/// and orchestration tools only, whatever the saved Write, Exec and GitHub
+/// toggles say, so without these lines the model's "I have no tools" has no
+/// visible cause. The head is short on purpose: the ORCH badge covers the end
+/// of the first row of an empty chat, and the body must not lose its key name.
+const ORCH_ON_HEAD: &str = "ORCH on";
+const ORCH_ON_BODY: &str = "This chat cannot write files, run commands or read GitHub itself. \
+    A code worker writes, through the batch review. Ctrl+O goes back to a plain chat.";
+
 /// Said by the first Ctrl+C of a selected worker.
 const CANCEL_AGAIN: &str = "Ctrl+C again cancels the run";
 const NO_WORKER: &str = "No worker to select";
@@ -801,6 +810,10 @@ impl App {
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.set_orch(!chat.orch());
             now_on = chat.orch();
+            if now_on {
+                chat.push_system_line(ORCH_ON_HEAD.to_owned());
+                chat.push_system_line(ORCH_ON_BODY.to_owned());
+            }
             // The grant stays, but an orchestrated turn never offers it.
             if now_on && chat.github_granted() {
                 chat.push_system_line(github::ORCH_KEEPS_GRANT.to_owned());

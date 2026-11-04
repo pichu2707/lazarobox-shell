@@ -2,19 +2,19 @@
 source: src/app/app_tests/orchestra_run.rs
 expression: screen(&a)
 ---
-                                       │› plan it                          ORCH
+                                       │• ORCH on                          ORCH
+                                       │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
+                                       │
+                                       │› plan it
                                        │
                                        │» review codex>gpt-5 failed
                                        │
                                        │waiting for the model…
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
                                        │
                                        │
                                        │

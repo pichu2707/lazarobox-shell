@@ -2,17 +2,17 @@
 source: src/app/app_tests/orchestra_notice.rs
 expression: shown
 ---
-                                       │› plan it                          ORCH
+                                       │• ORCH on                          ORCH
+                                       │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
+                                       │
+                                       │› plan it
                                        │
                                        │waiting for the model…
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
                                        │
                                        │
                                        │

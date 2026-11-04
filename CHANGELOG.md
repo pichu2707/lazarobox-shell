@@ -19,6 +19,11 @@ baseline.
   `edit_file` does, once per file per turn, and a denial gives the same answer
   whatever the file holds. A worker, which cannot be asked, gets the usual
   refusal. Creating a new template is unchanged. Refs #583.
+- Turning ORCH on (`Ctrl+O`) now says in the chat that, in this mode, the chat
+  itself cannot write files, run commands or read GitHub, even with those
+  tools on in the AI menu: a `code` worker writes, through the batch review,
+  and `Ctrl+O` goes back to a plain chat. Before, the model said it had no
+  tools and nothing explained why.
 
 ## [1.7.0] - 2026-11-04
 
