@@ -17,7 +17,8 @@ Under WSL, a chat whose folder lives on a Windows drive (`/mnt/c/Users/<user>/Do
 - **Reads by policy:** `read_file`, `list_dir`, `grep`, `glob` and `tree` reach drive folders, with the same file-name rules as today (`.env`, `.netrc`, history files…) and a new Windows deny list.
 - **Windows deny list**, compared without letter case because drvfs folders are case-insensitive:
   - On every drive: `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`, `$Recycle.Bin`, `System Volume Information`, `Recovery`, and the files `pagefile.sys`, `hiberfil.sys`, `swapfile.sys`.
-  - Under every Windows profile (`/mnt/<d>/Users/<name>`): `AppData`, `NTUSER.DAT*`, and the secret folders already refused under `$HOME` (`.ssh`, `.gnupg`, the `CREDENTIAL_DIRS` entries…).
+  - Profiles: other Windows users' profiles are refused whole. Only the user's own profile and `Public` can be read (Q1).
+  - Under every readable profile (`/mnt/<d>/Users/<name>`): `AppData`, `NTUSER.DAT*`, and the secret folders already refused under `$HOME` (`.ssh`, `.gnupg`, the `CREDENTIAL_DIRS` entries…).
 - **Chat folder:** a drive folder becomes an acceptable chat folder. A drive root, `/mnt/<d>/Users` and a Windows profile root are **Broad**, like `$HOME` today: accepted only as an explicit choice.
 - **The grant:**
   - **When it is asked:** when the user picks a drive folder as the chat folder (picker, `/cd`, resume), a dialog asks whether the chat may also write, run commands and use git there.
@@ -32,6 +33,7 @@ Under WSL, a chat whose folder lives on a Windows drive (`/mnt/c/Users/<user>/Do
 - Folders outside `$HOME` on plain Linux or macOS. They are still refused, and the #558 notice stays.
 - Custom WSL automount roots (`[automount] root` in `wsl.conf`), network drives, and `\\wsl$` paths.
 - Grants that outlive the app (see Q2).
+- Reading other Windows users' profiles (see Q1).
 - Orchestra workers: they keep their staged write scope and get no grant. Their reads follow the same read policy, because they share the gate.
 - `run_in_pane` and the run-mode auto-run rules, which already allow safe commands outside `$HOME`.
 - Git line endings and `core.filemode` on drvfs. They are reported if they show up, not changed.
@@ -83,7 +85,7 @@ PR 1 alone answers the core of #550: the chat can read a project on `C:`.
   - `linkat` → ok
   - `open(O_CREAT | O_EXCL)` → ok
 
-## Open Questions
+## Decisions on Review (2026-11-04)
 
-- **Q1. Other Windows users' profiles.** Should reads reach `/mnt/c/Users/<another user>`? **Recommended: no.** Only the profile of the WSL user's Windows account, plus `Public`. Finding that account costs one call to Windows at startup (`cmd.exe /c echo %USERNAME%`). If the call fails, all profiles are refused except `Public`.
-- **Q2. How long a grant lasts.** **Recommended:** until the app quits, asked again on resume, the same way an explicit `$HOME` is today. This needs no new stored state. The alternative is to store the grant with the conversation, which avoids the repeated question but adds a stored permission and its revocation.
+- **Q1. Other Windows users' profiles: refused.** Reads reach only two profiles: the profile of the WSL user's Windows account and `Public`. Finding that account takes one call to Windows at startup (`cmd.exe /c echo %USERNAME%`). If the call fails, every profile except `Public` is refused.
+- **Q2. A grant lasts until the app quits.** On resume it is asked again, the same way an explicit `$HOME` is today, so there is no new stored state. Storing the grant with the conversation was rejected, because it adds a stored permission and a way to revoke it.
