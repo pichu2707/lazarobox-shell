@@ -12,6 +12,9 @@ baseline.
 
 ### Fixed
 
+- An orchestra worker on Ollama whose prompt and setup pass the model's
+  window now says so at the top of its transcript, with the estimated tokens
+  and the window, instead of Ollama cutting the prompt silently (#557).
 - In WSL, text copied with `y` no longer pastes with a `<feff>` in front.
   `clip.exe` kept the byte order mark as a character, so lazarobox now copies
   with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls
