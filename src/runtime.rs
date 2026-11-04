@@ -326,7 +326,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         clipboard::Clipboard::start(
             tool,
             program,
-            clipboard::CLIP_TIMEOUT,
+            clipboard::timeout(tool),
             Box::new(move |seq, result| {
                 let _ = tx.blocking_send((seq, result));
             }),

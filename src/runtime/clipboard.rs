@@ -134,6 +134,15 @@ fn run(tool: Tool, program: &Path, text: &str, timeout: Duration) -> Result<(), 
     }
 }
 
+/// How long `tool` may run. `powershell.exe` starts a .NET runtime: about
+/// 300 ms warm on WSL2, more on the first run after boot.
+pub fn timeout(tool: Tool) -> Duration {
+    match tool {
+        Tool::PowerShell => Duration::from_secs(5),
+        _ => CLIP_TIMEOUT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -160,6 +169,14 @@ mod tests {
             let _ = tx.lock().unwrap().send((seq, result));
         });
         (Clipboard::start(Tool::WlCopy, program, timeout, report), rx)
+    }
+
+    #[test]
+    fn powershell_gets_more_time_to_start_than_the_other_tools() {
+        assert_eq!(timeout(Tool::PowerShell), Duration::from_secs(5));
+        for tool in [Tool::WlCopy, Tool::Xclip, Tool::Xsel, Tool::ClipExe] {
+            assert_eq!(timeout(tool), CLIP_TIMEOUT);
+        }
     }
 
     fn answer(rx: &mpsc::Receiver<Answer>) -> Answer {
