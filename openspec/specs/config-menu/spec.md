@@ -1362,6 +1362,25 @@ The issue keeps the shape of the repository's issue forms: one `### <label>` sec
 
 `gh` is taken as missing when it is not on PATH, and as not logged in when it exits with code 4 or its message names `gh auth login`.
 
+#### Scenario: Sent [auto]
+- GIVEN Ctrl+S was pressed
+- WHEN `gh` prints one line `https://github.com/pichu2707/lazarobox-shell/issues/<n>`
+- THEN the view reads `Sent:` and that link on a row of its own, with the footer `Ctrl+O open · Esc back` (`Ctrl+O copy link · Esc back` with no opener)
+- AND Ctrl+O, or a left click on the link row, opens it
+- AND Esc goes back to the row
+- AND any other output counts as a failure
+
+#### Scenario: gh fails [auto]
+- WHEN `gh` fails or times out
+- THEN the form stays with everything typed, and the footer error reads `gh: <its message>` on one line, control characters removed, cut to 48 columns
+- AND Ctrl+S sends again
+
+#### Scenario: No gh [auto]
+- WHEN `gh` is missing or not logged in
+- THEN the prefilled page opens in the browser, as Ctrl+O would, and the view reads `gh is not installed or not logged in:`, `opened the form in your browser, for you to`, `review and send.`
+- AND on a host with no opener the link is copied, and the view reads `gh is not installed or not logged in: link`, `copied. Paste it in your browser to review`, `and send the issue.`
+- AND when the link would be too long, the form stays with the footer error `No gh, and too long for a link: shorten it`
+
 ### Requirement: Similar issues before sending
 Before it creates an issue, Ctrl+S MUST look for open issues like it, so a user does not file a duplicate. The search runs `gh issue list --repo <owner/repo> --state open --limit 20 --search "<words> in:title,body" --json number,title`.
 - **The words:** the key words of the title, joined by `OR`, at most six of them. A key word has only letters and digits, is lowercase, is three characters or more, and is not a common word such as `the` or `para`. No search qualifier, quote or parenthesis of the title reaches the query. A title with no key word is not searched.
@@ -1401,25 +1420,6 @@ Typing and pasting do nothing while the list is shown.
 - GIVEN the similar issues are listed
 - WHEN Ctrl+S is pressed
 - THEN the issue is created and its link shown as in Sent
-
-#### Scenario: Sent [auto]
-- GIVEN Ctrl+S was pressed
-- WHEN `gh` prints one line `https://github.com/pichu2707/lazarobox-shell/issues/<n>`
-- THEN the view reads `Sent:` and that link on a row of its own, with the footer `Ctrl+O open · Esc back` (`Ctrl+O copy link · Esc back` with no opener)
-- AND Ctrl+O, or a left click on the link row, opens it
-- AND Esc goes back to the row
-- AND any other output counts as a failure
-
-#### Scenario: gh fails [auto]
-- WHEN `gh` fails or times out
-- THEN the form stays with everything typed, and the footer error reads `gh: <its message>` on one line, control characters removed, cut to 48 columns
-- AND Ctrl+S sends again
-
-#### Scenario: No gh [auto]
-- WHEN `gh` is missing or not logged in
-- THEN the prefilled page opens in the browser, as Ctrl+O would, and the view reads `gh is not installed or not logged in:`, `opened the form in your browser, for you to`, `review and send.`
-- AND on a host with no opener the link is copied, and the view reads `gh is not installed or not logged in: link`, `copied. Paste it in your browser to review`, `and send the issue.`
-- AND when the link would be too long, the form stays with the footer error `No gh, and too long for a link: shorten it`
 
 ### Requirement: Tool marks on Ollama download screens
 The Popular and Sizes rows MUST carry the same tool marks as installed models (see ai-task-models, Tool marks on installed Ollama models), taken from the library data: whether the model card declares `tools`, and the parameter size. No request is added for this; the marks use data the screens already read, and a card whose data is missing gets no mark.
