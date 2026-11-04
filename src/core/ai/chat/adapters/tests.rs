@@ -2052,3 +2052,21 @@ fn the_tool_rounds_carry_the_cache_options_too() {
     let body: Value = serde_json::from_slice(&openai_round_body(&llama, &[], true)).unwrap();
     assert_eq!(body["cache_prompt"], json!(true));
 }
+
+// #556: what the external tools of a turn weigh is their part of the `tools`
+// array, estimated as the reserve estimates the built-ins.
+#[test]
+fn the_external_tools_weigh_their_entries_of_the_tools_array() {
+    use crate::core::ai::tools::{ExternalTool, registry::FamilySet};
+    let tool = |name: &str| ExternalTool {
+        name: name.into(),
+        description: "x".repeat(400),
+        schema: json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+    };
+    assert_eq!(external_tools_tokens(&[]), 0);
+    let one = [tool("fs__search")];
+    let json = serde_json::to_string(&tools_json(&one, FamilySet::EMPTY)).unwrap();
+    assert_eq!(external_tools_tokens(&one), estimate_tokens(&json));
+    let two = [tool("fs__search"), tool("fs__read")];
+    assert!(external_tools_tokens(&two) > external_tools_tokens(&one) + 100);
+}

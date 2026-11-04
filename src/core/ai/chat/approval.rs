@@ -173,6 +173,12 @@ pub enum ApprovalAsk {
         what: String,
         ollama_cloud: bool,
     },
+    /// Let the user grant the GitHub tools to this chat (`/github`, never a
+    /// tool call): `repo` is the sanitized `owner/name` of `origin`. Only the
+    /// user's `y` answers; no mode, timer or model output does. `ask_for` and
+    /// the host never build it. `folder` is the folder `repo` was read from:
+    /// the grant is refused once the chat is not in it any more.
+    GithubGrant { repo: String, folder: PathBuf },
     /// Stage `paths` in the index (one clean line, as the user will read it).
     /// `files` is how many files a dry run says would be staged; the host
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
@@ -961,6 +967,31 @@ pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of the consent prompt of a receipt-driven review.
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
+/// The keys of the `/github` dialog. ASCII: it must read on a Linux console.
+pub const GITHUB_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the `/github` dialog adds under the repository. ASCII.
+pub const GITHUB_GRANT_NOTE: &str = "the model may read this repo's issues and PRs, for this chat only\na cloud engine still asks before each turn's first read\nafter the first read, commands are typed, never run";
+/// The system line of a grant: tools on from the next message, a cloud engine
+/// still asks, commands are typed after the first read. ASCII, 80 columns.
+pub const GITHUB_GRANTED_LINE: &str =
+    "GitHub tools on from next message; cloud still asks; commands typed after a read";
+/// The system line of a declined dialog.
+pub const GITHUB_DECLINED_LINE: &str = "GitHub tools stay off";
+/// Why a model's call cannot open the `/github` dialog.
+pub const GITHUB_GRANT_DENIED: &str = "only the user can grant the GitHub tools";
+
+/// The prompt of the `/github` dialog for the sanitized `repo`.
+pub fn grant_prompt(repo: &str, armed: bool) -> ApprovalPrompt {
+    ApprovalPrompt {
+        target: "Let this chat read GitHub?".to_owned(),
+        command: clean(repo),
+        keys: GITHUB_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(GITHUB_GRANT_NOTE.to_owned()),
+    }
+}
+
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
@@ -1842,6 +1873,10 @@ mod tests {
             RUN_BLOCKED_LINE,
             GITHUB_READ,
             GITHUB_READ_ASK,
+            GITHUB_GRANTED_LINE,
+            GITHUB_DECLINED_LINE,
+            GITHUB_GRANT_DENIED,
+            GITHUB_GRANT_KEYS,
         ] {
             assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
         }

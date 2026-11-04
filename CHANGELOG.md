@@ -20,6 +20,16 @@ baseline.
   everything they read as untrusted data with secrets masked. A cloud engine
   (and an Ollama `*-cloud` model) asks for your `y` before the first read of a
   repository in each turn.
+- `/github` in the chat composer lets one chat use the GitHub read tools
+  without turning the toggle on. It reads the folder's `origin` (no network),
+  names the repository in a dialog and only an unmodified `y` grants; `n` and
+  Esc decline and every other key says why it did nothing. It is a command of
+  yours: no message, no request, nothing stored, and the model, a tool result
+  or a stored message cannot open or answer it. The grant is for that chat
+  only, starts at the next message, never writes the config and ends with a
+  resume, a folder change, tools off or the saved toggle going off. A cloud
+  engine still asks before the first read of each turn. `//github` sends the
+  text, and `/github` followed by words says `/github takes no arguments`.
 - After a GitHub read, commands of that conversation wait for your Enter for
   the rest of the conversation, in every approval mode: `run_in_pane` only
   types, `y` types without Enter, and the bar shows `RUN OFF`. On a cloud
@@ -34,6 +44,11 @@ baseline.
 
 - When `$HOME` is reached through a symlink, a refused write now names the
   chat's folder as `~/…` instead of its full real path (#438).
+- The chat's context budget now counts the schemas of external MCP tools.
+  The runtime reports what they weigh when a turn starts: the context fill of
+  that turn is corrected, and the next turns reserve them, so many connected
+  tools no longer push an Ollama prompt past its window unnoticed. The turn
+  that first starts the servers is still budgeted without them (#556).
 - An orchestra worker on Ollama whose prompt and setup pass the model's
   window now says so at the top of its transcript, with the estimated tokens
   and the window, instead of Ollama cutting the prompt silently (#557).
@@ -41,6 +56,11 @@ baseline.
   `clip.exe` kept the byte order mark as a character, so lazarobox now copies
   with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls
   back to `clip.exe`, which only gets the mark for non-ASCII text.
+- In `run` mode, a `cd` you approve with `y` now adds the
+  `pane N: cd … → <dir>` line to the transcript, like a `cd` that runs on its
+  own. A run that finds the pane moved now says "the pane's directory changed
+  before the command could run" instead of naming a check that a `y` run never
+  had (#438).
 
 ## [1.5.0] - 2026-11-03
 

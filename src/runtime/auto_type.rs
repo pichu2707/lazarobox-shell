@@ -13,8 +13,10 @@ use crate::core::{
 
 /// Why nothing was typed into a pane that no longer exists.
 pub const GONE: &str = crate::app::PANE_GONE;
-/// Why a run was not written: the shell is not where the command was checked.
-pub const MOVED: &str = "the pane's directory changed since the check";
+/// Why a run was not written: the shell is not in the directory the run was
+/// decided for, the one its check read or, for a run approved with `y`, the
+/// one the app last read. Worded for both, since a `y` run had no check.
+pub const MOVED: &str = "the pane's directory changed before the command could run";
 /// Why a run was not written: its bytes break the one-Enter invariant.
 pub const MALFORMED: &str = "the run was not one command and one Enter";
 /// Why a run was not written: the call is over, or its chat is gone.

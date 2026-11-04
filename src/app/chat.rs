@@ -501,7 +501,7 @@ impl App {
 
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
-    fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
+    pub(super) fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
         let availability = self.turn_availability(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -514,6 +514,11 @@ impl App {
             Command::Cost => return self.cost_submit(id),
             Command::CostArgs => {
                 self.cost_refused(id);
+                return Vec::new();
+            }
+            Command::Github => return self.github_submit(id),
+            Command::GithubArgs => {
+                self.github_refused(id);
                 return Vec::new();
             }
             Command::Feedback(words) => return self.feedback_submit(id, &words),
@@ -607,11 +612,15 @@ impl App {
             }
             _ => false,
         };
-        chat.set_tools_reserve(if tools {
-            tools_reserve_tokens(families)
+        // The external tools weigh what the runtime reported for the last
+        // turn (#556); a turn without tools stops their servers.
+        if tools {
+            let external = chat.external_tools_tokens();
+            chat.set_tools_reserve(tools_reserve_tokens(families) + external);
         } else {
-            0
-        });
+            chat.forget_external_tools();
+            chat.set_tools_reserve(0);
+        }
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {

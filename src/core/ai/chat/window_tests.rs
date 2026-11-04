@@ -243,3 +243,58 @@ fn an_overflow_streak_says_so_once_and_again_only_after_a_send_that_fits() {
     exchange(&mut state, &"x".repeat(8_000));
     assert_eq!(over_window_lines(&state).len(), 2, "{:?}", state.entries());
 }
+
+// #556: the runtime reports what the external tools of the turn weigh. The
+// fill of the turn in flight is corrected, and the next send can reserve it.
+#[test]
+fn the_external_tools_the_runtime_reports_count_in_the_fill() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    state.set_tools_reserve(1_500);
+    let SendOutcome::Sent { turn, .. } = state.send(&"x".repeat(4_000), &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    assert_eq!(state.external_tools_tokens(), 0);
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(25));
+    state.apply(turn, StreamEvent::ExternalTools(2_000));
+    // 2504 + 2000 external = 4504 of 10000.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(45));
+    assert_eq!(state.external_tools_tokens(), 2_000);
+}
+
+// A send that already reserved the last report replaces it with the new one,
+// never counting both.
+#[test]
+fn a_new_report_replaces_the_external_part_the_send_counted() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    let SendOutcome::Sent { turn, .. } = state.send("a", &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    state.set_tools_reserve(1_500);
+    state.apply(turn, StreamEvent::ExternalTools(2_000));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    // The app reserves the built-ins and the reported external tools.
+    state.set_tools_reserve(1_500 + state.external_tools_tokens());
+    let SendOutcome::Sent { turn, .. } = state.send(&"x".repeat(4_000), &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    // 1000 + 1 history + 4 system + 3500 reserve = 4505.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(45));
+    state.apply(turn, StreamEvent::ExternalTools(500));
+    // 4505 - 2000 + 500 = 3005.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(30));
+}
+
+// A turn with the tools off stops the servers: nothing external is kept.
+#[test]
+fn forgetting_the_external_tools_leaves_nothing_to_reserve() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    let SendOutcome::Sent { turn, .. } = state.send("a", &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    state.apply(turn, StreamEvent::ExternalTools(2_000));
+    state.forget_external_tools();
+    assert_eq!(state.external_tools_tokens(), 0);
+}

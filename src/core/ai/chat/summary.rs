@@ -319,6 +319,7 @@ impl ChatState {
             | StreamEvent::Notice(_)
             | StreamEvent::ToolCall { .. }
             | StreamEvent::ToolResult { .. }
+            | StreamEvent::ExternalTools(_)
             | StreamEvent::GithubStarted => Follow::Nothing,
             StreamEvent::Delta(text) => {
                 if text.is_empty() {

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::core::ai::chat::{
     Entry, SendOutcome,
-    approval::{READ_KEYS, RUN_KEYS},
+    approval::{GITHUB_GRANT_KEYS, READ_KEYS, RUN_KEYS, grant_prompt},
     engine::{Availability, Finish, StreamEvent},
     transcript::Scroll,
     yank,
@@ -99,6 +99,68 @@ fn a_read_prompt_is_drawn_at_the_composer() {
     );
     assert!(shown.contains("read /home/u/note.txt"), "{shown}");
     assert!(shown.contains("y read it · n deny"), "{shown}");
+}
+
+// Spec (chat-pane, Dialog at 80 columns and TERM=linux): the dialog names the
+// whole repository, wraps without cutting it and is ASCII only, so a `linux`
+// console draws it as it is.
+#[test]
+fn the_github_dialog_names_the_repository_whole_in_ascii() {
+    const REPO: &str = "owner/a-fairly-long-repository-name";
+    let prompt = grant_prompt(REPO, true);
+    for width in [80_usize, 40, 30] {
+        let rows = parts(&prompt, width, 16);
+        let text = |wanted: fn(&Part) -> Option<&str>| -> String {
+            rows.iter().filter_map(wanted).collect()
+        };
+        let command = text(|p| match p {
+            Part::Command(t) => Some(t.as_str()),
+            _ => None,
+        });
+        assert_eq!(command, REPO, "{width}");
+        let notice = text(|p| match p {
+            Part::Notice(t) => Some(t.as_str()),
+            _ => None,
+        });
+        assert!(notice.contains("cloud engine still asks"), "{notice}");
+        assert!(notice.contains("commands are typed, never run"), "{notice}");
+        assert_eq!(rows.last(), Some(&Part::Keys(GITHUB_GRANT_KEYS.to_owned())));
+        for part in &rows {
+            let (Part::Head(t)
+            | Part::Command(t)
+            | Part::Why(t)
+            | Part::Notice(t)
+            | Part::Marker(t)
+            | Part::Keys(t)) = part;
+            assert!(t.is_ascii(), "{width}: {t:?}");
+            if !matches!(part, Part::Head(_)) {
+                assert!(t.chars().count() <= width, "{width}: {t:?}");
+            }
+        }
+    }
+    let chat = exchange(BLOCK);
+    let shot = draw(&chat, Some(&prompt), 80, 16);
+    insta::assert_snapshot!("github_grant_80x16", shot);
+    assert!(shot.contains(REPO), "{shot}");
+    assert!(shot.contains("y allow | n or Esc decline"), "{shot}");
+}
+
+// The repository of an origin is sanitized: no control or escape character
+// is ever drawn.
+#[test]
+fn the_github_dialog_draws_no_control_character() {
+    let prompt = grant_prompt("o/r\u{1b}[31m\u{202e}x", true);
+    let rows = parts(&prompt, 80, 16);
+    for part in &rows {
+        let (Part::Head(t)
+        | Part::Command(t)
+        | Part::Why(t)
+        | Part::Notice(t)
+        | Part::Marker(t)
+        | Part::Keys(t)) = part;
+        assert!(!t.chars().any(char::is_control), "{t:?}");
+        assert!(!t.contains('\u{202e}'), "{t:?}");
+    }
 }
 
 fn draw(chat: &ChatState, approval: Option<&ApprovalPrompt>, width: u16, height: u16) -> String {

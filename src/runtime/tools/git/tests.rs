@@ -809,6 +809,41 @@ mod origin {
         ));
     }
 
+    async fn read(dir: &Path, home: &Path) -> GhRepo {
+        repo_of(&git_path().unwrap(), dir, Some(home.as_os_str())).await
+    }
+
+    // The one reading both the tools and `/github` use: every outcome is a
+    // distinct, named result and never a free-form message.
+    #[tokio::test]
+    async fn repo_of_names_the_repository_or_why_not() {
+        if git_path().is_none() {
+            return;
+        }
+        for (origin, name) in [
+            ("https://github.com/o/r.git", "o/r"),
+            ("git@github.com:a/b.git", "a/b"),
+        ] {
+            let (dir, home) = repo(Some(origin));
+            assert_eq!(read(dir.path(), home.path()).await.to_string(), name);
+        }
+        let (dir, home) = repo(Some("https://gitlab.com/o/r.git"));
+        assert!(matches!(
+            read(dir.path(), home.path()).await,
+            GhRepo::NotGithub
+        ));
+        let (dir, home) = repo(None);
+        assert!(matches!(
+            read(dir.path(), home.path()).await,
+            GhRepo::NoOrigin
+        ));
+        let plain = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            read(plain.path(), home.path()).await,
+            GhRepo::NoRepo
+        ));
+    }
+
     #[tokio::test]
     async fn insteadof_is_not_applied() {
         if git_path().is_none() {

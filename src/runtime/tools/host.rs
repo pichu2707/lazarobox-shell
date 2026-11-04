@@ -1000,6 +1000,7 @@ mod files;
 mod gate;
 mod git;
 mod github;
+pub(crate) use git::locate_git;
 mod orphan;
 mod review;
 

@@ -476,6 +476,14 @@ pub(super) fn find_git(path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|real| SYSTEM_RX.iter().any(|place| real.starts_with(place)))
 }
 
+/// The system places a git is looked for when the login PATH has none.
+const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/local/bin";
+
+/// [`find_git`] on `path`, then in the system places.
+pub(crate) fn locate_git(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    find_git(path).or_else(|| find_git(std::ffi::OsStr::new(SYSTEM_PATH)))
+}
+
 fn executable(candidate: &Path) -> Option<PathBuf> {
     let real = fs::canonicalize(candidate).ok()?;
     let meta = fs::metadata(&real).ok()?;
