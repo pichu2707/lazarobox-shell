@@ -113,6 +113,13 @@ pub fn over_window(tokens: usize, window: usize) -> String {
         "this message and the setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
     )
 }
+/// Trace line for a worker whose prompt and setup pass its Ollama window: the
+/// one message goes whole, and Ollama cuts it without saying so (#557).
+pub fn worker_over_window(tokens: usize, window: usize) -> String {
+    format!(
+        "the worker prompt and setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
+    )
+}
 /// System line for a send while an answer is still streaming.
 pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 /// System line for a send into a full conversation.
