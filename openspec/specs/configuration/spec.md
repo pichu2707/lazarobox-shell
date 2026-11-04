@@ -476,25 +476,31 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 - THEN only entries from the user file for that root are active
 
 ### Requirement: Family toggle keys
-The table `[ai.tools]` MAY hold five booleans: `search`, `write`, `exec`, `git` and `git_write` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs and Git write verbs (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored. A change takes effect at the next turn, never on a stream or approval already running.
+The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, `git_write` and `github` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored, so a build without `github` reads a file that has it. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
+(Previously: five booleans, with no `github`.)
 
 #### Scenario: Defaults off [auto]
 - GIVEN a file with no family keys, and a file with no `[ai.tools]`
 - WHEN each is parsed
-- THEN all five toggles are off and no notice is produced
+- THEN all six toggles are off and no notice is produced
 
 #### Scenario: On [auto]
 - GIVEN `[ai.tools]` with `write = true` and `exec = true`
 - WHEN it is parsed
-- THEN Write and Exec are on and the other three are off
+- THEN Write and Exec are on and the other four are off
+
+#### Scenario: GitHub on [auto]
+- GIVEN `[ai.tools]` with `github = true`
+- WHEN it is parsed
+- THEN GitHub is on and the other five are off
 
 #### Scenario: Wrong type [auto]
-- GIVEN `[ai.tools]` with `git = "yes"`
+- GIVEN `[ai.tools]` with `git = "yes"`, and in another run `github = "yes"`
 - WHEN the app starts
-- THEN `git` is off and the notice is `config: ai.tools.git: expected a boolean`
+- THEN that key is off and the notice is `config: ai.tools.git: expected a boolean`, or `config: ai.tools.github: expected a boolean`
 
 #### Scenario: Master switch wins [auto]
-- GIVEN `enabled = false` and `write = true`
+- GIVEN `enabled = false` and `write = true`, and in another run `enabled = false` and `github = true`
 - WHEN the tool list is built
 - THEN no tool is offered
 
@@ -502,6 +508,16 @@ The table `[ai.tools]` MAY hold five booleans: `search`, `write`, `exec`, `git` 
 - GIVEN `git = false` and `git_write = true`
 - WHEN the tool list is built
 - THEN only `git_add` and `git_commit` are offered among the git tools
+
+#### Scenario: Old file with no key [auto]
+- GIVEN a file written before this change
+- WHEN it is parsed and the menu saves other keys
+- THEN `github` is off, no notice is produced and the file gains no `github` key unless the user changes the row
+
+#### Scenario: Grant never writes the file [auto]
+- GIVEN a chat granted with `/github`
+- WHEN the config is saved by the menu
+- THEN `github` is unchanged in the file
 
 ### Requirement: Workspace key
 The file MAY hold a table `[workspace]` with `dir`, a string: an absolute path, or a path starting with `~` which expands to an absolute `$HOME`. A missing key and an empty string both mean unset. `dir` is the start folder of the app when no `--dir` flag is given (see start-dir). Invalid values fall back to unset for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`, the other keys respected): `workspace.dir: expected a string` for a non-string, `workspace.dir: expected an absolute path` for a relative path, and `workspace: expected a table` for a non-table `workspace`. A well-formed path that does not exist or is not a directory at startup is not a parse problem: the start dir falls back to the launch cwd and the notice is `config: workspace.dir: folder not found`. Unknown keys under `workspace` MUST be ignored. A valid `dir` never raises a notice. The key is read once at startup; there is no hot reload.
