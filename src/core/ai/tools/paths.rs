@@ -70,7 +70,7 @@ pub fn is_env_name(name: &str) -> bool {
 /// `.template` or `.dist` (ASCII case-insensitive). It holds no secret by
 /// convention, so a write may touch it after the user's review (see
 /// [`SecretRoots::judge_write`]); a read still refuses it.
-fn is_env_template(name: &str) -> bool {
+pub fn is_env_template(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     is_env_name(name)
         && [".example", ".sample", ".template", ".dist"]

@@ -1494,3 +1494,48 @@ async fn a_template_behind_a_secret_link_of_home_stays_refused() {
     assert_eq!(w.staged(), 0);
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "A=1\n");
 }
+
+// #583: `edit_file` answers whether a text occurs, and a read of a template is
+// refused, so on a local engine too it asks before it says anything. A denial
+// stages nothing and tells nothing about the file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_local_edit_of_an_env_template_asks_first_and_a_denial_tells_nothing() {
+    let w = world();
+    std::fs::write(w.proj.join(".env.example"), "KEY=topsecret\n").unwrap();
+    let approver = Script::new(Decision::Denied("no"));
+    let (d, _rx) = w.turn(approver.clone());
+    let hit = d.call(edit(".env.example", "KEY=top", "KEY=top")).await;
+    let miss = d.call(edit(".env.example", "KEY=wrong", "KEY=x")).await;
+    assert_eq!(approver.asks().len(), 2, "each denied edit asks");
+    assert!(matches!(approver.asks()[0], ApprovalAsk::Read { .. }));
+    assert_eq!(hit.text, miss.text);
+    assert_eq!(w.staged(), 0);
+}
+
+// #583: a yes covers the file for the turn, as it does for a cloud edit.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_local_edit_of_an_env_template_asks_once_per_turn() {
+    let w = world();
+    std::fs::write(w.proj.join(".env.example"), "A=1\nB=2\n").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    assert!(!d.call(edit(".env.example", "A=1", "A=3")).await.is_error);
+    assert!(!d.call(edit(".env.example", "B=2", "B=3")).await.is_error);
+    assert_eq!(approver.asks().len(), 1);
+}
+
+// The ask is for the template alone: a local edit of an ordinary file stays
+// free, and one the policy refuses opens no prompt.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_local_edit_asks_for_nothing_else() {
+    let w = world();
+    std::fs::write(w.proj.join("a.txt"), "A=1\n").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    assert!(!d.call(edit("a.txt", "A=1", "A=2")).await.is_error);
+    assert_eq!(d.call(edit(".env", "A=1", "A=2")).await.text, HINTED);
+    assert!(approver.asks().is_empty());
+}
