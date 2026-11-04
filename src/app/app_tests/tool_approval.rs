@@ -2067,3 +2067,105 @@ fn a_git_add_prompts_in_every_approval_mode_with_the_paths_and_the_count() {
         assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
     }
 }
+
+fn github_ask(ollama_cloud: bool) -> ApprovalAsk {
+    ApprovalAsk::GithubRead {
+        repo: "o/r".into(),
+        what: "gh_pr_view #7".into(),
+        ollama_cloud,
+    }
+}
+
+// Spec (github-tools, Cloud consent, Auto and run do not answer): every mode
+// prompts, the prompt names the repository and the engine, and only an
+// unmodified lowercase `y` accepts.
+#[test]
+fn a_github_read_prompts_in_every_mode_and_only_a_lowercase_y_accepts() {
+    use crate::core::ai::config::ApprovalMode;
+    for (mode, ollama_cloud, engine) in [
+        (ApprovalMode::Ask, false, "the engine"),
+        (ApprovalMode::Auto, false, "the engine"),
+        (ApprovalMode::Run, true, "an Ollama cloud model"),
+    ] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = github_ask(ollama_cloud);
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(
+            prompt.target,
+            format!("send GitHub text of o/r to {engine}")
+        );
+        assert_eq!(prompt.command, "gh_pr_view #7");
+        // The text is sent to the provider: the wording says "send".
+        assert_eq!(prompt.keys, crate::core::ai::chat::approval::PANES_KEYS);
+        for other in [key('Y'), plain(KeyCode::Enter), key(' '), key('a')] {
+            assert_eq!(a.update(other), vec![], "{mode:?}: only y accepts");
+            assert!(pending(&a).is_some());
+        }
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// The host fills the repository in before the prompt is drawn; an empty one
+// would show "send GitHub text of  to the engine". Debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "repository")]
+fn a_github_prompt_with_an_empty_repository_is_refused_in_debug() {
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::GithubRead {
+        repo: String::new(),
+        what: "gh_pr_view #7".into(),
+        ollama_cloud: false,
+    };
+    announce(&mut a, turn, 1, ask);
+    let _ = a.approval_prompt(id2());
+}
+
+// Spec (Declined consent): `n`, Esc, a cancel and the end of the call all end
+// as denied or gone, and the next ask is not blocked by the old one.
+#[test]
+fn a_declined_github_read_is_denied_and_frees_the_chat() {
+    for decline in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = live();
+        announce(&mut a, turn, 1, github_ask(false));
+        assert_eq!(
+            a.update(decline),
+            vec![decision(turn, 1, Decision::Denied("the user declined"))]
+        );
+        assert_eq!(pending(&a), None);
+    }
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    let effects = a.update(super::chat_live::ctrl('c'));
+    assert_eq!(
+        effects,
+        vec![
+            decision(turn, 1, Decision::Denied("cancelled")),
+            Effect::ChatCancel(id2())
+        ]
+    );
+    assert_eq!(pending(&a), None);
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    result(&mut a, turn, 1, ToolStatus::Denied);
+    assert_eq!(pending(&a), None);
+}
+
+// One pending approval per chat: no mode answers the consent, and a second
+// ask is refused while it waits.
+#[test]
+fn a_pending_github_consent_refuses_a_second_ask() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    assert_eq!(
+        announce(&mut a, turn, 2, read("/home/u/x")),
+        vec![decision(turn, 2, Decision::Denied(ANOTHER_PENDING))]
+    );
+    assert!(matches!(
+        pending(&a).map(|(ask, _)| ask),
+        Some(ApprovalAsk::GithubRead { .. })
+    ));
+}

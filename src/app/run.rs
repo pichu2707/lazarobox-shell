@@ -625,6 +625,29 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // The repository was read from `origin` and checked by the host.
+            ApprovalAsk::GithubRead {
+                repo,
+                what,
+                ollama_cloud,
+            } => {
+                debug_assert!(!repo.is_empty(), "the host names the repository");
+                Some(ApprovalPrompt {
+                    target: format!(
+                        "send GitHub text of {repo} to {}",
+                        if *ollama_cloud {
+                            "an Ollama cloud model"
+                        } else {
+                            "the engine"
+                        }
+                    ),
+                    command: what.clone(),
+                    keys: PANES_KEYS,
+                    armed,
+                    why: None,
+                    notice: None,
+                })
+            }
             // The paths were made one clean line when asked, and the host
             // refused an add whose paths would not show whole.
             ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {
