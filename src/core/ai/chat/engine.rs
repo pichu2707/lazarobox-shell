@@ -320,6 +320,11 @@ pub enum StreamEvent {
     Notice(String),
     /// A piece of the engine's reasoning, kept apart from the answer.
     ThinkingDelta(String),
+    /// What the external MCP tools the runtime handed this turn weigh, in
+    /// estimated tokens (#556); 0 when none apply any more. Sent once the
+    /// runtime resolved them, before the engine runs, so the app can count
+    /// them in the fill and reserve them for the next turn.
+    ExternalTools(usize),
     /// A tool call the host is about to run. Produced by the host that
     /// executes it, never decoded from answer text. `approval` is set when the
     /// call waits for the user. It is boxed so the event stays small: every

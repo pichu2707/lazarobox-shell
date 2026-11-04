@@ -12,6 +12,11 @@ baseline.
 
 ### Fixed
 
+- The chat's context budget now counts the schemas of external MCP tools.
+  The runtime reports what they weigh when a turn starts: the context fill of
+  that turn is corrected, and the next turns reserve them, so many connected
+  tools no longer push an Ollama prompt past its window unnoticed. The turn
+  that first starts the servers is still budgeted without them (#556).
 - In WSL, text copied with `y` no longer pastes with a `<feff>` in front.
   `clip.exe` kept the byte order mark as a character, so lazarobox now copies
   with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls

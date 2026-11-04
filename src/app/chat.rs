@@ -606,11 +606,15 @@ impl App {
             }
             _ => false,
         };
-        chat.set_tools_reserve(if tools {
-            tools_reserve_tokens(self.ai.families())
+        // The external tools weigh what the runtime reported for the last
+        // turn (#556); a turn without tools stops their servers.
+        if tools {
+            let external = chat.external_tools_tokens();
+            chat.set_tools_reserve(tools_reserve_tokens(self.ai.families()) + external);
         } else {
-            0
-        });
+            chat.forget_external_tools();
+            chat.set_tools_reserve(0);
+        }
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {

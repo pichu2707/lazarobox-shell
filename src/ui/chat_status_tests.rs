@@ -544,3 +544,26 @@ fn another_engines_error_or_a_clean_end_detects_nothing() {
     ));
     assert!(!effects.contains(&Effect::DetectEngines), "{effects:?}");
 }
+
+// #556: the next turn reserves what the external tools of the last one
+// weighed, beside the built-in tools.
+#[test]
+fn the_next_send_reserves_the_external_tools_the_last_turn_reported() {
+    let mut app = windowed_app(Some(10_000));
+    let turn = send(&mut app, "hi");
+    app.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::ExternalTools(5_000),
+    ));
+    app.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    send(&mut app, "hi");
+    let line = status(&app);
+    // 2 history + 2 system + the built-in reserve + 5000 external.
+    let expected = format!("context {}%", (4 + tools_reserve() + 5_000) * 100 / 10_000);
+    assert!(line.contains(&expected), "{line}");
+}

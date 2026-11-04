@@ -315,6 +315,7 @@ impl ChatState {
             | StreamEvent::ThinkingDelta(_)
             | StreamEvent::ToolCall { .. }
             | StreamEvent::ToolResult { .. }
+            | StreamEvent::ExternalTools(_)
             | StreamEvent::GithubStarted => {}
         }
         Follow::Nothing

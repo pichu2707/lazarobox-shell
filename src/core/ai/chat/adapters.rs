@@ -316,10 +316,24 @@ fn tools_json(external: &[ExternalTool], families: FamilySet) -> Vec<Value> {
 /// What a turn that offers the built-in tools of `families` adds to the
 /// prompt, in estimated tokens: the tools block of the system prompt plus the
 /// `tools` array. The budget pays it before any history is counted. External
-/// MCP tools are resolved in the runtime and are not counted.
+/// MCP tools are resolved in the runtime: their weight
+/// ([`external_tools_tokens`]) comes back with the turn and is reserved from
+/// the next one (#556).
 pub fn tools_reserve_tokens(families: FamilySet) -> usize {
     let schemas = serde_json::to_string(&offered_tools_of(families)).unwrap_or_default();
     estimate_tokens(&schemas) + estimate_tokens(&prompts::with_tools("", families))
+}
+
+/// What `external` tools add to a turn, in estimated tokens: their entries of
+/// the `tools` array, estimated as [`tools_reserve_tokens`] estimates the
+/// built-ins. They add no text to the system prompt. 0 when there are none.
+pub fn external_tools_tokens(external: &[ExternalTool]) -> usize {
+    if external.is_empty() {
+        return 0;
+    }
+    let schemas =
+        serde_json::to_string(&tools_json(external, FamilySet::EMPTY)).unwrap_or_default();
+    estimate_tokens(&schemas)
 }
 
 /// The request after `rounds` of tool calls. `tools` says whether to offer the

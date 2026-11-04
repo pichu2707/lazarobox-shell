@@ -230,6 +230,8 @@ impl Pipe {
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             // The engine's own report: counts and ids, no text to filter.
             StreamEvent::Usage(usage) => vec![StreamEvent::Usage(usage)],
+            // A count the runtime made, no text to filter.
+            StreamEvent::ExternalTools(tokens) => vec![StreamEvent::ExternalTools(tokens)],
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
             StreamEvent::Error(ChatError::Failed(text)) => {
                 self.end(StreamEvent::Error(ChatError::Failed(error_text(&text))))

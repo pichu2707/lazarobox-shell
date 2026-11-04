@@ -391,6 +391,12 @@ pub struct ChatState {
     /// What the tool block and schemas of the turn about to be sent weigh, in
     /// estimated tokens; 0 when it offers none.
     tools_reserve: usize,
+    /// What the external tools of the last turn weighed, as the runtime
+    /// reported (#556); the app reserves it for the next turn.
+    external_tools: usize,
+    /// The part of `external_tools` the fill of the turn in flight counted,
+    /// replaced when the runtime reports this turn's.
+    fill_external: usize,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// What the last turn used, summed over its `Usage` events. Cleared by
@@ -530,6 +536,8 @@ impl ChatState {
             fill: None,
             over_window_told: false,
             tools_reserve: 0,
+            external_tools: 0,
+            fill_external: 0,
             request_engine: String::new(),
             turn_usage: None,
             usage_config: crate::core::ai::config::UsageConfig::default(),
@@ -835,6 +843,17 @@ impl ChatState {
             usage,
             partial,
         }));
+    }
+
+    /// What the external tools of the last turn weighed, in estimated tokens.
+    pub fn external_tools_tokens(&self) -> usize {
+        self.external_tools
+    }
+
+    /// A turn with the tools off stops the external servers: nothing of them
+    /// is reserved any more.
+    pub fn forget_external_tools(&mut self) {
+        self.external_tools = 0;
     }
 
     /// The context window of the engine the next turns go to, in tokens.
@@ -1398,6 +1417,13 @@ impl ChatState {
         self.end_side_run(true);
         self.compaction.sent(room);
         let memory_text = memory.as_deref().unwrap_or_default();
+        // The app put the last reported external tools in the reserve when
+        // the turn offers tools.
+        self.fill_external = if self.tools_reserve > 0 {
+            self.external_tools
+        } else {
+            0
+        };
         self.fill = budget::fill(
             self.window,
             &system,
@@ -1505,7 +1531,10 @@ impl ChatState {
         }
         if !matches!(
             event,
-            StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_) | StreamEvent::Reading
+            StreamEvent::ThinkingDelta(_)
+                | StreamEvent::Usage(_)
+                | StreamEvent::Reading
+                | StreamEvent::ExternalTools(_)
         ) {
             self.generation += 1;
         }
@@ -1517,6 +1546,7 @@ impl ChatState {
                 | StreamEvent::Notice(_)
                 | StreamEvent::Error(_)
                 | StreamEvent::Usage(_)
+                | StreamEvent::ExternalTools(_)
         ) {
             self.told_sent.clear();
         }
@@ -1548,6 +1578,16 @@ impl ChatState {
                     Some(sum) => sum.merge(&usage),
                     None => self.turn_usage = Some(usage),
                 }
+                Follow::Nothing
+            }
+            StreamEvent::ExternalTools(tokens) => {
+                // This turn's report replaces what the send counted.
+                if let Some(context) = self.fill.as_mut() {
+                    context.fill.used =
+                        context.fill.used.saturating_sub(self.fill_external) + tokens;
+                }
+                self.fill_external = tokens;
+                self.external_tools = tokens;
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),

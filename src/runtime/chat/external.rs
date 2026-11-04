@@ -24,7 +24,10 @@ use super::Wires;
 use crate::{
     core::{
         ai::{
-            chat::engine::{ChatRequest, StreamEvent, Tools},
+            chat::{
+                adapters::external_tools_tokens,
+                engine::{ChatRequest, StreamEvent, Tools},
+            },
             config::McpServer,
         },
         layout::PaneId,
@@ -181,10 +184,14 @@ impl Start {
             if let Some(old) = self.externals.retire(pane) {
                 old.shutdown().await;
             }
+            let _ = events.send(StreamEvent::ExternalTools(0)).await;
             return;
         }
         let set = self.externals.set_for(pane, active, events).await;
         **external = set.qualified().clone();
+        // The app reserves them for the next turn and corrects this fill.
+        let tokens = external_tools_tokens(&external.external());
+        let _ = events.send(StreamEvent::ExternalTools(tokens)).await;
         let _ = self.slot.set(set);
     }
 }
