@@ -568,7 +568,10 @@ pub const GITHUB_READ: &str = "auto-run is off: this conversation read GitHub te
 /// GitHub read) and when a blocked one is resumed. ASCII: it must read on a
 /// Linux console.
 pub const GITHUB_BLOCK_LINE: &str =
-    "auto-run is off for this conversation: it read GitHub text; commands are typed, never run";
+    "auto-run is off here: GitHub text was read; commands are only typed";
+/// The line of the approval toggle to `run` in a blocked conversation.
+pub const RUN_BLOCKED_LINE: &str =
+    "approval: run (blocked: GitHub text was read; commands are only typed)";
 /// Why a read of the user's files asks on a cloud engine once the
 /// conversation read GitHub text.
 pub const GITHUB_READ_ASK: &str = "this conversation read GitHub: reads of your files need your y";
@@ -749,6 +752,9 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
             ApprovalAsk::Read {
                 reach: Reach::Refused | Reach::Unshowable,
                 ..
+            } | ApprovalAsk::WorkerRead {
+                reach: Reach::Refused | Reach::Unshowable,
+                ..
             }
         )
     {
@@ -789,7 +795,9 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
 pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: bool) -> Option<&'static str> {
     let reads = matches!(
         ask,
-        ApprovalAsk::Read { cloud: true, .. } | ApprovalAsk::Search { .. }
+        ApprovalAsk::Read { cloud: true, .. }
+            | ApprovalAsk::WorkerRead { cloud: true, .. }
+            | ApprovalAsk::Search { .. }
     );
     (blocked && reads).then_some(GITHUB_READ_ASK)
 }
@@ -1703,6 +1711,61 @@ mod tests {
         assert_eq!(blocked_read_reason(&cloud, false), None);
         assert_eq!(blocked_read_reason(&local, true), None);
         assert_eq!(blocked_read_reason(&ask_of("ls"), true), None);
+    }
+
+    fn worker_ask(reach: Reach, cloud: bool) -> ApprovalAsk {
+        ApprovalAsk::WorkerRead {
+            path: "a".into(),
+            label: "w".into(),
+            worker: WorkerKey::for_test(1, 1),
+            reach,
+            cloud,
+        }
+    }
+
+    #[test]
+    fn a_blocked_worker_cloud_read_asks_in_every_mode() {
+        let ask = worker_ask(Reach::Other, true);
+        assert_eq!(blocked_read_reason(&ask, true), Some(GITHUB_READ_ASK));
+        assert_eq!(blocked_read_reason(&ask, false), None);
+        assert_eq!(
+            blocked_read_reason(&worker_ask(Reach::Other, false), true),
+            None
+        );
+        for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+            for reach in [Reach::Root, Reach::Other, Reach::Broad] {
+                assert_eq!(
+                    answers_itself(&worker_ask(reach, true), mode, true),
+                    None,
+                    "{mode:?} {reach:?}"
+                );
+            }
+        }
+        // The guard's refusal and an unshowable path keep their answers.
+        assert_eq!(
+            answers_itself(&worker_ask(Reach::Refused, true), ApprovalMode::Run, true),
+            Some(Decision::Unprompted)
+        );
+        assert_eq!(
+            answers_itself(
+                &worker_ask(Reach::Unshowable, true),
+                ApprovalMode::Run,
+                true
+            ),
+            Some(Decision::Denied(UNSHOWABLE))
+        );
+    }
+
+    #[test]
+    fn the_github_lines_fit_80_columns() {
+        for line in [
+            GITHUB_BLOCK_LINE,
+            RUN_BLOCKED_LINE,
+            GITHUB_READ,
+            GITHUB_READ_ASK,
+        ] {
+            assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
+        }
     }
 
     fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {

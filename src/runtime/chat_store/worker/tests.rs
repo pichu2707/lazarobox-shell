@@ -3613,6 +3613,26 @@ fn a_blocked_row_carries_the_marker_once_in_its_own_transaction() {
     assert_eq!(marker_rows(&conn, first).len(), 1);
 }
 
+// The Create path: the marker precedes the first row in the same transaction,
+// and a resume from it stays blocked.
+#[test]
+fn a_create_with_the_marker_stores_it_before_the_first_row_and_resumes_blocked() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(read_github("fresh"), vec![])));
+    let order: Vec<(i64, String)> = conn
+        .prepare("SELECT seq, role FROM messages WHERE conversation_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        order,
+        vec![(1, "github_read".to_owned()), (2, "user".to_owned())]
+    );
+    assert_eq!(resumed_flags(worker.handle(resume(id))), (true, 0, 1));
+}
+
 #[test]
 fn deleting_the_conversation_takes_the_marker_and_a_reused_id_starts_clean() {
     let (_dir, mut worker, conn) = fixture();

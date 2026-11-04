@@ -355,6 +355,12 @@ fn a_blocked_chat_in_run_wears_a_marker_that_promises_no_run() {
     // At 80 columns the whole word fits, and the narrow form is one letter.
     assert_badge_of(&draw(&chat, 80, 6), " RUN OFF ", theme().warning_orange);
     assert_eq!(draw(&chat, 8, 4)[(7, 0)].symbol(), "r");
+    // The bar at 80 columns, as drawn.
+    let shot = (0..2)
+        .map(|y| row(&draw(&chat, 80, 6), y).trim_end().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("blocked_run_marker_80x6", shot);
     // Auto is unchanged: it never ran a command by itself.
     let mut auto = chat_in(ApprovalMode::Auto);
     auto.note_github_read();

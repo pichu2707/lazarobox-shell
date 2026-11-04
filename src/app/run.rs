@@ -552,9 +552,17 @@ impl App {
         let chat = self.panes.get(&id)?.chat_state()?;
         let armed = self.approval_armed(id);
         let approval = chat.approvals().pending()?;
-        let why = approval.why().map(str::to_owned);
+        let mut why = approval.why().map(str::to_owned);
         match approval.ask() {
             ApprovalAsk::Run { command } => {
+                // A prompt opened before the GitHub read follows the block,
+                // which `run` checks before any other reason.
+                if approval.call().is_some()
+                    && chat.approval_mode() == ApprovalMode::Run
+                    && chat.github_read()
+                {
+                    why = Some(GITHUB_READ.to_owned());
+                }
                 // Only a model's command runs on `y`, only in `run` mode, and
                 // only when nothing would make `y` type it instead.
                 let runs = approval.call().is_some()
@@ -587,7 +595,7 @@ impl App {
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
-                why: None,
+                why,
                 notice: None,
             }),
             // The pattern and the folder were made one clean line when asked.

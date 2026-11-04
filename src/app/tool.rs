@@ -12,8 +12,8 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, Route, answers_itself,
-        blocked_read_reason, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, Origin, QUEUE_FULL, RUN_BLOCKED_LINE, Route,
+        answers_itself, blocked_read_reason, counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -357,9 +357,7 @@ impl App {
         chat.set_approval_mode(mode);
         let blocked = chat.github_read();
         chat.push_system_line(match mode {
-            ApprovalMode::Run if blocked => {
-                "approval: run (blocked: this conversation read GitHub text, so commands are typed, never run)".to_owned()
-            }
+            ApprovalMode::Run if blocked => RUN_BLOCKED_LINE.to_owned(),
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
             ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),

@@ -111,8 +111,16 @@ fn a_prompt_open_before_the_read_follows_the_block() {
     let (mut a, turn) = run_live();
     announce(&mut a, turn, 1, run("cargo build"));
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_NOW_KEYS);
+    assert_ne!(
+        a.approval_prompt(id2()).unwrap().why.as_deref(),
+        Some(GITHUB_READ)
+    );
     started(&mut a, turn);
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+    assert_eq!(
+        a.approval_prompt(id2()).unwrap().why.as_deref(),
+        Some(GITHUB_READ)
+    );
     wait_for_arming();
     let effects = a.update(key('y'));
     assert!(typed(&effects, turn, 1), "{effects:?}");
