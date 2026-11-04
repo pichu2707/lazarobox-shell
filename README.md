@@ -2,6 +2,10 @@
   <img src="https://raw.githubusercontent.com/pichu2707/lazarobox-shell/main/docs/assets/lazarobox-shell-banner.png" alt="Lazarobox Shell" width="100%">
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/pichu2707/lazarobox-shell/main/assets/icon/lazarobox-256.png" alt="Lazarobox logo" width="96">
+</p>
+
 # 🚀 LAZAROBOX SHELL (`lazarobox-shell`)
 
 [![CI](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml/badge.svg)](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml)
