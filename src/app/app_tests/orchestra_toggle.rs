@@ -66,11 +66,13 @@ fn the_orch_badge_follows_the_gate_and_the_pane_mode() {
     toggle(&mut a);
     assert!(orch(&a, chat_id()));
     a.ai.orchestrator.enabled = false;
-    assert!(!screen(&a).contains("ORCH"), "gate off:\n{}", screen(&a));
+    // The badge lives on the title row; the transcript keeps the ORCH-on line.
+    let badge = |a: &App| screen(a).lines().next().unwrap().ends_with(" ORCH");
+    assert!(!badge(&a), "gate off:\n{}", screen(&a));
     a.ai.orchestrator.enabled = true;
     toggle(&mut a);
     assert!(!orch(&a, chat_id()));
-    assert!(!screen(&a).contains("ORCH"), "ORCH off:\n{}", screen(&a));
+    assert!(!badge(&a), "ORCH off:\n{}", screen(&a));
     toggle(&mut a);
     let shown = screen(&a);
     assert!(shown.lines().next().unwrap().ends_with(" ORCH"), "{shown}");
@@ -91,6 +93,35 @@ fn ctrl_o_turns_the_orch_mode_on_then_off() {
     assert_eq!(at(&mut a, 1000, ctrl('o')), vec![]);
     assert!(!orch(&a, chat_id()));
     assert!(!a.orchestrating(chat_id()));
+}
+
+// agent-orchestrator / Turning ORCH on says what the coordinator cannot do.
+#[test]
+fn turning_orch_on_says_the_chat_cannot_write_run_or_read_github() {
+    let mut a = gate_on();
+    let notes = |a: &App| -> Vec<String> {
+        (chat_of(a).entries().iter())
+            .filter_map(|e| match e {
+                Entry::System(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(notes(&a).is_empty());
+    at(&mut a, 0, ctrl('o'));
+    let on = notes(&a);
+    assert_eq!(on.len(), 2, "head and body when ORCH turns on: {on:?}");
+    assert_eq!(on[0], "ORCH on");
+    let line = &on[1];
+    for word in ["write", "run commands", "GitHub", "code worker", "Ctrl+O"] {
+        assert!(line.contains(word), "{word:?} missing from {line:?}");
+    }
+    assert!(line.is_ascii(), "readable on a linux console: {line:?}");
+    // Turning it off adds nothing; the next ON says it again.
+    at(&mut a, 1000, ctrl('o'));
+    assert_eq!(notes(&a).len(), 2);
+    at(&mut a, 2000, ctrl('o'));
+    assert_eq!(notes(&a).len(), 4);
 }
 
 // modal-input / Held key toggles once.
@@ -256,7 +287,8 @@ fn the_footer_hint_names_ctrl_o_only_with_the_gate_on() {
     assert!(screen(&a).contains("Ctrl+O: stop"), "{}", screen(&a));
     a.ai.orchestrator.enabled = false;
     assert_eq!(hint(&a), None);
-    assert!(!screen(&a).contains("Ctrl+O"), "gate off:\n{}", screen(&a));
+    // The ORCH-on line in the transcript names the key; the footer hint does not.
+    assert!(!screen(&a).contains("Ctrl+O:"), "gate off:\n{}", screen(&a));
 }
 
 // chat-pane / Toggle blocked during a run: the footer hint says to cancel

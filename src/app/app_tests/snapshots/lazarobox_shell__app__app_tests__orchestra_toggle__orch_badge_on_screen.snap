@@ -2,21 +2,21 @@
 source: src/app/app_tests/orchestra_toggle.rs
 expression: shown
 ---
-                                       │                                   ORCH
+                                       │• ORCH on                          ORCH
                                        │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
                                        │
+                                       │• ORCH on
                                        │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
                                        │
                                        │
                                        │

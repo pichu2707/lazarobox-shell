@@ -84,6 +84,19 @@ The orchestrator turn MUST be offered exactly these orchestration tools through 
 - WHEN `spawn_agent` is called with kind `deploy`
 - THEN an error result is returned and no worker exists
 
+### Requirement: Turning ORCH on says what the chat loses
+The coordinator of an orchestrating pane is offered the read tools and the orchestration tools only, whatever the saved Write, Exec and GitHub toggles say. Turning ORCH on with the key Ctrl+O MUST therefore add two system lines to the pane's transcript: a short head (`ORCH on`) and a body saying that the chat itself cannot write files, run commands or read GitHub, that a code worker writes through the batch review, and that Ctrl+O goes back to a plain chat. The head is short so the ORCH badge, which covers the end of the first row of an empty chat, never cuts the body. The lines are ASCII, are transcript notices only (never sent to a model) and are said again each time ORCH is turned on. Turning ORCH off adds none.
+
+#### Scenario: ORCH on says it [auto]
+- GIVEN `enabled = true` and a chat whose Write, Exec and GitHub toggles are on
+- WHEN Ctrl+O turns its ORCH mode on
+- THEN the transcript gains `ORCH on` and a line naming write, run commands, GitHub, the code worker and Ctrl+O
+
+#### Scenario: ORCH off is silent [auto]
+- GIVEN a pane with ORCH on
+- WHEN Ctrl+O turns it off
+- THEN no line is added
+
 ### Requirement: Orchestrator toolset limits [S1]
 The orchestrator MUST NOT be offered `run_in_pane` and MUST NOT have any means to approve, deny or answer an approval. Any approval prompt MUST be answerable only by a key event from the user. Text produced by an engine, a worker or a tool result MUST NOT be able to answer a prompt.
 
