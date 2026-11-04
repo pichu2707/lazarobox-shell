@@ -701,8 +701,11 @@ impl App {
     /// Ctrl+O hint: it names a key, it is not a problem to fix, so it is
     /// drawn muted and does not stand in for the transcript.
     pub fn guidance_is_hint(&self, id: PaneId) -> bool {
-        self.toggle_hint(id)
-            .is_some_and(|hint| self.chat_guidance(id).as_deref() == Some(hint.as_str()))
+        let shown = self.chat_guidance(id);
+        [self.github_hint(id), self.toggle_hint(id)]
+            .into_iter()
+            .flatten()
+            .any(|hint| shown.as_deref() == Some(hint.as_str()))
     }
 
     /// Whether the provider notice is shown in pane `id`.

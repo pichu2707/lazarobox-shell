@@ -213,6 +213,8 @@ No schema change: `user_version` stays 3 and there is no migration. Old configs 
 - A cloud model whose name does not end in `-cloud` is read as local (see below).
 - In a blocked conversation on a cloud engine, an orchestrator worker's read inside its run's scope and its `grep` do not ask (the spec names this limit). The host (`host.rs`, read arm) builds no ask for them, and the block lives in the chat's state, which the worker's tool scope cannot see. Making them ask needs the block passed into the host's decision (a shared flag per chat in the worker scope, kept after a resume) and an ask for reads that run free today; that is more than a small change, so it is left for a later PR. Only a worker read outside its scope asks (`WorkerRead` is covered by `blocked_read_reason`).
 
+- A grant is not pinned to the repository slug. If `.git/config` changes its `origin` in the middle of a session (without a folder change), the grant keeps working for the new origin, and the consent prompt of a cloud engine names the slug being read, which is then the new one. The dialog is bound to the folder it was read for, not to the slug. Accepted; the cloud prompt is the safeguard.
+
 ## Could not verify (no shell in this phase)
 
 - `gh` JSON field names and `HOST/OWNER/REPO` come from memory of gh's docs; apply records real fixtures before coding the serde structs. Also unverified: that gh aliases cannot shadow `issue`, `pr` and `repo`.

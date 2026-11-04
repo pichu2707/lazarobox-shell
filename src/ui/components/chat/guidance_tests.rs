@@ -87,3 +87,45 @@ fn guidance_never_panics_at_any_size() {
         }
     }
 }
+
+// Spec (chat-pane, Hint at 80 columns and TERM=linux): one muted row above the
+// composer, `/github` intact, ASCII only, the repository dropped when the
+// name does not fit.
+#[test]
+fn the_github_hint_is_one_muted_ascii_row_at_80_columns() {
+    use crate::core::ai::chat::guidance::github_hint;
+    let chat = ChatState::new(None);
+    let theme = LazaroboxTheme::default();
+    for (repo, wanted) in [
+        (
+            "o/r",
+            "Type /github to let this chat read o/r's issues and PRs",
+        ),
+        (
+            "owner/a-fairly-long-repository-name",
+            "Type /github to let this chat read this repo's issues and PRs",
+        ),
+    ] {
+        let hint = github_hint(repo, 80);
+        assert_eq!(hint, wanted);
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&chat, &theme)
+            .guidance(Some(&hint))
+            .quiet_guidance(true)
+            .render(area, &mut buf);
+        assert_eq!(row(&buf, 4), wanted);
+        assert!(row(&buf, 4).is_ascii());
+        assert_eq!(row(&buf, 3), "", "one row: nothing above it");
+        assert_eq!(buf[(0, 4)].fg, theme.text_muted, "muted, not a warning");
+    }
+    let long = github_hint("owner/a-fairly-long-repository-name", 80);
+    let area = Rect::new(0, 0, 80, 6);
+    let mut buf = Buffer::empty(area);
+    ChatView::new(&chat, &theme)
+        .guidance(Some(&long))
+        .quiet_guidance(true)
+        .render(area, &mut buf);
+    let shot = rows(&buf).join("\n");
+    insta::assert_snapshot!("github_hint_80x6", shot);
+}

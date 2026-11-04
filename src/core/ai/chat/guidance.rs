@@ -13,6 +13,22 @@ pub fn guidance_rows(text: &str, width: u16, height: u16) -> u16 {
     u16::try_from(rows).unwrap_or(u16::MAX).min(height)
 }
 
+/// The hint that suggests `/github` in `cols` columns, ASCII and one line:
+/// first with the repository, then without it, then shorter, and at the
+/// narrowest the bare command. The word `/github` is never cut.
+pub fn github_hint(repo: &str, cols: usize) -> String {
+    let forms = [
+        format!("Type /github to let this chat read {repo}'s issues and PRs"),
+        "Type /github to let this chat read this repo's issues and PRs".to_owned(),
+        "Type /github to read this repo's issues and PRs".to_owned(),
+        "Type /github for GitHub issues".to_owned(),
+    ];
+    forms
+        .into_iter()
+        .find(|form| form.chars().count() <= cols)
+        .unwrap_or_else(|| "/github".to_owned())
+}
+
 /// The guidance for `availability`, or `None` when the engine is ready.
 pub fn guidance(availability: &Availability) -> Option<String> {
     Some(match availability {
@@ -52,6 +68,37 @@ pub fn guidance(availability: &Availability) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Spec (chat-pane, Hint at 80 columns and TERM=linux): one line, the word
+    // `/github` never cut, the repository dropped before anything else, ASCII.
+    #[test]
+    fn the_github_hint_drops_the_repository_name_before_it_cuts_the_command() {
+        const LONG: &str = "owner/a-fairly-long-repository-name";
+        assert_eq!(
+            github_hint("o/r", 80),
+            "Type /github to let this chat read o/r's issues and PRs"
+        );
+        // The long name does not fit one line: the name goes first.
+        assert_eq!(
+            github_hint(LONG, 80),
+            "Type /github to let this chat read this repo's issues and PRs"
+        );
+        for cols in [80_usize, 60, 50, 40, 30, 20, 10, 7] {
+            for repo in ["o/r", LONG] {
+                let text = github_hint(repo, cols);
+                assert!(text.is_ascii(), "{text:?}");
+                assert!(text.contains("/github"), "{cols}: {text:?}");
+                assert!(text.chars().count() <= cols, "{cols}: {text:?}");
+            }
+        }
+        // Narrower still: the shorter forms keep the command whole.
+        assert_eq!(
+            github_hint(LONG, 47),
+            "Type /github to read this repo's issues and PRs"
+        );
+        assert_eq!(github_hint(LONG, 30), "Type /github for GitHub issues");
+        assert_eq!(github_hint(LONG, 7), "/github");
+    }
 
     #[test]
     fn guidance_rows_are_the_wrapped_lines_capped_by_the_area() {

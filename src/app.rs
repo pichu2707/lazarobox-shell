@@ -947,8 +947,15 @@ pub struct App {
     /// The chats whose open steps (memory, prompt, list) wait for the folder
     /// to be settled: the probe, or the picker.
     opening: HashSet<PaneId>,
+    /// The GitHub repository (`owner/name`) of each chat's folder, as the last
+    /// probe found it; dropped when the folder changes.
+    github_repos: HashMap<PaneId, String>,
+    /// The folder each chat's `origin` was last asked for, to ask once.
+    github_probed: HashMap<PaneId, PathBuf>,
     /// The folder of the `/github` probe in flight, one per pane.
     github_probing: HashMap<PaneId, PathBuf>,
+    /// The (chat, repository) pairs the `/github` hint was shown for already.
+    github_hinted: HashSet<(PaneId, String)>,
     /// Chats opened in a folder outside HOME, until their picker closes: Esc
     /// keeps that folder and says the file tools cannot read it.
     outside_open: HashSet<PaneId>,
@@ -1109,7 +1116,10 @@ impl App {
             home: None,
             resume_folders: HashMap::new(),
             opening: HashSet::new(),
+            github_repos: HashMap::new(),
+            github_probed: HashMap::new(),
             github_probing: HashMap::new(),
+            github_hinted: HashSet::new(),
             outside_open: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
@@ -8886,6 +8896,8 @@ mod app_tests {
     mod github_command;
     /// The chat grant of the GitHub tools and where it ends.
     mod github_grant;
+    /// The hint that suggests `/github`.
+    mod github_hint;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;

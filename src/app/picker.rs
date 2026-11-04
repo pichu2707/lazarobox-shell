@@ -370,6 +370,7 @@ impl App {
             return Vec::new();
         }
         let mut effects = self.begin_memory(id);
+        effects.extend(self.probe_hint(id));
         self.show_server_offer();
         effects.extend(self.prepare_prompt(id));
         if self.history {
