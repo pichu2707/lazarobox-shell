@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pichu2707/lazarobox-shell/main/assets/icon/lazarobox-256.png" alt="Lazarobox logo" width="96">
+  <img src="docs/assets/lazarobox-blink.gif" alt="Lazarobox logo: a panther box that blinks" width="96">
 </p>
 
 # 🚀 LAZAROBOX SHELL (`lazarobox-shell`)
