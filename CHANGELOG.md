@@ -47,6 +47,8 @@ baseline.
 
 ### Fixed
 
+- When `$HOME` is reached through a symlink, a refused write now names the
+  chat's folder as `~/…` instead of its full real path (#438).
 - The chat's context budget now counts the schemas of external MCP tools.
   The runtime reports what they weigh when a turn starts: the context fill of
   that turn is corrected, and the next turns reserve them, so many connected
