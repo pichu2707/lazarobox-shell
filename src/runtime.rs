@@ -329,7 +329,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         clipboard::Clipboard::start(
             tool,
             program,
-            clipboard::CLIP_TIMEOUT,
+            clipboard::timeout(tool),
             Box::new(move |seq, result| {
                 let _ = tx.blocking_send((seq, result));
             }),
@@ -476,6 +476,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
     let orchestra = Arc::new(
         RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
+            .with_live(live.clone())
             .with_tools(tool_host.clone(), socket_dirs.clone())
             .with_run_floor({
                 let path = store_path.clone();

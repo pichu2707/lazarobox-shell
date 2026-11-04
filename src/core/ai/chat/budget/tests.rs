@@ -282,3 +282,57 @@ fn a_cli_keeps_its_cap_whatever_the_head() {
         Budget::Chars(CLI_HISTORY_CHARS)
     );
 }
+
+fn worker_request(system_chars: usize, prompt_chars: usize, num_ctx: Option<usize>) -> ChatRequest {
+    use crate::core::ai::chat::engine::{OllamaWire, Tools};
+    use crate::core::ai::tools::registry::FamilySet;
+    ChatRequest {
+        cache: Default::default(),
+        github_read: false,
+        families: FamilySet::EMPTY,
+        engine: "ollama".into(),
+        model: Some("llama3:8b".into()),
+        system: "s".repeat(system_chars),
+        memory: None,
+        tools: Tools::Off,
+        ollama: OllamaWire { num_ctx },
+        messages: vec![message(Role::User, prompt_chars)],
+    }
+}
+
+// #557: a worker sends one message, so its whole prompt is checked against
+// the Ollama window it is stamped with.
+#[test]
+fn a_request_over_its_ollama_window_gives_its_size_and_the_window() {
+    // 40 chars of system (10 tokens) and 8 of prompt (2 tokens).
+    assert_eq!(
+        over_window(&worker_request(40, 8, Some(11))),
+        Some((12, 11))
+    );
+}
+
+#[test]
+fn a_request_that_fits_or_has_no_known_window_gives_nothing() {
+    assert_eq!(over_window(&worker_request(40, 8, Some(12))), None);
+    assert_eq!(over_window(&worker_request(40, 8, None)), None);
+    assert_eq!(over_window(&worker_request(40, 8, Some(0))), None);
+}
+
+#[test]
+fn the_memory_and_the_offered_tools_count() {
+    use crate::core::ai::chat::adapters::tools_reserve_tokens;
+    use crate::core::ai::chat::engine::Tools;
+    use crate::core::ai::tools::registry::FamilySet;
+    let mut request = worker_request(40, 8, Some(1));
+    request.memory = Some("m".repeat(20));
+    request.families = FamilySet::LEGACY;
+    // Families with the tools off send no tool block: they weigh nothing.
+    assert_eq!(over_window(&request), Some((12 + 5, 1)));
+    request.tools = Tools::On {
+        origin: None,
+        external: Default::default(),
+        mcp: None,
+    };
+    let tools = tools_reserve_tokens(FamilySet::LEGACY);
+    assert_eq!(over_window(&request), Some((12 + 5 + tools, 1)));
+}
