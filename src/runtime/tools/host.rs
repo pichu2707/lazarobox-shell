@@ -377,8 +377,6 @@ impl Drop for Owed {
     }
 }
 
-/// A result that is the end of the call: the text for the model, and the
-/// status and one line for the row.
 /// Whether an `edit_file` asks like a read before it runs: its answers tell
 /// whether a text occurs in the file. On a cloud engine every edit does; on a
 /// local one only that of an env template, which no read may show.
@@ -389,6 +387,8 @@ fn edit_asks(locality: Locality, path: &str) -> bool {
             .is_some_and(|name| is_env_template(&name.to_string_lossy()))
 }
 
+/// A result that is the end of the call: the text for the model, and the
+/// status and one line for the row.
 fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatus, String) {
     let is_error = status != ToolStatus::Ok;
     (Outcome { text, is_error }, status, clip(summary))

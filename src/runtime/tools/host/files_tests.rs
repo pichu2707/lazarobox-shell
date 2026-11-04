@@ -1539,3 +1539,26 @@ async fn a_local_edit_asks_for_nothing_else() {
     assert_eq!(d.call(edit(".env", "A=1", "A=2")).await.text, HINTED);
     assert!(approver.asks().is_empty());
 }
+
+// #583: the ask reads the name as the model wrote it. A path that only reaches
+// a template by stepping back is refused by the policy, so no edit runs unasked.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_path_that_steps_back_to_an_env_template_is_refused() {
+    let w = world();
+    std::fs::write(w.proj.join(".env.example"), "KEY=topsecret\n").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(approver.clone());
+    for path in [
+        ".env.example/x/..",
+        ".env.example/.",
+        ".env.example/",
+        "./.env.example/",
+        "a/../.env.example",
+    ] {
+        let out = d.call(edit(path, "KEY=top", "KEY=top")).await;
+        assert_eq!(out.text, HINTED, "{path}");
+    }
+    assert_eq!(w.staged(), 0);
+}
+
