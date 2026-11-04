@@ -1,0 +1,23 @@
+{
+  "author": {
+    "id": "MDQ6VXNlcjU0Nzg0MjE2",
+    "is_bot": false,
+    "login": "pichu2707",
+    "name": "Javi Lazaro"
+  },
+  "body": "## Problem\n\nAI coding agents working on this repo build each branch in its own `CARGO_TARGET_DIR` (`target-<slice>`) and its own git worktree under `.claude/`. Nothing removes them after the branch merges. One developer machine reached 47 build folders, about 300 GB. It is also unclear which folders are safe to delete and what deleting them affects.\n\n## Goal\n\nA bounded, documented policy for build output during development:\n\n1. **Fixed slots.** Agents reuse a fixed set of build folders (for example `target-w1`, `target-w2`, matching the limit of two parallel writers) instead of one new folder per branch. Incremental builds stay fast.\n2. **Cleanup on merge.** A worktree and its build folder are removed when its PR merges.\n3. **A cleanup script** (`scripts/clean-builds.sh`) that:\n   - lists every build folder and worktree with its size, branch and merge state;\n   - says what removing each one affects (only a rebuild, never source or uncommitted work);\n   - refuses to touch a worktree with uncommitted changes;\n   - removes the oldest merged ones above a size cap.\n4. **Documentation** of this in `AGENTS.md`, so every agent follows it.\n\n## Notes\n\nBuild folders only hold compiler output; removing them costs a rebuild and nothing else. Worktrees can hold uncommitted work and must be checked first.\n",
+  "createdAt": "2026-11-02T21:32:24Z",
+  "labels": [
+    {
+      "id": "LA_kwDOU7WyEc8AAAAC60_pvg",
+      "name": "enhancement",
+      "description": "New feature or request",
+      "color": "a2eeef"
+    }
+  ],
+  "number": 541,
+  "state": "OPEN",
+  "title": "chore: bounded build folders and worktrees for agents",
+  "updatedAt": "2026-11-02T21:36:01Z",
+  "url": "https://github.com/pichu2707/lazarobox-shell/issues/541"
+}
