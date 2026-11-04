@@ -1815,3 +1815,55 @@ async fn the_staged_diff_holds_readable_paths_and_names_the_others() {
     assert!(none.files.is_empty(), "{none:?}");
     assert_eq!(none.skipped, ["fresh.rs"]);
 }
+
+// #583: a worker asks no one before it stages, so `edit_file` on a template it
+// may not read would tell it what the file holds. It can still write one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_worker_writes_an_env_template_but_cannot_probe_one_with_edit() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let app = home.join("dev/app");
+    std::fs::write(app.join(".env.sample"), "TOKEN=abc\n").unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let d = writer(
+        &host,
+        Locality::Cloud,
+        &home,
+        handle,
+        Scripted::new(Decision::Unprompted),
+    );
+    let probe = Call::EditFile {
+        path: ".env.sample".into(),
+        old: "TOKEN=abc".into(),
+        new: "TOKEN=x".into(),
+    };
+    let out = d.call(probe).await;
+    assert_eq!(
+        out.text,
+        format!("{REFUSED} (paths are relative to the chat's folder ~/dev/app)")
+    );
+    let staged = d.call(write_call(".env.example", "A=1\n")).await;
+    assert!(!staged.is_error, "{staged:?}");
+}
+
+// #583: a review worker's read tools refuse an env template, so its prompt
+// names the file and carries none of its text, whatever `allow` says.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_review_prompt_never_carries_an_env_template() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let app = home.join("dev/app");
+    std::fs::write(app.join(".env.sample"), "OLD=kept\n").unwrap();
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let user = Scripted::new(Decision::Unprompted);
+    let w = writer(&host, Locality::Cloud, &home, handle, user);
+    let staged = w.call(write_call(".env.sample", "A=1\n")).await;
+    assert!(!staged.is_error, "{staged:?}");
+    let key = StageKey::Pane(PANE);
+    let diff = host.staged_diff(key, &app, |_| true).await.unwrap();
+    assert!(diff.files.is_empty(), "{diff:?}");
+    assert!(!format!("{diff:?}").contains("OLD=kept"), "{diff:?}");
+    assert_eq!(diff.skipped, [".env.sample"]);
+}

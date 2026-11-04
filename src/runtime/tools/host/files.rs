@@ -28,7 +28,7 @@ use crate::{
         tools::{
             Call, ToolError,
             mcp::refusal_text,
-            paths::{PathVerdict, REFUSED, SecretRoots, resolve, resolve_write},
+            paths::{PathVerdict, REFUSED, SecretRoots, is_env_name, resolve, resolve_write},
             registry::Family,
             stage::{
                 BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey, Staged,
@@ -417,13 +417,9 @@ fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
 /// This relies on an invariant of the caller: it runs only after
 /// `resolve_write` allowed the path, so the folder it names is one the model
 /// could see anyway with `list_dir`, and it never names an excluded path. The
-/// probe whose error leads here (`open_target`) may refuse for reasons of its
-/// own: a link, a hard link or a folder (entries that exist, so their parent
-/// is not `NotFound`), or a name rule judged on the full path before anything
-/// is opened. The name rule can meet a missing parent: an env template such as
-/// `gone/.env.example` passes `resolve_write`, which judges it by its folder,
-/// and the probe then refuses it by name. The text names `gone/`, which the
-/// policy allows, so the missing folder is still the honest reason.
+/// probe whose error leads here (`open_target`) judges the name as
+/// `resolve_write` did, and may refuse for reasons of its own only on entries
+/// that exist (a link, a hard link, a folder), whose parent is not `NotFound`.
 fn missing_parent(env: &ToolEnv, path: &str, real: &Path) -> Option<String> {
     match real.parent()?.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -567,7 +563,8 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
 /// What a review may be shown of the batch of `key`: the files `allow` lets
 /// it read, and the other paths (and folders, which have no text) named only.
 /// Those are the files the review's read tools show it through the staged
-/// view, so this hands the prompt nothing the tools would refuse.
+/// view, so this hands the prompt nothing the tools would refuse. An env
+/// template is only named, whatever `allow` says: those tools refuse it.
 pub(super) fn staged_diff(
     stages: &Mutex<Stages>,
     key: StageKey,
@@ -583,7 +580,9 @@ pub(super) fn staged_diff(
         let path = ledger_path(env, &staged.target.real);
         match &staged.entry {
             Entry::Dir => out.dirs.push(path),
-            Entry::File { text, base } if allow(&staged.target.real) => {
+            Entry::File { text, base }
+                if allow(&staged.target.real) && !is_env_target(&staged.target.real) =>
+            {
                 out.files.push(StagedText {
                     path,
                     base: base.clone(),
@@ -594,6 +593,13 @@ pub(super) fn staged_diff(
         }
     }
     out
+}
+
+/// Whether a target of a write is an env file: `resolve_write` lets only
+/// templates get this far.
+fn is_env_target(real: &Path) -> bool {
+    real.file_name()
+        .is_some_and(|name| is_env_name(&name.to_string_lossy()))
 }
 
 /// [`stage`] with the disk read given: the text for the model and the change
@@ -619,6 +625,14 @@ fn stage_as(
         _ => return Err(refusal_text(ToolError::UnknownTool).to_owned()),
     };
     let target = resolve_write(&roots, &env.origin, path).ok_or_else(refused)?;
+    // An env template's name is for a file, and a read refuses it: a worker
+    // asks no one before it stages, so `edit_file` would tell it what the
+    // file holds.
+    let probes_env = worker.is_some() && matches!(call, Call::EditFile { .. });
+    let folder = matches!(call, Call::CreateDir { .. });
+    if (folder || probes_env) && is_env_target(&target.real) {
+        return Err(refused());
+    }
     // No scope pre-approves a write, but none outside the scope is staged.
     if let Some(worker) = worker
         && !worker

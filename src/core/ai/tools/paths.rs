@@ -68,8 +68,9 @@ pub fn is_env_name(name: &str) -> bool {
 /// Whether a name is an environment template (`.env.example`,
 /// `.env.local.sample`): an env name that ends in `.example`, `.sample`,
 /// `.template` or `.dist` (ASCII case-insensitive). It holds no secret by
-/// convention, so a write may create it; a read still refuses it.
-fn is_env_template(name: &str) -> bool {
+/// convention, so a write may touch it after the user's review (see
+/// [`SecretRoots::judge_write`]); a read still refuses it.
+pub fn is_env_template(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     is_env_name(name)
         && [".example", ".sample", ".template", ".dist"]
@@ -368,6 +369,20 @@ impl SecretRoots {
         matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
     }
 
+    /// [`judge_real`](Self::judge_real) for the file a write touches: an env
+    /// template is judged by the folder it sits in, so only its own name is
+    /// let through, and it is still refused as the real target of a secret
+    /// root (`~/.env -> proj/.env.example`). Pure.
+    pub fn judge_write(&self, real: &Path) -> bool {
+        let template = real
+            .file_name()
+            .is_some_and(|name| is_env_template(&name.to_string_lossy()));
+        match real.parent() {
+            Some(dir) if template => self.judge_real(dir) && !self.under_root(real),
+            _ => self.judge_real(real),
+        }
+    }
+
     /// Whether the real target of a secret root is `dir` or lies below it:
     /// a walk of `dir` that never follows a link can still reach it. Pure.
     pub fn holds_root(&self, dir: &Path) -> bool {
@@ -627,13 +642,7 @@ pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<
     }
     let shown = root.join(&rel);
     let real = canonical_new(&shown)?;
-    // An env template is judged by the folder it sits in: only its own name
-    // is let through.
-    let template = real
-        .file_name()
-        .is_some_and(|name| is_env_template(&name.to_string_lossy()));
-    let judged = if template { real.parent()? } else { &real };
-    if real != shown || !roots.judge_real(judged) {
+    if real != shown || !roots.judge_write(&real) {
         return None;
     }
     let below_home = real.strip_prefix(&roots.real).ok()?;
@@ -2006,6 +2015,31 @@ mod write_tests {
         ] {
             assert_eq!(ok(&f, input), None, "{input}");
         }
+    }
+
+    // #583: the name opens a template only by its folder; a template that is
+    // the real target of a secret link of HOME is that secret.
+    #[test]
+    fn a_template_behind_a_secret_link_of_home_is_refused() {
+        let f = fixture();
+        let target = f.origin.join(".env.example");
+        fs::write(&target, "A=1").unwrap();
+        std::os::unix::fs::symlink(&target, f.home.join(".env")).unwrap();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        assert_eq!(resolve_write(&roots, &f.origin, ".env.example"), None);
+        assert!(!roots.judge_write(&target));
+    }
+
+    #[test]
+    fn judge_write_opens_only_the_template_name() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        assert!(roots.judge_write(&f.origin.join(".env.example")));
+        assert!(roots.judge_write(&f.origin.join("lib.rs")));
+        assert!(!roots.judge_write(&f.origin.join(".env")));
+        assert!(!roots.judge_write(&f.origin.join(".env.local")));
+        assert!(!roots.judge_write(&f.home.join(".ssh/.env.example")));
+        assert!(!roots.judge_write(&f.home.join(".env.d/.env.example")));
     }
 
     #[test]

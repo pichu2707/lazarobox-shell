@@ -57,7 +57,7 @@ use crate::{
             label,
             mcp::refusal_text,
             panes::{self, Roster},
-            paths::{REFUSED, display_target},
+            paths::{REFUSED, display_target, is_env_template},
             registry::FamilySet,
             report::{self, RunReport},
             stage::StageKey,
@@ -377,6 +377,16 @@ impl Drop for Owed {
     }
 }
 
+/// Whether an `edit_file` asks like a read before it runs: its answers tell
+/// whether a text occurs in the file. On a cloud engine every edit does; on a
+/// local one only that of an env template, which no read may show.
+fn edit_asks(locality: Locality, path: &str) -> bool {
+    locality == Locality::Cloud
+        || Path::new(path)
+            .file_name()
+            .is_some_and(|name| is_env_template(&name.to_string_lossy()))
+}
+
 /// A result that is the end of the call: the text for the model, and the
 /// status and one line for the row.
 fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatus, String) {
@@ -670,19 +680,23 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             ) => {}
             // An edit that can only fail is refused before it asks. A missing
             // or ambiguous `old` still asks: it too tells whether a text occurs.
-            (Call::EditFile { old, .. }, Locality::Cloud, _) if old.is_empty() => {
+            (Call::EditFile { old, path, .. }, locality, _)
+                if edit_asks(locality, path) && old.is_empty() =>
+            {
                 checked = Err(EditError::EmptyOld.to_string().into());
             }
             // An edit of a file asks like a read of it, once per file per turn.
-            (Call::EditFile { path, .. }, Locality::Cloud, _) => match shown(path) {
-                Some(shown) => {
-                    if !files::lock_set(&scope.allowed).contains(&shown) {
-                        ask = Some(ApprovalAsk::read(shown.clone()));
+            (Call::EditFile { path, .. }, locality, _) if edit_asks(locality, path) => {
+                match shown(path) {
+                    Some(shown) => {
+                        if !files::lock_set(&scope.allowed).contains(&shown) {
+                            ask = Some(ApprovalAsk::read(shown.clone()));
+                        }
+                        approves = Some(shown);
                     }
-                    approves = Some(shown);
+                    None => checked = Err(UNSHOWABLE.into()),
                 }
-                None => checked = Err(UNSHOWABLE.into()),
-            },
+            }
             // A command is judged before it asks: a refusal never opens a prompt.
             (Call::RunCommand { .. }, locality, _) => {
                 match exec::plan(&host, &scope, valid).await {

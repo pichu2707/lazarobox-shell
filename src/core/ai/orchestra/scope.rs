@@ -127,7 +127,8 @@ impl ReadScope {
 
     /// Whether a worker of `run` may stage a write to `real`, the canonical
     /// target `paths::resolve_write` built (which already refused secret
-    /// paths and anything outside the chat's root): `run` is the run of this
+    /// paths and anything outside the chat's root, and lets an env template
+    /// through): `run` is the run of this
     /// scope and still going, and `real` is under one of its roots. A write
     /// outside the scope is refused, never asked; inside it the write is only
     /// staged, and reaches the disk through the user's batch review.

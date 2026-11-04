@@ -18,6 +18,11 @@ baseline.
   titles in the list of similar issues are cut by display columns, so
   double-width characters stay on the row, and the footer says it is looking for
   similar issues during the search (#588).
+- A chat can write an environment template such as `.env.example`. It was
+  always refused with no prompt, because the write primitives judged the name
+  more strictly than the path policy. Now it stops at the batch review like any
+  write and reaches the disk only with your `y`, in every approval mode. `.env`
+  and `.env.local` stay refused, and so does reading the template (#583).
 
 ## [1.6.0] - 2026-11-04
 
