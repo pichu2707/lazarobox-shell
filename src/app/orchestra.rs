@@ -798,6 +798,10 @@ impl App {
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.set_orch(!chat.orch());
             now_on = chat.orch();
+            // The grant stays, but an orchestrated turn never offers it.
+            if now_on && chat.github_granted() {
+                chat.push_system_line(github::ORCH_KEEPS_GRANT.to_owned());
+            }
             self.dirty = true;
         }
         // A reply to a resumed run is an ORCH turn: toggling gives it back.

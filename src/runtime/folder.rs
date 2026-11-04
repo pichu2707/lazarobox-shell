@@ -3,6 +3,7 @@
 //! accepts a folder the tools would refuse.
 
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -21,11 +22,11 @@ use crate::{
                 folder::{Probed, Purpose, Refusal, Verdict, judge},
                 folder_picker::{Completion, Source},
             },
-            tools::paths::SecretRoots,
+            tools::{github::GhRepo, paths::SecretRoots},
         },
         layout::PaneId,
     },
-    runtime::tools::{ToolEnv, fs::load_roots},
+    runtime::tools::{ToolEnv, fs::load_roots, git::repo_of, host::locate_git},
 };
 
 /// How long a probe may take. A HOME on a hung network or FUSE mount would
@@ -41,6 +42,9 @@ pub enum Answer {
     /// The picker candidates (pane, picker id), each judged, and whether an
     /// earlier request was still on the disk, so none was made.
     Many(PaneId, u64, Vec<(Source, Result<Probed, Refusal>)>, bool),
+    /// The GitHub repository of a folder's `origin` (pane, folder, whether
+    /// `/github` asked rather than the hint).
+    Origin(PaneId, PathBuf, bool, GhRepo),
     /// The directory names that complete the field text the picker sent
     /// (pane, picker id, text).
     Completed(PaneId, u64, String, Completion),
@@ -93,6 +97,8 @@ impl Flight {
 /// Starts the probes of the app off the event loop and sends their answers.
 pub struct Prober {
     env: ToolEnv,
+    /// Where git is looked for: the login PATH.
+    path: OsString,
     tx: mpsc::Sender<Answer>,
     many: Flight,
     completions: Flight,
@@ -104,6 +110,7 @@ impl Prober {
     pub fn new(env: ToolEnv, tx: mpsc::Sender<Answer>) -> Self {
         Self {
             env,
+            path: std::env::var_os("PATH").unwrap_or_default(),
             tx,
             many: Flight::default(),
             completions: Flight::default(),
@@ -118,6 +125,25 @@ impl Prober {
         tokio::spawn(async move {
             let result = bounded(TIMEOUT, move || probe(&env, &path)).await;
             let _ = tx.send(Answer::Probed(pane, purpose, result)).await;
+        });
+    }
+
+    /// Where git is looked for (the login PATH).
+    pub fn with_path(mut self, path: OsString) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// Reads the `origin` of `folder` (see [`repo_of`]) and sends exactly one
+    /// answer. Returns at once; needs a tokio runtime. No network is used.
+    pub fn start_origin(&self, pane: PaneId, folder: PathBuf, dialog: bool) {
+        let (tx, home, path) = (self.tx.clone(), self.env.home.clone(), self.path.clone());
+        tokio::spawn(async move {
+            let repo = match locate_git(&path) {
+                Some(git) => repo_of(&git, &folder, home.as_deref()).await,
+                None => GhRepo::Unreadable,
+            };
+            let _ = tx.send(Answer::Origin(pane, folder, dialog, repo)).await;
         });
     }
 

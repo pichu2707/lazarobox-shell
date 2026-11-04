@@ -12,7 +12,7 @@ use crate::core::ai::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
             PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
-            SEARCH_KEYS, exec_notice, run_sent_line,
+            SEARCH_KEYS, exec_notice, grant_prompt, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -36,7 +36,7 @@ pub(super) const ANSWER_FIRST: &str = "Answer the pending confirm first";
 pub(super) const JUST_OPENED: &str = "Prompt just opened: answer again in a moment";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
-const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
+pub(super) const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
 
 /// The mark of a line typed from a block (`Prefix e`): no tool call made it.
 const BLOCK_LINE: CallId = CallId(u64::MAX);
@@ -135,6 +135,9 @@ impl App {
         if self.folder_ask_pending(id) {
             return self.on_folder_key(id, key, repeat);
         }
+        if self.github_ask_pending(id) {
+            return self.on_github_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
         }
@@ -198,7 +201,10 @@ impl App {
         // only the user's own action leaves a line behind.
         let batch = matches!(
             approval.ask(),
-            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Folder { .. }
+            ApprovalAsk::Batch(_)
+                | ApprovalAsk::Commit(_)
+                | ApprovalAsk::Folder { .. }
+                | ApprovalAsk::GithubGrant { .. }
         );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
@@ -218,7 +224,7 @@ impl App {
 
     /// Whether the prompt of chat `id` shows all of what `y` would approve in
     /// the pane as it is now: the same rows the renderer draws.
-    fn prompt_fits(&self, id: PaneId) -> bool {
+    pub(super) fn prompt_fits(&self, id: PaneId) -> bool {
         let Some(prompt) = self.approval_prompt(id) else {
             return true;
         };
@@ -651,6 +657,7 @@ impl App {
                     notice: None,
                 })
             }
+            ApprovalAsk::GithubGrant { repo, .. } => Some(grant_prompt(repo, armed)),
             // The paths were made one clean line when asked, and the host
             // refused an add whose paths would not show whole.
             ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {

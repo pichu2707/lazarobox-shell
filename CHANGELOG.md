@@ -20,6 +20,16 @@ baseline.
   everything they read as untrusted data with secrets masked. A cloud engine
   (and an Ollama `*-cloud` model) asks for your `y` before the first read of a
   repository in each turn.
+- `/github` in the chat composer lets one chat use the GitHub read tools
+  without turning the toggle on. It reads the folder's `origin` (no network),
+  names the repository in a dialog and only an unmodified `y` grants; `n` and
+  Esc decline and every other key says why it did nothing. It is a command of
+  yours: no message, no request, nothing stored, and the model, a tool result
+  or a stored message cannot open or answer it. The grant is for that chat
+  only, starts at the next message, never writes the config and ends with a
+  resume, a folder change, tools off or the saved toggle going off. A cloud
+  engine still asks before the first read of each turn. `//github` sends the
+  text, and `/github` followed by words says `/github takes no arguments`.
 - After a GitHub read, commands of that conversation wait for your Enter for
   the rest of the conversation, in every approval mode: `run_in_pane` only
   types, `y` types without Enter, and the bar shows `RUN OFF`. On a cloud

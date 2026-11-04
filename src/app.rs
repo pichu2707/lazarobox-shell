@@ -34,7 +34,7 @@ use crate::core::{
         ollama_lib::{self, Pull},
         orchestra::{RunId, WorkerKey, event::OrchestraEvent, run::UserChoice},
         picker::{InstallAsk, InstallReply},
-        tools::{report::RunReport, stage::BatchId},
+        tools::{github::GhRepo, report::RunReport, stage::BatchId},
     },
     clipboard::{self, Tool},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -190,6 +190,14 @@ pub enum AppEvent {
         pane: PaneId,
         purpose: FolderPurpose,
         result: Result<Probed, Refusal>,
+    },
+    /// The answer to `Effect::ProbeOrigin`: what the `origin` of `folder`
+    /// says about GitHub. `dialog` is whether `/github` asked.
+    OriginProbed {
+        pane: PaneId,
+        folder: PathBuf,
+        dialog: bool,
+        repo: GhRepo,
     },
     /// The answer to `Effect::ProbeFolders`: every candidate, judged.
     FoldersProbed {
@@ -466,6 +474,13 @@ pub enum Effect {
         pane: PaneId,
         path: PathBuf,
         purpose: FolderPurpose,
+    },
+    /// Read the `origin` of `folder` of chat `pane` (no network): the runtime
+    /// answers with one `AppEvent::OriginProbed`.
+    ProbeOrigin {
+        pane: PaneId,
+        folder: PathBuf,
+        dialog: bool,
     },
     /// Judge the folder picker candidates of chat `pane`; with `git`, the pane
     /// folders move up to their git roots. Answered with one
@@ -932,6 +947,8 @@ pub struct App {
     /// The chats whose open steps (memory, prompt, list) wait for the folder
     /// to be settled: the probe, or the picker.
     opening: HashSet<PaneId>,
+    /// The folder of the `/github` probe in flight, one per pane.
+    github_probing: HashMap<PaneId, PathBuf>,
     /// Chats opened in a folder outside HOME, until their picker closes: Esc
     /// keeps that folder and says the file tools cannot read it.
     outside_open: HashSet<PaneId>,
@@ -1092,6 +1109,7 @@ impl App {
             home: None,
             resume_folders: HashMap::new(),
             opening: HashSet::new(),
+            github_probing: HashMap::new(),
             outside_open: HashSet::new(),
             cd_requests: HashMap::new(),
             folder_seq: 0,
@@ -1986,6 +2004,12 @@ impl App {
                 purpose,
                 result,
             } => self.on_folder_probed(pane, purpose, result),
+            AppEvent::OriginProbed {
+                pane,
+                folder,
+                dialog,
+                repo,
+            } => self.on_origin_probed(pane, &folder, dialog, repo),
             AppEvent::Orchestra(id, event) => self.on_orchestra(id, event),
             AppEvent::FoldersProbed {
                 pane,
@@ -2919,6 +2943,7 @@ impl App {
             self.input = InputMode::Terminal;
         }
         self.tabs[t].focus = next;
+        self.rearm_github_dialog(next);
         self.debug_assert_copy_on_shell();
     }
 
@@ -8857,6 +8882,8 @@ mod app_tests {
 
     /// The auto-run block after a GitHub read.
     mod github_block;
+    /// `/github` and its dialog.
+    mod github_command;
     /// The chat grant of the GitHub tools and where it ends.
     mod github_grant;
     /// The `run` mode: routing, the check round trip and its cleanup.

@@ -632,3 +632,45 @@ async fn a_panicking_candidate_frees_the_flight() {
     assert!(!busy && found.iter().all(|(_, r)| r.is_err()));
     free_soon(&prober.many).await;
 }
+
+// `/github` and the hint read the `origin` of the chat folder off the event
+// loop, and the answer says which folder it was asked about.
+#[tokio::test]
+async fn a_prober_reads_the_origin_off_the_loop_and_names_the_folder() {
+    use crate::core::ai::tools::github::GhRepo;
+    let Some(git) = crate::runtime::tools::host::locate_git(std::ffi::OsStr::new("/usr/bin:/bin"))
+    else {
+        return;
+    };
+    let f = fixture();
+    let project = f.root.join("home/project");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new(&git)
+            .args(args)
+            .current_dir(&project)
+            .env_clear()
+            .env("HOME", f.root.join("home"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let prober = Prober::new(f.env.clone(), tx);
+    let pane = crate::core::layout::PaneId::FIRST;
+    prober.start_origin(pane, project.clone(), true);
+    let Some(Answer::Origin(got_pane, folder, dialog, repo)) = rx.recv().await else {
+        panic!("expected an origin answer");
+    };
+    assert_eq!((got_pane, folder.clone(), dialog), (pane, project, true));
+    assert_eq!(repo.to_string(), "o/r");
+    // Another folder, another answer: no repository, and `dialog` is carried.
+    prober.start_origin(pane, f.root.join("srv/x"), false);
+    let Some(Answer::Origin(_, folder, dialog, repo)) = rx.recv().await else {
+        panic!("expected an origin answer");
+    };
+    assert_eq!((folder, dialog), (f.root.join("srv/x"), false));
+    assert_eq!(repo, GhRepo::NoRepo);
+}
