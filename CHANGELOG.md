@@ -49,6 +49,11 @@ baseline.
   `clip.exe` kept the byte order mark as a character, so lazarobox now copies
   with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls
   back to `clip.exe`, which only gets the mark for non-ASCII text.
+- In `run` mode, a `cd` you approve with `y` now adds the
+  `pane N: cd … → <dir>` line to the transcript, like a `cd` that runs on its
+  own. A run that finds the pane moved now says "the pane's directory changed
+  before the command could run" instead of naming a check that a `y` run never
+  had (#438).
 
 ## [1.5.0] - 2026-11-03
 

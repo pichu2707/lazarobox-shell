@@ -11,7 +11,9 @@ use crate::app::RunEvent;
 use crate::core::ai::{
     chat::{
         Entry,
-        approval::{HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, RUN_KEYS, RUN_NOW_KEYS, RUNNING},
+        approval::{
+            HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_ROOT, RUN_KEYS, RUN_NOW_KEYS, RUNNING,
+        },
         engine::{CallId, Decision, ToolStatus},
     },
     config::ApprovalMode,
@@ -102,6 +104,38 @@ fn a_run_on_y_ends_with_a_report() {
         "{effects:?}"
     );
     assert_eq!(slot(&a), None);
+}
+
+// #438: a `cd` run on `y` had no check, and still gets the transcript line.
+#[test]
+fn a_cd_run_on_y_adds_the_system_line() {
+    let (mut a, turn) = run_live();
+    announce(&mut a, turn, 1, run("cd /srv"));
+    let refused = RunEvent::Refused {
+        call: CallId(1),
+        reason: OUTSIDE_ROOT,
+    };
+    a.update(AppEvent::Run(PaneId::FIRST, refused));
+    assert!(pending(&a).is_some(), "the check opens the prompt");
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(a.update(key('y')), vec![run_effect(turn, b"cd /srv\r")]);
+    a.update(AppEvent::Pty(
+        PaneId::FIRST,
+        PtyEvent::Output(b"cd /srv\r\n$ ".to_vec()),
+    ));
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    let effects = a.update(AppEvent::Run(
+        PaneId::FIRST,
+        RunEvent::Probe {
+            foreground: Some(true),
+            cwd: Some("/srv".into()),
+        },
+    ));
+    assert!(
+        matches!(effects[..], [Effect::RunDone { .. }]),
+        "{effects:?}"
+    );
+    assert_eq!(lines(&a), vec!["pane 1: cd /srv \u{2192} /srv"]);
 }
 
 // S3: a run the write step refuses is typed, with the reason, and answered.
