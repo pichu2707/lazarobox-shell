@@ -109,7 +109,7 @@ fn ctrl_s_in_the_form_sends_the_issue_with_host_and_engines() {
     );
     assert_eq!(
         a.menu().unwrap().footer(),
-        Footer::Hint("Sending to GitHub…".into())
+        Footer::Hint("Looking for similar issues, then sending…".into())
     );
     // One send at a time.
     assert_eq!(a.update(ctrl('s')), vec![]);

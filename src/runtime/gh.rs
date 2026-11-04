@@ -45,6 +45,9 @@ const AUTH_REQUIRED: i32 = 4;
 const TIMED_OUT: &str = "timed out; check GitHub before sending again";
 /// The failure of a run that printed no issue link.
 const NO_LINK: &str = "printed no issue link; check GitHub first";
+/// The failure of a comment without `gh` or its login. Unlike a create, it has
+/// no prefilled page to fall back on: that page would file a new issue.
+const NO_LOGIN_COMMENT: &str = "missing or not logged in: run gh auth login";
 /// The failure of a comment that printed no comment link.
 const NO_COMMENT_LINK: &str = "printed no comment link; check GitHub first";
 
@@ -63,7 +66,10 @@ async fn send_with(
     timeout: Duration,
 ) -> SendReply {
     let Some(program) = which("gh", Some(path)) else {
-        return SendReply::NoGh;
+        return match request {
+            Request::Comment { .. } => SendReply::Failed(NO_LOGIN_COMMENT.to_owned()),
+            _ => SendReply::NoGh,
+        };
     };
     // One limit for the whole request: a slow search leaves the create
     // only what is left of it.
@@ -153,7 +159,7 @@ async fn comment(program: &Path, issue: &Issue, number: u64, deadline: Instant) 
             Some(url) => SendReply::Commented(url),
             None => SendReply::Failed(NO_COMMENT_LINK.to_owned()),
         },
-        Run::NotLoggedIn => SendReply::NoGh,
+        Run::NotLoggedIn => SendReply::Failed(NO_LOGIN_COMMENT.to_owned()),
         Run::Failed(message) => SendReply::Failed(message),
     }
 }
@@ -597,6 +603,24 @@ mod tests {
         let dir = fake(&format!("cat > /dev/null\necho '{URL}'\n"));
         let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
         assert!(matches!(reply, SendReply::Failed(_)), "{reply:?}");
+    }
+
+    // #588: a user who chose an existing issue is never sent to file a new
+    // one: with no login, or no gh, a comment is a failure the form shows.
+    #[tokio::test]
+    async fn a_comment_with_no_login_or_no_gh_fails_and_opens_nothing() {
+        let request = Request::Comment {
+            issue: issue("t", "b"),
+            number: 583,
+        };
+        let dir = fake("cat > /dev/null\necho 'run gh auth login' >&2\nexit 4\n");
+        let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert_eq!(reply, SendReply::Failed(NO_LOGIN_COMMENT.to_owned()));
+        let empty = tempfile::tempdir().unwrap();
+        let reply = send_with(empty.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert_eq!(reply, SendReply::Failed(NO_LOGIN_COMMENT.to_owned()));
+        let shown = crate::core::menu::feedback::gh_message(NO_LOGIN_COMMENT);
+        assert_eq!(shown, "gh: missing or not logged in: run gh auth login");
     }
 
     // Spec (Sending with gh): gh is killed 30 seconds after Ctrl+S, the

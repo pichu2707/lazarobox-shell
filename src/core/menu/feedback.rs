@@ -16,6 +16,7 @@
 
 use crate::core::desktop::is_wsl;
 use std::borrow::Cow;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -49,6 +50,9 @@ pub const HINT_ATTACH: &str = "Space attach · Tab next · Ctrl+S send · Esc ba
 /// The footer while the issue is being sent; every key waits for the
 /// answer.
 pub const SENDING: &str = "Sending to GitHub…";
+/// The footer while Ctrl+S looks for similar issues. With none, the same
+/// request goes on to send the issue, so the text says both.
+pub const SEARCHING: &str = "Looking for similar issues, then sending…";
 /// The footer once the link is copied or opened.
 pub const HINT_DONE: &str = "Esc back";
 /// The footer once the issue is sent, by whether the host has an opener.
@@ -354,13 +358,22 @@ pub fn comment_url(stdout: &str, repo: &str, number: u64) -> Option<String> {
 }
 
 /// `text` as one row of the form: see [`plain_words`], cut to `width`
-/// characters with `…`.
+/// display columns with `…`. A double-width character that would cross the
+/// edge is left out whole.
 fn one_row(text: &str, width: usize) -> String {
     let words = plain_words(text);
-    if words.chars().count() <= width {
+    if words.width() <= width {
         return words;
     }
-    let mut cut: String = words.chars().take(width - 1).collect();
+    let mut cut = String::new();
+    let mut used = 1; // the `…`
+    for c in words.chars() {
+        used += c.width().unwrap_or(0);
+        if used > width {
+            break;
+        }
+        cut.push(c);
+    }
     cut.push('…');
     cut
 }
@@ -489,6 +502,8 @@ pub struct Feedback {
     error: Option<Cow<'static, str>>,
     /// An issue is being sent: every key waits for the answer.
     sending: bool,
+    /// What is being sent is a [`Request::Find`].
+    searching: bool,
     /// The open issues like this one, and the one selected: shown instead of
     /// the fields until Esc, Enter or Ctrl+S.
     similar: Option<(Vec<Similar>, usize)>,
@@ -505,6 +520,7 @@ impl Feedback {
             field: Field::Kind,
             error: None,
             sending: false,
+            searching: false,
             similar: None,
         }
     }
@@ -589,10 +605,10 @@ impl Feedback {
         lines
     }
 
-    /// The footer for the focused field, or [`SENDING`].
+    /// The footer for the focused field, or [`SEARCHING`] or [`SENDING`].
     pub fn hint(&self) -> &'static str {
         if self.sending {
-            return SENDING;
+            return if self.searching { SEARCHING } else { SENDING };
         }
         if self.similar.is_some() {
             return HINT_SIMILAR;
@@ -732,15 +748,20 @@ impl Feedback {
     }
 
     /// The issue made into `request`, and the form sending; or nothing,
-    /// with why, when the issue cannot be made.
+    /// with why, when the issue cannot be made. A comment keeps the list: if
+    /// it fails, the chosen issue is still selected and Enter tries it again.
     fn send(&mut self, request: impl FnOnce(Issue) -> Request) -> Outcome {
         let Some(issue) = self.issue() else {
             self.similar = None;
             return Outcome::Handled;
         };
-        self.similar = None;
+        let request = request(issue);
+        if !matches!(request, Request::Comment { .. }) {
+            self.similar = None;
+        }
+        self.searching = matches!(request, Request::Find(_));
         self.sending = true;
-        Outcome::Send(request(issue))
+        Outcome::Send(request)
     }
 
     /// A paste into the focused text field. The title is one line: a
