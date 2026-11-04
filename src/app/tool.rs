@@ -189,6 +189,7 @@ impl App {
             | ApprovalAsk::Exec { .. }
             | ApprovalAsk::GitDiff { .. }
             | ApprovalAsk::Panes { .. }
+            | ApprovalAsk::GithubRead { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)

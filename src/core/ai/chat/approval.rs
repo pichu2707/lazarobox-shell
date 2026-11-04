@@ -161,6 +161,17 @@ pub enum ApprovalAsk {
     /// sent, already redacted; [`ask_for`] leaves it empty and the host fills
     /// it in. Never routed by the approval mode.
     Panes { text: String },
+    /// Send GitHub issue or pull request text of `repo` to a cloud engine:
+    /// asked before `gh` starts, once per repository and turn. `what` is the
+    /// call as one clean line; [`ask_for`] leaves `repo` empty and the host
+    /// fills in the sanitized `owner/name`. `ollama_cloud` marks an Ollama
+    /// `*-cloud` model, which counts as cloud here. Never routed by the
+    /// approval mode.
+    GithubRead {
+        repo: String,
+        what: String,
+        ollama_cloud: bool,
+    },
     /// Stage `paths` in the index (one clean line, as the user will read it).
     /// `files` is how many files a dry run says would be staged; the host
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
@@ -321,6 +332,12 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         // in the exact text.
         Call::ListPanes if locality == Locality::Cloud => Some(ApprovalAsk::Panes {
             text: String::new(),
+        }),
+        // GitHub text goes to the provider: a cloud engine asks.
+        Call::Github(gh) if locality == Locality::Cloud => Some(ApprovalAsk::GithubRead {
+            repo: String::new(),
+            what: format!("{} {}", gh.name(), gh.argument()),
+            ollama_cloud: false,
         }),
         // An add changes the index: it always asks, on any engine and mode.
         Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
@@ -2246,6 +2263,51 @@ mod tests {
         let ask = ApprovalAsk::Panes { text: "x".into() };
         for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
             assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
+        }
+    }
+
+    // Spec (github-tools, Cloud consent): GitHub text goes to the provider, so
+    // a cloud engine asks and a local one reads free; the host fills in `repo`.
+    #[test]
+    fn a_github_read_asks_on_a_cloud_engine_only() {
+        use crate::core::ai::tools::github::{GhCall, State};
+        let view = Call::Github(GhCall::IssueView {
+            number: 12,
+            comments: true,
+        });
+        let list = Call::Github(GhCall::IssueList {
+            state: State::All,
+            limit: 5,
+        });
+        assert_eq!(ask_for(&view, Locality::Local), None);
+        assert_eq!(ask_for(&list, Locality::Local), None);
+        for (call, what) in [
+            (view, "gh_issue_view #12 comments"),
+            (list, "gh_issue_list all (max 5)"),
+        ] {
+            assert_eq!(
+                ask_for(&call, Locality::Cloud),
+                Some(ApprovalAsk::GithubRead {
+                    repo: String::new(),
+                    what: what.into(),
+                    ollama_cloud: false
+                })
+            );
+        }
+    }
+
+    // No mode answers it, blocked or not: the user reads the repository.
+    #[test]
+    fn no_approval_mode_answers_the_github_ask() {
+        let ask = ApprovalAsk::GithubRead {
+            repo: "o/r".into(),
+            what: "gh_pr_view #7".into(),
+            ollama_cloud: true,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for blocked in [false, true] {
+                assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+            }
         }
     }
 
