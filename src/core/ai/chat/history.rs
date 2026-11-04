@@ -145,10 +145,27 @@ impl ChatState {
             folder: self.origin_cwd.clone(),
             open: open.to_vec(),
         };
-        let saves: Vec<StoreCmd> = std::mem::take(&mut self.outbox)
+        // Every row of a blocked conversation carries the marker in its own
+        // transaction, so a lost marker command cannot leave a later row bare.
+        let blocked = self.github_read;
+        let was_fresh = self.store.is_fresh();
+        let mut saves: Vec<StoreCmd> = std::mem::take(&mut self.outbox)
             .into_iter()
-            .filter_map(|message| self.store.save(pane, message, &new))
+            .filter_map(|message| {
+                let message = StoredMessage {
+                    github_read: blocked,
+                    ..message
+                };
+                self.store.save(pane, message, &new)
+            })
             .collect();
+        // A fresh conversation marks itself through its first message.
+        if self.github_unmarked && was_fresh && !saves.is_empty() {
+            self.github_unmarked = false;
+        } else if self.github_unmarked && !self.store.is_fresh() {
+            self.github_unmarked = false;
+            saves.extend(self.store.mark_github_read(pane));
+        }
         // Usage follows the messages, so a conversation created by them is
         // named by its pane. A detached conversation stores its usage
         // unlinked: the rows outlive the conversation.
@@ -221,6 +238,7 @@ impl ChatState {
             status: MsgStatus::Cancelled,
             engine: self.request_engine.clone(),
             model: (!self.request_model.is_empty()).then(|| self.request_model.clone()),
+            github_read: false,
         });
     }
 

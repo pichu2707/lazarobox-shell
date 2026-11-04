@@ -21,6 +21,7 @@ const FREE: AutoCtx = AutoCtx {
     paused: false,
     dirty: false,
     utf8: true,
+    github_read: false,
 };
 
 fn batch() -> ApprovalAsk {

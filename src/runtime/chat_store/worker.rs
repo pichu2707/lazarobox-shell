@@ -166,6 +166,14 @@ impl Worker {
                     Err(_) => Some(self.failure(pane)),
                 }
             }
+            StoreCmd::MarkGithubRead { pane, conversation } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
+                let conn = self.conn().ok()?;
+                match mark_github_read(conn, conversation) {
+                    Ok(()) => None,
+                    Err(_) => Some(self.failure(pane)),
+                }
+            }
             StoreCmd::LinkSession {
                 pane,
                 conversation,
@@ -323,6 +331,7 @@ impl Worker {
                         session,
                         folder,
                         skipped,
+                        github_read,
                     }) => {
                         // The pane now follows another conversation: what it
                         // created before must not link its later usage.
@@ -337,6 +346,7 @@ impl Worker {
                             session,
                             folder,
                             skipped,
+                            github_read,
                         }
                     }
                     None => StoreReply::ResumeFailed { pane },
@@ -402,7 +412,9 @@ impl Worker {
     ) -> Option<StoreReply> {
         let (pane, on_panic) = match &cmd {
             StoreCmd::Create { pane, .. } => (*pane, Panicked::Create),
-            StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
+            StoreCmd::Append { pane, .. } | StoreCmd::MarkGithubRead { pane, .. } => {
+                (*pane, Panicked::Append)
+            }
             StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
             StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
             StoreCmd::List { pane, .. } => (*pane, Panicked::List),
@@ -1088,6 +1100,8 @@ struct Resumed {
     folder: Option<PathBuf>,
     /// Rows left out for a role this build does not know.
     skipped: usize,
+    /// The conversation holds the marker of a GitHub read.
+    github_read: bool,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -1118,6 +1132,7 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
     // build does not know (a newer one wrote it) is left out and counted rather
     // than shown as the assistant's; an unknown status reads as a cut message.
     let mut skipped = 0;
+    let mut github_read = false;
     let mut messages = Vec::new();
     {
         let mut stmt = tx.prepare(
@@ -1129,6 +1144,11 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
             let role = match r.get::<_, String>(0)?.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
+                // The marker is a flag of the conversation, not a message.
+                MARKER_ROLE => {
+                    github_read = true;
+                    continue;
+                }
                 _ => {
                     skipped += 1;
                     continue;
@@ -1158,6 +1178,7 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         session,
         folder: folder.map(PathBuf::from),
         skipped,
+        github_read,
     })
 }
 
@@ -1185,6 +1206,24 @@ fn delete(conn: &mut Connection, conversation: i64) -> Result<Vec<NoteRow>, rusq
     Ok(notes)
 }
 
+/// The role of the row that marks a conversation as blocked. No schema change:
+/// the column is open-ended since schema 3, and a build that does not know the
+/// role skips the row on a resume.
+const MARKER_ROLE: &str = "github_read";
+
+/// Stores the marker row of `conversation` unless it has one. A conversation
+/// that does not exist is an error (the foreign key refuses the row).
+fn mark_github_read(conn: &Connection, conversation: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+         SELECT ?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = ?1),
+                ?2, '', '', NULL, 'complete', ?3
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE conversation_id = ?1 AND role = ?2)",
+        (conversation, MARKER_ROLE, now()),
+    )?;
+    Ok(())
+}
+
 fn insert_message(
     tx: &rusqlite::Transaction<'_>,
     conversation: i64,
@@ -1196,6 +1235,11 @@ fn insert_message(
         Role::User => "user",
         Role::Assistant => "assistant",
     };
+    // The marker goes in the row's own transaction, so a later row is never
+    // stored without it.
+    if message.github_read {
+        mark_github_read(tx, conversation)?;
+    }
     tx.execute(
         "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
          VALUES (?1,

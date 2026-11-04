@@ -58,7 +58,7 @@ fn y_consents_and_n_declines_to_the_workers_session() {
 #[test]
 fn no_approval_mode_answers_a_consent() {
     for mode in [ApprovalMode::Ask, ApprovalMode::Run, ApprovalMode::Auto] {
-        assert_eq!(answers_itself(&consent(1, "code x>y"), mode), None);
+        assert_eq!(answers_itself(&consent(1, "code x>y"), mode, false), None);
     }
 }
 

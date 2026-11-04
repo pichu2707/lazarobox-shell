@@ -18,7 +18,7 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        approval::{ApprovalAsk, NO_CWD, NOT_ALLOWED, Route},
+        approval::{ApprovalAsk, GITHUB_READ, NO_CWD, NOT_ALLOWED, Route},
         engine::locality,
     },
     tools::{
@@ -294,13 +294,27 @@ impl App {
     /// stays (the pane is executing) until the run settles or the call ends;
     /// it starts settling from where the cursor is now. The fallbacks before
     /// it are forgiven only when the run ends.
-    fn auto_run(
+    pub(super) fn auto_run(
         &mut self,
         mut slot: RunSlot,
         target: PaneId,
         mut bytes: Vec<u8>,
         (cwd, cd_target): (PathBuf, Option<PathBuf>),
     ) -> Vec<Effect> {
+        // The block of a conversation that read GitHub text: this door never
+        // presses Enter for it, whatever route led here.
+        let blocked = (self.panes.get(&slot.chat).and_then(PaneState::chat_state))
+            .is_some_and(ChatState::github_read);
+        if blocked {
+            let (turn, call, command) = (slot.turn, slot.call, slot.command.clone());
+            return self.type_run(
+                slot.chat,
+                Some((turn, call)),
+                target,
+                &command,
+                Some(GITHUB_READ),
+            );
+        }
         bytes.push(b'\r');
         let effect = Effect::AutoRun {
             chat: slot.chat,

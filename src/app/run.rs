@@ -10,9 +10,9 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
-            PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
-            SEARCH_KEYS, exec_notice, run_sent_line,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, GITHUB_READ, HALF_TYPED, MULTI_LINE, NO_CWD,
+            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
+            RUNNING, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -288,7 +288,7 @@ impl App {
         if let Some(call) = call
             && runs_on_y
         {
-            match self.y_run_blocker(target, command) {
+            match self.y_run_blocker(id, target, command) {
                 None => return self.run_approved(id, call, target, command),
                 Some(why) => not_run = Some(why),
             }
@@ -300,9 +300,13 @@ impl App {
     /// instead: what the write step or the settle could not handle, and the
     /// user's own line, which the Enter would run with it. The turn's limit,
     /// the focus and the shown tab are for runs nobody approved.
-    fn y_run_blocker(&self, target: PaneId, command: &str) -> Option<&'static str> {
+    fn y_run_blocker(&self, chat: PaneId, target: PaneId, command: &str) -> Option<&'static str> {
         let pty = self.panes.get(&target).and_then(PaneState::pty);
-        Some(if command.contains('\n') {
+        let blocked = (self.panes.get(&chat).and_then(PaneState::chat_state))
+            .is_some_and(ChatState::github_read);
+        Some(if blocked {
+            GITHUB_READ
+        } else if command.contains('\n') {
             MULTI_LINE
         } else if !self.cwd_readable || pty.is_none_or(|pty| pty.proc_cwd.is_none()) {
             NO_CWD
@@ -556,7 +560,7 @@ impl App {
                 let runs = approval.call().is_some()
                     && chat.approval_mode() == ApprovalMode::Run
                     && (chat.run_target())
-                        .is_some_and(|pane| self.y_run_blocker(pane, command).is_none());
+                        .is_some_and(|pane| self.y_run_blocker(id, pane, command).is_none());
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
@@ -573,7 +577,7 @@ impl App {
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
-                why: None,
+                why,
                 notice: None,
             }),
             // A worker's read outside its scope: the label names the worker,
@@ -592,7 +596,7 @@ impl App {
                 command: format!("search {pattern} in {dir}"),
                 keys: SEARCH_KEYS,
                 armed,
-                why: None,
+                why,
                 notice: None,
             }),
             // The path was made one clean line when asked.

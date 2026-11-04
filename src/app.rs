@@ -2937,6 +2937,11 @@ impl App {
             _ => Ended::Error,
         };
         let tool = ToolEvent::of(&event);
+        // `gh` was started: the conversation is blocked for good, also when
+        // the event comes late. Before `apply`, which drops a stale turn.
+        if matches!(event, StreamEvent::GithubStarted) {
+            chat.note_github_read();
+        }
         // A llama-server that fails may be gone or restarted with another
         // window: detect again, so the next turn is sized by what it says now.
         let llamacpp_failed = live
@@ -8844,6 +8849,8 @@ mod app_tests {
     /// The full-pane transcript of a worker (S9).
     mod orchestra_view;
 
+    /// The auto-run block after a GitHub read.
+    mod github_block;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;

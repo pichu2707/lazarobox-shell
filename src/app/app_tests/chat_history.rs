@@ -702,6 +702,7 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
         session: None,
         folder: None,
         skipped: 0,
+        github_read: false,
     })
 }
 
@@ -752,6 +753,7 @@ fn a_resume_of_an_unknown_profile_or_skipped_rows_says_so() {
         session,
         folder,
         skipped: 2,
+        github_read: false,
     }));
     let lines = systems(chat_of(&a));
     assert!(lines.iter().any(|l| l == UNKNOWN_PROFILE_LINE), "{lines:?}");

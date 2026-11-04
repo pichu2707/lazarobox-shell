@@ -1153,3 +1153,16 @@ fn usage_after_the_final_event_is_dropped() {
     pipe.event(done());
     assert_eq!(pipe.event(usage(1)), []);
 }
+
+// The host's `GithubStarted` reaches the app as it is, and never after the
+// turn ended.
+#[test]
+fn the_github_started_event_passes_the_pipe_once() {
+    let mut pipe = Pipe::new();
+    assert_eq!(
+        pipe.event(StreamEvent::GithubStarted),
+        [StreamEvent::GithubStarted]
+    );
+    pipe.event(StreamEvent::Done(Finish::Stop));
+    assert_eq!(pipe.event(StreamEvent::GithubStarted), []);
+}

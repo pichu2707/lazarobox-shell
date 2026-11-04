@@ -13,6 +13,7 @@ fn msg(role: Role, text: &str, status: MsgStatus) -> StoredMessage {
         status,
         engine: "ollama".into(),
         model: Some("llama3".into()),
+        github_read: false,
     }
 }
 

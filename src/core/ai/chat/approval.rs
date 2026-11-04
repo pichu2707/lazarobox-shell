@@ -561,13 +561,32 @@ pub const MULTI_LINE: &str = "a multi-line command is typed, not run";
 pub const FOCUSED: &str = "the pane has the focus";
 pub const HIDDEN: &str = "the chat's tab is not shown";
 pub const TOO_MANY: &str = "too many commands this turn";
+/// Why every `run_in_pane` command of a conversation that read GitHub text
+/// takes the prompt and is only typed, never run.
+pub const GITHUB_READ: &str = "auto-run is off: this conversation read GitHub text";
+/// The system line shown when a conversation starts to be blocked (its first
+/// GitHub read) and when a blocked one is resumed. ASCII: it must read on a
+/// Linux console.
+pub const GITHUB_BLOCK_LINE: &str =
+    "auto-run is off for this conversation: it read GitHub text; commands are typed, never run";
+/// Why a read of the user's files asks on a cloud engine once the
+/// conversation read GitHub text.
+pub const GITHUB_READ_ASK: &str = "this conversation read GitHub: reads of your files need your y";
 
 /// Whether a fallback is the model's doing: the reasons of the pane and of
 /// the pause itself never count toward the pause.
 pub fn counts_toward_pause(fallback: &Fallback) -> bool {
     !matches!(
         fallback.why,
-        NO_CWD | PAUSED | NON_UTF8 | RUNNING | HALF_TYPED | FOCUSED | HIDDEN | TOO_MANY
+        NO_CWD
+            | PAUSED
+            | NON_UTF8
+            | RUNNING
+            | HALF_TYPED
+            | FOCUSED
+            | HIDDEN
+            | TOO_MANY
+            | GITHUB_READ
     )
 }
 
@@ -639,6 +658,8 @@ pub struct AutoCtx {
     pub dirty: bool,
     /// The pane's locale names UTF-8, so bytes >= 0x80 mean what they say.
     pub utf8: bool,
+    /// The conversation read GitHub text: no command of it is run.
+    pub github_read: bool,
 }
 
 /// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
@@ -685,6 +706,9 @@ fn busy(ctx: AutoCtx) -> Option<&'static str> {
 /// then the grammar, then the limits.
 fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
+    if ctx.github_read {
+        return because(GITHUB_READ);
+    }
     if !ctx.cwd_known {
         return because(NO_CWD);
     }
@@ -715,7 +739,21 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// other ask prompts. A worker's read outside its run's scope is answered
 /// exactly as the same chat read. A command, a user tool, a batch and the ask
 /// of an edit are never answered here.
-pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision> {
+pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> Option<Decision> {
+    // A conversation that read GitHub text asks for every cloud read and
+    // search, in every mode. The guard's own refusal and a path that cannot be
+    // shown keep their answers: neither opens anything.
+    if blocked_read_reason(ask, blocked).is_some()
+        && !matches!(
+            ask,
+            ApprovalAsk::Read {
+                reach: Reach::Refused | Reach::Unshowable,
+                ..
+            }
+        )
+    {
+        return None;
+    }
     let (ApprovalAsk::Read { reach, cloud, .. } | ApprovalAsk::WorkerRead { reach, cloud, .. }) =
         ask
     else {
@@ -743,6 +781,17 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode) -> Option<Decision>
         }
         (ApprovalMode::Ask | ApprovalMode::Auto, _, _) => None,
     }
+}
+
+/// Why a cloud read or search of a conversation that read GitHub text asks
+/// for `y`, whatever the mode. `None` for a local read, any other ask, and a
+/// conversation that is not blocked.
+pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: bool) -> Option<&'static str> {
+    let reads = matches!(
+        ask,
+        ApprovalAsk::Read { cloud: true, .. } | ApprovalAsk::Search { .. }
+    );
+    (blocked && reads).then_some(GITHUB_READ_ASK)
 }
 
 /// Where the request came from.
@@ -1032,6 +1081,7 @@ mod tests {
         paused: false,
         dirty: false,
         utf8: true,
+        github_read: false,
     };
 
     fn run_ask() -> ApprovalAsk {
@@ -1538,6 +1588,123 @@ mod tests {
         }
     }
 
+    // Spec (pane-execution, Auto-run block): the block is checked first and is
+    // nobody's fault, so it never counts toward the pause.
+    #[test]
+    fn a_blocked_conversation_prompts_with_the_reason_before_anything_else() {
+        let blocked = AutoCtx {
+            github_read: true,
+            ..FREE
+        };
+        assert_eq!(
+            GITHUB_READ,
+            "auto-run is off: this conversation read GitHub text"
+        );
+        for command in ["cd x", "pwd", "ls", "cargo build"] {
+            let ask = ask_of(command);
+            let got = route(&ask, Origin::Tool, ApprovalMode::Run, blocked);
+            assert_eq!(why(&got), Some(GITHUB_READ), "{command}");
+            assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
+        }
+        // It wins over the other reasons, the pause and the unknown directory.
+        let every = AutoCtx {
+            cwd_known: false,
+            paused: true,
+            executing: true,
+            ..blocked
+        };
+        let ask = run_ask();
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, every);
+        assert_eq!(why(&got), Some(GITHUB_READ));
+    }
+
+    // Spec (pane-execution, Auto and ask unchanged).
+    #[test]
+    fn auto_and_ask_route_as_before_while_blocked() {
+        let blocked = AutoCtx {
+            github_read: true,
+            ..FREE
+        };
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Auto, blocked),
+            Route::AutoType
+        );
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Ask, blocked),
+            Route::Prompt(None)
+        );
+    }
+
+    // Spec (agent-tools, Reads in a blocked conversation).
+    #[test]
+    fn a_blocked_conversation_answers_no_cloud_read_or_search_itself() {
+        use ApprovalMode::{Ask, Auto, Run};
+        use Reach::{Broad, Other, Refused, Root, Unshowable};
+        let read = |reach, cloud| ApprovalAsk::Read {
+            path: "~/a".into(),
+            reach,
+            cloud,
+        };
+        let search = |reach| ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+            reach,
+        };
+        for mode in [Ask, Auto, Run] {
+            for reach in [Root, Broad, Other] {
+                assert_eq!(answers_itself(&read(reach, true), mode, true), None);
+                assert_eq!(answers_itself(&search(reach), mode, true), None);
+            }
+            // The guard's own refusal opens nothing and stays free.
+            assert_eq!(
+                answers_itself(&read(Refused, true), mode, true),
+                Some(Decision::Unprompted)
+            );
+            // The local engine is unchanged.
+            for reach in [Root, Broad, Other, Refused, Unshowable] {
+                assert_eq!(
+                    answers_itself(&read(reach, false), mode, true),
+                    answers_itself(&read(reach, false), mode, false),
+                    "{mode:?} {reach:?}"
+                );
+            }
+        }
+        assert_eq!(
+            answers_itself(&read(Unshowable, true), Run, true),
+            Some(Decision::Denied(UNSHOWABLE))
+        );
+        // Unblocked rows are as they were.
+        assert_eq!(
+            answers_itself(&read(Root, true), Run, false),
+            Some(Decision::Unprompted)
+        );
+        assert_eq!(
+            answers_itself(&search(Root), Run, false),
+            Some(Decision::Unprompted)
+        );
+    }
+
+    #[test]
+    fn the_read_reason_names_blocked_cloud_reads_only() {
+        let cloud = ApprovalAsk::Read {
+            path: "a".into(),
+            reach: Reach::Root,
+            cloud: true,
+        };
+        let local = ApprovalAsk::Read {
+            path: "a".into(),
+            reach: Reach::Other,
+            cloud: false,
+        };
+        assert_eq!(
+            blocked_read_reason(&cloud, true),
+            Some("this conversation read GitHub: reads of your files need your y")
+        );
+        assert_eq!(blocked_read_reason(&cloud, false), None);
+        assert_eq!(blocked_read_reason(&local, true), None);
+        assert_eq!(blocked_read_reason(&ask_of("ls"), true), None);
+    }
+
     fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {
         ApprovalAsk::Search {
             pattern: pattern.into(),
@@ -1592,16 +1759,24 @@ mod tests {
         };
         for (reach, cloud, run, others) in reads {
             for ask in [read(reach, cloud), worker(reach, cloud)] {
-                assert_eq!(answers_itself(&ask, Run), run, "{ask:?}");
+                assert_eq!(answers_itself(&ask, Run, false), run, "{ask:?}");
                 for mode in [Ask, Auto] {
-                    assert_eq!(answers_itself(&ask, mode), others, "{mode:?} {ask:?}");
+                    assert_eq!(
+                        answers_itself(&ask, mode, false),
+                        others,
+                        "{mode:?} {ask:?}"
+                    );
                 }
             }
         }
         for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
-            assert_eq!(answers_itself(&search(reach), Run), run, "{reach:?}");
+            assert_eq!(answers_itself(&search(reach), Run, false), run, "{reach:?}");
             for mode in [Ask, Auto] {
-                assert_eq!(answers_itself(&search(reach), mode), None, "{mode:?}");
+                assert_eq!(
+                    answers_itself(&search(reach), mode, false),
+                    None,
+                    "{mode:?}"
+                );
             }
         }
         let never = [
@@ -1615,7 +1790,7 @@ mod tests {
         ];
         for ask in never {
             for mode in [Ask, Auto, Run] {
-                assert_eq!(answers_itself(&ask, mode), None, "{mode:?} {ask:?}");
+                assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?} {ask:?}");
             }
         }
     }
@@ -2006,7 +2181,7 @@ mod tests {
     fn no_approval_mode_answers_the_panes_ask() {
         let ask = ApprovalAsk::Panes { text: "x".into() };
         for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
-            assert_eq!(answers_itself(&ask, mode), None, "{mode:?}");
+            assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
         }
     }
 
@@ -2127,7 +2302,7 @@ mod tests {
             for origin in [Origin::Tool, Origin::Block] {
                 assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
             }
-            assert_eq!(answers_itself(&ask, mode), None);
+            assert_eq!(answers_itself(&ask, mode, false), None);
         }
     }
 

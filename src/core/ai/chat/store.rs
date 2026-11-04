@@ -54,6 +54,9 @@ pub struct StoredMessage {
     pub status: MsgStatus,
     pub engine: String,
     pub model: Option<String>,
+    /// The conversation read GitHub text: the row is stored together with the
+    /// marker that keeps the auto-run block across a resume.
+    pub github_read: bool,
 }
 
 /// A request to the store thread.
@@ -82,6 +85,13 @@ pub enum StoreCmd {
         pane: PaneId,
         conversation: Option<i64>,
         message: StoredMessage,
+    },
+    /// Stores the marker row of a conversation that read GitHub text, once.
+    /// `conversation` is `None` while the pane does not know its id yet (as
+    /// for `Append`). Silent on success; a failure is a failed write.
+    MarkGithubRead {
+        pane: PaneId,
+        conversation: Option<i64>,
     },
     /// Reads or sets the engram session of a conversation: the stored id is
     /// answered with its project when there is one (a resume), else
@@ -286,6 +296,9 @@ pub enum StoreReply {
         /// Stored messages of a role this build does not know (written by a
         /// newer one): left out, so they never show as someone else's words.
         skipped: usize,
+        /// The conversation holds the marker of a GitHub read: it opens
+        /// blocked (pane-execution, Auto-run block).
+        github_read: bool,
     },
     ResumeFailed {
         pane: PaneId,
@@ -514,6 +527,18 @@ impl PaneStore {
             conversation,
             tags,
         })
+    }
+
+    /// The command that stores the GitHub marker now, if the conversation can
+    /// take it. A conversation not created yet marks itself through its first
+    /// message; one being created is named by its pane.
+    pub fn mark_github_read(&self, pane: PaneId) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::MarkGithubRead { pane, conversation })
     }
 
     /// The command that stores `folder` now. A conversation not created yet

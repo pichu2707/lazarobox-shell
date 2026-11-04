@@ -336,6 +336,10 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
+    /// `gh` is about to be started for a GitHub tool call. Produced by the
+    /// host just before the spawn, so it comes before any result of the call
+    /// and starts the conversation's auto-run block, whatever `gh` then does.
+    GithubStarted,
     /// What the turn used, as the engine reported it. Sent before the final
     /// event: nothing after `Done` or `Error` is delivered.
     Usage(Box<TurnUsage>),
