@@ -6,7 +6,7 @@
 use super::*;
 use crate::core::ai::{Detection, Diagnostics, EngineState, Status};
 use crate::core::menu::Footer;
-use crate::core::menu::feedback::{Facts, Issue, SendReply};
+use crate::core::menu::feedback::{Facts, Issue, Request, SendReply};
 
 fn host() -> Facts {
     Facts {
@@ -98,14 +98,14 @@ fn ctrl_s_in_the_form_sends_the_issue_with_host_and_engines() {
     let effects = a.update(ctrl('s'));
     assert_eq!(
         effects,
-        vec![Effect::SendIssue(Box::new(Issue {
+        vec![Effect::SendIssue(Box::new(Request::Find(Issue {
             repo: "pichu2707/lazarobox-shell".to_owned(),
             title: "Crash".to_owned(),
             body: "### What happened\n\nIt crashed\n\n### Environment\n\n```text\n\
                    lazarobox 9.9.9 · linux (WSL) · zsh\nengines: ollama available\n```"
                 .to_owned(),
             labels: vec!["bug".to_owned()],
-        }))]
+        })))]
     );
     assert_eq!(
         a.menu().unwrap().footer(),

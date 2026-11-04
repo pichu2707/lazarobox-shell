@@ -202,10 +202,13 @@ const ISSUE_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42"
 /// The form of [`filled`] after its Ctrl+S, and the issue it sends.
 fn sending(opener: bool) -> (MenuState, feedback::Issue) {
     let mut m = filled(opener);
-    let MenuCommand::SendIssue(issue) = ctrl(&mut m, 's') else {
+    let MenuCommand::SendIssue(request) = ctrl(&mut m, 's') else {
         panic!("not sent");
     };
-    (m, *issue)
+    let feedback::Request::Find(issue) = *request else {
+        panic!("Ctrl+S looks for similar issues first: {request:?}");
+    };
+    (m, issue)
 }
 
 // Spec (open-links S4, S7): Ctrl+S sends the issue; the form stays, says
@@ -445,4 +448,62 @@ fn open_feedback_shows_the_text_and_closes_to_the_feedback_row() {
     send(&mut m, KeyCode::Esc);
     assert!(!m.feedback_open());
     assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
+}
+
+const COMMENT_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42#issuecomment-7";
+
+// S1-S3: GitHub has similar open issues: the form lists them; Enter adds
+// the report to the selected one; once added, its link is shown and Ctrl+O
+// opens it.
+#[test]
+fn similar_issues_are_listed_and_enter_adds_the_report() {
+    let (mut m, issue) = sending(true);
+    let similar = vec![feedback::Similar {
+        number: 42,
+        title: "Scroll jumps on resize".to_owned(),
+    }];
+    assert_eq!(
+        m.feedback_reply(SendReply::Similar(similar)),
+        MenuCommand::None
+    );
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            feedback::SIMILAR,
+            "› #42 Scroll jumps on resize",
+            "",
+            feedback::SIMILAR_ADD,
+            feedback::SIMILAR_NEW,
+        ]
+    );
+    assert_eq!(hint(&m), feedback::HINT_SIMILAR);
+    assert_eq!(
+        send(&mut m, KeyCode::Enter),
+        MenuCommand::SendIssue(Box::new(feedback::Request::Comment { issue, number: 42 }))
+    );
+    assert_eq!(hint(&m), "Sending to GitHub…");
+    m.feedback_reply(SendReply::Commented(COMMENT_URL.to_owned()));
+    assert_eq!(texts(&m), ["Feedback", feedback::COMMENTED, COMMENT_URL]);
+    assert_eq!(hint(&m), HINT_SENT);
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Open(COMMENT_URL.to_owned()));
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+}
+
+// S3: Ctrl+S on the list creates the issue anyway, and its link is shown.
+#[test]
+fn ctrl_s_on_similar_issues_creates_the_issue_anyway() {
+    let (mut m, issue) = sending(true);
+    let similar = vec![feedback::Similar {
+        number: 42,
+        title: "Scroll jumps".to_owned(),
+    }];
+    m.feedback_reply(SendReply::Similar(similar));
+    assert_eq!(
+        ctrl(&mut m, 's'),
+        MenuCommand::SendIssue(Box::new(feedback::Request::Create(issue)))
+    );
+    m.feedback_reply(SendReply::Sent(ISSUE_URL.to_owned()));
+    assert_eq!(texts(&m), ["Feedback", "Sent:", ISSUE_URL]);
 }

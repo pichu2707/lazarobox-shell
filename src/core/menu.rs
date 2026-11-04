@@ -1011,9 +1011,10 @@ pub enum MenuCommand {
     /// opener (see [`MenuState::with_opener`]); without one the link is a
     /// [`MenuCommand::Copy`].
     Open(String),
-    /// Send this Feedback issue with `gh`; the answer comes back through
+    /// Send this Feedback request with `gh` (find similar issues, create,
+    /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
-    SendIssue(Box<feedback::Issue>),
+    SendIssue(Box<feedback::Request>),
 }
 
 /// Footer notices of the tab keys: a refused key always says why.
@@ -1181,6 +1182,8 @@ enum Done {
     Opened,
     /// Ctrl+S: the issue was created, at this link.
     Sent(String),
+    /// Enter on a similar issue: the report was added to it, at this link.
+    Commented(String),
     /// Ctrl+S found no `gh`: the link was opened instead.
     NoGhOpened,
     /// Ctrl+S found no `gh` and the host has no opener: the link was
@@ -1295,6 +1298,7 @@ impl MenuState {
             Some(Done::NoGhOpened) => owned(&feedback::NO_GH_OPENED),
             Some(Done::NoGhCopied) => owned(&feedback::NO_GH_COPIED),
             Some(Done::Sent(url)) => vec![feedback::SENT.to_owned(), url.clone()],
+            Some(Done::Commented(url)) => vec![feedback::COMMENTED.to_owned(), url.clone()],
             None => self.feedback.as_ref()?.lines(),
         };
         let mut rows = vec![Row::Title(Cow::Borrowed("Feedback"))];
@@ -1312,7 +1316,7 @@ impl MenuState {
             }
             if key.code == KeyCode::Esc {
                 self.feedback_done = None;
-            } else if let Done::Sent(url) = done
+            } else if let Done::Sent(url) | Done::Commented(url) = done
                 && key.code == KeyCode::Char('o')
                 && key.modifiers == KeyModifiers::CONTROL
             {
@@ -1329,7 +1333,7 @@ impl MenuState {
                 self.feedback = None;
                 MenuCommand::None
             }
-            feedback::Outcome::Send(issue) => MenuCommand::SendIssue(Box::new(issue)),
+            feedback::Outcome::Send(request) => MenuCommand::SendIssue(Box::new(request)),
             feedback::Outcome::Open(link) => {
                 self.feedback = None;
                 let command = self.open_or_copy(link);
@@ -1342,10 +1346,11 @@ impl MenuState {
         }
     }
 
-    /// What became of the Feedback issue being sent. A sent issue shows its
-    /// link; a failure keeps the form with the message; without `gh` the
-    /// prefilled page opens instead (copied with no opener). An answer no
-    /// form waits for changes nothing.
+    /// What became of the Feedback issue being sent. A sent issue, or a
+    /// report added to an existing one, shows its link; similar issues are
+    /// listed in the form; a failure keeps the form with the message; without
+    /// `gh` the prefilled page opens instead (copied with no opener). An
+    /// answer no form waits for changes nothing.
     pub fn feedback_reply(&mut self, reply: feedback::SendReply) -> MenuCommand {
         let Some(form) = self.feedback.as_mut().filter(|form| form.sending()) else {
             return MenuCommand::None;
@@ -1354,6 +1359,15 @@ impl MenuState {
             feedback::SendReply::Sent(url) => {
                 self.feedback = None;
                 self.feedback_done = Some(Done::Sent(url));
+                MenuCommand::None
+            }
+            feedback::SendReply::Commented(url) => {
+                self.feedback = None;
+                self.feedback_done = Some(Done::Commented(url));
+                MenuCommand::None
+            }
+            feedback::SendReply::Similar(issues) => {
+                form.found(issues);
                 MenuCommand::None
             }
             feedback::SendReply::Failed(message) => {
@@ -1589,7 +1603,7 @@ impl MenuState {
     fn link_at(&self, config: &Config, index: usize) -> Option<String> {
         let link = match (self.sub_view(), &self.feedback_done) {
             (Some(SubView::AccountField), _) => account::TOKEN_URL,
-            (Some(SubView::Feedback), Some(Done::Sent(url))) => url,
+            (Some(SubView::Feedback), Some(Done::Sent(url) | Done::Commented(url))) => url,
             _ => return None,
         };
         let on_link = matches!(
@@ -2711,8 +2725,12 @@ impl MenuState {
                 if let Some(done) = &self.feedback_done {
                     return Footer::Hint(match (&self.copied, done, self.opener) {
                         (Some(copied), _, _) => Cow::Owned(copied.clone()),
-                        (None, Done::Sent(_), true) => Cow::Borrowed(feedback::HINT_SENT),
-                        (None, Done::Sent(_), false) => Cow::Borrowed(feedback::HINT_SENT_COPY),
+                        (None, Done::Sent(_) | Done::Commented(_), true) => {
+                            Cow::Borrowed(feedback::HINT_SENT)
+                        }
+                        (None, Done::Sent(_) | Done::Commented(_), false) => {
+                            Cow::Borrowed(feedback::HINT_SENT_COPY)
+                        }
                         (None, _, _) => Cow::Borrowed(feedback::HINT_DONE),
                     });
                 }

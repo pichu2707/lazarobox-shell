@@ -14,6 +14,12 @@ baseline.
 
 ### Added
 
+- Feedback looks for open issues like yours before creating one. `Ctrl+S` first
+  searches the repository's open issues with the key words of the title. When
+  some share at least two of them, the form lists them: `Enter` adds your
+  report to the chosen one as a comment instead of opening a duplicate, and
+  `Ctrl+S` creates the issue anyway. With nothing similar, or when the search
+  fails or takes more than 10 seconds, the issue is created as before.
 - GitHub read tools, off by default: `gh_issue_list`, `gh_issue_view` and
   `gh_pr_view` read the issues and pull requests of the repository in the
   chat folder's `origin`, through your own `gh` login. Turn them on with

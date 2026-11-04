@@ -15,7 +15,10 @@ fn issues(effects: &[Effect]) -> Vec<(String, String)> {
     effects
         .iter()
         .filter_map(|e| match e {
-            Effect::SendIssue(issue) => Some((issue.title.clone(), issue.body.clone())),
+            Effect::SendIssue(request) => {
+                let issue = request.issue();
+                Some((issue.title.clone(), issue.body.clone()))
+            }
             _ => None,
         })
         .collect()

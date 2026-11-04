@@ -64,7 +64,7 @@ use crate::core::ai::tools::{
     github::GhRepo,
     panes::{self, Facts, Roster},
 };
-use crate::core::menu::feedback::{Issue, SendReply};
+use crate::core::menu::feedback::{Request, SendReply};
 use crate::core::pty::Probe;
 use ai_detect::spawn_detection;
 use chat::Chats;
@@ -1378,7 +1378,7 @@ struct Panes {
     /// Starts sending the Feedback issue with `gh`, without waiting; the
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
-    send_issue: Box<dyn FnMut(Issue)>,
+    send_issue: Box<dyn FnMut(Request)>,
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
@@ -1637,7 +1637,7 @@ impl Panes {
     }
 
     /// Sets what sends the Feedback issue.
-    fn with_issue_sender(mut self, send: Box<dyn FnMut(Issue)>) -> Self {
+    fn with_issue_sender(mut self, send: Box<dyn FnMut(Request)>) -> Self {
         self.send_issue = send;
         self
     }
@@ -3258,16 +3258,16 @@ mod tests {
     #[test]
     fn a_send_issue_effect_is_handed_to_the_sender() {
         let (panes, _rx, _rec) = fake_panes(None);
-        let seen: Rc<RefCell<Vec<Issue>>> = Rc::default();
+        let seen: Rc<RefCell<Vec<Request>>> = Rc::default();
         let log = Rc::clone(&seen);
         let mut panes =
             panes.with_issue_sender(Box::new(move |issue| log.borrow_mut().push(issue)));
-        let issue = Issue {
+        let issue = Request::Find(crate::core::menu::feedback::Issue {
             repo: "o/r".to_owned(),
             title: "t".to_owned(),
             body: "b".to_owned(),
             labels: vec!["bug".to_owned()],
-        };
+        });
         panes.apply(vec![Effect::SendIssue(Box::new(issue.clone()))]);
         assert_eq!(*seen.borrow(), vec![issue]);
         assert!(panes.host_out.is_empty());
