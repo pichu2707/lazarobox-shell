@@ -210,6 +210,7 @@ No schema change: `user_version` stays 3 and there is no migration. Old configs 
 - An engram note or a summary that carries issue text into a **new** conversation is not blocked: the block belongs to the conversation that read, and a new one starts clean.
 - A second lazarobox process that has the conversation open is not blocked until its next resume (section 1).
 - A cloud model whose name does not end in `-cloud` is read as local (see below).
+- In a blocked conversation on a cloud engine, an orchestrator worker's read inside its run's scope and its `grep` do not ask (the spec names this limit). The host (`host.rs`, read arm) builds no ask for them, and the block lives in the chat's state, which the worker's tool scope cannot see. Making them ask needs the block passed into the host's decision (a shared flag per chat in the worker scope, kept after a resume) and an ask for reads that run free today; that is more than a small change, so it is left for a later PR. Only a worker read outside its scope asks (`WorkerRead` is covered by `blocked_read_reason`).
 
 ## Could not verify (no shell in this phase)
 
