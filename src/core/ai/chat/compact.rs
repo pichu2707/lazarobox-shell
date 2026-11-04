@@ -272,6 +272,7 @@ impl ChatState {
                     content,
                 }],
                 ollama: Default::default(),
+                github_read: false,
             },
         ))
     }

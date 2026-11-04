@@ -594,6 +594,7 @@ impl App {
             }
             _ => None,
         };
+        let families = self.offered_families(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -610,7 +611,7 @@ impl App {
         // turn (#556); a turn without tools stops their servers.
         if tools {
             let external = chat.external_tools_tokens();
-            chat.set_tools_reserve(tools_reserve_tokens(self.ai.families()) + external);
+            chat.set_tools_reserve(tools_reserve_tokens(families) + external);
         } else {
             chat.forget_external_tools();
             chat.set_tools_reserve(0);

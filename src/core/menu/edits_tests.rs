@@ -164,6 +164,7 @@ fn every_kind(m: &mut MenuState, live: &mut Config) {
     change(m, live, "Tools", &['l']);
     change(m, live, "Search", &['l']);
     change(m, live, "Git write", &['l']);
+    change(m, live, "GitHub", &['l']);
     change(m, live, "Approval", &['l']);
     change(m, live, "Orchestrator", &['l']);
     change(m, live, "llama-server idle", &['l']);
@@ -198,6 +199,7 @@ fn every_kind_of_row_writes_its_edit_in_the_fixed_save_order() {
             ("ai.tools", "enabled", "false".to_owned()),
             ("ai.tools", "search", "true".to_owned()),
             ("ai.tools", "git_write", "true".to_owned()),
+            ("ai.tools", "github", "true".to_owned()),
             ("ai.tools", "approval", "auto".to_owned()),
             ("ai.orchestrator", "enabled", "true".to_owned()),
             ("ai.servers.llamacpp", "idle_minutes", "0".to_owned()),
@@ -240,6 +242,7 @@ acknowledged = true
 enabled = false
 search = true
 git_write = true
+github = true
 approval = "auto"
 
 [ai.orchestrator]
@@ -263,6 +266,7 @@ fn the_edits_do_not_depend_on_the_order_the_rows_were_visited() {
     change(&mut backward, &mut other, "llama-server idle", &['l']);
     change(&mut backward, &mut other, "Orchestrator", &['l']);
     change(&mut backward, &mut other, "Approval", &['l']);
+    change(&mut backward, &mut other, "GitHub", &['l']);
     change(&mut backward, &mut other, "Git write", &['l']);
     change(&mut backward, &mut other, "Search", &['l']);
     change(&mut backward, &mut other, "Tools", &['l']);

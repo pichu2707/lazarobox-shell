@@ -41,6 +41,7 @@ use super::{
     orchestra::{OrchScope, RunManager},
     tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
 };
+use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::{
     ai::{
         ServerPorts,
@@ -966,6 +967,8 @@ impl Chats {
             orchestra,
             read_scope: None,
             cli: is_cli_engine(&request.engine),
+            ollama_cloud: forwards_off_machine(&request.engine, request.model.as_deref()),
+            github_read: request.github_read.into(),
         };
         let dispatch = tooling.host.dispatch(scope);
         if matches!(

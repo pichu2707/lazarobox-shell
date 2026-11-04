@@ -185,6 +185,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
         tools: Tools::Off,
         families: FamilySet::LEGACY,
         ollama: Default::default(),
+        github_read: false,
     };
     let events = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

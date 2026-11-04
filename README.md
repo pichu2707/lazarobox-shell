@@ -970,9 +970,10 @@ write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
 git = false        # git_status, git_diff, git_log (solo lectura)
 git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
+github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ver GitHub)
 ```
 
-La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write** y **GitHub** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 
@@ -1103,7 +1104,7 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - Todo fragmento (programa, opciones, rutas, carpetas) se limpia como el resto de avisos (sin secuencias de escape, caracteres bidireccionales ni de ancho cero) y pasa por la censura de secretos; cada argumento se corta a 120 caracteres y cada línea de panel a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
 - El texto se acota para que el aviso se pueda aprobar: como mucho 5 paneles (el que tiene el foco primero) y una línea final `+N more` si hay más; una línea se acorta si hace falta.
 
-**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti. Un modelo `*-cloud` de Ollama cuenta como local: no hay aviso, aunque el modelo se ejecute en la nube de Ollama.
+**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti. Un modelo `*-cloud` de Ollama cuenta como local para `list_panes`: no hay aviso, aunque el modelo se ejecute en la nube de Ollama. Las herramientas de GitHub y las lecturas tras una lectura de GitHub (ver más abajo) son la excepción: ahí un modelo `*-cloud` sí cuenta como nube.
 
 **Límites.**
 
@@ -1111,6 +1112,33 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
 - La lista se actualiza cada segundo, así que puede ir un instante por detrás. La lectura de `/proc` y las comprobaciones de archivos se hacen fuera del bucle de la interfaz; si la lista tiene más de 10 s, el texto añade `(pane list is Ns old; a lookup may be stuck)`.
 - No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
+
+#### GitHub: `gh_issue_list`, `gh_issue_view` y `gh_pr_view`
+
+Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las pull requests del repositorio de la carpeta del chat. Están **desactivadas por defecto**: se activan con `github = true` en `[ai.tools]` (o con la fila **GitHub** de la pestaña **AI**), y solo actúan si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca las tienen.
+
+| Herramienta | Qué devuelve |
+|---|---|
+| `gh_issue_list` | Número, título, estado y etiquetas de los issues; `state` (`open`, `closed`, `all`) y `limit` (hasta 50, por defecto 20) opcionales. Si hay más de los pedidos, lo dice. |
+| `gh_issue_view` | Título, estado, autor, etiquetas y cuerpo de un issue (`number`). Los comentarios solo vienen con `comments: true`, y se ve en la fila de la llamada. |
+| `gh_pr_view` | La ficha de una pull request (`number`): título, estado, descripción, ramas, archivos con sus líneas añadidas y quitadas, y el resultado de los checks. **Nunca incluye el diff.** |
+
+**Requisitos.** El GitHub CLI (`gh`) instalado y con sesión iniciada: ejecuta `gh auth login` en un panel de shell. lazarobox no guarda ningún token; `gh` usa su propia sesión. La carpeta del chat debe ser un repositorio git con un remoto `origin` en `github.com` (https o ssh); GitHub Enterprise no se admite.
+
+**El repositorio sale siempre de `origin`.** Lo lee lazarobox en el momento de la llamada; el modelo no puede indicar otro repositorio, ni un `gh` distinto, ni añadir opciones. Si cambias de carpeta con `/cd`, la siguiente llamada lee el repositorio de la carpeta nueva. Si el repositorio es un _fork_, el resultado lo dice, nombra el repositorio padre y aclara que el padre no se lee. Sin `origin`, con un `origin` que no es de GitHub, sin repositorio, sin `gh`, sin sesión, o con un número que no existe, la fila de la herramienta muestra el motivo (por ejemplo `gh is not logged in: run gh auth login in a shell pane and try again`) y no se ejecuta nada más.
+
+**Todo lo que viene de GitHub es un dato, no una instrucción.** Títulos, cuerpos, comentarios, etiquetas, ramas y nombres de archivo se limpian (sin secuencias de escape ni caracteres invisibles), se quitan los comentarios HTML, los secretos se censan igual que en `read_file` (`[REDACTED]`) y el resultado va dentro del marcador de «datos no confiables» con un límite de 32 KiB; si se recorta, lo dice. `gh` se ejecuta con una orden fija, un entorno filtrado (sin `GH_HOST`, `GH_REPO`, `GH_ENTERPRISE_TOKEN`...) y un límite de 30 s y 4 MiB de respuesta.
+
+**Motores en la nube.** Leer GitHub envía texto de issues al proveedor, así que con un motor en la nube (y con un modelo de Ollama `*-cloud`, que se reconoce por el nombre: termina en `-cloud` o tiene la etiqueta `cloud`) la primera lectura de cada repositorio en cada turno **pide tu `y`** y el aviso muestra `owner/name`. Aceptar cubre el resto del turno; el turno siguiente pregunta de nuevo. Si rechazas, las demás llamadas de ese turno se deniegan sin volver a preguntar. Con un motor local no se pregunta. Ningún modo de aprobación (`ask`, `auto`, `run`) responde esta pregunta por ti.
+
+**Después de leer GitHub, los comandos esperan tu Enter durante el resto de la conversación.** Un issue es texto que puede haber escrito cualquiera, así que en cuanto una herramienta de GitHub arranca `gh`, esa conversación deja de ejecutar comandos por su cuenta, incluso las pruebas y los comandos seguros del modo `run`:
+
+- `run_in_pane` solo **escribe** el comando en el panel, sin pulsar Enter; en el aviso, `y` también solo lo escribe. Lo ejecutas tú.
+- La barra muestra `RUN OFF` en lugar de `RUN`, y una línea del sistema lo explica.
+- El bloqueo sobrevive a cambiar de modo, a las respuestas del modelo y a cerrar y reanudar la conversación. Una conversación nueva no está bloqueada.
+- Con un motor en la nube (o un modelo de Ollama `*-cloud`), `read_file` y `grep` también preguntan cada vez, incluso dentro de la carpeta del proyecto.
+- Una conversación con mensajes de un rol que esta versión no conoce (los escribió una versión más nueva) también se abre bloqueada, porque pueden contener texto de GitHub que no se ve. Como no se sabe que se leyera GitHub, ningún texto lo afirma: la línea del sistema es `auto-run is off here: messages from a newer version; commands are only typed`, el aviso de `y` en el modo `run` dice `auto-run is off: messages from a newer version`, y la línea del cambio de modo dice `blocked: messages from a newer version`. Si luego esa conversación lee GitHub de verdad, los textos pasan a decirlo.
+- Se guarda como una fila marcadora en tu historial. Una versión anterior de lazarobox que abra esa conversación mostrará el aviso «saved message(s) from a newer version are not shown» y no aplicará el bloqueo.
 
 ### Tools with Ollama
 

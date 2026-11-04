@@ -79,6 +79,7 @@ impl App {
     fn change_folder(&mut self, id: PaneId, new: PathBuf, restore: bool) -> Vec<Effect> {
         // A resume answer still on its way must not undo this choice.
         self.resume_folders.remove(&id);
+        self.end_grant_for_folder(id);
         let history = self.history && !restore;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();

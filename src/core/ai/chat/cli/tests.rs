@@ -441,6 +441,7 @@ fn the_known_flags_are_exactly_what_the_argv_builders_pass() {
                 content: "hi".into(),
             }],
             ollama: Default::default(),
+            github_read: false,
         };
         let Invocation::Process(job) = adapter_for(engine).unwrap().build(&request) else {
             panic!("{engine}: a process was expected");

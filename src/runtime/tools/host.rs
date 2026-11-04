@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -149,6 +149,15 @@ pub struct TurnScope {
     /// join a relative path to it before it calls a tool; a server engine
     /// never does, so the path rewrite is for CLI turns only.
     pub cli: bool,
+    /// The engine is an Ollama model served by Ollama's cloud (the name says
+    /// so, or there is none): what a tool returns leaves the machine although
+    /// the adapter is local. Only the GitHub tools and the reads of a blocked
+    /// conversation act on it.
+    pub ollama_cloud: bool,
+    /// The conversation read GitHub text: set from the chat at the start of
+    /// the turn and again by the host when it starts `gh`, so it applies to
+    /// the next call of the same turn.
+    pub github_read: AtomicBool,
 }
 
 impl TurnScope {
@@ -167,7 +176,17 @@ impl TurnScope {
             orchestra: None,
             read_scope: None,
             cli: false,
+            ollama_cloud: false,
+            github_read: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a read of the user's files asks as on a cloud engine: it does
+    /// there, and on an Ollama `*-cloud` model once the conversation read
+    /// GitHub text (other reads of that model stay free).
+    fn reads_ask(&self, locality: Locality) -> bool {
+        locality == Locality::Cloud
+            || (self.ollama_cloud && self.github_read.load(Ordering::Relaxed))
     }
 
     /// Whether this is a read-only review worker with a batch to look at: it
@@ -621,7 +640,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 } else {
                     files::reach(&host, &scope, path).await
                 };
-                let cloud = locality == Locality::Cloud;
+                let cloud = scope.reads_ask(locality);
                 if scoped.is_none() && (cloud || reach == Reach::Other) {
                     match shown(path) {
                         Some(shown) => {
@@ -708,7 +727,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             }
             // A search asks with how concrete the root it walks is: the
             // approval mode lets only the search of a concrete root go.
-            (Call::Grep { .. }, Locality::Cloud, _) => {
+            (Call::Grep { .. }, locality, _) if scope.reads_ask(locality) => {
                 let found = files::search_reach(&host, &scope).await;
                 ask = ask_for(valid, Locality::Cloud);
                 if let Some(ApprovalAsk::Search { reach, .. }) = ask.as_mut() {

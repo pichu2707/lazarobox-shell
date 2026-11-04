@@ -25,6 +25,7 @@ fn request(system: &str) -> ChatRequest {
         memory: None,
         tools: Tools::Off,
         ollama: OllamaWire::default(),
+        github_read: false,
         messages: vec![
             message(Role::User, "hi"),
             message(Role::Assistant, "hello"),

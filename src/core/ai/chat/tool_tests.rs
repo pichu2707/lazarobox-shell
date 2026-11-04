@@ -289,6 +289,7 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
         tools: Tools::Off,
         messages: Vec::new(),
         ollama: Default::default(),
+        github_read: false,
     };
     for (req, want) in [
         (request("ollama", "claude-sonnet"), Locality::Local),

@@ -9,11 +9,7 @@
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::{
-    ChatState,
-    approval::{ApprovalPrompt, GITHUB_READ, GITHUB_READ_ASK},
-    wrap::wrap_ranges,
-};
+use super::{BlockWhy, ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
 
 /// The most rows of the command drawn.
 pub const MAX_COMMAND_ROWS: usize = 6;
@@ -84,7 +80,9 @@ pub fn clip(text: &str, width: usize) -> String {
 
 /// Whether `why` is a reason of the GitHub block.
 fn is_block(why: &str) -> bool {
-    why == GITHUB_READ || why == GITHUB_READ_ASK
+    [BlockWhy::Marker, BlockWhy::NewerRows]
+        .iter()
+        .any(|block| why == block.reason() || why == block.read_ask())
 }
 
 /// The rows when the whole command fits in `height` rows, else `None`.
@@ -463,7 +461,23 @@ mod tests {
     }
 
     #[test]
+    fn the_newer_rows_reason_survives_a_pane_with_no_spare_row_too() {
+        for why in [BlockWhy::NewerRows.reason(), BlockWhy::NewerRows.read_ask()] {
+            let blocked = ApprovalPrompt {
+                why: Some(why.into()),
+                ..read("src/main.rs")
+            };
+            let rows = parts(&blocked, 80, 3);
+            assert!(
+                matches!(&rows[0], Part::Head(h) if h.starts_with(why)),
+                "{rows:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_block_reason_survives_a_pane_with_no_spare_row() {
+        use super::super::approval::GITHUB_READ_ASK;
         let blocked = ApprovalPrompt {
             why: Some(GITHUB_READ_ASK.into()),
             ..read("src/main.rs")

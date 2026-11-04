@@ -435,15 +435,33 @@ async fn slow_props_server() -> u16 {
     port
 }
 
+/// A server that closes every connection at once, for the engines a test does
+/// not run. Their default ports cannot stand in: under WSL's mirrored
+/// networking a connect to a closed local port is not refused, it waits for
+/// the probe's whole timeout.
+async fn closing_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    port
+}
+
 #[tokio::test]
 async fn a_hung_show_overlaps_the_other_slow_probes() {
     let ollama = fake_ollama(tags(&named(1)), Duration::ZERO, |_| Show::Silent).await;
     let llamacpp = slow_props_server().await;
+    let closed = closing_server().await;
     let (_dir, env) = env();
     let cache = ListingCache::new(Arc::new(Instant::now));
     let ports = ServerPorts::default()
         .with("ollama", ollama.port)
-        .with("llamacpp", llamacpp);
+        .with("llamacpp", llamacpp)
+        .with("lmstudio", closed)
+        .with("vllm", closed);
     let started = Instant::now();
     let d = detect_all(&env, &cache, &ShowCache::default(), false, &ports, &[]).await;
     let took = started.elapsed();
@@ -545,6 +563,7 @@ async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
         tools: crate::core::ai::chat::engine::Tools::Off,
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         ollama: Default::default(),
+        github_read: false,
         cache: Default::default(),
     };
     live.stamp(&mut request);
@@ -592,6 +611,7 @@ async fn a_failed_probe_on_the_next_run_keeps_the_last_known_window() {
         tools: crate::core::ai::chat::engine::Tools::Off,
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         ollama: Default::default(),
+        github_read: false,
         cache: Default::default(),
     };
     live.stamp(&mut request);

@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::core::ai::{
     chat::{
+        BlockWhy,
         engine::{CallId, Decision},
         review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
@@ -587,12 +588,49 @@ pub const GITHUB_READ: &str = "auto-run is off: this conversation read GitHub te
 /// Linux console.
 pub const GITHUB_BLOCK_LINE: &str =
     "auto-run is off here: GitHub text was read; commands are only typed";
+/// The line shown when a conversation with rows of a role this build does not
+/// know is resumed: a newer build may have written GitHub text there, so it
+/// is blocked, but nothing says GitHub was read. ASCII.
+pub const NEWER_BLOCK_LINE: &str =
+    "auto-run is off here: messages from a newer version; commands are only typed";
 /// The line of the approval toggle to `run` in a blocked conversation.
 pub const RUN_BLOCKED_LINE: &str =
     "approval: run (blocked: GitHub text was read; commands are only typed)";
 /// Why a read of the user's files asks on a cloud engine once the
 /// conversation read GitHub text.
 pub const GITHUB_READ_ASK: &str = "this conversation read GitHub: reads of your files need your y";
+/// The same three texts for a conversation blocked by rows of a newer
+/// version: nothing says GitHub was read, so none may say it.
+const NEWER_READ: &str = "auto-run is off: messages from a newer version";
+const NEWER_READ_ASK: &str = "messages from a newer version: reads of your files need your y";
+const NEWER_RUN_LINE: &str =
+    "approval: run (blocked: messages from a newer version; commands are only typed)";
+
+impl BlockWhy {
+    /// Why every `run_in_pane` command of the conversation is only typed.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Marker => GITHUB_READ,
+            Self::NewerRows => NEWER_READ,
+        }
+    }
+
+    /// Why a cloud read of the user's files asks, whatever the mode.
+    pub fn read_ask(self) -> &'static str {
+        match self {
+            Self::Marker => GITHUB_READ_ASK,
+            Self::NewerRows => NEWER_READ_ASK,
+        }
+    }
+
+    /// The line of the approval toggle to `run`.
+    pub fn run_line(self) -> &'static str {
+        match self {
+            Self::Marker => RUN_BLOCKED_LINE,
+            Self::NewerRows => NEWER_RUN_LINE,
+        }
+    }
+}
 
 /// Whether a fallback is the model's doing: the reasons of the pane and of
 /// the pause itself never count toward the pause.
@@ -608,6 +646,7 @@ pub fn counts_toward_pause(fallback: &Fallback) -> bool {
             | HIDDEN
             | TOO_MANY
             | GITHUB_READ
+            | NEWER_READ
     )
 }
 
@@ -679,8 +718,8 @@ pub struct AutoCtx {
     pub dirty: bool,
     /// The pane's locale names UTF-8, so bytes >= 0x80 mean what they say.
     pub utf8: bool,
-    /// The conversation read GitHub text: no command of it is run.
-    pub github_read: bool,
+    /// The conversation is blocked and why: no command of it is run.
+    pub github_read: Option<BlockWhy>,
 }
 
 /// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
@@ -727,8 +766,8 @@ fn busy(ctx: AutoCtx) -> Option<&'static str> {
 /// then the grammar, then the limits.
 fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
-    if ctx.github_read {
-        return because(GITHUB_READ);
+    if let Some(why) = ctx.github_read {
+        return because(why.reason());
     }
     if !ctx.cwd_known {
         return because(NO_CWD);
@@ -764,7 +803,7 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
     // A conversation that read GitHub text asks for every cloud read and
     // search, in every mode. The guard's own refusal and a path that cannot be
     // shown keep their answers: neither opens anything.
-    if blocked_read_reason(ask, blocked).is_some()
+    if blocked_read_reason(ask, blocked.then_some(BlockWhy::Marker)).is_some()
         && !matches!(
             ask,
             ApprovalAsk::Read {
@@ -810,14 +849,14 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
 /// Why a cloud read or search of a conversation that read GitHub text asks
 /// for `y`, whatever the mode. `None` for a local read, any other ask, and a
 /// conversation that is not blocked.
-pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: bool) -> Option<&'static str> {
+pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: Option<BlockWhy>) -> Option<&'static str> {
     let reads = matches!(
         ask,
         ApprovalAsk::Read { cloud: true, .. }
             | ApprovalAsk::WorkerRead { cloud: true, .. }
             | ApprovalAsk::Search { .. }
     );
-    (blocked && reads).then_some(GITHUB_READ_ASK)
+    blocked.filter(|_| reads).map(BlockWhy::read_ask)
 }
 
 /// Where the request came from.
@@ -1107,7 +1146,7 @@ mod tests {
         paused: false,
         dirty: false,
         utf8: true,
-        github_read: false,
+        github_read: None,
     };
 
     fn run_ask() -> ApprovalAsk {
@@ -1619,7 +1658,7 @@ mod tests {
     #[test]
     fn a_blocked_conversation_prompts_with_the_reason_before_anything_else() {
         let blocked = AutoCtx {
-            github_read: true,
+            github_read: Some(BlockWhy::Marker),
             ..FREE
         };
         assert_eq!(
@@ -1644,11 +1683,26 @@ mod tests {
         assert_eq!(why(&got), Some(GITHUB_READ));
     }
 
+    // Rows of a newer version block too, with a reason that is true.
+    #[test]
+    fn a_newer_rows_block_prompts_with_its_own_reason() {
+        use super::super::BlockWhy;
+        let blocked = AutoCtx {
+            github_read: Some(BlockWhy::NewerRows),
+            ..FREE
+        };
+        let ask = run_ask();
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, blocked);
+        assert_eq!(why(&got), Some(BlockWhy::NewerRows.reason()));
+        assert_ne!(why(&got), Some(GITHUB_READ));
+        assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
+    }
+
     // Spec (pane-execution, Auto and ask unchanged).
     #[test]
     fn auto_and_ask_route_as_before_while_blocked() {
         let blocked = AutoCtx {
-            github_read: true,
+            github_read: Some(BlockWhy::Marker),
             ..FREE
         };
         assert_eq!(
@@ -1723,12 +1777,15 @@ mod tests {
             cloud: false,
         };
         assert_eq!(
-            blocked_read_reason(&cloud, true),
+            blocked_read_reason(&cloud, Some(BlockWhy::Marker)),
             Some("this conversation read GitHub: reads of your files need your y")
         );
-        assert_eq!(blocked_read_reason(&cloud, false), None);
-        assert_eq!(blocked_read_reason(&local, true), None);
-        assert_eq!(blocked_read_reason(&ask_of("ls"), true), None);
+        assert_eq!(blocked_read_reason(&cloud, None), None);
+        assert_eq!(blocked_read_reason(&local, Some(BlockWhy::Marker)), None);
+        assert_eq!(
+            blocked_read_reason(&ask_of("ls"), Some(BlockWhy::Marker)),
+            None
+        );
     }
 
     fn worker_ask(reach: Reach, cloud: bool) -> ApprovalAsk {
@@ -1744,10 +1801,13 @@ mod tests {
     #[test]
     fn a_blocked_worker_cloud_read_asks_in_every_mode() {
         let ask = worker_ask(Reach::Other, true);
-        assert_eq!(blocked_read_reason(&ask, true), Some(GITHUB_READ_ASK));
-        assert_eq!(blocked_read_reason(&ask, false), None);
         assert_eq!(
-            blocked_read_reason(&worker_ask(Reach::Other, false), true),
+            blocked_read_reason(&ask, Some(BlockWhy::Marker)),
+            Some(GITHUB_READ_ASK)
+        );
+        assert_eq!(blocked_read_reason(&ask, None), None);
+        assert_eq!(
+            blocked_read_reason(&worker_ask(Reach::Other, false), Some(BlockWhy::Marker)),
             None
         );
         for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
@@ -1778,6 +1838,7 @@ mod tests {
     fn the_github_lines_fit_80_columns() {
         for line in [
             GITHUB_BLOCK_LINE,
+            NEWER_BLOCK_LINE,
             RUN_BLOCKED_LINE,
             GITHUB_READ,
             GITHUB_READ_ASK,

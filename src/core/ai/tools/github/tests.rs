@@ -331,3 +331,38 @@ fn the_schemas_take_only_what_the_validation_allows() {
         assert!(tool.schema["properties"].get("repo").is_none());
     }
 }
+
+// Spec (Cloud consent): an Ollama model named `*-cloud` or tagged `cloud`
+// forwards text off the machine; a missing model fails closed; no other
+// engine is judged by its name.
+#[test]
+fn forwards_off_machine_reads_the_ollama_cloud_names_and_fails_closed() {
+    let cloud = [
+        Some("gpt-oss:120b-cloud"),
+        Some("qwen3-coder:480b-cloud"),
+        Some("x:cloud"),
+        Some("GPT-OSS:120B-CLOUD"),
+        Some("X:Cloud"),
+        Some("deepseek-v3.1-cloud"),
+        None,
+        Some(""),
+    ];
+    for model in cloud {
+        assert!(forwards_off_machine("ollama", model), "{model:?}");
+    }
+    let local = [
+        Some("llama3.2"),
+        Some("llama3.2:3b"),
+        Some("cloudy:7b"),
+        Some("cloud:7b"),
+        Some("mymodel-cloud:7b"),
+    ];
+    for model in local {
+        assert!(!forwards_off_machine("ollama", model), "{model:?}");
+    }
+    // Other engines are decided by their kind, never by a model name.
+    for engine in ["claude", "llamacpp", "codex"] {
+        assert!(!forwards_off_machine(engine, Some("x-cloud")), "{engine}");
+        assert!(!forwards_off_machine(engine, None), "{engine}");
+    }
+}

@@ -148,7 +148,7 @@ impl ConfigEdit {
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound`, `ai.usage.line`, `ai.usage.statusline`, `ai.tools.enabled`, the five family switches,
+    /// `ai.notify_sound`, `ai.usage.line`, `ai.usage.statusline`, `ai.tools.enabled`, the six family switches,
     /// `ai.servers.llamacpp.managed` and the orchestrator flags. Every other
     /// owned key holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {

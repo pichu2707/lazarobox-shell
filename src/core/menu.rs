@@ -230,7 +230,7 @@ impl AiChoice {
     }
 }
 
-/// A draft flag row of the Tools tab: the five coding families.
+/// A draft flag row of the Tools tab: the six tool families.
 macro_rules! family {
     ($label:literal, $toggle:ident, $key:literal, $rank:literal, $caution:literal, $badge:expr) => {
         Item {
@@ -581,7 +581,7 @@ pub static MODELS_SECTION: Section = Section {
     ],
 };
 
-/// The Tools tab: the tools switch, the five family switches, `Approval` and
+/// The Tools tab: the tools switch, the six family switches, `Approval` and
 /// the `Orchestrator` gate.
 pub static TOOLS_SECTION: Section = Section {
     title: "Tools",
@@ -608,6 +608,9 @@ pub static TOOLS_SECTION: Section = Section {
         family!("Exec", Exec, "exec", 63, true, Some(Badge::NeedsSandbox)),
         family!("Git", Git, "git", 64, false, None),
         family!("Git write", GitWrite, "git_write", 65, true, None),
+        // Not `caution`: that line says a family can change files or run code,
+        // and these tools only read. The row has its own hint (`GITHUB_HINT`).
+        family!("GitHub", Github, "github", 66, false, None),
         Item {
             label: "Approval",
             kind: ItemKind::Draft(AiChoice {
@@ -826,6 +829,9 @@ pub const CHROME: u16 = 4;
 pub const TAB_BAR: usize = 1;
 /// The caution under the Tools tab for a family that can change files or run code.
 const CAUTION: &str = "Can change files or run code";
+/// The line of the GitHub row: it only reads, so the caution above would be
+/// untrue; what enabling does is the block it starts in a chat. ASCII.
+const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;
@@ -1526,6 +1532,10 @@ impl MenuState {
         }
         match self.selected_kind()? {
             ItemKind::Draft(choice) if choice.caution => Some(CAUTION),
+            ItemKind::Draft(AiChoice {
+                value: DraftValue::Flag(flag),
+                ..
+            }) if flag.key == "github" => Some(GITHUB_HINT),
             _ => None,
         }
     }

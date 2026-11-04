@@ -18,7 +18,7 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        approval::{ApprovalAsk, GITHUB_READ, NO_CWD, NOT_ALLOWED, Route},
+        approval::{ApprovalAsk, NO_CWD, NOT_ALLOWED, Route},
         engine::locality,
     },
     tools::{
@@ -304,15 +304,15 @@ impl App {
         // The block of a conversation that read GitHub text: this door never
         // presses Enter for it, whatever route led here.
         let blocked = (self.panes.get(&slot.chat).and_then(PaneState::chat_state))
-            .is_some_and(ChatState::github_read);
-        if blocked {
+            .and_then(ChatState::block_why);
+        if let Some(why) = blocked {
             let (turn, call, command) = (slot.turn, slot.call, slot.command.clone());
             return self.type_run(
                 slot.chat,
                 Some((turn, call)),
                 target,
                 &command,
-                Some(GITHUB_READ),
+                Some(why.reason()),
             );
         }
         bytes.push(b'\r');

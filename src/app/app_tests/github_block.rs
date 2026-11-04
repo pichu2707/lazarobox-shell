@@ -7,10 +7,10 @@ use super::tool_run::{chat_mut, chat_of, checked, run_live, slot};
 use super::*;
 use crate::core::ai::{
     chat::{
-        Entry,
+        BlockWhy, Entry,
         approval::{
-            ApprovalAsk, GITHUB_BLOCK_LINE, GITHUB_READ, GITHUB_READ_ASK, RUN_KEYS, RUN_NOW_KEYS,
-            Reach,
+            ApprovalAsk, GITHUB_BLOCK_LINE, GITHUB_READ, GITHUB_READ_ASK, NEWER_BLOCK_LINE,
+            RUN_KEYS, RUN_NOW_KEYS, Reach,
         },
         engine::{CallId, Decision, StreamEvent, ToolStatus},
     },
@@ -354,4 +354,114 @@ fn with_history_off_the_flag_still_blocks_and_nothing_is_stored() {
     assert!(effects.iter().all(|e| !matches!(e, Effect::Store(_))));
     assert!(chat_of(&a).github_read());
     assert_eq!(announce(&mut a, turn, 1, run("pwd")), vec![]);
+}
+
+// Spec (Resume stays blocked): a newer build may have written rows this one
+// does not know; they may hold tool-derived text, so the conversation opens
+// blocked. A conversation with none and no marker does not (see above).
+#[test]
+fn a_resumed_conversation_with_unknown_rows_opens_blocked() {
+    use super::chat_history::{chat_id, listing, resumed};
+    for skipped in [1, 3] {
+        let mut a = listing();
+        let mut event = resumed(chat_id(), 30, "programmer");
+        if let AppEvent::Store(StoreReply::Resumed { skipped: n, .. }) = &mut event {
+            *n = skipped;
+        }
+        a.update_settled(event);
+        let chat = a
+            .panes
+            .get(&chat_id())
+            .and_then(PaneState::chat_state)
+            .unwrap();
+        assert!(chat.github_read(), "{skipped} unknown rows");
+        let count = |line: &str| {
+            (chat.entries().iter())
+                .filter(|e| matches!(e, Entry::System(l) if l == line))
+                .count()
+        };
+        // Its own line: GitHub text is not known to have been read.
+        assert_eq!(count(NEWER_BLOCK_LINE), 1, "{skipped} unknown rows");
+        assert_eq!(count(GITHUB_BLOCK_LINE), 0, "{skipped} unknown rows");
+    }
+}
+
+// A marker row wins: the conversation did read GitHub, whatever else it holds.
+#[test]
+fn a_marker_and_unknown_rows_show_the_github_line() {
+    use super::chat_history::{chat_id, listing, resumed};
+    let mut a = listing();
+    let mut event = resumed(chat_id(), 30, "programmer");
+    if let AppEvent::Store(StoreReply::Resumed {
+        skipped,
+        github_read,
+        ..
+    }) = &mut event
+    {
+        (*skipped, *github_read) = (2, true);
+    }
+    a.update_settled(event);
+    let chat = a
+        .panes
+        .get(&chat_id())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    let count = |line: &str| {
+        (chat.entries().iter())
+            .filter(|e| matches!(e, Entry::System(l) if l == line))
+            .count()
+    };
+    assert_eq!(count(GITHUB_BLOCK_LINE), 1);
+    assert_eq!(count(NEWER_BLOCK_LINE), 0);
+}
+
+// Never show an untrue notice: a conversation blocked only because it holds
+// rows of a newer version must not tell the user that GitHub text was read,
+// not in the mode line, not in the run prompt, not in the read prompt.
+#[test]
+fn a_newer_rows_block_never_claims_github_text_was_read() {
+    let newer = BlockWhy::NewerRows;
+    let (mut a, turn) = run_live();
+    chat_mut(&mut a).adopt_github_read(newer);
+    // The mode line.
+    for _ in 0..3 {
+        press(&mut a, "a");
+    }
+    assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Run);
+    let last = lines(&a).last().cloned().unwrap_or_default();
+    assert_eq!(last, newer.run_line());
+    // The run prompt and what `y` reports.
+    announce(&mut a, turn, 1, run("pwd"));
+    assert_eq!(
+        a.approval_prompt(id2()).unwrap().why.as_deref(),
+        Some(newer.reason())
+    );
+    wait_for_arming();
+    a.update(key('y'));
+    let sent = format!(
+        "sent to pane 1; press Enter there to run it (not run: {})",
+        newer.reason()
+    );
+    assert!(lines(&a).contains(&sent), "{:?}", lines(&a));
+    // The read prompt.
+    announce(&mut a, turn, 2, cloud_read(Reach::Root));
+    assert_eq!(
+        a.approval_prompt(id2()).unwrap().why.as_deref(),
+        Some(newer.read_ask())
+    );
+    a.update(key('n'));
+    assert!(
+        lines(&a)
+            .iter()
+            .all(|l| !l.contains("GitHub text was read")),
+        "{:?}",
+        lines(&a)
+    );
+    // Once GitHub is really read, the reasons say so.
+    started(&mut a, turn);
+    announce(&mut a, turn, 3, run("pwd"));
+    assert_eq!(
+        a.approval_prompt(id2()).unwrap().why.as_deref(),
+        Some(GITHUB_READ)
+    );
 }

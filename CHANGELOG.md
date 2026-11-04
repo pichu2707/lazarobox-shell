@@ -10,6 +10,26 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- GitHub read tools, off by default: `gh_issue_list`, `gh_issue_view` and
+  `gh_pr_view` read the issues and pull requests of the repository in the
+  chat folder's `origin`, through your own `gh` login. Turn them on with
+  `[ai.tools] github = true` or the new `GitHub` row of the Tools tab. They
+  never return a diff, never take a repository from the model, and show
+  everything they read as untrusted data with secrets masked. A cloud engine
+  (and an Ollama `*-cloud` model) asks for your `y` before the first read of a
+  repository in each turn.
+- After a GitHub read, commands of that conversation wait for your Enter for
+  the rest of the conversation, in every approval mode: `run_in_pane` only
+  types, `y` types without Enter, and the bar shows `RUN OFF`. On a cloud
+  engine `read_file` and `grep` also ask each time. The block survives a
+  resume; it is kept as a marker row, so an older build opening that
+  conversation shows its "not shown" notice for it and does not enforce the
+  block. A conversation with saved messages this build does not know opens
+  blocked as well, and every text of that block says so instead of claiming
+  GitHub was read.
+
 ### Fixed
 
 - The chat's context budget now counts the schemas of external MCP tools.

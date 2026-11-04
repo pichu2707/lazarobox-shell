@@ -78,12 +78,12 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_tabs_hold_nine_settings_rows_and_nineteen_ai_rows() {
+fn the_tabs_hold_nine_settings_rows_and_twenty_ai_rows() {
     let ai: usize = [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
         .iter()
         .map(|s| s.items.len())
         .sum();
-    assert_eq!(ai, 19);
+    assert_eq!(ai, 20);
     assert_eq!(SECTIONS[0].items.len(), 9);
 }
 

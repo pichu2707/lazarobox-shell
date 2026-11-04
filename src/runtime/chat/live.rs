@@ -166,6 +166,7 @@ mod tests {
             tools: Tools::Off,
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             ollama: OllamaWire::default(),
+            github_read: false,
             cache: CacheOptions::default(),
         }
     }
