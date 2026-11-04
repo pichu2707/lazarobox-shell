@@ -179,6 +179,23 @@ fn an_orchestrating_pane_sends_on_the_orchestrate_engine_with_the_roster() {
     assert_eq!(composer(&a), "");
 }
 
+// github-tools, Availability (Workers have none): the orchestrator turn offers
+// the orchestrator toolset whatever the saved toggles and a chat grant say.
+#[test]
+fn an_orchestrator_turn_never_offers_the_github_family() {
+    use crate::core::ai::config::ToolToggle;
+    let mut ai = orch_ai();
+    ai.set_toggle(ToolToggle::Github, true);
+    let mut a = orch_app_with(ai);
+    assert!(a.offered_families(chat_id()).contains(Family::Github));
+    toggle(&mut a);
+    let effects = ask(&mut a, "plan it");
+    assert_orch_turn(&effects, chat_id());
+    let (_, _, request, _) = orchestrated(&effects).unwrap();
+    assert!(!request.families.contains(Family::Github));
+    assert!(!request.github_read);
+}
+
 // agent-orchestrator / Unusable orchestrator engine.
 #[test]
 fn an_unusable_orchestrate_engine_sends_nothing_and_shows_its_guidance() {
