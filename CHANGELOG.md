@@ -42,6 +42,11 @@ baseline.
 
 ### Fixed
 
+- The chat's context budget now counts the schemas of external MCP tools.
+  The runtime reports what they weigh when a turn starts: the context fill of
+  that turn is corrected, and the next turns reserve them, so many connected
+  tools no longer push an Ollama prompt past its window unnoticed. The turn
+  that first starts the servers is still budgeted without them (#556).
 - An orchestra worker on Ollama whose prompt and setup pass the model's
   window now says so at the top of its transcript, with the estimated tokens
   and the window, instead of Ollama cutting the prompt silently (#557).

@@ -498,3 +498,50 @@ fn tools_are_wired_for_ollama_and_for_a_jailed_cli_only() {
     assert!(!wires_tools(&bare, &turn_on("claude")));
     assert!(wires_tools(&bare, &turn_on("ollama")));
 }
+
+/// What the turn reported its external tools weigh, up to its end.
+async fn weights(rx: &mut mpsc::Receiver<Tagged>) -> Vec<usize> {
+    let mut seen = Vec::new();
+    loop {
+        let (_, _, event) = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        match event {
+            StreamEvent::ExternalTools(tokens) => seen.push(tokens),
+            StreamEvent::Done(_) | StreamEvent::Error(_) => return seen,
+            _ => {}
+        }
+    }
+}
+
+// #556: a turn tells the app what the external tools it hands the engine
+// weigh, and a later turn whose list became empty tells it they weigh nothing.
+#[tokio::test]
+async fn a_turn_tells_the_app_what_its_external_tools_weigh() {
+    use crate::core::ai::chat::adapters::external_tools_tokens;
+    let lab = lab();
+    let repo = lab.dir.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let mut server = lab.fake.server("fs", "search", "found");
+    server.project = Some(repo.clone());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = open_chats(&lab, recording(&seen), vec![server]);
+    let mut inside = turn_on("ollama");
+    if let Tools::On { origin, .. } = &mut inside.tools {
+        *origin = Some(repo);
+    }
+    chats.send(pane(1), 1, inside);
+    let first = weights(&mut rx).await;
+    // Cloned out: a guard bound here would hold the lock past the next turn.
+    let first_tools = seen.lock().unwrap()[0].clone();
+    let Tools::On { external, .. } = &first_tools else {
+        panic!("tools off");
+    };
+    let expected = external_tools_tokens(&external.external());
+    assert!(expected > 0);
+    assert_eq!(first, [expected]);
+    chats.send(pane(1), 2, turn_on("ollama"));
+    assert_eq!(weights(&mut rx).await, [0]);
+    chats.shutdown(Duration::from_secs(3)).await;
+}
