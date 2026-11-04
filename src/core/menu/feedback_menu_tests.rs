@@ -116,6 +116,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
         HINT_SENT,
         HINT_SENT_COPY,
         feedback::SENDING,
+        feedback::SEARCHING,
     ] {
         assert!(h.chars().count() <= 48, "{h}");
     }
@@ -227,12 +228,12 @@ fn ctrl_s_sends_the_issue_and_waits_for_the_answer() {
     );
     let form = texts(&m);
     assert_eq!(form[3], "  Scroll jumps");
-    assert_eq!(hint(&m), "Sending to GitHub…");
+    assert_eq!(hint(&m), "Looking for similar issues, then sending…");
     assert_eq!(ctrl(&mut m, 's'), MenuCommand::None);
     assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
     assert!(m.in_sub_level(), "Esc does not leave while sending");
     assert_eq!(texts(&m), form);
-    assert_eq!(hint(&m), "Sending to GitHub…");
+    assert_eq!(hint(&m), "Looking for similar issues, then sending…");
 }
 
 // Spec (open-links S7): once sent, the view shows the issue's link on a

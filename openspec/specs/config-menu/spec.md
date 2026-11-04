@@ -1320,7 +1320,8 @@ Both keys check the form first: the title and the description are required, and 
 - WHEN Ctrl+S is pressed
 - THEN the runtime runs `gh issue create --repo pichu2707/lazarobox-shell --title "Scroll jumps" --body-file - --label bug`, with the body on stdin
 - AND the body reads `### What happened`, a blank line, `It jumps\nback`, a blank line, `### Environment`, a blank line, and the facts in a `text` code block
-- AND the footer reads `Sending to GitHub…` until the answer
+- AND the footer reads `Looking for similar issues, then sending…` until the answer, because the search comes first
+- AND a send from the similar issues (Enter or Ctrl+S) reads `Sending to GitHub…`
 
 #### Scenario: Ctrl+O opens the prefilled page [auto]
 - GIVEN the bug report above, on a host with an opener
@@ -1411,6 +1412,16 @@ Typing and pasting do nothing while the list is shown.
 - THEN `gh issue comment 583` gets the report on stdin
 - AND when `gh` prints one line `https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-<id>`, the view reads `Added to the existing issue:` and that link, which Ctrl+O opens, as for a sent issue
 - AND any other output counts as a failure
+
+#### Scenario: A comment that fails keeps the chosen issue [auto]
+- GIVEN Enter was pressed on `#540` of the similar issues
+- WHEN `gh` fails, is missing, or is not logged in
+- THEN the list stays with `#540` selected and the footer error says why (`gh: missing or not logged in: run gh auth login` for the last two)
+- AND no prefilled new-issue page opens, and Enter tries `#540` again
+
+#### Scenario: Long titles in the list [auto]
+- WHEN a similar issue's title is longer than its row
+- THEN it is cut to 46 display columns, `#<number> ` and `…` included; a double-width character that would cross the edge is left out whole
 
 #### Scenario: Nothing similar [auto]
 - WHEN the search finds no similar issue, fails, prints something that is not the list, or takes more than 10 seconds
