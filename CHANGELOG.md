@@ -55,6 +55,11 @@ baseline.
 
 ### Fixed
 
+- Under WSL with `networkingMode=mirrored`, engine detection no longer waits
+  800 ms for engines that are not running (LM Studio, vLLM…). There a connect
+  to a port nothing listens on is never answered, so detection now gives up a
+  connect after 200 ms; a running server answers it in about a millisecond
+  (#584).
 - When `$HOME` is reached through a symlink, a refused write now names the
   chat's folder as `~/…` instead of its full real path (#438).
 - The chat's context budget now counts the schemas of external MCP tools.
