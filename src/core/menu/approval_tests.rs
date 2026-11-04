@@ -91,7 +91,7 @@ fn navigation_goes_family_rows_approval_gate_then_wraps_to_the_first_tools_row()
 
 // Spec (config-menu, Tools tab): nine `j` presses from the first row visit
 // every row, GitHub among them, and come back to the first (the tab wraps on
-// its own rows); eight do not.
+// its own rows).
 #[test]
 fn nine_j_presses_walk_the_tools_tab_and_wrap() {
     let mut m = open_with(ApprovalMode::Ask);

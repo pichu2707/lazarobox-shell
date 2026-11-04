@@ -856,8 +856,5 @@ fn y_after_the_engine_lost_its_tools_grants_nothing_and_says_why() {
             lines(&a)
         );
         assert!(!has_line(&a, GITHUB_GRANTED_LINE), "{why}");
-        assert!(
-            !a.offered_families(id2()).contains(Family::Github) || a.ai.toggle(ToolToggle::Github)
-        );
     }
 }

@@ -114,7 +114,7 @@ Branch: `feat/github-read-block` from `main`. Inert: no tool exists, so nothing 
 ### Phase 4: PR 1 close
 
 - [x] 1.20 (checks only; opening the PR, CI and merge are the coordinator's) `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Confirm `chat.db` `user_version` is 3 and mode 0600 in the tests that open a temp database. Measure production lines. Open PR to `main`, wait for green CI, merge.
-- [x] 1.21 (done through the merged chain PRs #564 to #580) Chain Context in the PR body: dependency diagram with the current PR marked, start/end, follow-ups (PR 2 to 4), out of scope. No CHANGELOG entry (nothing user-visible).
+- [x] 1.21 (closed as bookkeeping: PR 1 is merged, its body was not edited afterwards) Chain Context in the PR body: dependency diagram with the current PR marked, start/end, follow-ups (PR 2 to 4), out of scope. No CHANGELOG entry (nothing user-visible).
 
 ## PR 2: Pure core (target ~340 production lines)
 

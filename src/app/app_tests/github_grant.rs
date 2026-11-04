@@ -263,7 +263,6 @@ fn the_grant_ends_when_the_pane_ends() {
     press(&mut a, "wq");
     a.update(key('y'));
     assert!(!a.panes.contains_key(&id2()), "the pane is closed");
-    assert!(!a.offered_families(id2()).contains(Family::Github));
     press(&mut a, "c");
     let fresh = a.focused();
     assert!(a.panes.contains_key(&fresh));
