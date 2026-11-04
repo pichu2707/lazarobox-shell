@@ -28,7 +28,10 @@ use crate::{
         tools::{
             Call, ToolError,
             mcp::refusal_text,
-            paths::{PathVerdict, REFUSED, SecretRoots, is_env_name, resolve, resolve_write},
+            paths::{
+                PathVerdict, REFUSED, SecretRoots, display_target, is_env_name, resolve,
+                resolve_write,
+            },
             registry::Family,
             stage::{
                 BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey, Staged,
@@ -214,9 +217,11 @@ pub(super) async fn run_within(
     if let (true, Some(key)) = (call.is_write(), scope.stage_key) {
         let stages = host.stages.clone();
         let worker = scope.read_scope.clone();
-        let done =
-            tokio::task::spawn_blocking(move || stage(&stages, key, &env, &call, worker.as_ref()))
-                .await;
+        let approved = allowed_overwrite(host, scope, &call);
+        let done = tokio::task::spawn_blocking(move || {
+            stage(&stages, key, &env, &call, worker.as_ref(), approved)
+        })
+        .await;
         return match done {
             Ok(Ok(text)) => ended(ToolStatus::Ok, text.clone(), &text),
             Ok(Err(why)) => ended(ToolStatus::Error, why.clone(), &why),
@@ -450,8 +455,9 @@ fn stage(
     env: &ToolEnv,
     call: &Call,
     worker: Option<&WorkerScope>,
+    approved: bool,
 ) -> Result<String, String> {
-    let (text, change) = stage_as(stages, key, env, call, worker, disk_bytes)?;
+    let (text, change) = stage_as(stages, key, env, call, worker, approved, disk_bytes)?;
     if let Some(worker) = worker {
         worker.handle.staged(worker.run, worker.worker, change);
     }
@@ -468,7 +474,7 @@ pub(super) fn stage_with_probe(
     call: &Call,
     probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<String, String> {
-    stage_as(stages, key, env, call, None, probe).map(|(text, _)| text)
+    stage_as(stages, key, env, call, None, false, probe).map(|(text, _)| text)
 }
 
 /// The path a ledger names: relative to the chat's real root, one sanitized
@@ -595,6 +601,42 @@ pub(super) fn staged_diff(
     out
 }
 
+/// Whether `call` is a `write_file` over an env template that is on disk: its
+/// answer would tell what the file holds, so it asks first like an edit. A
+/// path the policy refuses, or a worker's call (which asks no one), is not.
+pub(super) async fn overwrites_template(host: &ToolHost, scope: &TurnScope, call: &Call) -> bool {
+    let Call::WriteFile { path, .. } = call else {
+        return false;
+    };
+    if scope.read_scope.is_some() {
+        return false;
+    }
+    let (env, path) = (host.env(&scope.origin), path.clone());
+    tokio::task::spawn_blocking(move || {
+        let Ok(roots) = load_roots(&env) else {
+            return false;
+        };
+        resolve_write(&roots, &env.origin, &path).is_some_and(|target| {
+            is_env_target(&target.real) && target.real.symlink_metadata().is_ok()
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Whether the user allowed this turn the file a `write_file` names, with the
+/// ask [`overwrites_template`] made.
+fn allowed_overwrite(host: &ToolHost, scope: &TurnScope, call: &Call) -> bool {
+    let Call::WriteFile { path, .. } = call else {
+        return false;
+    };
+    host.home
+        .as_deref()
+        .map(Path::new)
+        .and_then(|home| display_target(home, &scope.origin, path))
+        .is_some_and(|shown| lock_set(&scope.allowed).contains(&shown))
+}
+
 /// Whether a target of a write is an env file: `resolve_write` lets only
 /// templates get this far.
 fn is_env_target(real: &Path) -> bool {
@@ -611,6 +653,7 @@ fn stage_as(
     env: &ToolEnv,
     call: &Call,
     worker: Option<&WorkerScope>,
+    approved: bool,
     probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<(String, Change), String> {
     let refused = || refused_in(env);
@@ -646,6 +689,17 @@ fn stage_as(
     let mut stages = lock(stages);
     let disk = on_disk(&stages, key, &target.real, probed)
         .map_err(|_| missing_parent(env, path, &target.real).unwrap_or_else(refused))?;
+    // `write_file` over a template that exists tells what it holds (staged,
+    // or "use edit_file"), and a read of it is refused. Only the user's yes
+    // to the ask lets it go on, and a worker, which cannot be asked, gets the
+    // one refusal whatever the file holds.
+    if matches!(call, Call::WriteFile { .. })
+        && disk.is_some()
+        && is_env_target(&target.real)
+        && (worker.is_some() || !approved)
+    {
+        return Err(refused());
+    }
     let existing = match &disk {
         None => Existing::Absent,
         Some(bytes) => Existing::Present {

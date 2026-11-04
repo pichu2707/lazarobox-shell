@@ -601,6 +601,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut github_plan = None;
     let mut github_keys = None;
     let mut declined = false;
+    // A write over a template that is on disk tells what it holds, so it asks
+    // like an edit of it. Whether the file exists is read before the match.
+    let overwrites = match &checked {
+        Ok(call) => files::overwrites_template(&host, &scope, call).await,
+        Err(_) => false,
+    };
     if let Ok(valid) = &checked {
         let home = host.home.as_deref().map(Path::new);
         let shown = |path: &str| home.and_then(|home| display_target(home, &scope.origin, path));
@@ -685,8 +691,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             {
                 checked = Err(EditError::EmptyOld.to_string().into());
             }
-            // An edit of a file asks like a read of it, once per file per turn.
-            (Call::EditFile { path, .. }, locality, _) if edit_asks(locality, path) => {
+            // An edit of a file asks like a read of it, once per file per turn,
+            // and so does a write over a template that exists.
+            (Call::EditFile { path, .. } | Call::WriteFile { path, .. }, locality, _)
+                if overwrites
+                    || (matches!(valid, Call::EditFile { .. }) && edit_asks(locality, path)) =>
+            {
                 match shown(path) {
                     Some(shown) => {
                         if !files::lock_set(&scope.allowed).contains(&shown) {

@@ -41,7 +41,7 @@ Writes MUST be allowed only under one root: the chat origin directory. They MUST
 - AND `nope/.env` below a missing `nope` returns the one refusal text
 
 ### Requirement: Deny rules
-A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). The one exception is an environment template: an env name ending in `.example`, `.sample`, `.template` or `.dist` (for example `.env.example`, never `.env.local`). `write_file` and `edit_file` MAY stage it, judged by the folder it sits in, and like every write it reaches the disk only through the user's approval of the batch review, in every approval mode (#583). Its `edit_file` MUST ask like a read before it runs, on a local engine too, once per file per turn, because the answer tells whether a text occurs in a file no read may show. It is still refused as a folder name, as the real target of a secret link of `$HOME`, to a worker's `edit_file` (a worker asks no one before it stages, and the answer would tell what the file holds), and to `read_file`; a review worker's prompt only names it. Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.
+A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). The one exception is an environment template: an env name ending in `.example`, `.sample`, `.template` or `.dist` (for example `.env.example`, never `.env.local`). `write_file` and `edit_file` MAY stage it, judged by the folder it sits in, and like every write it reaches the disk only through the user's approval of the batch review, in every approval mode (#583). Its `edit_file` MUST ask like a read before it runs, on a local engine too, once per file per turn, because the answer tells whether a text occurs in a file no read may show. So MUST a `write_file` over a template that already exists, because staging it answers "staged" or "use edit_file" by what the file holds (a secret-looking run, CRLF, over the read cap); a denial, or an approval mode that answers for the user, MUST give one answer whatever the file holds, and a write of a template that does not exist yet asks nothing. A worker's `write_file` over an existing template MUST get the one refusal text whatever the file holds. It is still refused as a folder name, as the real target of a secret link of `$HOME`, to a worker's `edit_file` (a worker asks no one before it stages, and the answer would tell what the file holds), and to `read_file`; a review worker's prompt only names it. Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.
 
 #### Scenario: Protected directories [auto]
 - GIVEN the targets `.git/hooks/pre-commit` and `node_modules/x/index.js`
@@ -64,6 +64,12 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - GIVEN an existing `.env.example` and a chat on a local engine
 - WHEN `edit_file` is called on it and the ask is denied
 - THEN nothing is staged and the result is the same whether or not `old` occurs in the file
+
+#### Scenario: Writing over an environment template asks first [auto]
+- GIVEN existing templates that hold plain text, a secret-looking run, CRLF or more than the read cap
+- WHEN `write_file` is called on each and the ask is denied, or the approval mode answers it
+- THEN nothing is staged and the result is the same for every file
+- AND a worker's `write_file` over any of them gets the one refusal text
 
 #### Scenario: Environment template limits [auto]
 - GIVEN `create_dir` on `.env.example`, `write_file` on `.env.local`, or `write_file` on `.env.example` when `~/.env` links to it
