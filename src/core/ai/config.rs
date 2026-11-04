@@ -200,15 +200,17 @@ pub enum ToolToggle {
     Exec,
     Git,
     GitWrite,
+    Github,
 }
 
 impl ToolToggle {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Search,
         Self::Write,
         Self::Exec,
         Self::Git,
         Self::GitWrite,
+        Self::Github,
     ];
 
     /// The key under `[ai.tools]`.
@@ -219,6 +221,7 @@ impl ToolToggle {
             Self::Exec => "exec",
             Self::Git => "git",
             Self::GitWrite => "git_write",
+            Self::Github => "github",
         }
     }
 
@@ -230,6 +233,7 @@ impl ToolToggle {
             Self::Exec => Family::Exec,
             Self::Git => Family::Git,
             Self::GitWrite => Family::GitWrite,
+            Self::Github => Family::Github,
         }
     }
 }
@@ -410,7 +414,7 @@ pub struct AiConfig {
     tools: bool,
     approval: ApprovalMode,
     compaction: CompactionMode,
-    toggles: [bool; 5],
+    toggles: [bool; 6],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
@@ -528,7 +532,7 @@ impl Default for AiConfig {
             tools: true,
             approval: ApprovalMode::Ask,
             compaction: CompactionMode::Auto,
-            toggles: [false; 5],
+            toggles: [false; 6],
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
@@ -1090,10 +1094,10 @@ fn read_compaction(table: &Table, problems: &mut Vec<String>) -> CompactionMode 
     }
 }
 
-/// Reads the five `[ai.tools]` family switches. A missing key is off; a
+/// Reads the six `[ai.tools]` family switches. A missing key is off; a
 /// value of the wrong type is off with a problem for that key only. A
 /// non-table `ai.tools` was already reported by `read_tools`.
-fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 5] {
+fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 6] {
     let section = table
         .get("ai")
         .and_then(Value::as_table)
@@ -2871,7 +2875,7 @@ mod tests {
         );
     }
 
-    // Spec (configuration): the five family toggles, default and parse.
+    // Spec (configuration): the six family toggles, default and parse.
     #[test]
     fn family_toggles_default_to_off_without_a_notice() {
         for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
@@ -2893,7 +2897,34 @@ mod tests {
         assert_eq!(on, vec![ToolToggle::Write, ToolToggle::Exec]);
         assert!(problems.is_empty());
         let keys: Vec<_> = ToolToggle::ALL.into_iter().map(ToolToggle::key).collect();
-        assert_eq!(keys, ["search", "write", "exec", "git", "git_write"]);
+        assert_eq!(
+            keys,
+            ["search", "write", "exec", "git", "git_write", "github"]
+        );
+    }
+
+    // Spec (configuration, GitHub on): the key turns on its own toggle only,
+    // and a wrong type reports the key like the others.
+    #[test]
+    fn the_github_toggle_is_its_own_key() {
+        let (config, problems) = read_text("[ai.tools]\ngithub = true\n");
+        let on: Vec<_> = ToolToggle::ALL
+            .into_iter()
+            .filter(|t| config.toggle(*t))
+            .collect();
+        assert_eq!(on, vec![ToolToggle::Github]);
+        assert!(problems.is_empty());
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY.with(Family::Github),
+            "only the GitHub family is added"
+        );
+        let (config, problems) = read_text("[ai.tools]\ngithub = \"yes\"\nwrite = true\n");
+        assert!(!config.toggle(ToolToggle::Github) && config.toggle(ToolToggle::Write));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.github: expected a boolean".to_owned()]
+        );
     }
 
     #[test]

@@ -875,6 +875,26 @@ fn a_turn_offers_the_families_of_the_toggles() {
     );
 }
 
+// Spec (config-menu, Toggle is saved): with the toggle on the next turn offers
+// the GitHub family, and with it off again the set is the legacy one.
+#[test]
+fn the_github_toggle_adds_its_family_and_turning_it_off_removes_it() {
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY.with(Family::Github)
+    );
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    ai.set_toggle(ToolToggle::Github, false);
+    assert_eq!(families_of_a_turn(ai), FamilySet::LEGACY);
+    // The master switch wins: no tools, no GitHub family.
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(families_of_a_turn_on(ai, &[]), FamilySet::LEGACY);
+}
+
 #[test]
 fn a_turn_without_tools_offers_no_coding_family() {
     let mut ai = ollama();

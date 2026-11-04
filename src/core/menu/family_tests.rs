@@ -1,16 +1,17 @@
-//! Tests of the five family toggle rows of the AI section, at the
+//! Tests of the six family toggle rows of the AI section, at the
 //! `MenuState` level.
 
 use super::ai_tests::{ch, machine, press, selected_label};
 use super::*;
 use crate::core::ai::config::ToolToggle;
 
-const ROWS: [(&str, ToolToggle); 5] = [
+const ROWS: [(&str, ToolToggle); 6] = [
     ("Search", ToolToggle::Search),
     ("Write", ToolToggle::Write),
     ("Exec", ToolToggle::Exec),
     ("Git", ToolToggle::Git),
     ("Git write", ToolToggle::GitWrite),
+    ("GitHub", ToolToggle::Github),
 ];
 
 fn open() -> MenuState {
@@ -41,15 +42,15 @@ fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
         })
 }
 
-// Spec (config-menu): five static rows between Tools and Approval, each with
+// Spec (config-menu): six static rows between Tools and Approval, each with
 // its own kind and a distinct key path.
 #[test]
-fn the_five_rows_sit_between_tools_and_approval_in_order() {
+fn the_six_rows_sit_between_tools_and_approval_in_order() {
     let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let tools = labels.iter().position(|l| *l == "Tools").unwrap();
     let rows: Vec<_> = ROWS.iter().map(|(label, _)| *label).collect();
-    assert_eq!(labels[tools + 1..tools + 6], rows[..]);
-    assert_eq!(labels[tools + 6], "Approval");
+    assert_eq!(labels[tools + 1..tools + 7], rows[..]);
+    assert_eq!(labels[tools + 7], "Approval");
 }
 
 #[test]
@@ -69,11 +70,11 @@ fn each_row_is_found_by_its_own_kind_and_key_paths_are_distinct() {
     }
     paths.sort();
     paths.dedup();
-    assert_eq!(paths.len(), 5);
+    assert_eq!(paths.len(), 6);
 }
 
 #[test]
-fn navigation_goes_tools_then_the_five_rows_then_approval() {
+fn navigation_goes_tools_then_the_six_rows_then_approval() {
     let mut m = on("Tools");
     for (label, _) in ROWS {
         press(&mut m, 'j');
@@ -170,8 +171,16 @@ fn only_the_rows_that_change_files_or_run_code_carry_a_caution() {
             toggle,
             ToolToggle::Write | ToolToggle::Exec | ToolToggle::GitWrite
         );
-        assert_eq!(m.caution().is_some(), risky, "{label}");
+        // The GitHub row has a line of its own (below); the other rows carry
+        // the caution only when risky.
+        let has_line = risky || matches!(toggle, ToolToggle::Github);
+        assert_eq!(m.caution().is_some(), has_line, "{label}");
     }
+    // Its own hint: GitHub only reads, so the "change files" caution is untrue.
+    let hint = on("GitHub").caution().unwrap();
+    assert_ne!(Some(hint), on("Write").caution());
+    assert_eq!(hint, "Reads issues and PRs; locks auto-run in that chat");
+    assert!(hint.is_ascii() && hint.len() <= 44 + 8, "{hint}");
     assert_eq!(on("Tools").caution(), None);
     assert_eq!(on("Approval").caution(), None);
     let line = on("Write").caution().unwrap();
