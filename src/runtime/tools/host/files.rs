@@ -300,11 +300,14 @@ pub(super) async fn search_reach(host: &ToolHost, scope: &TurnScope) -> Reach {
 }
 
 /// The real root of the chat when it is concrete enough to keep a read in:
-/// not HOME and not a folder that holds HOME (`/` among them). `None` too
-/// when the root cannot be resolved.
+/// not HOME, not a folder that holds HOME (`/` among them) and, under WSL,
+/// not a broad Windows drive folder. `None` too when the root cannot be
+/// resolved.
 fn concrete_root(env: &ToolEnv, roots: &SecretRoots) -> Option<PathBuf> {
     let root = env.origin.canonicalize().ok()?;
-    (!roots.home().starts_with(&root)).then_some(root)
+    // A broad Windows drive folder is broad like HOME.
+    let broad = roots.home().starts_with(&root) || roots.drives().is_broad(&root);
+    (!broad).then_some(root)
 }
 
 /// Whether the resolved `real` path is the chat's root or under it, compared

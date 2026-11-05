@@ -148,7 +148,10 @@ fn root(
     let PathVerdict::Allowed(real) = resolve(secrets, origin, input) else {
         return Err(REFUSED_ROOT);
     };
-    let broad = real == secrets.home() || is_scratch(&real) || is_scratch(&text);
+    let broad = real == secrets.home()
+        || secrets.drives().is_broad(&real)
+        || is_scratch(&real)
+        || is_scratch(&text);
     if broad {
         return Err(TOO_BROAD);
     }

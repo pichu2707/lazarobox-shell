@@ -145,3 +145,56 @@ fn reads_open_beneath_the_drive() {
     assert_eq!(f.roots.base_of(&readme), f.drive.as_path());
     assert_eq!(f.roots.base_of(&f.home.join("dev")), f.home.as_path());
 }
+
+// Verifier B2: drvfs folds case and keeps the typed spelling, so the real
+// target of a HOME secret root that lies on a drive is refused in any case.
+#[test]
+fn a_secret_root_on_the_drive_is_refused_in_any_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (home, drive) = (root.join("home"), root.join("mnt/c"));
+    let target = drive.join("Users/ana/Documents/awsconf");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    symlink(&target, home.join(".aws")).unwrap();
+    let roots = SecretRoots::load(&home, &[])
+        .unwrap()
+        .with_drives(WinDrives::new(
+            vec![drive.clone()],
+            Some(drive.join("Users/ana")),
+        ));
+    for rel in [
+        "Users/ana/Documents/awsconf/credentials",
+        "Users/ana/Documents/AWSCONF/credentials",
+        "users/ANA/documents/awsconf",
+    ] {
+        assert!(!roots.judge_real(&drive.join(rel)), "{rel}");
+    }
+    assert!(roots.holds_root(&drive.join("USERS/ana/Documents")));
+}
+
+// Verifier B3: a broad drive folder is not a root for a run's read scope.
+#[test]
+fn a_broad_drive_folder_is_too_broad_for_a_read_scope() {
+    use crate::core::ai::orchestra::{
+        RunId,
+        scope::{ReadScope, TOO_BROAD},
+    };
+    let f = fixture();
+    let no_scratch = |_: &std::path::Path| false;
+    for root in [f.drive.clone(), f.drive.join("Users/ana")] {
+        let input = root.to_str().unwrap().to_owned();
+        let (_, dropped) = ReadScope::new(RunId(1), &f.roots, &f.home, &[&input], &no_scratch);
+        assert_eq!(dropped.len(), 1, "{input}");
+        assert_eq!(dropped[0].reason, TOO_BROAD, "{input}");
+    }
+    let app = f.drive.join("Users/ana/Documents/app");
+    let (_, dropped) = ReadScope::new(
+        RunId(1),
+        &f.roots,
+        &f.home,
+        &[app.to_str().unwrap()],
+        &no_scratch,
+    );
+    assert!(dropped.is_empty());
+}

@@ -1705,3 +1705,36 @@ async fn writes_in_a_drive_folder_are_refused() {
     assert_eq!(w.staged(), 0);
     assert!(!app.join("main.py").exists());
 }
+
+// Verifier B3: a broad drive folder (a drive root, a profile root) is broad
+// like HOME: reads and searches there do not get the reach of a root.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_broad_drive_folder_has_a_broad_reach() {
+    use crate::core::ai::chat::approval::Reach;
+    let w = world();
+    let drive = w.proj.parent().unwrap().parent().unwrap().join("mnt/c");
+    let app = drive.join("Users/ana/Documents/app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("README.md"), "x").unwrap();
+    w.host.set_drives(WinDrives::new(
+        vec![drive.clone()],
+        Some(drive.join("Users/ana")),
+    ));
+    let readme = app.join("README.md");
+    for (origin, want) in [
+        (drive.clone(), Reach::Broad),
+        (drive.join("Users/ana"), Reach::Broad),
+        (app.clone(), Reach::Root),
+    ] {
+        let (tx, _rx) = mpsc::channel(32);
+        let scope = TurnScope::new(tx, Locality::Cloud, origin.clone());
+        let got = super::files::reach(&w.host, &scope, readme.to_str().unwrap()).await;
+        assert_eq!(got, want, "{origin:?}");
+        assert_eq!(
+            super::files::search_reach(&w.host, &scope).await,
+            want,
+            "{origin:?}"
+        );
+    }
+}

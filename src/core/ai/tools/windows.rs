@@ -86,6 +86,11 @@ impl WinDrives {
         let Some((mount, names)) = self.below_mount(real) else {
             return DriveVerdict::Refused;
         };
+        // drvfs resolves DOS 8.3 aliases (`PROGRA~3` is `ProgramData`) and
+        // the real path keeps them, so no name list could catch them.
+        if names.iter().any(|name| is_short_alias(name)) {
+            return DriveVerdict::Refused;
+        }
         let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
         let allowed = match lower.as_slice() {
             [] => true,
@@ -164,6 +169,13 @@ pub fn parse_profile(out: &str) -> Option<PathBuf> {
             .join("Users")
             .join(name)
     })
+}
+
+/// Whether `name` looks like a DOS 8.3 alias: a `~` followed by a digit.
+fn is_short_alias(name: &str) -> bool {
+    name.as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'~' && pair[1].is_ascii_digit())
 }
 
 /// Whether any name is excluded wherever it sits (`.env`, `.netrc`…).

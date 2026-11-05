@@ -180,3 +180,28 @@ fn broad_drive_folders() {
         Some(Path::new("/mnt/d"))
     );
 }
+
+// Verifier B1: drvfs resolves DOS 8.3 short names (`PROGRA~3` is
+// `ProgramData`, `SSH~1` is `.ssh`), and the real path keeps the short
+// spelling, so any alias component is refused.
+#[test]
+fn short_names_are_refused_on_a_drive() {
+    let d = drives(Some("/mnt/c/Users/ana"));
+    for path in [
+        "/mnt/c/PROGRA~1",
+        "/mnt/c/PROGRA~3/x",
+        "/mnt/c/SYSTEM~1",
+        "/mnt/c/Users/ana/SSH~1/id_rsa",
+        "/mnt/c/Users/ana/LOCAL~1/share/keyrings",
+        "/mnt/c/Users/ana/NTUSER~1.BLF",
+        "/mnt/c/Users/ana/Documents/MYPROJ~2/x",
+        "/mnt/c/Users/JAVIER~1",
+    ] {
+        assert_eq!(verdict(&d, path), DriveVerdict::Refused, "{path}");
+    }
+    // A tilde that is not an alias is an ordinary name.
+    assert_eq!(
+        verdict(&d, "/mnt/c/Users/ana/Documents/notes~old.txt"),
+        DriveVerdict::Allowed
+    );
+}
