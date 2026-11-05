@@ -510,10 +510,12 @@ pub enum Effect {
     /// Review the batch a turn of chat `.0` left behind; the runtime answers
     /// with `AppEvent::Batch(.., Review(..))` when there is one.
     BatchReview(PaneId),
-    /// Apply the orphan `id` of chat `pane` after the user's `y`.
+    /// Apply the orphan `id` of chat `pane` after the user's `y`, with the
+    /// Windows drive folder the chat may write in at that moment.
     BatchApply {
         pane: PaneId,
         id: BatchId,
+        drive_grant: Option<std::path::PathBuf>,
     },
     /// Discard the orphan `id` of chat `pane`.
     BatchDiscard {

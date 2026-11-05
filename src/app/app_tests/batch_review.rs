@@ -803,6 +803,30 @@ mod orphan {
         a
     }
 
+    // Verifier B1 (wsl-drive-access PR 2): the apply carries the drive grant
+    // the chat holds when the user presses `y`.
+    #[test]
+    fn y_applies_the_orphan_with_the_chats_drive_grant() {
+        let mut a = orphaned(60);
+        let folder = std::path::PathBuf::from("/mnt/c/Users/ana/Documents/app");
+        a.panes
+            .get_mut(&id2())
+            .and_then(PaneState::chat_mut)
+            .unwrap()
+            .set_drive_grant(Some(folder.clone()));
+        a.update(review_event(60));
+        paint_at(&mut a, 0);
+        read_all(&mut a, 100);
+        assert_eq!(
+            at(&mut a, 100 + ms(ARM_DELAY), key('y')),
+            vec![Effect::BatchApply {
+                pane: id2(),
+                id: batch_id(),
+                drive_grant: Some(folder),
+            }]
+        );
+    }
+
     fn review_event(n: usize) -> AppEvent {
         AppEvent::Batch(id2(), BatchEvent::Review(batch_id(), numbered(n)))
     }
@@ -912,7 +936,8 @@ mod orphan {
             early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
             vec![Effect::BatchApply {
                 pane: id2(),
-                id: batch_id()
+                id: batch_id(),
+                drive_grant: None,
             }]
         );
         assert_eq!(pending(&a), None);
@@ -927,7 +952,8 @@ mod orphan {
             at(&mut b, ms(ARM_DELAY), key('y')),
             vec![Effect::BatchApply {
                 pane: id2(),
-                id: batch_id()
+                id: batch_id(),
+                drive_grant: None,
             }]
         );
     }
@@ -1036,6 +1062,7 @@ mod orphan {
         let apply = Effect::BatchApply {
             pane: id2(),
             id: batch_id(),
+            drive_grant: None,
         };
         assert_eq!(at(&mut a, 100 + ms(ARM_DELAY), key('y')), vec![apply]);
         a.update(done("applied 1 paths"));

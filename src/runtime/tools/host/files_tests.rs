@@ -511,7 +511,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     );
     let after = d.call(write("b.txt", "x")).await;
     assert!(after.text.contains("waiting for review"), "{after:?}");
-    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, None) else {
         panic!("an apply is done");
     };
     assert_eq!(shown, "applied 2 paths");
@@ -531,7 +531,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
         shown: "that batch is no longer there".into(),
         told: None,
     };
-    assert_eq!(w.host.apply_batch(id, false), gone);
+    assert_eq!(w.host.apply_batch(id, false, None), gone);
     assert_eq!(w.host.discard_batch(id), gone);
     assert!(
         w.host.review_batch(key(), false).is_none(),
@@ -1138,7 +1138,7 @@ async fn an_unreviewable_orphan_is_not_applied() {
     );
     let (id, review) = w.host.review_batch(key(), false).unwrap();
     assert!(!review.doc().reviewable());
-    let event = w.host.apply_batch(id, false);
+    let event = w.host.apply_batch(id, false, None);
     assert_eq!(
         event,
         BatchEvent::Done {
@@ -1159,7 +1159,7 @@ async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     let (id, _) = w.host.review_batch(key(), false).unwrap();
-    let event = w.host.apply_batch(id, true);
+    let event = w.host.apply_batch(id, true, None);
     assert_eq!(
         event,
         BatchEvent::Done {
@@ -1182,7 +1182,7 @@ async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
     assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
     let (id, _) = w.host.review_batch(key(), false).unwrap();
     std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
-    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, None) else {
         panic!("done");
     };
     assert!(shown.starts_with("refused"), "{shown}");
@@ -1211,7 +1211,7 @@ async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
         assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
         let (id, _) = w.host.review_batch(key(), false).unwrap();
         let event = if apply {
-            w.host.apply_batch(id, false)
+            w.host.apply_batch(id, false, None)
         } else {
             w.host.discard_batch(id)
         };
@@ -1785,9 +1785,29 @@ async fn an_apply_without_the_grant_writes_nothing_on_the_drive() {
     assert!(!d.call(write("main.py", "t")).await.is_error);
     drop((d, _rx));
     let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
-    let done = w.host.apply_batch(id, false);
+    let done = w.host.apply_batch(id, false, None);
     assert!(!app.join("main.py").exists(), "{done:?}");
     assert_eq!(std::fs::read_to_string(app.join("a")).unwrap(), "a");
+}
+
+// Verifier B1: an orphan left in a granted drive folder applies with the
+// grant the chat holds when the user presses `y`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_in_a_granted_drive_folder_applies_with_the_chats_grant() {
+    let w = world();
+    let (_, app) = drive_app(&w);
+    let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
+    assert!(!d.call(write("main.py", "t")).await.is_error);
+    drop((d, _rx));
+    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, Some(app.clone())) else {
+        panic!("expected the apply result");
+    };
+    assert_eq!(shown, "applied 1 paths");
+    assert!(told.is_some());
+    assert_eq!(std::fs::read_to_string(app.join("main.py")).unwrap(), "t");
+    assert_eq!(w.staged(), 0);
 }
 
 // PR 2: a broad drive folder (a drive root, a profile root) is broad like

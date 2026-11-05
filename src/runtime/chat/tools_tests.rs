@@ -709,7 +709,7 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     };
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert_eq!(
-        chats.apply_batch(id),
+        chats.apply_batch(id, None),
         Some(BatchEvent::Done {
             shown: "applied 1 paths".into(),
             told: Some("The user applied the batch you left staged: applied 1 paths.".into()),
