@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::ai::tools::windows::WinDrives;
 use crate::{
     core::{
         ai::{
@@ -88,6 +89,10 @@ pub struct ToolEnv {
     pub xdg_data_home: Option<OsString>,
     /// The chat's origin cwd, against which a relative path is read.
     pub origin: PathBuf,
+    /// The Windows drives of WSL for the drive read policy. `None` reads the
+    /// ones the runtime knows at each call (the own profile arrives later);
+    /// a test sets its own.
+    pub drives: Option<WinDrives>,
 }
 
 /// Why a call failed. The text is short and never holds file content or a
@@ -344,7 +349,12 @@ pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
     .into_iter()
     .flatten()
     .collect();
-    SecretRoots::load(Path::new(home), &extra).ok_or(Failure::Refused)
+    SecretRoots::load(Path::new(home), &extra)
+        .map(|roots| {
+            let drives = env.drives.clone();
+            roots.with_drives(drives.unwrap_or_else(crate::runtime::win_drives::drives))
+        })
+        .ok_or(Failure::Refused)
 }
 
 /// Opens the already resolved `real` path and proves the descriptor is that
@@ -366,10 +376,12 @@ pub fn open_checked_errno(
     if !roots.judge_real(real) {
         return Err((Failure::Refused, None));
     }
+    // HOME, or the Windows drive the path lies on under WSL.
+    let base = roots.base_of(real);
     let rel = real
-        .strip_prefix(roots.home())
+        .strip_prefix(base)
         .map_err(|_| (Failure::Refused, None))?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+    let fd = open_beneath(base, rel, dir).map_err(|error| {
         // No safe open on this platform: the tool cannot work at all. An OS
         // error of that kind is about the file (macOS opens a socket with
         // `EOPNOTSUPP`), so it is refused like any other.
@@ -1006,6 +1018,7 @@ mod tests {
 
     pub(super) fn env(home: &Path) -> ToolEnv {
         ToolEnv {
+            drives: Default::default(),
             home: Some(home.into()),
             xdg_config_home: None,
             xdg_data_home: None,

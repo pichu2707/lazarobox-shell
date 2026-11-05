@@ -55,6 +55,7 @@ pub fn process_env() -> ToolEnv {
         xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
         xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
         origin: PathBuf::from("/"),
+        drives: None,
     }
 }
 
@@ -462,6 +463,7 @@ mod tests {
 
     fn env(home: Option<&Path>) -> ToolEnv {
         ToolEnv {
+            drives: Default::default(),
             home: home.map(|h| h.as_os_str().to_owned()),
             xdg_config_home: None,
             xdg_data_home: None,
@@ -664,6 +666,7 @@ mod tests {
         let none = check(&env(None), CallId(1), f.home.clone(), "pwd", &anywhere());
         assert!(reason(&none).is_some());
         let relative = ToolEnv {
+            drives: Default::default(),
             home: Some("relative".into()),
             ..env(None)
         };

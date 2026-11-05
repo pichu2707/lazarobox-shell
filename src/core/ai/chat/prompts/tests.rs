@@ -364,6 +364,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
     // The reach of the file tools and what to do after a refusal.
     for needle in [
         "only reach the user's home folder",
+        "and, under WSL, Windows drives (read only)",
         "After a refusal or a failed tool, say so; never guess or invent contents",
     ] {
         assert!(text.contains(needle), "{needle}");

@@ -22,6 +22,7 @@ fn fixture() -> Fixture {
     fs::write(root.join("home/note.txt"), "x").unwrap();
     symlink(root.join("home/project"), root.join("home/link")).unwrap();
     let env = ToolEnv {
+        drives: Default::default(),
         home: Some(root.join("home").into_os_string()),
         xdg_config_home: None,
         xdg_data_home: None,
@@ -66,6 +67,7 @@ fn broad_folders_keep_their_verdict() {
 fn no_home_refuses_everything_like_the_tools() {
     let f = fixture();
     let env = ToolEnv {
+        drives: Default::default(),
         home: None,
         ..f.env.clone()
     };
@@ -79,6 +81,7 @@ fn no_home_refuses_everything_like_the_tools() {
 fn root_is_root_even_without_home_and_a_relative_path_is_not_found() {
     let f = fixture();
     let env = ToolEnv {
+        drives: Default::default(),
         home: None,
         ..f.env.clone()
     };

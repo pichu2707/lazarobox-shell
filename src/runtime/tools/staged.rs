@@ -168,6 +168,7 @@ mod tests {
         fs::write(root.join("src/old.rs"), "fn old() {}\n").unwrap();
         fs::write(root.join("notes.txt"), "plain notes\n").unwrap();
         let env = ToolEnv {
+            drives: Default::default(),
             home: Some(home.into_os_string()),
             xdg_config_home: None,
             xdg_data_home: None,

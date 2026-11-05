@@ -244,7 +244,9 @@ pub(super) fn root_of(
     if roots.home().starts_with(&root) {
         return Err(BROAD);
     }
-    if !roots.judge_real(&root) {
+    // A Windows drive folder is readable under WSL, but commands and git
+    // there wait for the user's grant (openspec `wsl-drive-access`, PR 3).
+    if roots.on_drive(&root) || !roots.judge_real(&root) {
         return Err(REFUSED);
     }
     Ok((roots, root))

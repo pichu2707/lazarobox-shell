@@ -24,6 +24,7 @@ pub mod servers;
 pub mod settle;
 pub mod stage;
 pub mod summary;
+pub mod windows;
 pub mod wiring;
 
 use std::borrow::Cow;

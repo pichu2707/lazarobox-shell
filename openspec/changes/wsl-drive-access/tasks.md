@@ -28,15 +28,15 @@ Each PR gets an independent verifier and is released on its own (patch through `
 
 ## PR 1: Reads on Windows drives
 
-- [ ] 1.1 RED: `/proc/mounts` parser: `drvfs` and `9p aname=drvfs` at `/mnt/c` kept; `/mnt/wsl` tmpfs, `/mnt/cd` and `/mnt/c/x` dropped; unreadable input gives no drives.
-- [ ] 1.2 RED: `%USERPROFILE%` parser: `C:\Users\javier.lazaro` → `/mnt/c/Users/javier.lazaro`; `\\server\x`, `C:\Users\a\b`, `C:\Users\..`, `%USERPROFILE%` (unexpanded) and empty refused.
-- [ ] 1.3 RED: drive branch of `judge_real`: a project under the own profile and under `/mnt/d/work` allowed; `Windows`, `Program Files`, `ProgramData`, `$Recycle.Bin`, `pagefile.sys`, `AppData`, `NTUSER.DAT`, `.ssh` under the profile, another user's profile refused, each also in other letter case (`/mnt/c/WINDOWS`); `Public` allowed; no own profile known → only `Public`; not WSL → every drive path refused as today.
-- [ ] 1.4 RED: `list_dir` on a drive folder omits denied entries; `grep`/`glob` do not descend into them.
-- [ ] 1.5 RED: chat-folder judge: a drive project folder is acceptable; drive root, `/mnt/c/Users` and the profile root are broad (explicit only, picker again on resume); a deny folder gives `not allowed`.
-- [ ] 1.6 GREEN: `windows.rs` parsers, `WinDrives` in `SecretRoots`, startup read of `/proc/mounts` and the background `cmd.exe` probe (2 s cap).
-- [ ] 1.7 Writes, `run_command` and git in a drive folder still refused (regression test), with the one path text.
-- [ ] 1.8 Docs: `tools.md` reach sentence, the #558 outside-folder line, README WSL section, CHANGELOG `[Unreleased]`.
-- [ ] 1.9 Manual: on WSL2, the chat opened in a project under `/mnt/c/Users/<me>/Documents` reads a file and lists the folder; `C:\Windows` is refused.
+- [x] 1.1 RED: `/proc/mounts` parser: `drvfs` and `9p aname=drvfs` at `/mnt/c` kept; `/mnt/wsl` tmpfs, `/mnt/cd` and `/mnt/c/x` dropped; unreadable input gives no drives.
+- [x] 1.2 RED: `%USERPROFILE%` parser: `C:\Users\javier.lazaro` → `/mnt/c/Users/javier.lazaro`; `\\server\x`, `C:\Users\a\b`, `C:\Users\..`, `%USERPROFILE%` (unexpanded) and empty refused.
+- [x] 1.3 RED: drive branch of `judge_real`: a project under the own profile and under `/mnt/d/work` allowed; `Windows`, `Program Files`, `ProgramData`, `$Recycle.Bin`, `pagefile.sys`, `AppData`, `NTUSER.DAT`, `.ssh` under the profile, another user's profile refused, each also in other letter case (`/mnt/c/WINDOWS`); `Public` allowed; no own profile known → only `Public`; not WSL → every drive path refused as today.
+- [x] 1.4 RED: `list_dir` on a drive folder omits denied entries; `grep`/`glob` do not descend into them.
+- [x] 1.5 RED: chat-folder judge: a drive project folder is acceptable; drive root, `/mnt/c/Users` and the profile root are broad (explicit only, picker again on resume); a deny folder gives `not allowed`.
+- [x] 1.6 GREEN: `windows.rs` parsers, `WinDrives` in `SecretRoots`, startup read of `/proc/mounts` and the background `cmd.exe` probe (2 s cap).
+- [x] 1.7 Writes, `run_command` and git in a drive folder still refused (regression test), with the one path text.
+- [x] 1.8 Docs: `tools.md` reach sentence, the #558 outside-folder line, README WSL section, CHANGELOG `[Unreleased]`.
+- [ ] 1.9 Manual (real drvfs read path checked on WSL2 by a throwaway probe: own profile found, README read, `.env` and `C:\Windows`/`C:\WINDOWS` refused; the TUI check is pending): on WSL2, the chat opened in a project under `/mnt/c/Users/<me>/Documents` reads a file and lists the folder; `C:\Windows` is refused.
 
 ## PR 2: Grant and writes
 

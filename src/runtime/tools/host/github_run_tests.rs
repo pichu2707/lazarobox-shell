@@ -96,6 +96,7 @@ fn rig_core(
         cli_cwds: std::sync::OnceLock::new(),
         roster: Default::default(),
         gh: super::github::Gh::with_bound(bound),
+        drives: Default::default(),
     });
     // Without `gh` on the login PATH git is still found in the system places.
     let login = if gh_on_path {

@@ -81,6 +81,7 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         cli_cwds: std::sync::OnceLock::new(),
         roster: Default::default(),
         gh: Default::default(),
+        drives: Default::default(),
     });
     World {
         _dir: dir,
@@ -1126,4 +1127,32 @@ async fn a_run_that_cannot_start_is_an_error_that_still_reports_the_sink() {
         out.text
     );
     assert!(w.host.exec.sink(key()).drain().is_empty());
+}
+
+/// A WSL drive `<tmp>/mnt/c` beside HOME, with a project at
+/// `Users/ana/Documents/app`, set as the host's drives.
+pub(super) fn drive_project(w: &World) -> PathBuf {
+    let drive = w.home.parent().unwrap().join("mnt/c");
+    let app = drive.join("Users/ana/Documents/app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Cargo.toml"), "[package]\n").unwrap();
+    w.host.set_drives(WinDrives::new(
+        vec![drive.clone()],
+        Some(drive.join("Users/ana")),
+    ));
+    app
+}
+
+// openspec `wsl-drive-access` task 1.7: a drive folder is readable, but a
+// command there waits for the grant of PR 3, so it gets the one path text.
+#[tokio::test]
+async fn a_command_in_a_drive_folder_is_refused() {
+    let w = world();
+    let app = drive_project(&w);
+    let asks = Asks::new(Decision::Sent);
+    let (d, _rx) = w.turn(&app, asks.clone(), exec_set());
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert!(out.is_error);
+    assert_eq!(out.text, "path not available");
+    assert!(asks.asked().is_empty());
 }
