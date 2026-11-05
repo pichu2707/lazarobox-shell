@@ -555,6 +555,7 @@ async fn a_finished_detection_feeds_the_windows_to_the_live_servers() {
     );
     rx.recv().await.expect("a detection");
     let mut request = crate::core::ai::chat::engine::ChatRequest {
+        drive_grant: None,
         engine: "ollama".into(),
         model: Some("m0:8b".into()),
         system: String::new(),
@@ -603,6 +604,7 @@ async fn a_failed_probe_on_the_next_run_keeps_the_last_known_window() {
     let second = rerun(&live, &Arc::new(ShowCache::default())).await;
     assert_eq!(window_of(&second, "m0:8b"), Some(8_192), "the app keeps it");
     let mut request = crate::core::ai::chat::engine::ChatRequest {
+        drive_grant: None,
         engine: "ollama".into(),
         model: Some("m0:8b".into()),
         system: String::new(),

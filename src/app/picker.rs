@@ -298,7 +298,11 @@ impl App {
             return Vec::new();
         }
         match result {
-            Ok(probed) if probed.verdict == Verdict::Concrete => self.finish_open(id),
+            Ok(probed) if probed.verdict == Verdict::Concrete => {
+                let effects = self.finish_open(id);
+                self.offer_drive_grant(id, &probed);
+                effects
+            }
             result => {
                 if matches!(&result, Ok(p) if p.verdict == Verdict::Outside) {
                     self.outside_open.insert(id);
@@ -321,7 +325,7 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
-        let Some(path) = chat
+        let Some(probed) = chat
             .folder_picker_mut()
             .and_then(|p| p.on_probed(picker, result))
         else {
@@ -334,12 +338,13 @@ impl App {
         }
         chat.close_folder_picker();
         self.outside_open.remove(&id);
-        let mut effects = if chat.origin_cwd() == Some(&path) {
+        let mut effects = if chat.origin_cwd() == Some(&probed.path) {
             Vec::new()
         } else {
-            self.apply_folder(id, path)
+            self.apply_folder(id, probed.path.clone())
         };
         effects.extend(self.finish_open(id));
+        self.offer_drive_grant(id, &probed);
         effects
     }
 

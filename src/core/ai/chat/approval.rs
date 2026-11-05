@@ -7,7 +7,7 @@
 //! maps keys to a [`Reply`].
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -179,6 +179,11 @@ pub enum ApprovalAsk {
     /// the host never build it. `folder` is the folder `repo` was read from:
     /// the grant is refused once the chat is not in it any more.
     GithubGrant { repo: String, folder: PathBuf },
+    /// Let the chat write in `folder`, the resolved Windows drive folder it is
+    /// in (openspec `wsl-drive-access` D8): opened by the app after the user
+    /// chose the folder, never by a tool call. Only the user's unmodified `y`
+    /// answers it; no mode, timer or model output does.
+    DriveGrant { folder: PathBuf },
     /// Stage `paths` in the index (one clean line, as the user will read it).
     /// `files` is how many files a dry run says would be staged; the host
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
@@ -979,6 +984,42 @@ pub const GITHUB_GRANTED_LINE: &str =
 pub const GITHUB_DECLINED_LINE: &str = "GitHub tools stay off";
 /// Why a model's call cannot open the `/github` dialog.
 pub const GITHUB_GRANT_DENIED: &str = "only the user can grant the GitHub tools";
+
+/// The keys of the drive grant prompt. ASCII: it must read on a Linux console.
+pub const DRIVE_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the drive grant prompt adds under the folder. ASCII.
+pub const DRIVE_GRANT_NOTE: &str =
+    "the model may write files in this folder until you quit\ncommands and git stay off here";
+/// Why a model's call cannot open the drive grant prompt.
+pub const DRIVE_GRANT_DENIED: &str = "only the user can let the chat write on a Windows drive";
+
+/// The prompt that asks whether the chat may write in the Windows drive
+/// folder `folder` (openspec `wsl-drive-access` D8).
+pub fn drive_grant_prompt(folder: &Path, armed: bool) -> ApprovalPrompt {
+    let shown = clean(&folder.to_string_lossy());
+    ApprovalPrompt {
+        target: format!("Allow writes in {shown}? (y/n)"),
+        command: shown,
+        keys: DRIVE_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(DRIVE_GRANT_NOTE.to_owned()),
+    }
+}
+
+/// The system line of a granted drive folder.
+pub fn drive_granted_line(folder: &Path) -> String {
+    format!(
+        "writes allowed in {} until you quit",
+        clean(&folder.to_string_lossy())
+    )
+}
+
+/// The system line of a declined drive grant: how to be asked again.
+pub fn drive_declined_line(folder: &Path) -> String {
+    let shown = clean(&folder.to_string_lossy());
+    format!("the chat stays read-only in {shown}; /cd {shown} asks again")
+}
 
 /// The prompt of the `/github` dialog for the sanitized `repo`.
 pub fn grant_prompt(repo: &str, armed: bool) -> ApprovalPrompt {

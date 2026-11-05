@@ -152,7 +152,7 @@ pub(super) async fn seal(
             Some((worker.ask_label(), worker.key(), receipt))
         }
     };
-    let env = host.env(&scope.origin);
+    let env = host.scope_env(scope);
     tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await
         .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))
@@ -213,7 +213,7 @@ pub(super) async fn run_within(
     call: Call,
     within: Within,
 ) -> (Outcome, ToolStatus, String) {
-    let env = host.env(&scope.origin);
+    let env = host.scope_env(scope);
     if let (true, Some(key)) = (call.is_write(), scope.stage_key) {
         let stages = host.stages.clone();
         let worker = scope.read_scope.clone();
@@ -260,7 +260,7 @@ const CONTINUE: &str = "Continue with any step the user asked for that is not fi
 /// about it prompts for. Only a fact for the ask: a read the mode lets go is
 /// kept in the root by the read itself ([`Within::Root`]).
 pub(super) async fn reach(host: &ToolHost, scope: &TurnScope, input: &str) -> Reach {
-    let env = host.env(&scope.origin);
+    let env = host.scope_env(scope);
     let input = input.to_owned();
     tokio::task::spawn_blocking(move || {
         let Ok(roots) = load_roots(&env) else {
@@ -284,7 +284,7 @@ pub(super) async fn reach(host: &ToolHost, scope: &TurnScope, input: &str) -> Re
 /// a concrete root, [`Reach::Broad`] for HOME or a folder above it. Read on
 /// the blocking pool; a failure is [`Reach::Other`].
 pub(super) async fn search_reach(host: &ToolHost, scope: &TurnScope) -> Reach {
-    let env = host.env(&scope.origin);
+    let env = host.scope_env(scope);
     tokio::task::spawn_blocking(move || {
         let Ok(roots) = load_roots(&env) else {
             return Reach::Other;
@@ -402,20 +402,40 @@ fn refused_in(env: &ToolEnv) -> String {
 }
 
 /// The refusal of every write when the chat's folder is itself too broad
-/// (HOME, a folder above it, `/`). The reason is about the folder, not a path,
-/// so it leaks nothing about which paths are excluded, and it tells the model
-/// to stop retrying and ask for a project folder.
+/// (HOME, a folder above it, `/` or, under WSL, a broad Windows drive folder).
+/// The reason is about the folder, not a path, so it leaks nothing about
+/// which paths are excluded, and it tells the model to stop retrying and ask
+/// for a project folder.
 fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
-    let root = env
-        .origin
-        .is_absolute()
-        .then(|| env.origin.canonicalize().ok())??;
-    roots.home().starts_with(&root).then(|| {
+    let root = real_origin(env)?;
+    (roots.home().starts_with(&root) || roots.drives().is_broad(&root)).then(|| {
         format!(
             "{REFUSED}: the chat's folder is {}, where files cannot be written; ask the user to run /cd <project folder>",
             chat_folder(env)
         )
     })
+}
+
+/// The refusal of every write when the chat's folder is on a Windows drive
+/// and the user has not granted it (openspec `wsl-drive-access` D10). Like
+/// [`broad_folder`] it depends on the folder only, so it tells nothing about
+/// any path, and it tells the model what the user can do.
+fn ungranted_drive(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
+    let root = real_origin(env)?;
+    let granted = env.drive_grant.as_deref() == Some(root.as_path());
+    (roots.on_drive(&root) && !granted).then(|| {
+        let folder = chat_folder(env);
+        format!(
+            "{REFUSED}: the chat's folder {folder} is on a Windows drive, where writes need your permission; ask the user to run /cd {folder}"
+        )
+    })
+}
+
+/// The chat's folder resolved, when it is absolute and resolves.
+fn real_origin(env: &ToolEnv) -> Option<PathBuf> {
+    env.origin
+        .is_absolute()
+        .then(|| env.origin.canonicalize().ok())?
 }
 
 /// The refusal of a write whose parent folder does not exist, for a path the
@@ -528,7 +548,7 @@ pub(super) async fn review_reach(host: &ToolHost, scope: &TurnScope, input: &str
     let Some(worker) = scope.read_scope.clone() else {
         return ReviewRead::Refused;
     };
-    let (env, input) = (host.env(&scope.origin), input.to_owned());
+    let (env, input) = (host.scope_env(scope), input.to_owned());
     let (stages, key) = (host.stages.clone(), scope.stage_key);
     let check = tokio::task::spawn_blocking(move || {
         let roots = load_roots(&env).ok()?;
@@ -614,7 +634,7 @@ pub(super) async fn overwrites_template(host: &ToolHost, scope: &TurnScope, call
     if scope.read_scope.is_some() {
         return false;
     }
-    let (env, path) = (host.env(&scope.origin), path.clone());
+    let (env, path) = (host.scope_env(scope), path.clone());
     tokio::task::spawn_blocking(move || {
         let Ok(roots) = load_roots(&env) else {
             return false;
@@ -661,8 +681,8 @@ fn stage_as(
 ) -> Result<(String, Change), String> {
     let refused = || refused_in(env);
     let roots = load_roots(env).map_err(|_| refused())?;
-    if let Some(broad) = broad_folder(env, &roots) {
-        return Err(broad);
+    if let Some(folder) = broad_folder(env, &roots).or_else(|| ungranted_drive(env, &roots)) {
+        return Err(folder);
     }
     let path = match call {
         Call::CreateDir { path } | Call::WriteFile { path, .. } | Call::EditFile { path, .. } => {
@@ -769,7 +789,7 @@ pub(super) async fn answered(
             return denied(NOT_APPROVED);
         }
     }
-    let env = host.env(&scope.origin);
+    let env = host.scope_env(scope);
     let stages = host.stages.clone();
     let done = tokio::task::spawn_blocking(move || {
         let roots = load_roots(&env).map_err(|_| refused_in(&env))?;

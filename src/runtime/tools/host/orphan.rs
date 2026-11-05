@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, TryLockError},
 };
 
@@ -63,12 +63,21 @@ impl ToolHost {
     /// boundary, so it refuses what the user could not have approved: a batch
     /// of a pane whose turn is live, or one that is not reviewable. A drifted
     /// or refused batch stays for the user to discard, and the model is told
-    /// only when the batch is closed.
-    pub fn apply_batch(&self, id: BatchId, turn_live: bool) -> BatchEvent {
+    /// only when the batch is closed. `drive_grant` is the Windows drive
+    /// folder the chat may write in now (openspec `wsl-drive-access`): an
+    /// entry on a drive outside it is refused again here.
+    pub fn apply_batch(
+        &self,
+        id: BatchId,
+        turn_live: bool,
+        drive_grant: Option<PathBuf>,
+    ) -> BatchEvent {
         if turn_live {
             return refused(LIVE);
         }
-        let Ok(roots) = load_roots(&self.env(Path::new("/"))) else {
+        let mut env = self.env(Path::new("/"));
+        env.drive_grant = drive_grant;
+        let Ok(roots) = load_roots(&env) else {
             return gone();
         };
         let mut stages = lock(&self.stages);

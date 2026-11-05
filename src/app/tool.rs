@@ -12,8 +12,9 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, GITHUB_GRANT_DENIED, Origin, QUEUE_FULL, Route,
-        answers_itself, blocked_read_reason, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, DRIVE_GRANT_DENIED, GITHUB_GRANT_DENIED, Origin,
+        QUEUE_FULL, Route, answers_itself, blocked_read_reason, counts_toward_pause, reason_line,
+        route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -147,6 +148,10 @@ impl App {
         if matches!(ask, ApprovalAsk::GithubGrant { .. }) {
             return Self::deny_for(id, worker, turn, call, GITHUB_GRANT_DENIED);
         }
+        // Only the user's choice of a Windows drive folder opens its grant.
+        if matches!(ask, ApprovalAsk::DriveGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, DRIVE_GRANT_DENIED);
+        }
         if !self.ai.tools_enabled() {
             return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
         }
@@ -196,6 +201,7 @@ impl App {
             | ApprovalAsk::Panes { .. }
             | ApprovalAsk::GithubRead { .. }
             | ApprovalAsk::GithubGrant { .. }
+            | ApprovalAsk::DriveGrant { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)
@@ -512,6 +518,9 @@ impl App {
             families
         };
         request.github_read = request.tools != Tools::Off && chat.github_read();
+        request.drive_grant = (request.tools != Tools::Off)
+            .then(|| chat.drive_grant().map(Path::to_path_buf))
+            .flatten();
         chat.set_tool_session(request.tools != Tools::Off);
     }
 

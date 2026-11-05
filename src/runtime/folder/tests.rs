@@ -23,6 +23,7 @@ fn fixture() -> Fixture {
     symlink(root.join("home/project"), root.join("home/link")).unwrap();
     let env = ToolEnv {
         drives: Default::default(),
+        drive_grant: None,
         home: Some(root.join("home").into_os_string()),
         xdg_config_home: None,
         xdg_data_home: None,
@@ -68,6 +69,7 @@ fn no_home_refuses_everything_like_the_tools() {
     let f = fixture();
     let env = ToolEnv {
         drives: Default::default(),
+        drive_grant: None,
         home: None,
         ..f.env.clone()
     };
@@ -82,6 +84,7 @@ fn root_is_root_even_without_home_and_a_relative_path_is_not_found() {
     let f = fixture();
     let env = ToolEnv {
         drives: Default::default(),
+        drive_grant: None,
         home: None,
         ..f.env.clone()
     };
@@ -104,6 +107,7 @@ async fn a_probe_that_hangs_answers_not_found_after_the_bound() {
         Ok(Probed {
             path: PathBuf::from("/late"),
             verdict: Verdict::Concrete,
+            drive: false,
         })
     };
     let started = std::time::Instant::now();
@@ -380,6 +384,7 @@ async fn one_stalled_candidate_does_not_take_the_others_with_it() {
             } else {
                 Verdict::Home
             },
+            drive: false,
         }))
     };
     let started = Instant::now();
@@ -556,6 +561,7 @@ fn slow_candidate(prober: &Prober, id: u64) {
                 Some(Ok(Probed {
                     path: path.to_path_buf(),
                     verdict: Verdict::Concrete,
+                    drive: false,
                 }))
             }
         },

@@ -40,14 +40,16 @@ Each PR gets an independent verifier and is released on its own (patch through `
 
 ## PR 2: Grant and writes
 
-- [ ] 2.1 Probe first (manual, WSL2 scratch folder under `%TEMP%`): `renameat` over an existing file, `st_nlink` of a fresh file, `openat2` no-symlink write open. Any failure stops PR 2 and goes back to the user.
-- [ ] 2.2 RED: grant prompt after picker accept, `/cd` confirm and resume in a non-broad drive folder; only unmodified lowercase `y` grants; `Y`, `n`, Esc and `Alt+y` leave it read-only; never shown for a broad or home folder.
-- [ ] 2.3 RED: grant cleared on folder change; not inherited by a new chat; not stored (resume asks again); `/cd <current>` on an ungranted drive folder reopens the prompt, on a granted one shows `already in`.
-- [ ] 2.4 RED: the model cannot reach the prompt: no tool and no message text opens it (a turn whose text is `/cd …` from the model changes nothing).
-- [ ] 2.5 RED: ungranted drive folder: every write returns the folder-level text, whatever the path; granted: writes in the folder stage and apply, writes outside it give the one path text.
-- [ ] 2.6 RED: `rename_noreplace` seam forced to `EINVAL`: missing target created with the bytes and no temp left; existing target → `Exists`, its bytes unchanged.
-- [ ] 2.7 GREEN: `drive_grant` state, prompt, `resolve_write` drive root, `linkat` fallback.
-- [ ] 2.8 Docs: README (grant), CHANGELOG.
+PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its texts say "writes" where the specs say "writes, commands and git": the prompt is `Allow writes in <folder>? (y/n)` and the ungranted refusal is `path not available: the chat's folder <folder> is on a Windows drive, where writes need your permission; ask the user to run /cd <folder>`. PR 3 widens both to the spec texts.
+
+- [x] 2.1 Probe first (manual, WSL2 scratch folder under `%TEMP%`): `renameat` over an existing file, `st_nlink` of a fresh file, `openat2` no-symlink write open. Any failure stops PR 2 and goes back to the user. (Done on WSL2 drvfs: `openat2` beneath `/mnt/c` and of the target ok, symlink → `ELOOP`; `O_EXCL|O_NOFOLLOW` temp, `fsync`, `mkdirat`/`unlinkat` ok; fresh file `nlink` 1; `renameat2(RENAME_NOREPLACE)` → `EINVAL`; `linkat` new name ok (nlink 2, then 1 after unlinking the temp), over an existing name → `EEXIST` with the bytes kept; plain `renameat` over a file ok, no temp left; `O_EXCL` of a case variant → `EEXIST`; `fchmod` succeeds but the mode stays 0777, which nothing in the write path checks.)
+- [x] 2.2 RED: grant prompt after picker accept, `/cd` confirm and resume in a non-broad drive folder; only unmodified lowercase `y` grants; `Y`, `n`, Esc and `Alt+y` leave it read-only; never shown for a broad or home folder.
+- [x] 2.3 RED: grant cleared on folder change; not inherited by a new chat; not stored (resume asks again); `/cd <current>` on an ungranted drive folder reopens the prompt, on a granted one shows `already in`.
+- [x] 2.4 RED: the model cannot reach the prompt: no tool and no message text opens it (a turn whose text is `/cd …` from the model changes nothing).
+- [x] 2.5 RED: ungranted drive folder: every write returns the folder-level text, whatever the path; granted: writes in the folder stage and apply, writes outside it give the one path text.
+- [x] 2.6 RED: `rename_noreplace` seam forced to `EINVAL`: missing target created with the bytes and no temp left; existing target → `Exists`, its bytes unchanged.
+- [x] 2.7 GREEN: `drive_grant` state, prompt, `resolve_write` drive root, `linkat` fallback; the chat's grant reaches the turn's `TurnScope` through `ChatRequest.drive_grant` (`a_turn_carries_the_grant_of_its_chat`).
+- [x] 2.8 Docs: README (grant), CHANGELOG.
 - [ ] 2.9 Manual: create, edit and roll back a file in a granted drive folder on WSL2.
 
 ## PR 3: Commands and git

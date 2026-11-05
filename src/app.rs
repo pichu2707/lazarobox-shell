@@ -510,10 +510,12 @@ pub enum Effect {
     /// Review the batch a turn of chat `.0` left behind; the runtime answers
     /// with `AppEvent::Batch(.., Review(..))` when there is one.
     BatchReview(PaneId),
-    /// Apply the orphan `id` of chat `pane` after the user's `y`.
+    /// Apply the orphan `id` of chat `pane` after the user's `y`, with the
+    /// Windows drive folder the chat may write in at that moment.
     BatchApply {
         pane: PaneId,
         id: BatchId,
+        drive_grant: Option<std::path::PathBuf>,
     },
     /// Discard the orphan `id` of chat `pane`.
     BatchDiscard {
@@ -1973,6 +1975,7 @@ impl App {
                     result: Ok(Probed {
                         path,
                         verdict: crate::core::ai::chat::folder::Verdict::Concrete,
+                        drive: false,
                     }),
                 })),
                 effect => settled.push(effect),
@@ -8973,6 +8976,9 @@ mod app_tests {
 
     /// The chat folder: busy refusals and the change (chat-folder).
     mod chat_folder;
+
+    /// The grant prompt of a Windows drive folder (openspec `wsl-drive-access`).
+    mod drive_grant;
 
     /// The folder picker: open flow, keys, accept and drop (chat-folder B2).
     mod chat_picker;

@@ -273,8 +273,10 @@ impl ChatState {
         self.compaction.reset();
         self.end_side_run(true);
         self.store = super::store::PaneStore::open(conversation);
-        // A resumed conversation opens with no grant.
+        // A resumed conversation opens with no grant, the drive grant too:
+        // it is asked again (openspec `wsl-drive-access` Q2).
         self.github_granted = false;
+        self.drive_grant = None;
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;
         self.generation += 1;

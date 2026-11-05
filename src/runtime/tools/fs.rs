@@ -93,6 +93,10 @@ pub struct ToolEnv {
     /// ones the runtime knows at each call (the own profile arrives later);
     /// a test sets its own.
     pub drives: Option<WinDrives>,
+    /// The Windows drive folder the user let the chat write in (openspec
+    /// `wsl-drive-access` D7), the chat's resolved folder. `None` for every
+    /// call but a chat's file tools after the user's `y`.
+    pub drive_grant: Option<PathBuf>,
 }
 
 /// Why a call failed. The text is short and never holds file content or a
@@ -352,7 +356,9 @@ pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
     SecretRoots::load(Path::new(home), &extra)
         .map(|roots| {
             let drives = env.drives.clone();
-            roots.with_drives(drives.unwrap_or_else(crate::runtime::win_drives::drives))
+            roots
+                .with_drives(drives.unwrap_or_else(crate::runtime::win_drives::drives))
+                .with_grant(env.drive_grant.clone())
         })
         .ok_or(Failure::Refused)
 }
@@ -1019,6 +1025,7 @@ mod tests {
     pub(super) fn env(home: &Path) -> ToolEnv {
         ToolEnv {
             drives: Default::default(),
+            drive_grant: None,
             home: Some(home.into()),
             xdg_config_home: None,
             xdg_data_home: None,

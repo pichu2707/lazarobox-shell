@@ -50,6 +50,7 @@ fn env(f: &Fixture, origin: &Path) -> ToolEnv {
             vec![f.drive.clone()],
             Some(f.drive.join("Users/ana")),
         )),
+        drive_grant: None,
     }
 }
 

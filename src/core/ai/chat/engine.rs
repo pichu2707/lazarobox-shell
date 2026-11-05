@@ -63,6 +63,11 @@ pub struct ChatRequest {
     /// model ask for a file read; no adapter does, so the bytes an engine
     /// receives do not depend on it.
     pub github_read: bool,
+    /// The Windows drive folder the user let this chat write in (openspec
+    /// `wsl-drive-access`, D7): set by the app for every turn that offers
+    /// tools, from the chat's grant. Only the runtime reads it, for the
+    /// turn's tool host; no adapter does.
+    pub drive_grant: Option<std::path::PathBuf>,
     /// What only Ollama's chat API reads. Empty unless the runtime stamps it
     /// on an Ollama turn, so no other engine's bytes depend on it.
     pub ollama: OllamaWire,

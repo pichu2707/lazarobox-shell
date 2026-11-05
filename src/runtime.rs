@@ -2041,8 +2041,15 @@ impl Panes {
                         feedback.push(AppEvent::Batch(pane, BatchEvent::Done { shown, told }));
                     }
                 }
-                Effect::BatchApply { pane, id } => {
-                    let done = self.chats.as_ref().and_then(|chats| chats.apply_batch(id));
+                Effect::BatchApply {
+                    pane,
+                    id,
+                    drive_grant,
+                } => {
+                    let done = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.apply_batch(id, drive_grant));
                     feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
                 }
                 Effect::BatchDiscard { pane, id } => {
@@ -3760,6 +3767,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            drive_grant: None,
             cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
@@ -5029,6 +5037,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            drive_grant: None,
             cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),

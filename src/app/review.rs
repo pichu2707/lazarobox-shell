@@ -270,11 +270,17 @@ impl App {
             return Vec::new();
         }
         let orphan = self.reviewed_orphan(id);
+        let drive_grant = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(|chat| chat.drive_grant().map(std::path::Path::to_path_buf));
         let closed = self.close_approval(id, Reply::Approve);
         if let Some(batch) = orphan {
             return vec![Effect::BatchApply {
                 pane: id,
                 id: batch,
+                drive_grant,
             }];
         }
         closed

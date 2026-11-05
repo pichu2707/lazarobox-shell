@@ -56,6 +56,7 @@ pub fn process_env() -> ToolEnv {
         xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
         origin: PathBuf::from("/"),
         drives: None,
+        drive_grant: None,
     }
 }
 
@@ -464,6 +465,7 @@ mod tests {
     fn env(home: Option<&Path>) -> ToolEnv {
         ToolEnv {
             drives: Default::default(),
+            drive_grant: None,
             home: home.map(|h| h.as_os_str().to_owned()),
             xdg_config_home: None,
             xdg_data_home: None,
@@ -667,6 +669,7 @@ mod tests {
         assert!(reason(&none).is_some());
         let relative = ToolEnv {
             drives: Default::default(),
+            drive_grant: None,
             home: Some("relative".into()),
             ..env(None)
         };

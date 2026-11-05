@@ -67,6 +67,7 @@ fn judged(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
     Ok(Probed {
         path: path.into(),
         verdict,
+        drive: false,
     })
 }
 

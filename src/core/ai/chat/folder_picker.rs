@@ -47,6 +47,7 @@ pub fn merge(found: Vec<(Source, Result<Probed, Refusal>)>) -> Vec<Row> {
             Ok(Probed {
                 path,
                 verdict: Verdict::Concrete,
+                ..
             }) => Some(Row { path, source }),
             _ => None,
         })
@@ -302,13 +303,13 @@ impl FolderPicker {
 
     /// The probe of the chosen folder answered. A folder the chat may use
     /// comes back to be applied; a refused one keeps the text and the reason.
-    pub fn on_probed(&mut self, id: u64, result: Result<Probed, Refusal>) -> Option<PathBuf> {
+    pub fn on_probed(&mut self, id: u64, result: Result<Probed, Refusal>) -> Option<Probed> {
         if id != self.id || self.state != State::Accepting {
             return None;
         }
         self.state = State::Ready;
         match typed(result.as_ref().map(|probed| probed.verdict).map_err(|e| *e)) {
-            Ok(_) => result.ok().map(|probed| probed.path),
+            Ok(_) => result.ok(),
             Err(refusal) => {
                 self.error = Some(refusal.text());
                 None

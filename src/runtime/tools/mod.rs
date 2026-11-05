@@ -194,6 +194,7 @@ mod tests {
     fn env(home: &std::path::Path) -> ToolEnv {
         ToolEnv {
             drives: Default::default(),
+            drive_grant: None,
             home: Some(home.into()),
             xdg_config_home: None,
             xdg_data_home: None,

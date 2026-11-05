@@ -287,6 +287,7 @@ fn worker_request(system_chars: usize, prompt_chars: usize, num_ctx: Option<usiz
     use crate::core::ai::chat::engine::{OllamaWire, Tools};
     use crate::core::ai::tools::registry::FamilySet;
     ChatRequest {
+        drive_grant: None,
         cache: Default::default(),
         github_read: false,
         families: FamilySet::EMPTY,

@@ -17,6 +17,7 @@ fn message(role: Role, content: &str) -> ChatMessage {
 
 fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
         cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),

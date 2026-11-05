@@ -141,6 +141,8 @@ const WRITE_LIBC_ALLOWED: &[&str] = &[
     "mkdirat",
     "unlinkat",
     "renameat",
+    // drvfs: the no-replace create when `RENAME_NOREPLACE` is `EINVAL`.
+    "linkat",
     "fsync",
     "syscall",
     "SYS_renameat2",

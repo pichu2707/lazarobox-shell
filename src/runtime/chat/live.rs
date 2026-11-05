@@ -158,6 +158,7 @@ mod tests {
 
     fn request(engine: &str, model: &str) -> ChatRequest {
         ChatRequest {
+            drive_grant: None,
             engine: engine.into(),
             model: Some(model.into()),
             system: String::new(),

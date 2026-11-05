@@ -461,6 +461,10 @@ pub struct ChatState {
     /// The user granted the GitHub tools to this chat with `/github`. Never
     /// stored: it ends with the pane, a resume and the events of the spec.
     github_granted: bool,
+    /// The Windows drive folder the user let this chat write in, from the
+    /// grant prompt's `y` (openspec `wsl-drive-access` D7). Never stored:
+    /// cleared on every folder change and a resume, never inherited.
+    drive_grant: Option<PathBuf>,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -580,6 +584,7 @@ impl ChatState {
             block_why: BlockWhy::Marker,
             github_unmarked: false,
             github_granted: false,
+            drive_grant: None,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
@@ -941,6 +946,16 @@ impl ChatState {
 
     pub fn set_github_granted(&mut self, granted: bool) {
         self.github_granted = granted;
+    }
+
+    /// The Windows drive folder the user let this chat write in.
+    pub fn drive_grant(&self) -> Option<&Path> {
+        self.drive_grant.as_deref()
+    }
+
+    /// Only the grant prompt's `y` sets it (the app's key handler).
+    pub fn set_drive_grant(&mut self, folder: Option<PathBuf>) {
+        self.drive_grant = folder;
     }
 
     /// The tokens the tool block and schemas reserve in the next turn.
@@ -1529,6 +1544,7 @@ impl ChatState {
         SendOutcome::Sent {
             turn: self.turn,
             request: Box::new(ChatRequest {
+                drive_grant: None,
                 cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
