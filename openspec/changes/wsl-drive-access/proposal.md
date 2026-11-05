@@ -24,7 +24,7 @@ Under WSL, a chat whose folder lives on a Windows drive (`/mnt/c/Users/<user>/Do
   - **When it is asked:** when the user picks a drive folder as the chat folder (picker, `/cd`, resume), a dialog asks whether the chat may also write, run commands and use git there.
   - **What it covers:** the chat folder and its subfolders, and nothing else. It is never offered for a Broad folder or a refused one.
   - **Who can grant it:** only a human keypress grants it. The model cannot open the dialog or answer it, and neither can any text the model read.
-  - **Declining:** the chat stays read-only in that folder. A write, command or git call is refused with a text that says how to grant: choose the folder again with `/cd <folder>`. Whether `/cd` to the current folder re-opens the dialog is for the design to settle.
+  - **Declining:** the chat stays read-only in that folder. A write, command or git call is refused with a text that says how to grant: choose the folder again with `/cd <folder>`. `/cd` to the current folder re-opens the dialog (design D9).
 - **Writes on drvfs:** creating a file uses `renameat2(RENAME_NOREPLACE)`, which drvfs rejects (see Evidence). When that call answers `EINVAL`, new files fall back to `linkat` plus `unlink`. That pair keeps the same never-replace guarantee, because `linkat` fails when the target exists.
 - **`run_command` and git:** these run in a granted drive folder inside the Landlock jail as today. The jail's broad-root list gains the drive roots, `Users`, profile roots and the Windows system folders, without letter case.
 - **Texts:** the outside-folder line from #558, the reach sentence in `tools.md`, the README and the CHANGELOG are reworded for drive folders.
@@ -87,5 +87,5 @@ PR 1 alone answers the core of #550: the chat can read a project on `C:`.
 
 ## Decisions on Review (2026-11-04)
 
-- **Q1. Other Windows users' profiles: refused.** Reads reach only two profiles: the profile of the WSL user's Windows account and `Public`. Finding that account takes one call to Windows at startup (`cmd.exe /c echo %USERNAME%`). If the call fails, every profile except `Public` is refused.
+- **Q1. Other Windows users' profiles: refused.** Reads reach only two profiles: the profile of the WSL user's Windows account and `Public`. Finding that account's profile takes one call to Windows at startup. The design refines the call to `cmd.exe /d /c echo %USERPROFILE%` (D2), because the profile folder name can differ from the account name. If the call fails, every profile except `Public` is refused.
 - **Q2. A grant lasts until the app quits.** On resume it is asked again, the same way an explicit `$HOME` is today, so there is no new stored state. Storing the grant with the conversation was rejected, because it adds a stored permission and a way to revoke it.
