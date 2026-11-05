@@ -137,6 +137,10 @@ pub struct TurnScope {
     /// Whose batch the write tools fill, and whose staged changes the read
     /// tools show. `None` for a turn that cannot stage.
     pub stage_key: Option<StageKey>,
+    /// The Windows drive folder the user let this chat write in (openspec
+    /// `wsl-drive-access` D7): set from the chat's grant when the turn starts.
+    /// `None` for a worker, and for a chat without a grant.
+    pub drive_grant: Option<PathBuf>,
     /// The paths (as shown) the user allowed a read or an edit of in this
     /// turn: a later `edit_file` of one does not ask again.
     pub allowed: Mutex<HashSet<String>>,
@@ -173,6 +177,7 @@ impl TurnScope {
             external: Slot::default(),
             families: FamilySet::LEGACY,
             stage_key: None,
+            drive_grant: None,
             allowed: Mutex::default(),
             orchestra: None,
             read_scope: None,
@@ -295,6 +300,16 @@ impl ToolHost {
             xdg_data_home: self.xdg_data_home.clone(),
             origin: origin.to_path_buf(),
             drives: self.drives.get().cloned(),
+            drive_grant: None,
+        }
+    }
+
+    /// What a call of the file tools may see in `scope`: [`env`](Self::env)
+    /// with the Windows drive folder the user let the turn's chat write in.
+    pub(crate) fn scope_env(&self, scope: &TurnScope) -> ToolEnv {
+        ToolEnv {
+            drive_grant: scope.drive_grant.clone(),
+            ..self.env(&scope.origin)
         }
     }
 

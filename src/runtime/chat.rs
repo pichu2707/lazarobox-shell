@@ -961,6 +961,7 @@ impl Chats {
             // What the session lists is what the host accepts (D7).
             families: request.families,
             stage_key: Some(StageKey::Pane(pane)),
+            drive_grant: request.drive_grant.clone(),
             allowed: Default::default(),
             // Only an orchestrator turn reaches a run; the read scope is the
             // workers'.

@@ -214,3 +214,56 @@ fn profile_secrets_are_refused_in_any_case() {
         assert!(!f.roots.judge_real(&f.drive.join(rel)), "{rel}");
     }
 }
+
+// PR 2 (code-write, Root policy, Granted drive folder): the granted folder
+// takes writes below it, with the HOME deny rules; nothing else on a drive
+// does, and the write primitives re-check it.
+#[test]
+fn a_granted_drive_folder_takes_writes_below_it_and_nowhere_else() {
+    let f = fixture();
+    let app = f.drive.join("Users/ana/Documents/app");
+    let roots = f.roots.clone().with_grant(Some(app.clone()));
+    for input in ["main.py", "src/lib.rs", ".env.example"] {
+        let target = resolve_write(&roots, &app, input);
+        assert_eq!(target.map(|t| t.real), Some(app.join(input)), "{input}");
+    }
+    for input in [
+        "../x",
+        ".git/config",
+        "src/node_modules/x",
+        ".env",
+        "/etc/x",
+    ] {
+        assert!(resolve_write(&roots, &app, input).is_none(), "{input}");
+    }
+    // The primitives of an apply judge the same: inside the grant only.
+    assert!(roots.judge_write(&app.join("main.py")));
+    assert!(!roots.judge_write(&f.drive.join("Users/ana/Documents/x")));
+    assert!(!f.roots.judge_write(&app.join("main.py")));
+    // A grant of another folder, or of a broad one, opens nothing here.
+    for grant in [f.drive.join("Users/ana/Documents"), f.drive.clone()] {
+        let other = f.roots.clone().with_grant(Some(grant.clone()));
+        assert!(
+            resolve_write(&other, &app, "main.py").is_none(),
+            "{grant:?}"
+        );
+    }
+    let broad = f.roots.clone().with_grant(Some(f.drive.clone()));
+    assert!(resolve_write(&broad, &f.drive, "x.txt").is_none());
+    assert!(!broad.judge_write(&f.drive.join("x.txt")));
+}
+
+// The previous behaviour of `resolve_write` holds under HOME whatever the
+// grant: a project there takes writes, its `.git` does not.
+#[test]
+fn a_grant_changes_nothing_under_home() {
+    let f = fixture();
+    let dev = f.home.join("dev");
+    let app = f.drive.join("Users/ana/Documents/app");
+    for roots in [f.roots.clone(), f.roots.clone().with_grant(Some(app))] {
+        let target = resolve_write(&roots, &dev, "main.rs").map(|t| t.real);
+        assert_eq!(target, Some(dev.join("main.rs")));
+        assert!(resolve_write(&roots, &dev, ".git/config").is_none());
+        assert!(roots.judge_write(&dev.join("main.rs")));
+    }
+}

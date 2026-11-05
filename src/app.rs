@@ -1973,6 +1973,7 @@ impl App {
                     result: Ok(Probed {
                         path,
                         verdict: crate::core::ai::chat::folder::Verdict::Concrete,
+                        drive: false,
                     }),
                 })),
                 effect => settled.push(effect),
@@ -8973,6 +8974,9 @@ mod app_tests {
 
     /// The chat folder: busy refusals and the change (chat-folder).
     mod chat_folder;
+
+    /// The grant prompt of a Windows drive folder (openspec `wsl-drive-access`).
+    mod drive_grant;
 
     /// The folder picker: open flow, keys, accept and drop (chat-folder B2).
     mod chat_picker;

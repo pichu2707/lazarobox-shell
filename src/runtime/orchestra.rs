@@ -1494,6 +1494,7 @@ impl RunManager {
             prompt = format!("{prompt}\n\n{wrapped}");
         }
         let mut request = ChatRequest {
+            drive_grant: None,
             cache: Default::default(),
             engine: spec.engine.clone(),
             model: spec.model.clone(),
@@ -1595,6 +1596,9 @@ impl RunManager {
             // badge and its orphan are the pane's, as for a chat's batch.
             // A review worker reads that batch too, and stages nothing (S7b).
             stage_key: (families.contains(Family::Write) || views).then_some(StageKey::Pane(pane)),
+            // A worker never writes on a Windows drive: the grant is the
+            // chat's, for its own turns (openspec `wsl-drive-access`).
+            drive_grant: None,
             allowed: Default::default(),
             orchestra: None,
             read_scope: Some(WorkerScope {

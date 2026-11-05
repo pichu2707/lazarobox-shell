@@ -156,6 +156,7 @@ fn concrete(path: &str) -> Result<Probed, Refusal> {
     Ok(Probed {
         path: path.into(),
         verdict: Verdict::Concrete,
+        drive: false,
     })
 }
 
@@ -272,6 +273,7 @@ fn a_typed_outside_folder_is_not_allowed() {
         Ok(Probed {
             path: "/usr".into(),
             verdict: Verdict::Outside,
+            drive: false,
         }),
     );
     assert!(lines(&a).contains(&"/cd refused: not allowed".to_owned()));
@@ -344,6 +346,7 @@ fn a_broad_folder_typed_by_the_user_is_confirmed_with_a_note() {
         Ok(Probed {
             path: "/h".into(),
             verdict: Verdict::Home,
+            drive: false,
         }),
     );
     let Some(ApprovalAsk::Folder { note, .. }) = pending_ask(&a) else {
@@ -632,6 +635,7 @@ fn probed_as(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
     Ok(Probed {
         path: path.into(),
         verdict,
+        drive: false,
     })
 }
 

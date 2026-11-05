@@ -3760,6 +3760,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            drive_grant: None,
             cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
@@ -5029,6 +5030,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            drive_grant: None,
             cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),

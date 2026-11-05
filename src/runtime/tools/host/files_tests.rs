@@ -1671,39 +1671,145 @@ async fn a_path_that_steps_back_to_an_env_template_is_refused() {
     assert_eq!(w.staged(), 0);
 }
 
-// openspec `wsl-drive-access` task 1.7: a drive folder is readable, but a
-// write there waits for the grant of PR 2, so it gets the one refusal text.
+/// A WSL drive `<tmp>/mnt/c` beside HOME, set as the host's drives, with a
+/// project at `Users/ana/Documents/app` holding `a`.
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn writes_in_a_drive_folder_are_refused() {
-    let w = world();
+fn drive_app(w: &World) -> (PathBuf, PathBuf) {
     let drive = w.proj.parent().unwrap().parent().unwrap().join("mnt/c");
     let app = drive.join("Users/ana/Documents/app");
     std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("a"), "a").unwrap();
     w.host.set_drives(WinDrives::new(
         vec![drive.clone()],
         Some(drive.join("Users/ana")),
     ));
-    let (tx, _rx) = mpsc::channel(32);
-    let mut scope = TurnScope::new(tx, Locality::Local, app.clone());
-    scope.approver = Script::new(Decision::Sent);
+    (drive, app)
+}
+
+/// A turn of the pane in `origin`, with the write family on, `grant` as
+/// the chat's drive grant and every ask answered `answer`.
+#[cfg(target_os = "linux")]
+fn drive_turn(
+    w: &World,
+    origin: &Path,
+    grant: Option<PathBuf>,
+    answer: Decision,
+) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+    let (tx, rx) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Local, origin.to_path_buf());
+    scope.approver = Script::new(answer);
     scope.families = on();
     scope.stage_key = Some(key());
-    let d = w.host.dispatch(scope);
-    for call in [write("main.py", "t"), folder("src"), edit("a", "a", "b")] {
+    scope.drive_grant = grant;
+    (w.host.dispatch(scope), rx)
+}
+
+// openspec `wsl-drive-access` PR 2 (code-write, Drive folder without a
+// grant): every write gets the folder-level text, whatever the path, and
+// nothing is staged.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_an_ungranted_drive_folder_get_the_folder_text() {
+    let w = world();
+    let (_, app) = drive_app(&w);
+    let (d, _rx) = drive_turn(&w, &app, None, Decision::Sent);
+    let shown = app.display();
+    let text = format!(
+        "path not available: the chat's folder {shown} is on a Windows drive, where writes need your permission; ask the user to run /cd {shown}"
+    );
+    for call in [
+        write("main.py", "t"),
+        write("../x", "t"),
+        write(".env", "t"),
+        folder("src"),
+        edit("a", "a", "b"),
+    ] {
         let out = d.call(call.clone()).await;
         assert!(out.is_error, "{call:?}");
-        assert_eq!(
-            out.text,
-            format!(
-                "path not available (paths are relative to the chat's folder {})",
-                app.display()
-            ),
-            "{call:?}"
-        );
+        assert_eq!(out.text, text, "{call:?}");
     }
     assert_eq!(w.staged(), 0);
     assert!(!app.join("main.py").exists());
+    // The grant of another folder is no grant of this one.
+    let (other, _rx2) = drive_turn(&w, &app, Some(app.join("sub")), Decision::Sent);
+    assert_eq!(other.call(write("main.py", "t")).await.text, text);
+    assert_eq!(w.staged(), 0);
+}
+
+// PR 2 (code-write, Granted drive folder): a write in the folder stages and
+// applies to the disk; one outside it gets the one path text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_a_granted_drive_folder_stage_and_apply() {
+    let w = world();
+    let (_, app) = drive_app(&w);
+    let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
+    let outside = d.call(write("../x", "t")).await;
+    assert!(outside.is_error);
+    assert_eq!(
+        outside.text,
+        format!(
+            "path not available (paths are relative to the chat's folder {})",
+            app.display()
+        )
+    );
+    assert_eq!(w.staged(), 0);
+    let staged = d.call(write("main.py", "print(1)\n")).await;
+    assert!(!staged.is_error, "{staged:?}");
+    assert!(
+        staged.text.starts_with("staged main.py (batch: 1 of"),
+        "{staged:?}"
+    );
+    assert!(!d.call(edit("a", "a", "b")).await.is_error);
+    assert_eq!(w.staged(), 2);
+    let applied = d.call(Call::ProposeBatch).await;
+    assert!(!applied.is_error, "{applied:?}");
+    assert!(applied.text.starts_with("applied 2 paths:"), "{applied:?}");
+    assert_eq!(
+        std::fs::read_to_string(app.join("main.py")).unwrap(),
+        "print(1)\n"
+    );
+    assert_eq!(std::fs::read_to_string(app.join("a")).unwrap(), "b");
+    assert!(!app.parent().unwrap().join("x").exists());
+}
+
+// PR 2: the apply judges the grant again. A batch staged under the grant and
+// applied without it (an orphan the user applies outside the turn) writes
+// nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_apply_without_the_grant_writes_nothing_on_the_drive() {
+    let w = world();
+    let (_, app) = drive_app(&w);
+    let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
+    assert!(!d.call(write("main.py", "t")).await.is_error);
+    drop((d, _rx));
+    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let done = w.host.apply_batch(id, false);
+    assert!(!app.join("main.py").exists(), "{done:?}");
+    assert_eq!(std::fs::read_to_string(app.join("a")).unwrap(), "a");
+}
+
+// PR 2: a broad drive folder (a drive root, a profile root) is broad like
+// HOME, and no grant changes that.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_a_broad_drive_folder_ask_for_a_project_folder() {
+    let w = world();
+    let (drive, _) = drive_app(&w);
+    for origin in [drive.clone(), drive.join("Users/ana")] {
+        let (d, _rx) = drive_turn(&w, &origin, Some(origin.clone()), Decision::Sent);
+        let out = d.call(write("x.txt", "t")).await;
+        assert!(out.is_error);
+        assert_eq!(
+            out.text,
+            format!(
+                "path not available: the chat's folder is {}, where files cannot be written; ask the user to run /cd <project folder>",
+                origin.display()
+            )
+        );
+    }
+    assert_eq!(w.staged(), 0);
 }
 
 // Verifier B3: a broad drive folder (a drive root, a profile root) is broad

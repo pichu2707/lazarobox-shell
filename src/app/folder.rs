@@ -4,7 +4,7 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        approval::{ApprovalAsk, Origin, Reply},
+        approval::{ApprovalAsk, Origin, Reply, drive_declined_line, drive_granted_line},
         folder::{CdArg, Command, Probed, Purpose, Refusal, Verdict, expand, parse_command, typed},
     },
     sanitize::clean,
@@ -207,7 +207,16 @@ impl App {
                 let line = match (busy, verdict, result) {
                     (Some(reason), ..) => refused(reason),
                     (None, Err(refusal), _) => refused(refusal.text()),
-                    (None, Ok(_), Ok(probed)) if chat.origin_cwd() == Some(&probed.path) => {
+                    (None, Ok(verdict), Ok(probed)) if chat.origin_cwd() == Some(&probed.path) => {
+                        // An ungranted drive folder asks for its grant again
+                        // (openspec `wsl-drive-access` D9).
+                        let ungranted = chat.drive_grant() != Some(probed.path.as_path());
+                        if probed.drive && verdict == Verdict::Concrete && ungranted {
+                            chat.composer_mut().clear();
+                            self.cd_requests.remove(&id);
+                            self.offer_drive_grant(id, &probed);
+                            return Vec::new();
+                        }
                         format!("already in {}", clean(&probed.path.to_string_lossy()))
                     }
                     (None, Ok(verdict), Ok(probed)) => {
@@ -259,7 +268,9 @@ impl App {
             (None, None) => chat.push_system_line(refused("folder changed since it was checked")),
             (None, Some(probed)) => {
                 chat.composer_mut().clear();
-                return self.apply_folder(id, probed.path);
+                let effects = self.apply_folder(id, probed.path.clone());
+                self.offer_drive_grant(id, &probed);
+                return effects;
             }
         }
         Vec::new()
@@ -329,11 +340,17 @@ impl App {
         let unusable = !matches!(&result, Ok(p) if p.verdict == Verdict::Concrete);
         let line = match result {
             Ok(probed) if probed.verdict == Verdict::Concrete => {
+                // The grant of a drive folder is asked again on every resume.
                 if chat.origin_cwd() == Some(&probed.path) {
+                    self.offer_drive_grant(id, &probed);
                     return Vec::new();
                 }
                 match busy {
-                    None => return self.restore_folder(id, probed.path),
+                    None => {
+                        let effects = self.restore_folder(id, probed.path.clone());
+                        self.offer_drive_grant(id, &probed);
+                        return effects;
+                    }
                     Some(reason) => format!("stored folder not used: {reason}"),
                 }
             }
@@ -361,6 +378,88 @@ impl App {
     }
 
     /// Whether the approval waiting in chat `id` is the folder confirmation.
+    /// Whether the approval waiting in chat `id` is the drive grant prompt.
+    pub(super) fn drive_ask_pending(&self, id: PaneId) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::DriveGrant { .. }))
+    }
+
+    /// Opens the grant prompt of chat `id` for `probed`, the folder the user
+    /// just put the chat in (picker, `/cd`, a new chat or a resume): only for
+    /// a non-broad Windows drive folder the chat is in and has not granted,
+    /// and only while the chat is free (openspec `wsl-drive-access` D8).
+    pub(super) fn offer_drive_grant(&mut self, id: PaneId, probed: &Probed) {
+        if !probed.drive || probed.verdict != Verdict::Concrete || self.folder_busy(id).is_some() {
+            return;
+        }
+        let ask = ApprovalAsk::DriveGrant {
+            folder: probed.path.clone(),
+        };
+        let armed = (self.clock)() + ask.arm_delay();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        let here = chat.origin_cwd() == Some(probed.path.as_path());
+        if !here || chat.drive_grant() == Some(probed.path.as_path()) {
+            return;
+        }
+        if chat.approvals_mut().request(ask, Origin::Block).is_ok() {
+            chat.set_armed_at(Some(armed));
+            self.dirty = true;
+        }
+    }
+
+    /// A key while the drive grant prompt waits. Only an unmodified lowercase
+    /// `y` grants, and only once the prompt is armed (it opens from an
+    /// asynchronous answer, so a key typed meanwhile is not an answer); `n`
+    /// and Esc decline; Ctrl+C declines and cancels the stream. Every other
+    /// key, a held one included, is swallowed with a notice. `y` grants only
+    /// the folder the chat is still in, and only what the prompt shows whole.
+    pub(super) fn on_drive_key(&mut self, id: PaneId, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let plain = key.modifiers == KeyModifiers::NONE && !repeat;
+        let grants = plain && key.code == KeyCode::Char('y');
+        let declines = plain && matches!(key.code, KeyCode::Char('n') | KeyCode::Esc);
+        let cancels =
+            !repeat && key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL;
+        if !grants && !declines && !cancels {
+            self.ignored_key(&key, super::run::ANSWER_FIRST);
+            return Vec::new();
+        }
+        if !cancels && !self.approval_armed(id) {
+            self.ignored_key(&key, super::run::JUST_OPENED);
+            return Vec::new();
+        }
+        if grants && !self.prompt_fits(id) {
+            self.notice = Some(super::run::PROMPT_TOO_SMALL.to_owned());
+            return Vec::new();
+        }
+        let reply = if grants {
+            Reply::Approve
+        } else {
+            Reply::Decline
+        };
+        let folder = match self.close_approval(id, reply).as_ref().map(|a| a.ask()) {
+            Some(ApprovalAsk::DriveGrant { folder }) => folder.clone(),
+            _ => return Vec::new(),
+        };
+        self.dirty = true;
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            if grants && chat.origin_cwd() == Some(folder.as_path()) {
+                chat.push_system_line(drive_granted_line(&folder));
+                chat.set_drive_grant(Some(folder));
+            } else {
+                chat.push_system_line(drive_declined_line(&folder));
+            }
+        }
+        if cancels {
+            return self.chat_cancel_key(id);
+        }
+        Vec::new()
+    }
+
     pub(super) fn folder_ask_pending(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)

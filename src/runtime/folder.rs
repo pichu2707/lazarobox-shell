@@ -267,6 +267,7 @@ fn resolve(path: &Path) -> Result<PathBuf, Refusal> {
 fn judged(roots: &SecretRoots, real: PathBuf) -> Result<Probed, Refusal> {
     let verdict = judge(&real, roots)?;
     Ok(Probed {
+        drive: roots.on_drive(&real),
         path: real,
         verdict,
     })

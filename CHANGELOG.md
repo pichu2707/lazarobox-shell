@@ -10,6 +10,22 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Under WSL, the chat can write in a Windows drive folder once the user
+  allows it: right after the folder is chosen in the picker, a `/cd` is
+  confirmed or a conversation resumes there, the chat asks
+  `Allow writes in <folder>? (y/n)`, and only an unmodified lowercase `y`
+  grants. The grant covers that folder and its subfolders, lives in memory
+  until the app quits, ends on a folder change, is not stored (a resume asks
+  again) and is not inherited by a new chat; `/cd` to the current folder asks
+  again. Broad drive folders never ask. Without the grant every write answers
+  `path not available: the chat's folder <folder> is on a Windows drive, where
+  writes need your permission; ask the user to run /cd <folder>`. On drvfs,
+  which has no no-replace rename, a new file is published with `linkat`, which
+  never replaces a file either. `run_command` and git on a drive are still
+  refused. Refs #550.
+
 ## [1.8.0] - 2026-11-05
 
 ### Added

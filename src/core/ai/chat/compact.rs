@@ -260,6 +260,7 @@ impl ChatState {
         Some((
             self.turn,
             ChatRequest {
+                drive_grant: None,
                 cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),

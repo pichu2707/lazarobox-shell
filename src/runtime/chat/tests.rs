@@ -46,6 +46,7 @@ pub(super) fn done() -> StreamEvent {
 
 pub(super) fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
         cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),

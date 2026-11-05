@@ -320,6 +320,9 @@ pub struct SecretRoots {
     roots: Vec<PathBuf>,
     /// The Windows drives under WSL; empty elsewhere.
     drives: WinDrives,
+    /// The Windows drive folder the user let the chat write in (openspec
+    /// `wsl-drive-access` D7). `None` refuses every write on a drive.
+    grant: Option<PathBuf>,
 }
 
 impl SecretRoots {
@@ -357,6 +360,7 @@ impl SecretRoots {
             real,
             roots,
             drives: WinDrives::default(),
+            grant: None,
         })
     }
 
@@ -367,13 +371,21 @@ impl SecretRoots {
         self
     }
 
+    /// These roots with `grant`, the resolved Windows drive folder the user
+    /// let the chat write in: writes on a drive land only below it.
+    pub fn with_grant(mut self, grant: Option<PathBuf>) -> Self {
+        self.grant = grant;
+        self
+    }
+
     /// The Windows drives of this snapshot.
     pub fn drives(&self) -> &WinDrives {
         &self.drives
     }
 
     /// Whether an already resolved path lies on a Windows drive (and not in
-    /// HOME). Writes, commands and git refuse such a path. Pure.
+    /// HOME). Writes there need the user's grant; commands and git refuse
+    /// such a path. Pure.
     pub fn on_drive(&self, real: &Path) -> bool {
         !real.starts_with(&self.real) && self.drives.drive_of(real).is_some()
     }
@@ -411,6 +423,10 @@ impl SecretRoots {
     /// let through, and it is still refused as the real target of a secret
     /// root (`~/.env -> proj/.env.example`). Pure.
     pub fn judge_write(&self, real: &Path) -> bool {
+        // On a Windows drive only the folder the user granted takes writes.
+        if self.on_drive(real) && !self.granted(real) {
+            return false;
+        }
         let template = real
             .file_name()
             .is_some_and(|name| is_env_template(&name.to_string_lossy()));
@@ -418,6 +434,16 @@ impl SecretRoots {
             Some(dir) if template => self.judge_real(dir) && !self.under_root(real),
             _ => self.judge_real(real),
         }
+    }
+
+    /// Whether an already resolved path on a drive is the granted folder or
+    /// lies below it. A broad grant (a drive root, a profile root) grants
+    /// nothing. Compared by its spelling: a folder with case sensitivity on
+    /// may hold another folder of the same name in another case. Pure.
+    fn granted(&self, real: &Path) -> bool {
+        self.grant.as_deref().is_some_and(|grant| {
+            self.on_drive(grant) && !self.drives.is_broad(grant) && real.starts_with(grant)
+        })
     }
 
     /// Whether the real target of a secret root is `dir` or lies below it:
@@ -581,7 +607,7 @@ fn canonical_new(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Folder names a write never enters, at any depth below HOME.
+/// Folder names a write never enters, at any depth below HOME or a drive.
 const WRITE_DENIED_DIRS: &[&str] = &[".git", "node_modules"];
 
 /// File names that run code when the project is built or tested: a change
@@ -658,7 +684,9 @@ fn is_build_file(rel: &Path) -> bool {
 /// The path policy of the write tools. `origin` is the root; `input` is a
 /// path below it. Allowed only when:
 /// - the root is a real folder strictly inside HOME and not secret (HOME, a
-///   parent of HOME, a system folder, a missing or outside root all refuse);
+///   parent of HOME, a system folder, a missing or outside root all refuse),
+///   or, under WSL, the Windows drive folder the user granted (see
+///   [`SecretRoots::with_grant`]), judged by the drive read policy;
 /// - `input` is a plain relative path that the review shows exactly as it is
 ///   written (see [`plain_relative`]), in its canonical text form: no `.`
 ///   part, empty part or trailing slash, and no secret-looking run;
@@ -678,6 +706,10 @@ pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<
     if root == roots.real || !root.is_dir() || !roots.judge_real(&root) {
         return None;
     }
+    // A Windows drive folder is a root only when it is the one granted.
+    if roots.on_drive(&root) && roots.grant.as_deref() != Some(root.as_path()) {
+        return None;
+    }
     let rel = plain_relative(input)?;
     // A secret-looking run would show redacted in the review.
     if rel.to_str() != Some(input) || crate::core::ai::memory::redact::redact(input).hits > 0 {
@@ -688,7 +720,8 @@ pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<
     if real != shown || !roots.judge_write(&real) {
         return None;
     }
-    let below_home = real.strip_prefix(&roots.real).ok()?;
+    // Judged below HOME, or below the drive of a granted drive folder.
+    let below_home = real.strip_prefix(roots.base_of(&real)).ok()?;
     // A dot folder of HOME (`.config`, `.local`) or `dotfiles` holds files
     // that run at login or on start: the review carries the tier-B warning.
     let dotfiles = below_home.components().next().is_some_and(|c| {

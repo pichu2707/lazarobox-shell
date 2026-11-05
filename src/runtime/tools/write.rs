@@ -710,6 +710,49 @@ mod unix {
             assert_eq!(mode, to, "{from:o}");
         }
 
+        /// Makes `renameat2` answer `EINVAL` on this thread, as drvfs does,
+        /// until dropped.
+        #[cfg(target_os = "linux")]
+        struct NoRenameNoreplace;
+
+        #[cfg(target_os = "linux")]
+        impl NoRenameNoreplace {
+            fn on() -> Self {
+                super::super::linux_sys::RENAME_EINVAL.with(|cell| cell.set(true));
+                Self
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        impl Drop for NoRenameNoreplace {
+            fn drop(&mut self) {
+                super::super::linux_sys::RENAME_EINVAL.with(|cell| cell.set(false));
+            }
+        }
+
+        // openspec `wsl-drive-access` D11 (code-write, Creating a file on a
+        // Windows drive): without `RENAME_NOREPLACE` a new file is published
+        // with `linkat`, which never replaces a name either.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn without_a_no_replace_rename_a_create_links_the_file_and_never_replaces() {
+            let f = fx();
+            let _drvfs = NoRenameNoreplace::on();
+            let proj = f.home.join("proj");
+            create_file(&f.roots, &proj.join("new.txt"), b"fresh").unwrap();
+            assert_eq!(std::fs::read(proj.join("new.txt")).unwrap(), b"fresh");
+            let meta = std::fs::metadata(proj.join("new.txt")).unwrap();
+            assert_eq!(meta.nlink(), 1);
+            assert_eq!(names(&proj), ["new.txt", "src"]);
+            std::fs::write(proj.join("old.txt"), "kept").unwrap();
+            assert_eq!(
+                create_file(&f.roots, &proj.join("old.txt"), b"other"),
+                Err(WriteError::Exists)
+            );
+            assert_eq!(std::fs::read(proj.join("old.txt")).unwrap(), b"kept");
+            assert_eq!(names(&proj), ["new.txt", "old.txt", "src"]);
+        }
+
         #[test]
         fn a_leftover_temp_is_not_a_target_and_does_not_break_the_next_create() {
             let f = fx();
@@ -941,8 +984,26 @@ mod linux_sys {
     }
 
     /// Renames `from` to `to` in `fd`, refusing a taken name (even a dangling
-    /// link) with [`WriteError::Exists`].
+    /// link) with [`WriteError::Exists`]. A filesystem without
+    /// `RENAME_NOREPLACE` answers `EINVAL` (drvfs, the Windows drives of
+    /// WSL): the file is then published with [`link_noreplace`], which never
+    /// replaces a name either (openspec `wsl-drive-access` D11). No other
+    /// error falls back.
     pub fn rename_noreplace(fd: RawFd, from: &CString, to: &CString) -> Result<(), WriteError> {
+        match renameat2_noreplace(fd, from, to) {
+            None => Ok(()),
+            Some(libc::EEXIST) => Err(WriteError::Exists),
+            Some(libc::EINVAL) => link_noreplace(fd, from, to),
+            Some(_) => Err(WriteError::Io),
+        }
+    }
+
+    /// `renameat2(RENAME_NOREPLACE)`: `None` when it renamed, else its errno.
+    fn renameat2_noreplace(fd: RawFd, from: &CString, to: &CString) -> Option<i32> {
+        #[cfg(test)]
+        if RENAME_EINVAL.with(std::cell::Cell::get) {
+            return Some(libc::EINVAL);
+        }
         // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
         let done = unsafe {
             libc::syscall(
@@ -954,13 +1015,33 @@ mod linux_sys {
                 libc::RENAME_NOREPLACE,
             )
         };
-        if done == 0 {
-            return Ok(());
+        // Read at once: nothing may run between the call and `errno`. No
+        // errno at all (0) is an I/O error like any other.
+        (done != 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    }
+
+    /// Publishes `from` as `to` in `fd` with `linkat`, which fails with
+    /// `EEXIST` when the name is taken ([`WriteError::Exists`], the target
+    /// untouched), then removes `from`. A removal that fails leaves only the
+    /// temp name, which the temp cleanup removes: the result does not change.
+    fn link_noreplace(fd: RawFd, from: &CString, to: &CString) -> Result<(), WriteError> {
+        // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
+        if unsafe { libc::linkat(fd, from.as_ptr(), fd, to.as_ptr(), 0) } != 0 {
+            return Err(match io::Error::last_os_error().raw_os_error() {
+                Some(libc::EEXIST) => WriteError::Exists,
+                _ => WriteError::Io,
+            });
         }
-        Err(match io::Error::last_os_error().raw_os_error() {
-            Some(libc::EEXIST) => WriteError::Exists,
-            _ => WriteError::Io,
-        })
+        // SAFETY: as above.
+        unsafe { libc::unlinkat(fd, from.as_ptr(), 0) };
+        Ok(())
+    }
+
+    thread_local! {
+        /// A test seam: while set on this thread, `renameat2` answers
+        /// `EINVAL`, as on drvfs.
+        #[cfg(test)]
+        pub static RENAME_EINVAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 }
 

@@ -156,6 +156,7 @@ fn jail_on() -> JailSupport {
 
 fn request() -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
         cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "claude".into(),

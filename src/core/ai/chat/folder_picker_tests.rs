@@ -9,6 +9,7 @@ fn found(source: Source, path: &str, verdict: Verdict) -> (Source, Result<Probed
         Ok(Probed {
             path: PathBuf::from(path),
             verdict,
+            drive: false,
         }),
     )
 }
@@ -110,6 +111,7 @@ fn probed(path: &str, verdict: Verdict) -> Result<Probed, Refusal> {
     Ok(Probed {
         path: PathBuf::from(path),
         verdict,
+        drive: false,
     })
 }
 
@@ -228,7 +230,7 @@ fn an_accepted_folder_comes_back_and_a_late_answer_is_ignored() {
     key(&mut p, KeyCode::Enter);
     assert_eq!(
         p.on_probed(1, probed("/h/a", Verdict::Concrete)),
-        Some(PathBuf::from("/h/a"))
+        probed("/h/a", Verdict::Concrete).ok()
     );
     // Nothing is being probed any more.
     assert_eq!(p.on_probed(1, probed("/h/a", Verdict::Concrete)), None);
@@ -335,7 +337,7 @@ fn answers_for_another_picker_are_dropped() {
     assert_eq!(p.on_probed(2, probed("/h/a", Verdict::Concrete)), None);
     assert_eq!(
         p.on_probed(1, probed("/h/a", Verdict::Concrete)),
-        Some(PathBuf::from("/h/a"))
+        probed("/h/a", Verdict::Concrete).ok()
     );
     let mut q = picker(&[]);
     type_in(&mut q, "~/pro");

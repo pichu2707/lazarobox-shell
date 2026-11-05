@@ -12,7 +12,7 @@ use crate::core::ai::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
             PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
-            SEARCH_KEYS, exec_notice, grant_prompt, run_sent_line,
+            SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -145,6 +145,9 @@ impl App {
         if self.github_ask_pending(id) {
             return self.on_github_key(id, key, repeat);
         }
+        if self.drive_ask_pending(id) {
+            return self.on_drive_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
         }
@@ -212,6 +215,7 @@ impl App {
                 | ApprovalAsk::Commit(_)
                 | ApprovalAsk::Folder { .. }
                 | ApprovalAsk::GithubGrant { .. }
+                | ApprovalAsk::DriveGrant { .. }
         );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
@@ -665,6 +669,7 @@ impl App {
                 })
             }
             ApprovalAsk::GithubGrant { repo, .. } => Some(grant_prompt(repo, armed)),
+            ApprovalAsk::DriveGrant { folder } => Some(drive_grant_prompt(folder, armed)),
             // The paths were made one clean line when asked, and the host
             // refused an add whose paths would not show whole.
             ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {

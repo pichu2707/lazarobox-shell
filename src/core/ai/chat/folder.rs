@@ -17,6 +17,9 @@ pub struct Probed {
     /// The resolved absolute path: the one stored, shown and used.
     pub path: PathBuf,
     pub verdict: Verdict,
+    /// Under WSL, the folder lies on a Windows drive: writes there need the
+    /// user's grant (openspec `wsl-drive-access` D8).
+    pub drive: bool,
 }
 
 /// Why a folder is being probed, so the answer reaches the right flow.
@@ -195,6 +198,8 @@ impl ChatState {
     /// visible line and the once-only notice for the model.
     pub fn set_folder(&mut self, new: PathBuf) -> FolderChange {
         let old = self.origin_cwd.replace(new.clone());
+        // A drive grant is for the folder it was given in only.
+        self.drive_grant = None;
         let show = |path: Option<&Path>| {
             path.map_or_else(|| "unknown".to_owned(), |p| clean(&p.to_string_lossy()))
         };
@@ -238,6 +243,8 @@ impl ChatState {
     /// project of the chat has to be resolved again.
     pub fn restore_folder(&mut self, new: PathBuf) -> FolderChange {
         let old = self.origin_cwd.replace(new.clone());
+        // A drive grant is for the folder it was given in only.
+        self.drive_grant = None;
         let to = clean(&new.to_string_lossy());
         let prompt_now = self.invalidate_prompt();
         self.restore_memory_for_folder();
