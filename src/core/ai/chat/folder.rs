@@ -121,6 +121,9 @@ pub enum Verdict {
     AboveHome,
     /// Outside HOME and not a secret root: the tools refuse it as a root.
     Outside,
+    /// Under WSL, a broad Windows drive folder (a drive root, its `Users`
+    /// folder or a profile root): only an explicit choice.
+    BroadDrive,
 }
 
 /// Why a folder cannot be a chat folder.
@@ -161,6 +164,14 @@ pub fn judge(real: &Path, roots: &SecretRoots) -> Result<Verdict, Refusal> {
             Ok(Verdict::Concrete)
         } else {
             Err(Refusal::NotAllowed)
+        };
+    }
+    // Under WSL, a Windows drive folder follows the drive read policy.
+    if roots.on_drive(real) {
+        return match (roots.judge_real(real), roots.drives().is_broad(real)) {
+            (false, _) => Err(Refusal::NotAllowed),
+            (true, true) => Ok(Verdict::BroadDrive),
+            (true, false) => Ok(Verdict::Concrete),
         };
     }
     if roots.holds_secret(real) {

@@ -57,6 +57,7 @@ pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
 pub mod tools;
 pub mod update;
 pub mod watch;
+pub mod win_drives;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
@@ -501,6 +502,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // delays a send, it just fills the slot later. The `t` test refreshes it.
     let plan = notify::PlanSlot::default();
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
+    // Under WSL, the user's own Windows profile for the drive read policy.
+    win_drives::probe_profile_in_background();
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_roster(roster, env::var_os("HOME").map(PathBuf::from))
         .with_memory(memory)

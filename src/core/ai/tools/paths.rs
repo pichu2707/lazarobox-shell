@@ -10,6 +10,7 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::jail::CREDENTIAL_DIRS;
+use crate::core::ai::tools::windows::{DriveVerdict, WinDrives};
 
 /// The one text returned for an excluded, outside or missing path.
 pub const REFUSED: &str = "path not available";
@@ -317,6 +318,8 @@ pub struct SecretRoots {
     /// HOME with every link followed.
     real: PathBuf,
     roots: Vec<PathBuf>,
+    /// The Windows drives under WSL; empty elsewhere.
+    drives: WinDrives,
 }
 
 impl SecretRoots {
@@ -353,7 +356,36 @@ impl SecretRoots {
             given: normalize(home),
             real,
             roots,
+            drives: WinDrives::default(),
         })
+    }
+
+    /// These roots with the Windows drives of WSL, judged by the drive read
+    /// policy (openspec `wsl-drive-access`).
+    pub fn with_drives(mut self, drives: WinDrives) -> Self {
+        self.drives = drives;
+        self
+    }
+
+    /// The Windows drives of this snapshot.
+    pub fn drives(&self) -> &WinDrives {
+        &self.drives
+    }
+
+    /// Whether an already resolved path lies on a Windows drive (and not in
+    /// HOME). Writes, commands and git refuse such a path. Pure.
+    pub fn on_drive(&self, real: &Path) -> bool {
+        !real.starts_with(&self.real) && self.drives.drive_of(real).is_some()
+    }
+
+    /// The folder a read of `real` is opened beneath: HOME, or the drive it
+    /// lies on. Pure.
+    pub fn base_of(&self, real: &Path) -> &Path {
+        if self.on_drive(real) {
+            self.drives.drive_of(real).unwrap_or(&self.real)
+        } else {
+            &self.real
+        }
     }
 
     /// The resolved HOME.
@@ -366,7 +398,12 @@ impl SecretRoots {
     /// not (under) the real target of a secret root of this snapshot. Pure.
     /// The runtime runs it on the real path of an opened file descriptor.
     pub fn judge_real(&self, real: &Path) -> bool {
-        matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
+        let allowed = if self.on_drive(real) {
+            self.drives.judge(real, judge_rest) == DriveVerdict::Allowed
+        } else {
+            matches!(check_path(&self.real, real), PathVerdict::Allowed(_))
+        };
+        allowed && !self.under_root(real)
     }
 
     /// [`judge_real`](Self::judge_real) for the file a write touches: an env
@@ -444,7 +481,12 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
     let Some(full) = locate(roots, origin, input) else {
         return PathVerdict::Refused;
     };
-    if !home_rest(roots, &normalize(&full)).is_some_and(judge_rest) {
+    let requested = normalize(&full);
+    let requested_ok = match home_rest(roots, &requested) {
+        Some(rest) => judge_rest(rest),
+        None => roots.drives.judge(&requested, judge_rest) == DriveVerdict::Allowed,
+    };
+    if !requested_ok {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
@@ -2219,3 +2261,7 @@ mod rehome_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "paths_drive_tests.rs"]
+mod drive_tests;

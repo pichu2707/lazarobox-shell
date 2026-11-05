@@ -41,6 +41,7 @@ use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
 use super::{Limits, OrchHandle, ToolEnv, WorkerScope, fs::Within, stage::Stages};
+use crate::core::ai::tools::windows::WinDrives;
 use crate::{
     core::ai::{
         chat::{
@@ -233,6 +234,8 @@ pub struct ToolHost {
     roster: Roster,
     /// The login PATH and the fork cache of the GitHub tools.
     gh: github::Gh,
+    /// Windows drives set by a test; otherwise the ones the runtime found.
+    drives: std::sync::OnceLock<WinDrives>,
 }
 
 impl ToolHost {
@@ -263,7 +266,14 @@ impl ToolHost {
             cli_cwds: std::sync::OnceLock::new(),
             roster: Roster::default(),
             gh: github::Gh::default(),
+            drives: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Makes every call of this host see `drives` as the WSL drives.
+    #[cfg(test)]
+    pub(crate) fn set_drives(&self, drives: WinDrives) {
+        let _ = self.drives.set(drives);
     }
 
     /// The login PATH, where `gh` is looked up and what it runs with. Set
@@ -284,6 +294,7 @@ impl ToolHost {
             xdg_config_home: self.xdg_config_home.clone(),
             xdg_data_home: self.xdg_data_home.clone(),
             origin: origin.to_path_buf(),
+            drives: self.drives.get().cloned(),
         }
     }
 

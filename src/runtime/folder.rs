@@ -352,7 +352,10 @@ pub fn complete(roots: &SecretRoots, dir: &Path, prefix: &str) -> Completion {
         return none;
     };
     let verdict = judged(roots, real.clone()).map(|probed| probed.verdict);
-    if !matches!(verdict, Ok(Verdict::Concrete | Verdict::Home)) {
+    if !matches!(
+        verdict,
+        Ok(Verdict::Concrete | Verdict::Home | Verdict::BroadDrive)
+    ) {
         return none;
     }
     let Ok(entries) = std::fs::read_dir(&real) else {

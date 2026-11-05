@@ -1670,3 +1670,38 @@ async fn a_path_that_steps_back_to_an_env_template_is_refused() {
     }
     assert_eq!(w.staged(), 0);
 }
+
+// openspec `wsl-drive-access` task 1.7: a drive folder is readable, but a
+// write there waits for the grant of PR 2, so it gets the one refusal text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn writes_in_a_drive_folder_are_refused() {
+    let w = world();
+    let drive = w.proj.parent().unwrap().parent().unwrap().join("mnt/c");
+    let app = drive.join("Users/ana/Documents/app");
+    std::fs::create_dir_all(&app).unwrap();
+    w.host.set_drives(WinDrives::new(
+        vec![drive.clone()],
+        Some(drive.join("Users/ana")),
+    ));
+    let (tx, _rx) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Local, app.clone());
+    scope.approver = Script::new(Decision::Sent);
+    scope.families = on();
+    scope.stage_key = Some(key());
+    let d = w.host.dispatch(scope);
+    for call in [write("main.py", "t"), folder("src"), edit("a", "a", "b")] {
+        let out = d.call(call.clone()).await;
+        assert!(out.is_error, "{call:?}");
+        assert_eq!(
+            out.text,
+            format!(
+                "path not available (paths are relative to the chat's folder {})",
+                app.display()
+            ),
+            "{call:?}"
+        );
+    }
+    assert_eq!(w.staged(), 0);
+    assert!(!app.join("main.py").exists());
+}

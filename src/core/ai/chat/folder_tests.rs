@@ -372,3 +372,35 @@ fn a_double_slash_escapes_feedback() {
         Command::Escaped("/feedback x".to_owned())
     );
 }
+
+// openspec `wsl-drive-access`: under WSL a drive folder is a chat folder;
+// a drive root, `Users` and a profile root are broad; refused ones are not
+// allowed.
+#[test]
+fn drive_folders_follow_the_drive_read_policy() {
+    use crate::core::ai::tools::windows::WinDrives;
+    let f = fixture();
+    let drive = f.root.join("mnt/c");
+    for sub in ["Users/ana/Documents/app", "Users/bob", "Windows"] {
+        fs::create_dir_all(drive.join(sub)).unwrap();
+    }
+    let roots = f.roots.clone().with_drives(WinDrives::new(
+        vec![drive.clone()],
+        Some(drive.join("Users/ana")),
+    ));
+    let judged = |rel: &str| judge(&drive.join(rel), &roots);
+    assert_eq!(judged("Users/ana/Documents/app"), Ok(Verdict::Concrete));
+    for rel in ["", "Users", "Users/ana"] {
+        assert_eq!(judged(rel), Ok(Verdict::BroadDrive), "{rel:?}");
+        assert!(is_broad(judged(rel).unwrap()), "{rel:?}");
+        assert_eq!(typed(judged(rel)), Ok(Verdict::BroadDrive), "{rel:?}");
+    }
+    for rel in ["Users/bob", "Windows"] {
+        assert_eq!(judged(rel), Err(Refusal::NotAllowed), "{rel:?}");
+    }
+    // Without drives, the same folder is outside HOME as before.
+    assert_eq!(
+        typed(judge(&drive.join("Users/ana/Documents/app"), &f.roots)),
+        Err(Refusal::NotAllowed)
+    );
+}

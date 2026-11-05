@@ -193,6 +193,7 @@ mod tests {
 
     fn env(home: &std::path::Path) -> ToolEnv {
         ToolEnv {
+            drives: Default::default(),
             home: Some(home.into()),
             xdg_config_home: None,
             xdg_data_home: None,
@@ -331,3 +332,6 @@ mod tests {
         assert!(out.contains(fs::FIND_MARKER), "{out}");
     }
 }
+
+#[cfg(test)]
+mod drive_tests;

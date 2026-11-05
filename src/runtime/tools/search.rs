@@ -407,6 +407,7 @@ mod tests {
         }
         fs::write(home.join("outside/leak.txt"), "fn main outside\n").unwrap();
         let env = ToolEnv {
+            drives: Default::default(),
             home: Some(home.clone().into_os_string()),
             xdg_config_home: None,
             xdg_data_home: None,
