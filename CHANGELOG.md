@@ -14,8 +14,9 @@ baseline.
 
 - Under WSL, the chat's read tools reach the Windows drives (`/mnt/c`,
   `/mnt/d`…, drvfs mounts from `/proc/mounts`), so a project on `C:` can be
-  read and chosen as the chat folder. Windows system folders, other users'
-  profiles, and `AppData`, `NTUSER.DAT*` and the usual secret folders and
+  read and chosen as the chat folder. Windows system folders (and what an
+  upgrade leaves: `Windows.old`, `$Windows.~BT`…), DOS 8.3 short names such
+  as `PROGRA~3`, other users' profiles, and `AppData`, `NTUSER.DAT*` and the usual secret folders and
   files of the own profile and `Public` stay refused, compared without letter
   case. The own profile comes from `%USERPROFILE%`, asked once at start; until
   it answers only `Public` is readable. A drive root, `Users` and a profile

@@ -205,3 +205,19 @@ fn short_names_are_refused_on_a_drive() {
         DriveVerdict::Allowed
     );
 }
+
+// Review R1-windows-old-bypass: the folders a Windows upgrade leaves on the
+// drive hold a copy of the old profiles and registry hives.
+#[test]
+fn upgrade_leftovers_are_refused() {
+    let d = drives(Some("/mnt/c/Users/ana"));
+    for path in [
+        "/mnt/c/Windows.old/Users/ana/.ssh/id_rsa",
+        "/mnt/c/WINDOWS.OLD",
+        "/mnt/c/$Windows.~BT/x",
+        "/mnt/c/$WINDOWS.~WS",
+        "/mnt/c/$WinREAgent",
+    ] {
+        assert_eq!(verdict(&d, path), DriveVerdict::Refused, "{path}");
+    }
+}

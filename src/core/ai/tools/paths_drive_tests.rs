@@ -198,3 +198,19 @@ fn a_broad_drive_folder_is_too_broad_for_a_read_scope() {
     );
     assert!(dropped.is_empty());
 }
+
+// Review R1-rest-case-fold / R3: the secret names under a profile are
+// refused in any case by the real HOME rules, not only by a test stub.
+#[test]
+fn profile_secrets_are_refused_in_any_case() {
+    let f = fixture();
+    for rel in [
+        "Users/ana/.SSH",
+        "Users/ana/.Aws/credentials",
+        "Users/ana/.CONFIG/GH/hosts.yml",
+        "Users/Public/.NETRC",
+        "Users/ana/Documents/app/.ENV",
+    ] {
+        assert!(!f.roots.judge_real(&f.drive.join(rel)), "{rel}");
+    }
+}

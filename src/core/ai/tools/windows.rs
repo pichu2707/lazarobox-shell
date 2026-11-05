@@ -34,6 +34,11 @@ const SYSTEM_FOLDERS: &[&str] = &[
     "$recycle.bin",
     "system volume information",
     "recovery",
+    // Left by a Windows upgrade: copies of the old profiles and hives.
+    "windows.old",
+    "$windows.~bt",
+    "$windows.~ws",
+    "$winreagent",
 ];
 
 /// Files directly on a drive that are never read.
