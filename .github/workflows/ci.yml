@@ -26,8 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux (x86_64)
-            os: ubuntu-latest
+          # Both supported Ubuntu LTS releases are pinned instead of
+          # `ubuntu-latest`, so a new image cannot change CI without a PR, and
+          # a break on either release shows up on every PR. 26.04 ships the
+          # uutils coreutils (`/usr/bin/touch` is a symlink into them).
+          - name: Linux (Ubuntu 24.04)
+            os: ubuntu-24.04
+          - name: Linux (Ubuntu 26.04)
+            os: ubuntu-26.04
           - name: macOS (arm64)
             os: macos-15
           # macos-13 (the former Intel image) was retired by GitHub; this is

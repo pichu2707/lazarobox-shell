@@ -272,7 +272,8 @@ mod tests {
     use crate::core::ai::jail::{JailOff, SeatbeltFault};
 
     /// Enforces what the probe's profile grants: only `touch` (RX_0), only under RW_0.
-    /// `$ALLOW_ECHO` makes it leak the exec control.
+    /// The program is compared by its real path too, like the kernel follows
+    /// a symlink. `$ALLOW_ECHO` makes it leak the exec control.
     const ENFORCING: &str = r#"#!/bin/sh
 rw=""; exe=""
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do
@@ -286,7 +287,7 @@ done
 shift
 prog="$1"; shift
 [ -n "$ALLOW_ECHO" ] && [ "$prog" = /bin/echo ] && exec "$prog" "$@"
-[ "$prog" = "$exe" ] || exit 71
+[ "$prog" = "$exe" ] || [ "$(realpath "$prog")" = "$exe" ] || exit 71
 case "$1" in "$rw"/*) exec "$prog" "$@";; esac
 exit 1
 "#;
@@ -319,6 +320,32 @@ exit 1
             }
         }
         panic!("the fake sandbox-exec stayed busy");
+    }
+
+    /// Ubuntu 26.04 ships `/usr/bin/touch` as a symlink into uutils, while
+    /// the probe grants the canonical path (RX_0). The fake must follow the
+    /// symlink like the kernel does, or every probe test reads `Refused`.
+    #[test]
+    fn the_fake_runs_a_program_reached_through_a_symlink() {
+        let tools = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let fake = script(tools.path(), "sandbox-exec", ENFORCING);
+        let link = tools.path().join("touch");
+        std::os::unix::fs::symlink(TOUCH, &link).unwrap();
+        let rx = fs::canonicalize(&link).unwrap();
+        let target = fs::canonicalize(root.path()).unwrap().join("ok");
+        let status = std::process::Command::new(&fake)
+            .arg("-D")
+            .arg(format!("RX_0={}", rx.display()))
+            .arg("-D")
+            .arg(format!("RW_0={}", target.parent().unwrap().display()))
+            .arg("--")
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
+        assert!(target.exists());
     }
 
     fn probe_in(sandbox_exec: &Path, root: &Path) -> Result<(), SeatbeltFault> {
@@ -475,7 +502,9 @@ exit 1
             seen.contains("(allow file-read* file-write* (subpath (param \"RW_0\")))"),
             "{seen}"
         );
-        assert!(seen.contains("RX_0=/usr/bin/touch\n"), "{seen}");
+        // The canonical path: a symlink on Ubuntu 26.04 (uutils).
+        let rx = fs::canonicalize(TOUCH).unwrap();
+        assert!(seen.contains(&format!("RX_0={}\n", rx.display())), "{seen}");
         assert!(seen.contains("/rw\n"), "{seen}");
         // The old constant profile used keys EXE and RW.
         assert!(!seen.contains("EXE="), "{seen}");
