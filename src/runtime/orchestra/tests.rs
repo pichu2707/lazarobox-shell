@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::core::ai::orchestra::steps::WRITE_OFF;
 // The disclosure tests drive the writing lab, which runs on Linux only.
 #[cfg(target_os = "linux")]
 use crate::core::ai::orchestra::changes::Disclosure;
@@ -386,6 +387,7 @@ impl Lab {
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
             limits: RunLimits::default(),
             profile: Profile::Programmer,
+            ceiling: FamilySet::ALL,
             events: self.turn.0.clone(),
             approver: Arc::new(Unwired),
             pending: Pending::new(),
@@ -1564,7 +1566,11 @@ async fn retry_relaunches_the_same_spec_with_the_error_wrapped() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
     assert_eq!(requests.len(), 2);
@@ -1607,7 +1613,11 @@ async fn a_retried_workers_ask_waits_under_the_revived_session() {
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     let request = loop {
         if let Some(second) = lab.seen.requests().into_iter().nth(1) {
             break second;
@@ -1693,13 +1703,18 @@ async fn a_retry_with_no_nonce_is_an_error_and_the_run_stays_halted() {
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NoNonce)
     );
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     assert_eq!(lab.seen.requests().len(), 1);
     // Cancel needs no nonce.
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 // User decision 2026-10-30 (never fail silently): the refused retry tells the
@@ -1714,7 +1729,8 @@ async fn a_retry_with_no_nonce_tells_the_app_why() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     lab.sent();
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NoNonce)
     );
     let declined = match lab.sent().as_slice() {
@@ -1739,7 +1755,11 @@ async fn a_retry_with_no_nonce_tells_the_app_why() {
         )
     );
     // Cancel needs no nonce and says nothing more.
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 // Review S2b W2/S1: an answer carries the run it was given for. One that
@@ -1754,20 +1774,26 @@ async fn an_answer_for_another_run_is_dropped_and_said() {
     lab.sent();
     let other = RunId(run.0 + 1);
     assert_eq!(
-        lab.manager.decide(pane(), other, UserChoice::Cancel),
+        lab.manager
+            .decide(pane(), other, UserChoice::Cancel, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run: other }]);
     // The live run is untouched: still halted, still answerable.
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 #[tokio::test]
 async fn an_answer_for_a_run_that_ended_is_dropped_and_said() {
     let mut lab = lab(Script::Answer("done"));
     assert_eq!(
-        lab.manager.decide(pane(), RunId(4), UserChoice::Retry),
+        lab.manager
+            .decide(pane(), RunId(4), UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run: RunId(4) }]);
@@ -1779,7 +1805,8 @@ async fn an_answer_with_no_failure_waiting_is_said_not_silent() {
     let (run, _handle) = lab.start(codex_review());
     lab.sent();
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run }]);
@@ -1795,18 +1822,18 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     let (tx, _chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let chats = chat::Chats::new(turn_runner, tx).with_orchestra(lab.manager.clone());
     assert!(
-        !chats.decide_run(pane(), RunId(1), UserChoice::Retry),
+        !chats.decide_run(pane(), RunId(1), UserChoice::Retry, FamilySet::ALL),
         "no run yet"
     );
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert!(chats.decide_run(pane(), run, UserChoice::Retry));
+    assert!(chats.decide_run(pane(), run, UserChoice::Retry, FamilySet::ALL));
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     assert_eq!(lab.seen.requests().len(), 2, "relaunched once");
     lab.sent();
     assert!(
-        !chats.decide_run(pane(), run, UserChoice::Cancel),
+        !chats.decide_run(pane(), run, UserChoice::Cancel, FamilySet::ALL),
         "no failure waits"
     );
     assert_eq!(
@@ -1822,7 +1849,7 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     failing.sent();
-    assert!(chats.decide_run(pane(), failed, UserChoice::Cancel));
+    assert!(chats.decide_run(pane(), failed, UserChoice::Cancel, FamilySet::ALL));
     assert_eq!(
         without_handoffs(failing.sent()),
         [OrchestraEvent::Ended { run: failed }]
@@ -1861,7 +1888,9 @@ async fn a_halted_run_stays_until_answered_then_ends_by_itself() {
     lab.manager.turn_ended(pane(), run);
     assert!(!lab.sent().contains(&OrchestraEvent::Ended { run }));
     assert!(lab.manager.scope(pane()).is_some(), "the run waits");
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     loop {
         if lab.next().await == (OrchestraEvent::Ended { run }) {
             break;
@@ -1879,7 +1908,8 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
     let lab = lab(Script::FailOnce("SECRET-ERROR"));
     let (run, handle) = lab.start(codex_review());
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
     handle.call(spawn(Task::Review, "check")).await;
@@ -1890,12 +1920,15 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
         assert_eq!(spawned, error("run paused"));
     }
     assert_eq!(lab.seen.requests().len(), 1, "nothing resumed on its own");
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let spawned = handle.call(spawn(Task::General, "more")).await;
     assert_eq!(spawned, fine("worker 2: running"));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
 }
@@ -1915,7 +1948,9 @@ async fn a_timed_out_worker_error_reaches_a_model_only_wrapped() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     let collected = handle.call(collect(1)).await;
     assert_eq!(collected, error("worker 1 ended timed_out with no text"));
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let prompt = lab.seen.requests()[1].messages[0].content.clone();
     let wrapped = label::wrap(&nonce_of(&prompt), "deadline passed");
@@ -1931,7 +1966,9 @@ async fn choosing_cancel_on_a_failure_ends_the_run() {
     handle.call(spawn(Task::Review, "one")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     lab.sent();
-    lab.manager.decide(pane(), run, UserChoice::Cancel).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL)
+        .unwrap();
     let events = lab.sent();
     // The failure was unresolved: the handoff lazarobox builds is `blocked`.
     assert_eq!(handoffs(&events)[0].verdict, Verdict::Blocked);
@@ -2293,7 +2330,9 @@ async fn a_retry_error_cannot_escape_its_wrapper() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
     assert_eq!(requests[0].messages[0].content, "check the parser");
@@ -2321,7 +2360,9 @@ async fn a_second_retry_carries_only_the_last_error() {
     handle.call(spawn(Task::Review, "check the parser")).await;
     for _ in 0..2 {
         assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-        lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+            .unwrap();
     }
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
@@ -2412,7 +2453,8 @@ async fn ctrl_c_twice_sends_ended_once() {
     assert_eq!(ends(&events), 1);
     assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run }]);
@@ -2461,7 +2503,7 @@ async fn races_keep_exactly_one_ended_as_the_last_event() {
             assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
             let manager = manager.clone();
             tokio::spawn(async move {
-                let _ = manager.decide(pane(), run, UserChoice::Retry);
+                let _ = manager.decide(pane(), run, UserChoice::Retry, FamilySet::ALL);
             })
         } else {
             tokio::spawn(async {})
@@ -5190,7 +5232,11 @@ async fn a_relaunched_worker_begins_a_new_transcript() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let items = traced(&lab.sent(), 1);
     assert_eq!(
@@ -5735,4 +5781,176 @@ async fn two_undelegated_runs_on_one_pane_are_each_reported() {
     }
     assert_eq!(told.len(), 2, "{told:?}");
     assert_ne!(told[0], told[1], "one per run");
+}
+
+/// The menu with Write off and every other family on.
+fn write_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Write)
+}
+
+// Spec (agent-orchestrator, "Code worker refused with Write off"): a `code`
+// spawn with Write off makes no worker and starts no process, the coordinator
+// gets the refusal, the pane is told the same line, and the run goes on.
+#[tokio::test]
+async fn a_code_spawn_with_write_off_is_refused_shown_and_never_launched() {
+    let mut lab = lab(Script::Hang);
+    let scope = OrchScope {
+        ceiling: write_off(),
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let refused = handle.call(spawn(Task::Code, "write it")).await;
+    assert!(refused.is_error, "{refused:?}");
+    // Neither cut nor masked on its way: the whole text, as written.
+    assert_eq!(refused.text, WRITE_OFF);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Code,
+            reason: refused.text,
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(lab.seen.requests().is_empty(), "no process was started");
+    // The run is not paused: the next spawn is a worker like any other.
+    assert_eq!(
+        handle.call(spawn(Task::Review, "look")).await,
+        fine("worker 1: running")
+    );
+}
+
+// Spec ("Turning Write on lets the spawn through", menu variant): a toggle
+// change reaches the NEXT spawn through the next turn's scope, and the worker
+// that already runs keeps the tools it was started with.
+#[tokio::test]
+async fn a_menu_change_applies_from_the_next_spawn_and_not_to_a_running_worker() {
+    let lab = writing_lab(Script::Hang);
+    let scope = |ceiling: FamilySet| OrchScope {
+        origin: lab.app(),
+        ceiling,
+        limits: RunLimits {
+            parallel: 3,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_code(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope(FamilySet::ALL)).unwrap();
+    assert_eq!(
+        handle.call(spawn(Task::Code, "one")).await,
+        fine("worker 1: running")
+    );
+    lab.manager.turn_ended(pane(), run);
+    let (_, handle) = lab.manager.attach(pane(), run, scope(write_off())).unwrap();
+    let refused = handle.call(spawn(Task::Code, "two")).await;
+    assert!(refused.is_error, "{refused:?}");
+    lab.manager.turn_ended(pane(), run);
+    let (_, handle) = lab
+        .manager
+        .attach(pane(), run, scope(FamilySet::ALL))
+        .unwrap();
+    assert_eq!(
+        handle.call(spawn(Task::Code, "three")).await,
+        fine("worker 2: running")
+    );
+    let requests = loop {
+        let seen = lab.seen.requests();
+        if seen.len() == 2 {
+            break seen;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    for request in requests {
+        assert_eq!(request.families, Toolset::Code.families());
+    }
+}
+
+// Spec ("Exec off means no run_command"): a forged `run_command` from a
+// `code` worker is refused as a result, and nothing is asked.
+#[tokio::test]
+async fn a_forged_run_command_from_a_code_worker_is_refused_without_an_ask() {
+    let mut lab = writing_lab(Script::Hang);
+    let waits = Waits::new();
+    let handle = lab.start_writing(&waits, TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write it")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(1, "run_command", json!({"command": "ls"}));
+    let reply = exchange(&mut client, call).await;
+    assert_eq!(reply["result"]["isError"], json!(true), "{reply}");
+    assert!(lab.turn.1.try_recv().is_err(), "no ask reached the turn");
+}
+
+// A correction cannot be spawned by anyone: with Write off its refusal says
+// where the review goes on, not "spawn it again".
+#[tokio::test]
+async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
+    use super::review::Role;
+    let lab = lab(Script::Hang);
+    let scope = OrchScope {
+        ceiling: write_off(),
+        ..lab.scope(codex_code(), &[])
+    };
+    let (run, _handle) = lab.manager.start(pane(), scope).unwrap();
+    let said = lab
+        .manager
+        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .unwrap_err();
+    assert!(
+        said.contains("Write") && said.contains("Ctrl+Space m"),
+        "{said}"
+    );
+    assert!(said.contains("review"), "{said}");
+    assert!(!said.contains("spawn"), "{said}");
+    assert!(said.is_ascii());
+}
+
+// A retry or a relaunch starts a new process under the menu as the user
+// answers it, not as it was at the spawn: Write off before Retry refuses the
+// worker and starts nothing.
+#[tokio::test]
+async fn a_retry_after_write_went_off_starts_no_process() {
+    let lab = lab(Script::FailThenHang("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_code());
+    handle.call(spawn(Task::Code, "write")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let decided = lab
+        .manager
+        .decide(pane(), run, UserChoice::Retry, write_off());
+    assert_eq!(decided, Ok(()));
+    // The refusal halts the run again: the user decides once more.
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(lab.seen.requests().len(), 1, "no second process");
+}
+
+// ... and Write back on before the next answer lets it through, with the
+// write tools: no loop on a stale ceiling.
+#[tokio::test]
+async fn a_retry_after_write_went_back_on_runs_the_worker_with_write() {
+    let lab = lab(Script::FailThenHang("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_code());
+    handle.call(spawn(Task::Code, "write")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let relaunch = UserChoice::Relaunch(codex_code());
+    let off = lab.manager.decide(pane(), run, relaunch, write_off());
+    assert_eq!(off, Ok(()));
+    // The refusal halts the run again: the user decides once more.
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(lab.seen.requests().len(), 1, "no process under Write off");
+    let on = lab
+        .manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL);
+    assert_eq!(on, Ok(()));
+    let second = timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(second) = lab.seen.requests().into_iter().nth(1) {
+                break second;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a second process started");
+    assert_eq!(second.families, Toolset::Code.families());
 }

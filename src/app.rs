@@ -398,6 +398,9 @@ pub enum Effect {
         pane: PaneId,
         run: RunId,
         choice: UserChoice,
+        /// The AI menu as it is at the answer: a retry or a relaunch starts a
+        /// new process under it, whatever the menu said at the spawn.
+        ceiling: crate::core::ai::tools::registry::FamilySet,
     },
     /// Ctrl+C with a worker row selected (S3): cancels that worker of run
     /// `run` and nothing else. A worker that ended meanwhile is a no-op; its

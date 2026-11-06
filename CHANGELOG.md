@@ -10,6 +10,21 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- ORCH workers now follow the Write toggle of the AI menu. Before, the saved
+  toggles were ignored for workers and a `code` worker always got the write
+  tools. Now, while Write is off (the default):
+  - a spawn of a `code` worker is refused with a notice in the chat, and the
+    run goes on; turn Write on in the AI menu (`Ctrl+Space m`) and spawn it
+    again;
+  - a `code` worker that is retried or relaunched follows the toggle at that
+    moment, and if it is refused the run asks again;
+  - a review correction is skipped with a notice;
+  - a worker that is already running keeps the tools it started with.
+
+  Turning ORCH on says this when Write is off.
+
 ## [1.11.0] - 2026-11-06
 
 ### Added

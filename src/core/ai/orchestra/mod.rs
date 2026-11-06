@@ -99,6 +99,16 @@ impl Toolset {
         }
     }
 
+    /// [`Self::families`] under the menu's ceiling: Write and Exec go when
+    /// `menu` lacks them, and nothing else changes, so the result is never
+    /// wider than the role's own set.
+    pub fn capped(self, menu: FamilySet) -> FamilySet {
+        [Family::Write, Family::Exec]
+            .into_iter()
+            .filter(|family| !menu.contains(*family))
+            .fold(self.families(), FamilySet::without)
+    }
+
     /// The toolset of a worker kind: `Code` for a `code` worker, read-only
     /// for every other kind.
     pub fn for_kind(task: Task) -> Self {
@@ -109,6 +119,8 @@ impl Toolset {
     }
 }
 
+#[cfg(test)]
+mod ceiling_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]

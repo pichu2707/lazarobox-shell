@@ -5,6 +5,7 @@ use std::time::Duration;
 use super::Toolset;
 use crate::core::ai::chat::engine::Usage;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::registry::{Family, FamilySet};
 
 /// What a worker is started from. The engine and model are those in effect
 /// at spawn time; both stay empty when the engine was unavailable.
@@ -15,7 +16,18 @@ pub struct WorkerSpec {
     pub engine: String,
     pub model: Option<String>,
     pub toolset: Toolset,
+    /// The families the worker is offered: its toolset under the menu's
+    /// ceiling at spawn time (D17).
+    pub families: FamilySet,
     pub deadline: Duration,
+}
+
+impl WorkerSpec {
+    /// Whether the worker may stage changes: what a worker kind is compared
+    /// by, not its name (D25).
+    pub fn writes(&self) -> bool {
+        self.families.contains(Family::Write)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

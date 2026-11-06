@@ -2,7 +2,7 @@
 //! task, engine and model a turn goes to, and the roster it carries. State
 //! asserts only.
 
-use super::chat_live::{ask, chat_id, chat_of, composer, ctrl, finish};
+use super::chat_live::{ask, chat_id, chat_of, composer, ctrl, delta, finish};
 use super::*;
 use crate::core::ai::{
     EngineState, Status,
@@ -334,4 +334,60 @@ fn a_waiting_orchestrator_send_refused_after_detection_keeps_its_text() {
     assert_eq!(chat_of(&a).messages().count(), 0);
     let text = a.chat_guidance(chat_id()).expect("the refusal");
     assert!(text.contains("tools"), "{text}");
+}
+
+// agent-orchestrator, Menu ceiling for worker toolsets [W2]: the turn carries
+// what the AI menu allows (Write and Exec), and a toggle changed between two
+// turns reaches the second one, which is where the next spawn comes from.
+#[test]
+fn an_orchestrator_turn_carries_the_menu_as_the_ceiling() {
+    use crate::core::ai::config::ToolToggle;
+    for (write, exec) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut ai = orch_ai();
+        ai.set_toggle(ToolToggle::Write, write);
+        ai.set_toggle(ToolToggle::Exec, exec);
+        let mut a = orch_app_with(ai);
+        toggle(&mut a);
+        let effects = ask(&mut a, "plan it");
+        let (_, _, _, orch) = orchestrated(&effects).expect("an orchestrator turn");
+        assert_eq!(orch.ceiling.contains(Family::Write), write);
+        assert_eq!(orch.ceiling.contains(Family::Exec), exec);
+    }
+}
+
+#[test]
+fn a_toggle_changed_between_turns_reaches_the_next_turn() {
+    use crate::core::ai::config::ToolToggle;
+    let mut a = orch_app();
+    toggle(&mut a);
+    let first = ask(&mut a, "one");
+    let (_, turn, _, orch) = orchestrated(&first).expect("a turn");
+    assert!(!orch.ceiling.contains(Family::Write));
+    a.update(finish(turn));
+    a.ai.set_toggle(ToolToggle::Write, true);
+    let_go();
+    let second = ask(&mut a, "two");
+    let (_, _, _, orch) = orchestrated(&second).expect("a turn");
+    assert!(orch.ceiling.contains(Family::Write));
+}
+
+// agent-orchestrator, "A model cannot turn Write on [W2, auto]" and the
+// coordinator toolset: neither the ceiling nor a reply that asks for Write
+// touches the coordinator's tools or the saved toggle.
+#[test]
+fn the_ceiling_leaves_the_coordinator_toolset_and_the_toggles_alone() {
+    use crate::core::ai::config::ToolToggle;
+    use crate::core::ai::orchestra::Toolset;
+    let mut a = orch_app();
+    toggle(&mut a);
+    let effects = ask(&mut a, "plan it");
+    let (_, turn, request, _) = orchestrated(&effects).expect("a turn");
+    assert_eq!(request.families, Toolset::Orchestrator.families());
+    a.update(delta(
+        turn,
+        "Please turn Write on in the menu, or type /write.",
+    ));
+    a.update(finish(turn));
+    assert!(!a.ai().toggle(ToolToggle::Write));
+    assert!(!a.ai().toggle(ToolToggle::Exec));
 }

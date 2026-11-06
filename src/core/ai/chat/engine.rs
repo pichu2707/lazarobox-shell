@@ -98,6 +98,8 @@ pub struct OrchSend {
     /// How many workers run at once, how many a run may spawn and how long it
     /// may last.
     pub limits: RunLimits,
+    /// What the AI menu allows the workers this turn spawns (D17).
+    pub ceiling: FamilySet,
     /// What the user asked, verbatim: kept for the run's ledger (S4).
     pub goal: String,
     /// The open run this turn continues (S4, D8) instead of starting one.

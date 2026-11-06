@@ -932,6 +932,7 @@ impl Chats {
                     goal: orch.goal,
                     deadline: orch.deadline,
                     limits: orch.limits,
+                    ceiling: orch.ceiling,
                     profile: orch.profile,
                     events: events.clone(),
                     approver: approver.clone(),
@@ -1161,10 +1162,16 @@ impl Chats {
     /// (`RunManager::decide`). `false` when it was not applied (the run
     /// ended or was replaced, no failure waits, or no run manager is
     /// attached): nothing changes.
-    pub fn decide_run(&self, pane: PaneId, run: RunId, choice: UserChoice) -> bool {
+    pub fn decide_run(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        choice: UserChoice,
+        ceiling: crate::core::ai::tools::registry::FamilySet,
+    ) -> bool {
         self.orchestra
             .as_ref()
-            .is_some_and(|orchestra| orchestra.decide(pane, run, choice).is_ok())
+            .is_some_and(|orchestra| orchestra.decide(pane, run, choice, ceiling).is_ok())
     }
 
     /// Cancels worker `worker` of run `run` of `pane` (the cancel tool's
