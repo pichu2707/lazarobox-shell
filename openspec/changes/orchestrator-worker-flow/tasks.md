@@ -112,38 +112,43 @@ Files: `src/app/chat.rs`, `src/app/orchestra.rs`, `src/core/ai/chat/guidance.rs`
 
 ---
 
-## Slice W2a: worker prompt, menu ceiling, refusals (split into three PRs)
+## Slice W2a: worker prompt, menu ceiling, refusals (split into two PRs: PR5+6 combined, PR7)
 
 Spec references: agent-orchestrator "Menu ceiling for worker toolsets [W2]" (three scenarios), "A worker that must write is refused when Write is off [W2]" (code half), "Spawn refusals that create no worker [W2, W8]"; agent-tools "Toolsets by session role" scenarios "Ceiling limits a writer", "Ceiling never widens", "A forged call is refused visibly"; prompt-profiles "Worker prompts require tools and forbid fragments as a result [W2]" (two scenarios).
 Design: D17, D18 (code half), D25 (partial), D29, Corrections rows 1 and 2.
 
-Ordering note: PR5 is inert (ceiling defaults to everything on) so that no worker silently loses write tools before the refusal exists. PR6 turns the ceiling on and adds the refusal together.
+Ordering note: PR5 is inert (ceiling defaults to everything on) so that no worker silently loses write tools before the refusal exists. PR6 turns the ceiling on and adds the refusal together. Since 2026-11-06 both ship in one PR; the order inside it is unchanged.
 
-### PR5: ceiling types, inert
+### PR5 + PR6 (one PR, owner decision 2026-11-06): ceiling types, then ceiling wired with the Write-off refusal
+
+PR5 and PR6 ship as ONE PR. The ordering trap still holds inside it: the ceiling is never turned on without `Refusal::WriteOff` and its visible notice.
+
+#### PR5: ceiling types
 
 Files: `src/core/ai/orchestra/mod.rs` (`Toolset` at 77, `families()` at 93, `WorkerSpec`), `src/core/ai/orchestra/worker.rs`, `src/core/ai/orchestra/run.rs` (`Run.ceiling`, `resolve`), `src/runtime/orchestra.rs` (the two `spec.toolset.families()` reads at 1512 and 1583); tests in `orchestra/tests.rs`.
 
-- [ ] 5.1 RED: pure test `Toolset::capped(menu) -> FamilySet`: removes Write and Exec when the menu lacks them, nothing else; property-style check that for every toolset and every menu `capped(menu)` is a subset of `families()` (never widens); `review`, `summarize`, `general`, `chat` stay read-only with Write and Exec on. Spec: "The menu never widens [W2, auto]", "Ceiling limits a writer".
-- [ ] 5.2 GREEN: implement `capped`.
-- [ ] 5.3 RED: `WorkerSpec` carries `families: FamilySet` set in `resolve`; `writes()` is `families.contains(Write)`; D25 comparison: `Run::spawn` uses `writes()` where the code compared `task == Code` (sites around `run.rs:394,656,747`; `run.rs:362` moves after `resolve`). Existing tests unchanged in behaviour.
-- [ ] 5.4 GREEN: add the field and `writes()`; `Run.ceiling` is a `FamilySet` set at `start`, default all on; `launch` and `open_session` read `spec.families`.
-- [ ] 5.5 RED: with the default ceiling every existing worker test still produces the same tool list (regression pin). Spec: "Role toolsets [auto]" unchanged.
-- [ ] 5.6 REFACTOR: remove now-dead direct `toolset.families()` reads in the runtime; keep `READ_ONLY` text change out of this PR unless a test forces it.
+- [x] 5.1 RED: pure test `Toolset::capped(menu) -> FamilySet`: removes Write and Exec when the menu lacks them, nothing else; property-style check that for every toolset and every menu `capped(menu)` is a subset of `families()` (never widens); `review`, `summarize`, `general`, `chat` stay read-only with Write and Exec on. Spec: "The menu never widens [W2, auto]", "Ceiling limits a writer".
+- [x] 5.2 GREEN: implement `capped`.
+- [x] 5.3 RED: `WorkerSpec` carries `families: FamilySet` set in `resolve`; `writes()` is `families.contains(Write)`; D25 comparison: `Run::spawn` uses `writes()` where the code compared `task == Code` (sites around `run.rs:394,656,747`; `run.rs:362` moves after `resolve`). Existing tests unchanged in behaviour.
+- [x] 5.4 GREEN: add the field and `writes()`; `Run.ceiling` is a `FamilySet` set at `start`, default all on; `launch` and `open_session` read `spec.families`.
+- [x] 5.5 RED: with the default ceiling every existing worker test still produces the same tool list (regression pin). Spec: "Role toolsets [auto]" unchanged.
+- [x] 5.6 REFACTOR: remove now-dead direct `toolset.families()` reads in the runtime; keep `READ_ONLY` text change out of this PR unless a test forces it.
 - Done when: `cargo test` green; behaviour identical to main for every user path (diff is types and plumbing).
 - Depends on: none (independent of W1).
 
-### PR6: menu ceiling wired, Write-off refusal
+#### PR6: menu ceiling wired, Write-off refusal
 
 Files: `src/core/ai/chat/engine.rs` (`OrchSend`), `src/app/orchestra.rs` (menu toggles -> ceiling), `src/core/ai/orchestra/run.rs` (`Refusal::WriteOff`, `attach`), `src/runtime/orchestra.rs` (`attach`, forged-call refusal), `src/app/orchestra.rs` (notice); tests in `orchestra/tests.rs`, `app_tests/`, tool tests for forged calls.
 
-- [ ] 6.1 RED: pure test: with `ceiling` lacking Write, `Run::spawn(Code, ...)` returns `Refusal::WriteOff`, creates no worker, starts no process, does not pause the run, does not raise a failure alert, and a following `wait`/`spawn_agent` behaves normally. Spec: "Code worker refused with Write off", "A refusal before a worker does not pause the run [W2, auto]".
-- [ ] 6.2 GREEN: `Refusal::WriteOff` in `run.rs` (code kinds always; the `simple` branch is added in W8b).
-- [ ] 6.3 RED: the refusal text names the `Write` toggle, says the worker was not started, and gives the INTERIM step: turn Write on in the AI menu. It is returned to the coordinator as an error result AND shown in the pane (reuses the PR2 refused-spawn notice path). The `/write` wording replaces the interim step in PR9; record that as a known follow-up.
-- [ ] 6.4 RED (runtime): Write off -> a `code` spawn never reaches `launch`; with Write on the same spawn gets write tools; a toggle change applies from the NEXT spawn and does not change a running worker; Exec off -> `run_command` absent and a forged `run_command` call returns an error result naming the cause with no ask. Spec: "Exec off means no run_command", "Turning Write on lets the spawn through" (menu variant).
-- [ ] 6.5 GREEN: send the ceiling in `OrchSend` at start and on `attach`; `App` derives it from `self.ai.toggle(ToolToggle::Write/Exec)`.
-- [ ] 6.6 RED: coordinator toolset is unaffected by the ceiling; a model text asking to enable Write changes no toggle. Spec: "A model cannot turn Write on [W2, auto]".
-- [ ] 6.7 REFACTOR: confirm `READ_ONLY` text if reworded keeps its test updated (D25).
+- [x] 6.1 RED: pure test: with `ceiling` lacking Write, `Run::spawn(Code, ...)` returns `Refusal::WriteOff`, creates no worker, starts no process, does not pause the run, does not raise a failure alert, and a following `wait`/`spawn_agent` behaves normally. Spec: "Code worker refused with Write off", "A refusal before a worker does not pause the run [W2, auto]".
+- [x] 6.2 GREEN: `Refusal::WriteOff` in `run.rs` (code kinds always; the `simple` branch is added in W8b).
+- [x] 6.3 RED: the refusal text names the `Write` toggle, says the worker was not started, and gives the INTERIM step: turn Write on in the AI menu. It is returned to the coordinator as an error result AND shown in the pane (reuses the PR2 refused-spawn notice path). The `/write` wording replaces the interim step in PR9; record that as a known follow-up.
+- [x] 6.4 RED (runtime): Write off -> a `code` spawn never reaches `launch`; with Write on the same spawn gets write tools; a toggle change applies from the NEXT spawn and does not change a running worker; Exec off -> `run_command` absent and a forged `run_command` call returns an error result naming the cause with no ask. Spec: "Exec off means no run_command", "Turning Write on lets the spawn through" (menu variant).
+- [x] 6.5 GREEN: send the ceiling in `OrchSend` at start and on `attach`; `App` derives it from `self.ai.toggle(ToolToggle::Write/Exec)`.
+- [x] 6.6 RED: coordinator toolset is unaffected by the ceiling; a model text asking to enable Write changes no toggle. Spec: "A model cannot turn Write on [W2, auto]".
+- [x] 6.7 REFACTOR: confirm `READ_ONLY` text if reworded keeps its test updated (D25).
 - Done when: `cargo test` green; manual step M3 (Write off) passes.
+- Notes (as built): `Refusal::WriteOff` text is `steps::WRITE_OFF` (names `Write`, says the worker was not started, gives the AI menu step `Ctrl+Space m`); the `/write` wording replaces the step in the later W2b PR. Exec is in no worker toolset today (W6 adds `run_command`), so 6.4's Exec half is a guard test (a forged `run_command` is refused with no ask). `READ_ONLY` text was not reworded (that is W8), so 6.7 needed no change. A read-only goal is refused as `ReadOnly` before `WriteOff` (the role decides, not the menu). `drive_grant` stays `None` for workers.
 - Depends on: PR5; PR2 (notice path).
 
 ### PR7: worker prompt
@@ -234,11 +239,9 @@ The design estimated 620-990 production lines for these four slices as 4 PRs. Pa
 | PR2 | W1a | refused-spawn and degraded-turn notices | 75-115 | 180-345 | Low |
 | PR3 | W1b | `Run::undelegated`, parked notice | 60-100 | 145-300 | Low |
 | PR4 | W1b | delegate key | 60-100 | 145-300 | Low |
-| PR5 | W2a | ceiling types, inert | 60-100 | 145-300 | Low |
-| PR6 | W2a | ceiling wired, Write-off refusal | 80-130 | 190-390 | Medium |
+| PR5+6 | W2a | ceiling types, ceiling wired, Write-off refusal (combined 2026-11-06) | 140-230 | 335-690 | Medium (split again if production passes 400) |
 | PR7 | W2a | worker prompt | 30-50 | 70-150 | Low |
-| PR8 | W2b | `/write` grant | 100-150 | 240-450 | Medium (high end over 400) |
-| PR9 | W2b | grant reaches the next spawn | 80-130 | 190-390 | Medium |
+| PR8+9 | W2b | `/write` grant and grant reaches the next spawn (combined 2026-11-06) | 180-280 | 430-840 | High (split again if production passes 400) |
 | PR10 | manual-gated | llamacpp in `MCP_VERIFIED` | 3-10 | 10-30 | Low |
 
 Totals: ~1,495-2,890 production lines across the milestone (design: 620-990; the same 2.4x-3x factor applied to the whole gives 1,490-2,970, so the per-PR split is consistent).
@@ -247,7 +250,7 @@ Totals: ~1,495-2,890 production lines across the milestone (design: 620-990; the
 - 400-line budget risk: High for the milestone as 4 slices (every slice would exceed 400 at the re-forecast: W1a 360-690, W1b 290-600, W2a 410-840, W2b 430-840); Low to Medium per PR once split into the 10 above.
 - Chained PRs recommended: Yes
 - Decision needed before apply: Yes
-- Proposed PR boundaries (stacked-to-main, merge in this order): PR1 -> PR2 -> PR3 -> PR4 -> PR5 -> PR6 -> PR7 -> PR8 -> PR9, with PR10 held until the manual llama-server check passes (it may be opened any time after PR7). Each PR starts from main after the previous one merged, finishes with its tests green and its manual step recorded, and reverts alone. Cut points: W1a at "notices of facts" vs "notices of refusals and degrade"; W1b at "detect and park" vs "key"; W2a at "inert types" vs "wired ceiling and refusal" vs "prompt"; W2b at "grant" vs "grant reaches the spawn". If PR8 passes 400 at apply time, split it into 8a (parse, dialog, denied from tool) and 8b (lifetime endings).
+- Proposed PR boundaries (stacked-to-main, merge in this order): PR1 -> PR2 -> PR3 -> PR4 -> (PR5+PR6) -> PR7 -> (PR8+PR9), with PR10 held until the manual llama-server check passes (it may be opened any time after PR7). Each PR starts from main after the previous one merged, finishes with its tests green and its manual step recorded, and reverts alone. Cut points: W1a at "notices of facts" vs "notices of refusals and degrade"; W1b at "detect and park" vs "key"; W2a at "types, wired ceiling and refusal" (one PR) vs "prompt"; W2b at "grant" vs "grant reaches the spawn". If the combined PR8+9 passes 400 at apply time, split it back into 8a (parse, dialog, denied from tool), 8b (lifetime endings) and 9. Owner decision 2026-11-06: PR5+PR6 and PR8+PR9 are combined; PR7 and PR10 stay apart.
 
 Decision needed (ask-on-risk): confirm the split of the four slices into the nine code PRs plus the gated PR10, rather than one PR per slice with `size:exception`. Dependencies that matter for the order: PR5 must precede PR6 so no worker silently loses write tools; PR6's interim refusal text (menu step) is replaced in PR9 by `/write`.
 
