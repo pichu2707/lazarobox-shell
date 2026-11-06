@@ -11,9 +11,11 @@ use super::receipt::{self, Evidence};
 use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
-use crate::core::ai::chat::engine::{Availability, Usage};
+use crate::core::ai::chat::engine::{Availability, Usage, locality};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::Locality;
+use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
@@ -298,6 +300,27 @@ impl Run {
 
     pub fn spec(&self, id: WorkerId) -> Option<&WorkerSpec> {
         self.slot(id).map(|slot| &slot.spec)
+    }
+
+    /// Another worker whose turn is in flight on the same local server as
+    /// worker `id` (owner decision 5, design D11): the server may queue their
+    /// requests. A worker counts only while it runs and is not parked, and an
+    /// engine only when it is a local server that does not forward the model
+    /// off the machine (an Ollama `*-cloud` model is not).
+    pub fn shares_engine(&self, id: WorkerId) -> Option<WorkerId> {
+        let local = |slot: &Slot| {
+            let spec = &slot.spec;
+            slot.status == WorkerStatus::Running
+                && !slot.parked
+                && locality(&spec.engine) == Some(Locality::Local)
+                && !forwards_off_machine(&spec.engine, spec.model.as_deref())
+        };
+        let mine = self.slot(id).filter(|slot| local(slot))?;
+        let other = |(n, slot): &(usize, &Slot)| {
+            WorkerId(*n as u32 + 1) != id && local(slot) && slot.spec.engine == mine.spec.engine
+        };
+        let found = self.slots.iter().enumerate().find(other)?;
+        Some(WorkerId(found.0 as u32 + 1))
     }
 
     /// What worker `id` reported using so far; `None` when its engine

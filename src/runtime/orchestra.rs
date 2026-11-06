@@ -16,7 +16,7 @@
 //! and error classes, never a prompt, an answer, an error text or a path.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     io::Read,
     panic::AssertUnwindSafe,
@@ -71,7 +71,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
-            event::Degrade,
+            event::{Degrade, shared_engine_notice},
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             review::Assessment,
@@ -524,6 +524,8 @@ struct Live {
     turn_over: bool,
     /// The app was told the run is undelegated (once per run).
     told_undelegated: bool,
+    /// The local engines the pane was told two workers share (once each).
+    told_shared: HashSet<String>,
     /// What the run keeps for its receipt-driven reviews (S7b).
     review: review::State,
     /// Ends the run when its wall clock passes (`run_timeout_mins`).
@@ -736,6 +738,7 @@ impl RunManager {
             review: review::State::default(),
             turn_over: false,
             told_undelegated: false,
+            told_shared: HashSet::new(),
             clock: self.start_clock(pane, run, scope.limits.wall),
         };
         let old = {
@@ -1486,6 +1489,7 @@ impl RunManager {
                 self.announce(pane, live, id, status);
             }
             if status == WorkerStatus::Running && !live.tasks.contains_key(&id) {
+                self.tell_shared(pane, live, id);
                 self.launch(pane, live, id);
             }
         }
@@ -1508,6 +1512,25 @@ impl RunManager {
             _ => live.alerted = None,
         }
         self.changed.notify_waiters();
+    }
+
+    /// Tells the pane, once per run and engine, that the worker about to start
+    /// shares a local server with a running one (owner decision 5): the
+    /// server may queue them, and `max_parallel` is the user's own ceiling.
+    fn tell_shared(&self, pane: PaneId, live: &mut Live, id: WorkerId) {
+        let (Some(other), Some(spec)) = (live.run.shares_engine(id), live.run.spec(id)) else {
+            return;
+        };
+        if !live.told_shared.insert(spec.engine.clone()) {
+            return;
+        }
+        let (first, second) = if other.0 < id.0 {
+            (other, id)
+        } else {
+            (id, other)
+        };
+        let text = shared_engine_notice(first, second, &spec.engine);
+        self.send(pane, OrchestraEvent::Notice { text });
     }
 
     fn announce(&self, pane: PaneId, live: &Live, id: WorkerId, status: WorkerStatus) {

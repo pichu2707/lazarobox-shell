@@ -1,0 +1,8 @@
+---
+source: src/app/app_tests/orchestra_run.rs
+expression: shown
+---
+ORCH on
+This chat cannot write files, run commands or read GitHub itself. A code worker writes, through the batch review. Ctrl+O goes back to a plain chat.
+code workers need Write: type /write, or turn it on in the AI menu (Ctrl+Space m)
+workers 1 and 2 share ollama, a local server: it may queue their requests; set max_parallel = 1 in [ai.orchestrator] to run one at a time

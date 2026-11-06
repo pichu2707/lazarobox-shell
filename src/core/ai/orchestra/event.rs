@@ -33,6 +33,16 @@ pub enum Degrade {
     NoHub,
 }
 
+/// What the pane is told, once per run and engine, when two workers may queue
+/// on one local server (owner decision 5, design D11). `first` and `second`
+/// are the two worker numbers, lowest first. It names only a key that exists.
+pub fn shared_engine_notice(first: WorkerId, second: WorkerId, engine: &str) -> String {
+    format!(
+        "workers {} and {} share {engine}, a local server: it may queue their requests; set max_parallel = 1 in [ai.orchestrator] to run one at a time",
+        first.0, second.0
+    )
+}
+
 /// A worker as its row shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WorkerRow {

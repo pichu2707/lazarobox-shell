@@ -83,6 +83,8 @@ enum Script {
     FailThenHang(&'static str),
     /// The first turn hangs; later turns answer `fixed`.
     HangOnce,
+    /// Turn number `n` (from 1) fails with the message; every other hangs.
+    FailOn(usize, &'static str),
     /// The first two turns fail with these messages, in order; later turns
     /// answer `fixed`.
     FailTwice(&'static str, &'static str),
@@ -124,6 +126,17 @@ impl Seen {
         panic!("no request");
     }
 
+    /// Request number `n` (from 0), once its turn has made it.
+    async fn nth(&self, n: usize) -> ChatRequest {
+        for _ in 0..500 {
+            if let Some(found) = self.requests().into_iter().nth(n) {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no request {n}");
+    }
+
     fn engines(&self) -> Vec<String> {
         self.requests().into_iter().map(|r| r.engine).collect()
     }
@@ -157,6 +170,10 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
                 }
                 Script::FailThenHang(_) => return std::future::pending().await,
+                Script::FailOn(at, error) if n == at => {
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::FailOn(..) => return std::future::pending().await,
                 Script::HangOnce if first => {
                     let _dropped = OnDrop(mine);
                     return std::future::pending().await;
@@ -6076,3 +6093,5 @@ async fn a_retried_writing_worker_has_the_worker_text_once() {
     assert_eq!(requests[0].system, want);
     assert_eq!(requests[1].system, want);
 }
+
+mod parallel;

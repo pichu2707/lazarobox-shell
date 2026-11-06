@@ -134,6 +134,8 @@ mod receipt_tests;
 #[cfg(test)]
 mod review_tests;
 #[cfg(test)]
+mod share_tests;
+#[cfg(test)]
 mod steps_tests;
 #[cfg(test)]
 mod tests;
