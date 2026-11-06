@@ -155,10 +155,10 @@ Files: `src/core/ai/chat/engine.rs` (`OrchSend`), `src/app/orchestra.rs` (menu t
 
 Files: `src/core/ai/chat/prompts/worker.md` (new), `src/core/ai/chat/prompts.rs`, `src/core/ai/chat/prompts/tests.rs`, `src/runtime/orchestra.rs` (`launch` at 1504); tests in `prompts/tests.rs`.
 
-- [ ] 7.1 RED: `prompts/tests.rs`: the `code` worker system prompt contains the worker instruction (make changes through write tools, end with `propose_batch`, a code fragment in the final text is not a result, it overrides the fenced-block style), is appended for write-capable workers only (`spec.writes()`), and does not contradict `tools.md`. Spec: "Worker prompt asks for tools [W2, auto]".
-- [ ] 7.2 RED: a chat turn on the `code` assignment gets byte-for-byte the prompt it had before (compare against the current built-in); a user override of `code.md` still applies to both. Spec: "Chat turn unchanged [W2, auto]".
-- [ ] 7.3 GREEN: add `worker.md` (lazarobox-owned, not overridable per D29) and append it in `launch` only for write-capable workers; review workers (`live.review.system(id)`) keep their lens prompt.
-- [ ] 7.4 REFACTOR: single `include_str!` constant; keep the loader free of profile branching.
+- [x] 7.1 RED: `prompts/tests.rs`: the `code` worker system prompt contains the worker instruction (make changes through write tools, end with `propose_batch`, a code fragment in the final text is not a result, it overrides the fenced-block style), is appended for write-capable workers only (`spec.writes()`), and does not contradict `tools.md`. Spec: "Worker prompt asks for tools [W2, auto]".
+- [x] 7.2 RED: a chat turn on the `code` assignment gets byte-for-byte the prompt it had before (compare against the current built-in); a user override of `code.md` still applies to both. Spec: "Chat turn unchanged [W2, auto]".
+- [x] 7.3 GREEN: add `worker.md` (lazarobox-owned, not overridable per D29) and append it in `launch` only for write-capable workers; review workers (`live.review.system(id)`) keep their lens prompt.
+- [x] 7.4 REFACTOR: single `include_str!` constant; keep the loader free of profile branching.
 - Done when: `cargo test` green; manual step M4 (prompt on a real model) is recorded in the PR.
 - Depends on: PR5 (`writes()`).
 
