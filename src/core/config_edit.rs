@@ -1115,7 +1115,12 @@ other = 1
             let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
             assert!(ai.memory.active(), "{out:?}");
             assert_eq!(ai.memory.port, 8123, "{out:?}");
-            assert_eq!(notice, None, "{out:?}");
+            // Spec (config-unknown-keys): the kept unknown key is reported.
+            assert_eq!(
+                notice.as_deref(),
+                Some("config: unknown key: ai.memory.x"),
+                "{out:?}"
+            );
             assert!(!out.contains("\"true\""), "booleans, not strings: {out:?}");
         }
     }
@@ -1699,7 +1704,8 @@ other = 1
             format!("{existing}\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n")
         );
         let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
-        assert_eq!(notice, None);
+        // Spec (config-unknown-keys): the kept unknown key is reported.
+        assert_eq!(notice.as_deref(), Some("config: unknown key: ai.unknown"));
         assert_eq!(
             ai.get(Task::Orchestrate),
             &Assignment {

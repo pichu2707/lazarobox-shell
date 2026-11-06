@@ -8,6 +8,7 @@ use toml::{Table, Value};
 use super::marks::GlyphMode;
 use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, CacheOptions, KeepAlive, Kind, ServerPorts};
+use crate::core::config::note_unknown_keys;
 
 mod usage;
 pub use usage::UsageConfig;
@@ -1501,6 +1502,123 @@ fn read_managed(server: &Table, problems: &mut Vec<String>) -> Option<ManagedSer
     }
 }
 
+/// Notes every unknown key under `[ai]`, a table lazarobox owns whole (see
+/// [`note_unknown_keys`]). Only tables of the right shape are walked: a
+/// wrong shape was already reported by its reader. The names here are the
+/// keys the readers above read; a key added to a reader is added here too.
+pub fn note_unknown_ai_keys(table: &Table, problems: &mut Vec<String>) {
+    let Some(Value::Table(ai)) = table.get("ai") else {
+        return;
+    };
+    fn child<'a>(parent: &'a Table, name: &str) -> Option<&'a Table> {
+        match parent.get(name) {
+            Some(Value::Table(child)) => Some(child),
+            _ => None,
+        }
+    }
+    note_unknown_keys(
+        ai,
+        "ai",
+        &[
+            "engine",
+            "model",
+            "profile",
+            "context",
+            "notify",
+            "notify_sound",
+            "tool_mark",
+            "tasks",
+            "usage",
+            "tools",
+            "chat",
+            "mcp",
+            "servers",
+            "memory",
+            "orchestrator",
+        ],
+        problems,
+    );
+    if let Some(tasks) = child(ai, "tasks") {
+        let ids: Vec<&str> = Task::ALL[1..].iter().map(|task| task.id()).collect();
+        note_unknown_keys(tasks, "ai.tasks", &ids, problems);
+        for task in &Task::ALL[1..] {
+            if let Some(section) = child(tasks, task.id()) {
+                note_unknown_keys(section, task.table(), &["engine", "model"], problems);
+            }
+        }
+    }
+    if let Some(usage) = child(ai, "usage") {
+        let known = [
+            "line",
+            "statusline",
+            "turn_tokens",
+            "day_tokens",
+            "day_usd",
+            "billing",
+        ];
+        note_unknown_keys(usage, "ai.usage", &known, problems);
+        if let Some(billing) = child(usage, "billing") {
+            note_unknown_keys(billing, "ai.usage.billing", &usage::BILLED, problems);
+        }
+    }
+    if let Some(tools) = child(ai, "tools") {
+        let mut known = vec!["enabled", "approval"];
+        known.extend(ToolToggle::ALL.map(ToolToggle::key));
+        note_unknown_keys(tools, "ai.tools", &known, problems);
+    }
+    if let Some(chat) = child(ai, "chat") {
+        note_unknown_keys(chat, "ai.chat", &["compaction"], problems);
+    }
+    if let Some(mcp) = child(ai, "mcp") {
+        note_unknown_keys(mcp, "ai.mcp", &["servers"], problems);
+        if let Some(Value::Array(entries)) = mcp.get("servers") {
+            let known = ["name", "command", "args", "env", "enabled", "project"];
+            for (index, entry) in entries.iter().enumerate() {
+                if let Value::Table(entry) = entry {
+                    let path = format!("ai.mcp.servers[{index}]");
+                    note_unknown_keys(entry, &path, &known, problems);
+                }
+            }
+        }
+    }
+    if let Some(servers) = child(ai, "servers") {
+        let ids: Vec<&str> = CATALOG
+            .iter()
+            .filter(|engine| matches!(engine.kind, Kind::Server { .. }))
+            .map(|engine| engine.id)
+            .collect();
+        note_unknown_keys(servers, "ai.servers", &ids, problems);
+        for id in ids {
+            let Some(server) = child(servers, id) else {
+                continue;
+            };
+            let own: &[&str] = match id {
+                "ollama" => &["keep_alive", "num_ctx_cap"],
+                "llamacpp" => &["managed", "model", "args", "idle_minutes", "cache_prompt"],
+                _ => &[],
+            };
+            let known: Vec<&str> = ["port"].into_iter().chain(own.iter().copied()).collect();
+            note_unknown_keys(server, &format!("ai.servers.{id}"), &known, problems);
+        }
+    }
+    if let Some(memory) = child(ai, "memory") {
+        let known = ["enabled", "acknowledged", "save_summaries", "port"];
+        note_unknown_keys(memory, "ai.memory", &known, problems);
+    }
+    if let Some(orchestrator) = child(ai, "orchestrator") {
+        let known = [
+            "enabled",
+            "acknowledged",
+            "worker_timeout_secs",
+            "max_parallel",
+            "max_workers",
+            "run_timeout_mins",
+            "max_turns",
+        ];
+        note_unknown_keys(orchestrator, "ai.orchestrator", &known, problems);
+    }
+}
+
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
 fn env_port(text: Option<&str>) -> Option<u16> {
     text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
@@ -2286,6 +2404,13 @@ mod tests {
                     [ai.tasks.poetry]\nengine = \"claude\"\nmodel = 4\n\
                     [ai]\nengine = \"ollama\"\n";
         assert_eq!(read_text(text), (ai(Some("ollama"), None), vec![]));
+        // Spec (config-unknown-keys): both tables are reported as unknown keys.
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(ai.get(Task::General).engine.as_deref(), Some("ollama"));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (2 problems): unknown key: ai.tasks.general")
+        );
     }
 
     // Spec: Unknown task engine kept.

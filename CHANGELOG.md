@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- An unknown key inside a table lazarobox owns (`[statusline]`, `[tabbar]`,
+  `[updates]`, `[workspace]`, and `[ai]` with every table under it) now gives
+  a startup notice with its full path, for example
+  `config: unknown key: ai.tols`, so typos no longer pass silently. The file
+  still loads, the key is ignored and a menu save keeps it. Keys and tables at
+  the root of the file that lazarobox does not read are not reported.
+
 ## [1.10.0] - 2026-11-06
 
 ### Added
