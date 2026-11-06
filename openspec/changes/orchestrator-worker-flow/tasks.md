@@ -173,13 +173,13 @@ Design: D15 (approved), D17 (`OrchCeiling`). Template: `/github` (`app/github.rs
 
 Files: `src/core/ai/chat/folder.rs` (`Command::Write`, parse at 92), `src/app/chat.rs` (route at ~520), new `src/app/write.rs`, `src/core/ai/chat/approval.rs` (`ApprovalAsk::ToolGrant { toggle, folder }`), `src/app/tool.rs` (deny from a tool call, beside 148), `src/app/run.rs` (dialog rendering beside 671), `src/runtime.rs` if the ask needs a runtime arm; tests in `folder_tests.rs`, `app_tests/`.
 
-- [ ] 8.1 RED: `parse_command("/write")` -> `Command::Write`; `/write x` is refused with a usage line; `/Write` stays plain text (same shape as `folder_tests.rs:313-325`).
-- [ ] 8.2 RED (app): `/write` in an idle chat with tools on and Write off opens a `ToolGrant` dialog naming the toggle and folder; `y` grants for this chat only, in memory, never saved to config; `n`/Esc declines with a visible line. Spec: "User turns Write on [W2, auto]" (the chat shows it was turned on).
-- [ ] 8.3 RED: refusals are visible with a reason: tools off, engine offers no tools, Write already on, no folder, conversation list open, another prompt pending (queued like `/github`). Mirror `R_*` constants.
-- [ ] 8.4 RED: the grant ends, with a system line each, on folder change, tools turned off, and the saved Write toggle going on or off; a resumed conversation does not carry it. Mirror `end_grant_for_folder`, `end_all_grants` for the new toggle.
-- [ ] 8.5 RED: `on_tool_ask` denies `ToolGrant` raised from a tool call (a model cannot open the dialog); worker or orchestrator text containing `/write` changes nothing. Spec: "Text cannot trigger it [W2, auto]". Add a test that the variant is rejected in every approval mode, like `GithubGrant`.
-- [ ] 8.6 GREEN: implement in `app/write.rs`, reusing the `ChatState` grant flag pattern; no ceiling effect yet (that is PR9), so this PR is user-visible only as a dialog and a flag.
-- [ ] 8.7 REFACTOR: extract what `github.rs` and `write.rs` share only if the duplication is mechanical; otherwise leave it.
+- [x] 8.1 RED: `parse_command("/write")` -> `Command::Write`; `/write x` is refused with a usage line; `/Write` stays plain text (same shape as `folder_tests.rs:313-325`).
+- [x] 8.2 RED (app): `/write` in an idle chat with tools on and Write off opens a `ToolGrant` dialog naming the toggle and folder; `y` grants for this chat only, in memory, never saved to config; `n`/Esc declines with a visible line. Spec: "User turns Write on [W2, auto]" (the chat shows it was turned on).
+- [x] 8.3 RED: refusals are visible with a reason: tools off, engine offers no tools, Write already on, no folder, conversation list open, another prompt pending (queued like `/github`). Mirror `R_*` constants.
+- [x] 8.4 RED: the grant ends, with a system line each, on folder change, tools turned off, and the saved Write toggle going on or off; a resumed conversation does not carry it. Mirror `end_grant_for_folder`, `end_all_grants` for the new toggle.
+- [x] 8.5 RED: `on_tool_ask` denies `ToolGrant` raised from a tool call (a model cannot open the dialog); worker or orchestrator text containing `/write` changes nothing. Spec: "Text cannot trigger it [W2, auto]". Add a test that the variant is rejected in every approval mode, like `GithubGrant`.
+- [x] 8.6 GREEN: implement in `app/write.rs`, reusing the `ChatState` grant flag pattern; no ceiling effect yet (that is PR9), so this PR is user-visible only as a dialog and a flag.
+- [x] 8.7 REFACTOR: extract what `github.rs` and `write.rs` share only if the duplication is mechanical; otherwise leave it.
 - Done when: `cargo test` green; manual step M5 shows the dialog and the flag, no effect on spawns yet.
 - Depends on: none strictly (independent of W2a), but order W2a first as the owner set.
 - Size risk: high end of re-forecast is above 400; split candidate if the dialog plumbing in `tool.rs` and `run.rs` is wider than expected. Fallback split: 8a (parse + dialog + denied-from-tool) and 8b (lifetime and endings).
@@ -188,14 +188,15 @@ Files: `src/core/ai/chat/folder.rs` (`Command::Write`, parse at 92), `src/app/ch
 
 Files: `src/runtime.rs` and `src/runtime/orchestra.rs` (`Effect::OrchCeiling`), `src/core/ai/orchestra/run.rs` (`Run.ceiling` update), `src/app/write.rs`, `src/app/orchestra.rs` (notice and guidance), PR6's refusal text; tests in `orchestra/tests.rs`, `app_tests/`.
 
-- [ ] 9.1 RED: after `/write` + `y`, an `Effect::OrchCeiling` updates the live run; the next `code` spawn gets write tools; a running worker keeps its original spec (like `set_roster`). Spec: "Turning Write on lets the spawn through [W2, auto]" (the `/write` variant).
-- [ ] 9.2 RED: when the grant ends (PR8 endings) the ceiling is lowered again for the next spawn; `Toolset::capped` still never widens beyond the role.
-- [ ] 9.3 RED: the Write-off refusal text now names `/write` as the chat step (replaces the interim menu step of PR6) and the chat-pane requirement "names the `Write` toggle and the step to turn it on from the chat" is asserted on the final string.
-- [ ] 9.4 RED: ORCH off or a plain chat: `/write` still works and widens the next plain-chat turn through `offered_families` (migration note: "`/write` also widens a plain chat's next turn, by the user's own `y`"). Pin it with a test, since this is user-visible outside ORCH.
-- [ ] 9.5 GREEN: add the effect, update `Run.ceiling` at `attach` and on the effect; extend `offered_families` for Write.
-- [ ] 9.6 REFACTOR: unify the guidance line for both grants if cheap.
+- [x] 9.1 RED: after `/write` + `y`, an `Effect::OrchCeiling` updates the live run; the next `code` spawn gets write tools; a running worker keeps its original spec (like `set_roster`). Spec: "Turning Write on lets the spawn through [W2, auto]" (the `/write` variant).
+- [x] 9.2 RED: when the grant ends (PR8 endings) the ceiling is lowered again for the next spawn; `Toolset::capped` still never widens beyond the role.
+- [x] 9.3 RED: the Write-off refusal text now names `/write` as the chat step (replaces the interim menu step of PR6) and the chat-pane requirement "names the `Write` toggle and the step to turn it on from the chat" is asserted on the final string.
+- [x] 9.4 RED: ORCH off or a plain chat: `/write` still works and widens the next plain-chat turn through `offered_families` (migration note: "`/write` also widens a plain chat's next turn, by the user's own `y`"). Pin it with a test, since this is user-visible outside ORCH.
+- [x] 9.5 GREEN: add the effect, update `Run.ceiling` at `attach` and on the effect; extend `offered_families` for Write.
+- [x] 9.6 REFACTOR: unify the guidance line for both grants if cheap.
 - Done when: `cargo test` green; manual step M5 passes end to end on Ollama.
 - Depends on: PR6 and PR8.
+- Notes (as built, PR8+PR9 together; production is over 400, so the two commits are the cut): `ApprovalAsk::ToolGrant { toggle, folder }` (+ `tool_grant_prompt`, `TOOL_GRANT_DENIED`, `WRITE_*` lines in `approval.rs`); `ChatState.write_granted` (reset by a resume); `app/write.rs` holds the command, the `y` dialog, the endings and `orch_ceiling(id)` (saved menu plus Write while the grant holds and tools are on; the only widening). `offered_families` and the three `OrchSend`/`OrchDecide` ceilings read `orch_ceiling`. `Effect::OrchCeiling { pane, ceiling }` is sent only for an orchestrating chat, on `y` and on every ending (folder change or restore, tools off, saved Write toggle change, resume); the runtime arm calls `RunManager::set_ceiling(pane, ceiling)`, which ignores a pane without a live run. Texts: `WRITE_OFF` and `WRITE_OFF_CORRECTION` name `/write` (in backticks, because `mask_paths` turns a bare `/write` into `<path>` in the coordinator-bound text); the ORCH-on line says `type /write`. Not done: 8.7 (the key handler of `/github` and `/write` is duplicated on purpose, the lines differ), 9.6 (no shared guidance line: the `/write` grant has no hint above the composer). The README (Spanish, `/github` section) was not extended.
 
 ---
 
