@@ -569,6 +569,9 @@ fn the_worker_prompt_requires_write_tools_and_propose_batch() {
             "not a result",
             "overrides",
             "fenced",
+            "call propose_batch again",
+            "32 KiB",
+            "create_dir",
         ] {
             assert!(got.contains(needle), "{profile:?}: {needle}");
         }
@@ -585,7 +588,7 @@ fn the_worker_prompt_requires_write_tools_and_propose_batch() {
 // Spec (prompt-profiles): a worker prompt MUST NOT contradict the tools block.
 #[test]
 fn the_worker_prompt_does_not_contradict_the_tools_block() {
-    let writer = FamilySet::LEGACY.with(Family::Write);
+    let writer = crate::core::ai::orchestra::Toolset::Code.families();
     for profile in Profile::ALL {
         let got = with_tools(&worker_system(builtin(profile, Task::Code)), writer);
         assert!(got.contains(WORKER.trim_end()), "{profile:?}");
@@ -625,4 +628,11 @@ fn a_chat_turn_on_the_code_assignment_gets_the_code_prompt_untouched() {
         assert!(!got.text.contains("propose_batch"), "{profile:?}");
         assert!(!builtin(profile, Task::Code).contains(WORKER.trim_end()));
     }
+}
+
+// Spec (prompt-profiles): a denied batch is dropped so the worker stages again.
+#[test]
+fn the_worker_prompt_lets_a_rejected_batch_be_proposed_again() {
+    assert!(!WORKER.contains("once"), "{WORKER}");
+    assert!(WORKER.contains("If the user rejects the batch"), "{WORKER}");
 }
