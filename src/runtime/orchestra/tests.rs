@@ -14,8 +14,11 @@ use tokio::{
 };
 
 use super::*;
+// The disclosure tests drive the writing lab, which runs on Linux only.
+#[cfg(target_os = "linux")]
+use crate::core::ai::orchestra::changes::Disclosure;
 use crate::core::ai::orchestra::{
-    changes::{Change, Disclosure, StagedDiff, StagedText},
+    changes::{Change, StagedDiff, StagedText},
     rdd::{Lens, Outcome as Ended},
     review::Tier,
     steps::{Grant, Size},
@@ -2802,6 +2805,7 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
 }
 
 /// The next disclosure the lab's pane received.
+#[cfg(target_os = "linux")]
 async fn disclosed(lab: &mut Lab) -> OrchestraEvent {
     loop {
         let event = lab.next().await;
