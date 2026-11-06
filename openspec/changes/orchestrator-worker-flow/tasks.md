@@ -50,13 +50,13 @@ Design: Corrections row 1 (the real silent degrade is the worker's), D26 not nee
 
 Files: `src/core/ai/orchestra/changes.rs`, `src/core/ai/orchestra/run.rs`, `src/core/ai/orchestra/event.rs`, `src/runtime/orchestra.rs`, `src/app/orchestra.rs`; tests in `src/core/ai/orchestra/tests.rs` and `src/app/app_tests/`.
 
-- [ ] 1.1 RED: pure test in `orchestra/tests.rs`: a `code` worker ended `done` with an empty ledger yields a `Disclosure::EmptyLedger { id, task, engine_model }` (name TBD in code); `review`/`summarize`/`general` workers yield none. Spec scenario: "Empty ledger [W1, auto]".
-- [ ] 1.2 GREEN: add the pure check in `orchestra/run.rs` (or `changes.rs`) over the existing ledger; add the event variant in `orchestra/event.rs`.
-- [ ] 1.3 RED: pure test: a worker that staged two files and ended with no `propose_batch` yields `Disclosure::StagedNotProposed` carrying the file count. Spec scenario: "Staged and never proposed [W1, auto]".
-- [ ] 1.4 GREEN: read the pane-level orphan state from `runtime/orchestra.rs` at worker finish (the batch is the pane's `StageKey::Pane`, so the check asks whether the worker's staged changes are still unproposed) and emit the event.
-- [ ] 1.5 RED (app): `App::update` test with insta snapshot: each event becomes a transcript system line naming worker id, kind and `engine>model`, not stored as a chat message, repeated each time it occurs. Spec: chat-pane scenarios "Notice is a system line, not history" and "Notice repeats".
-- [ ] 1.6 GREEN: render in `app/orchestra.rs` through the existing system-line path used by orchestra notices.
-- [ ] 1.7 REFACTOR: single notice-text module/consts in `app/orchestra.rs`; confirm the next orchestrator turn history does not contain the line (reuse the "history does not hold it" assertion).
+- [x] 1.1 RED: pure test in `orchestra/tests.rs`: a `code` worker ended `done` with an empty ledger yields a `Disclosure::EmptyLedger { id, task, engine_model }` (name TBD in code); `review`/`summarize`/`general` workers yield none. Spec scenario: "Empty ledger [W1, auto]".
+- [x] 1.2 GREEN: add the pure check in `orchestra/run.rs` (or `changes.rs`) over the existing ledger; add the event variant in `orchestra/event.rs`.
+- [x] 1.3 RED: pure test: a worker that staged two files and ended with no `propose_batch` yields `Disclosure::StagedNotProposed` carrying the file count. Spec scenario: "Staged and never proposed [W1, auto]".
+- [x] 1.4 GREEN: read the pane-level orphan state from `runtime/orchestra.rs` at worker finish (the batch is the pane's `StageKey::Pane`, so the check asks whether the worker's staged changes are still unproposed) and emit the event.
+- [x] 1.5 RED (app): `App::update` test with insta snapshot: each event becomes a transcript system line naming worker id, kind and `engine>model`, not stored as a chat message, repeated each time it occurs. Spec: chat-pane scenarios "Notice is a system line, not history" and "Notice repeats".
+- [x] 1.6 GREEN: render in `app/orchestra.rs` through the existing system-line path used by orchestra notices.
+- [x] 1.7 REFACTOR: single notice-text module/consts in `app/orchestra.rs`; confirm the next orchestrator turn history does not contain the line (reuse the "history does not hold it" assertion).
 - Done when: `cargo test` green; manual step M1 passes; the notice text is ASCII and neutral.
 - Depends on: none. Parallel: independent of PR2 in code, but both touch `runtime/orchestra.rs` finish path; land sequentially to avoid conflicts.
 
