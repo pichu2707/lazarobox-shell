@@ -346,3 +346,18 @@ fn the_orchestrate_prompt_is_its_builtin_or_its_override() {
     let got = load_prompt(Some(d.path()), Profile::Analyst, Task::Orchestrate);
     assert_eq!(got.text, "plan first");
 }
+
+// GUARD (prompt-profiles, Chat turn unchanged [W2, auto]): the prompt of a
+// chat conversation, as the runtime prepares it and the adapter completes it
+// for a turn with every write tool, never holds the worker text.
+#[test]
+fn a_chat_turn_with_write_tools_never_holds_the_worker_text() {
+    use crate::core::ai::{chat::prompts::with_tools, orchestra::Toolset};
+    for profile in [Profile::Analyst, Profile::Programmer] {
+        let got = prepare_prompt(None, profile, None, None, false, None, "2026-10-13".into());
+        let system = with_tools(&got.text, Toolset::Code.families());
+        assert_eq!(got.text, builtin(profile, Task::Chat).trim_end());
+        assert!(!system.contains("You are a worker."), "{profile:?}");
+        assert!(!system.contains("write_file for a new file"), "{profile:?}");
+    }
+}

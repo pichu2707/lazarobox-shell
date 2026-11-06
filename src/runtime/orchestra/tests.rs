@@ -5954,3 +5954,85 @@ async fn a_retry_after_write_went_back_on_runs_the_worker_with_write() {
     .expect("a second process started");
     assert_eq!(second.families, Toolset::Code.families());
 }
+
+// Spec (prompt-profiles, Worker prompt asks for tools [W2, auto]): the system
+// prompt of a `code` worker is its kind's prompt plus the worker instruction.
+#[tokio::test]
+async fn a_code_worker_system_prompt_adds_the_worker_instruction() {
+    let lab = writing_lab(Script::Hang);
+    let handle = lab.start_writing(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write it")).await;
+    let request = lab.seen.first().await;
+    let code = load_prompt(None, Profile::Programmer, Task::Code).text;
+    assert_eq!(
+        request.system,
+        crate::core::ai::chat::prompts::worker_system(&code)
+    );
+    assert!(
+        request.system.contains("propose_batch"),
+        "{}",
+        request.system
+    );
+}
+
+// GUARD (D29, review workers keep their lens prompt): a worker that cannot
+// write gets its kind's prompt untouched.
+#[tokio::test]
+async fn a_worker_that_cannot_write_keeps_its_kind_prompt() {
+    let lab = lab(Script::Answer("fine"));
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "check it")).await;
+    handle.call(wait(1)).await;
+    let request = &lab.seen.requests()[0];
+    let kind = load_prompt(None, Profile::Programmer, Task::Review).text;
+    assert_eq!(request.system, kind);
+}
+
+// The correction worker is a `code` worker that may not propose the batch
+// (`correction_prompt`): the worker prompt tells it to, so it must not get it.
+#[tokio::test]
+async fn a_correction_worker_does_not_get_the_worker_prompt() {
+    use super::review::Role;
+    let lab = writing_lab(Script::Hang);
+    let (run, _handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
+    lab.manager
+        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .unwrap();
+    let request = lab.seen.first().await;
+    let kind = load_prompt(None, Profile::Programmer, Task::Code).text;
+    assert_eq!(request.system, kind);
+}
+
+// A worker whose session did not open runs as text with no tools: telling it
+// to call tools would be false.
+#[tokio::test]
+async fn a_degraded_writing_worker_does_not_get_the_worker_prompt() {
+    let lab = lab(Script::Answer("text"));
+    let (_, handle) = lab.start(codex_code());
+    handle.call(spawn(Task::Code, "write it")).await;
+    handle.call(wait(1)).await;
+    let request = &lab.seen.requests()[0];
+    let kind = load_prompt(None, Profile::Programmer, Task::Code).text;
+    assert_eq!(request.system, kind);
+}
+
+// A retry builds the request again from the kind: the worker text is in it
+// once, as in the first attempt.
+#[tokio::test]
+async fn a_retried_writing_worker_has_the_worker_text_once() {
+    let lab = writing_lab(Script::FailOnce("409 conflict: session busy"));
+    let (run, handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write it")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let decided = lab
+        .manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL);
+    assert_eq!(decided, Ok(()));
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    let requests = lab.seen.requests();
+    assert_eq!(requests.len(), 2);
+    let kind = load_prompt(None, Profile::Programmer, Task::Code).text;
+    let want = crate::core::ai::chat::prompts::worker_system(&kind);
+    assert_eq!(requests[0].system, want);
+    assert_eq!(requests[1].system, want);
+}

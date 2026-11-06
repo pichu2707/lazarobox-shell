@@ -198,6 +198,17 @@ fn coding(abilities: &str) -> String {
     TOOLS.trim_end().replacen(NO_CHANGES, &block, 1)
 }
 
+/// What a write-capable worker is told on top of its kind's prompt (D29).
+/// Owned by lazarobox: it has no override file.
+const WORKER: &str = include_str!("prompts/worker.md");
+
+/// `system` for a worker that can write: its kind's prompt, then the worker
+/// instruction. Only `launch` calls this, so a chat turn on the same kind
+/// keeps its prompt byte for byte, and a user's override still comes first.
+pub fn worker_system(system: &str) -> String {
+    format!("{}\n\n{}", system.trim_end(), WORKER.trim_end())
+}
+
 /// The system line for a skipped override file.
 fn notice(profile: Profile, task: Task, reason: Reason) -> String {
     let why = match reason {

@@ -47,6 +47,7 @@ use super::{
         fs::load_roots,
     },
 };
+use crate::core::ai::chat::prompts::worker_system;
 use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
@@ -1604,6 +1605,18 @@ impl RunManager {
                 None
             }
         };
+        // Only a writer whose session opened with tools is told to use them.
+        // Not a review worker (its lens prompt), not the correction (it may
+        // not propose the batch) and not a degraded turn (it has no tools).
+        // Known gap: a CLI or Ollama/llama.cpp retry without tools keeps this
+        // text, because those paths derive their plain prompt from `system`.
+        if session.is_some()
+            && spec.writes()
+            && live.review.system(id).is_none()
+            && !live.review.corrects(id)
+        {
+            request.system = worker_system(&request.system);
+        }
         // The one message goes whole and Ollama cuts what passes its window
         // without saying so: the trace says it (#557). The runner stamps the
         // same window again, from the same state.
