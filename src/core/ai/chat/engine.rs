@@ -128,9 +128,10 @@ pub enum Tools {
 
 /// The CLIs whose manual MCP check passed (D12). An engine joins in the commit
 /// that follows its check; one outside the set carries `Tools::Off` and stays
-/// byte-identical to a build without tools. The check passed for all four on
-/// 2026-10-17.
-pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama"];
+/// byte-identical to a build without tools. The check passed for the first four
+/// on 2026-10-17 and for llamacpp on 2026-11-07 (Qwen2.5-7B-Instruct Q4_K_M on
+/// llama-server b11935 with `--jinja`).
+pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama", "llamacpp"];
 
 /// The tools of a turn on `engine`: on only when the user has tools enabled
 /// and the engine is in `verified`.

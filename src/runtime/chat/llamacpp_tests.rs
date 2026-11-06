@@ -1,6 +1,6 @@
 //! The tool loop on the OpenAI wire (llama.cpp) against a scripted fake
 //! server, reusing the fake of `ollama_tests`. These drive `tool_turn_with`
-//! directly, so they reach the loop while llamacpp is not in `MCP_VERIFIED`.
+//! directly; llamacpp is in `MCP_VERIFIED`, so the dispatch tests cover the live path too.
 
 // What only the Linux-only tests use is dead code elsewhere.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]

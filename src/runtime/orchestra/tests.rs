@@ -5644,11 +5644,11 @@ async fn a_worker_on_an_unverified_engine_is_reported_with_its_own_reason() {
     let mut lab = lab_with(Script::Answer("done"), tooled);
     let assigned = [
         (Task::Orchestrate, "claude", "opus"),
-        (Task::Review, "llamacpp", "m"),
+        (Task::Review, "lmstudio", "m"),
     ];
     let roster = roster(
         &assigned,
-        vec![found("claude", &[]), found("llamacpp", &["m"])],
+        vec![found("claude", &[]), found("lmstudio", &["m"])],
         JAIL,
     );
     let (_, handle) = lab.start(roster);
@@ -5657,7 +5657,7 @@ async fn a_worker_on_an_unverified_engine_is_reported_with_its_own_reason() {
     let OrchestraEvent::Degraded { why, engine, .. } = &event else {
         panic!("{event:?}");
     };
-    assert_eq!((*why, engine.as_str()), (Degrade::ToolsOff, "llamacpp"));
+    assert_eq!((*why, engine.as_str()), (Degrade::ToolsOff, "lmstudio"));
 }
 
 // A hub that cannot open (no private folder for its sockets) is a third

@@ -206,12 +206,13 @@ Gate: do NOT open this PR unless the owner reports the manual llama-server tool-
 
 Files: `src/core/ai/chat/engine.rs:131` (`MCP_VERIFIED`), `src/runtime/chat.rs:661` (remove the "inert until `MCP_VERIFIED` lists it (PR3)" comment), tests that pin the list (`src/app.rs:5777` asserts `tool_engines == MCP_VERIFIED`; `engine.rs` test near line 483 pins llamacpp; `core/ai/picker.rs:290` uses the list).
 
-- [ ] 10.1 MANUAL: run M6 (below) on a real llama-server and report pass or fail in the PR or the change.
-- [ ] 10.2 RED (only after a pass): test that `tools_for("llamacpp", true, Some(origin), MCP_VERIFIED)` returns `Tools::On` and that a worker on llamacpp now gets a tool session (`open_session` takes the `Adapter::Llamacpp` branch at ~1615); the existing llamacpp pin test is updated, not deleted.
-- [ ] 10.3 GREEN: add `"llamacpp"` to `MCP_VERIFIED`; update the comment in `runtime/chat.rs`.
-- [ ] 10.4 REFACTOR: none expected. Check `picker.rs:290` presentation (llamacpp now listed as tool-capable) with its snapshot.
+- [x] 10.1 MANUAL: run M6 (below) on a real llama-server and report pass or fail in the PR or the change.
+- [x] 10.2 RED (only after a pass): test that `tools_for("llamacpp", true, Some(origin), MCP_VERIFIED)` returns `Tools::On` and that a worker on llamacpp now gets a tool session (`open_session` takes the `Adapter::Llamacpp` branch at ~1615); the existing llamacpp pin test is updated, not deleted.
+- [x] 10.3 GREEN: add `"llamacpp"` to `MCP_VERIFIED`; update the comment in `runtime/chat.rs`.
+- [x] 10.4 REFACTOR: none expected. Check `picker.rs:290` presentation (llamacpp now listed as tool-capable) with its snapshot.
 - Done when: manual M6 recorded; `cargo test` green; the acceptance note in the PR says "verified on <model>, <server version>".
 - Depends on: PR2 (so a failure is visible) and PR7 (prompt) for a meaningful check. May run in parallel with PR8/PR9.
+- As-built (2026-11-07): verified on Qwen2.5-7B-Instruct Q4_K_M, llama-server b11935 (`--jinja --parallel 1`). M6 passed: notice before, real tool calls after, `propose_batch` review applied, two parallel workers applied, `php -l` ok, D12 (wait under 120 s queued; over 120 s halts with "no answer from the engine", `r` retries). Qwen3.8-27B was not run. Qwen2.5-Coder-7B answers tool calls as text (model/template). Closes T3.0-T3.3 of `llamacpp-tools`. The `Degrade::ToolsOff` orchestra test now uses lmstudio instead of llamacpp.
 
 ---
 
