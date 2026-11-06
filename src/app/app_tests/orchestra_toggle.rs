@@ -150,6 +150,17 @@ fn turning_orch_on_with_write_off_says_where_to_turn_it_on() {
         "code workers need Write: turn it on in the AI menu (Ctrl+Space m)"
     );
     assert!(said[2].is_ascii());
+    // With the master switch off the line asks for both.
+    let mut none = gate_on();
+    none.ai.set_tools_enabled(false);
+    none.ai.set_toggle(ToolToggle::Write, true);
+    at(&mut none, 0, ctrl('o'));
+    let said = lines(&none);
+    assert_eq!(
+        said[2],
+        "code workers need tools and Write: turn them on in the AI menu (Ctrl+Space m)"
+    );
+    assert!(said[2].is_ascii());
     let mut on = gate_on();
     on.ai.set_tools_enabled(true);
     on.ai.set_toggle(ToolToggle::Write, true);

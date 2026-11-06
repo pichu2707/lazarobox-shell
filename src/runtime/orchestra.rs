@@ -966,6 +966,7 @@ impl RunManager {
         pane: PaneId,
         run: RunId,
         choice: UserChoice,
+        ceiling: FamilySet,
     ) -> Result<(), DecideError> {
         let mut runs = lock(&self.runs);
         // An answer is for the run it was given for; one that finds it ended
@@ -1004,6 +1005,9 @@ impl RunManager {
         } else {
             None
         };
+        // A retry or a relaunch is a new process: it follows the menu as the
+        // user answers, not as it was at the spawn.
+        live.run.set_ceiling(ceiling);
         live.run.decide(now(), choice)?;
         if *live.run.state() == RunState::Cancelled {
             let live = runs.remove(&pane);

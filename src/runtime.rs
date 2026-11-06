@@ -1822,10 +1822,15 @@ impl Panes {
                     }
                 }
                 // Returns at once: a run that is not halted any more ignores it.
-                Effect::OrchDecide { pane, run, choice } => {
+                Effect::OrchDecide {
+                    pane,
+                    run,
+                    choice,
+                    ceiling,
+                } => {
                     if let Some(chats) = self.chats.as_ref() {
                         if chats.orchestrates() {
-                            chats.decide_run(pane, run, choice);
+                            chats.decide_run(pane, run, choice, ceiling);
                         } else {
                             feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
                         }
@@ -5288,6 +5293,7 @@ mod tests {
             pane: id(1),
             run: RunId(1),
             choice: UserChoice::Retry,
+            ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
         }]);
         assert_eq!(
             feedback,

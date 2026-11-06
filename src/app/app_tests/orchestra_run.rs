@@ -202,6 +202,7 @@ pub(super) fn decide(choice: UserChoice) -> Effect {
         pane: chat_id(),
         run: RUN,
         choice,
+        ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY,
     }
 }
 
@@ -489,6 +490,7 @@ fn the_answer_names_the_run_of_its_alert() {
             pane: chat_id(),
             run: RunId(9),
             choice: UserChoice::Retry,
+            ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY,
         }]
     );
 }
@@ -1060,4 +1062,24 @@ fn the_write_off_refusal_is_a_system_line_naming_the_toggle_and_the_step() {
     assert!(line.is_ascii(), "{line}");
     assert!(line.contains("Write") && line.contains("AI menu"), "{line}");
     assert_eq!(chat_of(&a).messages().count(), before);
+}
+
+// A retry or a relaunch carries the AI menu as it is at the answer, so the
+// run does not decide with the menu it had at the spawn.
+#[test]
+fn the_answer_to_a_failure_carries_the_menu_as_it_is_now() {
+    use crate::core::ai::{config::ToolToggle, tools::registry::Family};
+    let ceiling = |effects: Vec<Effect>| match effects.as_slice() {
+        [Effect::OrchDecide { ceiling, .. }] => *ceiling,
+        other => panic!("one answer: {other:?}"),
+    };
+    let (mut a, _) = alerted();
+    a.ai.set_toggle(ToolToggle::Write, false);
+    let off = ceiling(a.update(key('r')));
+    assert!(!off.contains(Family::Write));
+    let (mut a, _) = alerted();
+    a.ai.set_tools_enabled(true);
+    a.ai.set_toggle(ToolToggle::Write, true);
+    let on = ceiling(a.update(key('r')));
+    assert!(on.contains(Family::Write));
 }

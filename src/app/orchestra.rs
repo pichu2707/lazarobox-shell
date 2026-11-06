@@ -85,6 +85,9 @@ const ORCH_ON_BODY: &str = "This chat cannot write files, run commands or read G
 /// Said after the body while the menu has Write off: a `code` worker follows
 /// that toggle and is refused with a notice (agent-orchestrator, W2).
 const ORCH_ON_WRITE: &str = "code workers need Write: turn it on in the AI menu (Ctrl+Space m)";
+/// The same with the master tools switch off too.
+const ORCH_ON_TOOLS_WRITE: &str =
+    "code workers need tools and Write: turn them on in the AI menu (Ctrl+Space m)";
 
 /// Said by the first Ctrl+C of a selected worker.
 const CANCEL_AGAIN: &str = "Ctrl+C again cancels the run";
@@ -731,6 +734,7 @@ impl App {
             pane: id,
             run,
             choice,
+            ceiling: self.ai.families(),
         }])
     }
 
@@ -848,6 +852,7 @@ impl App {
             pane: id,
             run,
             choice,
+            ceiling: self.ai.families(),
         }]
     }
 
@@ -1011,6 +1016,7 @@ impl App {
             return Vec::new();
         }
         let mut now_on = false;
+        let tools_off = !self.ai.tools_enabled();
         let write_off = !self
             .ai
             .families()
@@ -1022,7 +1028,12 @@ impl App {
                 chat.push_system_line(ORCH_ON_HEAD.to_owned());
                 chat.push_system_line(ORCH_ON_BODY.to_owned());
                 if write_off {
-                    chat.push_system_line(ORCH_ON_WRITE.to_owned());
+                    let line = if tools_off {
+                        ORCH_ON_TOOLS_WRITE
+                    } else {
+                        ORCH_ON_WRITE
+                    };
+                    chat.push_system_line(line.to_owned());
                 }
             }
             // The grant stays, but an orchestrated turn never offers it.

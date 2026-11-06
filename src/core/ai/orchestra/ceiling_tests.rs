@@ -271,3 +271,34 @@ fn a_relaunched_code_worker_keeps_its_tools_while_write_is_on() {
     assert_eq!(run.status(id), Some(WorkerStatus::Running));
     assert!(run.spec(id).unwrap().writes());
 }
+
+// A retry is a new process: a writer that failed while Write was on and is
+// retried after it went off is refused, not relaunched with Write.
+#[test]
+fn a_retried_failed_code_worker_is_refused_when_write_went_off() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let id = run.spawn(now, Task::Code, "write").unwrap();
+    run.on_event(now, id, failed());
+    run.set_ceiling(write_off());
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_refused_for_write(&run, &[id]);
+}
+
+// Guards: a retry with Write still on keeps the tools, and a reader is not
+// touched by a menu without Write.
+#[test]
+fn a_retried_worker_keeps_what_the_menu_still_allows() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let code = run.spawn(now, Task::Code, "write").unwrap();
+    run.on_event(now, code, failed());
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(code), Some(WorkerStatus::Running));
+    assert!(run.spec(code).unwrap().writes());
+
+    let mut run = run_with(FamilySet::ALL);
+    let review = run.spawn(now, Task::Review, "look").unwrap();
+    run.on_event(now, review, failed());
+    run.set_ceiling(write_off());
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(review), Some(WorkerStatus::Running));
+}

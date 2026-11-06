@@ -1566,7 +1566,11 @@ async fn retry_relaunches_the_same_spec_with_the_error_wrapped() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
     assert_eq!(requests.len(), 2);
@@ -1609,7 +1613,11 @@ async fn a_retried_workers_ask_waits_under_the_revived_session() {
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     let request = loop {
         if let Some(second) = lab.seen.requests().into_iter().nth(1) {
             break second;
@@ -1695,13 +1703,18 @@ async fn a_retry_with_no_nonce_is_an_error_and_the_run_stays_halted() {
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NoNonce)
     );
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     assert_eq!(lab.seen.requests().len(), 1);
     // Cancel needs no nonce.
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 // User decision 2026-10-30 (never fail silently): the refused retry tells the
@@ -1716,7 +1729,8 @@ async fn a_retry_with_no_nonce_tells_the_app_why() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     lab.sent();
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NoNonce)
     );
     let declined = match lab.sent().as_slice() {
@@ -1741,7 +1755,11 @@ async fn a_retry_with_no_nonce_tells_the_app_why() {
         )
     );
     // Cancel needs no nonce and says nothing more.
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 // Review S2b W2/S1: an answer carries the run it was given for. One that
@@ -1756,20 +1774,26 @@ async fn an_answer_for_another_run_is_dropped_and_said() {
     lab.sent();
     let other = RunId(run.0 + 1);
     assert_eq!(
-        lab.manager.decide(pane(), other, UserChoice::Cancel),
+        lab.manager
+            .decide(pane(), other, UserChoice::Cancel, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run: other }]);
     // The live run is untouched: still halted, still answerable.
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Cancel), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL),
+        Ok(())
+    );
 }
 
 #[tokio::test]
 async fn an_answer_for_a_run_that_ended_is_dropped_and_said() {
     let mut lab = lab(Script::Answer("done"));
     assert_eq!(
-        lab.manager.decide(pane(), RunId(4), UserChoice::Retry),
+        lab.manager
+            .decide(pane(), RunId(4), UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run: RunId(4) }]);
@@ -1781,7 +1805,8 @@ async fn an_answer_with_no_failure_waiting_is_said_not_silent() {
     let (run, _handle) = lab.start(codex_review());
     lab.sent();
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run }]);
@@ -1797,18 +1822,18 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     let (tx, _chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let chats = chat::Chats::new(turn_runner, tx).with_orchestra(lab.manager.clone());
     assert!(
-        !chats.decide_run(pane(), RunId(1), UserChoice::Retry),
+        !chats.decide_run(pane(), RunId(1), UserChoice::Retry, FamilySet::ALL),
         "no run yet"
     );
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert!(chats.decide_run(pane(), run, UserChoice::Retry));
+    assert!(chats.decide_run(pane(), run, UserChoice::Retry, FamilySet::ALL));
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     assert_eq!(lab.seen.requests().len(), 2, "relaunched once");
     lab.sent();
     assert!(
-        !chats.decide_run(pane(), run, UserChoice::Cancel),
+        !chats.decide_run(pane(), run, UserChoice::Cancel, FamilySet::ALL),
         "no failure waits"
     );
     assert_eq!(
@@ -1824,7 +1849,7 @@ async fn the_answer_to_a_failure_reaches_the_run_through_chats() {
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     failing.sent();
-    assert!(chats.decide_run(pane(), failed, UserChoice::Cancel));
+    assert!(chats.decide_run(pane(), failed, UserChoice::Cancel, FamilySet::ALL));
     assert_eq!(
         without_handoffs(failing.sent()),
         [OrchestraEvent::Ended { run: failed }]
@@ -1863,7 +1888,9 @@ async fn a_halted_run_stays_until_answered_then_ends_by_itself() {
     lab.manager.turn_ended(pane(), run);
     assert!(!lab.sent().contains(&OrchestraEvent::Ended { run }));
     assert!(lab.manager.scope(pane()).is_some(), "the run waits");
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     loop {
         if lab.next().await == (OrchestraEvent::Ended { run }) {
             break;
@@ -1881,7 +1908,8 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
     let lab = lab(Script::FailOnce("SECRET-ERROR"));
     let (run, handle) = lab.start(codex_review());
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
     handle.call(spawn(Task::Review, "check")).await;
@@ -1892,12 +1920,15 @@ async fn a_halted_run_stays_paused_until_the_user_decides() {
         assert_eq!(spawned, error("run paused"));
     }
     assert_eq!(lab.seen.requests().len(), 1, "nothing resumed on its own");
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let spawned = handle.call(spawn(Task::General, "more")).await;
     assert_eq!(spawned, fine("worker 2: running"));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::NotHalted)
     );
 }
@@ -1917,7 +1948,9 @@ async fn a_timed_out_worker_error_reaches_a_model_only_wrapped() {
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     let collected = handle.call(collect(1)).await;
     assert_eq!(collected, error("worker 1 ended timed_out with no text"));
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let prompt = lab.seen.requests()[1].messages[0].content.clone();
     let wrapped = label::wrap(&nonce_of(&prompt), "deadline passed");
@@ -1933,7 +1966,9 @@ async fn choosing_cancel_on_a_failure_ends_the_run() {
     handle.call(spawn(Task::Review, "one")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     lab.sent();
-    lab.manager.decide(pane(), run, UserChoice::Cancel).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Cancel, FamilySet::ALL)
+        .unwrap();
     let events = lab.sent();
     // The failure was unresolved: the handoff lazarobox builds is `blocked`.
     assert_eq!(handoffs(&events)[0].verdict, Verdict::Blocked);
@@ -2295,7 +2330,9 @@ async fn a_retry_error_cannot_escape_its_wrapper() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check the parser")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+    lab.manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+        .unwrap();
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
     assert_eq!(requests[0].messages[0].content, "check the parser");
@@ -2323,7 +2360,9 @@ async fn a_second_retry_carries_only_the_last_error() {
     handle.call(spawn(Task::Review, "check the parser")).await;
     for _ in 0..2 {
         assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-        lab.manager.decide(pane(), run, UserChoice::Retry).unwrap();
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL)
+            .unwrap();
     }
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let requests = lab.seen.requests();
@@ -2414,7 +2453,8 @@ async fn ctrl_c_twice_sends_ended_once() {
     assert_eq!(ends(&events), 1);
     assert_eq!(events.last(), Some(&OrchestraEvent::Ended { run }));
     assert_eq!(
-        lab.manager.decide(pane(), run, UserChoice::Retry),
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
         Err(DecideError::Moved)
     );
     assert_eq!(lab.sent(), [OrchestraEvent::Dropped { run }]);
@@ -2463,7 +2503,7 @@ async fn races_keep_exactly_one_ended_as_the_last_event() {
             assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
             let manager = manager.clone();
             tokio::spawn(async move {
-                let _ = manager.decide(pane(), run, UserChoice::Retry);
+                let _ = manager.decide(pane(), run, UserChoice::Retry, FamilySet::ALL);
             })
         } else {
             tokio::spawn(async {})
@@ -5192,7 +5232,11 @@ async fn a_relaunched_worker_begins_a_new_transcript() {
     let (run, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    assert_eq!(lab.manager.decide(pane(), run, UserChoice::Retry), Ok(()));
+    assert_eq!(
+        lab.manager
+            .decide(pane(), run, UserChoice::Retry, FamilySet::ALL),
+        Ok(())
+    );
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let items = traced(&lab.sent(), 1);
     assert_eq!(
@@ -5858,4 +5902,55 @@ async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
     assert!(said.contains("review"), "{said}");
     assert!(!said.contains("spawn"), "{said}");
     assert!(said.is_ascii());
+}
+
+// A retry or a relaunch starts a new process under the menu as the user
+// answers it, not as it was at the spawn: Write off before Retry refuses the
+// worker and starts nothing.
+#[tokio::test]
+async fn a_retry_after_write_went_off_starts_no_process() {
+    let lab = lab(Script::FailThenHang("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_code());
+    handle.call(spawn(Task::Code, "write")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let decided = lab
+        .manager
+        .decide(pane(), run, UserChoice::Retry, write_off());
+    assert_eq!(decided, Ok(()));
+    // The refusal halts the run again: the user decides once more.
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(lab.seen.requests().len(), 1, "no second process");
+}
+
+// ... and Write back on before the next answer lets it through, with the
+// write tools: no loop on a stale ceiling.
+#[tokio::test]
+async fn a_retry_after_write_went_back_on_runs_the_worker_with_write() {
+    let lab = lab(Script::FailThenHang("409 conflict: session busy"));
+    let (run, handle) = lab.start(codex_code());
+    handle.call(spawn(Task::Code, "write")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    let relaunch = UserChoice::Relaunch(codex_code());
+    let off = lab.manager.decide(pane(), run, relaunch, write_off());
+    assert_eq!(off, Ok(()));
+    // The refusal halts the run again: the user decides once more.
+    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(lab.seen.requests().len(), 1, "no process under Write off");
+    let on = lab
+        .manager
+        .decide(pane(), run, UserChoice::Retry, FamilySet::ALL);
+    assert_eq!(on, Ok(()));
+    let second = timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(second) = lab.seen.requests().into_iter().nth(1) {
+                break second;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a second process started");
+    assert_eq!(second.families, Toolset::Code.families());
 }

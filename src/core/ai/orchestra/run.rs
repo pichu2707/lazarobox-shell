@@ -961,7 +961,12 @@ impl Run {
                 n => format!("{} workers refused: {reason}", n + 1),
             })
         } else {
-            None
+            // A retry is a new process: the spec is capped by the menu as it
+            // is now, and a writer that lost Write is refused, not run bare.
+            let spec = &mut self.slots[index(worker)].spec;
+            spec.families = spec.toolset.capped(self.ceiling);
+            (spec.toolset.families().contains(Family::Write) && !spec.writes())
+                .then(|| WRITE_OFF.to_owned())
         };
         // The run stays halted while the worker is queued again, so a refusal
         // lands in `pending` like any other late failure.
