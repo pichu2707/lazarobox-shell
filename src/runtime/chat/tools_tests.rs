@@ -788,6 +788,7 @@ async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
         limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
         goal: String::new(),
         attach: None,
     };
@@ -839,6 +840,7 @@ async fn an_orchestrator_turn_without_a_session_ends_its_run() {
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
         limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
         goal: String::new(),
         attach: None,
     };
@@ -887,6 +889,7 @@ async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
         profile: Profile::default(),
         deadline: Duration::from_secs(30),
         limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
         goal: String::new(),
         attach: None,
     };
@@ -964,6 +967,7 @@ async fn an_orchestrator_run_scopes_its_reads_to_the_chat_origin() {
             profile: Profile::default(),
             deadline: Duration::from_secs(30),
             limits: crate::core::ai::orchestra::run::RunLimits::default(),
+            ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
             goal: String::new(),
             attach: None,
         };

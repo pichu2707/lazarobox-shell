@@ -1042,3 +1042,22 @@ fn the_alert_shows_a_class_that_says_something_and_omits_other() {
         "{text}"
     );
 }
+
+// Spec (agent-orchestrator, "Code worker refused with Write off"; chat-pane):
+// the Write-off refusal reaches the pane as an ASCII system line that names
+// the Write toggle and the menu step, and is not chat history.
+#[test]
+fn the_write_off_refusal_is_a_system_line_naming_the_toggle_and_the_step() {
+    use crate::core::ai::orchestra::steps::WRITE_OFF;
+    let (mut a, _) = running();
+    let before = chat_of(&a).messages().count();
+    a.update(event(refused(WRITE_OFF)));
+    let all = system_lines(&a);
+    let line = all
+        .lines()
+        .find(|l| l.starts_with("spawn of a code worker refused"))
+        .expect("the refusal line");
+    assert!(line.is_ascii(), "{line}");
+    assert!(line.contains("Write") && line.contains("AI menu"), "{line}");
+    assert_eq!(chat_of(&a).messages().count(), before);
+}

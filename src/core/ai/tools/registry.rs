@@ -33,6 +33,21 @@ impl FamilySet {
     /// The 0.18.0 tools, the only ones offered until a toggle is on.
     pub const LEGACY: FamilySet = FamilySet::EMPTY.with(Family::Read).with(Family::Pane);
 
+    /// Every family: the menu with all of it on, the default ceiling.
+    pub const ALL: FamilySet = FamilySet::LEGACY
+        .with(Family::Search)
+        .with(Family::Write)
+        .with(Family::Exec)
+        .with(Family::Git)
+        .with(Family::GitWrite)
+        .with(Family::Orchestra)
+        .with(Family::Github);
+
+    /// This set minus `family`.
+    pub const fn without(self, family: Family) -> FamilySet {
+        FamilySet(self.0 & !(1 << family as u16))
+    }
+
     /// This set plus `family`.
     pub const fn with(self, family: Family) -> FamilySet {
         FamilySet(self.0 | 1 << family as u16)

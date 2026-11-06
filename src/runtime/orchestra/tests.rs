@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::core::ai::orchestra::steps::WRITE_OFF;
 // The disclosure tests drive the writing lab, which runs on Linux only.
 #[cfg(target_os = "linux")]
 use crate::core::ai::orchestra::changes::Disclosure;
@@ -386,6 +387,7 @@ impl Lab {
             deadline: Duration::from_secs(u64::from(DEFAULT_WORKER_TIMEOUT_SECS)),
             limits: RunLimits::default(),
             profile: Profile::Programmer,
+            ceiling: FamilySet::ALL,
             events: self.turn.0.clone(),
             approver: Arc::new(Unwired),
             pending: Pending::new(),
@@ -5735,4 +5737,101 @@ async fn two_undelegated_runs_on_one_pane_are_each_reported() {
     }
     assert_eq!(told.len(), 2, "{told:?}");
     assert_ne!(told[0], told[1], "one per run");
+}
+
+/// The menu with Write off and every other family on.
+fn write_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Write)
+}
+
+// Spec (agent-orchestrator, "Code worker refused with Write off"): a `code`
+// spawn with Write off makes no worker and starts no process, the coordinator
+// gets the refusal, the pane is told the same line, and the run goes on.
+#[tokio::test]
+async fn a_code_spawn_with_write_off_is_refused_shown_and_never_launched() {
+    let mut lab = lab(Script::Hang);
+    let scope = OrchScope {
+        ceiling: write_off(),
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let refused = handle.call(spawn(Task::Code, "write it")).await;
+    assert!(refused.is_error, "{refused:?}");
+    // Neither cut nor masked on its way: the whole text, as written.
+    assert_eq!(refused.text, WRITE_OFF);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Code,
+            reason: refused.text,
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(lab.seen.requests().is_empty(), "no process was started");
+    // The run is not paused: the next spawn is a worker like any other.
+    assert_eq!(
+        handle.call(spawn(Task::Review, "look")).await,
+        fine("worker 1: running")
+    );
+}
+
+// Spec ("Turning Write on lets the spawn through", menu variant): a toggle
+// change reaches the NEXT spawn through the next turn's scope, and the worker
+// that already runs keeps the tools it was started with.
+#[tokio::test]
+async fn a_menu_change_applies_from_the_next_spawn_and_not_to_a_running_worker() {
+    let lab = writing_lab(Script::Hang);
+    let scope = |ceiling: FamilySet| OrchScope {
+        origin: lab.app(),
+        ceiling,
+        limits: RunLimits {
+            parallel: 3,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_code(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope(FamilySet::ALL)).unwrap();
+    assert_eq!(
+        handle.call(spawn(Task::Code, "one")).await,
+        fine("worker 1: running")
+    );
+    lab.manager.turn_ended(pane(), run);
+    let (_, handle) = lab.manager.attach(pane(), run, scope(write_off())).unwrap();
+    let refused = handle.call(spawn(Task::Code, "two")).await;
+    assert!(refused.is_error, "{refused:?}");
+    lab.manager.turn_ended(pane(), run);
+    let (_, handle) = lab
+        .manager
+        .attach(pane(), run, scope(FamilySet::ALL))
+        .unwrap();
+    assert_eq!(
+        handle.call(spawn(Task::Code, "three")).await,
+        fine("worker 2: running")
+    );
+    let requests = loop {
+        let seen = lab.seen.requests();
+        if seen.len() == 2 {
+            break seen;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    for request in requests {
+        assert_eq!(request.families, Toolset::Code.families());
+    }
+}
+
+// Spec ("Exec off means no run_command"): a forged `run_command` from a
+// `code` worker is refused as a result, and nothing is asked.
+#[tokio::test]
+async fn a_forged_run_command_from_a_code_worker_is_refused_without_an_ask() {
+    let mut lab = writing_lab(Script::Hang);
+    let waits = Waits::new();
+    let handle = lab.start_writing(&waits, TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write it")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(1, "run_command", json!({"command": "ls"}));
+    let reply = exchange(&mut client, call).await;
+    assert_eq!(reply["result"]["isError"], json!(true), "{reply}");
+    assert!(lab.turn.1.try_recv().is_err(), "no ask reached the turn");
 }

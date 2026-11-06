@@ -55,6 +55,11 @@ impl Step {
 /// The reason a `code` worker is refused on a read-only goal.
 pub const READ_ONLY: &str = "code workers are not spawned for a read-only goal";
 
+/// The reason a `code` worker is refused while the menu has Write off. The
+/// step is the menu's: `/write` replaces it once the chat has that command.
+pub const WRITE_OFF: &str = "worker not started: a code worker needs the Write tools and Write is off; \
+     turn Write on in the AI menu (Ctrl+Space m), then spawn it again";
+
 /// How big `classify` found the goal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {

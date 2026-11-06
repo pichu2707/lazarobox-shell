@@ -79,14 +79,14 @@ use crate::core::{
                 RunState, StepDone, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
-            steps::{Mark, READ_ONLY, Step, StepError},
+            steps::{Mark, READ_ONLY, Step, StepError, WRITE_OFF},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
         tools::{
             label,
             paths::SecretRoots,
-            registry::Family,
+            registry::{Family, FamilySet},
             stage::StageKey,
             wiring::{McpWire, Secret},
         },
@@ -303,6 +303,8 @@ pub struct OrchScope {
     /// Each worker's deadline (`worker_timeout_secs`).
     pub deadline: Duration,
     pub limits: RunLimits,
+    /// What the AI menu allows the workers spawned from this turn (D17).
+    pub ceiling: FamilySet,
     pub profile: Profile,
     /// The orchestrator turn's channel and approver: a worker's tool rows and
     /// asks go there (D4), and `pending` lets that turn's timers see a
@@ -717,7 +719,9 @@ impl RunManager {
             scope: read_scope,
             dropped,
             goal: scope.goal,
-            run: Run::new(run, scope.roster, scope.deadline).with_limits(scope.limits),
+            run: Run::new(run, scope.roster, scope.deadline)
+                .with_limits(scope.limits)
+                .with_ceiling(scope.ceiling),
             origin: scope.origin,
             profile: scope.profile,
             events: scope.events,
@@ -761,6 +765,7 @@ impl RunManager {
             // it: the earlier turn's channel and approver are dead.
             // A worker that is over keeps its session closed: only the ones
             // still queued or running are pointed at the new turn.
+            live.run.set_ceiling(scope.ceiling);
             let run = &live.run;
             live.routes.retain(|id, _| {
                 matches!(
@@ -1121,6 +1126,7 @@ impl RunManager {
                         Refusal::Paused => "run paused".to_owned(),
                         Refusal::Ended => ENDED.to_owned(),
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
+                        Refusal::WriteOff => WRITE_OFF.to_owned(),
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
@@ -1553,7 +1559,7 @@ impl RunManager {
                 content: prompt,
             }],
             tools: tools_for(&spec.engine, true, Some(live.origin.clone()), MCP_VERIFIED),
-            families: spec.toolset.families(),
+            families: spec.families,
             ollama: Default::default(),
             github_read: false,
         };
@@ -1641,7 +1647,7 @@ impl RunManager {
         // Defensive: every `MCP_VERIFIED` engine is in `CATALOG` today, so
         // this exit is not reached; it stays so it is never silent.
         let locality = locality(&request.engine).ok_or(Degrade::NoLocality)?;
-        let families = spec.toolset.families();
+        let families = spec.families;
         // Only a chat pane may type into the user's session.
         debug_assert!(!families.contains(Family::Pane));
         let model = spec.model.as_deref().unwrap_or("default");

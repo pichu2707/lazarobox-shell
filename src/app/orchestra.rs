@@ -1131,6 +1131,9 @@ impl App {
                 profile,
                 deadline,
                 limits,
+                // The menu as it is now: a toggle changed since the last turn
+                // reaches the next spawn, never a running worker.
+                ceiling: self.ai.families(),
                 goal,
                 attach,
             }),

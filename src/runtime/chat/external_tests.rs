@@ -305,6 +305,7 @@ async fn user_tool_listed_and_asked(orchestrated: bool) {
             profile: Profile::default(),
             deadline: Duration::from_secs(60),
             limits: RunLimits::default(),
+            ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
             goal: String::new(),
             attach: None,
         };

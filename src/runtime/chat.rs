@@ -932,6 +932,7 @@ impl Chats {
                     goal: orch.goal,
                     deadline: orch.deadline,
                     limits: orch.limits,
+                    ceiling: orch.ceiling,
                     profile: orch.profile,
                     events: events.clone(),
                     approver: approver.clone(),

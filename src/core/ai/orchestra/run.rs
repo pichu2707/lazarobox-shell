@@ -15,6 +15,7 @@ use crate::core::ai::chat::engine::{Availability, Usage};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::label;
+use crate::core::ai::tools::registry::{Family, FamilySet};
 
 /// What bounds a run: the workers that run at once, the workers it may spawn
 /// in all and its wall clock (`max_parallel`, `max_workers`,
@@ -110,6 +111,9 @@ pub enum Refusal {
     WorkerCap(usize),
     /// `authorize` made the goal read-only: no `code` worker (S5, D15).
     ReadOnly,
+    /// The menu has Write off: no `code` worker (D18). The text is
+    /// [`super::steps::WRITE_OFF`].
+    WriteOff,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,6 +191,9 @@ pub struct Run {
     roster: Roster,
     deadline: Duration,
     limits: RunLimits,
+    /// What the AI menu allows the workers spawned from now on (D17): Write
+    /// and Exec, everything else is the role's own.
+    ceiling: FamilySet,
     /// Worker `n` is `slots[n - 1]`.
     slots: Vec<Slot>,
     /// Queued workers, in the order they started waiting.
@@ -220,6 +227,7 @@ impl Run {
             roster,
             deadline,
             limits: RunLimits::default(),
+            ceiling: FamilySet::ALL,
             slots: Vec::new(),
             queue: VecDeque::new(),
             pending: VecDeque::new(),
@@ -240,6 +248,18 @@ impl Run {
             ..limits
         };
         self
+    }
+
+    /// Bounds the workers spawned from now on by what the menu allows.
+    pub fn with_ceiling(mut self, ceiling: FamilySet) -> Self {
+        self.ceiling = ceiling;
+        self
+    }
+
+    /// Takes the menu of a new request. Workers already started keep their
+    /// spec; later spawns use this one.
+    pub fn set_ceiling(&mut self, ceiling: FamilySet) {
+        self.ceiling = ceiling;
     }
 
     pub fn limits(&self) -> RunLimits {
@@ -337,8 +357,7 @@ impl Run {
         }
         let files = slot.ledger.pending();
         if slot.ledger.changes().is_empty() {
-            // Only `code` writes today; `simple` joins it in W8.
-            let silent = slot.status == WorkerStatus::Done && slot.spec.task == Task::Code;
+            let silent = slot.status == WorkerStatus::Done && slot.spec.writes();
             return silent.then_some(Disclosure::EmptyLedger);
         }
         (files > 0 && unproposed()).then_some(Disclosure::StagedNotProposed { files })
@@ -388,13 +407,19 @@ impl Run {
             RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
             RunState::Open => {}
         }
-        if self.steps.read_only() && task == Task::Code {
+        let (spec, refusal) = self.resolve(task, prompt);
+        // A read-only goal is judged by the role, before the menu: turning
+        // Write on would not help.
+        let writer = spec.toolset.families().contains(Family::Write);
+        if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
         if self.slots.len() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
         }
-        let (spec, refusal) = self.resolve(task, prompt);
+        if writer && !spec.writes() {
+            return Err(Refusal::WriteOff);
+        }
         self.slots.push(Slot {
             spec,
             status: WorkerStatus::Queued,
@@ -420,7 +445,7 @@ impl Run {
         self.slots[index(id)].started = None;
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
-        let code = self.slots[index(id)].spec.task == Task::Code;
+        let code = self.slots[index(id)].spec.writes();
         // An engine that cannot run is a setup problem; a read-only goal is not.
         let refusal = refusal
             .map(|reason| (ErrorClass::Setup, reason))
@@ -477,6 +502,7 @@ impl Run {
             engine,
             model,
             toolset: Toolset::for_kind(task),
+            families: Toolset::for_kind(task).capped(self.ceiling),
             deadline: self.deadline,
         };
         (spec, refusal)
@@ -681,10 +707,7 @@ impl Run {
         let narrows = mark == Mark::Grant(Grant::ReadOnly) && !self.steps.read_only();
         if narrows {
             // A code worker that runs would keep writing: cancel it first.
-            if let Some(id) = self
-                .ids(WorkerStatus::Running, |s| s.spec.task == Task::Code)
-                .first()
-            {
+            if let Some(id) = self.ids(WorkerStatus::Running, |s| s.spec.writes()).first() {
                 return Err(StepError::CodeRunning(*id));
             }
         }
@@ -773,7 +796,7 @@ impl Run {
         let queued: Vec<_> = self.queue.iter().copied().collect();
         let code: Vec<_> = queued
             .into_iter()
-            .filter(|id| self.slots[index(*id)].spec.task == Task::Code)
+            .filter(|id| self.slots[index(*id)].spec.writes())
             .collect();
         for id in &code {
             let slot = &mut self.slots[index(*id)];

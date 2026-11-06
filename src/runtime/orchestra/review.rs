@@ -948,6 +948,7 @@ impl RunManager {
                     Refusal::Paused => "the run is paused".to_owned(),
                     Refusal::Ended => ENDED.to_owned(),
                     Refusal::ReadOnly => READ_ONLY.to_owned(),
+                    Refusal::WriteOff => WRITE_OFF.to_owned(),
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
                 })?;
             if let Some(system) = system {
