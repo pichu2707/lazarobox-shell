@@ -5,8 +5,11 @@ fn origin() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_four_engines_are_verified() {
-    assert_eq!(MCP_VERIFIED, ["claude", "codex", "gemini", "ollama"]);
+fn the_five_engines_are_verified() {
+    assert_eq!(
+        MCP_VERIFIED,
+        ["claude", "codex", "gemini", "ollama", "llamacpp"]
+    );
     for engine in MCP_VERIFIED {
         assert_eq!(
             tools_for(engine, true, origin(), MCP_VERIFIED),
@@ -51,4 +54,15 @@ fn tools_off_or_an_unverified_engine_stay_off() {
         Tools::Off
     );
     assert_eq!(tools_for("codex", true, origin(), &["claude"]), Tools::Off);
+}
+
+#[test]
+fn the_text_only_servers_and_opencode_stay_off() {
+    for engine in ["lmstudio", "vllm", "opencode"] {
+        assert_eq!(
+            tools_for(engine, true, origin(), MCP_VERIFIED),
+            Tools::Off,
+            "{engine}"
+        );
+    }
 }
