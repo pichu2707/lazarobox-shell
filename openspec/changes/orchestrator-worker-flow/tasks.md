@@ -101,12 +101,12 @@ Files: `src/core/ai/orchestra/run.rs` (`Run::undelegated()`), `src/runtime/orche
 Files: `src/app/chat.rs`, `src/app/orchestra.rs`, `src/core/ai/chat/guidance.rs`; tests in `app_tests/`.
 
 - Note: PR3 ships the notice without key text (`no worker ran, nothing written`); the `Enter delegate | Esc dismiss` text moves here and is added together with the keys (`undelegated_hint` in `guidance.rs`).
-- [ ] 4.1 RED (app): Enter on an EMPTY composer, fresh press only, with an undelegated notice pending in an orchestrating, idle pane starts an orchestrator turn whose message is a fixed text of lazarobox's own and keeps the user's goal (the `resume_goal` pattern). Spec: "Key starts delegation [W1, auto]".
-- [ ] 4.2 RED: Enter with text in the composer sends normally; Enter held (repeat) does not trigger; Enter while a turn runs, or with ORCH off, does nothing new. Esc dismisses the line.
-- [ ] 4.3 RED: with no undelegated request, the key does nothing and a notice says there is nothing to delegate. Spec: "Nothing to delegate says so [W1, auto]". Resolve precedence: one guidance line at a time (provider notice, failure alert, undelegated), so Enter has one meaning.
-- [ ] 4.4 RED: orchestrator text, worker text and tool results containing "delegate" start no turn. Spec: "A model cannot press it [W1, auto]".
-- [ ] 4.5 GREEN: handle the key in `app/chat.rs`, wired to a small method in `app/orchestra.rs`; fixed text constant; update `guidance.rs` rendering.
-- [ ] 4.6 REFACTOR: keep the fixed text next to the notice text constants; run `cargo test` for existing Enter-handling snapshots.
+- [x] 4.1 RED (app): Enter on an EMPTY composer, fresh press only, with an undelegated notice pending in an orchestrating, idle pane starts an orchestrator turn whose message is a fixed text of lazarobox's own and keeps the user's goal (the `resume_goal` pattern). Spec: "Key starts delegation [W1, auto]".
+- [x] 4.2 RED: Enter with text in the composer sends normally; Enter held (repeat) does not trigger; Enter while a turn runs, or with ORCH off, does nothing new. Esc dismisses the line.
+- [x] 4.3 RED: with no undelegated request, the key does nothing and a notice says there is nothing to delegate. Spec: "Nothing to delegate says so [W1, auto]". Resolve precedence: one guidance line at a time (provider notice, failure alert, undelegated), so Enter has one meaning.
+- [x] 4.4 RED: orchestrator text, worker text and tool results containing "delegate" start no turn. Spec: "A model cannot press it [W1, auto]".
+- [x] 4.5 GREEN: handle the key in `app/chat.rs`, wired to a small method in `app/orchestra.rs`; fixed text constant; update `guidance.rs` rendering.
+- [x] 4.6 REFACTOR: keep the fixed text next to the notice text constants; run `cargo test` for existing Enter-handling snapshots.
 - Done when: `cargo test` green; manual step M2 passes end to end (Enter produces a worker spawn on Ollama or a notice).
 - Depends on: PR3.
 

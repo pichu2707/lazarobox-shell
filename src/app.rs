@@ -8881,6 +8881,8 @@ mod app_tests {
     /// Selecting a worker row and the escalating Ctrl+C (S3).
     mod orchestra_cancel;
     mod orchestra_consent;
+    /// The delegate key and Esc after an undelegated reply.
+    mod orchestra_delegate;
     /// The handoffs of a run in engram, and the degraded mode.
     mod orchestra_handoffs;
     /// The one-time provider notice of an orchestrating pane.

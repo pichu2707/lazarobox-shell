@@ -31,7 +31,7 @@ pub fn github_hint(repo: &str, cols: usize) -> String {
 
 /// The notice that no worker ran, in `cols` columns, ASCII and one line with
 /// two columns of margin: the full form, then a shorter one. It names no key:
-/// the key text comes with the keys.
+/// the keys are named by [`delegate_hint`], only while they can act.
 pub fn undelegated_hint(cols: usize) -> String {
     let full = "no worker ran, nothing written";
     let form = if full.len() + 2 <= cols {
@@ -40,6 +40,22 @@ pub fn undelegated_hint(cols: usize) -> String {
         "no worker ran"
     };
     form.to_owned()
+}
+
+/// The line offered while the delegate key can act, in `cols` columns, ASCII
+/// and one line with two columns of margin. The keys come first and stay
+/// whole; the explanation and then Esc go as the width shrinks.
+pub fn delegate_hint(cols: usize) -> String {
+    let forms = [
+        "Enter delegate | Esc dismiss | no worker ran, nothing written",
+        "Enter delegate | Esc dismiss | no worker ran",
+        "Enter delegate | no worker ran",
+    ];
+    forms
+        .into_iter()
+        .find(|form| form.len() + 2 <= cols)
+        .unwrap_or("Enter delegate")
+        .to_owned()
 }
 
 /// The guidance for `availability`, or `None` when the engine is ready.
@@ -128,6 +144,30 @@ mod tests {
         for cols in 1..=80 {
             let text = undelegated_hint(cols);
             assert!(text.is_ascii() && !text.contains("Enter"));
+        }
+    }
+
+    // D27: the keys come first, shorter forms by width, ASCII, two columns of
+    // margin, and the Enter key is never cut.
+    #[test]
+    fn the_delegate_hint_puts_the_keys_first_with_a_form_for_each_width() {
+        let full = "Enter delegate | Esc dismiss | no worker ran, nothing written";
+        assert_eq!(delegate_hint(200), full);
+        assert_eq!(delegate_hint(full.len() + 2), full);
+        assert_eq!(
+            delegate_hint(full.len() + 1),
+            "Enter delegate | Esc dismiss | no worker ran"
+        );
+        assert_eq!(
+            delegate_hint(48),
+            "Enter delegate | Esc dismiss | no worker ran"
+        );
+        assert_eq!(delegate_hint(40), "Enter delegate | no worker ran");
+        assert_eq!(delegate_hint(20), "Enter delegate");
+        assert_eq!(delegate_hint(3), "Enter delegate");
+        for cols in 1..=80 {
+            let text = delegate_hint(cols);
+            assert!(text.is_ascii() && text.starts_with("Enter delegate"));
         }
     }
 

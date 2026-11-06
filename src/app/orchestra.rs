@@ -9,7 +9,7 @@ use crate::core::ai::{
     chat::{
         Entry, OrchAlert, OrchNote,
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
-        guidance::undelegated_hint,
+        guidance::{delegate_hint, undelegated_hint},
         transcript::{kind_label, worker_label},
     },
     config::Assignment,
@@ -34,6 +34,15 @@ const TOOLS_OFF: &str =
 /// it: Enter accepts, Esc dismisses (`y` is typed).
 const NOTICE: &str = "Providers recommend API keys for automation; \
      consumer-account logins carry risk. Enter accept \u{b7} Esc dismiss";
+
+/// What the delegate key sends: lazarobox's own words, never the model's or a
+/// tool result's. The run keeps the user's request as its goal.
+const DELEGATE_ASK: &str =
+    "Please delegate my previous request to a worker with spawn_agent, then wait for its result.";
+/// Said when the delegate key is pressed with no undelegated request.
+const NOTHING_TO_DELEGATE: &str = "nothing to delegate";
+/// Said when the delegate key found the turn could not go.
+const DELEGATE_NOT_SENT: &str = "the delegation was not sent; press Enter to try again";
 
 /// Said when `m` opens the engines because the worker has no engine to take
 /// the models from.
@@ -505,8 +514,88 @@ impl App {
         let cols = self.panes.get(&id).map_or(80, |p| usize::from(p.size.cols));
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(undelegated_hint(cols));
+            // The key acts on the user's request, not on its own earlier ask.
+            if let Some(goal) = chat.last_request(DELEGATE_ASK) {
+                chat.offer_delegate(goal);
+            }
             self.dirty = true;
         }
+    }
+
+    /// Whether the delegate key can act in pane `id` now: a request is
+    /// offered, the pane is orchestrating, idle, with an empty composer and
+    /// ready, and nothing that answers Enter first (D24) is on screen.
+    fn delegate_ready(&self, id: PaneId) -> bool {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return false;
+        };
+        chat.delegate_offered()
+            && self.orchestrating(id)
+            && chat.phase() == Phase::Idle
+            && chat.composer().text().is_empty()
+            && self.server_offer_prompt(id).is_none()
+            && self.orch_guidance(id).is_none()
+            && self.orch_refusal(id).is_none()
+            && matches!(self.turn_availability(id), Availability::Ready { .. })
+    }
+
+    /// The line that names the delegate key, only while it can act.
+    pub(super) fn delegate_line(&self, id: PaneId) -> Option<String> {
+        let cols = usize::from(self.panes.get(&id)?.size.cols);
+        self.delegate_ready(id).then(|| delegate_hint(cols))
+    }
+
+    /// Enter and Esc on the delegate line (D27): only a fresh, plain press on
+    /// an empty composer of an idle, orchestrating pane. Enter sends
+    /// lazarobox's fixed text and the run keeps the user's request; with
+    /// nothing offered it says so. `None` leaves the key to the chat.
+    pub(super) fn answer_delegate(
+        &mut self,
+        id: PaneId,
+        key: &KeyEvent,
+        repeat: bool,
+    ) -> Option<Vec<Effect>> {
+        let enter = key.code == KeyCode::Enter;
+        if !(enter || key.code == KeyCode::Esc)
+            || repeat
+            || key.kind != KeyEventKind::Press
+            || key.modifiers != KeyModifiers::NONE
+            || !self.orchestrating(id)
+        {
+            return None;
+        }
+        let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
+        if chat.phase() != Phase::Idle || !chat.composer().text().is_empty() {
+            return None;
+        }
+        if !self.delegate_ready(id) {
+            // Nothing offered: an Enter that did nothing says why.
+            let offered = (self.panes.get(&id).and_then(PaneState::chat_state))
+                .is_some_and(ChatState::delegate_offered);
+            if enter && !offered {
+                self.notice = Some(NOTHING_TO_DELEGATE.to_owned());
+                self.dirty = true;
+                return Some(Vec::new());
+            }
+            return None;
+        }
+        let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
+        let goal = chat.take_delegate()?;
+        self.dirty = true;
+        if !enter {
+            return Some(Vec::new());
+        }
+        self.run_keep.resume_goal = Some(goal.clone());
+        let availability = self.turn_availability(id);
+        let effects = self.send_text(id, DELEGATE_ASK, &availability);
+        if effects.is_empty() {
+            self.run_keep.resume_goal = None;
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.offer_delegate(goal);
+            }
+            self.notice = Some(DELEGATE_NOT_SENT.to_owned());
+        }
+        Some(effects)
     }
 
     /// Starts the continuation turn on the open run, after a line that says
@@ -809,10 +898,14 @@ impl App {
     /// drawn muted and does not stand in for the transcript.
     pub fn guidance_is_hint(&self, id: PaneId) -> bool {
         let shown = self.chat_guidance(id);
-        [self.github_hint(id), self.toggle_hint(id)]
-            .into_iter()
-            .flatten()
-            .any(|hint| shown.as_deref() == Some(hint.as_str()))
+        [
+            self.delegate_line(id),
+            self.github_hint(id),
+            self.toggle_hint(id),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|hint| shown.as_deref() == Some(hint.as_str()))
     }
 
     /// Whether the provider notice is shown in pane `id`.
