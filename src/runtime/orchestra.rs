@@ -1127,7 +1127,8 @@ impl RunManager {
                     Some(reason) => format!("{head}: {reason}"),
                     None => head,
                 };
-                return self.refused(pane, live, task, reason.unwrap_or_default(), text);
+                let shown = reason.unwrap_or_else(|| status.label().to_owned());
+                return self.refused(pane, live, task, shown, text);
             }
             let text = format!("worker {}: {}", id.0, status.label());
             Outcome {
