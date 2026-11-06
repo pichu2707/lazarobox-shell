@@ -99,6 +99,9 @@ fn ctrl_o_turns_the_orch_mode_on_then_off() {
 #[test]
 fn turning_orch_on_says_the_chat_cannot_write_run_or_read_github() {
     let mut a = gate_on();
+    // Write on: the line about the Write toggle is not part of this story.
+    a.ai.set_tools_enabled(true);
+    a.ai.set_toggle(crate::core::ai::config::ToolToggle::Write, true);
     let notes = |a: &App| -> Vec<String> {
         (chat_of(a).entries().iter())
             .filter_map(|e| match e {
@@ -122,6 +125,36 @@ fn turning_orch_on_says_the_chat_cannot_write_run_or_read_github() {
     assert_eq!(notes(&a).len(), 2);
     at(&mut a, 2000, ctrl('o'));
     assert_eq!(notes(&a).len(), 4);
+}
+
+// Never silent: ORCH workers follow the AI menu's Write toggle, so with Write
+// off the notice says code workers will be refused and where to turn it on.
+#[test]
+fn turning_orch_on_with_write_off_says_where_to_turn_it_on() {
+    use crate::core::ai::config::ToolToggle;
+    let lines = |a: &App| -> Vec<String> {
+        (chat_of(a).entries().iter())
+            .filter_map(|e| match e {
+                Entry::System(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut off = gate_on();
+    off.ai.set_tools_enabled(true);
+    at(&mut off, 0, ctrl('o'));
+    let said = lines(&off);
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert_eq!(
+        said[2],
+        "code workers need Write: turn it on in the AI menu (Ctrl+Space m)"
+    );
+    assert!(said[2].is_ascii());
+    let mut on = gate_on();
+    on.ai.set_tools_enabled(true);
+    on.ai.set_toggle(ToolToggle::Write, true);
+    at(&mut on, 0, ctrl('o'));
+    assert_eq!(lines(&on).len(), 2, "{:?}", lines(&on));
 }
 
 // modal-input / Held key toggles once.

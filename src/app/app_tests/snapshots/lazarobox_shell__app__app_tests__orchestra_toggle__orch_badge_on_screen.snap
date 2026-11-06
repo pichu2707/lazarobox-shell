@@ -10,6 +10,9 @@ expression: shown
                                        │  review. Ctrl+O goes back to a plain
                                        │  chat.
                                        │
+                                       │• code workers need Write: turn it on in
+                                       │  the AI menu (Ctrl+Space m)
+                                       │
                                        │• ORCH on
                                        │
                                        │• This chat cannot write files, run
@@ -18,11 +21,8 @@ expression: shown
                                        │  review. Ctrl+O goes back to a plain
                                        │  chat.
                                        │
-                                       │
-                                       │
-                                       │
-                                       │
-                                       │
+                                       │• code workers need Write: turn it on in
+                                       │  the AI menu (Ctrl+Space m)
                                        │
                                        │Ctrl+O: stop orchestrating
                                        │
