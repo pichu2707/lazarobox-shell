@@ -482,6 +482,15 @@ impl Run {
             let Some(next) = self.queue.pop_front() else {
                 return;
             };
+            // Starting is a new process: the menu is read again now, and a
+            // writer that lost Write meanwhile is refused, not run bare.
+            let spec = &mut self.slots[index(next)].spec;
+            spec.families = spec.toolset.capped(self.ceiling);
+            if spec.toolset.families().contains(Family::Write) && !spec.writes() {
+                let error = (ErrorClass::Setup, WRITE_OFF.to_owned());
+                self.end(now, next, WorkerStatus::Refused, "", Some(error));
+                continue;
+            }
             let slot = &mut self.slots[index(next)];
             (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
         }

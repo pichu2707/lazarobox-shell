@@ -28,8 +28,8 @@ baseline.
   - a spawn of a `code` worker is refused with a notice in the chat, and the
     run goes on; type `/write` in the chat (or turn Write on in the AI menu,
     `Ctrl+Space m`) and spawn it again;
-  - a `code` worker that is retried or relaunched follows the toggle at that
-    moment, and if it is refused the run asks again;
+  - a `code` worker that is retried, relaunched or taken off the queue follows
+    the toggle at that moment, and if it is refused the run asks again;
   - a review correction is skipped with a notice;
   - a worker that is already running keeps the tools it started with.
 

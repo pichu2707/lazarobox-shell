@@ -478,3 +478,19 @@ fn text_that_says_write_changes_nothing() {
     assert!(matches!(effects.as_slice(), [Effect::ChatSend { .. }]));
     assert_eq!(pending(&a), None);
 }
+
+// Ctrl+C always answers, even before the dialog is armed: it declines (no
+// grant) and cancels the stream that is running.
+#[test]
+fn ctrl_c_declines_the_dialog_and_cancels_the_stream() {
+    let mut a = tools_app();
+    let effects = submit(&mut a, "first");
+    assert!(matches!(effects.as_slice(), [Effect::ChatSend { .. }]));
+    dialog(&mut a);
+    let effects = a.update(super::chat_live::ctrl('c'));
+    assert!(effects.contains(&Effect::ChatCancel(id2())), "{effects:?}");
+    assert!(!granted(&a));
+    assert_eq!(pending(&a), None);
+    assert!(has_line(&a, WRITE_DECLINED_LINE), "{:?}", lines(&a));
+    assert!(!has_line(&a, WRITE_GRANTED_LINE));
+}

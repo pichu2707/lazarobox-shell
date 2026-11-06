@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use super::ledger::{Judgement, Verdict};
-use super::run::{Refusal, Roster, Run, UserChoice, WorkerEvent};
+use super::run::{Refusal, Roster, Run, RunState, UserChoice, WorkerEvent};
 use super::steps::{Grant, Mark, Step, WRITE_OFF};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
@@ -283,6 +283,45 @@ fn a_retried_failed_code_worker_is_refused_when_write_went_off() {
     run.set_ceiling(write_off());
     run.decide(now, UserChoice::Retry).unwrap();
     assert_refused_for_write(&run, &[id]);
+}
+
+// A writer queued while Write was on is checked again when it leaves the
+// queue: if the menu (or a `/write` grant) lost Write meanwhile it is refused
+// with the visible Write-off text and never started.
+#[test]
+fn a_queued_code_worker_is_refused_when_write_went_off_before_it_starts() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let first = run.spawn(now, Task::Code, "one").unwrap();
+    let second = run.spawn(now, Task::Code, "two").unwrap();
+    assert_eq!(run.status(second), Some(WorkerStatus::Queued));
+    run.set_ceiling(write_off());
+    run.on_event(now, first, WorkerEvent::Done { text: "ok".into() });
+    assert_refused_for_write(&run, &[second]);
+    assert_ne!(run.status(second), Some(WorkerStatus::Running));
+    // The same visible path as a refused retry: the run asks the user.
+    assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == second));
+}
+
+// Guard: with Write still on, the queued writer starts with the write tools.
+#[test]
+fn a_queued_code_worker_starts_with_write_while_write_is_on() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let first = run.spawn(now, Task::Code, "one").unwrap();
+    let second = run.spawn(now, Task::Code, "two").unwrap();
+    run.on_event(now, first, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(run.status(second), Some(WorkerStatus::Running));
+    assert!(run.spec(second).unwrap().writes());
+}
+
+// Guard: a queued reader is not touched by a menu without Write.
+#[test]
+fn a_queued_reader_starts_when_write_went_off() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let first = run.spawn(now, Task::Code, "one").unwrap();
+    let second = run.spawn(now, Task::Review, "look").unwrap();
+    run.set_ceiling(write_off());
+    run.on_event(now, first, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(run.status(second), Some(WorkerStatus::Running));
 }
 
 // Guards: a retry with Write still on keeps the tools, and a reader is not
