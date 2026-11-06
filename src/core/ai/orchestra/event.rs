@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::{
     RunId, WorkerId,
+    changes::Disclosure,
     feature::FeatureDoc,
     ledger::Handoff,
     worker::{ErrorClass, WorkerStatus},
@@ -159,6 +160,18 @@ pub enum OrchestraEvent {
     /// A line for the pane's transcript that belongs to no run yet (a floor
     /// of run ids that could not be read, S9). `text` is lazarobox's own.
     Notice { text: String },
+    /// A fact about how a worker ended that nothing else shows (agent-
+    /// orchestrator [W1]): the app turns it into a transcript line naming the
+    /// worker, its kind and `engine>model`. Never sent to a model.
+    Disclosed {
+        run: RunId,
+        worker: WorkerId,
+        kind: Task,
+        /// Empty when the engine was unavailable.
+        engine: String,
+        model: Option<String>,
+        what: Disclosure,
+    },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

@@ -9,7 +9,7 @@ use super::{
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
-use crate::core::ai::orchestra::worker::WorkerStatus;
+use crate::core::ai::{config::Task, orchestra::worker::WorkerStatus};
 
 /// What a transcript line is, which decides its style.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,12 +133,18 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
 
 /// A worker as its row and its alert name it: `review codex>gpt-5`.
 pub fn worker_label(row: &WorkerRow) -> String {
-    let engine = match (row.engine.as_str(), &row.model) {
+    kind_label(row.kind, &row.engine, row.model.as_deref())
+}
+
+/// `code ollama>qwen3`: a worker's kind and where it runs, `no engine` when
+/// the engine was unavailable.
+pub fn kind_label(kind: Task, engine: &str, model: Option<&str>) -> String {
+    let engine = match (engine, model) {
         ("", _) => "no engine".to_owned(),
         (engine, Some(model)) => format!("{engine}>{model}"),
         (engine, None) => engine.to_owned(),
     };
-    format!("{} {engine}", row.kind.id())
+    format!("{} {engine}", kind.id())
 }
 
 /// A worker row as text: `review codex>gpt-5 running`, then how long it ran

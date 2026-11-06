@@ -1,0 +1,7 @@
+---
+source: src/app/app_tests/orchestra_run.rs
+expression: shown
+---
+worker 1 code ollama>qwen3 ended done and changed no file
+worker 2 code ollama>qwen3 staged 2 files and never proposed the batch; the pane holds it as an orphan
+worker 3 code ollama>qwen3 staged 1 file and never proposed the batch; the pane holds it as an orphan

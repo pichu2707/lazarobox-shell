@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use super::changes::{Change, ChangeLedger};
+use super::changes::{Change, ChangeLedger, Disclosure};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
@@ -313,6 +313,28 @@ impl Run {
     /// What worker `id` staged.
     pub fn ledger(&self, id: WorkerId) -> Option<&ChangeLedger> {
         self.slot(id).map(|slot| &slot.ledger)
+    }
+
+    /// What the user should be told about how worker `id` ended, when nothing
+    /// else shows it (agent-orchestrator [W1]): a `code` worker that ended
+    /// `done` and staged nothing, or a worker with staged paths whose batch
+    /// is still unproposed. `unproposed` asks the pane's batch and runs only
+    /// when the worker has paths staged and not on disk.
+    pub fn disclosure(
+        &self,
+        id: WorkerId,
+        unproposed: impl FnOnce() -> bool,
+    ) -> Option<Disclosure> {
+        let slot = self.slot(id)?;
+        if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
+            return None;
+        }
+        let files = slot.ledger.pending();
+        if slot.ledger.changes().is_empty() {
+            let silent = slot.status == WorkerStatus::Done && slot.spec.task == Task::Code;
+            return silent.then_some(Disclosure::EmptyLedger);
+        }
+        (files > 0 && unproposed()).then_some(Disclosure::StagedNotProposed { files })
     }
 
     /// The host staged `change` for worker `id`.

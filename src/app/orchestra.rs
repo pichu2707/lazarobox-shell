@@ -9,11 +9,12 @@ use crate::core::ai::{
     chat::{
         Entry, OrchAlert, OrchNote,
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
-        transcript::worker_label,
+        transcript::{kind_label, worker_label},
     },
     config::Assignment,
     orchestra::{
-        Toolset, WorkerKey,
+        Toolset, WorkerId, WorkerKey,
+        changes::Disclosure,
         event::Continuation,
         ledger::{NO_HANDOFF, Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
@@ -44,6 +45,10 @@ const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
 /// Said when the run manager is not attached: the answer was not applied.
+/// The words of a worker-outcome disclosure (agent-orchestrator [W1]); ASCII
+/// and neutral. The worker is named before them, by [`disclosure_line`].
+const CHANGED_NO_FILE: &str = "ended done and changed no file";
+const NEVER_PROPOSED: &str = "and never proposed the batch; the pane holds it as an orphan";
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
 /// Said when the run manager dropped an answer: its run is over.
 const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";
@@ -321,6 +326,20 @@ impl App {
             OrchestraEvent::Review { run, text } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(text);
+                }
+            }
+            // A fact about a worker's end: a system line, never history.
+            OrchestraEvent::Disclosed {
+                run,
+                worker,
+                kind,
+                engine,
+                model,
+                what,
+            } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    let who = kind_label(kind, &engine, model.as_deref());
+                    chat.push_system_line(disclosure_line(worker, &who, what));
                 }
             }
             // Handled before the pane is borrowed.
@@ -935,6 +954,19 @@ impl App {
             }),
         }
     }
+}
+
+/// A disclosure as one transcript line: the worker (`worker 2 code
+/// ollama>qwen3`) and what its end left unsaid.
+fn disclosure_line(worker: WorkerId, who: &str, what: Disclosure) -> String {
+    let said = match what {
+        Disclosure::EmptyLedger => CHANGED_NO_FILE.to_owned(),
+        Disclosure::StagedNotProposed { files } => {
+            let noun = if files == 1 { "file" } else { "files" };
+            format!("staged {files} {noun} {NEVER_PROPOSED}")
+        }
+    };
+    format!("worker {} {who} {said}", worker.0)
 }
 
 /// The failure alert as one paragraph: the run is paused, the worker by its

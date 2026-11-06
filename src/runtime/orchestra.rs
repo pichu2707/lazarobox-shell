@@ -1665,8 +1665,32 @@ impl RunManager {
                 }
             }
             self.sync(pane, live);
+            self.disclose(pane, live, key.worker);
         });
         self.settle(pane, key.run);
+    }
+
+    /// Tells the pane what the worker that just ended left unsaid: a `code`
+    /// worker that changed nothing, or a batch it staged and never proposed
+    /// (the batch is the pane's, so the pane's state answers).
+    fn disclose(&self, pane: PaneId, live: &Live, id: WorkerId) {
+        let host = self.tooling.as_ref().map(|tooling| &tooling.host);
+        let unproposed = || host.is_some_and(|host| host.unproposed(StageKey::Pane(pane)));
+        let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
+        else {
+            return;
+        };
+        self.send(
+            pane,
+            OrchestraEvent::Disclosed {
+                run: live.run.id(),
+                worker: id,
+                kind: spec.task,
+                engine: spec.engine.clone(),
+                model: spec.model.clone(),
+                what,
+            },
+        );
     }
 }
 

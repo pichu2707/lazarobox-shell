@@ -15,6 +15,7 @@ use crate::core::ai::{
     config::Task,
     orchestra::{
         RunId, WorkerId,
+        changes::Disclosure,
         event::{Continuation, OrchestraEvent, WorkerRow},
         ledger::{Handoff, Unit, Verdict},
         run::UserChoice,
@@ -720,6 +721,85 @@ fn a_review_line_reaches_the_transcript() {
         text: "review of worker 1: the change was not reviewed".to_owned(),
     }));
     assert!(transcript(&a).contains("the change was not reviewed"));
+}
+
+fn disclosed(id: u32, what: Disclosure) -> OrchestraEvent {
+    OrchestraEvent::Disclosed {
+        run: RUN,
+        worker: WorkerId(id),
+        kind: Task::Code,
+        engine: "ollama".into(),
+        model: Some("qwen3".into()),
+        what,
+    }
+}
+
+/// The system lines of the pane's transcript, one per line.
+fn system_lines(a: &App) -> String {
+    let lines: Vec<_> = chat_of(a)
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::System(line) => Some(line.as_str()),
+            _ => None,
+        })
+        .collect();
+    lines.join("\n")
+}
+
+// chat-pane / Notice is a system line, not history; agent-orchestrator /
+// Silent worker outcomes are disclosed [W1]: each disclosure is a system line
+// that names the worker id, kind and `engine>model`.
+#[test]
+fn worker_disclosures_are_system_lines_naming_the_worker() {
+    let (mut a, _) = running();
+    a.update(event(disclosed(1, Disclosure::EmptyLedger)));
+    a.update(event(disclosed(
+        2,
+        Disclosure::StagedNotProposed { files: 2 },
+    )));
+    a.update(event(disclosed(
+        3,
+        Disclosure::StagedNotProposed { files: 1 },
+    )));
+    let all = system_lines(&a);
+    let shown: Vec<_> = all.lines().filter(|l| l.starts_with("worker ")).collect();
+    let shown = shown.join("\n");
+    assert!(shown.is_ascii(), "{shown}");
+    insta::assert_snapshot!("orch_worker_disclosures", shown);
+}
+
+// chat-pane / Notice is a system line, not history: the next orchestrator
+// turn carries the user's words and the coordinator's, not the notice.
+#[test]
+fn a_disclosure_stays_out_of_the_next_orchestrator_turn() {
+    let (mut a, turn) = running();
+    a.update(event(disclosed(1, Disclosure::EmptyLedger)));
+    a.update(delta(turn, "all done"));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(system_lines(&a).contains("changed no file"), "still shown");
+    let request = match ask(&mut a, "next").as_slice() {
+        [.., Effect::OrchestrateSend { request, .. }] => request.clone(),
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    let sent: Vec<&str> = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, ["plan it", "all done", "next"]);
+}
+
+// chat-pane / Notice repeats: the same condition twice shows the line twice.
+#[test]
+fn a_disclosure_is_shown_each_time_it_happens() {
+    let (mut a, _) = running();
+    for _ in 0..2 {
+        a.update(event(disclosed(1, Disclosure::EmptyLedger)));
+    }
+    let shown = system_lines(&a);
+    assert_eq!(shown.matches("changed no file").count(), 2, "{shown}");
 }
 
 fn gated_off(a: &mut App) {

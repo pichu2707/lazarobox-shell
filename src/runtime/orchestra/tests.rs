@@ -15,7 +15,7 @@ use tokio::{
 
 use super::*;
 use crate::core::ai::orchestra::{
-    changes::{Change, StagedDiff, StagedText},
+    changes::{Change, Disclosure, StagedDiff, StagedText},
     rdd::{Lens, Outcome as Ended},
     review::Tier,
     steps::{Grant, Size},
@@ -475,6 +475,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Trace { .. }
         | OrchestraEvent::Usage { .. }
         | OrchestraEvent::Notice { .. }
+        | OrchestraEvent::Disclosed { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1517,6 +1518,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Trace { .. }
             | OrchestraEvent::Usage { .. }
             | OrchestraEvent::Notice { .. }
+            | OrchestraEvent::Disclosed { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -2797,6 +2799,69 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     let (_, review) = host.review_batch(key, false).expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
+}
+
+/// The next disclosure the lab's pane received.
+async fn disclosed(lab: &mut Lab) -> OrchestraEvent {
+    loop {
+        let event = lab.next().await;
+        if matches!(event, OrchestraEvent::Disclosed { .. }) {
+            return event;
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Silent worker outcomes are disclosed [W1],
+// Empty ledger): a `code` worker that ends `done` having staged nothing is
+// disclosed with its id, kind, engine and model.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_code_worker_done_with_nothing_staged_is_disclosed() {
+    let mut lab = writing_lab(Script::Answer("all done"));
+    let (run, handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    assert_eq!(
+        disclosed(&mut lab).await,
+        OrchestraEvent::Disclosed {
+            run,
+            worker: WorkerId(1),
+            kind: Task::Code,
+            engine: "codex".into(),
+            model: Some("default".into()),
+            what: Disclosure::EmptyLedger,
+        }
+    );
+}
+
+// Spec (Staged and never proposed): a worker that staged a file and ended
+// without `propose_batch` is disclosed with the count; the pane keeps the
+// batch as an orphan.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
+    let mut lab = writing_lab(Script::Hang);
+    let (run, handle) = lab.start_writing_run(&Waits::new(), Duration::from_millis(1500));
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, call).await;
+    assert_eq!(
+        disclosed(&mut lab).await,
+        OrchestraEvent::Disclosed {
+            run,
+            worker: WorkerId(1),
+            kind: Task::Code,
+            engine: "codex".into(),
+            model: Some("default".into()),
+            what: Disclosure::StagedNotProposed { files: 1 },
+        }
+    );
+    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
+    assert!(lab.host().review_batch(key, false).is_some(), "an orphan");
 }
 
 // Spec (agent-orchestrator, Wall clock): with the run's limit and a worker

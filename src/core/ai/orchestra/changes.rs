@@ -82,6 +82,24 @@ impl ChangeLedger {
     }
 }
 
+/// A fact about a worker's outcome that nothing else shows the user
+/// (agent-orchestrator, "Silent worker outcomes are disclosed" [W1]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Disclosure {
+    /// A `code` worker ended `done` and staged nothing.
+    EmptyLedger,
+    /// A worker staged `files` paths and its batch was never proposed: the
+    /// pane holds it as an orphan.
+    StagedNotProposed { files: usize },
+}
+
+impl ChangeLedger {
+    /// The paths staged and not yet on disk.
+    pub fn pending(&self) -> usize {
+        self.0.iter().filter(|change| !change.applied).count()
+    }
+}
+
 /// A short fingerprint of a staged change: FNV-1a 64 over the text it
 /// replaces (none for a create) and its new text, as 16 hex digits. It tells
 /// two versions of a change apart; it is no security boundary.
