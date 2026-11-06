@@ -461,6 +461,10 @@ pub struct ChatState {
     /// The user granted the GitHub tools to this chat with `/github`. Never
     /// stored: it ends with the pane, a resume and the events of the spec.
     github_granted: bool,
+    /// The user turned Write on for this chat with `/write`. Never stored or
+    /// saved to the config: it ends with the pane, a resume, a folder change
+    /// and the tools going off.
+    write_granted: bool,
     /// The Windows drive folder the user let this chat write in, from the
     /// grant prompt's `y` (openspec `wsl-drive-access` D7). Never stored:
     /// cleared on every folder change and a resume, never inherited.
@@ -594,6 +598,7 @@ impl ChatState {
             block_why: BlockWhy::Marker,
             github_unmarked: false,
             github_granted: false,
+            write_granted: false,
             drive_grant: None,
             told: Vec::new(),
             told_sent: Vec::new(),
@@ -1011,6 +1016,16 @@ impl ChatState {
 
     pub fn set_github_granted(&mut self, granted: bool) {
         self.github_granted = granted;
+    }
+
+    /// Whether the user turned Write on for this chat with `/write`.
+    pub fn write_granted(&self) -> bool {
+        self.write_granted
+    }
+
+    /// Only the `/write` dialog's `y` sets it (the app's key handler).
+    pub fn set_write_granted(&mut self, granted: bool) {
+        self.write_granted = granted;
     }
 
     /// The Windows drive folder the user let this chat write in.

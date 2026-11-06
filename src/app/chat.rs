@@ -535,6 +535,11 @@ impl App {
                 self.github_refused(id);
                 return Vec::new();
             }
+            Command::Write => return self.write_submit(id),
+            Command::WriteArgs => {
+                self.write_refused(id);
+                return Vec::new();
+            }
             Command::Feedback(words) => return self.feedback_submit(id, &words),
             Command::Escaped(unescaped) => text = unescaped,
             Command::Plain => {}

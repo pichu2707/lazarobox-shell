@@ -21,7 +21,7 @@ use crate::core::ai::{
         review::{self, BatchReview, CommitReview},
         review_view::ReviewView,
     },
-    config::{ApprovalMode, Task},
+    config::{ApprovalMode, Task, ToolToggle},
     orchestra::WorkerKey,
     sanitize::clean,
     tools::{
@@ -179,6 +179,12 @@ pub enum ApprovalAsk {
     /// the host never build it. `folder` is the folder `repo` was read from:
     /// the grant is refused once the chat is not in it any more.
     GithubGrant { repo: String, folder: PathBuf },
+    /// Let the user turn the `toggle` family on for this chat (`/write`,
+    /// never a tool call): `folder` is the chat folder it was opened in. Only
+    /// the user's `y` answers; no mode, timer or model output does. `ask_for`
+    /// and the host never build it. The grant is refused once the chat is not
+    /// in `folder` any more.
+    ToolGrant { toggle: ToolToggle, folder: PathBuf },
     /// Let the chat write in `folder`, the resolved Windows drive folder it is
     /// in (openspec `wsl-drive-access` D8): opened by the app after the user
     /// chose the folder, never by a tool call. Only the user's unmodified `y`
@@ -984,6 +990,34 @@ pub const GITHUB_GRANTED_LINE: &str =
 pub const GITHUB_DECLINED_LINE: &str = "GitHub tools stay off";
 /// Why a model's call cannot open the `/github` dialog.
 pub const GITHUB_GRANT_DENIED: &str = "only the user can grant the GitHub tools";
+
+/// The keys of the `/write` dialog.
+pub const TOOL_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the `/write` dialog adds under the folder. ASCII.
+pub const WRITE_GRANT_NOTE: &str = "the model may propose file changes in this folder, this chat only\nyou still review each batch before it is written\nthe saved Write toggle stays as it is";
+/// The system line of a `/write` grant. ASCII, 80 columns.
+pub const WRITE_GRANTED_LINE: &str =
+    "Write on for this chat from the next message; batches are still reviewed";
+/// The system line of a declined `/write` dialog.
+pub const WRITE_DECLINED_LINE: &str = "Write stays off";
+/// Why a model's call cannot open the `/write` dialog.
+pub const TOOL_GRANT_DENIED: &str = "only the user can turn Write on for a chat";
+
+/// The prompt of the `/write` dialog for the chat folder `folder`.
+pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> ApprovalPrompt {
+    let name = match toggle {
+        ToolToggle::Write => "Write",
+        other => other.key(),
+    };
+    ApprovalPrompt {
+        target: format!("Turn {name} on for this chat?"),
+        command: clean(&folder.to_string_lossy()),
+        keys: TOOL_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(WRITE_GRANT_NOTE.to_owned()),
+    }
+}
 
 /// The keys of the drive grant prompt. ASCII: it must read on a Linux console.
 pub const DRIVE_GRANT_KEYS: &str = "y allow | n or Esc decline";
@@ -1918,6 +1952,10 @@ mod tests {
             GITHUB_DECLINED_LINE,
             GITHUB_GRANT_DENIED,
             GITHUB_GRANT_KEYS,
+            TOOL_GRANT_KEYS,
+            WRITE_GRANTED_LINE,
+            WRITE_DECLINED_LINE,
+            TOOL_GRANT_DENIED,
         ] {
             assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
         }

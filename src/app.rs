@@ -81,6 +81,7 @@ mod scroll;
 mod summary;
 mod tags;
 mod tool;
+mod write;
 
 use auto_run::RunSlot;
 pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent, RunScope};
@@ -2313,7 +2314,13 @@ impl App {
                     saved_over =
                         Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     let github = self.ai.toggle(crate::core::ai::config::ToolToggle::Github);
+                    let write = self.ai.toggle(crate::core::ai::config::ToolToggle::Write);
                     self.ai = menu.ai_draft();
+                    // A saved Write toggle that changed makes the grant moot or
+                    // unwanted: it ends either way.
+                    if write != self.ai.toggle(crate::core::ai::config::ToolToggle::Write) {
+                        self.end_all_write(write::TOGGLE_ENDED);
+                    }
                     // Turning the saved toggle off takes the tools from every chat.
                     if github && !self.ai.toggle(crate::core::ai::config::ToolToggle::Github) {
                         self.end_all_grants(github::TOGGLE_ENDED);
@@ -8919,6 +8926,8 @@ mod app_tests {
     mod tool_run_settle;
     /// `y` in `run` mode runs a model's command; elsewhere it types.
     mod tool_run_y;
+    /// `/write`, its dialog and where the grant ends.
+    mod write_grant;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;

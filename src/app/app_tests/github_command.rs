@@ -591,7 +591,7 @@ fn a_folder_change_withdraws_the_dialog_with_a_line() {
     }
 }
 
-fn list_app() -> App {
+pub(super) fn list_app() -> App {
     use super::chat_history::{detection, listed, prompt_for, rows};
     let mut a = launched(120, 30)
         .with_ai(super::chat_live::ollama())
