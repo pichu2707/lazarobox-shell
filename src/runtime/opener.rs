@@ -17,6 +17,20 @@ use crate::runtime::desktop::which;
 /// the browser in the foreground exits with it, much later.
 const LAUNCH: Duration = Duration::from_secs(5);
 
+/// Runs `spawn`, retrying briefly on ETXTBSY: a program that was written a
+/// moment ago is still "busy" while a concurrent fork holds its write handle.
+fn spawn_retrying<T>(spawn: impl Fn() -> io::Result<T>) -> io::Result<T> {
+    for attempt in 0..5 {
+        match spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+                thread::sleep(Duration::from_millis(20 * (attempt + 1)));
+            }
+            other => return other,
+        }
+    }
+    unreachable!("the last attempt always returns")
+}
+
 /// The program that opens links on this host.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Opener {
@@ -61,13 +75,15 @@ impl Opener {
             .file_name()
             .and_then(OsStr::to_str)
             .unwrap_or_default();
-        let mut child = Command::new(&self.program)
-            .args(leading_args(name))
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut child = spawn_retrying(|| {
+            Command::new(&self.program)
+                .args(leading_args(name))
+                .arg(url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })?;
         let trust_exit = !name.ends_with(".exe");
         let started = Instant::now();
         let launch = self.launch;
@@ -156,6 +172,28 @@ mod tests {
 
     // Bug (WSL): `rundll32.exe` opens the link through `url.dll`, given
     // before the link, still with no shell.
+    // The flake of the full suite: another test's fork holds the script's write
+    // handle for a moment and `exec` fails with ETXTBSY. Reproduced here by
+    // holding the handle on purpose.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_busy_for_a_moment_still_opens_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("args");
+        let opener = fake(dir.path(), &out);
+        let holder = fs::OpenOptions::new()
+            .append(true)
+            .open(&opener.program)
+            .unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            drop(holder);
+        });
+        opener.open("https://example.com/", || {}).unwrap();
+        release.join().unwrap();
+        assert_eq!(wait_for(&out), "https://example.com/\n");
+    }
+
     #[test]
     fn rundll32_gets_the_url_handler_then_the_link() {
         let dir = tempfile::tempdir().unwrap();
