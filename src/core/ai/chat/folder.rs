@@ -68,14 +68,19 @@ pub enum Command {
     Github,
     /// `/github` followed by text: refused with a notice, nothing is sent.
     GithubArgs,
+    /// The user-only `/write` command: asks to turn Write on for this chat.
+    Write,
+    /// `/write` followed by text: refused with a usage line, nothing is sent.
+    WriteArgs,
     /// The user-only `/feedback` command: opens the Feedback form with the
     /// text that follows it, trimmed.
     Feedback(String),
 }
 
-/// Reads a composer text. Only the exact tokens `/cd`, `/cost`, `/github` and
-/// `/feedback` are commands (the text is the token, or the token followed by
-/// whitespace); `//cd`, `//cost`, `//github` and `//feedback` escape them.
+/// Reads a composer text. Only the exact tokens `/cd`, `/cost`, `/github`,
+/// `/write` and `/feedback` are commands (the text is the token, or the token
+/// followed by whitespace); `//cd`, `//cost`, `//github`, `//write` and
+/// `//feedback` escape them.
 pub fn parse_command(text: &str) -> Command {
     let text = text.trim();
     let (token, rest) = match text.find(char::is_whitespace) {
@@ -91,8 +96,12 @@ pub fn parse_command(text: &str) -> Command {
         "/cost" => Command::CostArgs,
         "/github" if rest.is_empty() => Command::Github,
         "/github" => Command::GithubArgs,
+        "/write" if rest.is_empty() => Command::Write,
+        "/write" => Command::WriteArgs,
         "/feedback" => Command::Feedback(rest.to_owned()),
-        "//cd" | "//cost" | "//github" | "//feedback" => Command::Escaped(text[1..].to_owned()),
+        "//cd" | "//cost" | "//github" | "//write" | "//feedback" => {
+            Command::Escaped(text[1..].to_owned())
+        }
         _ => Command::Plain,
     }
 }

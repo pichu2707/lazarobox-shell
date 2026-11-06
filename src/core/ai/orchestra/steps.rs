@@ -55,15 +55,16 @@ impl Step {
 /// The reason a `code` worker is refused on a read-only goal.
 pub const READ_ONLY: &str = "code workers are not spawned for a read-only goal";
 
-/// The reason a `code` worker is refused while the menu has Write off. The
-/// step is the menu's: `/write` replaces it once the chat has that command.
+/// The reason a `code` worker is refused while Write is off. The step is the
+/// chat's: the user types `/write`. The backticks keep the coordinator-bound
+/// text from masking it as a path (a word that starts with `/`).
 pub const WRITE_OFF: &str = "worker not started: a code worker needs the Write tools and Write is off; \
-     turn Write on in the AI menu (Ctrl+Space m), then spawn it again";
+     the user can type `/write` in this chat to turn it on, then spawn it again";
 
 /// The reason a review correction (a `code` worker lazarobox starts itself)
 /// does not start while Write is off: the user spawns nothing there.
 pub const WRITE_OFF_CORRECTION: &str =
-    "Write is off in the AI menu (Ctrl+Space m); turn it on so the next review can correct";
+    "Write is off; type /write in this chat so the next review can correct";
 
 /// How big `classify` found the goal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

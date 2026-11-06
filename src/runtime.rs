@@ -1836,6 +1836,12 @@ impl Panes {
                         }
                     }
                 }
+                // Returns at once: a pane without a live run ignores it.
+                Effect::OrchCeiling { pane, ceiling } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.set_ceiling(pane, ceiling);
+                    }
+                }
                 Effect::OrchCancelWorker { pane, run, worker } => {
                     if let Some(chats) = self.chats.as_ref() {
                         if chats.orchestrates() {

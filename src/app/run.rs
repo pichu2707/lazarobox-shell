@@ -13,6 +13,7 @@ use crate::core::ai::{
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
             PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
             SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt, run_sent_line,
+            tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -54,15 +55,17 @@ impl App {
     /// blocks; tools on shows it again.
     pub(super) fn sync_tools(&mut self) -> Vec<Effect> {
         let on = self.ai.tools_enabled();
+        let mut effects = Vec::new();
         if !on {
             self.end_all_grants(github::TOOLS_ENDED);
-            // A dialog of `/github` goes with them, and says so.
+            effects.extend(self.end_all_write(write::TOOLS_ENDED));
+            // A dialog of `/github` or `/write` goes with them, and says so.
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {
                 self.withdraw_github_dialog(id, github::R_TOOLS_OFF);
+                self.withdraw_write_dialog(id, github::R_TOOLS_OFF);
             }
         }
-        let mut effects = Vec::new();
         for (&id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
                 continue;
@@ -145,6 +148,9 @@ impl App {
         if self.github_ask_pending(id) {
             return self.on_github_key(id, key, repeat);
         }
+        if self.write_ask_pending(id) {
+            return self.on_write_key(id, key, repeat);
+        }
         if self.drive_ask_pending(id) {
             return self.on_drive_key(id, key, repeat);
         }
@@ -215,6 +221,7 @@ impl App {
                 | ApprovalAsk::Commit(_)
                 | ApprovalAsk::Folder { .. }
                 | ApprovalAsk::GithubGrant { .. }
+                | ApprovalAsk::ToolGrant { .. }
                 | ApprovalAsk::DriveGrant { .. }
         );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
@@ -669,6 +676,9 @@ impl App {
                 })
             }
             ApprovalAsk::GithubGrant { repo, .. } => Some(grant_prompt(repo, armed)),
+            ApprovalAsk::ToolGrant { toggle, folder } => {
+                Some(tool_grant_prompt(*toggle, folder, armed))
+            }
             ApprovalAsk::DriveGrant { folder } => Some(drive_grant_prompt(folder, armed)),
             // The paths were made one clean line when asked, and the host
             // refused an add whose paths would not show whole.

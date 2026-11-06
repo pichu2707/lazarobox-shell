@@ -13,8 +13,8 @@ use super::*;
 use crate::core::ai::chat::{
     approval::{
         Approval, ApprovalAsk, AutoCtx, DRIVE_GRANT_DENIED, GITHUB_GRANT_DENIED, Origin,
-        QUEUE_FULL, Route, answers_itself, blocked_read_reason, counts_toward_pause, reason_line,
-        route,
+        QUEUE_FULL, Route, TOOL_GRANT_DENIED, answers_itself, blocked_read_reason,
+        counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
@@ -148,6 +148,10 @@ impl App {
         if matches!(ask, ApprovalAsk::GithubGrant { .. }) {
             return Self::deny_for(id, worker, turn, call, GITHUB_GRANT_DENIED);
         }
+        // Only the user's `/write` opens the Write dialog, never a tool call.
+        if matches!(ask, ApprovalAsk::ToolGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, TOOL_GRANT_DENIED);
+        }
         // Only the user's choice of a Windows drive folder opens its grant.
         if matches!(ask, ApprovalAsk::DriveGrant { .. }) {
             return Self::deny_for(id, worker, turn, call, DRIVE_GRANT_DENIED);
@@ -201,6 +205,7 @@ impl App {
             | ApprovalAsk::Panes { .. }
             | ApprovalAsk::GithubRead { .. }
             | ApprovalAsk::GithubGrant { .. }
+            | ApprovalAsk::ToolGrant { .. }
             | ApprovalAsk::DriveGrant { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)

@@ -5865,6 +5865,44 @@ async fn a_menu_change_applies_from_the_next_spawn_and_not_to_a_running_worker()
     }
 }
 
+// Spec ("Turning Write on lets the spawn through", /write variant; D15): an
+// `OrchCeiling` update reaches the NEXT spawn of the live run, the worker that
+// runs keeps its spec, and lowering it again refuses the spawn after that.
+#[tokio::test]
+async fn a_ceiling_update_applies_from_the_next_spawn_only() {
+    let lab = writing_lab(Script::Hang);
+    let scope = OrchScope {
+        origin: lab.app(),
+        ceiling: write_off(),
+        limits: RunLimits {
+            parallel: 3,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_code(), &["~/dev/app"])
+    };
+    let (_run, handle) = lab.manager.start(pane(), scope).unwrap();
+    assert!(handle.call(spawn(Task::Code, "one")).await.is_error);
+    lab.manager.set_ceiling(pane(), FamilySet::ALL);
+    assert_eq!(
+        handle.call(spawn(Task::Code, "two")).await,
+        fine("worker 1: running")
+    );
+    lab.manager.set_ceiling(pane(), write_off());
+    let refused = handle.call(spawn(Task::Code, "three")).await;
+    assert_eq!(refused.text, WRITE_OFF);
+    // A pane without a run ignores the update.
+    lab.manager.set_ceiling(PaneId::FIRST, FamilySet::ALL);
+    let requests = loop {
+        let seen = lab.seen.requests();
+        if !seen.is_empty() {
+            break seen;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(requests.len(), 1, "only the allowed spawn started");
+    assert_eq!(requests[0].families, Toolset::Code.families());
+}
+
 // Spec ("Exec off means no run_command"): a forged `run_command` from a
 // `code` worker is refused as a result, and nothing is asked.
 #[tokio::test]
@@ -5895,10 +5933,7 @@ async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
         .manager
         .start_review(pane(), run, Role::Correction, "fix".into(), None)
         .unwrap_err();
-    assert!(
-        said.contains("Write") && said.contains("Ctrl+Space m"),
-        "{said}"
-    );
+    assert!(said.contains("Write") && said.contains("/write"), "{said}");
     assert!(said.contains("review"), "{said}");
     assert!(!said.contains("spawn"), "{said}");
     assert!(said.is_ascii());

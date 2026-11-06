@@ -91,7 +91,7 @@ pub(super) fn toggle(a: &mut App) -> Vec<Effect> {
 }
 
 /// The orchestrator turn among `effects`.
-fn orchestrated(effects: &[Effect]) -> Option<(PaneId, u64, &ChatRequest, &OrchSend)> {
+pub(super) fn orchestrated(effects: &[Effect]) -> Option<(PaneId, u64, &ChatRequest, &OrchSend)> {
     effects.iter().find_map(|e| match e {
         Effect::OrchestrateSend {
             pane,

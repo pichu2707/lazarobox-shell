@@ -81,6 +81,7 @@ mod scroll;
 mod summary;
 mod tags;
 mod tool;
+mod write;
 
 use auto_run::RunSlot;
 pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent, RunScope};
@@ -400,6 +401,14 @@ pub enum Effect {
         choice: UserChoice,
         /// The AI menu as it is at the answer: a retry or a relaunch starts a
         /// new process under it, whatever the menu said at the spawn.
+        ceiling: crate::core::ai::tools::registry::FamilySet,
+    },
+    /// The effective menu of run `pane` changed under a `/write` grant (it
+    /// began or ended): the spawns from now on follow `ceiling`, and the
+    /// workers already running keep their spec (D17). A pane without a live
+    /// run ignores it.
+    OrchCeiling {
+        pane: PaneId,
         ceiling: crate::core::ai::tools::registry::FamilySet,
     },
     /// Ctrl+C with a worker row selected (S3): cancels that worker of run
@@ -2304,6 +2313,7 @@ impl App {
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
         let mut saved_over = None;
         let mut stop_download = false;
+        let mut lowered = Vec::new();
         if let Some(menu) = self.menu.take() {
             // The wizard goes with the menu: its download must not run on.
             stop_download = menu.install_downloading();
@@ -2313,7 +2323,13 @@ impl App {
                     saved_over =
                         Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     let github = self.ai.toggle(crate::core::ai::config::ToolToggle::Github);
+                    let write = self.ai.toggle(crate::core::ai::config::ToolToggle::Write);
                     self.ai = menu.ai_draft();
+                    // A saved Write toggle that changed makes the grant moot or
+                    // unwanted: it ends either way.
+                    if write != self.ai.toggle(crate::core::ai::config::ToolToggle::Write) {
+                        lowered = self.end_all_write(write::TOGGLE_ENDED);
+                    }
                     // Turning the saved toggle off takes the tools from every chat.
                     if github && !self.ai.toggle(crate::core::ai::config::ToolToggle::Github) {
                         self.end_all_grants(github::TOGGLE_ENDED);
@@ -2329,6 +2345,7 @@ impl App {
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
+        effects.extend(lowered);
         effects.extend(self.sync_tools());
         if stop_download {
             effects.push(Effect::Install(InstallAsk::Cancel));
@@ -8919,6 +8936,10 @@ mod app_tests {
     mod tool_run_settle;
     /// `y` in `run` mode runs a model's command; elsewhere it types.
     mod tool_run_y;
+    /// The `/write` grant reaches the next spawn.
+    mod write_ceiling;
+    /// `/write`, its dialog and where the grant ends.
+    mod write_grant;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;

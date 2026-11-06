@@ -331,6 +331,32 @@ fn github_is_case_sensitive_and_other_text_is_plain() {
     );
 }
 
+// ---- /write (modal-input: Write on from the chat is a user action) --------
+
+#[test]
+fn the_exact_token_write_is_the_command() {
+    assert_eq!(parse_command("/write"), Command::Write);
+    assert_eq!(parse_command("  /write \n"), Command::Write);
+}
+
+#[test]
+fn write_with_anything_after_it_is_refused_with_usage() {
+    assert_eq!(parse_command("/write now"), Command::WriteArgs);
+    assert_eq!(parse_command("/write\tx y"), Command::WriteArgs);
+}
+
+#[test]
+fn write_is_case_sensitive_and_other_text_is_plain() {
+    assert_eq!(parse_command("/Write"), Command::Plain);
+    assert_eq!(parse_command("/writes"), Command::Plain);
+    assert_eq!(parse_command("please /write it"), Command::Plain);
+}
+
+#[test]
+fn a_double_slash_escapes_write() {
+    assert_eq!(parse_command("//write"), Command::Escaped("/write".into()));
+}
+
 #[test]
 fn a_double_slash_escapes_github() {
     assert_eq!(

@@ -10,15 +10,15 @@ expression: screen(&a)
                                        │  review. Ctrl+O goes back to a plain
                                        │  chat.
                                        │
-                                       │• code workers need Write: turn it on in
-                                       │  the AI menu (Ctrl+Space m)
+                                       │• code workers need Write: type /write,
+                                       │  or turn it on in the AI menu
+                                       │  (Ctrl+Space m)
                                        │
                                        │› plan it
                                        │
                                        │» review codex>gpt-5 failed
                                        │
                                        │waiting for the model…
-                                       │
                                        │
                                        │
                                        │run paused: worker review codex>gpt-5

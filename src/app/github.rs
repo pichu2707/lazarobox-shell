@@ -34,10 +34,10 @@ const REFUSED: &str = "/github refused: ";
 /// Why `/github` does not apply to a chat now.
 pub(super) const R_TOOLS_OFF: &str = "tools are off";
 const R_ORCHESTRATING: &str = "this chat is orchestrating";
-const R_NO_TOOLS: &str = "the engine offers no tools";
-const R_ALREADY_ON: &str = "the GitHub tools are already on";
-const R_FOLDER: &str = "the folder changed";
-const R_LIST_OPEN: &str = "the conversation list is open";
+pub(super) const R_NO_TOOLS: &str = "the engine offers no tools";
+pub(super) const R_ALREADY_ON: &str = "the GitHub tools are already on";
+pub(super) const R_FOLDER: &str = "the folder changed";
+pub(super) const R_LIST_OPEN: &str = "the conversation list is open";
 pub(super) const R_RESUMED: &str = "a conversation was resumed";
 /// What turning ORCH on says to a chat that holds a grant.
 pub(super) const ORCH_KEEPS_GRANT: &str =
@@ -48,7 +48,7 @@ impl App {
     /// GitHub family when this chat holds a grant and tools are on. The one
     /// source of the offered tools and of the context budget.
     pub(super) fn offered_families(&self, id: PaneId) -> FamilySet {
-        let saved = self.ai.families();
+        let saved = self.orch_ceiling(id);
         let granted = self.ai.tools_enabled()
             && (self.panes.get(&id).and_then(PaneState::chat_state))
                 .is_some_and(ChatState::github_granted);
@@ -155,7 +155,7 @@ impl App {
     }
 
     /// Whether the engine a turn of chat `id` goes to offers tools.
-    fn offers_tools(&self, id: PaneId) -> bool {
+    pub(super) fn offers_tools(&self, id: PaneId) -> bool {
         matches!(
             self.turn_availability(id),
             Availability::Ready { engine, .. }
@@ -406,7 +406,7 @@ impl App {
     /// Chat `id` just gained the focus: a key typed for the pane left may
     /// still be on its way, so the dialog waits its delay again.
     pub(super) fn rearm_github_dialog(&mut self, id: PaneId) {
-        if !self.github_ask_pending(id) {
+        if !self.github_ask_pending(id) && !self.write_ask_pending(id) {
             return;
         }
         let clock = (self.clock)();
@@ -418,7 +418,7 @@ impl App {
     }
 
     /// Whether the dialog of chat `id` may take an answer: its own delay passed.
-    fn approval_armed_at(&self, id: PaneId) -> bool {
+    pub(super) fn approval_armed_at(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)
             .and_then(PaneState::chat_state)
