@@ -48,6 +48,16 @@ baseline.
   only be reviewed from the pane badge. This applies to a plain chat and to
   workers; a second proposal while your first ask is still open stays refused.
 
+### Fixed
+
+- An ORCH `code` worker that changed no file and whose reply holds tool calls
+  written as JSON text (small local models on Ollama or llama.cpp do this
+  instead of calling the tools) now gets a notice that says so: `... ended done
+  and changed no file; its reply holds tool calls written as text: the model
+  may lack tool support`. The coordinator is told the same, so it no longer
+  reports files that were never created. A worker whose turn ran without tools
+  keeps the plain notice.
+
 ## [1.11.0] - 2026-11-06
 
 ### Added

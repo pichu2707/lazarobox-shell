@@ -9,6 +9,7 @@ use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
 use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
+use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -153,6 +154,11 @@ pub enum WorkerEvent {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NotHalted;
 
+/// Told to the coordinator ahead of the answer of a worker that changed no
+/// file and whose reply holds tool calls written as text: ASCII and neutral,
+/// and true whatever the cause. It stands outside the worker's wrapper.
+const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
+
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
 struct Stored {
@@ -182,6 +188,8 @@ struct Slot {
     /// Waiting on its own review (see [`Run::park`]): not counted as running
     /// for `max_parallel`.
     parked: bool,
+    /// The current turn runs without tools: no write tool was offered to it.
+    no_tools: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -359,9 +367,24 @@ impl Run {
         let files = slot.ledger.pending();
         if slot.ledger.changes().is_empty() {
             let silent = slot.status == WorkerStatus::Done && slot.spec.writes();
-            return silent.then_some(Disclosure::EmptyLedger);
+            if !silent {
+                return None;
+            }
+            return Some(if slot.said_calls_as_text() {
+                Disclosure::ToolCallAsText
+            } else {
+                Disclosure::EmptyLedger
+            });
         }
         (files > 0 && unproposed()).then_some(Disclosure::StagedNotProposed { files })
+    }
+
+    /// The turn of worker `id` runs without tools (agent-orchestrator,
+    /// degraded turn).
+    pub fn ran_without_tools(&mut self, id: WorkerId) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.no_tools = true;
+        }
     }
 
     /// The host staged `change` for worker `id`.
@@ -432,6 +455,7 @@ impl Run {
             gap: false,
             handoff: None,
             parked: false,
+            no_tools: false,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal, false);
@@ -493,6 +517,7 @@ impl Run {
             }
             let slot = &mut self.slots[index(next)];
             (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
+            slot.no_tools = false;
         }
     }
 
@@ -594,6 +619,8 @@ impl Run {
     /// never be reused or shown to the worker, or its text could forge the
     /// closing tag. A worker that staged files has its `files changed`
     /// ledger first, inside the wrapper: its paths are the worker's names.
+    /// Anything before the wrapper is lazarobox's own word, never the
+    /// worker's.
     pub fn collect_wrapped(
         &self,
         nonce_bytes: [u8; 8],
@@ -603,9 +630,17 @@ impl Run {
         let text = self.collect(id)?;
         // The ledger comes first, so the cap on a long answer never hides it.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
-        Ok(match ledger {
+        let wrapped = match ledger {
             Some(ledger) => label::wrap(&nonce, &format!("{ledger}\n\n{text}")),
             None => label::wrap(&nonce, text),
+        };
+        // lazarobox's own word, outside the worker's wrapper: the worker
+        // cannot forge it, and the coordinator must not claim files exist.
+        let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
+        Ok(if said {
+            format!("{CALLS_AS_TEXT}\n\n{wrapped}")
+        } else {
+            wrapped
         })
     }
 
@@ -1102,7 +1137,20 @@ impl Run {
     }
 }
 
-/// Worker ids start at 1; id 0 maps to no slot.
+impl Slot {
+    /// The worker ended `done` with a write tool offered and nothing staged,
+    /// and its answer holds a call to a write tool written as text.
+    fn said_calls_as_text(&self) -> bool {
+        self.status == WorkerStatus::Done
+            && !self.no_tools
+            && self.spec.writes()
+            && self.ledger.changes().is_empty()
+            && self.result.as_ref().is_some_and(|result| {
+                textcall::mentions_call(&result.text, &textcall::write_tool_names())
+            })
+    }
+}
+
 /// A sum as it is shown: with no cost when it is partial, because a total
 /// that misses a report must not read as the whole.
 fn shown(usage: Usage, partial: bool) -> Usage {
@@ -1112,6 +1160,7 @@ fn shown(usage: Usage, partial: bool) -> Usage {
     }
 }
 
+/// Worker ids start at 1; id 0 maps to no slot.
 fn index(id: WorkerId) -> usize {
     (id.0 as usize).wrapping_sub(1)
 }
