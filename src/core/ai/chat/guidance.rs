@@ -29,6 +29,19 @@ pub fn github_hint(repo: &str, cols: usize) -> String {
         .unwrap_or_else(|| "/github".to_owned())
 }
 
+/// The notice that no worker ran, in `cols` columns, ASCII and one line with
+/// two columns of margin: the full form, then a shorter one. It names no key:
+/// the key text comes with the keys.
+pub fn undelegated_hint(cols: usize) -> String {
+    let full = "no worker ran, nothing written";
+    let form = if full.len() + 2 <= cols {
+        full
+    } else {
+        "no worker ran"
+    };
+    form.to_owned()
+}
+
 /// The guidance for `availability`, or `None` when the engine is ready.
 pub fn guidance(availability: &Availability) -> Option<String> {
     Some(match availability {
@@ -98,6 +111,24 @@ mod tests {
         );
         assert_eq!(github_hint(LONG, 30), "Type /github for GitHub issues");
         assert_eq!(github_hint(LONG, 7), "/github");
+    }
+
+    // Spec (chat-pane, Worker-flow notices are transcript notices): ASCII,
+    // two columns of margin so the line never wraps, shorter at narrow widths.
+    // No key is named: PR4 adds the key text with the keys.
+    #[test]
+    fn the_undelegated_hint_has_a_form_for_each_width() {
+        let full = "no worker ran, nothing written";
+        let short = "no worker ran";
+        assert_eq!(undelegated_hint(200), full);
+        assert_eq!(undelegated_hint(full.len() + 2), full);
+        assert_eq!(undelegated_hint(full.len() + 1), short);
+        assert_eq!(undelegated_hint(short.len() + 2), short);
+        assert_eq!(undelegated_hint(3), short);
+        for cols in 1..=80 {
+            let text = undelegated_hint(cols);
+            assert!(text.is_ascii() && !text.contains("Enter"));
+        }
     }
 
     #[test]

@@ -265,6 +265,12 @@ impl Run {
         self.slots.len()
     }
 
+    /// Whether the run made no worker and was not cancelled: an orchestrator
+    /// turn that ends now answered in text alone (agent-orchestrator [W1]).
+    pub fn undelegated(&self) -> bool {
+        self.slots.is_empty() && self.state != RunState::Cancelled
+    }
+
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {
         self.slot(id).map(|slot| slot.status)
     }

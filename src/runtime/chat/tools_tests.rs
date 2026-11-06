@@ -897,6 +897,16 @@ async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
         .expect("the turn ends")
         .expect("an event");
     assert_eq!((at, turn, event), (pane(1), 1, done()));
+    // A turn that made no worker is told first (D27), then the run ends.
+    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+        .await
+        .expect("the run says no worker ran")
+        .expect("an event");
+    assert_eq!(at, pane(1));
+    assert!(
+        matches!(event, OrchestraEvent::Undelegated { .. }),
+        "{event:?}"
+    );
     let (at, event) = timeout(Duration::from_secs(5), ended.recv())
         .await
         .expect("the run ends with its turn")

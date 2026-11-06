@@ -519,6 +519,8 @@ struct Live {
     /// The orchestrator turn that started the run is over: the run ends once
     /// it has nothing left to do (see [`RunManager::turn_ended`]).
     turn_over: bool,
+    /// The app was told the run is undelegated (once per run).
+    told_undelegated: bool,
     /// What the run keeps for its receipt-driven reviews (S7b).
     review: review::State,
     /// Ends the run when its wall clock passes (`run_timeout_mins`).
@@ -728,6 +730,7 @@ impl RunManager {
             retry: HashMap::new(),
             review: review::State::default(),
             turn_over: false,
+            told_undelegated: false,
             clock: self.start_clock(pane, run, scope.limits.wall),
         };
         let old = {
@@ -864,6 +867,9 @@ impl RunManager {
     pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
         let next = self.on_run(pane, run, |live| {
             let next = self.next_turn(live);
+            if matches!(next, Next::Settle) {
+                self.tell_undelegated(pane, live);
+            }
             // A run that continues waits for the turn the app starts: it must
             // not end under it when its last worker finishes meanwhile.
             live.turn_over = !matches!(next, Next::Go(_));
@@ -880,6 +886,14 @@ impl RunManager {
                 }
             }
             None => {}
+        }
+    }
+
+    /// Tells the app, once, that `live` answered with no worker (D27).
+    fn tell_undelegated(&self, pane: PaneId, live: &mut Live) {
+        if live.run.undelegated() && !live.told_undelegated {
+            live.told_undelegated = true;
+            self.send(pane, OrchestraEvent::Undelegated { run: live.run.id() });
         }
     }
 
@@ -1351,6 +1365,7 @@ impl RunManager {
         let finished = self.on_run(pane, run, |live| match live.run.finish(summary) {
             Ok(built) => {
                 self.announce_built(pane, run, built);
+                self.tell_undelegated(pane, live);
                 let ledger = live.run.run_ledger(&live.goal).render();
                 let summary = live.run.summary().unwrap_or(summary).to_owned();
                 self.send(

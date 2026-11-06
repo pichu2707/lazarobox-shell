@@ -3003,6 +3003,7 @@ impl App {
         let finished = live && chat.phase() == Phase::Idle;
         if finished {
             chat.set_turn_failure(failure);
+            chat.set_turn_clean(how == Ended::Done);
         }
         let no_run = chat.orch_run().is_none();
         if finished {
@@ -3047,6 +3048,9 @@ impl App {
                 .and_then(ChatState::take_continue)
         {
             effects.extend(self.start_continuation(id, next));
+        }
+        if finished {
+            self.flush_undelegated(id, how == Ended::Done);
         }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
@@ -8892,6 +8896,8 @@ mod app_tests {
     mod orchestra_store;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;
+    /// The undelegated-reply notice and when it is shown.
+    mod orchestra_undelegated;
     /// The full-pane transcript of a worker (S9).
     mod orchestra_view;
 

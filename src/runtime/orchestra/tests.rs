@@ -502,6 +502,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Disclosed { .. }
         | OrchestraEvent::Degraded { .. }
         | OrchestraEvent::SpawnRefused { .. }
+        | OrchestraEvent::Undelegated { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1547,6 +1548,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Disclosed { .. }
             | OrchestraEvent::Degraded { .. }
             | OrchestraEvent::SpawnRefused { .. }
+            | OrchestraEvent::Undelegated { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -5647,4 +5649,90 @@ async fn a_tooled_cli_worker_with_a_working_hub_is_not_reported_as_degraded() {
     let (_, handle) = lab.start(codex_review());
     handle.call(spawn(Task::Review, "look")).await;
     lab.assert_no_notices();
+}
+
+// Spec (agent-orchestrator, Text-only turn gets the notice [W1]): a turn
+// that ends with no worker made tells the app once, and nothing starts by
+// itself; a turn with a worker, or a cancelled run, tells nothing.
+#[tokio::test]
+async fn a_turn_that_ends_with_no_worker_is_reported_undelegated_once() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert_eq!(
+        events,
+        [
+            OrchestraEvent::Undelegated { run },
+            OrchestraEvent::Ended { run }
+        ],
+        "no continuation follows"
+    );
+    lab.manager.turn_ended(pane(), run);
+    assert_eq!(lab.sent(), [], "a later call finds the run ended");
+}
+
+#[tokio::test]
+async fn a_finish_with_no_worker_is_reported_undelegated_once() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle
+        .call(OrchCall::Finish {
+            summary: "nothing to do".to_owned(),
+        })
+        .await;
+    let told = |events: &[OrchestraEvent]| {
+        events
+            .iter()
+            .filter(|e| matches!(e, OrchestraEvent::Undelegated { .. }))
+            .count()
+    };
+    assert_eq!(told(&lab.sent()), 1, "sent by finish");
+    lab.manager.turn_ended(pane(), run);
+    assert_eq!(told(&lab.sent()), 0, "the turn's end does not repeat it");
+}
+
+#[tokio::test]
+async fn a_turn_with_a_worker_or_a_cancelled_run_is_not_undelegated() {
+    let mut lab = lab(Script::Answer("found"));
+    let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    handle.call(spawn(Task::Review, "check")).await;
+    assert_eq!(handle.call(wait(1)).await, fine("1: done"));
+    handle.call(handoff_of(1)).await;
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OrchestraEvent::Undelegated { .. })),
+        "{events:?}"
+    );
+
+    let (_, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+    lab.manager.cancel(pane());
+    let events = lab.sent();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OrchestraEvent::Undelegated { .. })),
+        "{events:?}"
+    );
+}
+
+// Spec (chat-pane, Notice repeats): two undelegated runs, one after the other
+// on one pane, are each reported.
+#[tokio::test]
+async fn two_undelegated_runs_on_one_pane_are_each_reported() {
+    let mut lab = lab(Script::Answer("found"));
+    let mut told = Vec::new();
+    for _ in 0..2 {
+        let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+        lab.manager.turn_ended(pane(), run);
+        told.extend(lab.sent().into_iter().filter_map(|e| match e {
+            OrchestraEvent::Undelegated { run } => Some(run),
+            _ => None,
+        }));
+    }
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_ne!(told[0], told[1], "one per run");
 }
