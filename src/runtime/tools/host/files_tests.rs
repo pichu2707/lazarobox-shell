@@ -699,6 +699,89 @@ async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
     assert!(!live.call(write("b.txt", "again")).await.is_error);
 }
 
+// A re-ask that never reaches the user must not destroy what the user was
+// already offered: the batch was proposed before (its ask ended with the
+// turn), so a call that dies before its announcement only ends its own ask.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_re_ask_that_cannot_announce_keeps_the_batch_the_user_was_offered() {
+    use crate::core::ai::tools::stage::State;
+    use crate::runtime::tools::approver::ENDED;
+    for owner in [key(), worker_key(1)] {
+        let w = world();
+        let (d, _rx) = w.turn_with(Script::new(Decision::Denied(ENDED)), on(), Some(owner));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        assert!(d.call(Call::ProposeBatch).await.text.contains(ENDED));
+        let (closed, rx) = w.turn_with(Script::new(Decision::Sent), on(), Some(owner));
+        drop(rx);
+        let out = closed.call(Call::ProposeBatch).await;
+        assert!(
+            out.is_error && out.text == "cancelled",
+            "{owner:?}: {out:?}"
+        );
+        assert_eq!(w.staged_of(owner), 1, "{owner:?}: the offered batch stays");
+        let state = w
+            .host
+            .stages
+            .lock()
+            .unwrap()
+            .batch(owner)
+            .map(|b| b.state());
+        assert_eq!(state, Some(State::Proposed));
+        // No ask is open any more: the owner can propose it once more.
+        let yes = Script::new(Decision::Sent);
+        let (d, _rx) = w.turn_with(yes.clone(), on(), Some(owner));
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(yes.asks().len(), 1);
+    }
+}
+
+// The user seals an orphan through the review and the model proposes the same
+// batch: the model's call asks too. When the user applies the orphan first,
+// the model's answer finds the batch gone and says so; nothing applies twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_model_ask_over_an_orphan_under_review_fails_cleanly_once_the_user_applied_it() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    // A staging orphan sealed by the user's review.
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
+    let (live, mut rx) = w.turn(Arc::new(super::tests::Waiting));
+    let mut propose = live.call(Call::ProposeBatch);
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
+    let BatchEvent::Done { shown, .. } = w.host.apply_batch(id, false, None) else {
+        panic!("an apply is done");
+    };
+    assert_eq!(shown, "applied 1 paths");
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "hello"
+    );
+    // The call of the model is dropped; its ask finds nothing and writes nothing.
+    drop(propose);
+    assert_eq!(w.staged(), 0);
+    assert_eq!(
+        w.host.apply_batch(id, false, None),
+        BatchEvent::Done {
+            shown: "that batch is no longer there".into(),
+            told: None,
+        }
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "hello"
+    );
+}
+
 // The disk is read before the lock is taken: staging never holds the mutex of
 // every chat's batches across a read.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
