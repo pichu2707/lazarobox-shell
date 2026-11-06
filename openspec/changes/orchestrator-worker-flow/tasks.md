@@ -86,13 +86,13 @@ Design: D27 (undelegated notice), D24 not needed. Owner precedent `NOTICE` ("`y`
 
 Files: `src/core/ai/orchestra/run.rs` (`Run::undelegated()`), `src/runtime/orchestra.rs` (`turn_ended` at 863, `finish_run` at 1324), `src/core/ai/orchestra/event.rs`, `src/app/orchestra.rs`, `src/core/ai/chat/mod.rs` (`park_continue` pattern at 716); tests in `orchestra/tests.rs`, `app_tests/`.
 
-- [ ] 3.1 RED: pure test `Run::undelegated()` is true only with no slots and not cancelled; false after any `spawn_agent` that created a worker; false when cancelled. Spec: "A turn with a worker gets none [W1, auto]".
-- [ ] 3.2 GREEN: implement `Run::undelegated()`.
-- [ ] 3.3 RED: runtime test: `turn_ended` on `Settle` and `finish_run` each send the event when `undelegated()`; not sent otherwise. Spec: "Text-only turn gets the notice" (the "no further turn starts by itself" half is asserted here too).
-- [ ] 3.4 GREEN: send from both sites.
-- [ ] 3.5 RED (app): the notice is parked while the phase is not idle and shown when idle (`park_continue` pattern, separate channels); dropped on a failed turn and on a resume waiting for a reply; shown after EACH such turn (legitimate answer included, neutral text, no accusation). Spec: "A legitimate answer gets the same neutral notice", "Notice repeats".
-- [ ] 3.6 GREEN: park/flush in `app/orchestra.rs` with the stated text, key first: `Enter delegate | Esc dismiss | no worker ran, nothing written` (ASCII `|`; the design shows a middle dot, ship ASCII per chat-pane spec).
-- [ ] 3.7 REFACTOR: shorter forms by width as `github_hint` does (`chat/guidance.rs`), with a pure width test per form.
+- [x] 3.1 RED: pure test `Run::undelegated()` is true only with no slots and not cancelled; false after any `spawn_agent` that created a worker; false when cancelled. Spec: "A turn with a worker gets none [W1, auto]".
+- [x] 3.2 GREEN: implement `Run::undelegated()`.
+- [x] 3.3 RED: runtime test: `turn_ended` on `Settle` and `finish_run` each send the event when `undelegated()`; not sent otherwise. Spec: "Text-only turn gets the notice" (the "no further turn starts by itself" half is asserted here too).
+- [x] 3.4 GREEN: send from both sites.
+- [x] 3.5 RED (app): the notice is parked while the phase is not idle and shown when idle (`park_continue` pattern, separate channels); dropped on a failed turn and on a resume waiting for a reply; shown after EACH such turn (legitimate answer included, neutral text, no accusation). Spec: "A legitimate answer gets the same neutral notice", "Notice repeats".
+- [x] 3.6 GREEN: park/flush in `app/orchestra.rs` with the stated text, key first: `Enter delegate | Esc dismiss | no worker ran, nothing written` (ASCII `|`; the design shows a middle dot, ship ASCII per chat-pane spec).
+- [x] 3.7 REFACTOR: shorter forms by width as `github_hint` does (`chat/guidance.rs`), with a pure width test per form.
 - Done when: `cargo test` green; manual step M2 shows the line with a text-only reply; no key action exists yet (Enter does nothing new).
 - Depends on: PR1/PR2 only for the shared notice formatter; otherwise independent.
 
