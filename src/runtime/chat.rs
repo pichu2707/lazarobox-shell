@@ -904,6 +904,13 @@ impl Chats {
         let (Tools::On { origin, .. }, Some(locality)) =
             (&request.tools, locality(&request.engine))
         else {
+            // `orch_refusal` stops an orchestrator turn without tools before
+            // it is sent, so no notice is needed here; only a plain chat
+            // passes (agent-orchestrator [W1], coordinator half).
+            debug_assert!(
+                orch.is_none(),
+                "an orchestrator turn reached here without tools"
+            );
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
             }
