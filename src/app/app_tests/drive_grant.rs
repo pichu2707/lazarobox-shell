@@ -194,7 +194,10 @@ fn a_confirmed_cd_to_a_drive_folder_asks_for_writes() {
     assert_eq!(folder_of(&a), Some(PathBuf::from(APP)));
     assert_eq!(grant_of(&a), None);
     let prompt = a.approval_prompt(id2()).expect("the grant prompt is drawn");
-    assert_eq!(prompt.target, format!("Allow writes in {APP}? (y/n)"));
+    assert_eq!(
+        prompt.target,
+        format!("Allow writes, commands and git in {APP}? (y/n)")
+    );
     assert_eq!(prompt.command, APP);
 }
 

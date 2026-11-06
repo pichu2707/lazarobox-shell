@@ -1186,18 +1186,62 @@ async fn a_failed_commit_that_left_the_index_alone_adds_no_notice() {
     assert!(!out.text.contains("the index was changed"), "{}", out.text);
 }
 
-// openspec `wsl-drive-access` task 1.7: git in a drive folder waits for the
-// grant of PR 3.
+// openspec `wsl-drive-access` task 3.3: before the grant every git verb in a
+// drive folder gets the folder-level text and asks nothing; a grant for
+// another folder does not count.
 #[tokio::test]
-async fn a_git_verb_in_a_drive_folder_is_refused() {
+async fn a_git_verb_in_an_ungranted_drive_folder_gets_the_folder_text() {
     let w = bare_world(LANDLOCK);
     let app = super::exec_tests::drive_project(&w);
+    let other = app.parent().unwrap().join("other");
+    std::fs::create_dir_all(&other).unwrap();
     let asks = Asks::new(Decision::Sent);
-    let (d, _rx) = w.turn(&app, asks.clone(), write_set());
-    for call in [diff(), add(&["Cargo.toml"])] {
-        let out = d.call(call.clone()).await;
-        assert!(out.is_error, "{call:?}");
-        assert_eq!(out.text, "path not available", "{call:?}");
+    for grant in [None, Some(other)] {
+        let (d, _rx) = w.turn_granted(&app, asks.clone(), write_set(), grant.clone());
+        for call in [
+            Call::GitStatus,
+            diff(),
+            log(),
+            add(&["Cargo.toml"]),
+            commit("feat: x"),
+        ] {
+            let out = d.call(call.clone()).await;
+            assert!(out.is_error, "{call:?} {grant:?}");
+            assert_eq!(
+                out.text,
+                super::exec_tests::ungranted_text(&app),
+                "{call:?} {grant:?}"
+            );
+        }
     }
+    assert!(asks.asked().is_empty());
+}
+
+// Scenario "Git in a drive folder": with the grant the verbs run in the
+// repository of the drive folder.
+#[tokio::test]
+async fn a_git_verb_in_a_granted_drive_folder_runs_there() {
+    if !system_git() {
+        eprintln!("skipped: no git in a system place");
+        return;
+    }
+    let w = bare_world(LANDLOCK);
+    let app = super::exec_tests::drive_project(&w);
+    sh(&app, &["init", "-q"]);
+    sh(&app, &["config", "user.name", "Repo Dev"]);
+    sh(&app, &["config", "user.email", "dev@example.com"]);
+    sh(&app, &["add", "Cargo.toml"]);
+    sh(&app, &["commit", "-q", "-m", "on the drive"]);
+    std::fs::write(app.join("new.txt"), "n\n").unwrap();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn_granted(&app, asks.clone(), git_set(), Some(app.clone()));
+    let status = d.call(Call::GitStatus).await;
+    assert!(!status.is_error, "{status:?}");
+    assert!(status.text.contains("new.txt"), "{status:?}");
+    let log = d.call(log()).await;
+    assert!(
+        !log.is_error && log.text.contains("on the drive"),
+        "{log:?}"
+    );
     assert!(asks.asked().is_empty());
 }

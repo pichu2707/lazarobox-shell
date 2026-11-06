@@ -40,7 +40,7 @@ Each PR gets an independent verifier and is released on its own (patch through `
 
 ## PR 2: Grant and writes
 
-PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its texts say "writes" where the specs say "writes, commands and git": the prompt is `Allow writes in <folder>? (y/n)` and the ungranted refusal is `path not available: the chat's folder <folder> is on a Windows drive, where writes need your permission; ask the user to run /cd <folder>`. PR 3 widens both to the spec texts.
+PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its texts say "writes" where the specs say "writes, commands and git": the prompt is `Allow writes in <folder>? (y/n)` and the ungranted refusal is `path not available: the chat's folder <folder> is on a Windows drive, where writes need your permission; ask the user to run /cd <folder>`. PR 3 widened both to the spec texts: `Allow writes, commands and git in <folder>? (y/n)` and `... where writes, commands and git need your permission; ...`, for writes, commands and git alike.
 
 - [x] 2.1 Probe first (manual, WSL2 scratch folder under `%TEMP%`): `renameat` over an existing file, `st_nlink` of a fresh file, `openat2` no-symlink write open. Any failure stops PR 2 and goes back to the user. (Done on WSL2 drvfs: `openat2` beneath `/mnt/c` and of the target ok, symlink → `ELOOP`; `O_EXCL|O_NOFOLLOW` temp, `fsync`, `mkdirat`/`unlinkat` ok; fresh file `nlink` 1; `renameat2(RENAME_NOREPLACE)` → `EINVAL`; `linkat` new name ok (nlink 2, then 1 after unlinking the temp), over an existing name → `EEXIST` with the bytes kept; plain `renameat` over a file ok, no temp left; `O_EXCL` of a case variant → `EEXIST`; `fchmod` succeeds but the mode stays 0777, which nothing in the write path checks.)
 - [x] 2.2 RED: grant prompt after picker accept, `/cd` confirm and resume in a non-broad drive folder; only unmodified lowercase `y` grants; `Y`, `n`, Esc and `Alt+y` leave it read-only; never shown for a broad or home folder.
@@ -54,8 +54,8 @@ PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its t
 
 ## PR 3: Commands and git
 
-- [ ] 3.1 Probe first (manual): the Landlock jail with a granted drive folder as root runs `ls` and `git status`, and cannot read the profile's `AppData` or another drive folder. A failure turns PR 3 into the refusal `commands cannot run in a Windows drive folder on this system` for commands and git on drives.
-- [ ] 3.2 RED: jail broad check refuses `/mnt/c`, `/mnt/c/Users`, a profile root, `/mnt/c/Windows` and `/mnt/C/windows`-style case variants as roots.
-- [ ] 3.3 RED: `run_command` and git in an ungranted drive folder give the folder-level text; in a granted one they run with the folder as cwd.
-- [ ] 3.4 GREEN: `root_of` and git root with the grant, dynamic broad check.
-- [ ] 3.5 Docs: README, CHANGELOG; tick this file and archive the change after the last PR merges.
+- [x] 3.1 Probe first (manual): the Landlock jail with a granted drive folder as root runs `ls` and `git status`, and cannot read the profile's `AppData` or another drive folder. A failure turns PR 3 into the refusal `commands cannot run in a Windows drive folder on this system` for commands and git on drives. Done on WSL2 (scratch `/mnt/c/Users/Public/lbx-jail-probe-*`, deleted) with the real `__jail-exec` helper and the drvfs folder as `--rwx` root: `ls`, write, `git status`, `git add`/`commit`/`log` work (with the global git config off and `/dev/urandom` readable, as the tools give them); `AppData` of the profile, `Users/Public/Documents`, `$HOME`, a sibling write and a case variant of the root path (`PUBLIC`) are all `Permission denied`. `git init` on drvfs sets `core.filemode=false`.
+- [x] 3.2 RED: jail broad check refuses `/mnt/c`, `/mnt/c/Users`, a profile root, `/mnt/c/Windows` and `/mnt/C/windows`-style case variants as roots.
+- [x] 3.3 RED: `run_command` and git in an ungranted drive folder give the folder-level text; in a granted one they run with the folder as cwd.
+- [x] 3.4 GREEN: `root_of` and git root with the grant, dynamic broad check.
+- [ ] 3.5 Docs: README, CHANGELOG; tick this file and archive the change after the last PR merges. (README, CHANGELOG and the ticks done; the archive waits for the merge.)

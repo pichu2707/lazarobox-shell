@@ -2827,6 +2827,64 @@ fn an_rwx_root_that_is_a_broad_place_is_refused() {
 }
 
 #[test]
+fn an_rwx_root_that_is_a_broad_windows_drive_folder_is_refused() {
+    // openspec `wsl-drive-access` D12: case-folded, every profile root.
+    let drives = paths(&["/mnt/c"]);
+    for bad in [
+        "/mnt/c",
+        "/mnt/c/Users",
+        "/mnt/c/users",
+        "/mnt/c/Users/ana",
+        "/mnt/c/USERS/Ana",
+        "/mnt/c/Windows",
+        "/mnt/c/windows",
+        "/mnt/C/windows",
+        "/mnt/c/WINDOWS/System32",
+        "/mnt/c/Program Files/app",
+        "/mnt/c/PROGRA~1/app",
+        "/mnt/c/Users/ana/Documents/PROJEC~1",
+        "/mnt/c/Users/ana/AppData/Local/app",
+    ] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec_with_drives(Os::Linux, &[], &drives),
+            Err(ExecFault::TooBroad(p(bad))),
+            "{bad}"
+        );
+    }
+    for good in [
+        "/mnt/c/Users/ana/Documents/app",
+        "/mnt/c/Users/Public/app",
+        "/mnt/c/work/windows",
+    ] {
+        assert_eq!(
+            with_rwx(&[good]).check_exec_with_drives(Os::Linux, &[], &drives),
+            Ok(()),
+            "{good}"
+        );
+    }
+}
+
+#[test]
+fn with_no_drives_the_exec_check_is_the_one_before_drives() {
+    let homes = [Path::new("/home/u")];
+    for bad in ["/home/u", "/mnt"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec_with_drives(Os::Linux, &homes, &[]),
+            Err(ExecFault::TooBroad(p(bad))),
+            "{bad}"
+        );
+    }
+    for root in ["/mnt/c", "/mnt/c/Users/ana", "/home/u/proj"] {
+        assert_eq!(
+            with_rwx(&[root]).check_exec_with_drives(Os::Linux, &homes, &[]),
+            with_rwx(&[root]).check_exec(Os::Linux, &homes),
+            "{root}"
+        );
+        assert_eq!(with_rwx(&[root]).check_exec(Os::Linux, &homes), Ok(()));
+    }
+}
+
+#[test]
 fn a_writable_path_next_to_an_execute_path_is_refused_on_linux_too() {
     // R29: equal, under or over, for rx and for the rwx root alike.
     for (rx, rw) in [

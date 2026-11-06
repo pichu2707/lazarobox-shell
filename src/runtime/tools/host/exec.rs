@@ -5,6 +5,7 @@
 //! spawn core is `runner.rs`.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::{OsStr, OsString},
     fs,
@@ -133,28 +134,24 @@ pub(super) struct Pin {
 
 /// Judges a call. The checks come in the order of the spec; the first refusal
 /// is the text the model gets.
-pub(super) async fn plan(
-    host: &ToolHost,
-    scope: &TurnScope,
-    call: &Call,
-) -> Result<Plan, &'static str> {
+pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Result<Plan, String> {
     let (Some(key), Call::RunCommand { args }) = (scope.stage_key, call) else {
-        return Err(refusal_text(ToolError::UnknownTool));
+        return Err(refusal_text(ToolError::UnknownTool).into());
     };
     if !host.exec.jailed() {
-        return Err(NO_JAIL);
+        return Err(NO_JAIL.into());
     }
-    let (env, origin, args) = (host.env(&scope.origin), scope.origin.clone(), args.clone());
+    let (env, origin, args) = (host.scope_env(scope), scope.origin.clone(), args.clone());
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
         let found = inspect(&env, &origin, &args)?;
         staged(&stages, key)?;
-        Ok::<_, &'static str>(found)
+        Ok::<_, Cow<'static, str>>(found)
     })
     .await
     .map_err(|_| COULD_NOT)??;
     if host.exec.gate.is_busy(key) {
-        return Err(CHAT_BUSY);
+        return Err(CHAT_BUSY.into());
     }
     let (request, root, cwd, pin) = judged;
     Ok(Plan {
@@ -229,11 +226,13 @@ pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
 const BROAD: &str = "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>";
 
 /// The chat origin as a root a command or a git verb may use: absolute, a real
-/// folder, not HOME, and not a place the path guard refuses.
+/// folder, not HOME, not a place the path guard refuses and, on a Windows
+/// drive, the folder the user granted (openspec `wsl-drive-access` D10) and
+/// never a broad one.
 pub(super) fn root_of(
     env: &ToolEnv,
     origin: &Path,
-) -> Result<(SecretRoots, PathBuf), &'static str> {
+) -> Result<(SecretRoots, PathBuf), Cow<'static, str>> {
     let roots = load_roots(env).map_err(|_| REFUSED)?;
     let root = origin
         .is_absolute()
@@ -242,12 +241,22 @@ pub(super) fn root_of(
         .filter(|root| root.is_dir())
         .ok_or(REFUSED)?;
     if roots.home().starts_with(&root) {
-        return Err(BROAD);
+        return Err(BROAD.into());
     }
-    // A Windows drive folder is readable under WSL, but commands and git
-    // there wait for the user's grant (openspec `wsl-drive-access`, PR 3).
-    if roots.on_drive(&root) || !roots.judge_real(&root) {
-        return Err(REFUSED);
+    if roots.on_drive(&root) {
+        if roots.drives().is_broad(&root) {
+            return Err(format!(
+                "{REFUSED}: the chat's folder is {}, where commands cannot run; ask the user to run /cd <project folder>",
+                super::files::chat_folder(env)
+            )
+            .into());
+        }
+        if !roots.granted_root(&root) {
+            return Err(super::files::ungranted_text(env).into());
+        }
+    }
+    if !roots.judge_real(&root) {
+        return Err(REFUSED.into());
     }
     Ok((roots, root))
 }
@@ -258,7 +267,7 @@ fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
-) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), &'static str> {
+) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
     let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
@@ -272,7 +281,7 @@ fn inspect(
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
     if package.missing && runs_scripts(args) {
-        return Err(NO_PACKAGE);
+        return Err(NO_PACKAGE.into());
     }
     let request = parse_run(args, &package.names()).map_err(|why| match why {
         RunError::Shape(shape) => refusal_text(shape),
@@ -283,7 +292,7 @@ fn inspect(
         .iter()
         .any(|arg| clean(arg) != *arg || arg.chars().any(char::is_control))
     {
-        return Err(UNSHOWABLE);
+        return Err(UNSHOWABLE.into());
     }
     let pin = pin(&request, &package);
     Ok((request, root, cwd, pin))
@@ -417,7 +426,7 @@ pub(super) async fn run(
     };
     let plan = match plan(host, scope, call).await {
         Ok(plan) => plan,
-        Err(why) => return fail(why),
+        Err(why) => return fail(&why),
     };
     // The disk may have changed while the prompt was open.
     if plan.pin != asked {

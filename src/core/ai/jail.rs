@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
 use crate::core::ai::parse::sanitize as one_line;
+use crate::core::ai::tools::windows::too_broad_on_drive;
 
 pub mod rpath;
 pub mod sbpl;
@@ -1516,6 +1517,19 @@ impl JailSpec {
     /// an `rwx` root is refused until the Seatbelt renderer grants toolchains.
     /// `homes` holds both spellings of `$HOME`, for the broad-place rule.
     pub fn check_exec(&self, os: Os, homes: &[&Path]) -> Result<(), ExecFault> {
+        self.check_exec_with_drives(os, homes, &[])
+    }
+
+    /// [`check_exec`](Self::check_exec) under WSL: `drives` are the Windows
+    /// drive mounts, and a root on one of them is also refused when it is a
+    /// broad or system drive folder (openspec `wsl-drive-access` D12). Pure:
+    /// the caller reads the mounts.
+    pub fn check_exec_with_drives(
+        &self,
+        os: Os,
+        homes: &[&Path],
+        drives: &[PathBuf],
+    ) -> Result<(), ExecFault> {
         let Some(root) = self.rwx.first() else {
             return Ok(());
         };
@@ -1528,7 +1542,7 @@ impl JailSpec {
         if !is_canonical_form(root) {
             return Err(ExecFault::NotCanonical(root.clone()));
         }
-        if root.parent().is_none() || broad_place(root, homes) {
+        if root.parent().is_none() || broad_place(root, homes) || too_broad_on_drive(root, drives) {
             return Err(ExecFault::TooBroad(root.clone()));
         }
         if let Some((rx, rw)) = writable_executable(self, os) {

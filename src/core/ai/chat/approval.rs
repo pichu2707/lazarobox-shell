@@ -988,17 +988,17 @@ pub const GITHUB_GRANT_DENIED: &str = "only the user can grant the GitHub tools"
 /// The keys of the drive grant prompt. ASCII: it must read on a Linux console.
 pub const DRIVE_GRANT_KEYS: &str = "y allow | n or Esc decline";
 /// What the drive grant prompt adds under the folder. ASCII.
-pub const DRIVE_GRANT_NOTE: &str =
-    "the model may write files in this folder until you quit\ncommands and git stay off here";
+pub const DRIVE_GRANT_NOTE: &str = "the model may write files, run commands and use git in this folder until you quit\nyou still review each change and command as in your home";
 /// Why a model's call cannot open the drive grant prompt.
-pub const DRIVE_GRANT_DENIED: &str = "only the user can let the chat write on a Windows drive";
+pub const DRIVE_GRANT_DENIED: &str =
+    "only the user can let the chat write, run commands and use git on a Windows drive";
 
-/// The prompt that asks whether the chat may write in the Windows drive
-/// folder `folder` (openspec `wsl-drive-access` D8).
+/// The prompt that asks whether the chat may write, run commands and use git
+/// in the Windows drive folder `folder` (openspec `wsl-drive-access` D8).
 pub fn drive_grant_prompt(folder: &Path, armed: bool) -> ApprovalPrompt {
     let shown = clean(&folder.to_string_lossy());
     ApprovalPrompt {
-        target: format!("Allow writes in {shown}? (y/n)"),
+        target: format!("Allow writes, commands and git in {shown}? (y/n)"),
         command: shown,
         keys: DRIVE_GRANT_KEYS,
         armed,

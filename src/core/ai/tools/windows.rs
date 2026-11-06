@@ -53,6 +53,11 @@ impl WinDrives {
         self.mounts.is_empty()
     }
 
+    /// The drvfs mount points.
+    pub fn mounts(&self) -> &[PathBuf] {
+        &self.mounts
+    }
+
     /// The mount `real` lies on, if any.
     pub fn drive_of(&self, real: &Path) -> Option<&Path> {
         self.mounts
@@ -129,6 +134,38 @@ impl WinDrives {
                 [users] | [users, _] => users.eq_ignore_ascii_case("users"),
                 _ => false,
             })
+    }
+}
+
+/// Whether `root`, on one of the drive `mounts`, may never be a jail's read,
+/// write and execute root (openspec `wsl-drive-access` D12): a drive root,
+/// its `Users` folder, any `Users/<name>` (every profile root, so no profile
+/// name is needed), a system folder of the drive or what lies below one, a
+/// profile's `AppData` or `NTUSER.DAT*`, or a path holding a DOS 8.3 alias.
+/// Every name, the mount's too, is compared without ASCII case. Pure.
+pub fn too_broad_on_drive(root: &Path, mounts: &[PathBuf]) -> bool {
+    let fold = |path: &Path| PathBuf::from(path.to_string_lossy().to_ascii_lowercase());
+    let root = fold(root);
+    let Some(rest) = mounts
+        .iter()
+        .find_map(|mount| root.strip_prefix(fold(mount)).ok())
+    else {
+        return false;
+    };
+    let Some(names) = normal_names(rest) else {
+        return true;
+    };
+    if names.iter().any(|name| is_short_alias(name)) {
+        return true;
+    }
+    match names.as_slice() {
+        [] => true,
+        [first, ..] if SYSTEM_FOLDERS.contains(&first.as_str()) => true,
+        [users] | [users, _] => users == "users",
+        [users, _, top, ..] if users == "users" => {
+            top == "appdata" || top.starts_with("ntuser.dat")
+        }
+        _ => false,
     }
 }
 

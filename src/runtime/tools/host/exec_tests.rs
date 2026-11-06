@@ -109,11 +109,23 @@ impl World {
         approver: Arc<dyn Approver>,
         families: FamilySet,
     ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        self.turn_granted(origin, approver, families, None)
+    }
+
+    /// [`turn`](Self::turn) of a chat whose Windows drive grant is `grant`.
+    pub(super) fn turn_granted(
+        &self,
+        origin: &Path,
+        approver: Arc<dyn Approver>,
+        families: FamilySet,
+        grant: Option<PathBuf>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
         let (tx, rx) = mpsc::channel(32);
         let mut scope = TurnScope::new(tx, Locality::Local, origin.to_path_buf());
         scope.approver = approver;
         scope.families = families;
         scope.stage_key = Some(key());
+        scope.drive_grant = grant;
         (self.host.dispatch(scope), rx)
     }
 }
@@ -1143,16 +1155,84 @@ pub(super) fn drive_project(w: &World) -> PathBuf {
     app
 }
 
-// openspec `wsl-drive-access` task 1.7: a drive folder is readable, but a
-// command there waits for the grant of PR 3, so it gets the one path text.
+/// The refusal of every command and git verb in the drive folder `app`
+/// before the user grants it (openspec `wsl-drive-access` D10).
+pub(super) fn ungranted_text(app: &Path) -> String {
+    let shown = app.display();
+    format!(
+        "path not available: the chat's folder {shown} is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd {shown}"
+    )
+}
+
+// openspec `wsl-drive-access` task 3.3: before the grant a command in a drive
+// folder gets the folder-level text and asks nothing; a grant for another
+// folder does not count.
 #[tokio::test]
-async fn a_command_in_a_drive_folder_is_refused() {
+async fn a_command_in_an_ungranted_drive_folder_gets_the_folder_text() {
     let w = world();
     let app = drive_project(&w);
+    let other = app.parent().unwrap().join("other");
+    std::fs::create_dir_all(&other).unwrap();
     let asks = Asks::new(Decision::Sent);
-    let (d, _rx) = w.turn(&app, asks.clone(), exec_set());
+    for grant in [None, Some(other)] {
+        let (d, _rx) = w.turn_granted(&app, asks.clone(), exec_set(), grant.clone());
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert!(out.is_error, "{grant:?}");
+        assert_eq!(out.text, ungranted_text(&app), "{grant:?}");
+    }
+    assert!(asks.asked().is_empty());
+    assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// Task 3.3: with the grant the command runs, with the folder as its cwd.
+#[tokio::test]
+async fn a_command_in_a_granted_drive_folder_runs_there() {
+    let w = runnable(HELPER, gate());
+    let app = drive_project(&w);
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let (d, _rx) = w.turn_granted(&app, asks.clone(), exec_set(), Some(app.clone()));
+    for (cwd, ran_in) in [(None, app.clone()), (Some("sub"), app.join("sub"))] {
+        let out = d.call(command("cargo", &["test", "--", "x"], cwd)).await;
+        assert!(!out.is_error, "{out:?}");
+        assert!(out.text.starts_with("exit code 0 after "), "{}", out.text);
+        assert!(
+            out.text.contains(&format!("{}\n", ran_in.display())),
+            "{}",
+            out.text
+        );
+    }
+    assert_eq!(asks.asked().len(), 2);
+}
+
+// Task 3.3: a broad drive folder (a drive root, `Users`, a profile root) is
+// broad like HOME even with a grant for it, and HOME stays broad whatever the
+// grant.
+#[tokio::test]
+async fn a_broad_drive_folder_stays_broad_with_a_grant() {
+    let w = world();
+    let app = drive_project(&w);
+    let profile = app.parent().unwrap().parent().unwrap().to_path_buf();
+    let users = profile.parent().unwrap().to_path_buf();
+    let drive = users.parent().unwrap().to_path_buf();
+    let asks = Asks::new(Decision::Sent);
+    for broad in [drive, users, profile] {
+        let (d, _rx) = w.turn_granted(&broad, asks.clone(), exec_set(), Some(broad.clone()));
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert_eq!(
+            out.text,
+            format!(
+                "path not available: the chat's folder is {}, where commands cannot run; ask the user to run /cd <project folder>",
+                broad.display()
+            ),
+            "{broad:?}"
+        );
+    }
+    let (d, _rx) = w.turn_granted(&w.home, asks.clone(), exec_set(), Some(w.home.clone()));
     let out = d.call(command("cargo", &["test"], None)).await;
-    assert!(out.is_error);
-    assert_eq!(out.text, "path not available");
+    assert_eq!(
+        out.text,
+        "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>"
+    );
     assert!(asks.asked().is_empty());
 }

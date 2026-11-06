@@ -1704,8 +1704,8 @@ fn drive_turn(
     (w.host.dispatch(scope), rx)
 }
 
-// openspec `wsl-drive-access` PR 2 (code-write, Drive folder without a
-// grant): every write gets the folder-level text, whatever the path, and
+// openspec `wsl-drive-access` PR 2 and PR 3 (code-write, Drive folder without
+// a grant): every write gets the folder-level text, whatever the path, and
 // nothing is staged.
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -1715,7 +1715,7 @@ async fn writes_in_an_ungranted_drive_folder_get_the_folder_text() {
     let (d, _rx) = drive_turn(&w, &app, None, Decision::Sent);
     let shown = app.display();
     let text = format!(
-        "path not available: the chat's folder {shown} is on a Windows drive, where writes need your permission; ask the user to run /cd {shown}"
+        "path not available: the chat's folder {shown} is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd {shown}"
     );
     for call in [
         write("main.py", "t"),

@@ -5,6 +5,7 @@
 //! this file only wires them to a call and shapes what the model gets back.
 
 use std::{
+    borrow::Cow,
     ffi::OsString,
     fs,
     os::unix::fs::PermissionsExt,
@@ -76,22 +77,23 @@ async fn exec(opened: &Opened, argv: Vec<String>, read_verb: bool) -> Result<Ran
 }
 
 /// What every git verb needs before it can ask: a chat that can stage, a jail,
-/// a root the path guard allows and no batch waiting.
-async fn ready(host: &ToolHost, scope: &TurnScope) -> Result<(), &'static str> {
+/// a root the path guard allows (on a Windows drive, the folder the user
+/// granted) and no batch waiting.
+async fn ready(host: &ToolHost, scope: &TurnScope) -> Result<(), Cow<'static, str>> {
     let Some(key) = scope.stage_key else {
-        return Err(refusal_text(ToolError::UnknownTool));
+        return Err(refusal_text(ToolError::UnknownTool).into());
     };
     if !host.exec.jailed() {
-        return Err(super::exec::NO_JAIL);
+        return Err(super::exec::NO_JAIL.into());
     }
     let (env, origin, stages) = (
-        host.env(&scope.origin),
+        host.scope_env(scope),
         scope.origin.clone(),
         host.stages.clone(),
     );
     tokio::task::spawn_blocking(move || {
         root_of(&env, &origin)?;
-        staged(&stages, key)
+        Ok(staged(&stages, key)?)
     })
     .await
     .map_err(|_| COULD_NOT)?
@@ -104,7 +106,7 @@ pub(super) async fn plan(
     host: &ToolHost,
     scope: &TurnScope,
     call: &Call,
-) -> Result<Option<ApprovalAsk>, &'static str> {
+) -> Result<Option<ApprovalAsk>, String> {
     // A path the model names is refused here, so a refusal opens no prompt.
     match call {
         Call::GitDiff { path: Some(p), .. } | Call::GitLog { path: Some(p), .. } => {
@@ -118,11 +120,12 @@ pub(super) async fn plan(
         _ => {}
     }
     ready(host, scope).await?;
-    match call {
+    let planned = match call {
         Call::GitAdd { paths } => plan_add(host, scope, paths).await.map(Some),
         Call::GitCommit { message } => plan_commit(host, scope, message).await.map(Some),
         _ => Ok(None),
-    }
+    };
+    Ok(planned?)
 }
 
 /// The ask of an add: the paths as the prompt shows them whole, and how many
@@ -217,7 +220,7 @@ pub(super) async fn run(
         return fail(COULD_NOT);
     };
     if let Err(why) = ready(host, scope).await {
-        return fail(why);
+        return fail(&why);
     }
     let result = match call {
         Call::GitAdd { paths } => add(host, scope, paths, &nonce).await,
@@ -376,7 +379,7 @@ async fn open(host: &ToolHost, scope: &TurnScope) -> Result<Opened, &'static str
     let read = host.exec.read.clone();
     let unreported = host.exec.sink(key);
     let (env, origin, home) = (
-        host.env(&scope.origin),
+        host.scope_env(scope),
         scope.origin.clone(),
         host.home.clone(),
     );
@@ -451,7 +454,12 @@ fn context(
     helper: PathBuf,
     unreported: crate::runtime::tools::runner::Unreported,
 ) -> Result<Ctx, &'static str> {
-    let (_, root) = root_of(env, origin)?;
+    // The plan already gave the model the text of a refused root; a root
+    // refused only now gets the one path text.
+    let (_, root) = root_of(env, origin).map_err(|why| match why {
+        Cow::Borrowed(text) => text,
+        Cow::Owned(_) => REFUSED,
+    })?;
     let home = home.and_then(|h| fs::canonicalize(h).ok()).ok_or(REFUSED)?;
     let scrubbed = scrub(read, &root, &parent);
     let path = scrubbed.iter().find(|(name, _)| name == "PATH");
