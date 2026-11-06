@@ -209,6 +209,10 @@ pub enum OrchestraEvent {
         model: Option<String>,
         why: Degrade,
     },
+    /// An orchestrator turn ended with a text answer and the run made no
+    /// worker (agent-orchestrator [W1]). Sent once per run; the app shows a
+    /// notice when its pane is idle. Never sent to a model.
+    Undelegated { run: RunId },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

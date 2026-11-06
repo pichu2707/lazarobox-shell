@@ -195,6 +195,13 @@ impl App {
         effects
     }
 
+    /// Pane `id` resumes a run, or its coordinator waits for the user's reply
+    /// to one: a turn with no worker is expected there, and said already.
+    pub(super) fn resume_waits(&self, id: PaneId) -> bool {
+        self.run_keep.resuming.contains_key(&id)
+            || self.run_keep.awaiting.get(&id).is_some_and(|w| !w.replied)
+    }
+
     /// The resume of pane `id` got no worker (its turn failed, was cancelled
     /// or ended): the run is offered again and the pane says so.
     pub(super) fn resume_not_started(&mut self, id: PaneId) {

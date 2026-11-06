@@ -29,6 +29,22 @@ pub fn github_hint(repo: &str, cols: usize) -> String {
         .unwrap_or_else(|| "/github".to_owned())
 }
 
+/// The notice that no worker ran, in `cols` columns, ASCII and one line, the
+/// key first and never cut: the full form, then without the Esc part, then
+/// shorter, and at the narrowest the key alone.
+pub fn undelegated_hint(cols: usize) -> String {
+    let forms = [
+        "Enter delegate | Esc dismiss | no worker ran, nothing written",
+        "Enter delegate | no worker ran, nothing written",
+        "Enter delegate | no worker ran",
+    ];
+    let form = forms
+        .into_iter()
+        .find(|form| form.len() <= cols)
+        .unwrap_or("Enter delegate");
+    form.to_owned()
+}
+
 /// The guidance for `availability`, or `None` when the engine is ready.
 pub fn guidance(availability: &Availability) -> Option<String> {
     Some(match availability {
@@ -98,6 +114,27 @@ mod tests {
         );
         assert_eq!(github_hint(LONG, 30), "Type /github for GitHub issues");
         assert_eq!(github_hint(LONG, 7), "/github");
+    }
+
+    // Spec (chat-pane, Worker-flow notices are transcript notices): ASCII, the
+    // key first and never cut, shorter forms as the width shrinks.
+    #[test]
+    fn the_undelegated_hint_has_a_form_for_each_width() {
+        let full = "Enter delegate | Esc dismiss | no worker ran, nothing written";
+        let medium = "Enter delegate | no worker ran, nothing written";
+        let short = "Enter delegate | no worker ran";
+        assert_eq!(undelegated_hint(200), full);
+        assert_eq!(undelegated_hint(full.len()), full);
+        assert_eq!(undelegated_hint(full.len() - 1), medium);
+        assert_eq!(undelegated_hint(medium.len()), medium);
+        assert_eq!(undelegated_hint(medium.len() - 1), short);
+        assert_eq!(undelegated_hint(short.len()), short);
+        assert_eq!(undelegated_hint(short.len() - 1), "Enter delegate");
+        assert_eq!(undelegated_hint(3), "Enter delegate");
+        for cols in 1..=80 {
+            let text = undelegated_hint(cols);
+            assert!(text.is_ascii() && text.starts_with("Enter delegate"));
+        }
     }
 
     #[test]

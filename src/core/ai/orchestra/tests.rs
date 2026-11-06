@@ -1304,3 +1304,26 @@ fn a_worker_that_timed_out_with_staged_files_is_disclosed_too() {
         Some(Disclosure::StagedNotProposed { files: 1 })
     );
 }
+
+// Spec (agent-orchestrator, A turn with a worker gets none [W1]): a run is
+// undelegated only while it has made no worker and was not cancelled.
+#[test]
+fn a_run_is_undelegated_only_with_no_worker_and_no_cancel() {
+    let t0 = Instant::now();
+    let mut fresh = run();
+    assert!(fresh.undelegated(), "no worker yet");
+    fresh.cancel_run(t0);
+    assert!(!fresh.undelegated(), "cancelled");
+
+    let mut spawned = run();
+    spawned.spawn(t0, Task::Review, "look").unwrap();
+    assert!(!spawned.undelegated(), "a worker was made");
+
+    // A refused spawn makes no worker: the run is still undelegated.
+    let mut refused = run().with_limits(RunLimits {
+        workers: 0,
+        ..RunLimits::default()
+    });
+    refused.spawn(t0, Task::Review, "x").unwrap_err();
+    assert!(refused.undelegated(), "a refusal made no worker");
+}

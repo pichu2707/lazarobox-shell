@@ -897,3 +897,48 @@ mod feedback_is_drawn {
         shows(&mut a, "No interrupted run to resume or discard");
     }
 }
+
+// Spec (An undelegated coordinator reply is disclosed): a resume turn that
+// ends with no worker leaves the coordinator waiting for the user, and the pane
+// already says so; the undelegated notice is dropped there, in either order.
+#[test]
+fn a_resume_waiting_for_a_reply_gets_no_undelegated_notice() {
+    let undelegated =
+        || event(crate::core::ai::orchestra::event::OrchestraEvent::Undelegated { run: RUN });
+    let notices = |a: &App| {
+        system(a)
+            .iter()
+            .filter(|l| l.starts_with("Enter delegate"))
+            .count()
+    };
+
+    let mut a = resumed_and_waiting();
+    a.update(undelegated());
+    assert_eq!(notices(&a), 0, "the event after the wait began");
+
+    let mut a = interrupted_app();
+    let effects = keys(&mut a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a turn");
+    a.update(undelegated());
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        crate::core::ai::chat::engine::StreamEvent::Done(
+            crate::core::ai::chat::engine::Finish::Stop,
+        ),
+    ));
+    assert_eq!(notices(&a), 0, "the event before the turn's end");
+    assert!(
+        system(&a)
+            .iter()
+            .any(|l| l.contains("waits for your reply")),
+        "{:?}",
+        system(&a)
+    );
+}

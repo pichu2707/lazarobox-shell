@@ -493,6 +493,10 @@ pub struct ChatState {
     /// (S4): it starts when that turn ends. One slot is enough: turns are
     /// serial, so a run has at most one turn to follow at a time.
     orch_continue: Option<Continuation>,
+    /// The run whose "no worker ran" notice came before the turn it follows
+    /// was over: it shows when that turn ends well. Separate from
+    /// `orch_continue`: it never starts a turn.
+    orch_undelegated: Option<RunId>,
     /// The run the user cancelled with Esc or Ctrl+C: a continuation the
     /// manager sent before it heard of the cancel must not start.
     orch_cancelled: Option<RunId>,
@@ -596,6 +600,7 @@ impl ChatState {
             run_view: None,
             run_view_drawn: Default::default(),
             orch_continue: None,
+            orch_undelegated: None,
             orch_cancelled: None,
             turn_failure: None,
             ended_workers: Default::default(),
@@ -717,6 +722,15 @@ impl ChatState {
         self.orch_continue = Some(next);
     }
 
+    /// Holds the undelegated notice of `run` until the turn it follows is over.
+    pub fn park_undelegated(&mut self, run: RunId) {
+        self.orch_undelegated = Some(run);
+    }
+
+    pub fn take_undelegated(&mut self) -> Option<RunId> {
+        self.orch_undelegated.take()
+    }
+
     pub fn set_turn_failure(&mut self, why: Option<String>) {
         self.turn_failure = why;
     }
@@ -729,6 +743,7 @@ impl ChatState {
     /// is refused.
     pub fn cancel_run(&mut self, run: RunId) {
         self.orch_continue = None;
+        self.orch_undelegated = None;
         self.orch_cancelled = Some(run);
     }
 

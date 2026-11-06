@@ -9,6 +9,7 @@ use crate::core::ai::{
     chat::{
         Entry, OrchAlert, OrchNote,
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
+        guidance::undelegated_hint,
         transcript::{kind_label, worker_label},
     },
     config::Assignment,
@@ -182,6 +183,7 @@ impl App {
     pub(super) fn on_orchestra(&mut self, id: PaneId, event: OrchestraEvent) -> Vec<Effect> {
         let event = match event {
             OrchestraEvent::Continue(next) => return self.on_continue(id, next),
+            OrchestraEvent::Undelegated { run } => return self.on_undelegated(id, run),
             event => event,
         };
         // A worker's step is a redraw only when its transcript is on view.
@@ -374,7 +376,7 @@ impl App {
             // Handled before the pane is borrowed.
             OrchestraEvent::Trace { .. } => {}
             // Handled before the pane is borrowed.
-            OrchestraEvent::Continue(_) => {}
+            OrchestraEvent::Continue(_) | OrchestraEvent::Undelegated { .. } => {}
             OrchestraEvent::Notice { text } => chat.push_system_line(text),
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
@@ -457,6 +459,50 @@ impl App {
             return Vec::new();
         }
         self.start_continuation(id, next)
+    }
+
+    /// The orchestrator turn of pane `id` ended with no worker made (D27): the
+    /// notice shows when the pane is idle and the turn did not fail, and waits
+    /// for the turn's end otherwise. Nothing starts by itself.
+    fn on_undelegated(&mut self, id: PaneId, run: RunId) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if chat.run_cancelled(run) {
+            return Vec::new();
+        }
+        if chat.phase() != Phase::Idle {
+            chat.park_undelegated(run);
+            return Vec::new();
+        }
+        if chat.turn_failure().is_none() {
+            self.say_undelegated(id);
+        }
+        Vec::new()
+    }
+
+    /// The turn of pane `id` ended: a parked undelegated notice shows if it
+    /// ended well (`done`), and goes otherwise.
+    pub(super) fn flush_undelegated(&mut self, id: PaneId, done: bool) {
+        let parked = (self.panes.get_mut(&id))
+            .and_then(PaneState::chat_mut)
+            .and_then(ChatState::take_undelegated);
+        if parked.is_some() && done {
+            self.say_undelegated(id);
+        }
+    }
+
+    /// Adds the "no worker ran" line, unless pane `id` is a resumed run that
+    /// waits for the user's reply: it says so itself.
+    fn say_undelegated(&mut self, id: PaneId) {
+        if self.resume_waits(id) {
+            return;
+        }
+        let cols = self.panes.get(&id).map_or(80, |p| usize::from(p.size.cols));
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system_line(ascii(undelegated_hint(cols)));
+            self.dirty = true;
+        }
     }
 
     /// Starts the continuation turn on the open run, after a line that says
