@@ -556,3 +556,73 @@ fn the_lens_and_refuter_prompts_hold_the_review_rules() {
     }
     assert_eq!(seen.len(), 12);
 }
+
+// Spec (prompt-profiles): Worker prompt asks for tools [W2, auto].
+#[test]
+fn the_worker_prompt_requires_write_tools_and_propose_batch() {
+    for profile in Profile::ALL {
+        let got = worker_system(builtin(profile, Task::Code));
+        for needle in [
+            "write_file",
+            "edit_file",
+            "propose_batch",
+            "not a result",
+            "overrides",
+            "fenced",
+        ] {
+            assert!(got.contains(needle), "{profile:?}: {needle}");
+        }
+        assert!(got.ends_with(WORKER.trim_end()), "{profile:?}");
+        assert!(WORKER.len() <= 1536, "{}", WORKER.len());
+        assert!(
+            WORKER
+                .chars()
+                .all(|c| c == '\n' || (' '..='~').contains(&c))
+        );
+    }
+}
+
+// Spec (prompt-profiles): a worker prompt MUST NOT contradict the tools block.
+#[test]
+fn the_worker_prompt_does_not_contradict_the_tools_block() {
+    let writer = FamilySet::LEGACY.with(Family::Write);
+    for profile in Profile::ALL {
+        let got = with_tools(&worker_system(builtin(profile, Task::Code)), writer);
+        assert!(got.contains(WORKER.trim_end()), "{profile:?}");
+        assert!(got.contains("do all of them in this turn"), "{profile:?}");
+        assert!(!got.contains(NO_CHANGES), "{profile:?}");
+        assert!(!got.contains("cannot change files"), "{profile:?}");
+        assert!(!got.contains("{abilities}"), "{profile:?}");
+        // The worker text says nothing the tools block denies.
+        for denied in ["no access", "text assistant", "cannot change"] {
+            assert!(!WORKER.contains(denied), "{denied}");
+        }
+    }
+}
+
+// Spec (prompt-profiles): a user override of `code.md` still applies. GUARD:
+// passes before the worker text exists, pins the order.
+#[test]
+fn a_user_override_of_code_keeps_its_place_before_the_worker_text() {
+    let got = resolve_prompt(
+        Profile::Programmer,
+        Task::Code,
+        text("My own code prompt."),
+        Override::Missing,
+    );
+    let system = worker_system(&got.text);
+    assert!(system.starts_with("My own code prompt."), "{system}");
+    assert!(system.contains("propose_batch"), "{system}");
+}
+
+// Spec (prompt-profiles): Chat turn unchanged [W2, auto]. GUARD: a chat turn
+// on the `code` assignment resolves the prompt without the worker text.
+#[test]
+fn a_chat_turn_on_the_code_assignment_gets_the_code_prompt_untouched() {
+    for profile in Profile::ALL {
+        let got = resolve_prompt(profile, Task::Code, Override::Missing, Override::Missing);
+        assert_eq!(got.text, builtin(profile, Task::Code).trim_end());
+        assert!(!got.text.contains("propose_batch"), "{profile:?}");
+        assert!(!builtin(profile, Task::Code).contains(WORKER.trim_end()));
+    }
+}

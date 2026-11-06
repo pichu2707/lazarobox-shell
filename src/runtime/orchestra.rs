@@ -47,6 +47,7 @@ use super::{
         fs::load_roots,
     },
 };
+use crate::core::ai::chat::prompts::worker_system;
 use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
@@ -1557,7 +1558,15 @@ impl RunManager {
             // A review worker has the prompt of its lens, not of its kind.
             system: match live.review.system(id) {
                 Some(system) => system.to_owned(),
-                None => load_prompt(self.prompts.as_deref(), live.profile, spec.task).text,
+                None => {
+                    let kind = load_prompt(self.prompts.as_deref(), live.profile, spec.task).text;
+                    // Only a worker that can write is told to use the tools.
+                    if spec.writes() {
+                        worker_system(&kind)
+                    } else {
+                        kind
+                    }
+                }
             },
             memory: None,
             messages: vec![ChatMessage {
