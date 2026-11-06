@@ -64,14 +64,14 @@ Files: `src/core/ai/orchestra/changes.rs`, `src/core/ai/orchestra/run.rs`, `src/
 
 Files: `src/core/ai/orchestra/run.rs` (Refusal text exposure), `src/runtime/orchestra.rs` (`open_session`, `launch`), `src/runtime/chat.rs` (debug_assert only), `src/core/ai/orchestra/event.rs`, `src/app/orchestra.rs`; tests in `orchestra/tests.rs`, `src/app/app_tests/`.
 
-- [ ] 2.1 RED: pure/runtime test: every `Run::spawn` refusal (read-only goal, max workers, run paused, etc.) produces a notice event carrying the SAME redacted, capped line that the coordinator receives. Spec: "Refused spawn is seen by the user [W1, auto]".
-- [ ] 2.2 GREEN: emit the event where the spawn tool result is built in `runtime/orchestra.rs`; reuse the existing redact-and-cap function so coordinator and user see one string.
-- [ ] 2.3 RED: runtime test with the fake runner: a worker turn for which `open_session` returns `None` (no tooling; `Tools::Off`; unknown locality; hub open failure) emits `Degraded { worker, reason }` with a distinct reason each, and the turn still runs as text. Spec: "Turn degraded to no tools [W1, auto]" (worker half).
-- [ ] 2.4 GREEN: split the `None` exits of `open_session` (lines ~1577-1581 and the hub `.ok()?` calls at ~1627-1630) so each returns a reason; `launch` sends the notice before the turn starts. Behaviour of the turn is unchanged.
-- [ ] 2.5 RED: test for the coordinator half: an orchestrator turn that starts with `Tools::Off` (tooling missing) says which turn ran without tools. Check first whether `orch_refusal` (`app/orchestra.rs:850`) already stops it; if so, assert it is a refusal and add no notice (Corrections row 3).
-- [ ] 2.6 GREEN: add the coordinator notice only if 2.5 shows a reachable path; otherwise add `debug_assert!` in `runtime/chat.rs` ORCH turn construction (design: "no notice there; a `debug_assert` for ORCH only").
-- [ ] 2.7 RED (app): insta snapshot of the three notice kinds; a notice is not history. GREEN: render in `app/orchestra.rs`.
-- [ ] 2.8 REFACTOR: one shared "notice about worker X" formatter for PR1 and PR2 (`worker n/m kind engine>model`).
+- [x] 2.1 RED: pure/runtime test: every `Run::spawn` refusal (read-only goal, max workers, run paused, etc.) produces a notice event carrying the SAME redacted, capped line that the coordinator receives. Spec: "Refused spawn is seen by the user [W1, auto]".
+- [x] 2.2 GREEN: emit the event where the spawn tool result is built in `runtime/orchestra.rs`; reuse the existing redact-and-cap function so coordinator and user see one string.
+- [x] 2.3 RED: runtime test with the fake runner: a worker turn for which `open_session` returns `None` (no tooling; `Tools::Off`; unknown locality; hub open failure) emits `Degraded { worker, reason }` with a distinct reason each, and the turn still runs as text. Spec: "Turn degraded to no tools [W1, auto]" (worker half).
+- [x] 2.4 GREEN: split the `None` exits of `open_session` (lines ~1577-1581 and the hub `.ok()?` calls at ~1627-1630) so each returns a reason; `launch` sends the notice before the turn starts. Behaviour of the turn is unchanged.
+- [x] 2.5 RED: test for the coordinator half: an orchestrator turn that starts with `Tools::Off` (tooling missing) says which turn ran without tools. Check first whether `orch_refusal` (`app/orchestra.rs:850`) already stops it; if so, assert it is a refusal and add no notice (Corrections row 3).
+- [x] 2.6 GREEN: add the coordinator notice only if 2.5 shows a reachable path; otherwise add `debug_assert!` in `runtime/chat.rs` ORCH turn construction (design: "no notice there; a `debug_assert` for ORCH only").
+- [x] 2.7 RED (app): insta snapshot of the three notice kinds; a notice is not history. GREEN: render in `app/orchestra.rs`.
+- [x] 2.8 REFACTOR: one shared "notice about worker X" formatter for PR1 and PR2 (`worker n/m kind engine>model`).
 - Done when: `cargo test` green; manual step M1 passes; the open question "Whether W1's disclosure identifies the original trigger" is answered in the PR description from M1.
 - Depends on: PR1 (shared formatter and event enum).
 
