@@ -7,7 +7,7 @@ use toml::{Table, Value};
 use crate::core::ai::chat::usage_view::Billing;
 
 /// The CLI engines that have a billing mode, in the order of their problems.
-const BILLED: [&str; 3] = ["claude", "codex", "gemini"];
+pub(super) const BILLED: [&str; 3] = ["claude", "codex", "gemini"];
 
 const BILLING_PROBLEM: &str = "expected \"subscription\" or \"per-token\"";
 
