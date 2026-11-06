@@ -19,6 +19,20 @@ use crate::core::ai::{
     config::Task,
 };
 
+/// Why a worker turn ran without tools; one reason per way out of the
+/// session setup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Degrade {
+    /// The runtime has no tool host.
+    NoTooling,
+    /// The tools were not on for the engine (it is not verified for them).
+    ToolsOff,
+    /// The engine's locality is unknown.
+    NoLocality,
+    /// The hub of the worker's tool sockets could not open.
+    NoHub,
+}
+
 /// A worker as its row shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WorkerRow {
@@ -166,11 +180,34 @@ pub enum OrchestraEvent {
     Disclosed {
         run: RunId,
         worker: WorkerId,
+        /// Workers the run has made so far: the `m` of `worker n/m`.
+        workers: usize,
         kind: Task,
         /// Empty when the engine was unavailable.
         engine: String,
         model: Option<String>,
         what: Disclosure,
+    },
+    /// A spawn that made no worker, or made a worker refused for its engine
+    /// or model (that path does create a slot): `reason` is the cause the
+    /// coordinator got, redacted and capped, without the worker's status
+    /// prefix (agent-orchestrator [W1]). Never sent to a model.
+    SpawnRefused {
+        run: RunId,
+        kind: Task,
+        reason: String,
+    },
+    /// A worker turn that runs as text because its tools could not be
+    /// offered (agent-orchestrator [W1]); the turn goes on as before.
+    Degraded {
+        run: RunId,
+        worker: WorkerId,
+        /// Workers the run has made so far: the `m` of `worker n/m`.
+        workers: usize,
+        kind: Task,
+        engine: String,
+        model: Option<String>,
+        why: Degrade,
     },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.

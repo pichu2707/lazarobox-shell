@@ -15,7 +15,7 @@ use crate::core::ai::{
     orchestra::{
         Toolset, WorkerId, WorkerKey,
         changes::Disclosure,
-        event::Continuation,
+        event::{Continuation, Degrade},
         ledger::{NO_HANDOFF, Unit, Verdict},
         overrides::{Change, FailurePicker, Picked},
         persist::Item,
@@ -335,6 +335,7 @@ impl App {
             OrchestraEvent::Disclosed {
                 run,
                 worker,
+                workers,
                 kind,
                 engine,
                 model,
@@ -342,7 +343,32 @@ impl App {
             } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     let who = kind_label(kind, &engine, model.as_deref());
-                    chat.push_system_line(disclosure_line(worker, &who, what));
+                    chat.push_system_line(disclosure_line(worker, workers, &who, what));
+                }
+            }
+            // A spawn that made no worker, with the coordinator's own line.
+            OrchestraEvent::SpawnRefused { run, kind, reason } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(ascii(format!(
+                        "spawn of a {} worker refused: {reason}",
+                        kind.id()
+                    )));
+                }
+            }
+            // A worker turn that runs as text: said before it starts.
+            OrchestraEvent::Degraded {
+                run,
+                worker,
+                workers,
+                kind,
+                engine,
+                model,
+                why,
+            } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    let who = kind_label(kind, &engine, model.as_deref());
+                    let said = format!("{RAN_WITHOUT_TOOLS}: {}", degrade_reason(why));
+                    chat.push_system_line(worker_notice(worker, workers, &who, &said));
                 }
             }
             // Handled before the pane is borrowed.
@@ -959,9 +985,39 @@ impl App {
     }
 }
 
-/// A disclosure as one transcript line: the worker (`worker 2 code
-/// ollama>qwen3`) and what its end left unsaid.
-fn disclosure_line(worker: WorkerId, who: &str, what: Disclosure) -> String {
+/// Said of a worker turn whose tools could not be offered, before the reason.
+const RAN_WITHOUT_TOOLS: &str = "runs as plain text, without tools";
+
+/// Why a worker turn has no tools, in lazarobox's words (ASCII, neutral).
+fn degrade_reason(why: Degrade) -> &'static str {
+    match why {
+        Degrade::NoTooling => "the tool host is not available",
+        Degrade::ToolsOff => "its engine is not verified for tools here",
+        Degrade::NoLocality => "its engine is unknown to lazarobox",
+        Degrade::NoHub => "the tool server could not start",
+    }
+}
+
+/// The one shape of a notice about a worker: `worker 2/3 code ollama>qwen3`
+/// (its number of the workers the run has made) and what is said of it.
+fn worker_notice(worker: WorkerId, workers: usize, who: &str, said: &str) -> String {
+    ascii(format!("worker {}/{workers} {who} {said}", worker.0))
+}
+
+/// `text` with every non-ASCII character shown as `?`: a model or engine name
+/// can carry any, and these notices are ASCII.
+fn ascii(text: String) -> String {
+    if text.is_ascii() {
+        return text;
+    }
+    text.chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .collect()
+}
+
+/// A disclosure as one transcript line: the worker and what its end left
+/// unsaid.
+fn disclosure_line(worker: WorkerId, workers: usize, who: &str, what: Disclosure) -> String {
     let said = match what {
         Disclosure::EmptyLedger => CHANGED_NO_FILE.to_owned(),
         Disclosure::StagedNotProposed { files } => {
@@ -969,7 +1025,7 @@ fn disclosure_line(worker: WorkerId, who: &str, what: Disclosure) -> String {
             format!("staged {files} {noun} {NEVER_PROPOSED}")
         }
     };
-    format!("worker {} {who} {said}", worker.0)
+    worker_notice(worker, workers, who, &said)
 }
 
 /// The failure alert as one paragraph: the run is paused, the worker by its

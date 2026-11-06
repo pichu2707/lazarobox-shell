@@ -1,0 +1,9 @@
+---
+source: src/app/app_tests/orchestra_run.rs
+expression: shown
+---
+spawn of a code worker refused: worker limit reached: max_workers is 2
+worker 2/3 review ollama>qwen3 runs as plain text, without tools: the tool host is not available
+worker 2/3 review ollama>qwen3 runs as plain text, without tools: its engine is not verified for tools here
+worker 2/3 review ollama>qwen3 runs as plain text, without tools: its engine is unknown to lazarobox
+worker 2/3 review ollama>qwen3 runs as plain text, without tools: the tool server could not start

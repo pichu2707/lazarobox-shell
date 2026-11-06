@@ -16,7 +16,7 @@ use crate::core::ai::{
     orchestra::{
         RunId, WorkerId,
         changes::Disclosure,
-        event::{Continuation, OrchestraEvent, WorkerRow},
+        event::{Continuation, Degrade, OrchestraEvent, WorkerRow},
         ledger::{Handoff, Unit, Verdict},
         run::UserChoice,
         worker::{ErrorClass, WorkerStatus},
@@ -727,6 +727,7 @@ fn disclosed(id: u32, what: Disclosure) -> OrchestraEvent {
     OrchestraEvent::Disclosed {
         run: RUN,
         worker: WorkerId(id),
+        workers: 3,
         kind: Task::Code,
         engine: "ollama".into(),
         model: Some("qwen3".into()),
@@ -767,6 +768,98 @@ fn worker_disclosures_are_system_lines_naming_the_worker() {
     let shown = shown.join("\n");
     assert!(shown.is_ascii(), "{shown}");
     insta::assert_snapshot!("orch_worker_disclosures", shown);
+}
+
+fn degraded(why: Degrade) -> OrchestraEvent {
+    OrchestraEvent::Degraded {
+        run: RUN,
+        worker: WorkerId(2),
+        workers: 3,
+        kind: Task::Review,
+        engine: "ollama".into(),
+        model: Some("qwen3".into()),
+        why,
+    }
+}
+
+fn refused(reason: &str) -> OrchestraEvent {
+    OrchestraEvent::SpawnRefused {
+        run: RUN,
+        kind: Task::Code,
+        reason: reason.into(),
+    }
+}
+
+// Spec (Refused spawn is seen by the user, Turn degraded to no tools): the
+// three notices are system lines, ASCII, each worker named `n/m kind
+// engine>model`, a distinct reason per degrade.
+#[test]
+fn refusal_and_degraded_turn_notices_are_system_lines() {
+    let (mut a, _) = running();
+    a.update(event(refused("worker limit reached: max_workers is 2")));
+    for why in [
+        Degrade::NoTooling,
+        Degrade::ToolsOff,
+        Degrade::NoLocality,
+        Degrade::NoHub,
+    ] {
+        a.update(event(degraded(why)));
+    }
+    let all = system_lines(&a);
+    let shown: Vec<_> = all
+        .lines()
+        .filter(|l| l.starts_with("worker ") || l.starts_with("spawn "))
+        .collect();
+    let shown = shown.join("\n");
+    assert!(shown.is_ascii(), "{shown}");
+    insta::assert_snapshot!("orch_refusal_and_degraded_notices", shown);
+}
+
+// The notices are ASCII even when an engine or model name is not.
+#[test]
+fn notices_with_non_ascii_names_are_shown_in_ascii() {
+    let (mut a, _) = running();
+    a.update(event(refused("model caf\u{e9} is not downloaded")));
+    a.update(event(OrchestraEvent::Degraded {
+        run: RUN,
+        worker: WorkerId(1),
+        workers: 1,
+        kind: Task::Review,
+        engine: "ollama".into(),
+        model: Some("qw\u{e9}n".into()),
+        why: Degrade::NoHub,
+    }));
+    let all = system_lines(&a);
+    let shown: Vec<_> = all
+        .lines()
+        .filter(|l| l.starts_with("worker ") || l.starts_with("spawn "))
+        .collect();
+    let shown = shown.join("\n");
+    assert!(shown.is_ascii(), "{shown}");
+    assert!(shown.contains("caf? is not downloaded"), "{shown}");
+    assert!(shown.contains("qw?n"), "{shown}");
+}
+
+// chat-pane / Notice is a system line, not history, for the new notices too.
+#[test]
+fn refusal_and_degraded_notices_stay_out_of_the_next_orchestrator_turn() {
+    let (mut a, turn) = running();
+    a.update(event(refused("run paused")));
+    a.update(event(degraded(Degrade::NoTooling)));
+    a.update(delta(turn, "all done"));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(system_lines(&a).contains("run paused"), "still shown");
+    let request = match ask(&mut a, "next").as_slice() {
+        [.., Effect::OrchestrateSend { request, .. }] => request.clone(),
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    let sent: Vec<&str> = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, ["plan it", "all done", "next"]);
 }
 
 // chat-pane / Notice is a system line, not history: the next orchestrator

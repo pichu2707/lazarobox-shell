@@ -70,6 +70,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
+            event::Degrade,
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             review::Assessment,
@@ -1101,31 +1102,56 @@ impl RunManager {
         let spawned = self.on_run(pane, run, |live| {
             let id = match live.run.spawn(now(), task, prompt) {
                 Ok(id) => id,
-                Err(Refusal::Paused) => return error("run paused"),
-                Err(Refusal::Ended) => return error(ENDED),
-                Err(Refusal::ReadOnly) => {
-                    return error(READ_ONLY);
-                }
-                Err(Refusal::WorkerCap(cap)) => {
-                    return error(format!("worker limit reached: max_workers is {cap}"));
+                Err(refusal) => {
+                    let said = match refusal {
+                        Refusal::Paused => "run paused".to_owned(),
+                        Refusal::Ended => ENDED.to_owned(),
+                        Refusal::ReadOnly => READ_ONLY.to_owned(),
+                        Refusal::WorkerCap(cap) => {
+                            format!("worker limit reached: max_workers is {cap}")
+                        }
+                    };
+                    let said = refusal_reason(&said);
+                    return self.refused(pane, live, task, said.clone(), said);
                 }
             };
             self.sync(pane, live);
             let status = live.run.status(id).unwrap_or(WorkerStatus::Refused);
-            let mut text = format!("worker {}: {}", id.0, status.label());
-            // A refusal says why, so the coordinator can tell the user.
             if status == WorkerStatus::Refused {
+                // A refusal says why, so the coordinator can tell the user;
+                // the pane gets the bare reason.
                 let why = (live.run.result(id)).and_then(|r| r.error.as_ref());
-                if let Some((_, reason)) = why {
-                    text = format!("{text}: {}", refusal_reason(reason));
-                }
+                let reason = why.map(|(_, reason)| refusal_reason(reason));
+                let head = format!("worker {}: {}", id.0, status.label());
+                let text = match &reason {
+                    Some(reason) => format!("{head}: {reason}"),
+                    None => head,
+                };
+                let shown = reason.unwrap_or_else(|| status.label().to_owned());
+                return self.refused(pane, live, task, shown, text);
             }
+            let text = format!("worker {}: {}", id.0, status.label());
             Outcome {
                 text,
-                is_error: status == WorkerStatus::Refused,
+                is_error: false,
             }
         });
         spawned.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// The error result of a spawn that did not run: the coordinator gets
+    /// `text`, and the pane `reason`; both are already redacted and capped.
+    fn refused(
+        &self,
+        pane: PaneId,
+        live: &Live,
+        kind: Task,
+        reason: String,
+        text: String,
+    ) -> Outcome {
+        let run = live.run.id();
+        self.send(pane, OrchestraEvent::SpawnRefused { run, kind, reason });
+        error(text)
     }
 
     /// The status of each id once none of them is queued or running, the run
@@ -1532,9 +1558,25 @@ impl RunManager {
         live.routes.insert(id, route.clone());
         let views = live.review.views(id);
         trace.send(TraceItem::Begin);
-        let session = self
-            .open_session(pane, key, &spec, views, &mut request, route)
-            .map(|dispatch| (live.pending.clone(), dispatch));
+        // A turn without tools still runs, as text, and the pane is told why.
+        let session = match self.open_session(pane, key, &spec, views, &mut request, route) {
+            Ok(dispatch) => Some((live.pending.clone(), dispatch)),
+            Err(why) => {
+                self.send(
+                    pane,
+                    OrchestraEvent::Degraded {
+                        run: key.run,
+                        worker: id,
+                        workers: live.run.worker_count(),
+                        kind: spec.task,
+                        engine: spec.engine.clone(),
+                        model: spec.model.clone(),
+                        why,
+                    },
+                );
+                None
+            }
+        };
         // The one message goes whole and Ollama cuts what passes its window
         // without saying so: the trace says it (#557). The runner stamps the
         // same window again, from the same state.
@@ -1566,8 +1608,8 @@ impl RunManager {
     /// The tool session of a worker turn, opened as a chat turn opens one
     /// (`Chats::open_session`) but keyed by worker and offering its toolset
     /// only: a server engine gets the dispatch of its tool loop, a CLI a
-    /// socket of the worker hub, wired into `request`. `None` runs the turn
-    /// as text.
+    /// socket of the worker hub, wired into `request`. `Err` says why the turn
+    /// runs as text.
     fn open_session(
         self: &Arc<Self>,
         pane: PaneId,
@@ -1576,13 +1618,14 @@ impl RunManager {
         views: bool,
         request: &mut ChatRequest,
         route: Arc<Route>,
-    ) -> Option<Option<Arc<dyn Dispatch>>> {
-        let tooling = self.tooling.as_ref()?;
-        let (Tools::On { origin, mcp, .. }, Some(locality)) =
-            (&mut request.tools, locality(&request.engine))
-        else {
-            return None;
+    ) -> Result<Option<Arc<dyn Dispatch>>, Degrade> {
+        let tooling = self.tooling.as_ref().ok_or(Degrade::NoTooling)?;
+        let Tools::On { origin, mcp, .. } = &mut request.tools else {
+            return Err(Degrade::ToolsOff);
         };
+        // Defensive: every `MCP_VERIFIED` engine is in `CATALOG` today, so
+        // this exit is not reached; it stays so it is never silent.
+        let locality = locality(&request.engine).ok_or(Degrade::NoLocality)?;
         let families = spec.toolset.families();
         // Only a chat pane may type into the user's session.
         debug_assert!(!families.contains(Family::Pane));
@@ -1619,7 +1662,7 @@ impl RunManager {
             adapter_for(&request.engine),
             Some(Adapter::Ollama | Adapter::Llamacpp)
         ) {
-            return Some(Some(dispatch));
+            return Ok(Some(dispatch));
         }
         let mut hub = lock(&tooling.hub);
         if hub.is_none() {
@@ -1628,15 +1671,15 @@ impl RunManager {
         // The toolset's families, never `FamilySet::LEGACY`; a worker key
         // gets no user servers whatever the slot holds.
         let started = hub
-            .as_mut()?
-            .open(key, dispatch, Slot::default(), families)
-            .ok()?;
+            .as_mut()
+            .and_then(|hub| hub.open(key, dispatch, Slot::default(), families).ok())
+            .ok_or(Degrade::NoHub)?;
         *mcp = Some(Box::new(McpWire {
             socket: started.socket.clone(),
             token: Secret::new(started.token.reveal()),
             unwire: started.end.clone(),
         }));
-        Some(None)
+        Ok(None)
     }
 
     /// Closes the tool session of a worker that is over and denies the asks
@@ -1690,6 +1733,7 @@ impl RunManager {
             OrchestraEvent::Disclosed {
                 run: live.run.id(),
                 worker: id,
+                workers: live.run.worker_count(),
                 kind: spec.task,
                 engine: spec.engine.clone(),
                 model: spec.model.clone(),

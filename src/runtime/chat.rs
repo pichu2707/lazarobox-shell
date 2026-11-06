@@ -904,6 +904,11 @@ impl Chats {
         let (Tools::On { origin, .. }, Some(locality)) =
             (&request.tools, locality(&request.engine))
         else {
+            // `orch_refusal` stops an orchestrator turn without tools before
+            // it is sent, so no notice is needed here; only a plain chat is
+            // expected (agent-orchestrator [W1], coordinator half). Not an
+            // assert: the tools setting can change between that check and
+            // the send.
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);
             }

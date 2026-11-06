@@ -320,6 +320,8 @@ struct Lab {
     events: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
     /// The worker usage records `next` and `untimed` passed over.
     usages: Vec<OrchestraEvent>,
+    /// The refusal and degraded-turn notices `next` and `untimed` passed over.
+    notices: Vec<OrchestraEvent>,
     /// The orchestrator turn's channel: worker tool rows would land here.
     turn: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
     home: tempfile::TempDir,
@@ -355,6 +357,7 @@ fn lab_over(
         seen,
         events,
         usages: Vec::new(),
+        notices: Vec::new(),
         turn: mpsc::channel(TURN_CHANNEL),
         home,
         via,
@@ -406,6 +409,9 @@ impl Lab {
             match event {
                 OrchestraEvent::Trace { .. } => {}
                 OrchestraEvent::Usage { .. } => self.usages.push(event),
+                OrchestraEvent::Degraded { .. } | OrchestraEvent::SpawnRefused { .. } => {
+                    self.notices.push(event);
+                }
                 event => return event,
             }
         }
@@ -419,16 +425,31 @@ impl Lab {
             match event {
                 OrchestraEvent::Trace { .. } => {}
                 OrchestraEvent::Usage { .. } => self.usages.push(event),
+                OrchestraEvent::Degraded { .. } | OrchestraEvent::SpawnRefused { .. } => {
+                    self.notices.push(event);
+                }
                 event => return event,
             }
         }
+    }
+
+    /// Fails when a refusal or degraded-turn notice was sent: the stash of
+    /// `next` and `sent` would otherwise hide one.
+    fn assert_no_notices(&mut self) {
+        let rest = self.sent();
+        assert!(self.notices.is_empty(), "{:?} {rest:?}", self.notices);
     }
 
     /// The events already sent.
     fn sent(&mut self) -> Vec<OrchestraEvent> {
         let mut out = Vec::new();
         while let Ok((_, event)) = self.events.try_recv() {
-            out.push(event);
+            match event {
+                OrchestraEvent::Degraded { .. } | OrchestraEvent::SpawnRefused { .. } => {
+                    self.notices.push(event);
+                }
+                event => out.push(event),
+            }
         }
         out
     }
@@ -479,6 +500,8 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Usage { .. }
         | OrchestraEvent::Notice { .. }
         | OrchestraEvent::Disclosed { .. }
+        | OrchestraEvent::Degraded { .. }
+        | OrchestraEvent::SpawnRefused { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1522,6 +1545,8 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Usage { .. }
             | OrchestraEvent::Notice { .. }
             | OrchestraEvent::Disclosed { .. }
+            | OrchestraEvent::Degraded { .. }
+            | OrchestraEvent::SpawnRefused { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -2829,6 +2854,7 @@ async fn a_code_worker_done_with_nothing_staged_is_disclosed() {
         OrchestraEvent::Disclosed {
             run,
             worker: WorkerId(1),
+            workers: 1,
             kind: Task::Code,
             engine: "codex".into(),
             model: Some("default".into()),
@@ -2858,6 +2884,7 @@ async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
         OrchestraEvent::Disclosed {
             run,
             worker: WorkerId(1),
+            workers: 1,
             kind: Task::Code,
             engine: "codex".into(),
             model: Some("default".into()),
@@ -2890,6 +2917,7 @@ async fn a_cancelled_worker_that_staged_files_is_disclosed() {
         OrchestraEvent::Disclosed {
             run,
             worker: WorkerId(1),
+            workers: 1,
             kind: Task::Code,
             engine: "codex".into(),
             model: Some("default".into()),
@@ -5452,4 +5480,171 @@ async fn an_ollama_worker_whose_prompt_fits_gets_no_notice() {
         ollama_review_trace(1_000_000).await,
         [TraceItem::Begin, TraceItem::Text("found it".into())]
     );
+}
+
+/// The next refusal or degraded-turn notice of the lab's pane.
+async fn notice(lab: &mut Lab) -> OrchestraEvent {
+    loop {
+        if !lab.notices.is_empty() {
+            return lab.notices.remove(0);
+        }
+        let (_, event) = timeout(Duration::from_secs(5), lab.events.recv())
+            .await
+            .expect("no notice")
+            .expect("channel open");
+        if matches!(
+            event,
+            OrchestraEvent::Degraded { .. } | OrchestraEvent::SpawnRefused { .. }
+        ) {
+            return event;
+        }
+    }
+}
+
+/// The next refused-spawn notice, the degraded-turn ones passed over.
+async fn refusal(lab: &mut Lab) -> OrchestraEvent {
+    loop {
+        let event = notice(lab).await;
+        if matches!(event, OrchestraEvent::SpawnRefused { .. }) {
+            return event;
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Refused spawn is seen by the user [W1]): a spawn
+// over the cap makes no worker, and the pane is told the same line the
+// coordinator got.
+#[tokio::test]
+async fn a_refused_spawn_is_shown_with_the_line_the_coordinator_got() {
+    let mut lab = lab(Script::Hang);
+    let scope = OrchScope {
+        limits: RunLimits {
+            workers: 1,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_review(), &[])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    handle.call(spawn(Task::Review, "one")).await;
+    let refused = handle.call(spawn(Task::Review, "two")).await;
+    assert!(refused.is_error);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Review,
+            reason: refused.text,
+        }
+    );
+}
+
+// Triangulation: a worker refused for an unavailable engine is a refused
+// spawn too, with the same line the coordinator got.
+#[tokio::test]
+async fn a_spawn_refused_for_its_engine_is_shown_too() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Code, "ollama", "llama3:70b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let mut lab = lab(Script::Hang);
+    let (run, handle) = lab.start(roster(&assigned, engines, JAIL));
+    let refused = handle.call(spawn(Task::Code, "write")).await;
+    assert!(refused.is_error, "{refused:?}");
+    // The coordinator keeps the status prefix; the pane gets the bare cause.
+    let bare = refused.text.strip_prefix("worker 1: refused: ").unwrap();
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Code,
+            reason: bare.to_owned(),
+        }
+    );
+}
+
+// Spec (Turn degraded to no tools [W1], worker half): no tooling at all.
+#[tokio::test]
+async fn a_worker_turn_without_tooling_is_reported_and_still_runs() {
+    let mut lab = lab(Script::Answer("done"));
+    let (run, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "look")).await;
+    assert_eq!(
+        notice(&mut lab).await,
+        OrchestraEvent::Degraded {
+            run,
+            worker: WorkerId(1),
+            workers: 1,
+            kind: Task::Review,
+            engine: "codex".into(),
+            model: Some("default".into()),
+            why: Degrade::NoTooling,
+        }
+    );
+    lab.seen.first().await;
+    assert_eq!(lab.seen.requests().len(), 1, "the turn still runs");
+}
+
+// An engine outside the verified list gets `Tools::Off`: another reason.
+#[tokio::test]
+async fn a_worker_on_an_unverified_engine_is_reported_with_its_own_reason() {
+    let mut lab = lab_with(Script::Answer("done"), tooled);
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Review, "llamacpp", "m"),
+    ];
+    let roster = roster(
+        &assigned,
+        vec![found("claude", &[]), found("llamacpp", &["m"])],
+        JAIL,
+    );
+    let (_, handle) = lab.start(roster);
+    handle.call(spawn(Task::Review, "look")).await;
+    let event = notice(&mut lab).await;
+    let OrchestraEvent::Degraded { why, engine, .. } = &event else {
+        panic!("{event:?}");
+    };
+    assert_eq!((*why, engine.as_str()), (Degrade::ToolsOff, "llamacpp"));
+}
+
+// A hub that cannot open (no private folder for its sockets) is a third
+// reason, and the CLI worker still runs as text.
+#[tokio::test]
+async fn a_worker_whose_tool_hub_cannot_open_is_reported() {
+    let mut lab = lab_with(Script::Answer("done"), |manager, home| {
+        let host = ToolHost::new(Some(home.into()), None, None, Limits::default());
+        manager.with_tools(host, Vec::new())
+    });
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "look")).await;
+    let event = notice(&mut lab).await;
+    let OrchestraEvent::Degraded { why, .. } = &event else {
+        panic!("{event:?}");
+    };
+    assert_eq!(*why, Degrade::NoHub);
+    lab.seen.first().await;
+}
+
+// A worker with working tools leaves no degraded-turn notice: an Ollama
+// worker gets the dispatch of its tool loop.
+#[tokio::test]
+async fn a_tooled_ollama_worker_is_not_reported_as_degraded() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Review, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let mut lab = lab_with(Script::Answer("done"), tooled);
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    handle.call(spawn(Task::Review, "look")).await;
+    lab.assert_no_notices();
+}
+
+// Same for a CLI worker whose hub opens.
+#[tokio::test]
+async fn a_tooled_cli_worker_with_a_working_hub_is_not_reported_as_degraded() {
+    let mut lab = lab_with(Script::Answer("done"), tooled);
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "look")).await;
+    lab.assert_no_notices();
 }
