@@ -15,7 +15,7 @@ use crate::{
     core::{
         ai::{
             chat::review::{Badge, BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
-            tools::stage::{BatchId, StageKey},
+            tools::stage::{BatchId, StageKey, State},
         },
         layout::PaneId,
     },
@@ -45,6 +45,17 @@ impl ToolHost {
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().badges(live)),
             Err(TryLockError::WouldBlock) => None,
         }
+    }
+
+    /// Whether the batch of `key` holds entries and was never proposed: its
+    /// writer is gone or still staging, and nobody asked the user yet. The
+    /// answer is per pane batch until W10a gives each writer its own: a
+    /// sibling's files make it true for every worker of the pane (the line
+    /// can repeat), and a sibling's proposal makes it false for all of them.
+    pub fn unproposed(&self, key: StageKey) -> bool {
+        lock(&self.stages)
+            .batch(key)
+            .is_some_and(|batch| batch.state() == State::Staging && !batch.entries().is_empty())
     }
 
     /// The orphan of `key` for the user to review. A batch the turn never

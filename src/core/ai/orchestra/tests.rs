@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use super::changes::{Change, ChangeLedger, diff_hash};
+use super::changes::{Change, ChangeLedger, Disclosure, diff_hash};
 use super::run::{
     CancelOutcome, CollectError, Refusal, Roster, Run, RunLimits, RunState, UserChoice, WorkerEvent,
 };
@@ -1223,5 +1223,84 @@ fn raise_validates_its_arguments() {
     assert_eq!(
         parse("raise", &json!({"tier": "high", "reason": "r", "x": 1})),
         Err(OrchError::ExtraArgument)
+    );
+}
+
+// Spec (agent-orchestrator, Silent worker outcomes are disclosed [W1]):
+// a `code` worker that ended `done` with an empty ledger is disclosed; a
+// read-only kind is not (they stage nothing by design), and a `code`
+// worker that staged something is not either.
+#[test]
+fn a_code_worker_done_with_an_empty_ledger_is_disclosed() {
+    let t0 = Instant::now();
+    let mut run = run();
+    let code = run.spawn(t0, Task::Code, "write it").unwrap();
+    run.on_event(t0, code, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(
+        run.disclosure(code, || panic!("nothing staged: the pane is not asked")),
+        Some(Disclosure::EmptyLedger)
+    );
+    let review = run.spawn(t0, Task::Review, "look").unwrap();
+    run.on_event(t0, review, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(run.disclosure(review, || false), None, "a read-only kind");
+    let staged = run.spawn(t0, Task::Code, "write it").unwrap();
+    run.staged(staged, change("a.rs", Some(3), "h1"));
+    run.on_event(t0, staged, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(run.disclosure(staged, || false), None);
+}
+
+// A worker that did not end `done` changed nothing for a reason the run
+// already shows (failed, timed out), and a worker still running has not
+// ended: no empty-ledger disclosure for either.
+#[test]
+fn an_empty_ledger_is_disclosed_only_for_a_worker_that_ended_done() {
+    let t0 = Instant::now();
+    let mut run = run();
+    let running = run.spawn(t0, Task::Code, "write it").unwrap();
+    assert_eq!(run.disclosure(running, || false), None);
+    let error = WorkerEvent::Failed {
+        class: ErrorClass::Timeout,
+        text: "late".into(),
+    };
+    run.on_event(t0, running, error);
+    assert_eq!(run.disclosure(running, || false), None);
+    assert_eq!(run.disclosure(WorkerId(99), || false), None);
+}
+
+// Spec (Staged and never proposed [W1]): two files staged and the pane's
+// batch still unproposed gives the count; a proposed batch gives nothing.
+#[test]
+fn a_worker_that_staged_and_never_proposed_is_disclosed_with_its_file_count() {
+    let t0 = Instant::now();
+    let mut run = run();
+    let id = run.spawn(t0, Task::Code, "write two files").unwrap();
+    run.staged(id, change("a.rs", Some(3), "h1"));
+    run.staged(id, change("b.rs", Some(5), "h2"));
+    run.on_event(t0, id, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(
+        run.disclosure(id, || true),
+        Some(Disclosure::StagedNotProposed { files: 2 })
+    );
+    assert_eq!(run.disclosure(id, || false), None, "proposed or answered");
+    run.applied(id, &["a.rs".to_owned(), "b.rs".to_owned()]);
+    assert_eq!(run.disclosure(id, || true), None, "all on disk");
+}
+
+// The batch is never proposed also when the worker did not end `done`:
+// it stays an orphan whatever ended the turn.
+#[test]
+fn a_worker_that_timed_out_with_staged_files_is_disclosed_too() {
+    let t0 = Instant::now();
+    let mut run = run();
+    let id = run.spawn(t0, Task::Code, "write").unwrap();
+    run.staged(id, change("a.rs", Some(3), "h1"));
+    let error = WorkerEvent::Failed {
+        class: ErrorClass::Timeout,
+        text: "late".into(),
+    };
+    run.on_event(t0, id, error);
+    assert_eq!(
+        run.disclosure(id, || true),
+        Some(Disclosure::StagedNotProposed { files: 1 })
     );
 }
