@@ -384,8 +384,7 @@ impl SecretRoots {
     }
 
     /// Whether an already resolved path lies on a Windows drive (and not in
-    /// HOME). Writes there need the user's grant; commands and git refuse
-    /// such a path. Pure.
+    /// HOME). Writes, commands and git there need the user's grant. Pure.
     pub fn on_drive(&self, real: &Path) -> bool {
         !real.starts_with(&self.real) && self.drives.drive_of(real).is_some()
     }
@@ -434,6 +433,13 @@ impl SecretRoots {
             Some(dir) if template => self.judge_real(dir) && !self.under_root(real),
             _ => self.judge_real(real),
         }
+    }
+
+    /// Whether `root`, an already resolved chat folder on a drive, is the
+    /// folder the user granted: equal to the grant, and not broad. Commands
+    /// and git run only there (openspec `wsl-drive-access` D7). Pure.
+    pub fn granted_root(&self, root: &Path) -> bool {
+        self.grant.as_deref() == Some(root) && self.granted(root)
     }
 
     /// Whether an already resolved path on a drive is the granted folder or

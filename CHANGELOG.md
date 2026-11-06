@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Under WSL, `run_command` and git work in a Windows drive folder the user
+  granted, inside the same jail as in the home folder. The grant prompt now
+  reads `Allow writes, commands and git in <folder>? (y/n)`, and without the
+  grant every write, command and git verb answers `path not available: the
+  chat's folder <folder> is on a Windows drive, where writes, commands and git
+  need your permission; ask the user to run /cd <folder>`. A broad drive folder
+  stays refused even with a grant, and the jail also refuses, without letter
+  case, a drive root, `Users`, any `Users/<name>`, the Windows system folders
+  and DOS 8.3 short names as the root of a command. Refs #550.
+
 ## [1.9.0] - 2026-11-05
 
 ### Added

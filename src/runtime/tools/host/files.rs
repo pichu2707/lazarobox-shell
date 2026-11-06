@@ -363,7 +363,7 @@ fn on_disk(
 /// The chat's folder as a write refusal names it: `$HOME` shown as `~`. The
 /// origin is usually a real path, so a `$HOME` reached through a symlink is
 /// also compared by its real path.
-fn chat_folder(env: &ToolEnv) -> String {
+pub(super) fn chat_folder(env: &ToolEnv) -> String {
     let home = env
         .home
         .as_deref()
@@ -423,12 +423,16 @@ fn broad_folder(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
 fn ungranted_drive(env: &ToolEnv, roots: &SecretRoots) -> Option<String> {
     let root = real_origin(env)?;
     let granted = env.drive_grant.as_deref() == Some(root.as_path());
-    (roots.on_drive(&root) && !granted).then(|| {
-        let folder = chat_folder(env);
-        format!(
-            "{REFUSED}: the chat's folder {folder} is on a Windows drive, where writes need your permission; ask the user to run /cd {folder}"
-        )
-    })
+    (roots.on_drive(&root) && !granted).then(|| ungranted_text(env))
+}
+
+/// The folder-level text of every write, command and git verb in a Windows
+/// drive folder the user has not granted (openspec `wsl-drive-access` D10).
+pub(super) fn ungranted_text(env: &ToolEnv) -> String {
+    let folder = chat_folder(env);
+    format!(
+        "{REFUSED}: the chat's folder {folder} is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd {folder}"
+    )
 }
 
 /// The chat's folder resolved, when it is absolute and resolves.

@@ -66,4 +66,4 @@ startup (WSL only)
 ## Open Questions
 
 - Replacing an existing file on drvfs (plain `renameat` over a target) and `st_nlink` on drvfs are unprobed. PR 2 starts with that probe; a failure stops PR 2 and comes back to the user.
-- Landlock on 9p is unprobed. PR 3 starts with that probe; a failure turns PR 3 into a clear refusal for commands and git on drives.
+- Landlock on 9p: answered by probe 3.1. The jail confines a granted drive folder (`ls`, writes and git work in it; the profile's `AppData`, sibling folders, `$HOME` and case variants of the root are denied), so commands and git have no fallback refusal on drives.

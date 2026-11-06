@@ -179,13 +179,17 @@ mod imp {
     }
 
     /// The `rwx` root must pass `check_exec` (with `$HOME` in both of its
-    /// spellings, so a broad root is refused) and be its own canonical path:
-    /// a root that is a link would grant its target, not what was checked.
+    /// spellings, so a broad root is refused, and under WSL the Windows drive
+    /// mounts, so a broad or system drive folder is refused too) and be its
+    /// own canonical path: a root that is a link would grant its target, not
+    /// what was checked.
     fn check_rwx(spec: &JailSpec) -> Result<(), ()> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let real = home.as_deref().and_then(|h| fs::canonicalize(h).ok());
         let homes: Vec<&Path> = home.iter().chain(&real).map(PathBuf::as_path).collect();
-        spec.check_exec(Os::Linux, &homes).map_err(|_| ())?;
+        let drives = crate::runtime::win_drives::drives();
+        spec.check_exec_with_drives(Os::Linux, &homes, drives.mounts())
+            .map_err(|_| ())?;
         for root in &spec.rwx {
             if fs::canonicalize(root).ok().as_deref() != Some(root.as_path()) {
                 return Err(());
