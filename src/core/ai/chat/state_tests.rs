@@ -877,3 +877,50 @@ mod usage_line_tests {
         }
     }
 }
+
+// The delegate offer is about one conversation in one folder: opening another
+// conversation, changing the folder or leaving ORCH ends it.
+fn offered() -> ChatState {
+    let mut state = chat();
+    state.offer_delegate("plan it".into());
+    state.park_undelegated(RunId(7));
+    state
+}
+
+fn nothing_offered(state: &mut ChatState) -> bool {
+    !state.delegate_offered() && state.take_undelegated().is_none()
+}
+
+#[test]
+fn opening_a_stored_conversation_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.resume_into(
+        7,
+        Profile::Programmer,
+        super::tags::Tags::default(),
+        Vec::new(),
+    );
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn changing_the_folder_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.set_folder("/w/b".into());
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn restoring_the_folder_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.restore_folder("/w/b".into());
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn leaving_orch_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.set_orch(true);
+    state.set_orch(false);
+    assert!(nothing_offered(&mut state));
+}

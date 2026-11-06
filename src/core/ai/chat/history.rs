@@ -254,6 +254,7 @@ impl ChatState {
         tags: Tags,
         messages: Vec<Msg>,
     ) {
+        self.drop_delegate();
         let stored = Self::resumed(self.origin_cwd.clone(), messages).entries;
         let (memory, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
             .into_iter()

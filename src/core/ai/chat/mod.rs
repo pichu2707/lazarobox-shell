@@ -497,6 +497,9 @@ pub struct ChatState {
     /// was over: it shows when that turn ends well. Separate from
     /// `orch_continue`: it never starts a turn.
     orch_undelegated: Option<RunId>,
+    /// The user's request of the last undelegated reply, while the delegate
+    /// key can still act on it. A turn sent goes with it.
+    delegate: Option<String>,
     /// The last turn ended cleanly (`Done`); false for an error, a cut-off or
     /// an interruption. True before any turn ended.
     last_turn_clean: bool,
@@ -604,6 +607,7 @@ impl ChatState {
             run_view_drawn: Default::default(),
             orch_continue: None,
             orch_undelegated: None,
+            delegate: None,
             last_turn_clean: true,
             orch_cancelled: None,
             turn_failure: None,
@@ -626,6 +630,8 @@ impl ChatState {
 
     pub fn set_orch(&mut self, on: bool) {
         self.orch = on;
+        // The offer belongs to the mode it was made in.
+        self.drop_delegate();
     }
 
     /// Turn `turn`, just sent, is an orchestrator turn.
@@ -745,6 +751,35 @@ impl ChatState {
         self.orch_undelegated.take()
     }
 
+    /// The delegate key can act on `goal`, the request nothing was delegated for.
+    pub fn offer_delegate(&mut self, goal: String) {
+        self.delegate = Some(goal);
+    }
+
+    pub fn delegate_offered(&self) -> bool {
+        self.delegate.is_some()
+    }
+
+    /// The offer and the notice parked for it end: the conversation, the
+    /// folder or the mode they were about changed.
+    pub fn drop_delegate(&mut self) {
+        self.delegate = None;
+        self.orch_undelegated = None;
+    }
+
+    pub fn take_delegate(&mut self) -> Option<String> {
+        self.delegate.take()
+    }
+
+    /// The user's last message that is not `skip`: the request an undelegated
+    /// reply answered.
+    pub fn last_request(&self, skip: &str) -> Option<String> {
+        (self.messages())
+            .filter(|m| m.role == Role::User && m.text != skip)
+            .last()
+            .map(|m| m.text.clone())
+    }
+
     pub fn set_turn_failure(&mut self, why: Option<String>) {
         self.turn_failure = why;
     }
@@ -758,6 +793,7 @@ impl ChatState {
     pub fn cancel_run(&mut self, run: RunId) {
         self.orch_continue = None;
         self.orch_undelegated = None;
+        self.delegate = None;
         self.orch_cancelled = Some(run);
     }
 
@@ -1558,6 +1594,8 @@ impl ChatState {
             self.over_window_told = over;
         }
         self.turn += 1;
+        // The key acts on the reply it was offered for, not on a later one.
+        self.delegate = None;
         self.turn_usage = None;
         self.clean_end = false;
         self.auto_typed = 0;

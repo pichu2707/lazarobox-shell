@@ -332,6 +332,18 @@ impl App {
         {
             return effects;
         }
+        // The delegate line, in the conversation view only, after the notice
+        // and the alert (D24): one meaning for Enter at a time.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && !self.cost_open(id)
+            && let Some(effects) = self.answer_delegate(id, &key, repeat)
+        {
+            return effects;
+        }
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -482,6 +494,7 @@ impl App {
         }
         self.orch_refusal(id)
             .or_else(|| guidance(&self.turn_availability(id)))
+            .or_else(|| self.delegate_line(id))
             .or_else(|| self.github_hint(id))
             .or_else(|| self.toggle_hint(id))
     }
@@ -541,7 +554,12 @@ impl App {
 
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
-    fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+    pub(super) fn send_text(
+        &mut self,
+        id: PaneId,
+        text: &str,
+        availability: &Availability,
+    ) -> Vec<Effect> {
         self.send_with(id, text, availability, None)
     }
 
