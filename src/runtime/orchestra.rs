@@ -1394,6 +1394,9 @@ impl RunManager {
                 }
                 self.close_session(&live.approver, WorkerKey { run, worker: id });
                 self.sync(pane, live);
+                // The pane's batch is still Staging with entries, which may include a
+                // sibling's files, until W10a gives each writer its own.
+                self.disclose(pane, live, id);
                 fine(format!("worker {}: cancelled", id.0))
             }
             CancelOutcome::AlreadyEnded => {
@@ -1665,6 +1668,8 @@ impl RunManager {
                 }
             }
             self.sync(pane, live);
+            // A worker timed out by a sibling's tick keeps its task until its
+            // own turn ends, so each worker is told about at its own finish.
             self.disclose(pane, live, key.worker);
         });
         self.settle(pane, key.run);

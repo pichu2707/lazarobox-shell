@@ -539,6 +539,24 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     );
 }
 
+// `unproposed` is true only for a batch with entries still being staged; no
+// batch, an empty batch and a batch the user was handed (sealed) are false.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_batch_is_unproposed_only_while_it_holds_entries_and_is_not_sealed() {
+    let w = world();
+    assert!(!w.host.unproposed(key()), "no batch");
+    w.host.stages.lock().unwrap().stage(key()).unwrap();
+    assert!(!w.host.unproposed(key()), "an empty batch");
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "one")).await.is_error);
+    assert!(w.host.unproposed(key()), "staging with an entry");
+    w.host
+        .review_batch(key(), false)
+        .expect("sealed for review");
+    assert!(!w.host.unproposed(key()), "proposed");
+}
+
 // The same for a call whose channel is gone before it can announce: the batch
 // it sealed is not left behind.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

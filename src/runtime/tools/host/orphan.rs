@@ -48,7 +48,10 @@ impl ToolHost {
     }
 
     /// Whether the batch of `key` holds entries and was never proposed: its
-    /// writer is gone or still staging, and nobody asked the user yet.
+    /// writer is gone or still staging, and nobody asked the user yet. The
+    /// answer is per pane batch until W10a gives each writer its own: a
+    /// sibling's files make it true for every worker of the pane (the line
+    /// can repeat), and a sibling's proposal makes it false for all of them.
     pub fn unproposed(&self, key: StageKey) -> bool {
         lock(&self.stages)
             .batch(key)

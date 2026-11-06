@@ -331,6 +331,7 @@ impl Run {
         }
         let files = slot.ledger.pending();
         if slot.ledger.changes().is_empty() {
+            // Only `code` writes today; `simple` joins it in W8.
             let silent = slot.status == WorkerStatus::Done && slot.spec.task == Task::Code;
             return silent.then_some(Disclosure::EmptyLedger);
         }

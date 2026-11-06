@@ -44,11 +44,14 @@ const ALERT_KEYS: &str = "m change model \u{b7} p change provider \u{b7} c/Esc c
 const RETRY_KEY: &str = "r retry";
 /// Said when `r` is pressed again after a retry that failed.
 const RETRY_AGAIN: &str = "r try again";
-/// Said when the run manager is not attached: the answer was not applied.
-/// The words of a worker-outcome disclosure (agent-orchestrator [W1]); ASCII
-/// and neutral. The worker is named before them, by [`disclosure_line`].
+/// Said of a `code` worker that ended `done` and staged nothing
+/// (agent-orchestrator [W1]); ASCII and neutral. [`disclosure_line`] names
+/// the worker before it.
 const CHANGED_NO_FILE: &str = "ended done and changed no file";
+/// Said of a worker whose staged batch was never proposed (agent-orchestrator
+/// [W1]), after the count of files.
 const NEVER_PROPOSED: &str = "and never proposed the batch; the pane holds it as an orphan";
+/// Said when the run manager is not attached: the answer was not applied.
 const NO_ORCHESTRA: &str = "orchestration is not available: your answer was not applied";
 /// Said when the run manager dropped an answer: its run is over.
 const ANSWER_LOST: &str = "that worker already ended: your answer was not applied";

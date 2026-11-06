@@ -54,6 +54,11 @@ impl ChangeLedger {
         }
     }
 
+    /// The paths staged and not yet on disk.
+    pub fn pending(&self) -> usize {
+        self.0.iter().filter(|change| !change.applied).count()
+    }
+
     /// The `files changed` block of the worker's result, `None` when it
     /// staged nothing: one line per path with its size, its diff hash and
     /// whether it was applied.
@@ -91,13 +96,6 @@ pub enum Disclosure {
     /// A worker staged `files` paths and its batch was never proposed: the
     /// pane holds it as an orphan.
     StagedNotProposed { files: usize },
-}
-
-impl ChangeLedger {
-    /// The paths staged and not yet on disk.
-    pub fn pending(&self) -> usize {
-        self.0.iter().filter(|change| !change.applied).count()
-    }
 }
 
 /// A short fingerprint of a staged change: FNV-1a 64 over the text it

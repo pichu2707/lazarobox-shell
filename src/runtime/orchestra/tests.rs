@@ -2864,6 +2864,55 @@ async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
     assert!(lab.host().review_batch(key, false).is_some(), "an orphan");
 }
 
+// Never silent: a worker the user cancels after it staged files leaves the
+// pane an orphan batch, and the user is told (not `EmptyLedger`: that is for
+// `done`).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cancelled_worker_that_staged_files_is_disclosed() {
+    let mut lab = writing_lab(Script::Hang);
+    let (run, handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, call).await;
+    handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert_eq!(
+        disclosed(&mut lab).await,
+        OrchestraEvent::Disclosed {
+            run,
+            worker: WorkerId(1),
+            kind: Task::Code,
+            engine: "codex".into(),
+            model: Some("default".into()),
+            what: Disclosure::StagedNotProposed { files: 1 },
+        }
+    );
+}
+
+// A cancelled worker that staged nothing says nothing: a cancel is not a
+// `done` with an empty ledger.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cancelled_worker_that_staged_nothing_is_not_disclosed() {
+    let mut lab = writing_lab(Script::Hang);
+    let (_, handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    let ended = lab.sent();
+    assert!(
+        !ended
+            .iter()
+            .any(|e| matches!(e, OrchestraEvent::Disclosed { .. })),
+        "{ended:?}"
+    );
+}
+
 // Spec (agent-orchestrator, Wall clock): with the run's limit and a worker
 // running, when the limit passes in paused time the worker is killed and the
 // run ends, with the limit named.
