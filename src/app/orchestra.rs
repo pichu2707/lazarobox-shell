@@ -475,19 +475,23 @@ impl App {
             chat.park_undelegated(run);
             return Vec::new();
         }
-        if chat.turn_failure().is_none() {
+        if chat.turn_clean() && chat.orch_run().is_none_or(|live| live == run) {
             self.say_undelegated(id);
         }
         Vec::new()
     }
 
     /// The turn of pane `id` ended: a parked undelegated notice shows if it
-    /// ended well (`done`), and goes otherwise.
+    /// ended well (`done`) and its run is still the pane's, or the one that
+    /// just ended; it goes otherwise.
     pub(super) fn flush_undelegated(&mut self, id: PaneId, done: bool) {
         let parked = (self.panes.get_mut(&id))
             .and_then(PaneState::chat_mut)
-            .and_then(ChatState::take_undelegated);
-        if parked.is_some() && done {
+            .and_then(|chat| Some((chat.take_undelegated()?, chat.orch_run())));
+        if let Some((run, live)) = parked
+            && done
+            && live.is_none_or(|live| live == run)
+        {
             self.say_undelegated(id);
         }
     }
@@ -500,7 +504,7 @@ impl App {
         }
         let cols = self.panes.get(&id).map_or(80, |p| usize::from(p.size.cols));
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.push_system_line(ascii(undelegated_hint(cols)));
+            chat.push_system_line(undelegated_hint(cols));
             self.dirty = true;
         }
     }

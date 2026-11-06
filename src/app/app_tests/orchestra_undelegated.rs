@@ -4,14 +4,15 @@
 //! once it is idle, and drops it when the turn failed or was cancelled.
 
 use super::chat_live::{ask, chat_id, chat_of, ctrl, delta, finish};
-use super::orchestra_run::{RUN, event, running};
+use super::orchestra_run::{RUN, event, row, running};
 use super::*;
 use crate::core::ai::chat::{
     Entry,
     engine::{ChatError, StreamEvent},
 };
+use crate::core::ai::orchestra::{RunId, worker::WorkerStatus};
 
-const NOTICE: &str = "Enter delegate | Esc dismiss | no worker ran, nothing written";
+const NOTICE: &str = "no worker ran, nothing written";
 
 fn undelegated() -> AppEvent {
     event(OrchestraEvent::Undelegated { run: RUN })
@@ -19,7 +20,7 @@ fn undelegated() -> AppEvent {
 
 fn shown(a: &App) -> usize {
     (chat_of(a).entries().iter())
-        .filter(|e| matches!(e, Entry::System(l) if l.starts_with("Enter delegate")))
+        .filter(|e| matches!(e, Entry::System(l) if l.starts_with("no worker ran")))
         .count()
 }
 
@@ -59,7 +60,7 @@ fn the_notice_shows_at_once_when_the_pane_is_already_idle() {
 }
 
 // Spec "A legitimate answer gets the same neutral notice": plain ASCII, no
-// accusation, and the text the design fixes.
+// accusation, and the information only.
 #[test]
 fn the_notice_is_neutral_ascii_and_names_the_key() {
     let (mut a, turn) = running();
@@ -67,18 +68,15 @@ fn the_notice_is_neutral_ascii_and_names_the_key() {
     a.update(undelegated());
     let text = (chat_of(&a).entries().iter())
         .find_map(|e| match e {
-            Entry::System(l) if l.starts_with("Enter delegate") => Some(l.clone()),
+            Entry::System(l) if l.starts_with("no worker ran") => Some(l.clone()),
             _ => None,
         })
         .expect("the notice");
     assert!(text.is_ascii(), "{text}");
-    assert!(text.starts_with("Enter delegate"), "key first: {text}");
-    assert!(text.contains("no worker ran"), "{text}");
+    assert_eq!(text, NOTICE, "no key is advertised before the key exists");
+    assert!(!text.contains("Enter") && !text.contains("Esc"), "{text}");
     for accusation in ["should", "wrong", "fail", "refus", "ignored", "did not"] {
         assert!(!text.contains(accusation), "{text}");
-    }
-    if text.contains("Esc") {
-        assert_eq!(text, NOTICE);
     }
 }
 
@@ -142,4 +140,58 @@ fn the_notice_stays_out_of_the_next_orchestrator_turn() {
         .map(|m| m.content.as_str())
         .collect();
     assert_eq!(sent, ["plan it", "all done", "next"]);
+}
+
+fn interrupt(turn: u64) -> AppEvent {
+    AppEvent::Chat(chat_id(), turn, StreamEvent::Error(ChatError::Interrupted))
+}
+
+// An interrupted turn is not a clean end, whichever event the app hears first.
+#[test]
+fn an_interrupted_turn_drops_the_notice_in_either_order() {
+    let (mut a, turn) = running();
+    a.update(undelegated());
+    a.update(interrupt(turn));
+    assert_eq!(shown(&a), 0, "parked first");
+
+    let (mut a, turn) = running();
+    a.update(interrupt(turn));
+    a.update(undelegated());
+    assert_eq!(shown(&a), 0, "the end first");
+}
+
+// The user sends the next turn before the last one's notice lands, and that
+// turn spawns a worker: the old turn's notice must not show after it.
+#[test]
+fn a_notice_that_lands_during_the_next_turn_is_dropped_when_it_has_workers() {
+    let (mut a, turn) = running();
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let next = match ask(&mut a, "and now?").as_slice() {
+        [.., Effect::OrchestrateSend { turn, .. }] => *turn,
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    a.update(undelegated());
+    a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
+    a.update(finish(next));
+    assert_eq!(shown(&a), 0);
+}
+
+// A parked notice does not outlive the turn it was parked for: a new
+// orchestrator turn clears it.
+#[test]
+fn a_new_orchestrator_turn_clears_a_stale_parked_notice() {
+    let (mut a, turn) = running();
+    a.update(undelegated());
+    a.panes
+        .get_mut(&chat_id())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_orch_turn(turn + 1);
+    assert_eq!(
+        (a.panes.get_mut(&chat_id()))
+            .and_then(PaneState::chat_mut)
+            .and_then(ChatState::take_undelegated),
+        None
+    );
 }

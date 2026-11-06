@@ -29,19 +29,16 @@ pub fn github_hint(repo: &str, cols: usize) -> String {
         .unwrap_or_else(|| "/github".to_owned())
 }
 
-/// The notice that no worker ran, in `cols` columns, ASCII and one line, the
-/// key first and never cut: the full form, then without the Esc part, then
-/// shorter, and at the narrowest the key alone.
+/// The notice that no worker ran, in `cols` columns, ASCII and one line with
+/// two columns of margin: the full form, then a shorter one. It names no key:
+/// the key text comes with the keys.
 pub fn undelegated_hint(cols: usize) -> String {
-    let forms = [
-        "Enter delegate | Esc dismiss | no worker ran, nothing written",
-        "Enter delegate | no worker ran, nothing written",
-        "Enter delegate | no worker ran",
-    ];
-    let form = forms
-        .into_iter()
-        .find(|form| form.len() <= cols)
-        .unwrap_or("Enter delegate");
+    let full = "no worker ran, nothing written";
+    let form = if full.len() + 2 <= cols {
+        full
+    } else {
+        "no worker ran"
+    };
     form.to_owned()
 }
 
@@ -116,24 +113,21 @@ mod tests {
         assert_eq!(github_hint(LONG, 7), "/github");
     }
 
-    // Spec (chat-pane, Worker-flow notices are transcript notices): ASCII, the
-    // key first and never cut, shorter forms as the width shrinks.
+    // Spec (chat-pane, Worker-flow notices are transcript notices): ASCII,
+    // two columns of margin so the line never wraps, shorter at narrow widths.
+    // No key is named: PR4 adds the key text with the keys.
     #[test]
     fn the_undelegated_hint_has_a_form_for_each_width() {
-        let full = "Enter delegate | Esc dismiss | no worker ran, nothing written";
-        let medium = "Enter delegate | no worker ran, nothing written";
-        let short = "Enter delegate | no worker ran";
+        let full = "no worker ran, nothing written";
+        let short = "no worker ran";
         assert_eq!(undelegated_hint(200), full);
-        assert_eq!(undelegated_hint(full.len()), full);
-        assert_eq!(undelegated_hint(full.len() - 1), medium);
-        assert_eq!(undelegated_hint(medium.len()), medium);
-        assert_eq!(undelegated_hint(medium.len() - 1), short);
-        assert_eq!(undelegated_hint(short.len()), short);
-        assert_eq!(undelegated_hint(short.len() - 1), "Enter delegate");
-        assert_eq!(undelegated_hint(3), "Enter delegate");
+        assert_eq!(undelegated_hint(full.len() + 2), full);
+        assert_eq!(undelegated_hint(full.len() + 1), short);
+        assert_eq!(undelegated_hint(short.len() + 2), short);
+        assert_eq!(undelegated_hint(3), short);
         for cols in 1..=80 {
             let text = undelegated_hint(cols);
-            assert!(text.is_ascii() && text.starts_with("Enter delegate"));
+            assert!(text.is_ascii() && !text.contains("Enter"));
         }
     }
 

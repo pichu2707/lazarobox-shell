@@ -5718,3 +5718,21 @@ async fn a_turn_with_a_worker_or_a_cancelled_run_is_not_undelegated() {
         "{events:?}"
     );
 }
+
+// Spec (chat-pane, Notice repeats): two undelegated runs, one after the other
+// on one pane, are each reported.
+#[tokio::test]
+async fn two_undelegated_runs_on_one_pane_are_each_reported() {
+    let mut lab = lab(Script::Answer("found"));
+    let mut told = Vec::new();
+    for _ in 0..2 {
+        let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
+        lab.manager.turn_ended(pane(), run);
+        told.extend(lab.sent().into_iter().filter_map(|e| match e {
+            OrchestraEvent::Undelegated { run } => Some(run),
+            _ => None,
+        }));
+    }
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_ne!(told[0], told[1], "one per run");
+}

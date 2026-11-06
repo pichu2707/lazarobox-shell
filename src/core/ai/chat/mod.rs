@@ -497,6 +497,9 @@ pub struct ChatState {
     /// was over: it shows when that turn ends well. Separate from
     /// `orch_continue`: it never starts a turn.
     orch_undelegated: Option<RunId>,
+    /// The last turn ended cleanly (`Done`); false for an error, a cut-off or
+    /// an interruption. True before any turn ended.
+    last_turn_clean: bool,
     /// The run the user cancelled with Esc or Ctrl+C: a continuation the
     /// manager sent before it heard of the cancel must not start.
     orch_cancelled: Option<RunId>,
@@ -601,6 +604,7 @@ impl ChatState {
             run_view_drawn: Default::default(),
             orch_continue: None,
             orch_undelegated: None,
+            last_turn_clean: true,
             orch_cancelled: None,
             turn_failure: None,
             ended_workers: Default::default(),
@@ -627,6 +631,9 @@ impl ChatState {
     /// Turn `turn`, just sent, is an orchestrator turn.
     pub fn set_orch_turn(&mut self, turn: u64) {
         self.orch_turn = Some(turn);
+        // A notice parked for an earlier turn does not outlive it.
+        self.orch_undelegated = None;
+        self.last_turn_clean = true;
     }
 
     /// Whether an orchestrator turn of this chat is still in flight.
@@ -725,6 +732,14 @@ impl ChatState {
     /// Holds the undelegated notice of `run` until the turn it follows is over.
     pub fn park_undelegated(&mut self, run: RunId) {
         self.orch_undelegated = Some(run);
+    }
+
+    pub fn set_turn_clean(&mut self, clean: bool) {
+        self.last_turn_clean = clean;
+    }
+
+    pub fn turn_clean(&self) -> bool {
+        self.last_turn_clean
     }
 
     pub fn take_undelegated(&mut self) -> Option<RunId> {

@@ -3003,6 +3003,7 @@ impl App {
         let finished = live && chat.phase() == Phase::Idle;
         if finished {
             chat.set_turn_failure(failure);
+            chat.set_turn_clean(how == Ended::Done);
         }
         let no_run = chat.orch_run().is_none();
         if finished {
