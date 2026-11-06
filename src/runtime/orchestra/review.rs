@@ -156,7 +156,7 @@ pub(super) fn reviews(manager: &RunManager, pane: PaneId, run: RunId) -> Vec<Rev
 
 /// What kind of review worker to start.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Role {
+pub(super) enum Role {
     Reader,
     Correction,
 }
@@ -927,7 +927,7 @@ impl RunManager {
     }
 
     /// Starts one review worker as a worker of the run.
-    fn start_review(
+    pub(super) fn start_review(
         self: &Arc<Self>,
         pane: PaneId,
         run: RunId,
@@ -948,7 +948,9 @@ impl RunManager {
                     Refusal::Paused => "the run is paused".to_owned(),
                     Refusal::Ended => ENDED.to_owned(),
                     Refusal::ReadOnly => READ_ONLY.to_owned(),
-                    Refusal::WriteOff => WRITE_OFF.to_owned(),
+                    // Nobody can spawn a correction: the review goes on at the
+                    // next propose_batch, so the step is the menu's alone.
+                    Refusal::WriteOff => WRITE_OFF_CORRECTION.to_owned(),
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
                 })?;
             if let Some(system) = system {

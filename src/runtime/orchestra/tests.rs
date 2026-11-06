@@ -5835,3 +5835,27 @@ async fn a_forged_run_command_from_a_code_worker_is_refused_without_an_ask() {
     assert_eq!(reply["result"]["isError"], json!(true), "{reply}");
     assert!(lab.turn.1.try_recv().is_err(), "no ask reached the turn");
 }
+
+// A correction cannot be spawned by anyone: with Write off its refusal says
+// where the review goes on, not "spawn it again".
+#[tokio::test]
+async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
+    use super::review::Role;
+    let lab = lab(Script::Hang);
+    let scope = OrchScope {
+        ceiling: write_off(),
+        ..lab.scope(codex_code(), &[])
+    };
+    let (run, _handle) = lab.manager.start(pane(), scope).unwrap();
+    let said = lab
+        .manager
+        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .unwrap_err();
+    assert!(
+        said.contains("Write") && said.contains("Ctrl+Space m"),
+        "{said}"
+    );
+    assert!(said.contains("review"), "{said}");
+    assert!(!said.contains("spawn"), "{said}");
+    assert!(said.is_ascii());
+}

@@ -8,7 +8,7 @@ use super::changes::{Change, ChangeLedger, Disclosure};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
-use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps};
+use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -112,7 +112,7 @@ pub enum Refusal {
     /// `authorize` made the goal read-only: no `code` worker (S5, D15).
     ReadOnly,
     /// The menu has Write off: no `code` worker (D18). The text is
-    /// [`super::steps::WRITE_OFF`].
+    /// [`WRITE_OFF`].
     WriteOff,
 }
 
@@ -257,7 +257,8 @@ impl Run {
     }
 
     /// Takes the menu of a new request. Workers already started keep their
-    /// spec; later spawns use this one.
+    /// spec (D17: running workers keep what they started with); later
+    /// spawns use this one.
     pub fn set_ceiling(&mut self, ceiling: FamilySet) {
         self.ceiling = ceiling;
     }
@@ -505,6 +506,13 @@ impl Run {
             families: Toolset::for_kind(task).capped(self.ceiling),
             deadline: self.deadline,
         };
+        // A role that writes, under a menu that no longer allows it, is
+        // refused and never run read-only without a word. `spawn` refuses it
+        // first; this covers the re-resolves of a retry and a relaunch.
+        let refusal = refusal.or_else(|| {
+            (spec.toolset.families().contains(Family::Write) && !spec.writes())
+                .then(|| WRITE_OFF.to_owned())
+        });
         (spec, refusal)
     }
 

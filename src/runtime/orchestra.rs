@@ -79,7 +79,7 @@ use crate::core::{
                 RunState, StepDone, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
-            steps::{Mark, READ_ONLY, Step, StepError, WRITE_OFF},
+            steps::{Mark, READ_ONLY, Step, StepError, WRITE_OFF, WRITE_OFF_CORRECTION},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
@@ -765,6 +765,8 @@ impl RunManager {
             // it: the earlier turn's channel and approver are dead.
             // A worker that is over keeps its session closed: only the ones
             // still queued or running are pointed at the new turn.
+            // Later spawns follow the menu as it is now; workers already
+            // started keep the tools they started with (D17).
             live.run.set_ceiling(scope.ceiling);
             let run = &live.run;
             live.routes.retain(|id, _| {

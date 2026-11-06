@@ -60,6 +60,11 @@ pub const READ_ONLY: &str = "code workers are not spawned for a read-only goal";
 pub const WRITE_OFF: &str = "worker not started: a code worker needs the Write tools and Write is off; \
      turn Write on in the AI menu (Ctrl+Space m), then spawn it again";
 
+/// The reason a review correction (a `code` worker lazarobox starts itself)
+/// does not start while Write is off: the user spawns nothing there.
+pub const WRITE_OFF_CORRECTION: &str =
+    "Write is off in the AI menu (Ctrl+Space m); turn it on so the next review can correct";
+
 /// How big `classify` found the goal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {

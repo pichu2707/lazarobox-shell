@@ -5,10 +5,10 @@
 use std::time::{Duration, Instant};
 
 use super::ledger::{Judgement, Verdict};
-use super::run::{Refusal, Roster, Run};
+use super::run::{Refusal, Roster, Run, UserChoice, WorkerEvent};
 use super::steps::{Grant, Mark, Step, WRITE_OFF};
-use super::worker::WorkerStatus;
-use super::{RunId, Toolset};
+use super::worker::{ErrorClass, WorkerStatus};
+use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
@@ -54,14 +54,21 @@ fn ready() -> Availability {
     }
 }
 
-fn run_with(menu: FamilySet) -> Run {
-    let roster = Roster::new(
+fn full_roster() -> Roster {
+    Roster::new(
         Task::SET_ALL
             .into_iter()
             .map(|task| (task, ready()))
             .collect(),
-    );
-    Run::new(RunId(1), roster, Duration::from_secs(600)).with_ceiling(menu)
+    )
+}
+
+fn write_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Write)
+}
+
+fn run_with(menu: FamilySet) -> Run {
+    Run::new(RunId(1), full_roster(), Duration::from_secs(600)).with_ceiling(menu)
 }
 
 // Spec (agent-orchestrator, "The menu never widens [W2, auto]"): whatever the
@@ -190,4 +197,77 @@ fn the_refusal_text_names_the_toggle_and_says_no_worker_started() {
     assert!(WRITE_OFF.contains("not started"), "{WRITE_OFF}");
     assert!(WRITE_OFF.contains("AI menu"), "{WRITE_OFF}");
     assert!(WRITE_OFF.is_ascii());
+}
+
+fn failed() -> WorkerEvent {
+    WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "x".to_owned(),
+    }
+}
+
+/// Fails the running worker `id` and checks it, and any queued sibling named
+/// in `also`, ended refused with the Write-off text: never read-only.
+fn assert_refused_for_write(run: &Run, ids: &[WorkerId]) {
+    for id in ids {
+        assert_eq!(run.status(*id), Some(WorkerStatus::Refused), "{id:?}");
+        let error = run.result(*id).and_then(|r| r.error.as_ref());
+        assert!(
+            error.is_some_and(|(_, text)| text.contains(WRITE_OFF)),
+            "{id:?} {error:?}"
+        );
+    }
+}
+
+// A worker re-resolved after the menu lost Write must not run read-only
+// without a word: relaunch.
+#[test]
+fn a_relaunched_code_worker_is_refused_when_write_went_off() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let id = run.spawn(now, Task::Code, "write").unwrap();
+    run.on_event(now, id, failed());
+    run.set_ceiling(write_off());
+    run.decide(now, UserChoice::Relaunch(full_roster()))
+        .unwrap();
+    assert_refused_for_write(&run, &[id]);
+}
+
+// ... and the workers queued behind it, re-resolved with it.
+#[test]
+fn queued_code_workers_are_refused_with_it_when_write_went_off() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let first = run.spawn(now, Task::Code, "one").unwrap();
+    let second = run.spawn(now, Task::Code, "two").unwrap();
+    assert_eq!(run.status(second), Some(WorkerStatus::Queued));
+    run.on_event(now, first, failed());
+    run.set_ceiling(write_off());
+    run.decide(now, UserChoice::Relaunch(full_roster()))
+        .unwrap();
+    assert_refused_for_write(&run, &[first, second]);
+}
+
+// ... and a retry of a worker that was refused before it started (its engine
+// was missing), once the engine is back.
+#[test]
+fn a_retried_refused_code_worker_is_refused_when_write_went_off() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    run.set_roster(Roster::new(vec![(Task::Code, Availability::Unassigned)]));
+    let id = run.spawn(now, Task::Code, "write").unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    run.set_roster(full_roster());
+    run.set_ceiling(write_off());
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_refused_for_write(&run, &[id]);
+}
+
+// Guard: with Write still on, the same paths keep the write tools.
+#[test]
+fn a_relaunched_code_worker_keeps_its_tools_while_write_is_on() {
+    let (now, mut run) = (Instant::now(), run_with(FamilySet::ALL));
+    let id = run.spawn(now, Task::Code, "write").unwrap();
+    run.on_event(now, id, failed());
+    run.decide(now, UserChoice::Relaunch(full_roster()))
+        .unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Running));
+    assert!(run.spec(id).unwrap().writes());
 }
