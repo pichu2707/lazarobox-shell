@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "lazarobox-shell"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "crossterm",
  "futures",

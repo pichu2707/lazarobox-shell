@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-06
+
 ### Added
 
 - Under WSL, `run_command` and git work in a Windows drive folder the user
@@ -2190,7 +2192,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.0...v1.7.1
