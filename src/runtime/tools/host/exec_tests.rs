@@ -414,6 +414,48 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
     assert_eq!(out.text, "denied: the user declined");
 }
 
+// GUARD (passes by design): the unproposed-changes check and the unreported
+// sink are per key. Once two writers of one pane exist, worker A's unproposed
+// batch must not refuse worker B's command, and is refused for A itself.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_command_is_judged_by_its_own_batch_not_a_siblings() {
+    use crate::core::ai::orchestra::WorkerKey;
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let turn_of = |worker: u32| {
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+        scope.approver = asks.clone();
+        scope.families = exec_set();
+        scope.stage_key = Some(StageKey::Worker(
+            PaneId::for_test(1),
+            WorkerKey::for_test(1, worker),
+        ));
+        (w.host.dispatch(scope), rx)
+    };
+    let ((a, _rx_a), (b, _rx_b)) = (turn_of(1), turn_of(2));
+    let staged = a
+        .call(Call::WriteFile {
+            path: "a.txt".into(),
+            content: "x".into(),
+        })
+        .await;
+    assert!(!staged.is_error, "{staged:?}");
+    let own = a.call(command("cargo", &["test"], None)).await;
+    assert!(own.text.contains("propose them first"), "{own:?}");
+    let sibling = b.call(command("cargo", &["test"], None)).await;
+    assert_eq!(sibling.text, "denied: the user declined");
+    let sinks = |worker| StageKey::Worker(PaneId::for_test(1), WorkerKey::for_test(1, worker));
+    use crate::runtime::tools::integrity::Kind;
+    w.host
+        .exec
+        .sink(sinks(1))
+        .push(vec![change(Kind::Added, "x")]);
+    assert!(w.host.exec.sink(sinks(2)).drain().is_empty());
+    assert_eq!(w.host.exec.sink(sinks(1)).drain().len(), 1);
+}
+
 // Scenario "One run per chat": refused at once, before the prompt.
 #[tokio::test]
 async fn a_chat_that_is_running_a_command_is_refused_before_it_asks() {

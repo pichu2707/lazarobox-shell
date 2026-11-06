@@ -112,6 +112,11 @@ impl World {
         (self.host.dispatch(scope), rx)
     }
 
+    fn staged_of(&self, key: StageKey) -> usize {
+        let stages = self.host.stages.lock().unwrap();
+        stages.batch(key).map_or(0, |b| b.entries().len())
+    }
+
     fn staged(&self) -> usize {
         let stages = self.host.stages.lock().unwrap();
         stages.batch(key()).map_or(0, |b| b.entries().len())
@@ -425,7 +430,7 @@ async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
     // The user can still review it, as the same batch.
     let (id, review) = w
         .host
-        .review_batch(key(), false)
+        .review_batch(key().pane(), false)
         .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     let BatchEvent::Done { shown, .. } = w.host.discard_batch(id) else {
@@ -447,12 +452,128 @@ async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
     let out = d.call(Call::ProposeBatch).await;
     assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
     assert_eq!(w.staged(), 1);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     w.host.discard_batch(id);
     let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     assert!(d.call(Call::ProposeBatch).await.is_error);
     assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+/// A key of a worker of pane 1, for the re-propose tests.
+fn worker_key(worker: u32) -> StageKey {
+    StageKey::Worker(
+        PaneId::for_test(1),
+        crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+    )
+}
+
+// Design, Corrections row on the denied ask: the ask lives under the turn
+// that made it; when the turn ends it is denied with `ENDED`, which is no
+// user's no, and the batch stays proposed. The writer that owns the batch may
+// propose it again and the user is asked again, in a worker as in a plain
+// chat turn. Every proposal asks.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_batch_whose_ask_ended_is_asked_again_when_its_owner_proposes_it_again() {
+    use crate::runtime::tools::approver::ENDED;
+    for owner in [key(), worker_key(1)] {
+        let w = world();
+        let ended = Script::new(Decision::Denied(ENDED));
+        let (d, _rx) = w.turn_with(ended.clone(), on(), Some(owner));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        let first = d.call(Call::ProposeBatch).await;
+        assert!(first.text.contains(ENDED), "{owner:?}: {first:?}");
+        assert_eq!(w.staged_of(owner), 1, "{owner:?}: the batch stays");
+        // Again, with the turn over and nobody asked: a fresh ask.
+        let again = Script::new(Decision::Denied(ENDED));
+        let (d, _rx) = w.turn_with(again.clone(), on(), Some(owner));
+        let second = d.call(Call::ProposeBatch).await;
+        assert!(second.text.contains(ENDED), "{owner:?}: {second:?}");
+        assert_eq!(again.asks().len(), 1, "{owner:?}: asked again");
+        // And again, now answered: it applies the same files.
+        let yes = Script::new(Decision::Sent);
+        let (d, _rx) = w.turn_with(yes.clone(), on(), Some(owner));
+        let third = d.call(Call::ProposeBatch).await;
+        assert!(!third.is_error, "{owner:?}: {third:?}");
+        assert_eq!(yes.asks().len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(w.staged_of(owner), 0);
+    }
+}
+
+// Staying refused: while the first ask is open a second proposal is refused
+// and no second ask is made; a call dropped with its ask open (a cancel)
+// closes that ask, so the next proposal asks again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_second_proposal_is_refused_while_the_first_ask_is_open_and_asks_after_a_drop() {
+    let w = world();
+    let owner = worker_key(1);
+    let (d, mut rx) = w.turn_with(Arc::new(super::tests::Waiting), on(), Some(owner));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let mut propose = d.call(Call::ProposeBatch);
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
+    // The ask is open: a parallel proposal is refused, with no new ask.
+    let during = d.call(Call::ProposeBatch).await;
+    assert!(
+        during.is_error && during.text.contains("waiting for review"),
+        "{during:?}"
+    );
+    while let Ok(event) = rx.try_recv() {
+        let StreamEvent::ToolCall { approval, .. } = event else {
+            continue;
+        };
+        assert!(approval.is_none(), "no second ask was announced");
+    }
+    drop(propose);
+    // The ask is gone with the call: the owner proposes again and is asked.
+    let asked = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn_with(asked.clone(), on(), Some(owner));
+    let again = d.call(Call::ProposeBatch).await;
+    assert!(!again.is_error, "{again:?}");
+    assert_eq!(asked.asks().len(), 1);
+}
+
+// Staying refused: a proposal is never answered with another key's batch. A
+// worker with nothing staged gets no ask because a sibling has an orphan.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_worker_cannot_propose_the_orphan_batch_of_another_key() {
+    use crate::runtime::tools::approver::ENDED;
+    let w = world();
+    let (a, _rx_a) = w.turn_with(
+        Script::new(Decision::Denied(ENDED)),
+        on(),
+        Some(worker_key(1)),
+    );
+    assert!(!a.call(write("a.txt", "hello")).await.is_error);
+    assert!(a.call(Call::ProposeBatch).await.is_error);
+    let asked = Script::new(Decision::Sent);
+    let (b, _rx_b) = w.turn_with(asked.clone(), on(), Some(worker_key(2)));
+    let out = b.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.contains("nothing is staged"),
+        "{out:?}"
+    );
+    assert!(asked.asks().is_empty());
+    assert_eq!(
+        w.staged_of(worker_key(1)),
+        1,
+        "the sibling's batch is as it was"
+    );
+    assert!(!w.proj.join("a.txt").exists());
 }
 
 // A run report is no answer to a batch: the call is denied, and the batch is
@@ -474,7 +595,7 @@ async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
     let out = d.call(Call::ProposeBatch).await;
     assert!(out.is_error, "{out:?}");
     assert_eq!(w.staged(), 0, "a denied batch is not an orphan");
-    assert!(w.host.review_batch(key(), false).is_none());
+    assert!(w.host.review_batch(key().pane(), false).is_none());
 }
 
 // The command was typed but the turn ended: that is no user's no, but it is
@@ -503,10 +624,15 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
             .is_error
     );
     assert!(!d.call(folder("sub")).await.is_error);
-    let (id, review) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, review) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     assert_eq!(review.counts(), "2 files, +1 -0");
     assert_eq!(
-        w.host.review_batch(key(), false).map(|(again, _)| again),
+        w.host
+            .review_batch(key().pane(), false)
+            .map(|(again, _)| again),
         Some(id)
     );
     let after = d.call(write("b.txt", "x")).await;
@@ -534,7 +660,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     assert_eq!(w.host.apply_batch(id, false, None), gone);
     assert_eq!(w.host.discard_batch(id), gone);
     assert!(
-        w.host.review_batch(key(), false).is_none(),
+        w.host.review_batch(key().pane(), false).is_none(),
         "nothing to review"
     );
 }
@@ -552,7 +678,7 @@ async fn a_batch_is_unproposed_only_while_it_holds_entries_and_is_not_sealed() {
     assert!(!d.call(write("a.txt", "one")).await.is_error);
     assert!(w.host.unproposed(key()), "staging with an entry");
     w.host
-        .review_batch(key(), false)
+        .review_batch(key().pane(), false)
         .expect("sealed for review");
     assert!(!w.host.unproposed(key()), "proposed");
 }
@@ -571,6 +697,89 @@ async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
     assert!(out.is_error && out.text == "cancelled", "{out:?}");
     assert_eq!(w.staged(), 0);
     assert!(!live.call(write("b.txt", "again")).await.is_error);
+}
+
+// A re-ask that never reaches the user must not destroy what the user was
+// already offered: the batch was proposed before (its ask ended with the
+// turn), so a call that dies before its announcement only ends its own ask.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_re_ask_that_cannot_announce_keeps_the_batch_the_user_was_offered() {
+    use crate::core::ai::tools::stage::State;
+    use crate::runtime::tools::approver::ENDED;
+    for owner in [key(), worker_key(1)] {
+        let w = world();
+        let (d, _rx) = w.turn_with(Script::new(Decision::Denied(ENDED)), on(), Some(owner));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        assert!(d.call(Call::ProposeBatch).await.text.contains(ENDED));
+        let (closed, rx) = w.turn_with(Script::new(Decision::Sent), on(), Some(owner));
+        drop(rx);
+        let out = closed.call(Call::ProposeBatch).await;
+        assert!(
+            out.is_error && out.text == "cancelled",
+            "{owner:?}: {out:?}"
+        );
+        assert_eq!(w.staged_of(owner), 1, "{owner:?}: the offered batch stays");
+        let state = w
+            .host
+            .stages
+            .lock()
+            .unwrap()
+            .batch(owner)
+            .map(|b| b.state());
+        assert_eq!(state, Some(State::Proposed));
+        // No ask is open any more: the owner can propose it once more.
+        let yes = Script::new(Decision::Sent);
+        let (d, _rx) = w.turn_with(yes.clone(), on(), Some(owner));
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(yes.asks().len(), 1);
+    }
+}
+
+// The user seals an orphan through the review and the model proposes the same
+// batch: the model's call asks too. When the user applies the orphan first,
+// the model's answer finds the batch gone and says so; nothing applies twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_model_ask_over_an_orphan_under_review_fails_cleanly_once_the_user_applied_it() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    // A staging orphan sealed by the user's review.
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
+    let (live, mut rx) = w.turn(Arc::new(super::tests::Waiting));
+    let mut propose = live.call(Call::ProposeBatch);
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
+    let BatchEvent::Done { shown, .. } = w.host.apply_batch(id, false, None) else {
+        panic!("an apply is done");
+    };
+    assert_eq!(shown, "applied 1 paths");
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "hello"
+    );
+    // The call of the model is dropped; its ask finds nothing and writes nothing.
+    drop(propose);
+    assert_eq!(w.staged(), 0);
+    assert_eq!(
+        w.host.apply_batch(id, false, None),
+        BatchEvent::Done {
+            shown: "that batch is no longer there".into(),
+            told: None,
+        }
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "hello"
+    );
 }
 
 // The disk is read before the lock is taken: staging never holds the mutex of
@@ -1154,7 +1363,7 @@ async fn an_unreviewable_orphan_is_not_applied() {
             .await
             .is_error
     );
-    let (id, review) = w.host.review_batch(key(), false).unwrap();
+    let (id, review) = w.host.review_batch(key().pane(), false).unwrap();
     assert!(!review.doc().reviewable());
     let event = w.host.apply_batch(id, false, None);
     assert_eq!(
@@ -1176,7 +1385,7 @@ async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
     let w = world();
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     let event = w.host.apply_batch(id, true, None);
     assert_eq!(
         event,
@@ -1198,7 +1407,7 @@ async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
     std::fs::write(w.proj.join("b.txt"), "foo\n").unwrap();
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
     let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, None) else {
         panic!("done");
@@ -1227,7 +1436,7 @@ async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
     for apply in [true, false] {
         let (d, _rx) = w.turn(Script::new(Decision::Sent));
         assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
-        let (id, _) = w.host.review_batch(key(), false).unwrap();
+        let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
         let event = if apply {
             w.host.apply_batch(id, false, None)
         } else {
@@ -1802,7 +2011,10 @@ async fn an_apply_without_the_grant_writes_nothing_on_the_drive() {
     let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
     assert!(!d.call(write("main.py", "t")).await.is_error);
     drop((d, _rx));
-    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, _) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     let done = w.host.apply_batch(id, false, None);
     assert!(!app.join("main.py").exists(), "{done:?}");
     assert_eq!(std::fs::read_to_string(app.join("a")).unwrap(), "a");
@@ -1818,7 +2030,10 @@ async fn an_orphan_in_a_granted_drive_folder_applies_with_the_chats_grant() {
     let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
     assert!(!d.call(write("main.py", "t")).await.is_error);
     drop((d, _rx));
-    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, _) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, Some(app.clone())) else {
         panic!("expected the apply result");
     };

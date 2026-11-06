@@ -642,6 +642,10 @@ async fn a_turn_on_ollama_closes_the_cli_session_the_pane_had() {
 // batch and says how many entries; the disk is untouched and other chats keep
 // theirs.
 fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
+    stager_of(lab, StageKey::Pane(pane))
+}
+
+fn stager_of(lab: &Lab, key: StageKey) -> Arc<dyn Dispatch> {
     let (tx, rx) = mpsc::channel(64);
     // Nothing reads the events of a staging call: the channel only has to stay open.
     std::mem::forget(rx);
@@ -650,7 +654,7 @@ fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
     let mut scope = TurnScope::new(tx, crate::core::ai::tools::Locality::Local, proj);
     scope.families = crate::core::ai::tools::registry::FamilySet::LEGACY
         .with(crate::core::ai::tools::registry::Family::Write);
-    scope.stage_key = Some(StageKey::Pane(pane));
+    scope.stage_key = Some(key);
     lab.host.dispatch(scope)
 }
 
@@ -685,6 +689,50 @@ async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
         "the other chat kept its batch"
     );
     assert_eq!(chats.close_batch(pane(3)), None);
+}
+
+// A pane that started a run holds one batch per writer: close, review, apply
+// and the badge all go by the pane, whichever key holds the batch.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn the_chats_serve_every_key_of_a_pane() {
+    use crate::core::ai::{chat::review::Badge, orchestra::WorkerKey};
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    let worker = |n| StageKey::Worker(pane(1), WorkerKey::for_test(1, n));
+    let (late, early) = (stager_of(&lab, worker(2)), stager_of(&lab, worker(1)));
+    stage(&late, "late.txt", "l").await;
+    stage(&early, "early.txt", "e").await;
+    stage(&stager(&lab, pane(2)), "other.txt", "o").await;
+
+    // One badge per pane, summed over its keys.
+    assert_eq!(chats.batch_badges().unwrap()[&pane(1)], Badge::Orphan(2));
+    // Arrival order, not worker number: `late` staged first.
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(1)) else {
+        panic!("an orphan of the pane");
+    };
+    assert_eq!(id.key, worker(2));
+    // A turn of the pane owns every key of it, also at the apply.
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(chats.review_batch(pane(1)), None);
+    let live = chats.apply_batch(id, None);
+    assert!(
+        matches!(live, Some(BatchEvent::Done { ref shown, .. }) if shown == "a turn of this chat is still running"),
+        "{live:?}"
+    );
+    assert!(!proj.join("late.txt").exists());
+    chats.cancel(pane(1));
+    chats.apply_batch(id, None);
+    assert_eq!(std::fs::read_to_string(proj.join("late.txt")).unwrap(), "l");
+    let Some(BatchEvent::Review(next, _)) = chats.review_batch(pane(1)) else {
+        panic!("the other batch is next");
+    };
+    assert_eq!(next.key, worker(1));
+    // A close drops what is left of every key and spares the other pane.
+    assert_eq!(chats.close_batch(pane(1)), Some(1));
+    assert_eq!(chats.close_batch(pane(1)), None);
+    assert_eq!(chats.close_batch(pane(2)), Some(1));
 }
 
 // Spec (code-write, Orphan, close and quit): the user reviews, applies or

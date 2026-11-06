@@ -35,6 +35,7 @@ use crate::{
             registry::Family,
             stage::{
                 BatchId, Entry, Existing, MAX_BYTES, MAX_ENTRIES, StageError, StageKey, Staged,
+                State,
             },
             summary::clip,
         },
@@ -65,6 +66,9 @@ pub(super) struct Sealed {
     stages: Arc<Mutex<Stages>>,
     /// The ask is open: dropping now leaves the batch as an orphan.
     keep: bool,
+    /// The batch was already proposed when this call asked: the user may hold
+    /// it, so a drop before the announcement only ends this ask.
+    reasked: bool,
 }
 
 impl Sealed {
@@ -76,26 +80,32 @@ impl Sealed {
     /// The wait ended with an answer, not with a drop: nothing is left open.
     pub(super) fn resumed(&mut self) {
         self.keep = false;
+        self.reasked = false;
     }
 }
 
 impl Drop for Sealed {
     fn drop(&mut self) {
-        if self.keep {
-            return;
-        }
         // A drop may run on an async worker, which must not wait for the
-        // store while an apply holds it: then the discard waits on the
-        // blocking pool instead.
-        let id = self.id;
+        // store while an apply holds it: then the work waits on the blocking
+        // pool instead. Once the ask was announced the batch stays for the
+        // user and only its ask is over, so the owner may propose it again.
+        let (id, keep) = (self.id, self.keep || self.reasked);
+        let end = move |stages: &mut Stages| {
+            if keep {
+                stages.ask_gone(id);
+            } else {
+                let _ = stages.discard(id);
+            }
+        };
         match self.stages.try_lock() {
-            Ok(mut stages) => drop(stages.discard(id)),
-            Err(TryLockError::Poisoned(held)) => drop(held.into_inner().discard(id)),
+            Ok(mut stages) => end(&mut stages),
+            Err(TryLockError::Poisoned(held)) => end(&mut held.into_inner()),
             Err(TryLockError::WouldBlock) => {
                 let stages = self.stages.clone();
                 match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => drop(runtime.spawn_blocking(move || lock(&stages).discard(id))),
-                    Err(_) => drop(lock(&stages).discard(id)),
+                    Ok(runtime) => drop(runtime.spawn_blocking(move || end(&mut lock(&stages)))),
+                    Err(_) => end(&mut lock(&stages)),
                 }
             }
         }
@@ -169,6 +179,9 @@ fn seal_in(
         .batch(key)
         .map(|batch| batch.id())
         .ok_or(StageError::Empty.to_string())?;
+    let reasked = stages
+        .batch(key)
+        .is_some_and(|batch| batch.state() == State::Proposed);
     stages.seal(id).map_err(|why| why.to_string())?;
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
     let doc = ReviewDoc::build(batch);
@@ -190,6 +203,7 @@ fn seal_in(
             paths,
             stages: shared,
             keep: false,
+            reasked,
         },
         review,
     ))

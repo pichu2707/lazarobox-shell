@@ -10,6 +10,13 @@ fn chat(n: u32) -> StageKey {
     StageKey::Pane(PaneId::for_test(n))
 }
 
+fn worker(pane: u32, worker: u32) -> StageKey {
+    StageKey::Worker(
+        PaneId::for_test(pane),
+        crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+    )
+}
+
 const WAIT: Duration = Duration::from_secs(60);
 
 // Scenario "One run per chat": a busy chat is refused at once and another
@@ -63,4 +70,30 @@ async fn a_cancelled_wait_frees_the_chat() {
     let waiting = tokio::time::timeout(Duration::from_secs(1), gate.acquire(chat(2))).await;
     assert!(waiting.is_err(), "the wait was cut by the caller");
     assert!(!gate.is_busy(chat(2)));
+}
+
+// Design D8: the claim is by pane. Two writers of one pane share the one
+// command a pane may run; a worker's command is refused at once, naming a
+// busy chat, whichever key took the claim first.
+#[tokio::test(start_paused = true)]
+async fn the_claim_is_by_pane_whatever_the_key() {
+    let gate = RunGate::new(4, WAIT);
+    let held = gate.acquire(chat(1)).await.unwrap();
+    assert!(gate.is_busy(worker(1, 1)), "the pane key holds the claim");
+    assert_eq!(gate.acquire(worker(1, 1)).await.err(), Some(Refused::Chat));
+    assert_eq!(gate.acquire(worker(1, 2)).await.err(), Some(Refused::Chat));
+    // Another pane is not affected, with either kind of key.
+    assert!(!gate.is_busy(worker(2, 1)));
+    let other = gate.acquire(worker(2, 1)).await.unwrap();
+    drop((held, other));
+    let first = gate.acquire(worker(1, 1)).await.unwrap();
+    assert!(gate.is_busy(chat(1)), "a worker key holds the pane");
+    assert_eq!(gate.acquire(chat(1)).await.err(), Some(Refused::Chat));
+    drop(first);
+    // The refusal of a sibling must not free the claim of the holder.
+    let held = gate.acquire(worker(1, 1)).await.unwrap();
+    assert!(gate.acquire(worker(1, 2)).await.is_err());
+    assert!(gate.is_busy(worker(1, 1)));
+    drop(held);
+    assert!(!gate.is_busy(chat(1)));
 }

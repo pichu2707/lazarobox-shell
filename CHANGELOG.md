@@ -34,6 +34,11 @@ baseline.
   - a worker that is already running keeps the tools it started with.
 
   Turning ORCH on says this when Write is off.
+- When a turn ends while a batch is waiting for your answer, the model that
+  owns the batch can now propose it again and you are asked again. Before,
+  `propose_batch` was refused with "waiting for review" and the batch could
+  only be reviewed from the pane badge. This applies to a plain chat and to
+  workers; a second proposal while your first ask is still open stays refused.
 
 ## [1.11.0] - 2026-11-06
 
