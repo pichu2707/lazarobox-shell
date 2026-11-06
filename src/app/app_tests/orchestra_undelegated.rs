@@ -62,7 +62,7 @@ fn the_notice_shows_at_once_when_the_pane_is_already_idle() {
 // Spec "A legitimate answer gets the same neutral notice": plain ASCII, no
 // accusation, and the information only.
 #[test]
-fn the_notice_is_neutral_ascii_and_names_the_key() {
+fn the_notice_is_neutral_ascii_and_names_no_key() {
     let (mut a, turn) = running();
     a.update(finish(turn));
     a.update(undelegated());
@@ -174,6 +174,17 @@ fn a_notice_that_lands_during_the_next_turn_is_dropped_when_it_has_workers() {
     a.update(undelegated());
     a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
     a.update(finish(next));
+    assert_eq!(shown(&a), 0);
+}
+
+// The pane is idle and already shows a newer run when an older run's notice
+// lands late: the notice belongs to that older run and is dropped.
+#[test]
+fn a_late_notice_of_an_older_run_is_dropped_on_an_idle_pane() {
+    let (mut a, turn) = running();
+    a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
+    a.update(finish(turn));
+    a.update(undelegated());
     assert_eq!(shown(&a), 0);
 }
 

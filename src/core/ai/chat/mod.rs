@@ -633,7 +633,6 @@ impl ChatState {
         self.orch_turn = Some(turn);
         // A notice parked for an earlier turn does not outlive it.
         self.orch_undelegated = None;
-        self.last_turn_clean = true;
     }
 
     /// Whether an orchestrator turn of this chat is still in flight.
