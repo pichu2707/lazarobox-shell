@@ -154,16 +154,17 @@ pub enum WorkerEvent {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NotHalted;
 
+/// Told to the coordinator ahead of the answer of a worker that changed no
+/// file and whose reply holds tool calls written as text: ASCII and neutral,
+/// and true whatever the cause. It stands outside the worker's wrapper.
+const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
+
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
 struct Stored {
     handoff: Handoff,
     summary: receipt::Summary,
 }
-
-/// Told to the coordinator ahead of a worker's answer that holds its tool
-/// calls as text: ASCII and neutral.
-const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file. It wrote its tool calls as text, so none ran; do not report its files as created.";
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -187,6 +188,8 @@ struct Slot {
     /// Waiting on its own review (see [`Run::park`]): not counted as running
     /// for `max_parallel`.
     parked: bool,
+    /// The current turn runs without tools: no write tool was offered to it.
+    no_tools: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -376,6 +379,14 @@ impl Run {
         (files > 0 && unproposed()).then_some(Disclosure::StagedNotProposed { files })
     }
 
+    /// The turn of worker `id` runs without tools (agent-orchestrator,
+    /// degraded turn).
+    pub fn ran_without_tools(&mut self, id: WorkerId) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.no_tools = true;
+        }
+    }
+
     /// The host staged `change` for worker `id`.
     pub fn staged(&mut self, id: WorkerId, change: Change) {
         if let Some(slot) = self.slots.get_mut(index(id)) {
@@ -444,6 +455,7 @@ impl Run {
             gap: false,
             handoff: None,
             parked: false,
+            no_tools: false,
         });
         let id = WorkerId(self.slots.len() as u32);
         self.enqueue(now, id, refusal, false);
@@ -505,6 +517,7 @@ impl Run {
             }
             let slot = &mut self.slots[index(next)];
             (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
+            slot.no_tools = false;
         }
     }
 
@@ -606,6 +619,8 @@ impl Run {
     /// never be reused or shown to the worker, or its text could forge the
     /// closing tag. A worker that staged files has its `files changed`
     /// ledger first, inside the wrapper: its paths are the worker's names.
+    /// Anything before the wrapper is lazarobox's own word, never the
+    /// worker's.
     pub fn collect_wrapped(
         &self,
         nonce_bytes: [u8; 8],
@@ -1122,14 +1137,12 @@ impl Run {
     }
 }
 
-/// Worker ids start at 1; id 0 maps to no slot.
-/// A sum as it is shown: with no cost when it is partial, because a total
-/// that misses a report must not read as the whole.
 impl Slot {
     /// The worker ended `done` with a write tool offered and nothing staged,
     /// and its answer holds a call to a write tool written as text.
     fn said_calls_as_text(&self) -> bool {
         self.status == WorkerStatus::Done
+            && !self.no_tools
             && self.spec.writes()
             && self.ledger.changes().is_empty()
             && self.result.as_ref().is_some_and(|result| {
@@ -1138,6 +1151,8 @@ impl Slot {
     }
 }
 
+/// A sum as it is shown: with no cost when it is partial, because a total
+/// that misses a report must not read as the whole.
 fn shown(usage: Usage, partial: bool) -> Usage {
     Usage {
         cost_micros: usage.cost_micros.filter(|_| !partial),
@@ -1145,6 +1160,7 @@ fn shown(usage: Usage, partial: bool) -> Usage {
     }
 }
 
+/// Worker ids start at 1; id 0 maps to no slot.
 fn index(id: WorkerId) -> usize {
     (id.0 as usize).wrapping_sub(1)
 }

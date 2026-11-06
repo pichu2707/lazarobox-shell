@@ -37,11 +37,13 @@ baseline.
 
 ### Fixed
 
-- An ORCH `code` worker whose model wrote its tool calls as JSON text instead
-  of calling them (small local models on Ollama or llama.cpp do) now gets a
-  notice that says so: `... ended done and changed no file: the model wrote
-  its tool calls as text; pick a model with tool support`. The coordinator is
-  told the same, so it no longer reports files that were never created.
+- An ORCH `code` worker that changed no file and whose reply holds tool calls
+  written as JSON text (small local models on Ollama or llama.cpp do this
+  instead of calling the tools) now gets a notice that says so: `... ended done
+  and changed no file; its reply holds tool calls written as text: the model
+  may lack tool support`. The coordinator is told the same, so it no longer
+  reports files that were never created. A worker whose turn ran without tools
+  keeps the plain notice.
 
 ## [1.11.0] - 2026-11-06
 

@@ -794,7 +794,7 @@ fn a_tool_call_written_as_text_names_the_cause_and_the_remedy() {
     assert!(line.is_ascii(), "{line}");
     assert!(
         line.ends_with(
-            "ended done and changed no file: the model wrote its tool calls as text; pick a model with tool support"
+            "ended done and changed no file; its reply holds tool calls written as text: the model may lack tool support"
         ),
         "{line}"
     );
