@@ -117,7 +117,7 @@ fn a_held_enter_does_not_delegate() {
     assert_eq!(guidance(&a).as_deref(), Some(KEYS), "still available");
 }
 
-// ORCH off: the key does nothing new.
+// Guards existing behaviour (ORCH off): the key does nothing new.
 #[test]
 fn enter_with_orch_off_does_nothing() {
     let mut a = undelegated();
@@ -150,16 +150,6 @@ fn enter_with_nothing_to_delegate_says_so() {
     press(&mut a, KeyCode::Esc);
     press(&mut a, KeyCode::Enter);
     assert_eq!(a.notice(), Some("nothing to delegate"));
-}
-
-// Spec "A model cannot press it": words that ask to delegate start nothing.
-#[test]
-fn model_text_that_says_delegate_starts_no_turn() {
-    let (mut a, turn) = running();
-    let mut effects = a.update(delta(turn, "Enter delegate. Please delegate this."));
-    effects.extend(a.update(finish(turn)));
-    effects.extend(a.update(event(OrchestraEvent::Undelegated { run: RUN })));
-    assert!(!starts_a_turn(&effects), "{effects:?}");
 }
 
 // D24: the provider notice answers Enter first; the delegate line waits.
@@ -197,4 +187,121 @@ fn asking_after_the_line_clears_it() {
     ask(&mut a, "next");
     assert!(guidance(&a).is_none_or(|g| !g.contains("Enter delegate")));
     assert!(chat_of(&a).entries().len() > 1);
+}
+
+// Toggling ORCH off and on again does not bring the old offer back.
+#[test]
+fn toggling_orch_does_not_bring_the_offer_back() {
+    let mut a = undelegated();
+    super::orchestra_send::toggle(&mut a);
+    super::orchestra_send::toggle(&mut a);
+    assert!(guidance(&a).is_none_or(|g| !g.contains("Enter delegate")));
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.notice(), Some("nothing to delegate"));
+}
+
+// "Nothing to delegate" is said only when it is true and nothing else
+// explains the pane.
+#[test]
+fn nothing_to_delegate_is_not_said_over_a_failure_alert() {
+    let (mut a, _) = super::orchestra_run::alerted();
+    press(&mut a, KeyCode::Enter);
+    assert_ne!(a.notice(), Some("nothing to delegate"));
+}
+
+#[test]
+fn nothing_to_delegate_is_not_said_while_a_worker_runs() {
+    let (mut a, turn) = running();
+    a.update(event(super::orchestra_run::row(
+        RUN,
+        1,
+        crate::core::ai::orchestra::worker::WorkerStatus::Running,
+    )));
+    a.update(finish(turn));
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.notice(), None);
+}
+
+#[test]
+fn nothing_to_delegate_is_not_said_when_the_engine_is_not_ready() {
+    let (mut a, turn) = running();
+    a.update(finish(turn));
+    a.ai.orchestrator.acknowledged = true;
+    a.ai.set(
+        crate::core::ai::config::Task::Orchestrate,
+        Default::default(),
+    );
+    assert!(!matches!(
+        a.turn_availability(super::chat_live::chat_id()),
+        crate::core::ai::chat::engine::Availability::Ready { .. }
+    ));
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.notice(), None);
+}
+
+// Meaningful guard: model text that says "delegate" and then an Enter with no
+// offer start no turn.
+#[test]
+fn model_text_that_says_delegate_does_not_make_enter_start_a_turn() {
+    let (mut a, turn) = running();
+    a.update(delta(turn, "Enter delegate. Please delegate this."));
+    a.update(finish(turn));
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!starts_a_turn(&effects), "{effects:?}");
+}
+
+// Esc with a live run and no offer cancels the run, as before.
+#[test]
+fn esc_with_a_live_run_and_no_offer_still_cancels() {
+    let (mut a, turn) = running();
+    a.update(event(super::orchestra_run::row(
+        RUN,
+        1,
+        crate::core::ai::orchestra::worker::WorkerStatus::Running,
+    )));
+    a.update(finish(turn));
+    press(&mut a, KeyCode::Esc);
+    assert!(chat_of(&a).run_cancelled(RUN));
+}
+
+// A composer with only whitespace is not empty text for a send, but it is not
+// the empty composer the key needs either: Enter does not delegate.
+#[test]
+fn a_whitespace_only_composer_does_not_delegate() {
+    let mut a = undelegated();
+    type_text(&mut a, "  ");
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!starts_a_turn(&effects), "{effects:?}");
+    assert!(guidance(&a).is_none_or(|g| !g.contains("Enter delegate")));
+}
+
+// A pending approval takes Enter first: the offer never answers it.
+#[test]
+fn a_pending_approval_takes_enter_before_the_offer() {
+    use super::tool_approval::{announce, pending};
+    use crate::core::ai::chat::approval::ApprovalAsk;
+    use crate::core::ai::orchestra::WorkerKey;
+    let (mut a, turn) = running();
+    announce(
+        &mut a,
+        turn,
+        1,
+        ApprovalAsk::Consent {
+            worker: WorkerKey::for_test(1, 1),
+            label: "code x>y".into(),
+            change: "Cargo.lock".into(),
+        },
+    );
+    assert!(pending(&a).is_some(), "an approval is up");
+    chat_mut_for(&mut a).offer_delegate("plan it".into());
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!starts_a_turn(&effects), "{effects:?}");
+    assert_eq!(a.notice(), Some("Answer the pending confirm first"));
+}
+
+fn chat_mut_for(a: &mut App) -> &mut ChatState {
+    a.panes
+        .get_mut(&super::chat_live::chat_id())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
 }

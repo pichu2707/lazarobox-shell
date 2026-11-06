@@ -630,6 +630,8 @@ impl ChatState {
 
     pub fn set_orch(&mut self, on: bool) {
         self.orch = on;
+        // The offer belongs to the mode it was made in.
+        self.drop_delegate();
     }
 
     /// Turn `turn`, just sent, is an orchestrator turn.
@@ -756,6 +758,13 @@ impl ChatState {
 
     pub fn delegate_offered(&self) -> bool {
         self.delegate.is_some()
+    }
+
+    /// The offer and the notice parked for it end: the conversation, the
+    /// folder or the mode they were about changed.
+    pub fn drop_delegate(&mut self) {
+        self.delegate = None;
+        self.orch_undelegated = None;
     }
 
     pub fn take_delegate(&mut self) -> Option<String> {

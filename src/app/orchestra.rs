@@ -572,7 +572,17 @@ impl App {
             // Nothing offered: an Enter that did nothing says why.
             let offered = (self.panes.get(&id).and_then(PaneState::chat_state))
                 .is_some_and(ChatState::delegate_offered);
-            if enter && !offered {
+            // Said only when true and nothing else explains the pane: no
+            // guidance, no live run or worker, engine ready. A key already clears the
+            // status notice, so none can be overwritten here.
+            if enter
+                && !offered
+                && !self.orch_run_active(id)
+                && self.server_offer_prompt(id).is_none()
+                && self.orch_guidance(id).is_none()
+                && self.orch_refusal(id).is_none()
+                && matches!(self.turn_availability(id), Availability::Ready { .. })
+            {
                 self.notice = Some(NOTHING_TO_DELEGATE.to_owned());
                 self.dirty = true;
                 return Some(Vec::new());

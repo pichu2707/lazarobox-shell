@@ -200,6 +200,7 @@ impl ChatState {
         let old = self.origin_cwd.replace(new.clone());
         // A drive grant is for the folder it was given in only.
         self.drive_grant = None;
+        self.drop_delegate();
         let show = |path: Option<&Path>| {
             path.map_or_else(|| "unknown".to_owned(), |p| clean(&p.to_string_lossy()))
         };
@@ -245,6 +246,7 @@ impl ChatState {
         let old = self.origin_cwd.replace(new.clone());
         // A drive grant is for the folder it was given in only.
         self.drive_grant = None;
+        self.drop_delegate();
         let to = clean(&new.to_string_lossy());
         let prompt_now = self.invalidate_prompt();
         self.restore_memory_for_folder();
