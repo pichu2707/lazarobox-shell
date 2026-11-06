@@ -815,6 +815,31 @@ fn refusal_and_degraded_turn_notices_are_system_lines() {
     insta::assert_snapshot!("orch_refusal_and_degraded_notices", shown);
 }
 
+// The notices are ASCII even when an engine or model name is not.
+#[test]
+fn notices_with_non_ascii_names_are_shown_in_ascii() {
+    let (mut a, _) = running();
+    a.update(event(refused("model caf\u{e9} is not downloaded")));
+    a.update(event(OrchestraEvent::Degraded {
+        run: RUN,
+        worker: WorkerId(1),
+        workers: 1,
+        kind: Task::Review,
+        engine: "ollama".into(),
+        model: Some("qw\u{e9}n".into()),
+        why: Degrade::NoHub,
+    }));
+    let all = system_lines(&a);
+    let shown: Vec<_> = all
+        .lines()
+        .filter(|l| l.starts_with("worker ") || l.starts_with("spawn "))
+        .collect();
+    let shown = shown.join("\n");
+    assert!(shown.is_ascii(), "{shown}");
+    assert!(shown.contains("caf? is not downloaded"), "{shown}");
+    assert!(shown.contains("qw?n"), "{shown}");
+}
+
 // chat-pane / Notice is a system line, not history, for the new notices too.
 #[test]
 fn refusal_and_degraded_notices_stay_out_of_the_next_orchestrator_turn() {

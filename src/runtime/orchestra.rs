@@ -1111,22 +1111,25 @@ impl RunManager {
                             format!("worker limit reached: max_workers is {cap}")
                         }
                     };
-                    return self.refused(pane, live, task, refusal_reason(&said));
+                    let said = refusal_reason(&said);
+                    return self.refused(pane, live, task, said.clone(), said);
                 }
             };
             self.sync(pane, live);
             let status = live.run.status(id).unwrap_or(WorkerStatus::Refused);
-            let mut text = format!("worker {}: {}", id.0, status.label());
-            // A refusal says why, so the coordinator can tell the user.
             if status == WorkerStatus::Refused {
+                // A refusal says why, so the coordinator can tell the user;
+                // the pane gets the bare reason.
                 let why = (live.run.result(id)).and_then(|r| r.error.as_ref());
-                if let Some((_, reason)) = why {
-                    text = format!("{text}: {}", refusal_reason(reason));
-                }
+                let reason = why.map(|(_, reason)| refusal_reason(reason));
+                let head = format!("worker {}: {}", id.0, status.label());
+                let text = match &reason {
+                    Some(reason) => format!("{head}: {reason}"),
+                    None => head,
+                };
+                return self.refused(pane, live, task, reason.unwrap_or_default(), text);
             }
-            if status == WorkerStatus::Refused {
-                return self.refused(pane, live, task, text);
-            }
+            let text = format!("worker {}: {}", id.0, status.label());
             Outcome {
                 text,
                 is_error: false,
@@ -1136,18 +1139,18 @@ impl RunManager {
     }
 
     /// The error result of a spawn that did not run: the coordinator gets
-    /// `reason`, already redacted and capped, and the pane the same line.
-    fn refused(&self, pane: PaneId, live: &Live, kind: Task, reason: String) -> Outcome {
+    /// `text`, and the pane `reason`; both are already redacted and capped.
+    fn refused(
+        &self,
+        pane: PaneId,
+        live: &Live,
+        kind: Task,
+        reason: String,
+        text: String,
+    ) -> Outcome {
         let run = live.run.id();
-        self.send(
-            pane,
-            OrchestraEvent::SpawnRefused {
-                run,
-                kind,
-                reason: reason.clone(),
-            },
-        );
-        error(reason)
+        self.send(pane, OrchestraEvent::SpawnRefused { run, kind, reason });
+        error(text)
     }
 
     /// The status of each id once none of them is queued or running, the run
@@ -1619,6 +1622,8 @@ impl RunManager {
         let Tools::On { origin, mcp, .. } = &mut request.tools else {
             return Err(Degrade::ToolsOff);
         };
+        // Defensive: every `MCP_VERIFIED` engine is in `CATALOG` today, so
+        // this exit is not reached; it stays so it is never silent.
         let locality = locality(&request.engine).ok_or(Degrade::NoLocality)?;
         let families = spec.toolset.families();
         // Only a chat pane may type into the user's session.

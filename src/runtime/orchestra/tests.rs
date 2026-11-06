@@ -433,6 +433,13 @@ impl Lab {
         }
     }
 
+    /// Fails when a refusal or degraded-turn notice was sent: the stash of
+    /// `next` and `sent` would otherwise hide one.
+    fn assert_no_notices(&mut self) {
+        let rest = self.sent();
+        assert!(self.notices.is_empty(), "{:?} {rest:?}", self.notices);
+    }
+
     /// The events already sent.
     fn sent(&mut self) -> Vec<OrchestraEvent> {
         let mut out = Vec::new();
@@ -5544,12 +5551,14 @@ async fn a_spawn_refused_for_its_engine_is_shown_too() {
     let (run, handle) = lab.start(roster(&assigned, engines, JAIL));
     let refused = handle.call(spawn(Task::Code, "write")).await;
     assert!(refused.is_error, "{refused:?}");
+    // The coordinator keeps the status prefix; the pane gets the bare cause.
+    let bare = refused.text.strip_prefix("worker 1: refused: ").unwrap();
     assert_eq!(
         refusal(&mut lab).await,
         OrchestraEvent::SpawnRefused {
             run,
             kind: Task::Code,
-            reason: refused.text,
+            reason: bare.to_owned(),
         }
     );
 }
@@ -5614,4 +5623,28 @@ async fn a_worker_whose_tool_hub_cannot_open_is_reported() {
     };
     assert_eq!(*why, Degrade::NoHub);
     lab.seen.first().await;
+}
+
+// A worker with working tools leaves no degraded-turn notice: an Ollama
+// worker gets the dispatch of its tool loop.
+#[tokio::test]
+async fn a_tooled_ollama_worker_is_not_reported_as_degraded() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Review, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let mut lab = lab_with(Script::Answer("done"), tooled);
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    handle.call(spawn(Task::Review, "look")).await;
+    lab.assert_no_notices();
+}
+
+// Same for a CLI worker whose hub opens.
+#[tokio::test]
+async fn a_tooled_cli_worker_with_a_working_hub_is_not_reported_as_degraded() {
+    let mut lab = lab_with(Script::Answer("done"), tooled);
+    let (_, handle) = lab.start(codex_review());
+    handle.call(spawn(Task::Review, "look")).await;
+    lab.assert_no_notices();
 }

@@ -188,9 +188,10 @@ pub enum OrchestraEvent {
         model: Option<String>,
         what: Disclosure,
     },
-    /// A spawn that made no worker, or whose worker was refused: `reason` is
-    /// the line the coordinator got, redacted and capped (agent-orchestrator
-    /// [W1]). Never sent to a model.
+    /// A spawn that made no worker, or made a worker refused for its engine
+    /// or model (that path does create a slot): `reason` is the cause the
+    /// coordinator got, redacted and capped, without the worker's status
+    /// prefix (agent-orchestrator [W1]). Never sent to a model.
     SpawnRefused {
         run: RunId,
         kind: Task,

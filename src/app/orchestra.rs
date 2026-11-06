@@ -349,10 +349,10 @@ impl App {
             // A spawn that made no worker, with the coordinator's own line.
             OrchestraEvent::SpawnRefused { run, kind, reason } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.push_system_line(format!(
+                    chat.push_system_line(ascii(format!(
                         "spawn of a {} worker refused: {reason}",
                         kind.id()
-                    ));
+                    )));
                 }
             }
             // A worker turn that runs as text: said before it starts.
@@ -1001,7 +1001,18 @@ fn degrade_reason(why: Degrade) -> &'static str {
 /// The one shape of a notice about a worker: `worker 2/3 code ollama>qwen3`
 /// (its number of the workers the run has made) and what is said of it.
 fn worker_notice(worker: WorkerId, workers: usize, who: &str, said: &str) -> String {
-    format!("worker {}/{workers} {who} {said}", worker.0)
+    ascii(format!("worker {}/{workers} {who} {said}", worker.0))
+}
+
+/// `text` with every non-ASCII character shown as `?`: a model or engine name
+/// can carry any, and these notices are ASCII.
+fn ascii(text: String) -> String {
+    if text.is_ascii() {
+        return text;
+    }
+    text.chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .collect()
 }
 
 /// A disclosure as one transcript line: the worker and what its end left
