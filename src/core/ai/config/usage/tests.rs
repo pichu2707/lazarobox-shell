@@ -119,6 +119,25 @@ fn local_engines_and_unknown_keys_are_ignored() {
     assert_eq!(usage, UsageConfig::default());
 }
 
+// Spec (configuration, Usage keys): Local engines ignored. Ollama still has
+// no billing mode, and the full load reports the key as unknown.
+#[test]
+fn a_local_engine_in_billing_is_reported_as_an_unknown_key() {
+    let text = "[ai.usage.billing]\nollama = \"per-token\"\n";
+    let (usage, problems) = read_text(text);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(usage.billing("ollama"), None);
+    assert_eq!(usage, UsageConfig::default());
+    let parsed = crate::core::config::Config::parse(text).unwrap();
+    assert_eq!(parsed.problems, ["unknown key: ai.usage.billing.ollama"]);
+    assert_eq!(parsed.ai.usage().billing("ollama"), None);
+    let (_, notice) = crate::core::config::Config::load(Ok(text.to_owned()));
+    assert_eq!(
+        notice.as_deref(),
+        Some("config: unknown key: ai.usage.billing.ollama")
+    );
+}
+
 #[test]
 fn a_usage_that_is_not_a_table_falls_back_to_defaults() {
     let (usage, problems) = read_text("[ai]\nusage = 3\n");

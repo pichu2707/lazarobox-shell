@@ -27,7 +27,7 @@ After the readers run, one walk over the owned tables compares each table's keys
 ## Capabilities
 
 ### Modified Capabilities
-- `configuration`, Schema and defaults (unknown keys in owned tables are reported) and the new requirement Unknown keys in owned tables.
+- `configuration`, Schema and defaults, Memory keys, Server ports, Tools key, MCP server lists, Workspace key and Usage keys (unknown keys in owned tables are reported) and the new requirement Unknown keys in owned tables.
 
 ## Risks
 

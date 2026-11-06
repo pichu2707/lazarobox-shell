@@ -1030,6 +1030,15 @@ mod tests {
                 vec!["unknown key: workspace.colour".to_owned()]
             )
         );
+        let (_, _, notice, _) = Config::load_with_workspace(
+            Ok("[workspace]\ncolour = \"red\"\ndir = \"/w\"".into()),
+            None,
+            None,
+        );
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: unknown key: workspace.colour")
+        );
         let (_, _, notice, dir) = Config::load_with_workspace(
             Ok("[workspace]\ndir = 3\n[statusline]\nposition = \"middle\"".into()),
             None,

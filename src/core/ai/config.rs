@@ -1672,6 +1672,14 @@ mod tests {
         (ai, problems)
     }
 
+    /// The problems and the startup notice of the full loader, which also
+    /// reports unknown keys (`read_with_port_env` alone does not).
+    fn full_load(text: &str) -> (Vec<String>, Option<String>) {
+        let problems = crate::core::config::Config::parse(text).unwrap().problems;
+        let (_, notice) = crate::core::config::Config::load(Ok(text.to_owned()));
+        (problems, notice)
+    }
+
     fn ports_of(text: &str) -> (Vec<Option<u16>>, Vec<String>) {
         let (ai, problems) = read_text(text);
         let ports = ["ollama", "lmstudio", "llamacpp", "vllm", "claude", "nope"]
@@ -1712,6 +1720,19 @@ mod tests {
             (
                 vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
                 vec![]
+            )
+        );
+        // Spec (config-unknown-keys): the full load reports each unknown id
+        // and key by its full path.
+        assert_eq!(
+            full_load(text),
+            (
+                vec![
+                    "unknown key: ai.servers.claude".to_owned(),
+                    "unknown key: ai.servers.nope".to_owned(),
+                    "unknown key: ai.servers.vllm.host".to_owned(),
+                ],
+                Some("config (3 problems): unknown key: ai.servers.claude".to_owned())
             )
         );
     }
@@ -2692,6 +2713,14 @@ mod tests {
     fn unknown_memory_keys_are_ignored() {
         let text = "[ai.memory]\nendpoint = \"http://x\"\nenabled = true\n";
         assert_eq!(memory_of(text, None), (mem(true, false, 7437), vec![]));
+        // Spec (config-unknown-keys): the full load reports the unknown key.
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.memory.endpoint".to_owned()],
+                Some("config: unknown key: ai.memory.endpoint".to_owned())
+            )
+        );
     }
 
     // Tasks and memory are independent.
@@ -2874,6 +2903,23 @@ mod tests {
             assert!(config.tools_enabled(), "{text:?}");
             assert!(problems.is_empty(), "{text:?}");
         }
+    }
+
+    // Spec (configuration, Tools key): Unknown keys ignored. `enabled`
+    // applies, and the full load reports the unknown key.
+    #[test]
+    fn unknown_tools_keys_are_ignored() {
+        let text = "[ai.tools]\nmode = \"fast\"\nenabled = true\n";
+        let (config, problems) = read_text(text);
+        assert!(config.tools_enabled());
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.tools.mode".to_owned()],
+                Some("config: unknown key: ai.tools.mode".to_owned())
+            )
+        );
     }
 
     #[test]
@@ -3270,6 +3316,28 @@ mod tests {
         docs.project = Some("/home/u/p".into());
         docs.enabled = false;
         assert_eq!(servers, vec![fs, docs]);
+        // Spec (config-unknown-keys): the full load reports the entry's
+        // unknown key.
+        assert_eq!(
+            full_load(text).0,
+            ["unknown key: ai.mcp.servers[1].timeout"]
+        );
+    }
+
+    // Spec (configuration, MCP server lists): Unknown keys ignored. The
+    // valid keys apply, the entry is kept, and the full load reports the
+    // unknown key.
+    #[test]
+    fn unknown_mcp_entry_keys_are_ignored() {
+        let text = "[[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"mcp-fs\"\ntimeout = 5\n";
+        assert_eq!(mcp_of(text), (vec![server("fs", "mcp-fs")], Vec::new()));
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.mcp.servers[0].timeout".to_owned()],
+                Some("config: unknown key: ai.mcp.servers[0].timeout".to_owned())
+            )
+        );
     }
 
     #[test]
