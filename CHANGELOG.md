@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-06
+
 ### Added
 
 - An unknown key inside a table lazarobox owns (`[statusline]`, `[tabbar]`,
@@ -2201,7 +2203,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.1...v1.8.0
