@@ -1,3 +1,7 @@
 /target
 /.atl
 /.tmp*/
+
+# Local agent settings and an alternate cargo target dir
+/.claude/
+/target-mcw/
