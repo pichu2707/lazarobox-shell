@@ -30,10 +30,10 @@ pub const GONE: &str = "that batch is no longer there";
 pub const LIVE: &str = "a turn of this chat is still running";
 
 impl ToolHost {
-    /// Drops the batch of `key` because its pane closed. How many entries were
+    /// Drops every batch of `pane` because it closed. How many entries were
     /// lost; `None` when there was nothing worth a notice.
-    pub fn close_batch(&self, key: StageKey) -> Option<usize> {
-        lock(&self.stages).discard_key(key)
+    pub fn close_batch(&self, pane: PaneId) -> Option<usize> {
+        lock(&self.stages).discard_pane(pane)
     }
 
     /// What the panes show of their batches (see `Stages::badges`). It never
@@ -58,15 +58,16 @@ impl ToolHost {
             .is_some_and(|batch| batch.state() == State::Staging && !batch.entries().is_empty())
     }
 
-    /// The orphan of `key` for the user to review. A batch the turn never
-    /// proposed is sealed now, so the model can no longer add to it.
-    /// `turn_live`: a turn of the chat still runs, so the batch is its own.
+    /// The oldest orphan of `pane` for the user to review, one batch at a
+    /// time. A batch the turn never proposed is sealed now, so the model can
+    /// no longer add to it. `turn_live`: a turn of the chat still runs, so
+    /// the batches are its own.
     pub fn review_batch(
         &self,
-        key: StageKey,
+        pane: PaneId,
         turn_live: bool,
     ) -> Option<(BatchId, Arc<BatchReview>)> {
-        let (id, review) = lock(&self.stages).review(key, turn_live).ok()?;
+        let (id, review) = lock(&self.stages).review_pane(pane, turn_live).ok()?;
         Some((id, Arc::new(review)))
     }
 

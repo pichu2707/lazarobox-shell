@@ -1087,10 +1087,7 @@ impl Chats {
     /// entries were lost, `None` when there was nothing worth a notice. Unlike
     /// [`Chats::cancel`], which leaves a batch as an orphan for the user.
     pub fn close_batch(&mut self, pane: PaneId) -> Option<usize> {
-        self.tooling
-            .as_ref()?
-            .host
-            .close_batch(StageKey::Pane(pane))
+        self.tooling.as_ref()?.host.close_batch(pane)
     }
 
     /// The batch a turn of `pane` left behind (cancelled, timed out, or never
@@ -1099,7 +1096,7 @@ impl Chats {
     pub fn review_batch(&self, pane: PaneId) -> Option<BatchEvent> {
         let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
         let host = &self.tooling.as_ref()?.host;
-        let (id, review) = host.review_batch(StageKey::Pane(pane), live)?;
+        let (id, review) = host.review_batch(pane, live)?;
         Some(BatchEvent::Review(id, review))
     }
 
@@ -1116,7 +1113,7 @@ impl Chats {
     /// may write in now; the host refuses it while a turn of the pane runs,
     /// as it does a review.
     pub fn apply_batch(&self, id: BatchId, drive_grant: Option<PathBuf>) -> Option<BatchEvent> {
-        let StageKey::Pane(pane) = id.key;
+        let pane = id.key.pane();
         let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
         Some(
             self.tooling

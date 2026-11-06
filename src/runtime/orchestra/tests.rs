@@ -2868,7 +2868,9 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     assert_eq!(status, Some(WorkerStatus::TimedOut));
     let host = lab.host();
     let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
-    let (_, review) = host.review_batch(key, false).expect("an orphan to review");
+    let (_, review) = host
+        .review_batch(key.pane(), false)
+        .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
 }
@@ -2936,7 +2938,10 @@ async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
         }
     );
     let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
-    assert!(lab.host().review_batch(key, false).is_some(), "an orphan");
+    assert!(
+        lab.host().review_batch(key.pane(), false).is_some(),
+        "an orphan"
+    );
 }
 
 // Never silent: a worker the user cancels after it staged files leaves the

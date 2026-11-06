@@ -12,7 +12,7 @@ use std::{
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::core::ai::tools::stage::StageKey;
+use crate::core::{ai::tools::stage::StageKey, layout::PaneId};
 
 /// Runs at once in the whole app.
 const SLOTS: usize = 2;
@@ -39,7 +39,8 @@ impl Refused {
     }
 }
 
-type Claimed = Arc<Mutex<HashSet<StageKey>>>;
+/// The panes with a run: one command per pane, whatever key asks (D8).
+type Claimed = Arc<Mutex<HashSet<PaneId>>>;
 
 pub(super) struct RunGate {
     claimed: Claimed,
@@ -56,12 +57,12 @@ impl Default for RunGate {
 /// A chat's claim: removed when dropped, also while it still waits.
 struct Claim {
     claimed: Claimed,
-    key: StageKey,
+    pane: PaneId,
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        lock(&self.claimed).remove(&self.key);
+        lock(&self.claimed).remove(&self.pane);
     }
 }
 
@@ -71,7 +72,7 @@ pub(super) struct Permit {
     _slot: OwnedSemaphorePermit,
 }
 
-fn lock(set: &Mutex<HashSet<StageKey>>) -> std::sync::MutexGuard<'_, HashSet<StageKey>> {
+fn lock(set: &Mutex<HashSet<PaneId>>) -> std::sync::MutexGuard<'_, HashSet<PaneId>> {
     set.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -84,19 +85,20 @@ impl RunGate {
         }
     }
 
-    /// Whether `key` has a run (or a call waiting for a slot).
+    /// Whether the pane of `key` has a run (or a call waiting for a slot).
     pub(super) fn is_busy(&self, key: StageKey) -> bool {
-        lock(&self.claimed).contains(&key)
+        lock(&self.claimed).contains(&key.pane())
     }
 
     /// Takes the chat, then a global slot (waiting at most the cap).
     pub(super) async fn acquire(&self, key: StageKey) -> Result<Permit, Refused> {
-        if !lock(&self.claimed).insert(key) {
+        let pane = key.pane();
+        if !lock(&self.claimed).insert(pane) {
             return Err(Refused::Chat);
         }
         let claim = Claim {
             claimed: self.claimed.clone(),
-            key,
+            pane,
         };
         match tokio::time::timeout(self.wait, self.slots.clone().acquire_owned()).await {
             Ok(Ok(slot)) => Ok(Permit {

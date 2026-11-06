@@ -425,7 +425,7 @@ async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
     // The user can still review it, as the same batch.
     let (id, review) = w
         .host
-        .review_batch(key(), false)
+        .review_batch(key().pane(), false)
         .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     let BatchEvent::Done { shown, .. } = w.host.discard_batch(id) else {
@@ -447,7 +447,7 @@ async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
     let out = d.call(Call::ProposeBatch).await;
     assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
     assert_eq!(w.staged(), 1);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     w.host.discard_batch(id);
     let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
@@ -474,7 +474,7 @@ async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
     let out = d.call(Call::ProposeBatch).await;
     assert!(out.is_error, "{out:?}");
     assert_eq!(w.staged(), 0, "a denied batch is not an orphan");
-    assert!(w.host.review_batch(key(), false).is_none());
+    assert!(w.host.review_batch(key().pane(), false).is_none());
 }
 
 // The command was typed but the turn ended: that is no user's no, but it is
@@ -503,10 +503,15 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
             .is_error
     );
     assert!(!d.call(folder("sub")).await.is_error);
-    let (id, review) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, review) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     assert_eq!(review.counts(), "2 files, +1 -0");
     assert_eq!(
-        w.host.review_batch(key(), false).map(|(again, _)| again),
+        w.host
+            .review_batch(key().pane(), false)
+            .map(|(again, _)| again),
         Some(id)
     );
     let after = d.call(write("b.txt", "x")).await;
@@ -534,7 +539,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     assert_eq!(w.host.apply_batch(id, false, None), gone);
     assert_eq!(w.host.discard_batch(id), gone);
     assert!(
-        w.host.review_batch(key(), false).is_none(),
+        w.host.review_batch(key().pane(), false).is_none(),
         "nothing to review"
     );
 }
@@ -552,7 +557,7 @@ async fn a_batch_is_unproposed_only_while_it_holds_entries_and_is_not_sealed() {
     assert!(!d.call(write("a.txt", "one")).await.is_error);
     assert!(w.host.unproposed(key()), "staging with an entry");
     w.host
-        .review_batch(key(), false)
+        .review_batch(key().pane(), false)
         .expect("sealed for review");
     assert!(!w.host.unproposed(key()), "proposed");
 }
@@ -1154,7 +1159,7 @@ async fn an_unreviewable_orphan_is_not_applied() {
             .await
             .is_error
     );
-    let (id, review) = w.host.review_batch(key(), false).unwrap();
+    let (id, review) = w.host.review_batch(key().pane(), false).unwrap();
     assert!(!review.doc().reviewable());
     let event = w.host.apply_batch(id, false, None);
     assert_eq!(
@@ -1176,7 +1181,7 @@ async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
     let w = world();
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     let event = w.host.apply_batch(id, true, None);
     assert_eq!(
         event,
@@ -1198,7 +1203,7 @@ async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
     std::fs::write(w.proj.join("b.txt"), "foo\n").unwrap();
     let (d, _rx) = w.turn(Script::new(Decision::Sent));
     assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
-    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
     std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
     let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, None) else {
         panic!("done");
@@ -1227,7 +1232,7 @@ async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
     for apply in [true, false] {
         let (d, _rx) = w.turn(Script::new(Decision::Sent));
         assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
-        let (id, _) = w.host.review_batch(key(), false).unwrap();
+        let (id, _) = w.host.review_batch(key().pane(), false).unwrap();
         let event = if apply {
             w.host.apply_batch(id, false, None)
         } else {
@@ -1802,7 +1807,10 @@ async fn an_apply_without_the_grant_writes_nothing_on_the_drive() {
     let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
     assert!(!d.call(write("main.py", "t")).await.is_error);
     drop((d, _rx));
-    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, _) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     let done = w.host.apply_batch(id, false, None);
     assert!(!app.join("main.py").exists(), "{done:?}");
     assert_eq!(std::fs::read_to_string(app.join("a")).unwrap(), "a");
@@ -1818,7 +1826,10 @@ async fn an_orphan_in_a_granted_drive_folder_applies_with_the_chats_grant() {
     let (d, _rx) = drive_turn(&w, &app, Some(app.clone()), Decision::Sent);
     assert!(!d.call(write("main.py", "t")).await.is_error);
     drop((d, _rx));
-    let (id, _) = w.host.review_batch(key(), false).expect("a staging orphan");
+    let (id, _) = w
+        .host
+        .review_batch(key().pane(), false)
+        .expect("a staging orphan");
     let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false, Some(app.clone())) else {
         panic!("expected the apply result");
     };
