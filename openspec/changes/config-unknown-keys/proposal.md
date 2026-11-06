@@ -10,7 +10,7 @@
 
 ### In Scope
 - **Owned tables:** `[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` and `[ai]` with every table under it, each `[[ai.mcp.servers]]` entry included.
-- **The problem:** `unknown key: <full path>` (for example `unknown key: ai.tols`), through the existing startup notice. The file still loads, the key is ignored, and these problems come after every other one.
+- **The problem:** `unknown key: <full path>` (for example `unknown key: ai.tols`), through the existing startup notice. The file still loads, the key is ignored, and these problems come after every other problem found while reading the file.
 - **Not reported:** the root of the file (other keys and tables there are the user's own), and every key lazarobox reads, the root `mouse` and `ai.servers.llamacpp.model` included.
 - `[ai.tasks.general]` and unknown task names are now reported: they were already ignored, and a user who writes them expects them to work.
 - README and CHANGELOG.
