@@ -147,7 +147,7 @@ fn turning_orch_on_with_write_off_says_where_to_turn_it_on() {
     assert_eq!(said.len(), 3, "{said:?}");
     assert_eq!(
         said[2],
-        "code workers need Write: turn it on in the AI menu (Ctrl+Space m)"
+        "code workers need Write: type /write, or turn it on in the AI menu (Ctrl+Space m)"
     );
     assert!(said[2].is_ascii());
     // With the master switch off the line asks for both.
@@ -158,7 +158,7 @@ fn turning_orch_on_with_write_off_says_where_to_turn_it_on() {
     let said = lines(&none);
     assert_eq!(
         said[2],
-        "code workers need tools and Write: turn them on in the AI menu (Ctrl+Space m)"
+        "code workers need tools and Write: turn tools on in the AI menu (Ctrl+Space m), then type /write"
     );
     assert!(said[2].is_ascii());
     let mut on = gate_on();

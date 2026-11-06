@@ -55,9 +55,10 @@ impl App {
     /// blocks; tools on shows it again.
     pub(super) fn sync_tools(&mut self) -> Vec<Effect> {
         let on = self.ai.tools_enabled();
+        let mut effects = Vec::new();
         if !on {
             self.end_all_grants(github::TOOLS_ENDED);
-            self.end_all_write(write::TOOLS_ENDED);
+            effects.extend(self.end_all_write(write::TOOLS_ENDED));
             // A dialog of `/github` or `/write` goes with them, and says so.
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {
@@ -65,7 +66,6 @@ impl App {
                 self.withdraw_write_dialog(id, github::R_TOOLS_OFF);
             }
         }
-        let mut effects = Vec::new();
         for (&id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
                 continue;

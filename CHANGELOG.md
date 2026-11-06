@@ -10,14 +10,24 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `/write` in a chat turns Write on for that chat only. It opens a `y` dialog
+  that names the Write toggle and the folder; the grant lives in memory, is not
+  saved to the config, and ends (with a line) on a folder change, a resume,
+  tools turned off or a change of the saved Write toggle. It reaches the next
+  worker the coordinator spawns (a worker that is already running keeps its
+  tools) and, in a plain chat, the next turn. Only you can open it: a model,
+  a worker or a tool result cannot.
+
 ### Changed
 
 - ORCH workers now follow the Write toggle of the AI menu. Before, the saved
   toggles were ignored for workers and a `code` worker always got the write
   tools. Now, while Write is off (the default):
   - a spawn of a `code` worker is refused with a notice in the chat, and the
-    run goes on; turn Write on in the AI menu (`Ctrl+Space m`) and spawn it
-    again;
+    run goes on; type `/write` in the chat (or turn Write on in the AI menu,
+    `Ctrl+Space m`) and spawn it again;
   - a `code` worker that is retried or relaunched follows the toggle at that
     moment, and if it is refused the run asks again;
   - a review correction is skipped with a notice;

@@ -36,7 +36,7 @@ pub(super) fn granted(a: &App, id: PaneId) -> bool {
 }
 
 /// Sends one message and returns the turn and its request.
-fn send(a: &mut App) -> (u64, ChatRequest) {
+pub(super) fn send(a: &mut App) -> (u64, ChatRequest) {
     a.update(key('q'));
     let effects = a.update(plain(KeyCode::Enter));
     let [Effect::ChatSend { turn, request, .. }] = effects.as_slice() else {
@@ -45,7 +45,7 @@ fn send(a: &mut App) -> (u64, ChatRequest) {
     (*turn, request.clone())
 }
 
-fn finish(a: &mut App, turn: u64) {
+pub(super) fn finish(a: &mut App, turn: u64) {
     a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
 }
 

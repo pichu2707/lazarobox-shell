@@ -9,6 +9,7 @@ use crate::core::ai::{
         Approval, ApprovalAsk, Origin, Reply, WRITE_DECLINED_LINE, WRITE_GRANTED_LINE,
     },
     config::ToolToggle,
+    tools::registry::{Family, FamilySet},
 };
 
 /// The system line of a grant that a folder change ended.
@@ -27,39 +28,63 @@ const CANCELLED: &str = "/write cancelled: ";
 const REFUSED: &str = "/write refused: ";
 
 impl App {
+    /// The menu chat `id` follows: the saved one plus Write while the chat
+    /// holds a `/write` grant and tools are on. Nothing else is ever added.
+    /// The one source of what an orchestrated turn lets its workers have and
+    /// of the tools a plain turn offers.
+    pub(super) fn orch_ceiling(&self, id: PaneId) -> FamilySet {
+        let saved = self.ai.families();
+        if self.ai.tools_enabled() && self.write_granted(id) {
+            saved.with(Family::Write)
+        } else {
+            saved
+        }
+    }
+
     /// Whether chat `id` holds a `/write` grant.
     pub(super) fn write_granted(&self, id: PaneId) -> bool {
         (self.panes.get(&id).and_then(PaneState::chat_state)).is_some_and(ChatState::write_granted)
     }
 
-    /// Chat `id` lost its folder grant: the dialog is taken back, and a grant
-    /// held says why it ended.
-    pub(super) fn end_write_for_folder(&mut self, id: PaneId) {
-        self.withdraw_write_dialog(id, R_FOLDER);
-        self.end_write(id, FOLDER_ENDED);
+    /// Tells the live run of an orchestrating chat that its menu changed with
+    /// the grant: the spawns from now on follow it (D15, D17).
+    fn ceiling_effect(&self, id: PaneId) -> Vec<Effect> {
+        let ceiling = self.orch_ceiling(id);
+        (self.orchestrating(id))
+            .then_some(Effect::OrchCeiling { pane: id, ceiling })
+            .into_iter()
+            .collect()
     }
 
-    /// Ends the grant of chat `id`, if it holds one, with `line`.
-    pub(super) fn end_write(&mut self, id: PaneId, line: &str) -> bool {
+    /// Chat `id` left its folder: the dialog is taken back, and a grant held
+    /// says why it ended.
+    pub(super) fn end_write_for_folder(&mut self, id: PaneId) -> Vec<Effect> {
+        self.withdraw_write_dialog(id, R_FOLDER);
+        self.end_write(id, FOLDER_ENDED)
+    }
+
+    /// Ends the grant of chat `id`, if it holds one, with `line`, and lowers
+    /// the menu of its run again.
+    pub(super) fn end_write(&mut self, id: PaneId, line: &str) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
-            return false;
+            return Vec::new();
         };
-        let held = chat.write_granted();
-        if held {
-            chat.set_write_granted(false);
-            chat.push_system_line(line.to_owned());
-            self.dirty = true;
+        if !chat.write_granted() {
+            return Vec::new();
         }
-        held
+        chat.set_write_granted(false);
+        chat.push_system_line(line.to_owned());
+        self.dirty = true;
+        self.ceiling_effect(id)
     }
 
     /// Every grant ends (tools turned off, or the saved toggle changed): each
     /// chat that held one says why, `line`.
-    pub(super) fn end_all_write(&mut self, line: &str) {
+    pub(super) fn end_all_write(&mut self, line: &str) -> Vec<Effect> {
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
-        for id in ids {
-            self.end_write(id, line);
-        }
+        (ids.into_iter())
+            .flat_map(|id| self.end_write(id, line))
+            .collect()
     }
 
     /// `/write` followed by text: says so and keeps the composer text.
@@ -184,6 +209,9 @@ impl App {
         self.dirty = true;
         if cancels {
             return self.chat_cancel_key(id);
+        }
+        if grants {
+            return self.ceiling_effect(id);
         }
         Vec::new()
     }

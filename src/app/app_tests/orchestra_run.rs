@@ -1060,7 +1060,7 @@ fn the_write_off_refusal_is_a_system_line_naming_the_toggle_and_the_step() {
         .find(|l| l.starts_with("spawn of a code worker refused"))
         .expect("the refusal line");
     assert!(line.is_ascii(), "{line}");
-    assert!(line.contains("Write") && line.contains("AI menu"), "{line}");
+    assert!(line.contains("Write") && line.contains("/write"), "{line}");
     assert_eq!(chat_of(&a).messages().count(), before);
 }
 

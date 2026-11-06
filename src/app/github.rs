@@ -48,7 +48,7 @@ impl App {
     /// GitHub family when this chat holds a grant and tools are on. The one
     /// source of the offered tools and of the context budget.
     pub(super) fn offered_families(&self, id: PaneId) -> FamilySet {
-        let saved = self.ai.families();
+        let saved = self.orch_ceiling(id);
         let granted = self.ai.tools_enabled()
             && (self.panes.get(&id).and_then(PaneState::chat_state))
                 .is_some_and(ChatState::github_granted);

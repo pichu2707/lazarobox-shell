@@ -80,7 +80,7 @@ impl App {
         // A resume answer still on its way must not undo this choice.
         self.resume_folders.remove(&id);
         self.end_grant_for_folder(id);
-        self.end_write_for_folder(id);
+        let lowered = self.end_write_for_folder(id);
         self.forget_github_repo(id);
         let history = self.history && !restore;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -106,7 +106,7 @@ impl App {
             chat.set_folder(new)
         };
         let session = chat.take_tool_session();
-        let mut effects: Vec<Effect> = end.into_iter().collect();
+        let mut effects: Vec<Effect> = end.into_iter().chain(lowered).collect();
         if history {
             effects.extend(store.map(Effect::Store));
         }

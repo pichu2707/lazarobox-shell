@@ -1174,6 +1174,14 @@ impl Chats {
             .is_some_and(|orchestra| orchestra.decide(pane, run, choice, ceiling).is_ok())
     }
 
+    /// The menu `pane`'s live run follows from the next spawn on
+    /// (`RunManager::set_ceiling`); a pane without a run ignores it.
+    pub fn set_ceiling(&self, pane: PaneId, ceiling: crate::core::ai::tools::registry::FamilySet) {
+        if let Some(orchestra) = self.orchestra.as_ref() {
+            orchestra.set_ceiling(pane, ceiling);
+        }
+    }
+
     /// Cancels worker `worker` of run `run` of `pane` (the cancel tool's
     /// path, `RunManager::cancel_worker`); a run or a worker that is gone is
     /// a no-op, its rows having said so.

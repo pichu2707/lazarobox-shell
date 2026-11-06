@@ -25,7 +25,7 @@ const FOLDER_LINE: &str = "Write is off because the folder changed";
 const TOOLS_LINE: &str = "Write is off because tools were turned off";
 const TOGGLE_LINE: &str = "Write is off because the Write toggle was changed";
 
-fn lines(a: &App) -> Vec<String> {
+pub(super) fn lines(a: &App) -> Vec<String> {
     (chat(a, id2()).entries().iter())
         .filter_map(|e| match e {
             Entry::System(line) => Some(line.clone()),
@@ -48,7 +48,7 @@ fn messages(a: &App) -> usize {
         .count()
 }
 
-fn granted(a: &App) -> bool {
+pub(super) fn granted(a: &App) -> bool {
     chat(a, id2()).write_granted()
 }
 
@@ -56,12 +56,12 @@ fn folder(a: &App) -> PathBuf {
     chat(a, id2()).origin_cwd().expect("a folder").to_path_buf()
 }
 
-fn submit(a: &mut App, text: &str) -> Vec<Effect> {
+pub(super) fn submit(a: &mut App, text: &str) -> Vec<Effect> {
     type_text(a, text);
     a.update(super::chat_live::plain(KeyCode::Enter))
 }
 
-fn wait_for_arming() {
+pub(super) fn wait_for_arming() {
     NOW_MS.with(|n| n.set(n.get() + 1_000));
 }
 
@@ -76,13 +76,13 @@ fn dialog_open(a: &App) -> bool {
 }
 
 /// The dialog is open for the chat folder.
-fn dialog(a: &mut App) {
+pub(super) fn dialog(a: &mut App) {
     assert_eq!(submit(a, "/write"), vec![]);
     assert!(dialog_open(a), "{:?}", lines(a));
 }
 
 /// The chat holds the grant, as after `y`.
-fn hold(a: &mut App) {
+pub(super) fn hold(a: &mut App) {
     dialog(a);
     wait_for_arming();
     a.update(key('y'));

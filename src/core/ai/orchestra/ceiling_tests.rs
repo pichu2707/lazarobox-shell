@@ -195,7 +195,8 @@ fn a_read_only_goal_is_refused_as_read_only_even_with_write_off() {
 fn the_refusal_text_names_the_toggle_and_says_no_worker_started() {
     assert!(WRITE_OFF.contains("Write"), "{WRITE_OFF}");
     assert!(WRITE_OFF.contains("not started"), "{WRITE_OFF}");
-    assert!(WRITE_OFF.contains("AI menu"), "{WRITE_OFF}");
+    assert!(WRITE_OFF.contains("/write"), "{WRITE_OFF}");
+    assert!(WRITE_OFF.contains("this chat"), "{WRITE_OFF}");
     assert!(WRITE_OFF.is_ascii());
 }
 

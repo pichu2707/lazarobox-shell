@@ -1084,6 +1084,15 @@ impl RunManager {
 
     /// Runs `f` on the run `run` of `pane`; `None` once it ended or was
     /// replaced.
+    /// Bounds the spawns of `pane`'s live run from now on by `ceiling`
+    /// (D15, D17). Workers already started keep their spec; a pane without a
+    /// live run ignores it.
+    pub fn set_ceiling(&self, pane: PaneId, ceiling: FamilySet) {
+        if let Some(live) = lock(&self.runs).get_mut(&pane) {
+            live.run.set_ceiling(ceiling);
+        }
+    }
+
     fn on_run<T>(&self, pane: PaneId, run: RunId, f: impl FnOnce(&mut Live) -> T) -> Option<T> {
         let mut runs = lock(&self.runs);
         let live = runs.get_mut(&pane).filter(|live| live.run.id() == run)?;
