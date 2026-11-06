@@ -9,6 +9,7 @@ use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
 use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
+use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage};
@@ -159,6 +160,10 @@ struct Stored {
     handoff: Handoff,
     summary: receipt::Summary,
 }
+
+/// Told to the coordinator ahead of a worker's answer that holds its tool
+/// calls as text: ASCII and neutral.
+const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file. It wrote its tool calls as text, so none ran; do not report its files as created.";
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -359,7 +364,14 @@ impl Run {
         let files = slot.ledger.pending();
         if slot.ledger.changes().is_empty() {
             let silent = slot.status == WorkerStatus::Done && slot.spec.writes();
-            return silent.then_some(Disclosure::EmptyLedger);
+            if !silent {
+                return None;
+            }
+            return Some(if slot.said_calls_as_text() {
+                Disclosure::ToolCallAsText
+            } else {
+                Disclosure::EmptyLedger
+            });
         }
         (files > 0 && unproposed()).then_some(Disclosure::StagedNotProposed { files })
     }
@@ -603,9 +615,17 @@ impl Run {
         let text = self.collect(id)?;
         // The ledger comes first, so the cap on a long answer never hides it.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
-        Ok(match ledger {
+        let wrapped = match ledger {
             Some(ledger) => label::wrap(&nonce, &format!("{ledger}\n\n{text}")),
             None => label::wrap(&nonce, text),
+        };
+        // lazarobox's own word, outside the worker's wrapper: the worker
+        // cannot forge it, and the coordinator must not claim files exist.
+        let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
+        Ok(if said {
+            format!("{CALLS_AS_TEXT}\n\n{wrapped}")
+        } else {
+            wrapped
         })
     }
 
@@ -1105,6 +1125,19 @@ impl Run {
 /// Worker ids start at 1; id 0 maps to no slot.
 /// A sum as it is shown: with no cost when it is partial, because a total
 /// that misses a report must not read as the whole.
+impl Slot {
+    /// The worker ended `done` with a write tool offered and nothing staged,
+    /// and its answer holds a call to a write tool written as text.
+    fn said_calls_as_text(&self) -> bool {
+        self.status == WorkerStatus::Done
+            && self.spec.writes()
+            && self.ledger.changes().is_empty()
+            && self.result.as_ref().is_some_and(|result| {
+                textcall::mentions_call(&result.text, &textcall::write_tool_names())
+            })
+    }
+}
+
 fn shown(usage: Usage, partial: bool) -> Usage {
     Usage {
         cost_micros: usage.cost_micros.filter(|_| !partial),

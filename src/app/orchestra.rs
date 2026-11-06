@@ -58,6 +58,10 @@ const RETRY_AGAIN: &str = "r try again";
 /// (agent-orchestrator [W1]); ASCII and neutral. [`disclosure_line`] names
 /// the worker before it.
 const CHANGED_NO_FILE: &str = "ended done and changed no file";
+/// The cause and the remedy when a worker's answer holds its tool calls as
+/// text, after [`CHANGED_NO_FILE`].
+const TOOL_CALLS_AS_TEXT: &str =
+    "the model wrote its tool calls as text; pick a model with tool support";
 /// Said of a worker whose staged batch was never proposed (agent-orchestrator
 /// [W1]), after the count of files.
 const NEVER_PROPOSED: &str = "and never proposed the batch; the pane holds it as an orphan";
@@ -1196,6 +1200,7 @@ fn ascii(text: String) -> String {
 fn disclosure_line(worker: WorkerId, workers: usize, who: &str, what: Disclosure) -> String {
     let said = match what {
         Disclosure::EmptyLedger => CHANGED_NO_FILE.to_owned(),
+        Disclosure::ToolCallAsText => format!("{CHANGED_NO_FILE}: {TOOL_CALLS_AS_TEXT}"),
         Disclosure::StagedNotProposed { files } => {
             let noun = if files == 1 { "file" } else { "files" };
             format!("staged {files} {noun} {NEVER_PROPOSED}")

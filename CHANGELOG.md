@@ -35,6 +35,14 @@ baseline.
 
   Turning ORCH on says this when Write is off.
 
+### Fixed
+
+- An ORCH `code` worker whose model wrote its tool calls as JSON text instead
+  of calling them (small local models on Ollama or llama.cpp do) now gets a
+  notice that says so: `... ended done and changed no file: the model wrote
+  its tool calls as text; pick a model with tool support`. The coordinator is
+  told the same, so it no longer reports files that were never created.
+
 ## [1.11.0] - 2026-11-06
 
 ### Added

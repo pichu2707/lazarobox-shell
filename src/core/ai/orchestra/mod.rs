@@ -16,6 +16,7 @@ pub mod review;
 pub mod run;
 pub mod scope;
 pub mod steps;
+pub mod textcall;
 pub mod tools;
 pub mod worker;
 
@@ -137,3 +138,5 @@ mod review_tests;
 mod steps_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod textcall_tests;

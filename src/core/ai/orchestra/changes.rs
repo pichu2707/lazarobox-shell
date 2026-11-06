@@ -93,6 +93,9 @@ impl ChangeLedger {
 pub enum Disclosure {
     /// A `code` worker ended `done` and staged nothing.
     EmptyLedger,
+    /// As [`Disclosure::EmptyLedger`], and the worker's final text holds a
+    /// write-tool call written as text: the model does not call tools.
+    ToolCallAsText,
     /// A worker staged `files` paths and its batch was never proposed: the
     /// pane holds it as an orphan.
     StagedNotProposed { files: usize },
