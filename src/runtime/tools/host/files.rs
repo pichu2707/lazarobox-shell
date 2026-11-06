@@ -81,21 +81,26 @@ impl Sealed {
 
 impl Drop for Sealed {
     fn drop(&mut self) {
-        if self.keep {
-            return;
-        }
         // A drop may run on an async worker, which must not wait for the
-        // store while an apply holds it: then the discard waits on the
-        // blocking pool instead.
-        let id = self.id;
+        // store while an apply holds it: then the work waits on the blocking
+        // pool instead. Once the ask was announced the batch stays for the
+        // user and only its ask is over, so the owner may propose it again.
+        let (id, keep) = (self.id, self.keep);
+        let end = move |stages: &mut Stages| {
+            if keep {
+                stages.ask_gone(id);
+            } else {
+                let _ = stages.discard(id);
+            }
+        };
         match self.stages.try_lock() {
-            Ok(mut stages) => drop(stages.discard(id)),
-            Err(TryLockError::Poisoned(held)) => drop(held.into_inner().discard(id)),
+            Ok(mut stages) => end(&mut stages),
+            Err(TryLockError::Poisoned(held)) => end(&mut held.into_inner()),
             Err(TryLockError::WouldBlock) => {
                 let stages = self.stages.clone();
                 match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => drop(runtime.spawn_blocking(move || lock(&stages).discard(id))),
-                    Err(_) => drop(lock(&stages).discard(id)),
+                    Ok(runtime) => drop(runtime.spawn_blocking(move || end(&mut lock(&stages)))),
+                    Err(_) => end(&mut lock(&stages)),
                 }
             }
         }

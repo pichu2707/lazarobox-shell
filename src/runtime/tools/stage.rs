@@ -127,10 +127,19 @@ impl Stages {
             .map_or_else(StagedView::default, StagedView::from_batch)
     }
 
-    /// Closes staging for the batch `id` and hands it to the user. A stale
-    /// id, from a gone batch of the same key, is refused.
+    /// Closes staging for the batch `id` and hands it to the user, again if
+    /// its earlier ask is gone. A stale id, from a gone batch of the same
+    /// key, is refused.
     pub fn seal(&mut self, id: BatchId) -> Result<BatchId, StageError> {
-        self.current(id)?.propose()
+        self.current(id)?.ask()
+    }
+
+    /// The ask for the batch `id` is over without an answer (see
+    /// [`Batch::ask_gone`]). A stale id is ignored.
+    pub fn ask_gone(&mut self, id: BatchId) {
+        if let Ok(batch) = self.current(id) {
+            batch.ask_gone();
+        }
     }
 
     /// The orphan of `key` for the user (see [`Batch::review_orphan`]): a

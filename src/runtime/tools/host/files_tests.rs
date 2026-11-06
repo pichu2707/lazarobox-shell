@@ -112,6 +112,11 @@ impl World {
         (self.host.dispatch(scope), rx)
     }
 
+    fn staged_of(&self, key: StageKey) -> usize {
+        let stages = self.host.stages.lock().unwrap();
+        stages.batch(key).map_or(0, |b| b.entries().len())
+    }
+
     fn staged(&self) -> usize {
         let stages = self.host.stages.lock().unwrap();
         stages.batch(key()).map_or(0, |b| b.entries().len())
@@ -453,6 +458,122 @@ async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     assert!(d.call(Call::ProposeBatch).await.is_error);
     assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+/// A key of a worker of pane 1, for the re-propose tests.
+fn worker_key(worker: u32) -> StageKey {
+    StageKey::Worker(
+        PaneId::for_test(1),
+        crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+    )
+}
+
+// Design, Corrections row on the denied ask: the ask lives under the turn
+// that made it; when the turn ends it is denied with `ENDED`, which is no
+// user's no, and the batch stays proposed. The writer that owns the batch may
+// propose it again and the user is asked again, in a worker as in a plain
+// chat turn. Every proposal asks.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_batch_whose_ask_ended_is_asked_again_when_its_owner_proposes_it_again() {
+    use crate::runtime::tools::approver::ENDED;
+    for owner in [key(), worker_key(1)] {
+        let w = world();
+        let ended = Script::new(Decision::Denied(ENDED));
+        let (d, _rx) = w.turn_with(ended.clone(), on(), Some(owner));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        let first = d.call(Call::ProposeBatch).await;
+        assert!(first.text.contains(ENDED), "{owner:?}: {first:?}");
+        assert_eq!(w.staged_of(owner), 1, "{owner:?}: the batch stays");
+        // Again, with the turn over and nobody asked: a fresh ask.
+        let again = Script::new(Decision::Denied(ENDED));
+        let (d, _rx) = w.turn_with(again.clone(), on(), Some(owner));
+        let second = d.call(Call::ProposeBatch).await;
+        assert!(second.text.contains(ENDED), "{owner:?}: {second:?}");
+        assert_eq!(again.asks().len(), 1, "{owner:?}: asked again");
+        // And again, now answered: it applies the same files.
+        let yes = Script::new(Decision::Sent);
+        let (d, _rx) = w.turn_with(yes.clone(), on(), Some(owner));
+        let third = d.call(Call::ProposeBatch).await;
+        assert!(!third.is_error, "{owner:?}: {third:?}");
+        assert_eq!(yes.asks().len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(w.staged_of(owner), 0);
+    }
+}
+
+// Staying refused: while the first ask is open a second proposal is refused
+// and no second ask is made; a call dropped with its ask open (a cancel)
+// closes that ask, so the next proposal asks again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_second_proposal_is_refused_while_the_first_ask_is_open_and_asks_after_a_drop() {
+    let w = world();
+    let owner = worker_key(1);
+    let (d, mut rx) = w.turn_with(Arc::new(super::tests::Waiting), on(), Some(owner));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let mut propose = d.call(Call::ProposeBatch);
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
+    // The ask is open: a parallel proposal is refused, with no new ask.
+    let during = d.call(Call::ProposeBatch).await;
+    assert!(
+        during.is_error && during.text.contains("waiting for review"),
+        "{during:?}"
+    );
+    while let Ok(event) = rx.try_recv() {
+        let StreamEvent::ToolCall { approval, .. } = event else {
+            continue;
+        };
+        assert!(approval.is_none(), "no second ask was announced");
+    }
+    drop(propose);
+    // The ask is gone with the call: the owner proposes again and is asked.
+    let asked = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn_with(asked.clone(), on(), Some(owner));
+    let again = d.call(Call::ProposeBatch).await;
+    assert!(!again.is_error, "{again:?}");
+    assert_eq!(asked.asks().len(), 1);
+}
+
+// Staying refused: a proposal is never answered with another key's batch. A
+// worker with nothing staged gets no ask because a sibling has an orphan.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_worker_cannot_propose_the_orphan_batch_of_another_key() {
+    use crate::runtime::tools::approver::ENDED;
+    let w = world();
+    let (a, _rx_a) = w.turn_with(
+        Script::new(Decision::Denied(ENDED)),
+        on(),
+        Some(worker_key(1)),
+    );
+    assert!(!a.call(write("a.txt", "hello")).await.is_error);
+    assert!(a.call(Call::ProposeBatch).await.is_error);
+    let asked = Script::new(Decision::Sent);
+    let (b, _rx_b) = w.turn_with(asked.clone(), on(), Some(worker_key(2)));
+    let out = b.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.contains("nothing is staged"),
+        "{out:?}"
+    );
+    assert!(asked.asks().is_empty());
+    assert_eq!(
+        w.staged_of(worker_key(1)),
+        1,
+        "the sibling's batch is as it was"
+    );
+    assert!(!w.proj.join("a.txt").exists());
 }
 
 // A run report is no answer to a batch: the call is denied, and the batch is

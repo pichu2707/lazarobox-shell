@@ -176,6 +176,9 @@ pub struct Batch {
     id: BatchId,
     state: State,
     entries: Vec<Staged>,
+    /// A proposal of the owner is waiting for the user's answer. A proposed
+    /// batch without one (its ask ended with the turn) may be asked again.
+    asking: bool,
 }
 
 impl Batch {
@@ -187,6 +190,7 @@ impl Batch {
             id,
             state: State::Staging,
             entries: Vec::new(),
+            asking: false,
         }
     }
 
@@ -324,6 +328,25 @@ impl Batch {
         Ok(self.id)
     }
 
+    /// The owner's proposal: [`Batch::propose`], or, for a batch that is
+    /// proposed with no ask open (the turn that asked ended), the same files
+    /// again. A batch whose ask is open refuses, as any second proposal. The
+    /// size caps were checked when it was first proposed and a proposed
+    /// batch cannot change; the drift check is the apply's.
+    pub fn ask(&mut self) -> Result<BatchId, StageError> {
+        if self.state != State::Proposed || self.asking {
+            self.propose()?;
+        }
+        self.asking = true;
+        Ok(self.id)
+    }
+
+    /// The ask of the owner is over without an answer (its call was dropped,
+    /// or the turn ended): the batch stays proposed, and may be asked again.
+    pub fn ask_gone(&mut self) {
+        self.asking = false;
+    }
+
     /// Records the user's answer. Only the proposed batch of this very id
     /// takes it.
     pub fn resolve(&mut self, id: BatchId, outcome: Outcome) -> Result<(), StageError> {
@@ -395,6 +418,26 @@ mod tests {
         assert_eq!(StageKey::Pane(pane).pane(), pane);
         assert_eq!((a.pane(), b.pane(), other_run.pane()), (pane, pane, pane));
         assert!(a != b && a != other_run && a != StageKey::Pane(pane));
+    }
+
+    #[test]
+    fn a_proposed_batch_is_asked_again_only_once_its_ask_is_gone() {
+        let mut b = batch(1);
+        assert_eq!(b.ask(), Err(StageError::Empty));
+        b.stage_file(&target("a.txt"), "x\n", Existing::Absent)
+            .unwrap();
+        assert_eq!(b.ask(), Ok(b.id()));
+        assert_eq!(b.ask(), Err(StageError::Proposed), "the ask is open");
+        b.ask_gone();
+        assert_eq!(b.state(), State::Proposed);
+        assert_eq!(b.ask(), Ok(b.id()), "asked again, same files");
+        assert_eq!(b.ask(), Err(StageError::Proposed));
+        // Staging stays closed throughout.
+        let more = b.stage_file(&target("b.txt"), "y\n", Existing::Absent);
+        assert_eq!(more, Err(StageError::Proposed));
+        b.resolve(b.id(), Outcome::Discarded).unwrap();
+        b.ask_gone();
+        assert_eq!(b.ask(), Err(StageError::Closed));
     }
 
     fn batch(generation: u64) -> Batch {
