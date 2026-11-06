@@ -228,7 +228,7 @@ Unit tests cannot prove local tool calling. Use one Ollama model that supports t
 
 ## Later milestones (not tasked)
 
-W10a, W10b, W3, W4, W5, W6, W7, W8a, W8b, W8c, W9a, W9b (design order: W10a, W10b, W3, W4, W5, W6, W7, W8a-c, W9a-b). Open owner decisions 2-6, 8, 9 and D16 `/exec` belong to them. After this milestone, revisit sizes: if W1a/W1b identify the original trigger, later slices may shrink.
+Milestone 2 (W10a, W10b, W3, W4) is tasked below. Milestone 3 is W5, W6, W7, W8a, W8b, W8c, W9a, W9b (design order). Open owner decisions 2, 3, 4, 6, 7, 8 and D16 `/exec` belong to it and are not tasked. After milestone 2, revisit sizes: if W1a/W1b identify the original trigger, later slices may shrink.
 
 ## Review Workload Forecast
 
@@ -258,3 +258,184 @@ Decision needed (ask-on-risk): confirm the split of the four slices into the nin
 ## Work-unit commit plan (per PR)
 
 Each PR is one deliverable unit; inside it, commit tests with the behaviour they verify (never "tests" or "types" as their own commit). Suggested messages: `feat(orchestra): disclose workers that changed nothing or never proposed` (PR1), `feat(orchestra): show refused spawns and tool-less worker turns` (PR2), `feat(orchestra): say when a coordinator reply delegated nothing` (PR3), `feat(orchestra): Enter on an empty composer asks the coordinator to delegate` (PR4), `refactor(orchestra): carry a per-worker family set and a menu ceiling` (PR5), `feat(orchestra): refuse a code worker when Write is off` (PR6), `feat(orchestra): worker prompt that requires tools` (PR7), `feat(chat): /write grants Write for this chat` (PR8), `feat(orchestra): a /write grant reaches the next spawn` (PR9), `feat(chat): list llamacpp as tool-verified` (PR10).
+
+---
+---
+
+# Milestone 2: W10a, W10b, W3, W4 (PR11 to PR14)
+
+Scope: chosen by the owner on 2026-11-06, in this order (engram `sdd/orchestrator-worker-flow/milestone-2`). Milestone 1 above is done and unchanged; PR10 stays manual-gated and is not part of this milestone. Execution context as in milestone 1: artifact store `hybrid`, chain strategy `stacked-to-main`, Strict TDD with `cargo test`, the 400-line budget counts PRODUCTION code only. Every convention of milestone 1 applies (RED -> GREEN -> REFACTOR, work-unit commits, no AI attribution, `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check` green, ORCH off by default, one revert per PR).
+
+## Decisions applied (owner, 2026-11-06)
+
+- Decision 5 (D11): `max_parallel` is the only ceiling. One notice when two workers share a local engine. Task group W10b (PR12).
+- Decision 9 (D23, D24): hard spawn and finish gates, plus the user's `Enter gates off` override. A model can never use the override. Task group W3 (PR13).
+- Still OPEN, milestone 3, NOT tasked: decisions 2, 3, 4, 6, 7, 8 and D16 `/exec`. Decision 10 (interim one-writer guard) was closed in milestone 1.
+
+## Lessons from milestone 1, folded into every PR below
+
+- Size: real PRs landed near the design figure, so the forecast is the design estimate plus about 30%, not 2.4x-3x.
+- CI: each PR pays about 17 minutes of macOS CI. One PR per slice is the default when the slice fits in 400 production lines; a split is made only at the commit boundary named in the PR.
+- Bypass paths: every task that adds a guard lists the paths that could skip it (retry, relaunch, queue promote, resume, attach, a lazarobox-started worker) and has a RED for each. A path that is deliberately exempt gets a test that says so.
+- Stale state: every new piece of state names what clears it (folder change, resume, ORCH toggle, run end, pane close) and has a RED per clearing event.
+- Notices only name a key that exists in the same PR.
+- macOS clippy runs with `-D warnings`: a helper or fixture used only by Linux-gated tests carries the same `cfg`. Check by reading the diff, not by running Linux only.
+- Behavioural RED: each RED below says what fails today. A test that passes before its GREEN is rewritten, or labelled GUARD (passes by design, pins a path that must not change) and then shown to go red against a naive GREEN.
+- Time: tests on the orchestra writing lab use real short deadlines (about 1500 ms), NEVER `#[tokio::test(start_paused = true)]` (engram `testing/orchestra-writing-lab-paused-time`; this overrides the "paused tokio clock" line of the design's Testing Strategy for the writing lab). Run `cargo test` for those under `timeout`.
+
+## Drift check against branch feat/orch-write-grant (PR #613)
+
+| Design reference | Current branch | Effect |
+|---|---|---|
+| `StageKey` in "`tools/stage.rs`" | Two files: the enum is `src/core/ai/tools/stage.rs:27-32` (only `Pane`; its doc says it "is meant to grow"); the store is `src/runtime/tools/stage.rs` (`Stages` at 50, `badges` at 92-111, `discard_key` at 179) | W10a edits both. Two irrefutable patterns stop compiling when the second variant lands, which is a useful compile guard: `runtime/tools/stage.rs:96` and `runtime/chat.rs:1119` (`let StageKey::Pane(pane) = id.key;`). |
+| `WorkerKey` | `src/core/ai/orchestra/mod.rs:36`; `SessionKey::Worker(PaneId, WorkerKey)` at 57 already exists | `StageKey::Worker` reuses `WorkerKey`; `core::ai::tools` starts to import `core::ai::orchestra` (same crate, no cycle). |
+| `RunGate` claims "by `PaneId`" (D8) | `host/gate.rs`: `Claimed = HashSet<StageKey>` (42), `acquire` 93, `is_busy` 88 | Claim today is per `StageKey`; W10a normalises it to the pane. |
+| Exec sinks | `host/exec.rs`: `sinks: HashMap<StageKey, Unreported>` 85, `sink` 103, key at 121 and 304 | Key-generic already; only pinned. Workers cannot call `run_command` until W6, so D8 is unit-tested only. |
+| Orphan and close paths | `host/orphan.rs`: `close_batch` 35, `unproposed` 55 (its doc comment already says "until W10a gives each writer its own"), `review_batch` 64; `runtime/chat.rs`: `close_batch` 1089, `review_batch` 1099, `apply_batch` 1118 | W10a/W10b. The `unproposed` doc comment must be rewritten in PR12. |
+| Seal and ask | `host/files.rs`: `Sealed` 60-103 (`keep` flag), `seal` 135, `seal_in` 161; `core/ai/tools/stage.rs`: `propose` 299, `StageError::Proposed` 292 | Re-propose fix (W10a) lives here. |
+| Writer key at launch | `runtime/orchestra.rs`: `launch` 1552, `sync` launch loop 1480-1491, `open_session` 1662, `stage_key` at 1693, `disclose` 1773 (`StageKey::Pane(pane)` at 1775) | The flip to `Worker` is PR12, not PR11 (see the ordering note). |
+| W10b "`chat/review.rs`" | `core/ai/chat/review.rs`: `BatchReview::labelled` 235 already carries the worker label | Probably untouched; confirm at apply. The real work is in `runtime/orchestra/review.rs`: `State` 122 (`viewers` 129 and `correcting` 133 are `HashSet<WorkerId>`, they need the proposer), `restaged` 892, `diff_text` 908 (both read `StageKey::Pane(pane)` at 901 and 924), `start_review` 930. |
+| W3 "`run.rs`, `steps.rs`" | `run.rs`: `Refusal` 106, `spawn` 405, `finish` 867, `next_turn` 892 (`Capped` 79/901); `steps.rs`: `check` 177, `grant` is PRIVATE (152) | Needs a `Steps::grant()` accessor. `start_review` (`runtime/orchestra/review.rs:943-955`) and `RunManager::spawn` (`runtime/orchestra.rs:1138-1149`) match `Refusal` exhaustively, so a new variant is a compile guard. `finish_run` matches `FinishError` at 1403-1410. `NextTurn::Capped` is rendered at `runtime/orchestra.rs:915`. |
+| D24 Enter order | As built: `chat.rs:326-346` (`answer_orch_alert`, then `answer_delegate`); `orch_guidance` `app/orchestra.rs:863`; `delegate_ready` 534 requires `orch_guidance(id).is_none()`; `guidance_is_hint` 917; `ChatState.delegate` `chat/mod.rs:506`, cleared at 639, 801 and 1613 | The gate line goes INTO `orch_guidance` after the alert, so `delegate_ready`, the "nothing to delegate" branch and `chat_guidance` hide the undelegated line without a second check. |
+| Effect template | `Effect::OrchCeiling` `runtime.rs:1840`, `app/write.rs:54` | `Effect::OrchGatesOff` copies its shape. |
+| Prompts | `src/core/ai/chat/prompts/{analyst,programmer}/orchestrate_odd.md` (both profiles) | Both change; pin both in `prompts/tests.rs`. |
+| W4 "In `Handoff::of`" | `core/ai/orchestra/ledger.rs:127`: `Handoff::of(facts, judgement, blocked)` is pure over `Facts` (168), which holds NO ledger; `Run::facts` `run.rs:685`; `Run::receipt` 645 builds `Facts` for `Unit::Receipt`; `fallbacks` 850; `Row::new` ledger.rs:210; store note `persist.rs:58-97` | `Facts` must gain the worker's ledger paths. `of` serves worker, step, receipt and fallback handoffs: the check must be explicit per unit. |
+| W4 "shown in the result" | `Run::collect_wrapped` run.rs:597; runtime `collect` 1237, `handoff` 1262 (ack text), `Closed` event built in `finish_run` 1393 | The first `collect` happens BEFORE the handoff exists, so it cannot carry the check (see PR14 note). |
+
+No file listed in the design is missing.
+
+Ordering note (differs from the design's file split, on purpose): in the design W10a also flips the writers to `StageKey::Worker`. Review lenses and the correction worker read the proposer's batch through the PANE key today (`review.rs:901,924`, `views` at `orchestra.rs:1693`), so a flip without the proposer mapping would blind every review for one PR. PR11 therefore ships the key, the store, the claim and the re-propose fix with writers still on `Pane` (behaviour identical for every user path), and PR12 flips writers, viewers, corrections and disclosure together. This is the same "inert first" shape as PR5/PR6.
+
+Spec note: the scenario "Before W10, one writer at a time" (agent-orchestrator) was never implemented, because owner decision 10 closed with no interim guard in milestone 1. PR12 records it as superseded in its description; no test.
+
+---
+
+## Slice W10a: a batch per key (one PR)
+
+Spec references: code-write "Worker batches [W10]" (store half of "One proposal does not seal another's files"); agent-orchestrator "One batch per writing worker and parallel writers [W10]" ("Same file, drift refused"). Design: D7, D8, D9, D10 (apply-time half only), Corrections row on the denied ask.
+
+### PR11: `StageKey::Worker`, per-pane operations, claim by pane, re-propose
+
+Files: `src/core/ai/tools/stage.rs`, `src/runtime/tools/stage.rs`, `src/runtime/tools/host/{gate,orphan,files}.rs`, `src/runtime/chat.rs` (1089-1119); tests in `core/ai/tools/stage.rs`, `runtime/tools/stage.rs`, `host/gate_tests.rs`, `host/files_tests.rs`, `runtime/chat/tools_tests.rs`.
+
+- [ ] 11.1 RED: `StageKey::Worker(PaneId, WorkerKey)` exists; `key.pane()` returns the pane for both variants; two workers of one pane, and one worker id in two runs, are distinct keys. GREEN: add the variant and `pane()`. Because nothing builds a `Worker` key outside tests until PR12, put `#[cfg_attr(not(test), allow(dead_code))]` on the variant with a comment naming PR12 (macOS clippy `-D warnings`); PR12 removes it.
+- [ ] 11.2 RED (`runtime/tools/stage.rs`): `badges` for a pane holding batches under two keys (2 and 3 entries) shows ONE badge of 5; it is `Orphan(5)` when no turn of the pane is live, and a pane with only empty batches shows none. Fails today by compile error, and a naive `key.pane()` rewrite fails it too (`out.insert` would keep only the last key's count). GREEN: accumulate per pane.
+- [ ] 11.3 RED: `Stages::discard_pane(pane)` (used by `close_batch`) drops EVERY key of the pane and returns the summed entry count (`None` when 0); a sibling pane's batch survives. RED: the orphan review of a pane with two orphan keys opens the OLDEST batch (lowest generation) and the next call opens the next one. Decision made here, flagged to the owner in the PR text: the user reviews one worker batch at a time, oldest first. GREEN: `Stages::review_pane`, and `runtime/chat.rs` `close_batch`, `review_batch`, `apply_batch` use it / `.pane()`.
+- [ ] 11.4 RED (`gate_tests.rs`): two keys of ONE pane: the second `acquire` is refused at once with `CHAT_BUSY`; keys of two panes both get a slot; `is_busy(Worker key)` is true while the pane's `Pane` key holds the claim. Fails today (distinct keys never conflict). GREEN: normalise the claim to the pane inside `acquire` and `is_busy` (D8). Check every caller of `is_busy` (grep) so none keeps a raw key.
+- [ ] 11.5 GUARD (`exec_tests.rs`, passes by design): `sinks` keep one `Unreported` per key, so worker A's command is not refused `propose them first` because of worker B's unproposed batch, and is for its own. Pins the open point of the code-write spec ("scoped to its own batch") now that two keys can exist.
+- [ ] 11.6 RED (`files_tests.rs`): re-propose after a denied ask. Worker batch `Proposed`, its ask denied by the end of the coordinator's turn (`Sealed` dropped with `keep` set, nobody waiting): the owner of that batch calls `propose_batch` again and gets a fresh ask over the same files. Fails today with `StageError::Proposed`. RED (stays refused): a second `propose_batch` while the first ask is still open; another key's `Proposed` batch is never re-asked by a different worker. A re-propose runs the same drift and size checks as the first. GREEN: remember on the store entry that no ask is open (cleared by `announced`, set when the ask is dropped) and let `seal` re-propose only then. This also changes a plain chat turn (same function): add a chat-turn test so the change is deliberate.
+- [ ] 11.7 GUARD (`stage.rs`): two batches of different keys stage the same path; the first is applied; the second, approved, writes nothing, stays `Proposed` and reports drift. Spec "Same file, drift refused [W10, auto]". Passes by design (apply-time drift exists); pinned because two keys are now possible.
+- [ ] 11.8 REFACTOR: grep every `StageKey::Pane(` and say in the PR which stay (plain chat: `runtime.rs:6326`, `runtime/chat.rs:969`) and which become key-generic; rewrite the `unproposed` doc comment only in PR12.
+- Done when: `cargo test` green, clippy and fmt green on Linux and read for macOS; a single `code` worker behaves as on main (manual M7).
+- Production forecast: design 200-320 less about 30 for the flip, plus 30% = 220-380. Medium. If production passes 400 at apply time, the cut is two commits: (1) 11.1-11.5, 11.7, 11.8, (2) 11.6 re-propose; split there and ask the owner.
+- Depends on: none (milestone 1 merged or PR #613 as base).
+
+---
+
+## Slice W10b: writers, reviews and disclosure on the worker's key (one PR)
+
+Spec references: code-write "One proposal does not seal another's files [W10, auto]"; agent-orchestrator "Two writers, two batches [W10, auto]", "Same file, drift refused [W10, auto]"; the owner's decision 5 (no spec scenario; the notice text is asserted here). Design: D7, D9, D11, D12, D22 (only the viewer/correction mapping, not internal workers).
+
+### PR12: parallel writers
+
+Files: `src/runtime/orchestra.rs` (`open_session` 1693, `disclose` 1775, `sync` 1480-1491 for the notice), `src/runtime/orchestra/review.rs` (`State` 122, `restaged` 892, `diff_text` 908, `start_review` 930), `src/runtime/tools/host/orphan.rs` (doc), `src/core/ai/orchestra/run.rs` (pure engine-sharing query), `src/app/orchestra.rs` (notice goes through the existing `OrchestraEvent::Notice`, 395); tests in `src/runtime/orchestra/tests.rs` (writing lab, Linux-gated helpers carry the same `cfg`), `orchestra/review_tests.rs`, `orchestra/tests.rs`, `src/app/app_tests/`.
+
+- [ ] 12.1 RED (writing lab, real deadlines): two `code` workers of one pane each stage a different file; worker 1 calls `propose_batch`; the ask lists ONLY worker 1's files; worker 2 can still stage and propose; approving 1 applies only 1's files and its ledger alone flips to applied. Fails today: the shared pane batch seals both. GREEN: `open_session` builds `StageKey::Worker(pane, key)` for writers; drop the `cfg_attr` of 11.1.
+- [ ] 12.2 RED: two proposals pending from two workers queue as labelled reviews, one at a time, in arrival order, each labelled with its worker (D9); answering the first does not touch the second.
+- [ ] 12.3 RED: a lens or the refuter reads its PROPOSER's batch, not a sibling's: with worker 1 under review and worker 2 holding other staged files, the review prompt and `restaged` see worker 1's files only. The correction worker stages into the proposer's batch and may not propose. Fails after a naive 12.1 (a lens would read the empty pane batch). GREEN: `State.viewers` and `correcting` map reviewer -> proposer; `open_session` picks the proposer's key for them; `restaged` and `diff_text` take the proposer.
+- [ ] 12.4 RED (bypass paths): a lens that is retried, relaunched or started from the queue keeps its proposer mapping; a correction retried after a failure is still no proposer and no second correction; a review of worker 1 started while worker 2 is mid-staging does not flag worker 2's files as late paths of worker 1.
+- [ ] 12.5 RED: disclosure per writer. Worker 1 staged and never proposed while worker 2 proposed: the "staged, never proposed" notice names worker 1 only (today the pane flag makes it all-or-none; see the `orphan.rs:50-55` doc comment). GREEN: `disclose` asks `unproposed(Worker key)`; rewrite that doc comment.
+- [ ] 12.6 RED (stale state): ending or cancelling the run with two staged writers leaves one orphan badge counting both; closing the pane drops both; a resumed run starts with no worker batches; the orphan review (11.3) opens them oldest first.
+- [ ] 12.7 RED (decision 5): pure `Run` query "worker N shares a local engine with a running worker M" counts only workers whose turn is in flight (status Running and not parked) and only engines where `locality(engine) == Local` and `!forwards_off_machine(engine, model)` (an Ollama `*-cloud` model is not shared). Runtime: ONE `Notice` per run per engine, ASCII, text like `workers 1 and 2 share <engine>, a local server: it may queue their requests; set max_parallel = 1 in [ai.orchestrator] to run one at a time` (names an existing config key only). Not sent: different engines, a cloud engine, sequential workers, a third worker on an engine already told. Sent from the `sync` launch loop, so spawn, queue promote, retry and relaunch all reach it (RED for promote and retry). The once-per-engine memory lives on `Live`, so a new run notifies again. Fails today: no notice.
+- [ ] 12.8 RED (app): the notice is a transcript system line, not stored as history (reuse the "history does not hold it" assertion), insta snapshot.
+- [ ] 12.9 Docs: CHANGELOG `Unreleased` entry (parallel writers, one review each, the engine notice). Record in the PR text the superseded scenario "Before W10, one writer at a time".
+- Done when: `cargo test` green (writing-lab tests under `timeout`); manual M8 passes, including the D12 observations.
+- Production forecast: design 90-160 plus about 30 for the moved flip, plus 30% = 155-250. Low.
+- Depends on: PR11.
+
+---
+
+## Slice W3: step gates and the user's override (one PR)
+
+Spec references: agent-orchestrator "Gates on step state are visible and bounded [W3]" ("A gate names itself", "The turn cap ends a trapped run visibly", "Only the user overrides"); chat-pane notices. Design: D23, D24. Owner decision 9: hard gates. The gated transitions are exactly D23's two: SPAWN of a write-capable worker needs `steps.check(Step::Implement)`, FINISH is refused when `grant == Implement` and no write-capable worker was spawned. Lifting is all-or-nothing for the run: one key lifts both.
+
+### PR13: gates, override key
+
+Files: `src/core/ai/orchestra/steps.rs` (`grant()` accessor), `src/core/ai/orchestra/run.rs` (`Refusal::Gate`, `FinishError::Gate`, `spawn_internal`, `gates_off`, last-gate memory), `src/core/ai/orchestra/ledger.rs` (`FinishError`, 188), `src/core/ai/orchestra/event.rs` (`GateRefused`), `src/runtime/orchestra.rs` (`spawn` 1138, `finish_run` 1403, `next_turn` 915, `start` 709, `attach` 758, new `gates_off(pane)`), `src/runtime/orchestra/review.rs` (`start_review` 943-955), `src/runtime.rs` (new `Effect::OrchGatesOff`, beside 1840), `src/app/orchestra.rs` (`orch_guidance` 863, the new key method, `guidance_is_hint` 917), `src/app/chat.rs` (between 331 and 343), `src/core/ai/chat/guidance.rs` (the line and its width forms), `src/core/ai/chat/mod.rs` (`ChatState.gate_offer`, cleared at the sites of `drop_delegate`: 639, 801, 1613), `prompts/{analyst,programmer}/orchestrate_odd.md`, `prompts/tests.rs`; tests in `orchestra/tests.rs` (or `gate_tests.rs`), `steps_tests.rs`, `app_tests/`.
+
+- [ ] 13.1 RED (pure): `Run::spawn(Task::Code)` with the early steps open returns `Refusal::Gate` naming the SPAWN gate and the first open step (`authorize` when none is closed); with steps closed through `classify` (`track` skipped for a small goal) it passes. `review`, `summarize`, `general` spawns are never gated. Precedence is pinned: `Paused/Ended`, then `ReadOnly` (a read-only goal says read-only, not "open step"), then `WorkerCap`, then `Gate`, then `WriteOff`. Gate on the ROLE (`writer`), so a Write-off spawn is still gated first. GREEN: add the variant, `Steps::grant()`, the check in `spawn`. Existing tests that spawn a `code` worker with no steps will go red: give the test module one helper that closes the steps (fixture lines are not production lines).
+- [ ] 13.2 RED (pure): `Run::finish` with `grant == Implement` and no write-capable slot ever created returns `FinishError::Gate` (names the finish gate and `implement`); it passes after a `code` worker exists, even an ended one; `read_only` grant, and a run with no `authorize` at all and no workers, finish as today (a text-only answer is not gated). A spawn refused by `ReadOnly`, `WriteOff` or `WorkerCap` creates no slot, so it does not satisfy the gate; the refusal text must therefore name the gate and the user's override (see 13.6).
+- [ ] 13.3 RED (exemption and bypass paths): the correction worker lazarobox starts (`start_review`, `Role::Correction`) is NOT gated: GUARD, shown to go red right after 13.1 GREEN, then GREEN with `Run::spawn_internal` used only there. Retry, relaunch, queue promote and `decide` of a worker that already exists never re-check the gate (steps only close). `grep slots.push` finds one site, `spawn`. A continuation turn (`attach`) keeps a lifted gate; a resumed or replaced run (`start`) does not inherit one (see 13.6).
+- [ ] 13.4 RED (runtime): a gate refusal returns an error result to the coordinator that names the gate and the step it saw, and the SAME redacted, capped text reaches the pane as a `GateRefused` event; the run does not pause, no failure alert opens, no process starts; a later `spawn_agent` after the steps close works. A refused `finish` leaves the run `Open`, sends no `Closed` and no `Undelegated`. `start_review` and `RunManager::spawn` handle `Refusal::Gate` with explicit arms (no wildcard).
+- [ ] 13.5 RED: turn cap. A run whose gate kept refusing until `max_turns` stops with a `Stopped` text that names the gate, the step and the cap, and says the override applies to the next run (spec "The turn cap ends a trapped run visibly"). A run that was never gated keeps today's text (GUARD). GREEN: the run remembers the last gate that refused.
+- [ ] 13.6 RED (override state): `Run::lift_gates()` makes both gates pass for that run and returns which gates had refused. Runtime `gates_off(pane)`: a live run is lifted; with no live run the pane is remembered and consumed by the next `start` ONCE (a third run is gated again); a continuation `attach` keeps the lift; a replaced run (`start` over an old one) takes only the stored flag. The stored flag is cleared where the pane's other runtime state is (cancel and pane close). GREEN: `Effect::OrchGatesOff { pane }`, handled like `OrchCeiling` (returns at once).
+- [ ] 13.7 RED (a model cannot use it): orchestrator text, `spawn_agent` prompts, worker text and tool results that say "gates off" or "Enter" lift nothing; no `OrchCall` variant reaches `lift_gates`, and the `OrchCall` dispatch has no wildcard arm. Spec "Only the user overrides [W3, auto]".
+- [ ] 13.8 RED (app, guidance and key, D24 order as built: provider notice, failure alert, gate override, undelegated): `GateRefused` adds a system line naming gate and step and sets `ChatState.gate_offer`; `orch_guidance` shows `Enter gates off | <gate>: step <step>` in forms by width (pure test per form, ASCII, `github_hint` style), saying `this run` or `next run`; with an offer pending `delegate_ready` is false, the undelegated line is hidden and Enter does NOT delegate and the "nothing to delegate" notice is not shown; with the provider notice or the failure alert up, THEY answer Enter first. The line is a problem line, not a muted hint (`guidance_is_hint`).
+- [ ] 13.9 RED (app, the key): Enter on an empty composer, fresh press, no modifiers, conversation view only, ORCH on: sends `Effect::OrchGatesOff` and writes one transcript line naming the gate lifted ("gates off: spawn gate lifted for this run"). Held Enter, Enter with text, Enter with a modal open, and Esc do nothing to the offer. Enter works while a turn runs (the lift targets the live run).
+- [ ] 13.10 RED (stale offer): the offer is dropped by folder change, resume, ORCH toggle off, pane close, and when the NEXT run starts without Enter; a new refusal replaces it. One RED per event; mirror the `drop_delegate` sites.
+- [ ] 13.11 RED (prompts): both `orchestrate_odd.md` say that a refused gate names the step to hand off first, that only the user can lift it, and not to retry the same spawn; `prompts/tests.rs` pins both profiles.
+- [ ] 13.12 Docs: CHANGELOG `Unreleased` (gates, `Enter gates off`). The line names no key beyond Enter.
+- Done when: `cargo test` green; manual M9 passes.
+- Production forecast: design 180-300 plus 30% = 235-390. Medium. If it passes 400 at apply time, cut at two commits: (1) 13.1-13.5 (gates, no key), (2) 13.6-13.11 (override); the first is safe alone because a gated run with no override still ends at `max_turns`, said.
+- Depends on: none in code (independent of W10); lands after PR12 by the owner's order.
+
+---
+
+## Slice W4: handoff check against the ledger (one PR)
+
+Spec references: orchestrator-handoffs "App check of a handoff against the ledger [W4]" ("Claimed file not in the ledger", "Claim matches the ledger", "The orchestrator cannot clear a flag", "Nothing to check says so") and "A code worker with an empty ledger [W1, W4]" (the W4 half: the claimed file is flagged; the empty-ledger notice shipped in PR1). Design: D28. The `simple` kind does not exist yet (W8a); the check keys off a worker that has a ledger, `Task::Code` today.
+
+### PR14: pure check, flag stored and shown
+
+Files: `src/core/ai/orchestra/ledger.rs` (`Facts` 168, `Handoff` 111, `Handoff::of` 127, `Row::new` 210, `render_within`), `src/core/ai/orchestra/run.rs` (`facts` 685, `handoff` 629, `collect_wrapped` 597), `src/core/ai/orchestra/persist.rs` (`of_handoff` 58-97), `src/runtime/orchestra.rs` (`handoff` ack 1262-1277, `Closed` in `finish_run` 1393); tests in `ledger_tests.rs`, `orchestra/tests.rs`, `persist` tests, `app_tests/`.
+
+- [ ] 14.1 RED (pure): `check_claims(done, ledger_paths)` returns Flagged / Matches / NotChecked. Cases: `wrote src/a.rs and src/b.rs` with a ledger of `src/a.rs` flags `src/b.rs` only; trailing commas, periods and backticks are stripped; `./src/a.rs` equals `src/a.rs`; URLs, versions (`v1.2`), `e.g.` and plain numbers are not paths; a path repeated is listed once; more than 8 flagged paths show `+n more`; no recognisable path gives `NotChecked("no file named in the handoff")`; a worker with no ledger gives `NotChecked("no change ledger")`; names that match give `Matches`. An absolute path token is compared against ledger paths by suffix (decide at RED and pin it). GREEN in `ledger.rs`.
+- [ ] 14.2 RED: `Facts` carries the worker's ledger (paths and applied flags) set in `Run::facts`; `Handoff::of` stores a `check` for `Unit::Worker` ONLY. The step handoff, the receipt handoff and the lazarobox-built fallback (`done` is `none`, so `NotChecked("no handoff text")`) are covered by one test each: no false flag from a step or receipt `done`. A claim in a handoff of a `code` worker with an EMPTY ledger flags every claimed path (spec scenario).
+- [ ] 14.3 RED (sticky): the orchestrator re-saves the handoff with a `done` that no longer names the path, and the flag remains; it clears only when the worker's ledger now holds the path (a retry staged it). The orchestrator's verdict (`on_course`) is stored and shown BESIDE the flag; a reason that says the flag is wrong changes nothing (spec "The orchestrator cannot clear a flag").
+- [ ] 14.4 RED: write-capable worker, verdict `on_course`, ledger empty or with nothing applied: a second, neutral flag (`on_course, nothing applied yet`, never an accusation); `off_course` and `blocked` do not raise it; it is recomputed from the ledger when rendered, so a later apply clears it.
+- [ ] 14.5 RED (shown, one test per place): (a) the `handoff` ack text carries `claimed, not in ledger: <paths>` or `not checked: <reason>` or `claims match the ledger`; (b) `collect` AFTER a handoff exists shows the check inside the untrusted-data wrapper, after the ledger; (c) the `close` report shows the flag under the worker row, and a ledger rendered at its bound still shows a short `Flags: n` (the cap never hides it); (d) the engram note of the handoff gains a `check:` line. Note for the owner: the spec says "in the `collect` result", but the first `collect` of a worker happens before its handoff exists, so only the handoff ack, a later `collect`, the `close` report and the stored note can carry it. Nothing here reads the worker's own final text.
+- [ ] 14.6 REFACTOR: if more than a handful of tests build `Handoff` literals, add one `Handoff::test()` helper rather than touching each; keep it `cfg(test)` and used by non-gated tests only (macOS clippy).
+- [ ] 14.7 Docs: CHANGELOG `Unreleased`.
+- Done when: `cargo test` green; manual M10 passes.
+- Production forecast: design 110-190 plus 30% = 145-250. Low.
+- Depends on: none in code. Lands last by the owner's order; after PR12 a worker's ledger is per worker, which this check assumes.
+
+---
+
+## Manual acceptance, milestone 2 (owner, per slice)
+
+Same setup as M1-M6: one Ollama model that supports tools, ORCH on (`Ctrl+O`), Orchestrator enabled, Write on (or `/write`).
+
+- M7 (W10a, after PR11): Regression, one `code` worker. Ask for a small two-file change; the batch review opens labelled with the worker and applies as before. Then provoke the denied ask: leave the review unanswered until the coordinator's turn ends without `wait`, so the review closes; the worker's next `propose_batch` asks again (record whether this could be provoked, and what the transcript said). Cancel a run with a staged file: one orphan badge; open it, apply or discard.
+- M8 (W10b, after PR12): Two parallel writers on ONE Ollama server, `max_parallel` 2. Ask for two independent changes in different files. Check: both workers run; each proposes; two reviews arrive one at a time, each labelled with its worker; approving the first applies only its files and leaves the second pending; a lens review of one worker never shows the other's files. The single local-engine notice appears once and names `max_parallel`; with `max_parallel = 1` it does not appear. D12, run it twice with `OLLAMA_NUM_PARALLEL=1` and `=2` (`ollama ps`/server log to confirm): with 1 the second request queues, and a wait past 120 s may end that worker "no answer" as a visible halt with retry; with 2 both stream. Record what happened, including a model swap if the two workers use different models. Same file: ask both to edit one file; approve the first; the second reports drift and writes nothing. Cancel one worker mid-staging: its orphan shows without touching the other's batch.
+- M9 (W3, after PR13): Ask for a change and make the coordinator skip `authorize` (a model that spawns first, or a prompt that tells it to). The `code` spawn is refused with a line naming the spawn gate and the open step; the run does not pause and no failure alert opens. Let it reach the turn cap if you can: the stop line names the gate and the cap. Press Enter on the empty composer with `Enter gates off` showing: the transcript names the gate lifted and the spawn now starts. With the provider notice or a failure alert up, Enter answers THOSE first. Paste `Enter gates off` as chat text and as worker output: nothing lifts. Toggle ORCH off and on, change folder: the line is gone.
+- M10 (W4, after PR14): Run a `code` worker that writes one of two files you named, or ask the coordinator to hand off claiming both. The `handoff` ack, a second `collect` and the `close` report show `claimed, not in ledger: <file>`; the verdict is shown beside it. Re-save the handoff without the file: the flag stays. A handoff naming no file says `not checked`, never `ok`.
+
+## Review Workload Forecast (milestone 2)
+
+Basis: design file-change figures for W10a, W10b, W3 and W4 plus about 30% (milestone 1 landed near its design figures), adjusted for moving the writer flip from W10a to W10b. Production lines only; tests, fixtures and snapshots are excluded.
+
+| PR | Slice | Scope | Design estimate | Forecast (production) | 400-line risk |
+|---|---|---|---|---|---|
+| PR11 | W10a | `StageKey::Worker`, per-pane close/badge/review, claim by pane, re-propose after a denied ask | 200-320 (about 30 move to PR12) | 220-380 | Medium (split at the commit boundary if over 400) |
+| PR12 | W10b | writers, lenses and corrections on the worker's key, per-worker disclosure, local-engine notice | 90-160 (plus about 30 moved) | 155-250 | Low |
+| PR13 | W3 | spawn and finish gates, turn-cap text, `Enter gates off` | 180-300 | 235-390 | Medium (split at the commit boundary if over 400) |
+| PR14 | W4 | claim check against the ledger, stored and shown | 110-190 | 145-250 | Low |
+
+Totals: about 755-1,270 production lines across the milestone (design: 380-670 for these four slices as written).
+
+Estimated changed lines (production): 755-1,270 in total; no single PR is forecast above 400, but the high ends of PR11 and PR13 sit within 20 lines of it.
+400-line budget risk: Medium
+Chained PRs recommended: Yes
+Chain strategy: stacked-to-main
+Decision needed before apply: No
+
+Reason for "No": the owner already chose the cut (one PR per slice, order W10a, W10b, W3, W4) and the chain (stacked-to-main), and nothing is forecast above 400. It becomes Yes only if PR11 or PR13 passes 400 at apply time; the cut points are named in each PR (PR11: re-propose commit; PR13: override commit).
+
+Proposed PR boundaries (stacked-to-main, merge in this order): PR11 -> PR12 -> PR13 -> PR14. Each PR starts from main after the previous one merged (until PR #613 merges, PR11 branches from `feat/orch-write-grant`), finishes with its tests green and its manual step recorded, and reverts alone. Suggested branches: `feat/orch-stage-keys` (PR11), `feat/orch-parallel-writers` (PR12), `feat/orch-step-gates` (PR13), `feat/orch-handoff-check` (PR14). PR10 stays held on its manual gate and may open at any time.
+
+Dependencies that matter: PR12 needs PR11 (the key and the pane operations); the writer flip and the proposer mapping must land together (PR12) or reviews go blind; the `cfg_attr` of 11.1 is removed in PR12; the gate line of PR13 shows `Enter gates off` only in the same PR as the key.
+
+## Work-unit commit plan, milestone 2
+
+Tests travel with the behaviour they verify. Suggested messages: `refactor(stage): key a staged batch by pane or worker` and `fix(stage): a worker can propose again after its ask was denied` (PR11); `feat(orchestra): each code worker stages and reviews in its own batch` and `feat(orchestra): say when two workers share a local engine` (PR12); `feat(orchestra): gate worker spawn and finish on the ODD steps` and `feat(orchestra): Enter lifts a gate for the user` (PR13); `feat(orchestra): check a handoff's claimed files against the ledger` (PR14); plus one `docs(openspec): tick PRn` commit each.
