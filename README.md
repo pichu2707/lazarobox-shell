@@ -707,7 +707,7 @@ compaction = "off"   # "auto" (por defecto) | "off"
 Límites de esta versión:
 
 - `opencode` se detecta, pero aún no tiene adaptador de chat. El menú lo marca con `detected · not in chat yet` y no deja elegirlo.
-- El chat con `llama.cpp` (`llama-server`) está probado con respuestas grabadas de un servidor real; `lmstudio` y `vllm` usan el mismo formato (`/v1/chat/completions` con SSE) pero aún no se han grabado ni probado con un servidor real. Ninguno de los tres muestra razonamiento ni ofrece herramientas al modelo.
+- El chat con `llama.cpp` (`llama-server`) está probado con respuestas grabadas de un servidor real; `lmstudio` y `vllm` usan el mismo formato (`/v1/chat/completions` con SSE) pero aún no se han grabado ni probado con un servidor real. Ninguno de los tres muestra razonamiento; `lmstudio` y `vllm` tampoco ofrecen herramientas al modelo (las de `llama.cpp` se describen en «Tools with llama.cpp»).
 - Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
 
 ### Run a command from the chat
@@ -1182,6 +1182,17 @@ Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el b
 - Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
 - **Estado:** las herramientas con Ollama están activas: el usuario las comprobó con un modelo real el 2026-10-17 y `ollama` figura en `MCP_VERIFIED`.
 - El límite de tiempo total del turno (15 minutos) incluye el tiempo que pasas decidiendo una aprobación.
+
+### Tools with llama.cpp
+
+`llama.cpp` usa el mismo bucle de herramientas que Ollama, sobre `/v1/chat/completions`: las mismas herramientas, las mismas aprobaciones y los mismos topes de rondas (8 peticiones por turno, 24 si hay activa alguna familia de `[ai.tools]`). `lmstudio` y `vllm` siguen respondiendo solo con texto.
+
+- **Plantilla de chat.** Las herramientas exigen un modelo y una plantilla de chat que admitan llamadas a herramientas, y que `llama-server` use Jinja (`--jinja`, el valor predeterminado en las versiones actuales). lazarobox no añade `--jinja` por ti; con `--no-jinja` el turno se responde como texto y el aviso `runs as plain text, without tools` sale una vez por panel.
+- **Verificado con:** Qwen2.5-7B-Instruct Q4_K_M en `llama-server` b11935 con `--jinja --parallel 1` (2026-11-07). No se ha probado Qwen3.8-27B.
+- **Plantillas `coder`.** Qwen2.5-Coder-7B Q4_K_M envía sus llamadas a herramientas como texto JSON en lugar de hacerlas, y el turno falla. Depende del modelo y de su plantilla, no de lazarobox (Ollama con `qwen2.5-coder:14b` se comporta igual). Si ves llamadas escritas como texto, prueba con un modelo Instruct.
+- **Contexto.** Se recomienda `-c 16384` o más: el prompt y las herramientas ocupan una parte importante de la ventana.
+- **Workers en paralelo.** Con `--parallel 1` el servidor atiende una petición cada vez: una espera de menos de 120 s se encola; pasados 120 s la ejecución se detiene con `no answer from the engine` y `r` la reintenta.
+- **Apagarlas.** Con `[ai.tools] enabled = false` el turno no envía el campo `tools` y vuelve a ser solo texto.
 
 ### Tus propios servidores MCP (`[[ai.mcp.servers]]`)
 

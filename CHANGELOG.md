@@ -12,6 +12,14 @@ baseline.
 
 ### Added
 
+- Tools with llama.cpp: `llamacpp` joins the engines whose requests carry
+  tools, so chat turns and ORCH workers on a `llama-server` run the same tool
+  loop as on Ollama. Verified on Qwen2.5-7B-Instruct Q4_K_M with llama-server
+  b11935 (`--jinja --parallel 1`); Qwen3.8-27B was not run. It needs a model
+  and chat template that support tool calls: Qwen2.5-Coder-7B answers its tool
+  calls as text and fails, as Ollama's `qwen2.5-coder:14b` does. `lmstudio` and
+  `vllm` stay text-only.
+
 - `/write` in a chat turns Write on for that chat only. It opens a `y` dialog
   that names the Write toggle and the folder; the grant lives in memory, is not
   saved to the config, and ends (with a line) on a folder change, a resume,
