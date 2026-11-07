@@ -324,6 +324,7 @@ pub fn execute_within(
         | Call::RunCommand { .. }
         | Call::GitStatus
         | Call::ListPanes
+        | Call::ReadPane { .. }
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
         | Call::GitAdd { .. }

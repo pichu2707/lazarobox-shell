@@ -29,15 +29,15 @@ fn commit_of(rows: usize) -> ApprovalAsk {
     )))
 }
 
-fn review(a: &App) -> &ReviewView {
+pub(super) fn review(a: &App) -> &ReviewView {
     chat(a, id2()).approvals().review().expect("a review view")
 }
 
-fn ms(d: std::time::Duration) -> u64 {
+pub(super) fn ms(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap()
 }
 
-fn paint(a: &mut App) {
+pub(super) fn paint(a: &mut App) {
     let theme = LazaroboxTheme::default();
     let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
     terminal
@@ -54,7 +54,7 @@ fn asked(rows: usize) -> (App, u64) {
     (a, turn)
 }
 
-fn read_all(a: &mut App) {
+pub(super) fn read_all(a: &mut App) {
     for _ in 0..500 {
         if review(a).remaining() == 0 {
             return;

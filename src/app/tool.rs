@@ -110,6 +110,15 @@ impl App {
         }
         match event {
             Some(ToolEvent::Over(call, status)) => {
+                // A screen the turn gave up on (a timeout, a cancel) was not
+                // released: said, not dropped.
+                let waiting = (self.panes.get(&id).and_then(PaneState::chat_state))
+                    .and_then(|chat| chat.approvals().pending())
+                    .filter(|approval| approval.call() == Some((turn, call)))
+                    .map(|approval| approval.ask().clone());
+                if let Some(ask) = waiting.filter(|_| status != ToolStatus::Ok) {
+                    self.note_screen_denied(id, &ask);
+                }
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
                 let ran = self
                     .drop_run_slots(|slot| (slot.chat, slot.turn, slot.call) == (id, turn, call));
@@ -158,6 +167,13 @@ impl App {
         }
         if !self.ai.tools_enabled() {
             return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
+        }
+        // The screen is read now and frozen: the mode never answers it.
+        if let ApprovalAsk::Screen {
+            pane, scrollback, ..
+        } = ask
+        {
+            return self.on_screen_ask(id, (turn, call), pane, scrollback);
         }
         // Announced just as its worker was cancelled: nobody could answer it.
         let over = worker.is_some_and(|key| {
@@ -210,6 +226,7 @@ impl App {
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)
+            | ApprovalAsk::Screen { .. }
             | ApprovalAsk::Consent { .. }
             | ApprovalAsk::Folder { .. } => None,
         };
@@ -239,9 +256,17 @@ impl App {
     ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ask.arm_delay();
         let worker = ask.worker();
+        let screen_pane = match &ask {
+            ApprovalAsk::Screen { pane, .. } => Some(*pane),
+            _ => None,
+        };
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
             ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
+            ApprovalAsk::Screen {
+                review: Some(screen),
+                ..
+            } => Some(screen.review().clone()),
             _ => None,
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
@@ -266,6 +291,14 @@ impl App {
             Err(refusal) => {
                 if refusal.reason() == QUEUE_FULL {
                     self.notice = Some(QUEUE_FULL_NOTICE.to_owned());
+                }
+                // A screen read refused here never reaches the user's review:
+                // say so in the chat instead of failing silently.
+                if let Some(pane) = screen_pane {
+                    chat.push_system_line(format!(
+                        "screen read denied: pane {pane} ({})",
+                        refusal.reason()
+                    ));
                 }
                 Self::deny_for(id, worker, turn, call, refusal.reason())
             }

@@ -41,15 +41,15 @@ Fallback: if PR2 forecasts above 380 at apply time, move README to PR3.
 
 ## PR 2: wiring
 
-- [ ] 2.1 RED `tools/mod.rs`: `Call::ReadPane { pane, scrollback: Option<u32> }` parse; refuses missing `pane`, `pane:"2"`, `scrollback:"x"`, extra key, `scrollback` >200 (D7, D12). GREEN `ToolDef` + parse; Pane family, in default list.
-- [ ] 2.2 RED `approval.rs`: `ask_for(ReadPane)` -> `ApprovalAsk::Screen` on Local and Cloud in `ask`/`auto`/`run`; `answers_itself` None in all modes (D3). GREEN.
-- [ ] 2.3 RED `engine.rs`: `Answer::Screen(ScreenText)`, bytes-only Debug. GREEN, plus `approver.rs` arm.
-- [ ] 2.4 RED host: `(Screen, ReadPane)` -> ok `wrap(nonce,t)` "N lines from pane P"; Screen on other calls and `Sent/Unprompted/Typed` on ReadPane -> `NOT_APPROVED` (D9). GREEN `runtime/tools/host.rs`, `fs.rs`.
-- [ ] 2.5 RED registry: `read_pane` absent for Worker/Orchestrator/`Toolset::Code`; forged call refused unasked; `files::gate` ListPanes line extends to ReadPane (D11). GREEN `host/files.rs`.
-- [ ] 2.6 RED App `app/tool.rs` `on_tool_ask`: reads at ask, freezes, opens `ScreenReview`; frozen == sent after pane writes and after close (D10); own pane (no PTY) and unknown pane -> denied "the pane is not open", no prompt (D2). GREEN.
-- [ ] 2.7 RED notices: denied/timeout "screen read denied: pane N"; empty -> notice, no prompt, result "the pane's screen is empty"; truncated Warning; alt-screen Warning "full-screen app: visible screen only"; `y` locked until seen; `n`/Esc/Ctrl+C deny, composer kept. GREEN `app/review.rs`, `app/run.rs`.
-- [ ] 2.8 RED/GREEN `Effect::ToolScreen { pane, turn, call, text }`: runtime claims wait (`Waits::take`) and sends; add exhaustive arms in `runtime.rs`, `runtime/chat.rs`, `host/review.rs`.
-- [ ] 2.9 Regenerate golden `tools_list.json` (holds `read_pane`); update the "Off equals 0.18.0" pin.
-- [ ] 2.10 README: `read_pane` section (~25 lines). Fallback: PR 3.
-- [ ] 2.11 REFACTOR; run `cargo test`, clippy, fmt.
+- [x] 2.1 RED `tools/mod.rs`: `Call::ReadPane { pane, scrollback: Option<u32> }` parse; refuses missing `pane`, `pane:"2"`, `scrollback:"x"`, extra key, `scrollback` >200 (D7, D12). GREEN `ToolDef` + parse; Pane family, in default list.
+- [x] 2.2 RED `approval.rs`: `ask_for(ReadPane)` -> `ApprovalAsk::Screen` on Local and Cloud in `ask`/`auto`/`run`; `answers_itself` None in all modes (D3). GREEN.
+- [x] 2.3 RED `engine.rs`: `Answer::Screen(ScreenText)`, bytes-only Debug. GREEN, plus `approver.rs` arm.
+- [x] 2.4 RED host: `(Screen, ReadPane)` -> ok `wrap(nonce,t)` "N lines from pane P"; Screen on other calls and `Sent/Unprompted/Typed` on ReadPane -> `NOT_APPROVED` (D9). GREEN `runtime/tools/host.rs`, `fs.rs`.
+- [x] 2.5 RED registry: `read_pane` absent for Worker/Orchestrator/`Toolset::Code`; forged call refused unasked; `files::gate` ListPanes line extends to ReadPane (D11). GREEN `host/files.rs`.
+- [x] 2.6 RED App `app/tool.rs` `on_tool_ask`: reads at ask, freezes, opens `ScreenReview`; frozen == sent after pane writes and after close (D10); own pane (no PTY) and unknown pane -> denied "the pane is not open", no prompt (D2). GREEN.
+- [x] 2.7 RED notices: denied/timeout "screen read denied: pane N"; empty -> notice, no prompt, result "the pane's screen is empty"; truncated Warning; alt-screen Warning "full-screen app: visible screen only"; `y` locked until seen; `n`/Esc/Ctrl+C deny, composer kept. GREEN `app/review.rs`, `app/run.rs`.
+- [x] 2.8 RED/GREEN `Effect::ToolScreen { pane, turn, call, text }`: runtime claims wait (`Waits::take`) and sends; add exhaustive arms in `runtime.rs`, `runtime/chat.rs`, `host/review.rs`.
+- [x] 2.9 Regenerate golden `tools_list.json` (holds `read_pane`); update the "Off equals 0.18.0" pin.
+- [x] 2.10 README: `read_pane` section (~25 lines). Fallback: PR 3.
+- [x] 2.11 REFACTOR; run `cargo test`, clippy, fmt.
 - Manual PR2: Ollama and one cloud engine, `ask`/`auto`/`run`: model calls `read_pane` on another pane; review opens; `y` locked until scrolled to end; secrets redacted; `n` denies with a notice; closed pane, own pane, blank pane and `vim` with scrollback each show the notice; worker/orchestrator never see the tool.

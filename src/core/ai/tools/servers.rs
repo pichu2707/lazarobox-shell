@@ -312,8 +312,8 @@ mod tests {
         assert_eq!(q.dropped, Vec::new());
         let listed = registry(&q.external());
         let built_in = registry(&[]);
-        assert_eq!(&listed[..5], &built_in[..], "the built-ins are unchanged");
-        assert_eq!(listed.len(), 8);
+        assert_eq!(&listed[..6], &built_in[..], "the built-ins are unchanged");
+        assert_eq!(listed.len(), 9);
     }
 
     // 4b routes by lookup, never by splitting on `__`.
@@ -383,7 +383,7 @@ mod tests {
     fn the_registry_lists_a_qualified_name_once() {
         let tools = [ext("fs__search", "first"), ext("fs__search", "second")];
         let listed = registry(&tools);
-        assert_eq!(listed.len(), 6);
-        assert_eq!(listed[5].description, "first");
+        assert_eq!(listed.len(), 7);
+        assert_eq!(listed[6].description, "first");
     }
 }

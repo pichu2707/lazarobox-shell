@@ -1878,6 +1878,22 @@ impl Panes {
                         }
                     }
                 }
+                // The approved text of a screen: the wait is claimed, and a
+                // call that is over is owed nothing.
+                Effect::ToolScreen {
+                    pane,
+                    turn,
+                    call,
+                    text,
+                } => {
+                    let wait = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.take(pane, turn, call));
+                    if let Some(wait) = wait {
+                        let _ = wait.send(crate::core::ai::chat::engine::Answer::Screen(text));
+                    }
+                }
                 // The write and the answer are one step: the answer is claimed
                 // first (a call that is over is owed none, so nothing is
                 // typed), and `Sent` is only said after the bytes were handed
@@ -5263,7 +5279,7 @@ mod tests {
         waiting_answer(panes, call)
             .map(|answer| match answer {
                 Answer::Decided(decision) => decision,
-                Answer::Ran(_) => unreachable!("no run is parked here"),
+                Answer::Ran(_) | Answer::Screen(_) => unreachable!("nothing is parked here"),
             })
             .boxed()
     }

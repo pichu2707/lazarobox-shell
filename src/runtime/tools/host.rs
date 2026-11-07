@@ -46,7 +46,7 @@ use crate::{
     core::ai::{
         chat::{
             approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
-            engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
+            engine::{Answer, CallId, Decision, ScreenText, StreamEvent, ToolStatus},
         },
         orchestra::{
             WorkerKey,
@@ -366,6 +366,7 @@ const CANCELLED: &str = "cancelled";
 const NOT_COMMAND: &str = "that call is not a command";
 /// No nonce could be made, so the rows cannot be wrapped as data.
 const NO_PANES: &str = "the panes cannot be listed now";
+const NO_SCREEN: &str = "the screen cannot be sent now";
 /// A server tool was approved but the turn has no running server for it.
 const NO_SERVER: &str = "that tool is not available";
 
@@ -550,6 +551,15 @@ fn list_panes(text: String) -> (Outcome, ToolStatus, String) {
         return ended(ToolStatus::Error, NO_PANES.to_owned(), NO_PANES);
     };
     ended(ToolStatus::Ok, label::wrap(&nonce, &text), &text)
+}
+
+/// The result of an approved screen: the frozen text, wrapped as data.
+fn screen_result(pane: u32, text: &ScreenText) -> (Outcome, ToolStatus, String) {
+    let Some(nonce) = super::new_nonce() else {
+        return ended(ToolStatus::Error, NO_SCREEN.to_owned(), NO_SCREEN);
+    };
+    let summary = format!("{} lines from pane {pane}", text.0.lines().count());
+    ended(ToolStatus::Ok, label::wrap(&nonce, &text.0), &summary)
 }
 
 /// The private cwds of a CLI turn (`<data>/lazarobox/cli-cwd`), as typed and
@@ -921,6 +931,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     owed.answer(status, &summary);
                     return outcome;
                 }
+                // The frozen text the user read: it answers `read_pane` only.
+                Answer::Screen(text) => {
+                    let (outcome, status, summary) = match &call {
+                        Call::ReadPane { pane, .. } => screen_result(*pane, &text),
+                        _ => ended(
+                            ToolStatus::Denied,
+                            format!("denied: {NOT_APPROVED}"),
+                            NOT_APPROVED,
+                        ),
+                    };
+                    owed.answer(status, &summary);
+                    return outcome;
+                }
             };
             match (decision, call) {
                 (decision, Call::ProposeBatch) => {
@@ -948,6 +971,16 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, Call::RunInPane { .. }) => {
                     ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
                 }
+                // Only the frozen text releases a screen, never a plain `y` or
+                // a mode's answer.
+                (
+                    Decision::Sent | Decision::Typed(_) | Decision::Unprompted,
+                    Call::ReadPane { .. },
+                ) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_APPROVED}"),
+                    NOT_APPROVED,
+                ),
                 // Only after `y`: nothing is sent to the server before it.
                 (
                     Decision::Sent,

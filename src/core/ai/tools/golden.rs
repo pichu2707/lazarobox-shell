@@ -1,8 +1,8 @@
 //! Characterization of the 0.18.0 tool surface: the exact `tools/list` bytes
 //! and the text a model gets back for each refused call. Captured BEFORE the
 //! registry refactor; every later slice must keep them green with all
-//! toggles off. `list_panes` (Pane family, in the legacy set) is the one
-//! deliberate addition to the list bytes.
+//! toggles off. `list_panes` and `read_pane` (Pane family, in the legacy set)
+//! are the deliberate additions to the list bytes.
 
 use serde_json::{Value, json};
 

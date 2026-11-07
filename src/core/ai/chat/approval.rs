@@ -18,7 +18,7 @@ use crate::core::ai::{
     chat::{
         BlockWhy,
         engine::{CallId, Decision},
-        review::{self, BatchReview, CommitReview},
+        review::{self, BatchReview, CommitReview, ScreenReview},
         review_view::ReviewView,
     },
     config::{ApprovalMode, Task, ToolToggle},
@@ -162,6 +162,16 @@ pub enum ApprovalAsk {
     /// sent, already redacted; [`ask_for`] leaves it empty and the host fills
     /// it in. Never routed by the approval mode.
     Panes { text: String },
+    /// Send the text on the screen of pane number `pane` (`read_pane`), with
+    /// `scrollback` earlier lines. The host asks with `review: None`; the app
+    /// reads the pane when the ask arrives and keeps the frozen review: what
+    /// the user reads is what `y` sends. Asked on every engine and never
+    /// routed by the approval mode.
+    Screen {
+        pane: u32,
+        scrollback: Option<u32>,
+        review: Option<Arc<ScreenReview>>,
+    },
     /// Send GitHub issue or pull request text of `repo` to a cloud engine:
     /// asked before `gh` starts, once per repository and turn. `what` is the
     /// call as one clean line; [`ask_for`] leaves `repo` empty and the host
@@ -292,7 +302,7 @@ impl ApprovalAsk {
     /// read it first.
     pub fn arm_delay(&self) -> Duration {
         match self {
-            Self::Batch(_) | Self::Commit(_) => review::ARM_DELAY,
+            Self::Batch(_) | Self::Commit(_) | Self::Screen { .. } => review::ARM_DELAY,
             _ => ASK_ARM_DELAY,
         }
     }
@@ -350,6 +360,13 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         // in the exact text.
         Call::ListPanes if locality == Locality::Cloud => Some(ApprovalAsk::Panes {
             text: String::new(),
+        }),
+        // A screen holds anything the user typed or ran: every engine asks,
+        // in every mode. The app reads it when the ask arrives.
+        Call::ReadPane { pane, scrollback } => Some(ApprovalAsk::Screen {
+            pane: *pane,
+            scrollback: *scrollback,
+            review: None,
         }),
         // GitHub text goes to the provider: a cloud engine asks.
         Call::Github(gh) if locality == Locality::Cloud => Some(ApprovalAsk::GithubRead {
@@ -2438,6 +2455,50 @@ mod tests {
         let ask = ApprovalAsk::Panes { text: "x".into() };
         for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
             assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
+        }
+    }
+
+    // read_pane sends the text of a screen to the model: it asks on every
+    // engine, and the screen is read later, by the app.
+    #[test]
+    fn read_pane_asks_on_every_engine() {
+        let call = Call::ReadPane {
+            pane: 3,
+            scrollback: Some(20),
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&call, locality),
+                Some(ApprovalAsk::Screen {
+                    pane: 3,
+                    scrollback: Some(20),
+                    review: None
+                }),
+                "{locality:?}"
+            );
+        }
+    }
+
+    // No approval mode answers it, blocked or not: only the user's `y` on the
+    // frozen text does.
+    #[test]
+    fn no_approval_mode_answers_a_screen_ask() {
+        let ask = ApprovalAsk::Screen {
+            pane: 2,
+            scrollback: None,
+            review: None,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for blocked in [false, true] {
+                assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+            }
+        }
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert_eq!(
+                route(&ask, Origin::Tool, mode, FREE),
+                Route::Prompt(None),
+                "{mode:?}"
+            );
         }
     }
 
