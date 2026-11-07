@@ -1100,7 +1100,7 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 `list_panes` es una herramienta de solo lectura que se ofrece junto a `run_in_pane` y no tiene interruptor propio. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en el panel con foco, el modelo lo ve en lugar de pedirte que pegues el código. Los _workers_ del orquestador no la tienen.
 
-**Qué se envía exactamente.** Una línea por panel, con el número, si tiene el foco, su carpeta (con `~/` en lugar de tu `$HOME`) y el programa en primer plano; por ejemplo `pane 1 (focused) cwd: ~/proyecto program: nvim prueba.rs`. Un panel cuyo proceso no se puede leer dice `program: unknown`. No se envía el contenido de la pantalla ni del _scrollback_, y el entorno de otros procesos no se lee nunca.
+**Qué se envía exactamente.** Una línea por panel, con el número, si tiene el foco, su carpeta (con `~/` en lugar de tu `$HOME`) y el programa en primer plano; por ejemplo `pane 1 (focused) cwd: ~/proyecto program: nvim prueba.rs`. Un panel cuyo proceso no se puede leer dice `program: unknown`. `list_panes` no envía el contenido de la pantalla (para eso existe `read_pane`, más abajo), y el entorno de otros procesos no se lee nunca.
 
 **Lista de permitidos, no de prohibidos.** Una línea de comando puede esconder un secreto de muchas formas (`-u usuario:clave`, `-a CLAVE`, una cadena de conexión, una cabecera), así que no se muestra nada que no se sepa inofensivo:
 
@@ -1121,6 +1121,15 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 - macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
 - La lista se actualiza cada segundo, así que puede ir un instante por detrás. La lectura de `/proc` y las comprobaciones de archivos se hacen fuera del bucle de la interfaz; si la lista tiene más de 10 s, el texto añade `(pane list is Ns old; a lookup may be stuck)`.
 - No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
+
+#### Paneles: `read_pane`
+
+`read_pane` deja que el modelo lea el texto de la pantalla de **otro** panel (el número que muestra `list_panes`, nunca el del propio chat). Se ofrece junto a `list_panes` y solo a los chats: ni los _workers_ ni el orquestador la tienen. Argumentos: `pane` y, opcional, `scrollback` (de 1 a 200 líneas de historial; un valor mayor se rechaza).
+
+- **Pregunta siempre.** En cualquier motor, local o en la nube, y en los tres modos de aprobación (`ask`, `auto`, `run`): ninguno la responde por ti. Un panel puede contener lo que escribiste o ejecutaste.
+- **Ves el texto exacto.** Al llegar la petición se lee el panel y se congela. Se abre la revisión (la misma vista de los lotes) con ese texto; `y` queda bloqueada hasta que hayas visto todas las líneas. Lo que se envía es el texto congelado, aunque el panel cambie o se cierre mientras decides.
+- **Censura y límite.** Se quitan los caracteres de control, se censuran los secretos (también los partidos por un salto de línea automático) y se envían como mucho 8 KiB; si no caben se conserva el final y se avisa.
+- **Avisos visibles.** Si lo deniegas, si el panel ya no existe, si está en blanco o si pides historial en una aplicación a pantalla completa (solo se lee la pantalla visible) lo ves en el chat; el modelo recibe el resultado correspondiente.
 
 #### GitHub: `gh_issue_list`, `gh_issue_view` y `gh_pr_view`
 
