@@ -117,9 +117,10 @@ fn the_orchestrate_prompts_explain_the_step_gates() {
     for profile in Profile::ALL {
         let prompt = builtin(profile, Task::Orchestrate);
         for rule in [
-            "A refused gate names the step to hand off first",
-            "only the user can lift it",
-            "do not retry the same spawn",
+            "A refused spawn or finish names the step to hand off first",
+            "only the user can lift a gate",
+            "In a worker prompt, give the key, the task id and the S# text",
+            "do not retry the same call",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
