@@ -1843,9 +1843,9 @@ impl Panes {
                     }
                 }
                 // Returns at once.
-                Effect::OrchGatesOff { pane } => {
+                Effect::OrchGatesOff { pane, run } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.gates_off(pane);
+                        chats.gates_off(pane, run);
                     }
                 }
                 Effect::OrchCancelWorker { pane, run, worker } => {

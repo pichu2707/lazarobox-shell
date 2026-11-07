@@ -411,10 +411,11 @@ pub enum Effect {
         pane: PaneId,
         ceiling: crate::core::ai::tools::registry::FamilySet,
     },
-    /// `Enter gates off` (W3, D24): the user lifts the step gates of `pane`'s
-    /// live run, or of its next run when it has none. Returns at once.
+    /// `Enter gates off` (W3, D24): the user lifts the step gates of run `run`
+    /// of `pane`, the one the offer named, and of no other. Returns at once.
     OrchGatesOff {
         pane: PaneId,
+        run: RunId,
     },
     /// Ctrl+C with a worker row selected (S3): cancels that worker of run
     /// `run` and nothing else. A worker that ended meanwhile is a no-op; its

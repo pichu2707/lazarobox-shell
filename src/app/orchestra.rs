@@ -391,6 +391,8 @@ impl App {
             } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(ascii(reason));
+                    // The refusal makes the run known: its offer outlives the turn.
+                    chat.set_orch_run(Some(run));
                     // The offer belongs to this run: a row of another one drops it.
                     chat.offer_gates(GateOffer { run, gate, step });
                 }
@@ -953,9 +955,12 @@ impl App {
             return None;
         }
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
-        chat.take_gate_offer()?;
+        let offer = chat.take_gate_offer()?;
         self.dirty = true;
-        Some(vec![Effect::OrchGatesOff { pane: id }])
+        Some(vec![Effect::OrchGatesOff {
+            pane: id,
+            run: offer.run,
+        }])
     }
 
     /// The cancel keys, while a run has a worker that has not ended and
