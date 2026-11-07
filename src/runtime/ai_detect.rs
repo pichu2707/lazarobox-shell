@@ -56,12 +56,30 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 /// Most `--version` output kept; more than this means the probe gave up.
 const VERSION_CAP: usize = 64 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    /// A test seam: how many times longer the probe timeouts below last on
+    /// this thread, so a test that measures wall time keeps its margins on a
+    /// slow machine. `1` everywhere else.
+    static TIME_SCALE: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
+/// `base` as the probes use it: itself, but for the test seam.
+fn scaled(base: Duration) -> Duration {
+    #[cfg(test)]
+    return base * TIME_SCALE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    base
+}
+
 /// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
 pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
     let request = format!(
         "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
-    timeout(HTTP_TIMEOUT, exchange(port, &request)).await.ok()?
+    timeout(scaled(HTTP_TIMEOUT), exchange(port, &request))
+        .await
+        .ok()?
 }
 
 /// The only path detection POSTs to, and only on the Ollama port. It is a
@@ -92,7 +110,9 @@ pub async fn http_post_show(port: u16, model: &str) -> Option<(u16, Vec<u8>)> {
         "POST {SHOW_PATH} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    timeout(SHOW_TIMEOUT, exchange(port, &request)).await.ok()?
+    timeout(scaled(SHOW_TIMEOUT), exchange(port, &request))
+        .await
+        .ok()?
 }
 
 /// Sends `request` (a whole HTTP/1.0 request) to `127.0.0.1:port`.
@@ -100,7 +120,7 @@ async fn exchange(port: u16, request: &str) -> Option<(u16, Vec<u8>)> {
     // HTTP/1.0 with `Connection: close`: the reply ends at EOF. The host is
     // fixed, so no request can leave the machine.
     let connect = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)));
-    let mut stream = timeout(CONNECT_TIMEOUT, connect).await.ok()?.ok()?;
+    let mut stream = timeout(scaled(CONNECT_TIMEOUT), connect).await.ok()?.ok()?;
     stream.write_all(request.as_bytes()).await.ok()?;
     // Headers fit well inside the slack; a longer reply is cut and rejected.
     let mut raw = Vec::new();
@@ -181,7 +201,7 @@ async fn show_phase(
         })
         .buffer_unordered(SHOW_PARALLEL);
     let mut answers = Vec::new();
-    let _ = timeout(SHOW_DEADLINE, async {
+    let _ = timeout(scaled(SHOW_DEADLINE), async {
         while let Some(answer) = calls.next().await {
             answers.push(answer);
         }
