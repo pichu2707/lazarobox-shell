@@ -91,8 +91,9 @@ impl Gate {
         let step = step.label();
         match self {
             Self::Spawn => format!(
-                "spawn gate: step {step} is not closed. Hand off the steps in order first; \
-                 do not retry this spawn. Only the user can lift the gate (Enter gates off)"
+                "spawn gate: step {step} is not closed. Hand off the steps in order, then spawn \
+                 again, or ask the user and retry once they lift it. Only the user can lift the \
+                 gate (Enter gates off)"
             ),
             Self::Finish => format!(
                 "finish gate: step {step} was granted but no code worker ran. Spawn one, or tell \

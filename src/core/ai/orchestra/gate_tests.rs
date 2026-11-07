@@ -172,14 +172,18 @@ fn lifting_the_gates_lets_a_code_spawn_through_with_steps_open() {
 }
 
 // Spec (W3, A gate names itself): the text names the gate and the step, and
-// tells the model not to retry. Whole after the runtime's cap.
+// tells the model when it may spawn again (after the handoff, or once the
+// user lifted the gate): a bare "do not retry" kept models from ever retrying
+// after Enter gates off. Whole after the runtime's cap.
 #[test]
 fn the_refusal_text_names_the_gate_and_the_step() {
     for step in Step::ALL {
         let spawn = Gate::Spawn.refusal(step);
         assert!(spawn.starts_with("spawn gate:"), "{spawn}");
         assert!(spawn.contains(&format!("step {}", step.label())), "{spawn}");
-        assert!(spawn.contains("do not retry"), "{spawn}");
+        assert!(!spawn.contains("do not retry"), "{spawn}");
+        assert!(spawn.contains("then spawn again"), "{spawn}");
+        assert!(spawn.contains("retry once they lift it"), "{spawn}");
         let finish = Gate::Finish.refusal(step);
         assert!(finish.starts_with("finish gate:"), "{finish}");
         assert!(finish.contains("Write off"), "{finish}");
