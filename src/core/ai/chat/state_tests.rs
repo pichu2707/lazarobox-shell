@@ -978,11 +978,17 @@ fn cancelling_the_run_ends_the_gate_offer() {
 #[test]
 fn the_next_run_ends_the_gate_offer_of_the_one_before() {
     let mut state = gated();
-    state.set_orch_run(None);
-    assert!(state.gate_offer().is_some(), "the run ended: next run");
     state.set_orch_run(Some(RunId(7)));
     assert!(state.gate_offer().is_some(), "the same run");
     state.set_orch_run(Some(RunId(8)));
+    assert_eq!(state.gate_offer(), None);
+}
+
+// The offer is for a live run: when the run ends nothing can take the lift.
+#[test]
+fn the_end_of_the_run_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_orch_run(None);
     assert_eq!(state.gate_offer(), None);
 }
 

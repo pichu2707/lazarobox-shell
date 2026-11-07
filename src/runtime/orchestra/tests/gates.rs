@@ -168,6 +168,8 @@ async fn the_turn_cap_names_a_gate_that_stood() {
     assert!(reason.contains("max_turns (1)"), "{reason}");
     assert!(reason.contains("spawn gate"), "{reason}");
     assert!(reason.contains("step authorize"), "{reason}");
+    // The run is ending: no key is offered for a run that cannot take it.
+    assert!(!reason.contains("Enter"), "{reason}");
     assert!(reason.is_ascii(), "{reason}");
 }
 
@@ -268,21 +270,6 @@ async fn authorize_implement(handle: &OrchHandle) {
     assert!(!acked.is_error, "{acked:?}");
 }
 
-// Spec (W3, 13.6): with no live run the pane is remembered and the next run
-// takes it once.
-#[tokio::test]
-async fn a_lift_with_no_run_is_taken_by_the_next_run_once() {
-    let lab = lab(Script::Hang);
-    lab.manager.gates_off(pane());
-    let (_first, handle) = lab.start(codex_both());
-    assert!(code_gets_through(&handle).await, "the next run is lifted");
-    let (_second, handle) = lab.start(codex_both());
-    assert!(
-        !code_gets_through(&handle).await,
-        "a third run is gated again"
-    );
-}
-
 // A run replaced by a new one takes only the stored flag: a lift of the old
 // run does not travel.
 #[tokio::test]
@@ -311,21 +298,22 @@ async fn a_continuation_keeps_the_lift() {
     assert!(!said.text.contains("gate"), "{said:?}");
 }
 
-// A cancel clears the remembered lift with the rest of the pane's state.
+// Spec (W3, D24): the lift is for a live run only. With none, nothing is
+// lifted or stored, the pane is told so, and the next run starts gated.
 #[tokio::test]
-async fn a_cancel_clears_the_remembered_lift() {
-    let lab = lab(Script::Hang);
+async fn a_lift_with_no_live_run_lifts_nothing_and_says_so() {
+    let mut lab = lab(Script::Hang);
     lab.manager.gates_off(pane());
-    lab.manager.cancel(pane());
+    assert_eq!(notices_of(&lab.sent()), vec![NOTHING_LIFTED]);
     let (_run, handle) = lab.start(codex_both());
-    assert!(!code_gets_through(&handle).await);
+    assert!(!code_gets_through(&handle).await, "the next run is gated");
 }
 
-// A run already finished (still listed until its turn ends) is not lifted: the
-// lift is the next run's.
+// A run that already finished (still listed until its turn ends) is not lifted
+// either, and the line says so.
 #[tokio::test]
-async fn a_lift_after_the_run_finished_is_kept_for_the_next_run() {
-    let lab = lab(Script::Hang);
+async fn a_lift_after_the_run_finished_lifts_nothing_and_says_so() {
+    let mut lab = lab(Script::Hang);
     let (_run, handle) = lab.start(codex_both());
     let done = handle
         .call(OrchCall::Finish {
@@ -333,9 +321,34 @@ async fn a_lift_after_the_run_finished_is_kept_for_the_next_run() {
         })
         .await;
     assert_eq!(done, fine("run finished"));
+    lab.sent();
     lab.manager.gates_off(pane());
+    assert_eq!(notices_of(&lab.sent()), vec![NOTHING_LIFTED]);
     let (_next, handle) = lab.start(codex_both());
-    assert!(code_gets_through(&handle).await);
+    assert!(!code_gets_through(&handle).await);
+}
+
+// The line of a lift on a live run is the runtime's own word.
+#[tokio::test]
+async fn a_lift_on_a_live_run_says_which_run() {
+    let mut lab = lab(Script::Hang);
+    let (_run, _handle) = lab.start(codex_both());
+    lab.sent();
+    lab.manager.gates_off(pane());
+    assert_eq!(notices_of(&lab.sent()), vec![LIFTED]);
+}
+
+const LIFTED: &str = "gates off: spawn and finish gates lifted for this run";
+const NOTHING_LIFTED: &str = "gates off: no live run, nothing lifted";
+
+fn notices_of(events: &[OrchestraEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            OrchestraEvent::Notice { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 // Spec (W3, Only the user overrides): words that look like the override, in

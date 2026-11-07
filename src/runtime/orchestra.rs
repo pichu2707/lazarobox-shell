@@ -592,10 +592,6 @@ pub struct RunManager {
     /// for it, and apart from `ids` so the read never blocks an id.
     floor_read: Mutex<bool>,
     runs: Mutex<HashMap<PaneId, Live>>,
-    /// The panes whose next run starts with the step gates lifted: the user
-    /// pressed the key with no run open. Taken once by `start`, cleared by
-    /// `cancel` (W3).
-    gates_next: Mutex<HashSet<PaneId>>,
     /// Set by `shutdown`, under the `runs` lock: no run starts after it.
     closed: AtomicBool,
     /// Woken whenever a worker's status changes, for `wait`.
@@ -624,7 +620,6 @@ impl RunManager {
             floor: None,
             floor_read: Mutex::new(false),
             runs: Mutex::default(),
-            gates_next: Mutex::default(),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
             #[cfg(test)]
@@ -723,17 +718,14 @@ impl RunManager {
         }
         let run = self.next_run(pane);
         let (read_scope, dropped) = self.read_scope(run, &scope.origin, &scope.roots);
-        let mut fresh = Run::new(run, scope.roster, scope.deadline)
-            .with_limits(scope.limits)
-            .with_ceiling(scope.ceiling);
-        if lock(&self.gates_next).remove(&pane) {
-            fresh.lift_gates();
-        }
+
         let live = Live {
             scope: read_scope,
             dropped,
             goal: scope.goal,
-            run: fresh,
+            run: Run::new(run, scope.roster, scope.deadline)
+                .with_limits(scope.limits)
+                .with_ceiling(scope.ceiling),
             origin: scope.origin,
             profile: scope.profile,
             events: scope.events,
@@ -871,7 +863,6 @@ impl RunManager {
 
     /// Ctrl+C on `pane`: ends its run, if it has one. Returns at once.
     pub fn cancel(self: &Arc<Self>, pane: PaneId) {
-        lock(&self.gates_next).remove(&pane);
         let live = lock(&self.runs).remove(&pane);
         if let Some(live) = live {
             self.end(pane, live);
@@ -931,7 +922,7 @@ impl RunManager {
                     .last_gate()
                     .map_or_else(String::new, |(gate, step)| {
                         format!(
-                            "; the {} gate still refused at step {} (Enter gates off lifts it for the next run)",
+                            "; the {} gate still refused at step {}",
                             gate.label(),
                             step.label()
                         )
@@ -1119,18 +1110,26 @@ impl RunManager {
     }
 
     /// The user lifted the step gates of `pane` (W3, D24): its live run, all
-    /// or nothing; with no run still open, the next run takes it once. Only
-    /// the app calls it, from a key press: no `OrchCall` reaches it.
+    /// or nothing, for that run only. With no run that is open there is
+    /// nothing to lift, nothing is kept, and the pane is told so. Only the app
+    /// calls it, from a key press: no `OrchCall` reaches it.
     pub fn gates_off(&self, pane: PaneId) {
-        let mut runs = lock(&self.runs);
-        let open =
-            |live: &&mut Live| matches!(live.run.state(), RunState::Open | RunState::Halted { .. });
-        match runs.get_mut(&pane).filter(open) {
-            Some(live) => live.run.lift_gates(),
-            None => {
-                lock(&self.gates_next).insert(pane);
-            }
-        }
+        let lifted = lock(&self.runs)
+            .get_mut(&pane)
+            .filter(|live| matches!(live.run.state(), RunState::Open | RunState::Halted { .. }))
+            .map(|live| live.run.lift_gates())
+            .is_some();
+        let text = if lifted {
+            "gates off: spawn and finish gates lifted for this run"
+        } else {
+            "gates off: no live run, nothing lifted"
+        };
+        self.send(
+            pane,
+            OrchestraEvent::Notice {
+                text: text.to_owned(),
+            },
+        );
     }
 
     fn on_run<T>(&self, pane: PaneId, run: RunId, f: impl FnOnce(&mut Live) -> T) -> Option<T> {

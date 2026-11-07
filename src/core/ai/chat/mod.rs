@@ -677,8 +677,8 @@ impl ChatState {
             self.selected = None;
             self.cancel_armed = None;
         }
-        // A refusal belongs to its run: the next run ignores it.
-        if run.is_some_and(|run| self.gate_offer.is_some_and(|offer| offer.run != run)) {
+        // A refusal belongs to its live run: another run, or none, ends it.
+        if self.gate_offer.is_some_and(|offer| Some(offer.run) != run) {
             self.gate_offer = None;
         }
         self.orch_run = run;
@@ -810,7 +810,7 @@ impl ChatState {
         self.gate_offer.take()
     }
 
-    /// A new run begins without the key: the offer was not taken.
+    /// The gate passed or the run is over: nothing is left to lift.
     pub fn drop_gate_offer(&mut self) {
         self.gate_offer = None;
     }

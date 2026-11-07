@@ -661,8 +661,6 @@ impl App {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {
                     chat.composer_mut().clear();
-                    // A new run: the refusal of an earlier one is not its own.
-                    chat.drop_gate_offer();
                 }
                 if let Some(model) = unknown {
                     self.announce_unknown_window(model);

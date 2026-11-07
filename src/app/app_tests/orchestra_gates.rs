@@ -75,7 +75,7 @@ use super::chat_live::{chat_id, ctrl, finish, plain, repeat, type_text};
 use super::orchestra_run::row;
 use crate::core::ai::orchestra::{RunId, worker::WorkerStatus};
 
-const LINE: &str = "Enter gates off (this run) | spawn gate: step explore";
+const LINE: &str = "Enter gates off | spawn gate: step explore";
 
 /// An orchestrating pane whose run is in flight and was just refused by the
 /// spawn gate at `explore`. The pane is wide enough for the full line.
@@ -106,7 +106,7 @@ fn starts_a_turn(effects: &[Effect]) -> bool {
         .any(|e| matches!(e, Effect::OrchestrateSend { .. } | Effect::ChatSend { .. }))
 }
 
-/// The turn is over and the run ended: a refusal left behind is for the next run.
+/// The turn is over and the run ended.
 fn ended(a: &mut App, turn: u64) {
     a.update(finish(turn));
     a.update(event(OrchestraEvent::Ended { run: RUN }));
@@ -125,43 +125,76 @@ fn a_refusal_offers_the_key_for_this_run() {
     assert!(!a.guidance_is_hint(chat_id()), "a problem line, not a hint");
 }
 
+// Spec (W3, Only the user overrides): Enter on the empty composer lifts and the
+// offer is spent. The transcript line is the runtime's, after it acted: the
+// app guesses nothing about which run took the lift.
 #[test]
-fn once_the_run_is_over_the_line_says_next_run() {
-    let (mut a, turn) = gated();
-    ended(&mut a, turn);
-    assert_eq!(
-        guidance(&a).as_deref(),
-        Some("Enter gates off (next run) | spawn gate: step explore")
-    );
-}
-
-// Spec (W3, Only the user overrides): Enter on the empty composer lifts, says
-// which gates, and the offer is spent.
-#[test]
-fn enter_lifts_the_gates_and_the_transcript_says_so() {
+fn enter_asks_the_runtime_to_lift_and_spends_the_offer() {
     let (mut a, _) = gated();
+    let before = system_lines(&a).len();
     let effects = press(&mut a, KeyCode::Enter);
     assert_eq!(effects, vec![Effect::OrchGatesOff { pane: chat_id() }]);
-    let lines = system_lines(&a);
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some("gates off: spawn and finish gates lifted for this run"),
-        "{lines:?}"
-    );
+    assert_eq!(system_lines(&a).len(), before, "no line of the app's own");
     assert!(offer(&a).is_none());
     assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
 }
 
+// The runtime's words reach the transcript, ASCII, never as history.
 #[test]
-fn enter_after_the_run_ended_says_next_run() {
+fn the_runtimes_lift_line_is_a_system_line() {
+    let (mut a, _) = gated();
+    a.update(event(OrchestraEvent::Notice {
+        text: "gates off: no live run, nothing lifted".into(),
+    }));
+    assert_eq!(
+        chat_of(&a).entries().iter().rev().find_map(|e| match e {
+            Entry::System(l) => Some(l.as_str()),
+            _ => None,
+        }),
+        Some("gates off: no live run, nothing lifted")
+    );
+}
+
+// D24: the offer ends when it no longer applies: a code worker exists (both
+// gates pass), the run finished, the run ended or was stopped. Enter then does
+// nothing for the gates.
+#[test]
+fn the_offer_ends_when_the_gate_passes_or_the_run_is_over() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    // A refused finish, then a code worker, then a successful finish.
+    let (mut a, _) = gated();
+    a.update(event(refused(Gate::Finish, Step::Implement)));
+    let mut code = row(RUN, 1, WorkerStatus::Running);
+    if let OrchestraEvent::Worker(w) = &mut code {
+        w.kind = crate::core::ai::config::Task::Code;
+    }
+    a.update(event(code));
+    assert!(offer(&a).is_none(), "a code worker exists");
+    assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!lifts(&effects), "{effects:?}");
+
+    let (mut a, _) = gated();
+    a.update(event(OrchestraEvent::Closed {
+        run: RUN,
+        ledger: String::new(),
+        summary: String::new(),
+    }));
+    assert!(offer(&a).is_none(), "the run finished");
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!lifts(&effects), "{effects:?}");
+
+    let (mut a, _) = gated();
+    a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped".into(),
+    }));
+    assert!(offer(&a).is_none(), "the run is ending");
+
     let (mut a, turn) = gated();
     ended(&mut a, turn);
-    let effects = press(&mut a, KeyCode::Enter);
-    assert!(lifts(&effects), "{effects:?}");
-    assert_eq!(
-        system_lines(&a).last().map(String::as_str),
-        Some("gates off: spawn and finish gates lifted for next run")
-    );
+    assert!(offer(&a).is_none(), "the run ended");
+    assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
 }
 
 // Held Enter, Enter with text, Enter with a modal open and Esc leave the
@@ -183,13 +216,6 @@ fn a_held_enter_esc_text_and_a_modal_do_not_lift() {
     assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
     let typed = press(&mut a, KeyCode::Enter);
     assert!(!lifts(&typed), "{typed:?}");
-
-    // Esc with the run over answers nothing: the offer stays.
-    let (mut a, turn) = gated();
-    ended(&mut a, turn);
-    let esc = press(&mut a, KeyCode::Esc);
-    assert!(!lifts(&esc), "{esc:?}");
-    assert!(offer(&a).is_some());
 
     let (mut a, _) = gated();
     a.update(ctrl(' '));
@@ -224,48 +250,39 @@ fn the_provider_notice_and_the_failure_alert_answer_enter_before_the_gate() {
     );
 }
 
-// D24: a pending override hides the undelegated line; Enter does not delegate
-// and the "nothing to delegate" notice is not shown.
+// D24: with a delegate offer also pending, the gate answers Enter first: it
+// lifts and does not delegate, and the "nothing to delegate" notice is not shown.
 #[test]
-fn a_pending_override_hides_the_undelegated_line_and_enter_does_not_delegate() {
-    let (mut a, turn) = running();
-    a.panes.get_mut(&chat_id()).unwrap().size.cols = 80;
-    a.update(super::chat_live::delta(turn, "here is the answer"));
-    a.update(finish(turn));
-    a.update(event(OrchestraEvent::Undelegated { run: RUN }));
-    assert!(guidance(&a).unwrap().starts_with("Enter delegate"));
-    a.update(event(refused(Gate::Finish, Step::Implement)));
-    assert!(
-        guidance(&a).unwrap().starts_with("Enter gates off"),
-        "{:?}",
-        guidance(&a)
-    );
+fn a_pending_override_answers_enter_before_the_delegate_offer() {
+    let (mut a, _) = gated();
+    a.panes
+        .get_mut(&chat_id())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .offer_delegate("plan it".into());
     let effects = press(&mut a, KeyCode::Enter);
     assert!(lifts(&effects) && !starts_a_turn(&effects), "{effects:?}");
     assert_eq!(a.notice(), None);
-    // Spent: once the run is over, the undelegated line is back.
-    a.update(event(OrchestraEvent::Ended { run: RUN }));
-    assert!(guidance(&a).unwrap().starts_with("Enter delegate"));
 }
 
-// D24 / stale state: the offer ends when the run is cancelled, the pane leaves
-// ORCH, or the next run starts without Enter.
+// The line is shown only while a live run can take the lift: with the turn
+// over and no run known to the pane (its `Ended` still on the way), it is not.
+#[test]
+fn no_line_is_offered_when_no_run_is_live() {
+    let (mut a, turn) = gated();
+    a.update(finish(turn));
+    assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
+    let effects = press(&mut a, KeyCode::Enter);
+    assert!(!lifts(&effects), "{effects:?}");
+}
+
+// Stale state: the offer ends when the run is cancelled (folder change, resume
+// and leaving ORCH are pinned on the chat state).
 #[test]
 fn the_offer_goes_with_a_cancel_the_toggle_and_the_next_run() {
     let (mut a, _) = gated();
     a.update(ctrl('c'));
     assert!(offer(&a).is_none(), "cancelled");
-
-    let (mut a, turn) = gated();
-    ended(&mut a, turn);
-    super::orchestra_send::toggle(&mut a);
-    assert!(offer(&a).is_none(), "ORCH off");
-
-    let (mut a, turn) = gated();
-    ended(&mut a, turn);
-    let effects = super::chat_live::ask(&mut a, "again");
-    assert!(starts_a_turn(&effects), "{effects:?}");
-    assert!(offer(&a).is_none(), "the next run began without Enter");
 }
 
 // A live worker has its own keys line; the gate line comes before it, or the

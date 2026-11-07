@@ -274,6 +274,10 @@ impl App {
                 if is_over {
                     over = Some(key);
                 }
+                // A code worker exists: both gates pass, nothing is left to lift.
+                if row.kind == crate::core::ai::config::Task::Code {
+                    chat.drop_gate_offer();
+                }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
                 let menu = self.ai.resolve(row.kind).0.engine;
@@ -344,6 +348,8 @@ impl App {
             OrchestraEvent::Stopped { run, reason } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(reason);
+                    // The run is ending: no key is offered for it.
+                    chat.drop_gate_offer();
                 }
             }
             // Where a worker's review stands (S7b): lazarobox's own words.
@@ -442,7 +448,11 @@ impl App {
                 run,
                 ledger,
                 summary,
-            } => store = Some((run, Item::of_ledger(run, &ledger, &summary))),
+            } => {
+                // The run finished: its gates passed or no longer matter.
+                chat.drop_gate_offer();
+                store = Some((run, Item::of_ledger(run, &ledger, &summary)));
+            }
             // Never a silent fallback: say which handoffs lazarobox wrote.
             OrchestraEvent::Filled { workers, .. } => {
                 let ids: Vec<_> = workers.iter().map(|id| id.0.to_string()).collect();
@@ -457,6 +467,10 @@ impl App {
             // one started.
             OrchestraEvent::Ended { run } => {
                 chat.end_orch_run(run);
+                // No live run is left to take a lift.
+                if chat.gate_offer().is_some_and(|offer| offer.run == run) {
+                    chat.drop_gate_offer();
+                }
                 if chat.orch_run() == Some(run) {
                     chat.set_orch_run(None);
                 }
@@ -906,6 +920,7 @@ impl App {
         };
         chat.gate_offer().is_some()
             && self.orchestrating(id)
+            && self.orch_run_active(id)
             && chat.composer().text().is_empty()
             && chat.orch_alert().is_none()
             && self.server_offer_prompt(id).is_none()
@@ -916,13 +931,13 @@ impl App {
         let cols = usize::from(self.panes.get(&id)?.size.cols);
         let offer = self.panes.get(&id)?.chat_state()?.gate_offer()?;
         self.gates_ready(id)
-            .then(|| gates_hint(cols, offer.gate, offer.step, self.orch_run_active(id)))
+            .then(|| gates_hint(cols, offer.gate, offer.step))
     }
 
     /// Enter on the gates line (W3, D24): only a fresh, plain press on an
     /// empty composer of an orchestrating pane, and also while a turn runs:
-    /// the lift targets the live run, or the next one. The transcript says
-    /// which gates and for which run. `None` leaves the key to the chat.
+    /// the lift targets the live run, and the runtime says what it did.
+    /// `None` leaves the key to the chat.
     pub(super) fn answer_gates_off(
         &mut self,
         id: PaneId,
@@ -937,16 +952,8 @@ impl App {
         {
             return None;
         }
-        let when = if self.orch_run_active(id) {
-            "this run"
-        } else {
-            "next run"
-        };
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
         chat.take_gate_offer()?;
-        chat.push_system_line(format!(
-            "gates off: spawn and finish gates lifted for {when}"
-        ));
         self.dirty = true;
         Some(vec![Effect::OrchGatesOff { pane: id }])
     }
