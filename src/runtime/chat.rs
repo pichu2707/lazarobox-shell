@@ -824,6 +824,14 @@ impl Chats {
         if request.tools == Tools::Off {
             self.stop_servers(pane);
         }
+        // The reply to a run that waited after the user lifted its gates tells
+        // the coordinator so, once; the app's copy of the message is untouched.
+        if let (Some(run), Some(manager)) = (orch.as_ref().and_then(|o| o.attach), &self.orchestra)
+            && let Some(note) = manager.reply_note(pane, run)
+            && let Some(last) = request.messages.last_mut()
+        {
+            last.content = format!("{}\n\n{note}", last.content);
+        }
         let channel = mpsc::channel(TURN_CHANNEL);
         let opened = match self.open_session(pane, turn, &request, &channel.0, orch) {
             Ok(opened) => opened,

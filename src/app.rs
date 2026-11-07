@@ -8923,6 +8923,7 @@ mod app_tests {
     /// The delegate key and Esc after an undelegated reply.
     mod orchestra_delegate;
     /// The step gates' lines and the user's override key (W3).
+    mod orchestra_gate_wait;
     mod orchestra_gates;
     /// The handoffs of a run in engram, and the degraded mode.
     mod orchestra_handoffs;

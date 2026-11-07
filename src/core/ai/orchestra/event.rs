@@ -238,6 +238,12 @@ pub enum OrchestraEvent {
     /// worker (agent-orchestrator [W1]). Sent once per run; the app shows a
     /// notice when its pane is idle. Never sent to a model.
     Undelegated { run: RunId },
+    /// The orchestrator turn ended with a spawn gate refusal standing and
+    /// nothing pending: the run stays open for the user's reply (agent-
+    /// orchestrator [W3], option B). `step` is the open step the gate named.
+    /// The user's next message in the pane attaches to this run. Never sent
+    /// to a model.
+    Waits { run: RunId, step: Step },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

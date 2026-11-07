@@ -398,3 +398,40 @@ fn a_code_worker_that_failed_or_was_cancelled_counts_as_having_run() {
     cancelled.cancel(now, id);
     assert_ne!(cancelled.finish("done"), Err(FinishError::Gate));
 }
+
+// Option B (W3 follow-up): a turn that ends with a spawn refusal standing and
+// nothing pending does not settle the run; it waits for the user's reply.
+#[test]
+fn a_standing_spawn_refusal_makes_the_run_wait_for_the_reply() {
+    use super::run::NextTurn;
+    let mut run = run();
+    let _ = run.spawn(Instant::now(), Task::Code, "p");
+    assert_eq!(run.next_turn(), NextTurn::Wait(Step::Authorize));
+    // The reply turn takes a turn of the budget, like a continuation.
+    assert_eq!(run.turns(), 2);
+}
+
+#[test]
+fn a_lifted_or_passed_gate_does_not_make_the_run_wait() {
+    use super::run::NextTurn;
+    let mut lifted = run();
+    let _ = lifted.spawn(Instant::now(), Task::Code, "p");
+    lifted.lift_gates();
+    assert!(lifted.gates_lifted());
+    assert_eq!(lifted.next_turn(), NextTurn::Settle);
+    let mut forgotten = run();
+    let _ = forgotten.spawn(Instant::now(), Task::Code, "p");
+    forgotten.forget_gate();
+    assert_eq!(forgotten.next_turn(), NextTurn::Settle);
+}
+
+#[test]
+fn waiting_for_the_reply_stops_at_the_turn_cap() {
+    use super::run::NextTurn;
+    let mut run = run().with_limits(RunLimits {
+        turns: 1,
+        ..Default::default()
+    });
+    let _ = run.spawn(Instant::now(), Task::Code, "p");
+    assert_eq!(run.next_turn(), NextTurn::Capped(1));
+}

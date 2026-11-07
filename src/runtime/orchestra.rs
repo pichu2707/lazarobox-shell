@@ -282,7 +282,13 @@ enum Next {
     Settle,
     Go(OrchestraEvent),
     Stop(String),
+    /// The run stays open for the user's reply (a spawn gate stands).
+    Wait(OrchestraEvent),
 }
+
+/// What the coordinator is told with the reply to a run that waited for it
+/// after the user lifted its step gates.
+pub const LIFT_NOTE: &str = "lazarobox: the user lifted the step gates for this run: spawn and finish are not gated now; spawn the worker again if the work still stands.";
 
 /// What `collect` answers when no nonce can be drawn: unwrapped text never
 /// goes out.
@@ -522,6 +528,9 @@ struct Live {
     /// The orchestrator turn that started the run is over: the run ends once
     /// it has nothing left to do (see [`RunManager::turn_ended`]).
     turn_over: bool,
+    /// The run waits for the user's reply: a spawn gate refusal stood when its
+    /// turn ended with nothing pending (W3, option B). Cleared by the reply.
+    waiting: bool,
     /// The app was told the run is undelegated (once per run).
     told_undelegated: bool,
     /// The local engines the pane was told two workers share (once each).
@@ -738,6 +747,7 @@ impl RunManager {
             retry: HashMap::new(),
             review: review::State::default(),
             turn_over: false,
+            waiting: false,
             told_undelegated: false,
             told_shared: HashSet::new(),
             clock: self.start_clock(pane, run, scope.limits.wall),
@@ -787,6 +797,11 @@ impl RunManager {
             live.approver = scope.approver;
             live.pending = scope.pending;
             live.turn_over = false;
+            // The reply starts clean: a refusal that stood is not carried, and
+            // a new one makes the run wait again.
+            if std::mem::take(&mut live.waiting) {
+                live.run.forget_gate();
+            }
         });
         attached.ok_or_else(|| ENDED.to_owned())?;
         Ok((run, self.handle(pane, run)))
@@ -885,11 +900,12 @@ impl RunManager {
             // A run that continues waits for the turn the app starts: it must
             // not end under it when its last worker finishes meanwhile.
             live.turn_over = !matches!(next, Next::Go(_));
+            live.waiting = matches!(next, Next::Wait(_));
             next
         });
         match next {
             Some(Next::Settle) => self.settle(pane, run),
-            Some(Next::Go(event)) => self.send(pane, event),
+            Some(Next::Go(event) | Next::Wait(event)) => self.send(pane, event),
             Some(Next::Stop(reason)) => {
                 let live = lock(&self.runs).remove(&pane);
                 if let Some(live) = live {
@@ -916,6 +932,10 @@ impl RunManager {
         let max = live.run.limits().turns;
         match live.run.next_turn() {
             NextTurn::Settle => Next::Settle,
+            NextTurn::Wait(step) => Next::Wait(OrchestraEvent::Waits {
+                run: live.run.id(),
+                step,
+            }),
             NextTurn::Capped(taken) => {
                 let gate = live
                     .run
@@ -958,6 +978,7 @@ impl RunManager {
             let over = runs.get(&pane).is_some_and(|live| {
                 live.run.id() == run
                     && live.turn_over
+                    && !live.waiting
                     && !matches!(live.run.state(), RunState::Halted { .. })
                     && (1..)
                         .map_while(|n| live.run.status(WorkerId(n)))
@@ -1131,6 +1152,17 @@ impl RunManager {
                 text: text.to_owned(),
             },
         );
+    }
+
+    /// The line the coordinator gets with the user's reply to run `run` of
+    /// `pane`, once: the run waited for it and the user lifted the gates. The
+    /// app asks before the reply turn starts; the model is told in plain words
+    /// that it can spawn and finish again (W3, option B).
+    pub fn reply_note(&self, pane: PaneId, run: RunId) -> Option<&'static str> {
+        self.on_run(pane, run, |live| {
+            (live.waiting && live.run.gates_lifted()).then_some(LIFT_NOTE)
+        })
+        .flatten()
     }
 
     fn on_run<T>(&self, pane: PaneId, run: RunId, f: impl FnOnce(&mut Live) -> T) -> Option<T> {

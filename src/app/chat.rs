@@ -576,7 +576,20 @@ impl App {
         text: &str,
         availability: &Availability,
     ) -> Vec<Effect> {
-        self.send_with(id, text, availability, None)
+        // A run that waits for the user's reply takes it as its next turn (W3,
+        // option B): the reply attaches to it instead of starting a new run.
+        let waiting = (self.orchestrating(id))
+            .then(|| self.panes.get(&id)?.chat_state()?.waiting_run())
+            .flatten();
+        let effects = self.send_with(id, text, availability, waiting);
+        if waiting.is_some()
+            && !effects.is_empty()
+            && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+        {
+            chat.composer_mut().clear();
+            chat.set_waiting_run(None);
+        }
+        effects
     }
 
     /// Tells on the status line, once per model, that `model` has no known
