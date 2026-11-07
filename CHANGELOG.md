@@ -20,9 +20,10 @@ baseline.
   correction worker lazarobox starts are not gated. If a gate keeps refusing
   until `max_turns`, the stop line names it. While a refusal stands, the line
   above the composer says `Enter gates off`: Enter on an empty composer lifts
-  both gates for that run (or for the next one when none is running), the chat
-  says so, and it ends with the run. Only your key press lifts a gate: text,
-  a worker's answer or a tool call never does. Gates are on for every ORCH
+  both gates for the live run and the chat says so; it ends with that run. With
+  no live run it lifts nothing, and the chat says that too. Only your key press
+  lifts a gate: text, a worker's answer or a tool call never does. The line
+  goes when a `code` worker starts or the run ends. Gates are on for every ORCH
   run, so a coordinator that skips `authorize` now stops at the spawn.
 - Two `code` workers of one ORCH run can now write at the same time, each
   with a batch of its own. When one proposes, the review lists only its
