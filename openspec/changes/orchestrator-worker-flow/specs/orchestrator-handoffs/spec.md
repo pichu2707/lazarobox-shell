@@ -5,12 +5,12 @@ Slice tag: [W4] app-checked handoffs. Tags: [auto] = `cargo test`; [manual] = re
 ## ADDED Requirements
 
 ### Requirement: App check of a handoff against the ledger [W4]
-At every handoff of a `code` or `simple` worker, lazarobox MUST compare the files the handoff claims to have changed or written against the worker's change ledger (`files changed`), without any model. A file named in the handoff that the ledger does not show MUST be flagged `claimed, not in ledger` with its path. The flag MUST be shown in the `collect` result (inside the untrusted-data wrapper, after the ledger) and in the `close` report of the run, and stored with the handoff. The flag is app evidence: the orchestrator's text MUST NOT remove it, and the orchestrator's verdict (`on_course`, `off_course`, `blocked`) MUST stay the orchestrator's, shown beside the flag. When the check cannot run (a handoff with no recognisable path, or no ledger), the result MUST say `not checked` and why, never `ok`. Whether an `off_course` verdict is forced by a flag, and whether the reverse (a ledger file the handoff does not mention) is flagged, are open for design.
+At every handoff of a `code` or `simple` worker, lazarobox MUST compare the files the handoff claims to have changed or written against the worker's change ledger (`files changed`), without any model. A file named in the handoff that the ledger does not show MUST be flagged `claimed, not in ledger` with its path. The flag MUST be shown in the acknowledgement of the `handoff` call, in every `collect` made after the handoff exists (a line of lazarobox's own before the untrusted-data wrapper, never inside it, so the worker's text cannot forge it), in the `close` report of the run, and in the stored note of the handoff. The first `collect` of a worker happens before its handoff exists and so carries no check. The flag is app evidence: the orchestrator's text MUST NOT remove it, and the orchestrator's verdict (`on_course`, `off_course`, `blocked`) MUST stay the orchestrator's, shown beside the flag. When the check cannot run (a handoff with no recognisable path, or no ledger), the result MUST say `not checked` and why, never `ok`. Whether an `off_course` verdict is forced by a flag, and whether the reverse (a ledger file the handoff does not mention) is flagged, are open for design.
 
 #### Scenario: Claimed file not in the ledger [W4, auto]
 - GIVEN a handoff whose `done` says `wrote src/a.rs and src/b.rs` and a ledger that holds only `src/a.rs`
 - WHEN the handoff is checked
-- THEN `src/b.rs` is flagged `claimed, not in ledger`, in the `collect` result and in the `close` report, and no model was called
+- THEN `src/b.rs` is flagged `claimed, not in ledger`, in the handoff acknowledgement, in a later `collect` result, in the `close` report and in the stored note, and no model was called
 
 #### Scenario: Claim matches the ledger [W4, auto]
 - GIVEN a handoff that names only files the ledger holds
