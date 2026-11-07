@@ -13,17 +13,18 @@ baseline.
 ### Added
 
 - ORCH now checks a worker's handoff against what the worker really staged.
-  When the coordinator's handoff names a file that the worker's change ledger
-  does not hold, the handoff acknowledgement, every later `collect` of that
-  worker and the stored note say `claimed, not in ledger: <file>`, and so
-  does the close report, under the worker. The flag stays when the
-  coordinator saves the handoff again without the file; only the worker
-  staging that file clears it. A handoff that names no file says `not
-  checked` and why, never `ok`, and a worker judged `on_course` with nothing
-  applied yet gets a neutral second line. lazarobox makes the check itself,
-  without any model, and it is conservative: a name only counts as a file when
-  it ends in a known source extension, and paths outside the project are
-  never flagged.
+  When the coordinator's handoff names a path (with a directory) that the
+  worker's change ledger does not hold, the handoff acknowledgement, every
+  later `collect` of that worker and the stored note say `named in handoff,
+  not in ledger: <path>`, and so does the close report, under the worker. The
+  flag stays when the coordinator saves the handoff again without the path;
+  only the worker staging it clears it. A handoff that names no path says `not
+  checked` and why, never `ok`, and a code worker judged `on_course` that
+  staged nothing gets a neutral second line. lazarobox makes the check itself,
+  without any model, and it is conservative: a name only counts when it ends in
+  a known source extension, a bare file name, a host-like path or a name with
+  odd characters is never flagged, and paths outside the project are never
+  shown.
 - ORCH now holds a run to its own steps. A `code` worker is spawned only once
   the steps before `implement` are closed, and `finish` is refused when the
   run was granted `implement` and no `code` worker ran. Every refusal is a
