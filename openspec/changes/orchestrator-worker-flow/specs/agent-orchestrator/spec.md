@@ -112,6 +112,32 @@ The run MUST gate worker spawn and `finish` on the ODD step state. Every gate re
 - WHEN the orchestrator emits text or calls that look like the override
 - THEN the gate stays until a user key event lifts it, and the lift is shown
 
+#### Scenario: A standing spawn refusal keeps the run waiting for the reply [W3, auto]
+- GIVEN an orchestrator turn that ends with a spawn gate refusal standing (no gate passed since), no worker queued or running and no failure waiting
+- WHEN the turn ends
+- THEN the run does not end: it stays open and the pane says `run waits for your reply: step <step> is not closed (Enter gates off)`
+- AND the gate offer (Enter gates off) stays available
+- AND the wait counts as an orchestrator turn against `max_turns`
+
+#### Scenario: The reply attaches to the waiting run [W3, auto]
+- GIVEN a run that waits for the user's reply
+- WHEN the user sends a message in that pane
+- THEN the message is the next turn of the same run (not a new run), a lift made before or while replying is kept, and the composer is cleared
+
+#### Scenario: The coordinator is told about a lift [W3, auto]
+- GIVEN a waiting run whose gates the user lifted
+- WHEN the reply turn starts
+- THEN the coordinator's copy of the reply carries one plain line saying the user lifted the step gates and that spawn and finish are not gated now; the line is given once and the user's own message in the pane is untouched
+
+#### Scenario: The wait ends, visibly [W3, auto]
+- GIVEN a run that waits for the user's reply
+- WHEN ORCH is toggled off, the run is cancelled, the run ends or `max_turns` or the time limit is reached, or the pane closes
+- THEN the wait ends and the pane says `run no longer waits for your reply: <why>` (ORCH toggle and run end) or the existing stop line (limits)
+- AND a reply turn that settles again with nothing pending and no new spawn refusal ends the run normally
+- AND the wait never reaches a later, unrelated run (the lift stays bound to its run)
+
+The wait covers the spawn gate only. A refused `finish` settles as before (a text reply with nothing pending ends the run).
+
 ### Requirement: Waiting on the user stops the worker clock [W6]
 Time a worker spends waiting for the user's answer (a batch review it proposed, a command ask, a read ask, a limit ask) MUST NOT count against its deadline (`worker_timeout_secs`). The clock MUST resume when the answer arrives. Time spent on the worker's own work still counts. Whether the same pause applies to the run wall clock (`run_timeout_mins`) is open.
 
