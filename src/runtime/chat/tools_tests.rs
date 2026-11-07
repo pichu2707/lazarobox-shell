@@ -223,7 +223,8 @@ async fn the_request_families_decide_what_the_session_lists_and_accepts() {
             "list_dir",
             "read_file",
             "run_in_pane",
-            "list_panes"
+            "list_panes",
+            "read_pane"
         ]
     );
 

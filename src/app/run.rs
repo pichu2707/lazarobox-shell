@@ -234,7 +234,11 @@ impl App {
     /// `n`, Esc and Ctrl+C: ends the approval and, for a tool call, tells it
     /// why nothing was done.
     pub(super) fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
-        self.close_approval(id, Reply::Decline)
+        let closed = self.close_approval(id, Reply::Decline);
+        if let Some(approval) = &closed {
+            self.note_screen_denied(id, approval.ask());
+        }
+        closed
             .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
             .into_iter()
             .collect()
@@ -260,7 +264,7 @@ impl App {
             .is_some_and(|approval| {
                 matches!(
                     approval.ask(),
-                    ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_)
+                    ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. }
                 )
             });
         // Defence in depth: a batch is answered only by its review, behind the
@@ -736,7 +740,7 @@ impl App {
                 })
             }
             // The review view draws a batch; it has no overlay.
-            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) => None,
+            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. } => None,
             // The label and the change were made one clean line when asked.
             ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
                 target: format!("worker {label}: review this high-risk change first?"),

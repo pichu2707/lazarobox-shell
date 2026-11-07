@@ -83,3 +83,13 @@ fn the_readme_states_llamacpp_tools_and_their_template_requirement() {
         assert!(section.contains(needle), "{needle}");
     }
 }
+
+// The screen the user approved never reaches a log: Debug shows its size only.
+#[test]
+fn a_screen_answer_debugs_as_a_size() {
+    let answer = Answer::Screen(ScreenText("password: hunter2".to_owned()));
+    let shown = format!("{answer:?}");
+    assert_eq!(shown, "Screen(ScreenText(17 bytes))");
+    assert!(!shown.contains("hunter2"));
+    assert_ne!(answer, Answer::Decided(Decision::Sent));
+}

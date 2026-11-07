@@ -16,7 +16,7 @@ use super::{
 use crate::core::ai::chat::{
     approval::Reply,
     approval::{ApprovalAsk, Origin},
-    engine::Decision,
+    engine::{Decision, ScreenText},
     review::{ARM_DELAY, Badge, BatchEvent, BatchReview, NO_ORPHAN, TOO_LARGE, closed_notice},
     review_view::{Move, ReviewView},
 };
@@ -284,7 +284,22 @@ impl App {
             }];
         }
         closed
-            .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
+            .and_then(|approval| match (approval.ask(), approval.call()) {
+                // The text the user read is the text that goes.
+                (
+                    ApprovalAsk::Screen {
+                        review: Some(screen),
+                        ..
+                    },
+                    Some((turn, call)),
+                ) => Some(Effect::ToolScreen {
+                    pane: id,
+                    turn,
+                    call,
+                    text: ScreenText(screen.text().to_owned()),
+                }),
+                _ => Self::answer(id, &approval, Decision::Sent),
+            })
             .into_iter()
             .collect()
     }
@@ -304,6 +319,10 @@ impl App {
             .and_then(PaneState::chat_state)
             .and_then(|chat| chat.approvals().pending())
             .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Commit(_)));
+        let screen = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Screen { .. }));
         let Some(view) = self.review_mut(id) else {
             return Vec::new();
         };
@@ -315,7 +334,8 @@ impl App {
         let counts = view.review().counts();
         let what = if commit { "commit" } else { "batch" };
         let effects = self.decline(id, reason);
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+        // A screen says it was denied in `decline`.
+        if !screen && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.push_system_line(format!("{what} rejected: {counts}"));
         }
         effects

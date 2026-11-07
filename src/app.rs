@@ -12,7 +12,9 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, StreamEvent},
+            engine::{
+                CallId, ChatRequest, Decision, MCP_VERIFIED, OrchSend, ScreenText, StreamEvent,
+            },
             folder::{Probed, Purpose as FolderPurpose, Refusal},
             folder_picker::{Completion, Source as PickerSource},
             list::fit,
@@ -77,6 +79,7 @@ mod run;
 mod run_resume;
 mod run_store;
 mod run_view;
+mod screen;
 mod scroll;
 mod summary;
 mod tags;
@@ -435,6 +438,15 @@ pub enum Effect {
         turn: u64,
         call: CallId,
         decision: Decision,
+    },
+    /// The user approved the frozen screen `text` for the `read_pane` call
+    /// `call` of turn `turn` of chat `pane`: the runtime claims the wait and
+    /// sends it. A call that ended meanwhile is owed nothing.
+    ToolScreen {
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        text: ScreenText,
     },
     /// Chat `chat` has a model's command for the shell pane `target` typed
     /// without a prompt (design D18): the runtime writes `bytes` only when
@@ -8900,6 +8912,7 @@ mod app_tests {
     /// The review view of a proposed write batch.
     mod batch_review;
     mod commit_review;
+    mod screen_review;
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;

@@ -971,7 +971,7 @@ mod tests {
             }
         );
         let listed = reply(server.handle(&request(json!(6), "tools/list", json!({}))));
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 7);
     }
 
     #[test]

@@ -226,6 +226,20 @@ pub enum Decision {
 pub enum Answer {
     Decided(Decision),
     Ran(Box<RunReport>),
+    /// The user approved the frozen text of a pane's screen (`read_pane`):
+    /// the only answer that releases it.
+    Screen(ScreenText),
+}
+
+/// The text of a screen the user approved. Its `Debug` shows the size only:
+/// a screen never reaches a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ScreenText(pub String);
+
+impl std::fmt::Debug for ScreenText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ScreenText({} bytes)", self.0.len())
+    }
 }
 
 impl From<Decision> for Answer {
