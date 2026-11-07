@@ -374,6 +374,20 @@ impl Pane {
         end
     }
 
+    /// The visible rows plus up to `scrollback` rows of history above them,
+    /// whole lines. On the alternate screen there is no history: only the
+    /// visible rows.
+    pub fn screen_span(&self, scrollback: usize) -> LineSpan {
+        let (rows, cols) = self.parser.screen().size();
+        let top = self.first_line + self.history_len;
+        LineSpan {
+            first: top.saturating_sub(scrollback).max(self.first_line),
+            last: top + usize::from(rows).saturating_sub(1),
+            first_col: 0,
+            last_col: cols.saturating_sub(1),
+        }
+    }
+
     /// Text of the cells of `span`, one entry per retained line. Both end
     /// cells are included, empty cells read as `" "`, wide characters appear
     /// once. The scrollback offset is restored.
@@ -759,6 +773,45 @@ mod tests {
         for i in 0..n {
             p.feed(format!("line{i}\r\n").as_bytes());
         }
+    }
+
+    // read_pane: the span of what the model may be shown.
+    fn texts(p: &mut Pane, span: LineSpan) -> Vec<String> {
+        p.read_lines(span)
+            .into_iter()
+            .map(|l| l.text.trim_end().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn screen_span_without_scrollback_is_the_visible_rows() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        let span = p.screen_span(0);
+        assert_eq!(texts(&mut p, span), ["line8", "line9", ""]);
+    }
+
+    #[test]
+    fn screen_span_adds_the_asked_scrollback_above_the_visible_rows() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        let span = p.screen_span(2);
+        assert_eq!(
+            texts(&mut p, span),
+            ["line6", "line7", "line8", "line9", ""]
+        );
+        // More than the history keeps what exists.
+        let span = p.screen_span(500);
+        assert_eq!(texts(&mut p, span).len(), 8 + 3);
+    }
+
+    #[test]
+    fn screen_span_on_the_alternate_screen_is_the_visible_rows_only() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        p.feed(b"\x1b[?1049hfull");
+        let span = p.screen_span(5);
+        assert_eq!(texts(&mut p, span), ["full", "", ""]);
     }
 
     #[test]
