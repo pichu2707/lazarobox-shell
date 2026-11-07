@@ -312,15 +312,24 @@ async fn at_most_32_calls_and_4_at_once() {
     assert_eq!(tools_of(&d, "m39:8b"), Tools::Unknown);
 }
 
+/// Makes every probe timeout on this thread `k` times longer, so a test that
+/// measures wall time keeps `k` times the margin on a slow machine. The test
+/// runtime is single-threaded, so nothing else sees it.
+fn stretch_timeouts(k: u32) {
+    super::TIME_SCALE.with(|scale| scale.set(k));
+}
+
 #[tokio::test]
 async fn the_whole_phase_ends_at_the_two_second_deadline() {
+    stretch_timeouts(2);
     let fake = fake_ollama(tags(&named(12)), Duration::ZERO, |_| Show::Silent).await;
     let started = Instant::now();
     let d = detect(fake.port, &ShowCache::default()).await;
     let took = started.elapsed();
-    // 12 silent calls, 4 at a time, 1 s each would take 3 s.
+    // 12 silent calls, 4 at a time, 2 s each (1 s stretched) would take 6 s;
+    // the stretched deadline cuts them at 4 s.
     assert!(
-        took >= Duration::from_millis(1900) && took < Duration::from_secs(5),
+        took >= Duration::from_millis(3800) && took < Duration::from_secs(7),
         "{took:?}"
     );
     assert_eq!(tools_of(&d, "m11:8b"), Tools::Unknown);
@@ -452,6 +461,7 @@ async fn closing_server() -> u16 {
 
 #[tokio::test]
 async fn a_hung_show_overlaps_the_other_slow_probes() {
+    stretch_timeouts(4);
     let ollama = fake_ollama(tags(&named(1)), Duration::ZERO, |_| Show::Silent).await;
     let llamacpp = slow_props_server().await;
     let closed = closing_server().await;
@@ -466,9 +476,10 @@ async fn a_hung_show_overlaps_the_other_slow_probes() {
     let d = detect_all(&env, &cache, &ShowCache::default(), false, &ports, &[]).await;
     let took = started.elapsed();
     assert_eq!(tools_of(&d, "m0:8b"), Tools::Unknown);
-    // 0.8 s of /props and 1 s of show: one after the other would be 1.8 s.
+    // Stretched 4 times: 3.2 s of /props and 4 s of show. One after the other
+    // would be 7.2 s; overlapped it is the show alone, with 2 s to spare.
     assert!(
-        took >= Duration::from_millis(900) && took < Duration::from_millis(1500),
+        took >= Duration::from_millis(3600) && took < Duration::from_millis(6000),
         "{took:?}"
     );
 }
