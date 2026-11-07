@@ -1842,6 +1842,12 @@ impl Panes {
                         chats.set_ceiling(pane, ceiling);
                     }
                 }
+                // Returns at once.
+                Effect::OrchGatesOff { pane } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.gates_off(pane);
+                    }
+                }
                 Effect::OrchCancelWorker { pane, run, worker } => {
                     if let Some(chats) = self.chats.as_ref() {
                         if chats.orchestrates() {

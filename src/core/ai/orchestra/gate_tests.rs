@@ -184,6 +184,10 @@ fn the_refusal_text_names_the_gate_and_the_step() {
         assert!(finish.starts_with("finish gate:"), "{finish}");
         assert!(finish.contains("Write off"), "{finish}");
         for text in [spawn, finish] {
+            assert!(
+                text.ends_with("Only the user can lift the gate (Enter gates off)"),
+                "{text}"
+            );
             assert!(text.is_ascii(), "{text}");
             assert!(
                 text.len() <= ERROR_CAP,

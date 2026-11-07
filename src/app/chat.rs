@@ -332,8 +332,19 @@ impl App {
         {
             return effects;
         }
-        // The delegate line, in the conversation view only, after the notice
-        // and the alert (D24): one meaning for Enter at a time.
+        // The gates line, then the delegate line, in the conversation view
+        // only, after the notice and the alert (D24): one meaning for Enter at
+        // a time. A pending override hides the delegate line.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && !self.cost_open(id)
+            && let Some(effects) = self.answer_gates_off(id, &key, repeat)
+        {
+            return effects;
+        }
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.note_editor_open(id)
@@ -650,6 +661,8 @@ impl App {
             SendOutcome::Sent { turn, mut request } => {
                 if attach.is_none() {
                     chat.composer_mut().clear();
+                    // A new run: the refusal of an earlier one is not its own.
+                    chat.drop_gate_offer();
                 }
                 if let Some(model) = unknown {
                     self.announce_unknown_window(model);
@@ -722,6 +735,11 @@ impl App {
         let run = chat.orch_run().is_some();
         if let Some(live) = chat.orch_run() {
             chat.cancel_run(live);
+        }
+        // A cancel ends the turn and its run: so it does the refusal of a
+        // gate. An idle pane with no run keeps its offer.
+        if run || follow == Follow::CancelEngine {
+            chat.drop_gate_offer();
         }
         chat.drop_orch_alert();
         // The partial answer is saved as cancelled.

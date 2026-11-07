@@ -92,11 +92,12 @@ impl Gate {
         match self {
             Self::Spawn => format!(
                 "spawn gate: step {step} is not closed. Hand off the steps in order first; \
-                 do not retry this spawn"
+                 do not retry this spawn. Only the user can lift the gate (Enter gates off)"
             ),
             Self::Finish => format!(
                 "finish gate: step {step} was granted but no code worker ran. Spawn one, or tell \
-                 the user it cannot start (Write off, worker cap)"
+                 the user it cannot start (Write off, worker cap). Only the user can lift the \
+                 gate (Enter gates off)"
             ),
         }
     }

@@ -1179,6 +1179,13 @@ impl Chats {
         }
     }
 
+    /// The user lifted the step gates of `pane` (`RunManager::gates_off`).
+    pub fn gates_off(&self, pane: PaneId) {
+        if let Some(orchestra) = self.orchestra.as_ref() {
+            orchestra.gates_off(pane);
+        }
+    }
+
     /// Cancels worker `worker` of run `run` of `pane` (the cancel tool's
     /// path, `RunManager::cancel_worker`); a run or a worker that is gone is
     /// a no-op, its rows having said so.

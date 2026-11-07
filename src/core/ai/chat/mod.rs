@@ -60,6 +60,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             event::{Continuation, WorkerRow},
             overrides::{FailurePicker, RunOverrides},
+            steps::{Gate, Step},
             worker::{ErrorClass, WorkerStatus},
         },
         tools::stage::BatchId,
@@ -89,6 +90,16 @@ pub struct OrchAlert {
     pub worker: WorkerId,
     pub class: ErrorClass,
     pub text: String,
+}
+
+/// The step gate refusal the `Enter gates off` key can lift (agent-
+/// orchestrator [W3], D24): the gate and the step it saw, in the run it
+/// refused in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GateOffer {
+    pub run: RunId,
+    pub gate: Gate,
+    pub step: Step,
 }
 
 /// Why the last answer to the alert did not go through.
@@ -504,6 +515,9 @@ pub struct ChatState {
     /// The user's request of the last undelegated reply, while the delegate
     /// key can still act on it. A turn sent goes with it.
     delegate: Option<String>,
+    /// The gate refusal the `Enter gates off` key can act on, while it can
+    /// (agent-orchestrator [W3], D24). Ends with the run it was about.
+    gate_offer: Option<GateOffer>,
     /// The last turn ended cleanly (`Done`); false for an error, a cut-off or
     /// an interruption. True before any turn ended.
     last_turn_clean: bool,
@@ -613,6 +627,7 @@ impl ChatState {
             orch_continue: None,
             orch_undelegated: None,
             delegate: None,
+            gate_offer: None,
             last_turn_clean: true,
             orch_cancelled: None,
             turn_failure: None,
@@ -661,6 +676,10 @@ impl ChatState {
         if self.orch_run != run {
             self.selected = None;
             self.cancel_armed = None;
+        }
+        // A refusal belongs to its run: the next run ignores it.
+        if run.is_some_and(|run| self.gate_offer.is_some_and(|offer| offer.run != run)) {
+            self.gate_offer = None;
         }
         self.orch_run = run;
         self.prune_traces();
@@ -765,15 +784,35 @@ impl ChatState {
         self.delegate.is_some()
     }
 
-    /// The offer and the notice parked for it end: the conversation, the
+    /// The offers and the notice parked for them end: the conversation, the
     /// folder or the mode they were about changed.
     pub fn drop_delegate(&mut self) {
         self.delegate = None;
         self.orch_undelegated = None;
+        self.gate_offer = None;
     }
 
     pub fn take_delegate(&mut self) -> Option<String> {
         self.delegate.take()
+    }
+
+    /// A step gate refused: the key can lift it. A later refusal replaces
+    /// the offer.
+    pub fn offer_gates(&mut self, offer: GateOffer) {
+        self.gate_offer = Some(offer);
+    }
+
+    pub fn gate_offer(&self) -> Option<GateOffer> {
+        self.gate_offer
+    }
+
+    pub fn take_gate_offer(&mut self) -> Option<GateOffer> {
+        self.gate_offer.take()
+    }
+
+    /// A new run begins without the key: the offer was not taken.
+    pub fn drop_gate_offer(&mut self) {
+        self.gate_offer = None;
     }
 
     /// The user's last message that is not `skip`: the request an undelegated
@@ -799,6 +838,7 @@ impl ChatState {
         self.orch_continue = None;
         self.orch_undelegated = None;
         self.delegate = None;
+        self.gate_offer = None;
         self.orch_cancelled = Some(run);
     }
 

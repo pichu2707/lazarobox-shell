@@ -1,6 +1,7 @@
 //! The text a chat pane shows when its engine cannot be used yet.
 
 use super::{adapters, engine::Availability, wrap::wrap_words};
+use crate::core::ai::orchestra::steps::{Gate, Step};
 
 /// The rows `text` takes above the composer in a transcript area `width`
 /// wide and `height` high: its wrapped lines, never more than the area has.
@@ -56,6 +57,26 @@ pub fn delegate_hint(cols: usize) -> String {
         .find(|form| form.len() + 2 <= cols)
         .unwrap_or("Enter delegate")
         .to_owned()
+}
+
+/// The line offered while `Enter gates off` can act (W3, D24), in `cols`
+/// columns, ASCII and one line with two columns of margin. The key comes first
+/// and stays whole, and so does when it applies (`this run` or `next run`);
+/// the gate and then the step go as the width shrinks.
+pub fn gates_hint(cols: usize, gate: Gate, step: Step, this_run: bool) -> String {
+    let when = if this_run { "this run" } else { "next run" };
+    let key = format!("Enter gates off ({when})");
+    let gate = gate.label();
+    let forms = [
+        format!("{key} | {gate} gate: step {}", step.label()),
+        format!("{key} | {gate} gate"),
+        key,
+    ];
+    let last = "Enter gates off".to_owned();
+    forms
+        .into_iter()
+        .find(|form| form.len() + 2 <= cols)
+        .unwrap_or(last)
 }
 
 /// The guidance for `availability`, or `None` when the engine is ready.
@@ -168,6 +189,44 @@ mod tests {
         for cols in 1..=80 {
             let text = delegate_hint(cols);
             assert!(text.is_ascii() && text.starts_with("Enter delegate"));
+        }
+    }
+
+    // D24: the key first, when it applies named, the gate and the step shed by
+    // width, ASCII, two columns of margin.
+    #[test]
+    fn the_gates_hint_names_the_key_and_when_it_applies_in_a_form_for_each_width() {
+        let full = "Enter gates off (this run) | spawn gate: step explore";
+        assert_eq!(gates_hint(200, Gate::Spawn, Step::Explore, true), full);
+        assert_eq!(
+            gates_hint(full.len() + 2, Gate::Spawn, Step::Explore, true),
+            full
+        );
+        assert_eq!(
+            gates_hint(full.len() + 1, Gate::Spawn, Step::Explore, true),
+            "Enter gates off (this run) | spawn gate"
+        );
+        assert_eq!(
+            gates_hint(60, Gate::Finish, Step::Implement, false),
+            "Enter gates off (next run) | finish gate: step implement"
+        );
+        assert_eq!(
+            gates_hint(30, Gate::Spawn, Step::Explore, false),
+            "Enter gates off (next run)"
+        );
+        assert_eq!(
+            gates_hint(10, Gate::Spawn, Step::Explore, true),
+            "Enter gates off"
+        );
+        for cols in 1..=90 {
+            for this_run in [true, false] {
+                let text = gates_hint(cols, Gate::Finish, Step::Implement, this_run);
+                assert!(text.is_ascii() && text.starts_with("Enter gates off"));
+                assert!(
+                    text.len() + 2 <= cols || text == "Enter gates off",
+                    "{cols}: {text}"
+                );
+            }
         }
     }
 
