@@ -238,13 +238,13 @@ async fn code_gets_through(handle: &OrchHandle) -> bool {
 #[tokio::test]
 async fn gates_off_on_a_live_run_lifts_both_gates() {
     let lab = lab(Script::Hang);
-    let (_run, handle) = lab.start(codex_both());
+    let (run, handle) = lab.start(codex_both());
     assert!(!code_gets_through(&handle).await);
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), run);
     assert!(code_gets_through(&handle).await);
     // Only the gate that was lifted: the finish gate has its worker anyway, so
     // prove the finish half on a run that has none.
-    let (_run, handle) = lab.start(codex_both());
+    let (run, handle) = lab.start(codex_both());
     authorize_implement(&handle).await;
     assert!(
         handle
@@ -254,7 +254,7 @@ async fn gates_off_on_a_live_run_lifts_both_gates() {
             .await
             .is_error
     );
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), run);
     let finished = handle
         .call(OrchCall::Finish {
             summary: "x".into(),
@@ -275,8 +275,8 @@ async fn authorize_implement(handle: &OrchHandle) {
 #[tokio::test]
 async fn a_replaced_run_does_not_inherit_a_lift() {
     let lab = lab(Script::Hang);
-    let (_old, handle) = lab.start(codex_both());
-    lab.manager.gates_off(pane());
+    let (old, handle) = lab.start(codex_both());
+    lab.manager.gates_off(pane(), old);
     assert!(code_gets_through(&handle).await);
     let (_new, handle) = lab.start(codex_both());
     assert!(!code_gets_through(&handle).await);
@@ -287,7 +287,7 @@ async fn a_replaced_run_does_not_inherit_a_lift() {
 async fn a_continuation_keeps_the_lift() {
     let lab = lab(Script::Hang);
     let (run, _handle) = lab.manager.start(pane(), turns_scope(&lab, 6)).unwrap();
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), run);
     let (_, handle) = lab
         .manager
         .attach(pane(), run, turns_scope(&lab, 6))
@@ -303,7 +303,7 @@ async fn a_continuation_keeps_the_lift() {
 #[tokio::test]
 async fn a_lift_with_no_live_run_lifts_nothing_and_says_so() {
     let mut lab = lab(Script::Hang);
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), RunId(1));
     assert_eq!(notices_of(&lab.sent()), vec![NOTHING_LIFTED]);
     let (_run, handle) = lab.start(codex_both());
     assert!(!code_gets_through(&handle).await, "the next run is gated");
@@ -314,7 +314,7 @@ async fn a_lift_with_no_live_run_lifts_nothing_and_says_so() {
 #[tokio::test]
 async fn a_lift_after_the_run_finished_lifts_nothing_and_says_so() {
     let mut lab = lab(Script::Hang);
-    let (_run, handle) = lab.start(codex_both());
+    let (run, handle) = lab.start(codex_both());
     let done = handle
         .call(OrchCall::Finish {
             summary: "x".into(),
@@ -322,7 +322,7 @@ async fn a_lift_after_the_run_finished_lifts_nothing_and_says_so() {
         .await;
     assert_eq!(done, fine("run finished"));
     lab.sent();
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), run);
     assert_eq!(notices_of(&lab.sent()), vec![NOTHING_LIFTED]);
     let (_next, handle) = lab.start(codex_both());
     assert!(!code_gets_through(&handle).await);
@@ -332,10 +332,26 @@ async fn a_lift_after_the_run_finished_lifts_nothing_and_says_so() {
 #[tokio::test]
 async fn a_lift_on_a_live_run_says_which_run() {
     let mut lab = lab(Script::Hang);
-    let (_run, _handle) = lab.start(codex_both());
+    let (run, _handle) = lab.start(codex_both());
     lab.sent();
-    lab.manager.gates_off(pane());
+    lab.manager.gates_off(pane(), run);
     assert_eq!(notices_of(&lab.sent()), vec![LIFTED]);
+}
+
+// A lift names its run: the offer was for run A, run B is live now. Nothing of
+// B is lifted, and the line says so.
+#[tokio::test]
+async fn a_lift_for_another_run_lifts_nothing_of_the_live_one() {
+    let mut lab = lab(Script::Hang);
+    let (old, _handle) = lab.start(codex_both());
+    let (_new, handle) = lab.start(codex_both());
+    lab.sent();
+    lab.manager.gates_off(pane(), old);
+    assert_eq!(notices_of(&lab.sent()), vec![NOTHING_LIFTED]);
+    assert!(
+        !code_gets_through(&handle).await,
+        "the live run stays gated"
+    );
 }
 
 const LIFTED: &str = "gates off: spawn and finish gates lifted for this run";

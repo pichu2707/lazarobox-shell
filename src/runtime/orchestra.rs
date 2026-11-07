@@ -1109,13 +1109,14 @@ impl RunManager {
         }
     }
 
-    /// The user lifted the step gates of `pane` (W3, D24): its live run, all
-    /// or nothing, for that run only. With no run that is open there is
+    /// The user lifted the step gates of `pane` (W3, D24): run `run`, all or
+    /// nothing, when it is the one live there; another run is left as it is. With no run that is open there is
     /// nothing to lift, nothing is kept, and the pane is told so. Only the app
     /// calls it, from a key press: no `OrchCall` reaches it.
-    pub fn gates_off(&self, pane: PaneId) {
+    pub fn gates_off(&self, pane: PaneId, run: RunId) {
         let lifted = lock(&self.runs)
             .get_mut(&pane)
+            .filter(|live| live.run.id() == run)
             .filter(|live| matches!(live.run.state(), RunState::Open | RunState::Halted { .. }))
             .map(|live| live.run.lift_gates())
             .is_some();

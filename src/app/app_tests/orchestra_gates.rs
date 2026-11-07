@@ -97,7 +97,10 @@ fn guidance(a: &App) -> Option<String> {
 }
 
 fn lifts(effects: &[Effect]) -> bool {
-    effects.contains(&Effect::OrchGatesOff { pane: chat_id() })
+    effects.contains(&Effect::OrchGatesOff {
+        pane: chat_id(),
+        run: RUN,
+    })
 }
 
 fn starts_a_turn(effects: &[Effect]) -> bool {
@@ -133,7 +136,13 @@ fn enter_asks_the_runtime_to_lift_and_spends_the_offer() {
     let (mut a, _) = gated();
     let before = system_lines(&a).len();
     let effects = press(&mut a, KeyCode::Enter);
-    assert_eq!(effects, vec![Effect::OrchGatesOff { pane: chat_id() }]);
+    assert_eq!(
+        effects,
+        vec![Effect::OrchGatesOff {
+            pane: chat_id(),
+            run: RUN,
+        }]
+    );
     assert_eq!(system_lines(&a).len(), before, "no line of the app's own");
     assert!(offer(&a).is_none());
     assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
@@ -265,15 +274,25 @@ fn a_pending_override_answers_enter_before_the_delegate_offer() {
     assert_eq!(a.notice(), None);
 }
 
-// The line is shown only while a live run can take the lift: with the turn
-// over and no run known to the pane (its `Ended` still on the way), it is not.
+// The line is shown only while a live run can take the lift: once the run
+// ended (its `Ended` seen), it is not.
 #[test]
 fn no_line_is_offered_when_no_run_is_live() {
     let (mut a, turn) = gated();
-    a.update(finish(turn));
+    ended(&mut a, turn);
     assert!(guidance(&a).is_none_or(|g| !g.contains("gates off")));
     let effects = press(&mut a, KeyCode::Enter);
     assert!(!lifts(&effects), "{effects:?}");
+}
+
+// A refusal makes the run known to the pane: with the turn over and the run
+// not yet ended, the way out stays and lifts that run.
+#[test]
+fn a_refused_run_keeps_its_offer_after_the_turn() {
+    let (mut a, turn) = gated();
+    a.update(finish(turn));
+    assert_eq!(guidance(&a).as_deref(), Some(LINE));
+    assert!(lifts(&press(&mut a, KeyCode::Enter)));
 }
 
 // Stale state: the offer ends when the run is cancelled (folder change, resume

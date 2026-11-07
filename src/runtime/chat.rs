@@ -1180,9 +1180,9 @@ impl Chats {
     }
 
     /// The user lifted the step gates of `pane` (`RunManager::gates_off`).
-    pub fn gates_off(&self, pane: PaneId) {
+    pub fn gates_off(&self, pane: PaneId, run: RunId) {
         if let Some(orchestra) = self.orchestra.as_ref() {
-            orchestra.gates_off(pane);
+            orchestra.gates_off(pane, run);
         }
     }
 
