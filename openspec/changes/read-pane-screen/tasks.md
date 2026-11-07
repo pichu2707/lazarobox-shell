@@ -29,14 +29,14 @@ Fallback: if PR2 forecasts above 380 at apply time, move README to PR3.
 
 ## PR 1: inert core
 
-- [ ] 1.1 RED `src/core/pane.rs`: `screen_span` returns visible rows, visible plus N scrollback, and visible only on the alternate screen (flag set).
-- [ ] 1.2 GREEN `Pane::screen_span` (D6, alt note).
-- [ ] 1.3 RED `src/core/ai/tools/screen.rs`: builder tests: visible; scrollback tail; 8 KiB tail with "[earlier lines cut: kept the last N lines]" inside cap (D7); wrapped `KEY=secret` split across soft wraps redacted; blank screen -> `None`; alt-screen note line; `escape(l)==l` and `wrap(nonce,text)` contains text verbatim (D5).
-- [ ] 1.4 GREEN new `screen.rs`: `read_lines -> copy::join -> clean -> redact -> tail cap` (cap after redact).
-- [ ] 1.5 RED `chat/review/screen.rs`: `ScreenReview { text, review }` doc = Summary + Warning (cut / no scrollback) + Context; header "pane 3 screen, 24 lines"; `y` locked until all lines seen, then ARM_DELAY; rows equal `escape(line)`.
-- [ ] 1.6 GREEN `ScreenReview` (CommitReview pattern) plus optional `summary` in `BatchReview::counts()` (`review.rs`).
-- [ ] 1.7 GUARD: golden `tools_list.json` and default tool list unchanged.
-- [ ] 1.8 REFACTOR; module wiring only.
+- [x] 1.1 RED `src/core/pane.rs`: `screen_span` returns visible rows, visible plus N scrollback, and visible only on the alternate screen (flag set).
+- [x] 1.2 GREEN `Pane::screen_span` (D6, alt note).
+- [x] 1.3 RED `src/core/ai/tools/screen.rs`: builder tests: visible; scrollback tail; 8 KiB tail with "[earlier lines cut: kept the last N lines]" inside cap (D7); wrapped `KEY=secret` split across soft wraps redacted; blank screen -> `None`; alt-screen note line; `escape(l)==l` and `wrap(nonce,text)` contains text verbatim (D5).
+- [x] 1.4 GREEN new `screen.rs`: `read_lines -> copy::join -> clean -> redact -> tail cap` (cap after redact).
+- [x] 1.5 RED `chat/review/screen.rs`: `ScreenReview { text, review }` doc = Summary + Warning (cut / no scrollback) + Context; header "pane 3 screen, 24 lines"; `y` locked until all lines seen, then ARM_DELAY; rows equal `escape(line)`.
+- [x] 1.6 GREEN `ScreenReview` (CommitReview pattern) plus optional `summary` in `BatchReview::counts()` (`review.rs`).
+- [x] 1.7 GUARD: golden `tools_list.json` and default tool list unchanged.
+- [x] 1.8 REFACTOR; module wiring only.
 - Manual PR1: none visible; confirm app behaves exactly as before.
 
 ## PR 2: wiring
