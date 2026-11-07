@@ -146,3 +146,68 @@ async fn a_waiting_run_ends_on_cancel_and_on_the_turn_cap() {
         "{events:?}"
     );
 }
+
+// A reply to a run that ended while it waited is refused, not started.
+#[tokio::test]
+async fn a_reply_after_the_waiting_run_ended_is_refused() {
+    let lab = lab(Script::Hang);
+    let (run, handle) = lab.start(codex_both());
+    assert!(!code_gets_through(&handle).await);
+    lab.manager.turn_ended(pane(), run);
+    lab.manager.cancel(pane());
+    assert!(
+        lab.manager
+            .attach(pane(), run, lab.scope(codex_both(), &[]))
+            .is_err()
+    );
+}
+
+// The lift line is given once: after the reply the lifted run no longer waits.
+#[tokio::test]
+async fn the_lift_note_is_given_once_and_the_lifted_run_settles() {
+    let mut lab = lab(Script::Hang);
+    let (run, handle) = lab.start(codex_both());
+    assert!(!code_gets_through(&handle).await);
+    lab.manager.turn_ended(pane(), run);
+    lab.manager.gates_off(pane(), run);
+    assert!(lab.manager.reply_note(pane(), run).is_some());
+    let _ = lab
+        .manager
+        .attach(pane(), run, lab.scope(codex_both(), &[]))
+        .unwrap();
+    lab.sent();
+    lab.manager.turn_ended(pane(), run);
+    let events = lab.sent();
+    assert!(waits_of(&events).is_empty(), "{events:?}");
+    assert!(
+        events.contains(&OrchestraEvent::Ended { run }),
+        "{events:?}"
+    );
+    assert_eq!(lab.manager.reply_note(pane(), run), None);
+}
+
+// A later, unrelated run never waits and cannot take the old run's reply.
+#[tokio::test]
+async fn a_later_run_does_not_inherit_the_wait() {
+    let mut lab = lab(Script::Hang);
+    let (old, handle) = lab.start(codex_both());
+    assert!(!code_gets_through(&handle).await);
+    lab.manager.turn_ended(pane(), old);
+    lab.manager.gates_off(pane(), old);
+    let (new, _handle) = lab.start(codex_both());
+    assert_eq!(lab.manager.reply_note(pane(), new), None);
+    assert_eq!(lab.manager.reply_note(pane(), old), None);
+    assert!(
+        lab.manager
+            .attach(pane(), old, lab.scope(codex_both(), &[]))
+            .is_err()
+    );
+    lab.sent();
+    lab.manager.turn_ended(pane(), new);
+    let events = lab.sent();
+    assert!(waits_of(&events).is_empty(), "{events:?}");
+    assert!(
+        events.contains(&OrchestraEvent::Ended { run: new }),
+        "{events:?}"
+    );
+}

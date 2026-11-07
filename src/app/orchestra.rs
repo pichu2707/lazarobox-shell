@@ -400,8 +400,9 @@ impl App {
             // The turn ended with the spawn gate standing: the run stays open
             // for the reply, and the pane says why (W3, option B).
             OrchestraEvent::Waits { run, step } => {
-                if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.set_orch_run(Some(run));
+                // A `Waits` that comes after the run ended or was cancelled
+                // marks nothing.
+                if chat.orch_run() == Some(run) && !chat.run_cancelled(run) {
                     chat.set_waiting_run(Some(run));
                     chat.push_system_line(format!(
                         "run waits for your reply: step {} is not closed (Enter gates off)",
@@ -1100,7 +1101,12 @@ impl App {
         if !self.orch_gate() {
             return None;
         }
-        Some(if self.orch_run_active(id) {
+        let waits = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(ChatState::only_waits);
+        Some(if self.orch_run_active(id) && !waits {
             OrchHint::CancelRunFirst
         } else {
             OrchHint::Toggle
@@ -1120,7 +1126,7 @@ impl App {
             .panes
             .get(&id)
             .and_then(PaneState::chat_state)
-            .is_some_and(|chat| chat.waiting_run().is_some() && !chat.orch_turn_in_flight());
+            .is_some_and(ChatState::only_waits);
         if waiting {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 if let Some(run) = chat.waiting_run() {

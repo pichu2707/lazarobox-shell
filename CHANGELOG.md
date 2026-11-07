@@ -13,10 +13,12 @@ baseline.
 ### Fixed
 
 - Orchestrator: when a step gate refuses a code worker and the coordinator's
-  turn ends, the run now waits for your reply instead of ending. Your next
-  message in that pane continues the same run, so Enter (gates off) takes
-  effect, and the coordinator is told the gates were lifted. The pane says
-  when the run waits and when the wait ends.
+  turn ends, the run now waits for your reply instead of ending. Once the pane
+  says the run waits, press Enter to lift the gates and send your reply: it
+  continues the same run and the coordinator is told the gates were lifted.
+  The pane says when the run waits and when the wait ends. A lift pressed
+  while the first turn still runs is not kept if that turn ends without a
+  refusal standing.
 - Orchestrator: a spawn refused by a step gate no longer tells the coordinator
   never to retry it. The refusal and the coordinator prompts now say to spawn
   again once that step is handed off.

@@ -744,6 +744,11 @@ impl App {
         // A run outlives its turn: Ctrl+C ends it too, which answers its
         // failure alert.
         let run = chat.orch_run().is_some();
+        if chat.waiting_run().is_some() {
+            chat.push_system_line(
+                "run no longer waits for your reply: the run was cancelled".to_owned(),
+            );
+        }
         if let Some(live) = chat.orch_run() {
             chat.cancel_run(live);
         }

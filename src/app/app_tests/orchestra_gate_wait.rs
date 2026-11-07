@@ -149,3 +149,95 @@ fn enter_still_lifts_while_the_run_waits() {
     );
     assert_eq!(chat_of(&a).waiting_run(), Some(RUN), "still waiting");
 }
+
+// Ctrl+C on a waiting run says the wait is over (the run is cancelled).
+#[test]
+fn cancel_says_the_wait_is_over() {
+    let (mut a, _) = waiting();
+    a.update(ctrl('c'));
+    let lines = systems(&a);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "run no longer waits for your reply: the run was cancelled"),
+        "{lines:?}"
+    );
+}
+
+// The footer does not tell the user to cancel first: Ctrl+O ends the wait.
+#[test]
+fn the_footer_hint_does_not_say_cancel_first_while_only_waiting() {
+    use crate::app::orchestra::OrchHint;
+    let (a, _) = waiting();
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::Toggle));
+    let (a, _) = running();
+    assert_eq!(a.orch_hint(chat_id()), Some(OrchHint::CancelRunFirst));
+}
+
+fn refused_event() -> OrchestraEvent {
+    OrchestraEvent::GateRefused {
+        run: RUN,
+        gate: Gate::Spawn,
+        step: Step::Explore,
+        reason: Gate::Spawn.refusal(Step::Explore),
+    }
+}
+
+fn waits_event() -> OrchestraEvent {
+    OrchestraEvent::Waits {
+        run: RUN,
+        step: Step::Explore,
+    }
+}
+
+// A `Waits` that arrives after the run ended or was cancelled marks nothing.
+#[test]
+fn a_late_waits_for_an_ended_or_cancelled_run_is_ignored() {
+    let (mut a, turn) = running();
+    a.update(event(refused_event()));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    a.update(event(waits_event()));
+    assert_eq!(chat_of(&a).waiting_run(), None);
+    assert!(
+        !systems(&a)
+            .iter()
+            .any(|l| l.contains("waits for your reply"))
+    );
+    a.update(finish(turn));
+    let effects = ask(&mut a, "again");
+    assert_eq!(attach_of(&effects), Some(None), "{effects:?}");
+
+    let (mut a, _) = running();
+    a.update(event(refused_event()));
+    a.update(ctrl('c'));
+    a.update(event(waits_event()));
+    assert_eq!(chat_of(&a).waiting_run(), None);
+}
+
+// Closing the pane during the wait cancels the run.
+#[test]
+fn closing_the_pane_during_the_wait_cancels_the_run() {
+    let (a, _) = waiting();
+    assert_eq!(
+        a.close_run_effects(&[chat_id()]),
+        vec![Effect::ChatCancel(chat_id())]
+    );
+}
+
+// Pinned: an orchestrator turn that fails after the wait began leaves the
+// run waiting; the user can still reply to it.
+#[test]
+fn an_engine_error_after_the_wait_keeps_it_and_the_reply_attaches() {
+    use crate::core::ai::chat::engine::{ChatError, StreamEvent};
+    let (mut a, turn) = running();
+    a.update(event(refused_event()));
+    a.update(event(waits_event()));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    assert_eq!(chat_of(&a).waiting_run(), Some(RUN));
+    let effects = ask(&mut a, "retry");
+    assert_eq!(attach_of(&effects), Some(Some(RUN)), "{effects:?}");
+}

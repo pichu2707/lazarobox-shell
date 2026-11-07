@@ -819,6 +819,11 @@ impl ChatState {
         self.waiting_run
     }
 
+    /// The run only waits for the reply: no orchestrator turn is in flight.
+    pub fn only_waits(&self) -> bool {
+        self.waiting_run.is_some() && !self.orch_turn_in_flight()
+    }
+
     pub fn set_waiting_run(&mut self, run: Option<RunId>) {
         self.waiting_run = run;
     }
