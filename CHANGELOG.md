@@ -10,6 +10,23 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The chat can now read the screen of another pane with the new `read_pane`
+  tool, so it sees what a command printed (for example over SSH), not only the
+  folder. It reads the visible screen, and with `scrollback` (1 to 200) that
+  many earlier lines too, keeping the last 8 KiB. Every call asks, on every
+  engine and in every approval mode: the review shows the exact text that will
+  be sent, already cleaned and redacted, and `y` stays locked until you have
+  scrolled to the end. The text is frozen when the review opens, so what you
+  approve is what the model gets, even if the pane changes or closes. Only
+  panes `list_panes` shows can be read, never the chat's own; ORCH workers and
+  the coordinator never get the tool. A denied read, a pane that is not open,
+  a blank screen and a read refused because another approval is pending each
+  print a chat line; a cut text and scrollback asked of a full-screen app are
+  warnings in the review. Redaction is partial: read the text before you
+  approve.
+
 ## [1.13.0] - 2026-11-07
 
 ### Added
