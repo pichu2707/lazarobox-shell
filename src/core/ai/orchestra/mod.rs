@@ -80,7 +80,7 @@ pub enum Toolset {
     ReadOnly,
     /// The read tools and the coding-tools write tools (S7): `create_dir`,
     /// `write_file`, `edit_file` and `propose_batch`. Writes are staged in
-    /// the pane's batch and reach the disk only through the user's review.
+    /// the worker's own batch and reach the disk only through the user's review.
     Code,
     /// The four orchestration tools, for the orchestrator turn only.
     Orchestrator,

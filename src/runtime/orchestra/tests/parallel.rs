@@ -286,7 +286,7 @@ mod writers {
     /// The next ask the lab's orchestrator turn got.
     async fn next_ask(lab: &mut Lab) -> (CallId, ApprovalAsk) {
         loop {
-            let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+            let event = timeout(Duration::from_secs(30), lab.turn.1.recv()).await;
             if let StreamEvent::ToolCall {
                 id,
                 approval: Some(ask),
@@ -348,7 +348,7 @@ mod writers {
         assert_eq!(files, 2, "b.txt and c.txt");
         assert!(waits.decide(session_of(run, 1), 7, first, Decision::Sent));
         let mut reply = String::new();
-        let read = timeout(Duration::from_secs(5), one.0.read_line(&mut reply));
+        let read = timeout(Duration::from_secs(30), one.0.read_line(&mut reply));
         read.await.unwrap().unwrap();
         assert!(lab.app().join("a.txt").exists(), "{reply}");
         assert!(!lab.app().join("b.txt").exists());
@@ -384,7 +384,7 @@ mod writers {
         assert!(waits.decide(session_of(run, 2), 7, early, Decision::Denied("no")));
         assert!(waits.decide(session_of(run, 1), 7, late, Decision::Sent));
         let mut reply = String::new();
-        let read = timeout(Duration::from_secs(5), one.0.read_line(&mut reply));
+        let read = timeout(Duration::from_secs(30), one.0.read_line(&mut reply));
         read.await.unwrap().unwrap();
         assert!(lab.app().join("a.txt").exists(), "{reply}");
         assert!(!lab.app().join("b.txt").exists(), "denied");

@@ -1017,7 +1017,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     // resolving the request again would reopen the race it
                     // closed.
                     //
-                    // A review worker (read-only, with the pane's batch to
+                    // A review worker (read-only, with its proposer's batch to
                     // look at, S7b) reads through the staged view instead,
                     // kept in the root: the staged text is not on disk.
                     (_, Call::ReadFile { .. }) if scope.sees_stage() => {

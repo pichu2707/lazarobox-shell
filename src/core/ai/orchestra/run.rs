@@ -169,7 +169,7 @@ struct Slot {
     started: Option<Instant>,
     result: Option<WorkerResult>,
     /// What the worker staged (S7). Kept across a retry: the staged files
-    /// stay in the pane's batch whatever the attempt.
+    /// stay in the writer's own batch whatever the attempt.
     ledger: ChangeLedger,
     /// What the worker's engine reported so far, over every attempt: a failed
     /// attempt spent its tokens too.
@@ -368,7 +368,7 @@ impl Run {
     /// What the user should be told about how worker `id` ended, when nothing
     /// else shows it (agent-orchestrator [W1]): a `code` worker that ended
     /// `done` and staged nothing, or a worker with staged paths whose batch
-    /// is still unproposed. `unproposed` asks the pane's batch and runs only
+    /// is still unproposed. `unproposed` asks the worker's own batch and runs only
     /// when the worker has paths staged and not on disk.
     pub fn disclosure(
         &self,
