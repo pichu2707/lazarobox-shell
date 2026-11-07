@@ -924,3 +924,84 @@ fn leaving_orch_ends_the_delegate_offer() {
     state.set_orch(false);
     assert!(nothing_offered(&mut state));
 }
+
+// The gate offer (W3, D24) is about one run in one conversation and folder:
+// the same events that end the delegate offer end it, and so does the run.
+fn gated() -> ChatState {
+    let mut state = chat();
+    state.set_orch_run(Some(RunId(7)));
+    state.offer_gates(GateOffer {
+        run: RunId(7),
+        gate: Gate::Spawn,
+        step: Step::Explore,
+    });
+    state
+}
+
+#[test]
+fn opening_a_stored_conversation_ends_the_gate_offer() {
+    let mut state = gated();
+    state.resume_into(
+        7,
+        Profile::Programmer,
+        super::tags::Tags::default(),
+        Vec::new(),
+    );
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn changing_or_restoring_the_folder_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_folder("/w/b".into());
+    assert_eq!(state.gate_offer(), None);
+    let mut state = gated();
+    state.restore_folder("/w/b".into());
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn leaving_orch_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_orch(true);
+    state.set_orch(false);
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn cancelling_the_run_ends_the_gate_offer() {
+    let mut state = gated();
+    state.cancel_run(RunId(7));
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn the_next_run_ends_the_gate_offer_of_the_one_before() {
+    let mut state = gated();
+    state.set_orch_run(Some(RunId(7)));
+    assert!(state.gate_offer().is_some(), "the same run");
+    state.set_orch_run(Some(RunId(8)));
+    assert_eq!(state.gate_offer(), None);
+}
+
+// The offer is for a live run: when the run ends nothing can take the lift.
+#[test]
+fn the_end_of_the_run_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_orch_run(None);
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn a_new_refusal_replaces_the_offer() {
+    let mut state = gated();
+    let finish = GateOffer {
+        run: RunId(7),
+        gate: Gate::Finish,
+        step: Step::Implement,
+    };
+    state.offer_gates(finish);
+    assert_eq!(state.gate_offer(), Some(finish));
+    assert_eq!(state.take_gate_offer(), Some(finish));
+    assert_eq!(state.gate_offer(), None);
+}

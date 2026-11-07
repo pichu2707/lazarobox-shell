@@ -66,6 +66,43 @@ pub const WRITE_OFF: &str = "worker not started: a code worker needs the Write t
 pub const WRITE_OFF_CORRECTION: &str =
     "Write is off; type /write in this chat so the next review can correct";
 
+/// The two transitions a step gate guards (agent-orchestrator [W3], D23).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gate {
+    /// A write-capable worker needs the steps before `implement` closed.
+    Spawn,
+    /// A run granted `implement` needs a write-capable worker before `finish`.
+    Finish,
+}
+
+impl Gate {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Spawn => "spawn",
+            Self::Finish => "finish",
+        }
+    }
+
+    /// What the coordinator and the pane both read when `self` refused at
+    /// `step`: the gate, the step and what to do. A run whose code worker
+    /// cannot start (Write off, worker cap) ends here too, so the finish text
+    /// says to tell the user. Under `ERROR_CAP` for every step.
+    pub fn refusal(self, step: Step) -> String {
+        let step = step.label();
+        match self {
+            Self::Spawn => format!(
+                "spawn gate: step {step} is not closed. Hand off the steps in order first; \
+                 do not retry this spawn. Only the user can lift the gate (Enter gates off)"
+            ),
+            Self::Finish => format!(
+                "finish gate: step {step} was granted but no code worker ran. Spawn one, or tell \
+                 the user it cannot start (Write off, worker cap). Only the user can lift the \
+                 gate (Enter gates off)"
+            ),
+        }
+    }
+}
+
 /// How big `classify` found the goal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {
@@ -158,6 +195,11 @@ impl Steps {
     /// handoff cannot lift it.
     pub fn read_only(&self) -> bool {
         self.read_only
+    }
+
+    /// What `authorize` granted; `None` before it closed.
+    pub fn grant(&self) -> Option<Grant> {
+        self.grant
     }
 
     pub fn size(&self) -> Option<Size> {

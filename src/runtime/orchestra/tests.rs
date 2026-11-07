@@ -415,6 +415,29 @@ impl Lab {
         self.manager.start(pane(), self.scope(roster, &[])).unwrap()
     }
 
+    /// [`Lab::start`] with the steps before `implement` closed, so a test may
+    /// spawn a `code` worker (W3). A gate test uses `start`.
+    fn start_open(&self, roster: Roster) -> (RunId, OrchHandle) {
+        let (run, handle) = self.start(roster);
+        self.open_steps(run);
+        (run, handle)
+    }
+
+    /// Starts `scope` with the steps before `implement` closed.
+    fn begin(&self, scope: OrchScope) -> Result<(RunId, OrchHandle), String> {
+        let (run, handle) = self.manager.start(pane(), scope)?;
+        self.open_steps(run);
+        Ok((run, handle))
+    }
+
+    /// Closes the steps a `code` spawn needs on the live run.
+    fn open_steps(&self, run: RunId) {
+        (self.manager.on_run(pane(), run, |live| {
+            live.run.close_steps_for_tests();
+        }))
+        .expect("the run is live");
+    }
+
     /// The next event, from pane 1. A worker's transcript steps (`Trace`) are
     /// skipped: they come with every turn and the tests that read the story
     /// of a run do not tell them.
@@ -521,6 +544,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Disclosed { .. }
         | OrchestraEvent::Degraded { .. }
         | OrchestraEvent::SpawnRefused { .. }
+        | OrchestraEvent::GateRefused { .. }
         | OrchestraEvent::Undelegated { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
@@ -873,7 +897,7 @@ async fn a_worker_on_a_model_not_downloaded_is_refused_naming_it() {
     ];
     let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
     let mut lab = lab(Script::Answer("x"));
-    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    let (_, handle) = lab.start_open(roster(&assigned, engines, JAIL));
     let spawned = handle.call(spawn(Task::Code, "write it")).await;
     assert!(spawned.is_error);
     assert!(
@@ -1567,6 +1591,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Disclosed { .. }
             | OrchestraEvent::Degraded { .. }
             | OrchestraEvent::SpawnRefused { .. }
+            | OrchestraEvent::GateRefused { .. }
             | OrchestraEvent::Undelegated { .. }
             | OrchestraEvent::Unavailable => None,
         })
@@ -2642,7 +2667,9 @@ impl Lab {
             deadline,
             ..self.scope(codex_code(), &["~/dev/app"])
         };
-        self.manager.start(pane(), scope).unwrap()
+        let (run, handle) = self.manager.start(pane(), scope).unwrap();
+        self.open_steps(run);
+        (run, handle)
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // only the Linux-only write tests use it
@@ -3351,7 +3378,7 @@ async fn read_only_names_the_running_code_worker_and_classify_needs_a_reason() {
         (Task::Code, "claude", "sonnet"),
     ];
     let roster = roster(&assigned, vec![found("claude", &[])], JAIL);
-    let (_, handle) = lab.start(roster);
+    let (_, handle) = lab.start_open(roster);
     handle.call(spawn(Task::Code, "edit it")).await;
     assert_eq!(
         handle
@@ -4084,7 +4111,7 @@ async fn reviewed_with(
         limits,
         ..lab.scope(codex_both(), &[])
     };
-    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.begin(scope).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
@@ -4128,10 +4155,7 @@ async fn reviewed_diff(
         diff: Some(diff),
         ..tooled(m, home)
     });
-    let (run, handle) = lab
-        .manager
-        .start(pane(), lab.scope(codex_both(), &[]))
-        .unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
@@ -4655,10 +4679,7 @@ async fn held_lab() -> (Lab, RunId, OrchHandle) {
         scratch: |_| false,
         ..tooled(m, home)
     });
-    let (run, handle) = lab
-        .manager
-        .start(pane(), lab.scope(codex_both(), &[]))
-        .unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     (lab, run, handle)
@@ -4805,10 +4826,7 @@ async fn an_unread_staged_file_makes_the_review_incomplete() {
         scratch: |_| false,
         ..tooled(m, home)
     });
-    let (run, handle) = lab
-        .manager
-        .start(pane(), lab.scope(codex_both(), &[]))
-        .unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     // The first lens will be worker 2.
@@ -4923,7 +4941,7 @@ async fn a_check_that_cannot_start_keeps_the_blockers_open() {
         limits,
         ..lab.scope(codex_both(), &[])
     };
-    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.begin(scope).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
@@ -5004,10 +5022,7 @@ async fn the_review_returns_the_hashes_it_last_reviewed() {
         restage: Some(restaged_differently),
         ..tooled(m, home)
     });
-    let (run, handle) = lab
-        .manager
-        .start(pane(), lab.scope(codex_both(), &[]))
-        .unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
@@ -5616,7 +5631,7 @@ async fn a_spawn_refused_for_its_engine_is_shown_too() {
     ];
     let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
     let mut lab = lab(Script::Hang);
-    let (run, handle) = lab.start(roster(&assigned, engines, JAIL));
+    let (run, handle) = lab.start_open(roster(&assigned, engines, JAIL));
     let refused = handle.call(spawn(Task::Code, "write")).await;
     assert!(refused.is_error, "{refused:?}");
     // The coordinator keeps the status prefix; the pane gets the bare cause.
@@ -5818,7 +5833,7 @@ async fn a_code_spawn_with_write_off_is_refused_shown_and_never_launched() {
         ceiling: write_off(),
         ..lab.scope(codex_review(), &[])
     };
-    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.begin(scope).unwrap();
     let refused = handle.call(spawn(Task::Code, "write it")).await;
     assert!(refused.is_error, "{refused:?}");
     // Neither cut nor masked on its way: the whole text, as written.
@@ -5855,7 +5870,7 @@ async fn a_menu_change_applies_from_the_next_spawn_and_not_to_a_running_worker()
         },
         ..lab.scope(codex_code(), &["~/dev/app"])
     };
-    let (run, handle) = lab.manager.start(pane(), scope(FamilySet::ALL)).unwrap();
+    let (run, handle) = lab.begin(scope(FamilySet::ALL)).unwrap();
     assert_eq!(
         handle.call(spawn(Task::Code, "one")).await,
         fine("worker 1: running")
@@ -5900,7 +5915,7 @@ async fn a_ceiling_update_applies_from_the_next_spawn_only() {
         },
         ..lab.scope(codex_code(), &["~/dev/app"])
     };
-    let (_run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (_run, handle) = lab.begin(scope).unwrap();
     assert!(handle.call(spawn(Task::Code, "one")).await.is_error);
     lab.manager.set_ceiling(pane(), FamilySet::ALL);
     assert_eq!(
@@ -5972,7 +5987,7 @@ async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
 #[tokio::test]
 async fn a_retry_after_write_went_off_starts_no_process() {
     let lab = lab(Script::FailThenHang("409 conflict: session busy"));
-    let (run, handle) = lab.start(codex_code());
+    let (run, handle) = lab.start_open(codex_code());
     handle.call(spawn(Task::Code, "write")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     let decided = lab
@@ -5990,7 +6005,7 @@ async fn a_retry_after_write_went_off_starts_no_process() {
 #[tokio::test]
 async fn a_retry_after_write_went_back_on_runs_the_worker_with_write() {
     let lab = lab(Script::FailThenHang("409 conflict: session busy"));
-    let (run, handle) = lab.start(codex_code());
+    let (run, handle) = lab.start_open(codex_code());
     handle.call(spawn(Task::Code, "write")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
     let relaunch = UserChoice::Relaunch(codex_code());
@@ -6077,7 +6092,7 @@ async fn a_correction_worker_does_not_get_the_worker_prompt() {
 #[tokio::test]
 async fn a_degraded_writing_worker_does_not_get_the_worker_prompt() {
     let lab = lab(Script::Answer("text"));
-    let (_, handle) = lab.start(codex_code());
+    let (_, handle) = lab.start_open(codex_code());
     handle.call(spawn(Task::Code, "write it")).await;
     handle.call(wait(1)).await;
     let request = &lab.seen.requests()[0];
@@ -6112,7 +6127,7 @@ async fn a_retried_writing_worker_has_the_worker_text_once() {
 async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     let call = r#"{"name": "write_file", "arguments": {"path": "a", "content": "x"}}"#;
     let lab = lab(Script::Answer(call));
-    let (_, handle) = lab.start(codex_code());
+    let (_, handle) = lab.start_open(codex_code());
     let spawned = handle.call(spawn(Task::Code, "write it")).await;
     assert!(!spawned.is_error, "{spawned:?}");
     handle.call(wait(1)).await;
@@ -6122,4 +6137,5 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
+mod gates;
 mod parallel;

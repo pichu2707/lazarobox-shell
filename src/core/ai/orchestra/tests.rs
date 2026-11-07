@@ -156,11 +156,13 @@ fn roster(review: Availability) -> Roster {
 }
 
 fn run() -> Run {
-    Run::new(
+    let mut run = Run::new(
         RunId(1),
         roster(ready("codex", "default")),
         Duration::from_secs(600),
-    )
+    );
+    run.close_steps_for_tests();
+    run
 }
 
 fn failed(class: ErrorClass, text: &str) -> WorkerEvent {

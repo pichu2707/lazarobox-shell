@@ -324,6 +324,7 @@ mod stored {
         };
         let roster = Roster::new(vec![(Task::Code, ready)]);
         let mut run = Run::new(RunId(7), roster, Duration::from_secs(600));
+        run.close_steps_for_tests();
         run.spawn(std::time::Instant::now(), Task::Code, "p")
             .unwrap();
         run

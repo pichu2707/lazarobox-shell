@@ -7,9 +7,9 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        Entry, OrchAlert, OrchNote,
+        Entry, GateOffer, OrchAlert, OrchNote,
         engine::{Availability, OrchSend, Tools, availability_for, tools_for},
-        guidance::{delegate_hint, undelegated_hint},
+        guidance::{delegate_hint, gates_hint, undelegated_hint},
         transcript::{kind_label, worker_label},
     },
     config::Assignment,
@@ -274,6 +274,10 @@ impl App {
                 if is_over {
                     over = Some(key);
                 }
+                // A code worker exists: both gates pass, nothing is left to lift.
+                if row.kind == crate::core::ai::config::Task::Code {
+                    chat.drop_gate_offer();
+                }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
                 let menu = self.ai.resolve(row.kind).0.engine;
@@ -344,6 +348,8 @@ impl App {
             OrchestraEvent::Stopped { run, reason } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(reason);
+                    // The run is ending: no key is offered for it.
+                    chat.drop_gate_offer();
                 }
             }
             // Where a worker's review stands (S7b): lazarobox's own words.
@@ -374,6 +380,21 @@ impl App {
                         "spawn of a {} worker refused: {reason}",
                         kind.id()
                     )));
+                }
+            }
+            // A step gate refused a spawn or the finish: its line, as told.
+            OrchestraEvent::GateRefused {
+                run,
+                gate,
+                step,
+                reason,
+            } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(ascii(reason));
+                    // The refusal makes the run known: its offer outlives the turn.
+                    chat.set_orch_run(Some(run));
+                    // The offer belongs to this run: a row of another one drops it.
+                    chat.offer_gates(GateOffer { run, gate, step });
                 }
             }
             // A worker turn that runs as text: said before it starts.
@@ -429,7 +450,11 @@ impl App {
                 run,
                 ledger,
                 summary,
-            } => store = Some((run, Item::of_ledger(run, &ledger, &summary))),
+            } => {
+                // The run finished: its gates passed or no longer matter.
+                chat.drop_gate_offer();
+                store = Some((run, Item::of_ledger(run, &ledger, &summary)));
+            }
             // Never a silent fallback: say which handoffs lazarobox wrote.
             OrchestraEvent::Filled { workers, .. } => {
                 let ids: Vec<_> = workers.iter().map(|id| id.0.to_string()).collect();
@@ -444,6 +469,10 @@ impl App {
             // one started.
             OrchestraEvent::Ended { run } => {
                 chat.end_orch_run(run);
+                // No live run is left to take a lift.
+                if chat.gate_offer().is_some_and(|offer| offer.run == run) {
+                    chat.drop_gate_offer();
+                }
                 if chat.orch_run() == Some(run) {
                     chat.set_orch_run(None);
                 }
@@ -876,9 +905,62 @@ impl App {
             (Some(notice), Some(alert)) => Some(format!("{notice} | {alert}")),
             (notice, alert) => notice
                 .or(alert)
+                .or_else(|| self.gates_line(id))
                 .or_else(|| self.worker_keys(chat))
                 .or_else(|| self.run_hint(id)),
         }
+    }
+
+    /// Whether `Enter gates off` can act in pane `id` now: a refusal is
+    /// offered, the pane is orchestrating, the composer is empty and nothing
+    /// that answers Enter first (D24) is on screen. The provider notice needs
+    /// no check here: it is answered before this key, and `orch_guidance`
+    /// names it first.
+    fn gates_ready(&self, id: PaneId) -> bool {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return false;
+        };
+        chat.gate_offer().is_some()
+            && self.orchestrating(id)
+            && self.orch_run_active(id)
+            && chat.composer().text().is_empty()
+            && chat.orch_alert().is_none()
+            && self.server_offer_prompt(id).is_none()
+    }
+
+    /// The line that names the override key, only while it can act (D24).
+    fn gates_line(&self, id: PaneId) -> Option<String> {
+        let cols = usize::from(self.panes.get(&id)?.size.cols);
+        let offer = self.panes.get(&id)?.chat_state()?.gate_offer()?;
+        self.gates_ready(id)
+            .then(|| gates_hint(cols, offer.gate, offer.step))
+    }
+
+    /// Enter on the gates line (W3, D24): only a fresh, plain press on an
+    /// empty composer of an orchestrating pane, and also while a turn runs:
+    /// the lift targets the live run, and the runtime says what it did.
+    /// `None` leaves the key to the chat.
+    pub(super) fn answer_gates_off(
+        &mut self,
+        id: PaneId,
+        key: &KeyEvent,
+        repeat: bool,
+    ) -> Option<Vec<Effect>> {
+        if key.code != KeyCode::Enter
+            || repeat
+            || key.kind != KeyEventKind::Press
+            || key.modifiers != KeyModifiers::NONE
+            || !self.gates_ready(id)
+        {
+            return None;
+        }
+        let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut)?;
+        let offer = chat.take_gate_offer()?;
+        self.dirty = true;
+        Some(vec![Effect::OrchGatesOff {
+            pane: id,
+            run: offer.run,
+        }])
     }
 
     /// The cancel keys, while a run has a worker that has not ended and

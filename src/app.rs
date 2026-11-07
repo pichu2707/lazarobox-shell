@@ -411,6 +411,12 @@ pub enum Effect {
         pane: PaneId,
         ceiling: crate::core::ai::tools::registry::FamilySet,
     },
+    /// `Enter gates off` (W3, D24): the user lifts the step gates of run `run`
+    /// of `pane`, the one the offer named, and of no other. Returns at once.
+    OrchGatesOff {
+        pane: PaneId,
+        run: RunId,
+    },
     /// Ctrl+C with a worker row selected (S3): cancels that worker of run
     /// `run` and nothing else. A worker that ended meanwhile is a no-op; its
     /// row events (and `withdraw_worker`) do the rest.
@@ -8903,6 +8909,8 @@ mod app_tests {
     mod orchestra_consent;
     /// The delegate key and Esc after an undelegated reply.
     mod orchestra_delegate;
+    /// The step gates' lines and the user's override key (W3).
+    mod orchestra_gates;
     /// The handoffs of a run in engram, and the degraded mode.
     mod orchestra_handoffs;
     /// The one-time provider notice of an orchestrating pane.
