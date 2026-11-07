@@ -10,6 +10,11 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A command whose stdout went past its cap no longer loses the stderr it wrote
+  just before: the final read after the kill now drains both pipes.
+
 ## [1.14.0] - 2026-11-07
 
 ### Added

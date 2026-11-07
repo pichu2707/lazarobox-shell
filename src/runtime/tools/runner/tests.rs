@@ -740,6 +740,26 @@ async fn a_stdout_flood_stops_at_the_cap_and_kills_the_group() {
     assert!(wait_gone(pid).await, "the grandchild lives");
 }
 
+// Regression: after the kill, the last bytes of stderr are still in its pipe
+// even when stdout already went over its cap. `a_stdout_flood_...` read an
+// empty stderr (a ParseIntError) whenever the live pump read stdout first.
+#[tokio::test]
+async fn the_final_drain_keeps_stderr_after_stdout_went_over() {
+    use std::io::Write;
+    let receiver = |fd: io::PipeReader| Receiver::from_file(File::from(OwnedFd::from(fd))).unwrap();
+    let ((out_r, mut out_w), (err_r, mut err_w)) = (io::pipe().unwrap(), io::pipe().unwrap());
+    err_w.write_all(b"diagnostic\n").unwrap();
+    out_w.write_all(&[b'x'; 100]).unwrap();
+    drop((out_w, err_w));
+    let (mut out_pipe, mut err_pipe) = (receiver(out_r), receiver(err_r));
+    let (mut out, mut err) = (Lane::new(16), Lane::new(STDERR_CAP));
+    out.over = true;
+    drain_lanes(&mut out, &mut out_pipe, &mut err, &mut err_pipe).await;
+    assert_eq!(err.kept, b"diagnostic\n");
+    assert_eq!(out.kept.len(), 16);
+    assert!(!err.open && !out.open);
+}
+
 #[tokio::test]
 async fn a_reply_exactly_at_the_cap_is_not_over() {
     let split = capped("head -c 4096 /dev/zero | tr '\\0' x", 4096)

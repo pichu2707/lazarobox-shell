@@ -471,6 +471,24 @@ async fn pump(out: &mut Lane, out_pipe: &mut Receiver, err: &mut Lane, err_pipe:
     }
 }
 
+/// Reads both pipes to their end, whether or not stdout already went over its
+/// cap: [`pump`] stops at the cap, but the other pipe may not have been read
+/// yet and what the program wrote last is still in it. The caller bounds it
+/// with [`DRAIN`]; `Lane` keeps only the first `cap` bytes either way.
+async fn drain_lanes(
+    out: &mut Lane,
+    out_pipe: &mut Receiver,
+    err: &mut Lane,
+    err_pipe: &mut Receiver,
+) {
+    while out.open || err.open {
+        tokio::select! {
+            read = out_pipe.read(&mut out.chunk), if out.open => out.feed(read),
+            read = err_pipe.read(&mut err.chunk), if err.open => err.feed(read),
+        }
+    }
+}
+
 /// Starts `run` like [`spawn_core`], but with stdout and stderr on separate
 /// pipes: stdout stops at `stdout_cap` (the group is killed, `over` is set),
 /// stderr keeps its first [`STDERR_CAP`] bytes. Dropping the future kills the
@@ -509,9 +527,10 @@ pub async fn spawn_capped(run: Run, stdout_cap: usize) -> io::Result<Split> {
         _ = &mut deadline => timed_out = true,
     }
     let status = bounded(group.kill_and_reap(&mut child), REAP).await?;
-    // What was written last is still in the pipes: at most what a pipe holds,
-    // so a flood is not read on.
-    let rest = pump(&mut out, &mut out_pipe, &mut err, &mut err_pipe);
+    // What was written last is still in the pipes. Both are read to their
+    // end, kept to their caps, for at most DRAIN: a writer that escaped the
+    // group and holds a pipe open is not read on.
+    let rest = drain_lanes(&mut out, &mut out_pipe, &mut err, &mut err_pipe);
     let _ = tokio::time::timeout(DRAIN, rest).await;
     Ok(Split {
         ended: Ended {
