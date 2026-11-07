@@ -1,22 +1,14 @@
-//! The check of a handoff against the worker's change ledger (agent-
-//! orchestrator W4, D28). Pure and conservative: it reads the files the
-//! handoff names and flags those the ledger does not hold. It is evidence
-//! for the user and the coordinator, never a verdict, and a miss is better
-//! than a false flag.
+//! The check of a handoff against the worker's change ledger (W4, D28). Pure
+//! and conservative: evidence, never a verdict; a miss beats a false flag.
 
 use super::changes::ChangeLedger;
 use super::ledger::{NONE, Verdict, cut};
 
-/// The most claimed paths one worker keeps.
+/// Bounds: claims kept per worker, handoff bytes read, flagged paths and
+/// path bytes shown on a line.
 const MAX_CLAIMS: usize = 32;
-
-/// The most of a handoff's text that is read.
 const SCAN_BYTES: usize = 4 * 1024;
-
-/// The most flagged paths a line lists.
 const SHOWN: usize = 8;
-
-/// The longest path a line shows.
 const PATH_BYTES: usize = 80;
 
 /// What a name needs to be read as a file: one of these extensions.
