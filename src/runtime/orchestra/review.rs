@@ -369,7 +369,13 @@ impl RunManager {
     }
 
     /// Ends the workers of a review and unparks its proposer.
-    pub(super) fn release(self: &Arc<Self>, pane: PaneId, run: RunId, worker: WorkerId, spawned: &[WorkerId]) {
+    pub(super) fn release(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        worker: WorkerId,
+        spawned: &[WorkerId],
+    ) {
         for id in spawned {
             // One that already ended answers "already ended".
             self.cancel_worker(pane, run, *id);

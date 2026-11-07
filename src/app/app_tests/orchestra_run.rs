@@ -1121,3 +1121,16 @@ fn a_run_notice_with_non_ascii_text_is_shown_in_ascii() {
     assert!(shown.is_ascii(), "{shown}");
     assert!(shown.contains("share ollam?,"), "{shown}");
 }
+
+// The run-id diagnostic quotes an external error that may hold a non-ASCII
+// path: it is shown as it is, not with `?` in place of the letters.
+#[test]
+fn the_run_id_diagnostic_keeps_a_non_ascii_path_intact() {
+    let (mut a, _) = running();
+    let text =
+        "run ids could not be checked against stored runs: cannot read /home/jos\u{e9}/runs.db"
+            .to_owned();
+    a.update(event(OrchestraEvent::Notice { text: text.clone() }));
+    let shown = system_lines(&a);
+    assert!(shown.contains(&text), "{shown}");
+}

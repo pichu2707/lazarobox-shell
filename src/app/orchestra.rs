@@ -392,7 +392,7 @@ impl App {
             OrchestraEvent::Trace { .. } => {}
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) | OrchestraEvent::Undelegated { .. } => {}
-            OrchestraEvent::Notice { text } => chat.push_system_line(ascii(text)),
+            OrchestraEvent::Notice { text } => chat.push_system_line(text),
             OrchestraEvent::Unavailable => {
                 chat.undo_override();
                 chat.push_system_line(NO_ORCHESTRA.to_owned());
