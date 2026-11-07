@@ -708,3 +708,47 @@ mod writers {
         assert_eq!(paths(&lab, key_of(run, 1)).await, ["new.txt"]);
     }
 }
+
+// Review state cleanup ---------------------------------------------------
+
+/// The proposer map of the lab's run.
+fn proposers(lab: &Lab) -> Vec<(WorkerId, WorkerId)> {
+    let runs = lock(&lab.manager.runs);
+    let mut all: Vec<_> = runs[&pane()]
+        .review
+        .proposers
+        .iter()
+        .map(|(reviewer, proposer)| (*reviewer, *proposer))
+        .collect();
+    all.sort_by_key(|(reviewer, _)| reviewer.0);
+    all
+}
+
+// When a review ends, the entry of each reader (lenses, refuter) goes with it.
+#[tokio::test]
+async fn the_proposer_entry_of_a_reader_goes_when_its_review_ends() {
+    let (lab, _, _) = reviewed(quiet, Answered::Granted, RunLimits::default()).await;
+    assert!(lab.seen.requests().iter().any(is_lens), "readers ran");
+    assert_eq!(proposers(&lab), []);
+}
+
+// A correction's entry stays for the life of the run, like `correcting`, so a
+// retry of it still names its proposer; the readers of that review are gone.
+#[tokio::test]
+async fn the_proposer_entry_of_a_correction_stays_after_its_review() {
+    let (lab, _, _) = reviewed_with(
+        blocker_then_fixed,
+        Answered::Granted,
+        RunLimits::default(),
+        Some(restaged_differently),
+    )
+    .await;
+    let fixer = lock(&lab.manager.runs)[&pane()]
+        .review
+        .correcting
+        .iter()
+        .copied()
+        .next()
+        .expect("a correction");
+    assert_eq!(proposers(&lab), [(fixer, WorkerId(1))]);
+}
