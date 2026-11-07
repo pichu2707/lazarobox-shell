@@ -20,7 +20,7 @@ The config MUST be read from `$XDG_CONFIG_HOME/lazarobox/config.toml`. When `XDG
 - THEN there is no path and the defaults apply (nothing is read relative to the working directory)
 
 ### Requirement: Schema and defaults
-The file is TOML with `[statusline] position` and `[tabbar] position`, each `"top"` or `"bottom"`, a top-level `mouse` boolean, `[ai] engine` and `[ai] model`, each a string (the assignment of the `general` task), `[ai] profile`, a string that is `"analyst"` or `"programmer"`, and for each of the tasks `code`, `chat`, `review` and `summarize` a table `[ai.tasks.<task>]` with `engine` and `model`, each a string. Defaults: statusline `"bottom"`, tabbar `"top"`, `mouse = true`, profile `"programmer"`, and every `engine` and `model` unset (no engine, no model). The `mouse` key controls host mouse capture and the wheel (see mouse-input) and takes effect at startup and when changed from the config menu. An empty string equals unset (for `profile`, the default), and an unassigned task falls back to `general` (see ai-task-models). Any key may be omitted. Unknown keys and tables MUST be ignored, including `[ai.tasks.general]` (ignored and preserved: `[ai]` is the general task) and any unknown task name under `ai.tasks`. All four position combinations are valid. Any string is valid for every `engine` and `model`, including an id that is not in the engine catalog; it MUST be kept as written and MUST NOT raise a notice. No secret is part of the schema. The profile is not an engine key: only `analyst` and `programmer` are valid (see Profile key validation).
+The file is TOML with `[statusline] position` and `[tabbar] position`, each `"top"` or `"bottom"`, a top-level `mouse` boolean, `[ai] engine` and `[ai] model`, each a string (the assignment of the `general` task), `[ai] profile`, a string that is `"analyst"` or `"programmer"`, and for each of the tasks `code`, `chat`, `review` and `summarize` a table `[ai.tasks.<task>]` with `engine` and `model`, each a string. Defaults: statusline `"bottom"`, tabbar `"top"`, `mouse = true`, profile `"programmer"`, and every `engine` and `model` unset (no engine, no model). The `mouse` key controls host mouse capture and the wheel (see mouse-input) and takes effect at startup and when changed from the config menu. An empty string equals unset (for `profile`, the default), and an unassigned task falls back to `general` (see ai-task-models). Any key may be omitted. Unknown keys and tables MUST be ignored, including `[ai.tasks.general]` (ignored and preserved: `[ai]` is the general task) and any unknown task name under `ai.tasks`; one inside a table lazarobox owns is also reported (see Unknown keys in owned tables). All four position combinations are valid. Any string is valid for every `engine` and `model`, including an id that is not in the engine catalog; it MUST be kept as written and MUST NOT raise a notice. No secret is part of the schema. The profile is not an engine key: only `analyst` and `programmer` are valid (see Profile key validation).
 
 #### Scenario: Defaults [auto]
 - GIVEN an empty file
@@ -45,7 +45,7 @@ The file is TOML with `[statusline] position` and `[tabbar] position`, each `"to
 #### Scenario: Unknown keys ignored [auto]
 - GIVEN a file with unknown keys and tables next to valid ones
 - WHEN it is parsed
-- THEN the valid keys apply and no error is raised
+- THEN the valid keys apply, no error is raised, and only the unknown keys inside owned tables are reported
 
 #### Scenario: AI keys parsed [auto]
 - GIVEN `[ai]` with `engine = "ollama"` and `model = "llama3:8b"`
@@ -85,7 +85,7 @@ The file is TOML with `[statusline] position` and `[tabbar] position`, each `"to
 #### Scenario: General task table and unknown tasks ignored [auto]
 - GIVEN `[ai.tasks.general]` with `engine = "codex"`, `[ai.tasks.poetry]` with `engine = "claude"`, and `[ai]` with `engine = "ollama"`
 - WHEN it is parsed
-- THEN general is `ollama`, no task named `poetry` exists, and no notice is produced
+- THEN general is `ollama`, no task named `poetry` exists, and the notice is `config (2 problems): unknown key: ai.tasks.general`
 
 #### Scenario: Unknown task engine kept [auto]
 - GIVEN `[ai.tasks.review]` with `engine = "future-engine"`
@@ -95,7 +95,7 @@ The file is TOML with `[statusline] position` and `[tabbar] position`, each `"to
 ### Requirement: Fallback and startup notice
 A missing file MUST silently give the defaults. An unreadable file or unparseable TOML (a syntax error) MUST give all the defaults and a startup notice `config: <short error>` (one line) shown through the existing statusline notice until the next key.
 
-An invalid value or type MUST fall back to the default for THAT KEY ONLY; every other key in the file is respected. The notice names the failing key, for example `config: statusline.position: expected "top" or "bottom"`; when several keys fail it reports the count and the first: `config (N problems): <first problem>`. A non-table section (`statusline = 3`) reports `statusline: expected a table`, and a non-boolean `mouse` reports `mouse: expected true or false` (the key falls back to the default `true`). A non-string `ai.engine` or `ai.model` reports `ai.engine: expected a string` or `ai.model: expected a string`, and a non-table `ai` reports `ai: expected a table`. A non-table `ai.tasks` reports `ai.tasks: expected a table` (all tasks fall back to unset), a non-table `ai.tasks.<task>` reports `ai.tasks.<task>: expected a table` (that task is unset), and a non-string task key reports `ai.tasks.<task>.engine: expected a string` or `ai.tasks.<task>.model: expected a string` (only that key falls back to unset). Problems under `ai.tasks.general` and under unknown task names are not reported.
+An invalid value or type MUST fall back to the default for THAT KEY ONLY; every other key in the file is respected. The notice names the failing key, for example `config: statusline.position: expected "top" or "bottom"`; when several keys fail it reports the count and the first: `config (N problems): <first problem>`. A non-table section (`statusline = 3`) reports `statusline: expected a table`, and a non-boolean `mouse` reports `mouse: expected true or false` (the key falls back to the default `true`). A non-string `ai.engine` or `ai.model` reports `ai.engine: expected a string` or `ai.model: expected a string`, and a non-table `ai` reports `ai: expected a table`. A non-table `ai.tasks` reports `ai.tasks: expected a table` (all tasks fall back to unset), a non-table `ai.tasks.<task>` reports `ai.tasks.<task>: expected a table` (that task is unset), and a non-string task key reports `ai.tasks.<task>.engine: expected a string` or `ai.tasks.<task>.model: expected a string` (only that key falls back to unset). Problems under `ai.tasks.general` and under unknown task names are not reported, except the unknown keys themselves, which are reported as `unknown key: <path>` (see Unknown keys in owned tables).
 
 `mouse = true` and `mouse = false` MUST both be accepted with no notice. The notice `config: mouse is not supported yet` MUST NOT exist any more.
 
@@ -193,7 +193,7 @@ An `[ai] profile` that is not a string MUST fall back to the default for that ke
 - THEN the profile is `programmer` and the only notice is `config: ai: expected a table`
 
 ### Requirement: Memory keys
-The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`), `port` (integer from 1 to 65535, default the value of the `ENGRAM_PORT` environment variable when that is a valid port, else `7437`) and `acknowledged` (boolean, default `false`). Any key may be omitted. Unknown keys under `ai.memory` MUST be ignored. A wrong type or out-of-range value MUST fall back to the default for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`), with the problems `ai.memory.enabled: expected a boolean`, `ai.memory.acknowledged: expected a boolean`, `ai.memory.port: expected an integer from 1 to 65535`, and, when `ai.memory` is not a table, `ai.memory: expected a table`. Memory is active only when `enabled` and `acknowledged` are both true (see chat-memory). The token is never part of the schema: `ENGRAM_HTTP_TOKEN` is read from the environment only and no secret is ever read from or written to the file.
+The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`), `port` (integer from 1 to 65535, default the value of the `ENGRAM_PORT` environment variable when that is a valid port, else `7437`) and `acknowledged` (boolean, default `false`). Any key may be omitted. Unknown keys under `ai.memory` MUST be ignored, and each one is reported as `unknown key: ai.memory.<key>` (see Unknown keys in owned tables). A wrong type or out-of-range value MUST fall back to the default for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`), with the problems `ai.memory.enabled: expected a boolean`, `ai.memory.acknowledged: expected a boolean`, `ai.memory.port: expected an integer from 1 to 65535`, and, when `ai.memory` is not a table, `ai.memory: expected a table`. Memory is active only when `enabled` and `acknowledged` are both true (see chat-memory). The token is never part of the schema: `ENGRAM_HTTP_TOKEN` is read from the environment only and no secret is ever read from or written to the file.
 
 #### Scenario: Defaults [auto]
 - GIVEN a file with no `[ai.memory]`
@@ -233,7 +233,7 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 #### Scenario: Unknown keys ignored [auto]
 - GIVEN `[ai.memory]` with `endpoint = "http://x"` next to valid keys
 - WHEN it is parsed
-- THEN the valid keys apply and no notice is produced
+- THEN the valid keys apply and the notice is `config: unknown key: ai.memory.endpoint`
 
 ### Requirement: The notify flag
 `[ai] notify` is a boolean. A missing key is `false`. A value that is not a boolean falls back to `false` and produces the problem `ai.notify: expected a boolean`, which follows the `ai.context` problem in the notice order. It is independent of every other `[ai]` key.
@@ -272,7 +272,7 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 - THEN it reads `tools`
 
 ### Requirement: Managed llama-server
-`[ai.servers.llamacpp]` MAY hold `managed` (boolean, default `false`) and `model` (string, the path of the model file `llama-server` loads, used as written: it SHOULD be absolute, since `~` is not expanded and a relative path is read from lazarobox's working directory). With `managed = true` and a non-empty `model`, lazarobox manages the server (see chat-engines), and llamacpp's port defaults to 39281 instead of 8080; `port` still overrides it. Under any other server id, `managed` and `model` MUST be ignored like any unknown key. A wrong value MUST leave the server unmanaged and report one problem under the existing startup-notice rules: `ai.servers.llamacpp.managed: expected true or false`, `ai.servers.llamacpp.model: expected a path to a model file` (also when `managed` is off), or `ai.servers.llamacpp.model: required when managed = true` (missing or empty).
+`[ai.servers.llamacpp]` MAY hold `managed` (boolean, default `false`) and `model` (string, the path of the model file `llama-server` loads, used as written: it SHOULD be absolute, since `~` is not expanded and a relative path is read from lazarobox's working directory). With `managed = true` and a non-empty `model`, lazarobox manages the server (see chat-engines), and llamacpp's port defaults to 39281 instead of 8080; `port` still overrides it. Under any other server id, `managed` and `model` MUST be ignored like any unknown key and reported as such (`unknown key: ai.servers.<id>.managed`, see Unknown keys in owned tables). A wrong value MUST leave the server unmanaged and report one problem under the existing startup-notice rules: `ai.servers.llamacpp.managed: expected true or false`, `ai.servers.llamacpp.model: expected a path to a model file` (also when `managed` is off), or `ai.servers.llamacpp.model: required when managed = true` (missing or empty).
 
 #### Scenario: A managed llama-server is opt-in [auto]
 - GIVEN no `managed`, `managed = false`, or a `model` without `managed`
@@ -290,7 +290,7 @@ The file MAY hold a table `[ai.memory]` with `enabled` (boolean, default `false`
 - THEN nothing is managed, llamacpp keeps port 8080 and the notice names the matching problem
 
 ### Requirement: Server ports
-The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) with `port` (integer from 1 to 65535, default the catalog port). Detection and chat both use it, always on `127.0.0.1`. Unknown ids and unknown keys under `ai.servers` MUST be ignored. A wrong type or out-of-range value MUST fall back to the catalog port for that server only and report a problem under the existing startup-notice rules, with the problems `ai.servers.<id>.port: expected an integer from 1 to 65535`, `ai.servers.<id>: expected a table` when the server entry is not a table, and `ai.servers: expected a table` when `ai.servers` is not a table. The menu MUST NOT write `ai.servers` except `managed`, `model` and `idle_minutes` of `[ai.servers.llamacpp]` (see config-menu, Choosing a local model manages llama-server), and every save MUST keep the rest of it byte for byte. The ports are read at startup; only a save that turns the managed llama-server on changes llamacpp's port while running.
+The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lmstudio`, `llamacpp`, `vllm`) with `port` (integer from 1 to 65535, default the catalog port). Detection and chat both use it, always on `127.0.0.1`. Unknown ids and unknown keys under `ai.servers` MUST be ignored, and each one is reported by its full path, `unknown key: ai.servers.<id>` for an unknown id and `unknown key: ai.servers.<id>.<key>` for an unknown key (see Unknown keys in owned tables). A wrong type or out-of-range value MUST fall back to the catalog port for that server only and report a problem under the existing startup-notice rules, with the problems `ai.servers.<id>.port: expected an integer from 1 to 65535`, `ai.servers.<id>: expected a table` when the server entry is not a table, and `ai.servers: expected a table` when `ai.servers` is not a table. The menu MUST NOT write `ai.servers` except `managed`, `model` and `idle_minutes` of `[ai.servers.llamacpp]` (see config-menu, Choosing a local model manages llama-server), and every save MUST keep the rest of it byte for byte. The ports are read at startup; only a save that turns the managed llama-server on changes llamacpp's port while running.
 
 #### Scenario: Server ports default to the catalog [auto]
 - GIVEN a file with no `[ai.servers]`, or an empty one
@@ -305,7 +305,7 @@ The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lm
 #### Scenario: Unknown servers and keys are ignored [auto]
 - GIVEN `[ai.servers.claude]`, `[ai.servers.nope]` and `[ai.servers.vllm]` with `port = 8001` and `host = "0.0.0.0"`
 - WHEN it is parsed
-- THEN only vllm changes (port 8001, host unchanged) and no notice is produced
+- THEN only vllm changes (port 8001, host unchanged), the problems are `unknown key: ai.servers.claude`, `unknown key: ai.servers.nope` and `unknown key: ai.servers.vllm.host`, and the notice is `config (3 problems): unknown key: ai.servers.claude`
 
 #### Scenario: A wrong server value falls back alone [auto]
 - GIVEN `ai.servers = 1`, `[ai.servers] llamacpp = 39080`, `port = 0`, `port = 70000` and `port = "39080"` in separate files
@@ -362,7 +362,7 @@ The file MAY hold one table `[ai.servers.<id>]` per server engine (`ollama`, `lm
 - THEN Ollama's body holds `"keep_alive": "30m"`, llama.cpp's `"cache_prompt": true`, and the others neither
 
 ### Requirement: Tools key
-The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`). It is the off switch of all agent tools: the run action of pane-commands, the built-in tools, the lazarobox MCP server and the user MCP servers (see agent-tools). A wrong type falls back to `true` for that key only and reports `ai.tools.enabled: expected a boolean`; a non-table `ai.tools` reports `ai.tools: expected a table` and uses the default. Unknown keys under `ai.tools` MUST be ignored. The key is read at startup and when changed from the config menu; a change takes effect at the next turn, never on a stream or approval already running. No secret is part of the schema.
+The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`). It is the off switch of all agent tools: the run action of pane-commands, the built-in tools, the lazarobox MCP server and the user MCP servers (see agent-tools). A wrong type falls back to `true` for that key only and reports `ai.tools.enabled: expected a boolean`; a non-table `ai.tools` reports `ai.tools: expected a table` and uses the default. Unknown keys under `ai.tools` MUST be ignored, and each one is reported as `unknown key: ai.tools.<key>` (see Unknown keys in owned tables). The key is read at startup and when changed from the config menu; a change takes effect at the next turn, never on a stream or approval already running. No secret is part of the schema.
 
 #### Scenario: Default on [auto]
 - GIVEN a file with no `[ai.tools]`
@@ -392,7 +392,7 @@ The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`).
 #### Scenario: Unknown keys ignored [auto]
 - GIVEN `[ai.tools]` with `mode = "fast"` next to `enabled = true`
 - WHEN it is parsed
-- THEN `enabled` applies and no notice is produced
+- THEN `enabled` applies and the notice is `config: unknown key: ai.tools.mode`
 
 ### Requirement: Approval mode key
 The table `[ai.tools]` MAY hold `approval`, the string `"ask"`, `"auto"` or `"run"` (default `"ask"`, compared exactly, lowercase). It is the approval mode a chat pane takes when it opens and at each conversation switch inside it (see agent-tools, Chat approval mode); the current conversation of an open pane keeps its mode. Any other value or type (including `"RUN"`) falls back to `"ask"` for that key only and reports `ai.tools.approval: expected "ask", "auto" or "run"`, after the `ai.tools.enabled` problem in the notice order. A non-table `ai.tools` uses the default with the existing `ai.tools: expected a table` problem only. The key is read at startup and when changed from the config menu. The default is never `run`.
@@ -428,7 +428,7 @@ The table `[ai.tools]` MAY hold `approval`, the string `"ask"`, `"auto"` or `"ru
 - THEN the mode is `ask` and the notice names `ai.tools.approval`
 
 ### Requirement: MCP server lists
-The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (lowercase letters, digits and `-`, 1 to 24 characters, unique in its scope: the global list, or one project root; it is also the server part of a qualified tool name), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty, each an identifier of at most 64 bytes; values are never in the file) and `enabled` (boolean, default `true`). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of lowercase letters, digits and - (1 to 24 characters)`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored. There are no `Authorization`, token or secret keys in the schema. The list is read once at startup (no hot reload). The menu has no row for it in this change: it is edited by hand.
+The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (lowercase letters, digits and `-`, 1 to 24 characters, unique in its scope: the global list, or one project root; it is also the server part of a qualified tool name), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty, each an identifier of at most 64 bytes; values are never in the file) and `enabled` (boolean, default `true`). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of lowercase letters, digits and - (1 to 24 characters)`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored, the entry kept, and each one is reported as `unknown key: ai.mcp.servers[N].<key>` (see Unknown keys in owned tables). There are no `Authorization`, token or secret keys in the schema. The list is read once at startup (no hot reload). The menu has no row for it in this change: it is edited by hand.
 
 #### Scenario: Defaults [auto]
 - GIVEN a file with no `[ai.mcp]`
@@ -468,7 +468,7 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 #### Scenario: Unknown keys ignored [auto]
 - GIVEN an entry with `timeout = 5` next to valid keys
 - WHEN it is parsed
-- THEN the valid keys apply and no notice is produced
+- THEN the valid keys apply, the entry is kept and the notice is `config: unknown key: ai.mcp.servers[0].timeout`
 
 #### Scenario: Project extras only from the user file [design-confirm]
 - GIVEN a repository file that declares a server and a project entry in the user file for another root
@@ -476,7 +476,7 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 - THEN only entries from the user file for that root are active
 
 ### Requirement: Family toggle keys
-The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, `git_write` and `github` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored, so a build without `github` reads a file that has it. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
+The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, `git_write` and `github` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored and reported as `unknown key: ai.tools.<key>` (see Unknown keys in owned tables), so a build without `github` reads a file that has it and says so. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
 (Previously: five booleans, with no `github`.)
 
 #### Scenario: Defaults off [auto]
@@ -520,7 +520,7 @@ The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, 
 - THEN `github` is unchanged in the file
 
 ### Requirement: Workspace key
-The file MAY hold a table `[workspace]` with `dir`, a string: an absolute path, or a path starting with `~` which expands to an absolute `$HOME`. A missing key and an empty string both mean unset. `dir` is the start folder of the app when no `--dir` flag is given (see start-dir). Invalid values fall back to unset for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`, the other keys respected): `workspace.dir: expected a string` for a non-string, `workspace.dir: expected an absolute path` for a relative path, and `workspace: expected a table` for a non-table `workspace`. A well-formed path that does not exist or is not a directory at startup is not a parse problem: the start dir falls back to the launch cwd and the notice is `config: workspace.dir: folder not found`. Unknown keys under `workspace` MUST be ignored. A valid `dir` never raises a notice. The key is read once at startup; there is no hot reload.
+The file MAY hold a table `[workspace]` with `dir`, a string: an absolute path, or a path starting with `~` which expands to an absolute `$HOME`. A missing key and an empty string both mean unset. `dir` is the start folder of the app when no `--dir` flag is given (see start-dir). Invalid values fall back to unset for that key only and report a problem under the existing startup-notice rules (`config: <problem>`, or `config (N problems): <first problem>`, the other keys respected): `workspace.dir: expected a string` for a non-string, `workspace.dir: expected an absolute path` for a relative path, and `workspace: expected a table` for a non-table `workspace`. A well-formed path that does not exist or is not a directory at startup is not a parse problem: the start dir falls back to the launch cwd and the notice is `config: workspace.dir: folder not found`. Unknown keys under `workspace` MUST be ignored, and each one is reported as `unknown key: workspace.<key>` (see Unknown keys in owned tables). A valid `dir` never raises a notice. The key is read once at startup; there is no hot reload.
 
 #### Scenario: Default [auto]
 - GIVEN a file with no `[workspace]`
@@ -555,7 +555,7 @@ The file MAY hold a table `[workspace]` with `dir`, a string: an absolute path, 
 #### Scenario: Unknown keys ignored [auto]
 - GIVEN `[workspace]` with `colour = "red"` next to a valid `dir`
 - WHEN it is parsed
-- THEN `dir` applies and no notice is produced
+- THEN `dir` applies and the notice is `config: unknown key: workspace.colour`
 
 ### Requirement: Orchestrate slot [S1]
 The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the table `[ai.tasks.orchestrate]`. An absent table means unassigned. The slot MUST NOT be counted by any logic that is defined over the five original tasks (Set all, its aggregate).
@@ -571,7 +571,7 @@ The configuration MUST carry a sixth AI task slot, `orchestrate`, with the same 
 - THEN `orchestrate` is unassigned and falls back to `general`
 
 ### Requirement: Orchestrator keys [S1, S3, S4]
-The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) `run_timeout_mins` (integer, default 60, valid range 1 to 480) and [S4] `max_turns` (integer, default 6, valid range 1 to 24; the orchestrator turns one run may take, the first included). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored.
+The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (bool, default `false`; the global gate), `acknowledged` (bool, default `false`), `worker_timeout_secs` (integer, default 600, valid range 30 to 3600; the worker deadline), [S3] `max_parallel` (integer, default 2, valid range 1 to 4), `max_workers` (integer, default 8, valid range 1 to 32) `run_timeout_mins` (integer, default 60, valid range 1 to 480) and [S4] `max_turns` (integer, default 6, valid range 1 to 24; the orchestrator turns one run may take, the first included). The per-pane ORCH mode is not a configuration key. A wrong type or out-of-range value MUST fall back to the default for that key and produce the existing startup notice, without discarding other keys. Unknown keys MUST be ignored and reported as `unknown key: ai.orchestrator.<key>` (see Unknown keys in owned tables).
 
 #### Scenario: Defaults [auto]
 - GIVEN no `[ai.orchestrator]` table
@@ -600,7 +600,7 @@ The configuration MUST read these keys under `[ai.orchestrator]`: `enabled` (boo
 - `turn_tokens` (whole number greater than 0): per-turn token threshold;
 - `day_tokens` (whole number greater than 0): per-day token threshold;
 - `day_usd` (number greater than 0, a TOML float or integer): per-day dollar threshold.
-A missing threshold key means that threshold is off. `[ai.usage.billing]` MAY hold `claude`, `codex` and `gemini`, each the string `subscription` or `per-token`; a missing key is `subscription`. Any other key under `[ai.usage.billing]` (including local engine ids) and any unknown key under `[ai.usage]` MUST be ignored. A wrong value MUST fall back to that key's default (thresholds: off) and produce one problem under the startup-notice rules, in this order after the `ai.notify` problem: `ai.usage.line: expected true or false`, `ai.usage.statusline: expected true or false`, `ai.usage.turn_tokens: expected a whole number above 0`, `ai.usage.day_tokens: expected a whole number above 0`, `ai.usage.day_usd: expected a number above 0`, `ai.usage.billing.claude: expected "subscription" or "per-token"` (same for `codex`, `gemini`). `ai.usage` holding a non-table value falls back to all defaults with the problem `ai.usage: expected a table`. Values are case-sensitive. The keys are independent of every other `[ai]` key.
+A missing threshold key means that threshold is off. `[ai.usage.billing]` MAY hold `claude`, `codex` and `gemini`, each the string `subscription` or `per-token`; a missing key is `subscription`. Any other key under `[ai.usage.billing]` (including local engine ids) and any unknown key under `[ai.usage]` MUST be ignored, and each one is reported by its full path, `unknown key: ai.usage.billing.<key>` or `unknown key: ai.usage.<key>` (see Unknown keys in owned tables). A wrong value MUST fall back to that key's default (thresholds: off) and produce one problem under the startup-notice rules, in this order after the `ai.notify` problem: `ai.usage.line: expected true or false`, `ai.usage.statusline: expected true or false`, `ai.usage.turn_tokens: expected a whole number above 0`, `ai.usage.day_tokens: expected a whole number above 0`, `ai.usage.day_usd: expected a number above 0`, `ai.usage.billing.claude: expected "subscription" or "per-token"` (same for `codex`, `gemini`). `ai.usage` holding a non-table value falls back to all defaults with the problem `ai.usage: expected a table`. Values are case-sensitive. The keys are independent of every other `[ai]` key.
 
 #### Scenario: Defaults [auto]
 - GIVEN no `[ai.usage]` table
@@ -625,7 +625,7 @@ A missing threshold key means that threshold is off. `[ai.usage.billing]` MAY ho
 #### Scenario: Local engines ignored [auto]
 - GIVEN `[ai.usage.billing]\nollama = "per-token"`
 - WHEN the config is read
-- THEN there is no problem and ollama still never shows dollars
+- THEN the only problem is `unknown key: ai.usage.billing.ollama` and ollama still never shows dollars
 
 #### Scenario: Not a table [auto]
 - GIVEN `[ai]\nusage = 3`
@@ -636,3 +636,36 @@ A missing threshold key means that threshold is off. `[ai.usage.billing]` MAY ho
 - GIVEN `turn_tokens = 1.5`
 - WHEN the config is read
 - THEN the threshold is off and the problem is `ai.usage.turn_tokens: expected a whole number above 0`
+
+### Requirement: Unknown keys in owned tables
+The tables lazarobox owns are `[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` and `[ai]` with every table under it, each entry of `[[ai.mcp.servers]]` included. A key inside an owned table that lazarobox does not read MUST be ignored (the file still loads and every other key applies) and MUST be reported as one problem under the existing startup-notice rules: `unknown key: <path>`, where `<path>` is the full dotted path of the key, for example `unknown key: ai.tols`, `unknown key: ai.tasks.general`, `unknown key: ai.servers.llama` or `unknown key: ai.mcp.servers[0].timeout`. An unknown table inside an owned table is one unknown key, reported once, and its content is not walked. A key that is not a bare TOML key (letters, digits, `_` and `-`) MUST be shown quoted, with control characters escaped, so the notice stays one line. These problems MUST come after every other problem found while reading the file, so a wrong value stays the first problem of the notice; a problem found later at startup (such as `workspace.dir: folder not found`) may follow them. The root of the file is not an owned table: its other keys and tables (for example `theme = "x"` or `[custom]`) are the user's own and MUST NOT be reported. Every key that lazarobox reads MUST NOT be reported, the root `mouse` and `ai.servers.llamacpp.model` included. A value of the wrong shape (a non-table where a table is read) keeps its existing problem and is not walked. The requirements modified below say so where they name their unknown keys. This also amends the sentences that say unknown keys under an owned table are ignored without naming a notice (`managed` and `model` under another server id in Managed llama-server, and `[ai.orchestrator]` in Orchestrator keys) and the sentence "Problems under `ai.tasks.general` and under unknown task names are not reported": in every case the value is still ignored and the save still preserves it byte for byte (see config-persistence), and the key is now reported.
+
+#### Scenario: A typo in an owned table [auto]
+- GIVEN `[ai]` with `tols = 1`
+- WHEN the file is loaded
+- THEN the config loads with its defaults and the notice is `config: unknown key: ai.tols`
+
+#### Scenario: Known keys next to an unknown one [auto]
+- GIVEN `[ai]` with `tols = 1`, `engine = 3` and `model = "m"`, and `[statusline]` with `position = "top"`
+- WHEN the file is loaded
+- THEN the model is `m`, the statusline is at the top, and the notice is `config (2 problems): ai.engine: expected a string`, the unknown key being the second problem
+
+#### Scenario: Every owned table is checked [auto]
+- GIVEN, one at a time, `[statusline] postion`, `[tabbar] side`, `[updates] chek`, `[workspace] colour`, `[ai.tasks.cod]`, `[ai.tasks.general]`, `[ai.tasks.code] modle`, `[ai.usage] limit`, `[ai.usage.billing] openai`, `[ai.tools] mode`, `[ai.chat] compact`, `[ai.mcp] proxy`, an `[[ai.mcp.servers]]` entry with `timeout`, `[ai.servers.llama]`, `[ai.servers.ollama] managed`, `[ai.servers.llamacpp] modle`, `[ai.memory] endpoint` and `[ai.orchestrator] notice_accepted`
+- WHEN each file is loaded
+- THEN each gives exactly one problem, `unknown key: <path>` with the key's full path, and the same config as the file without that key
+
+#### Scenario: Keys outside the owned tables [auto]
+- GIVEN `theme = "x"`, `[custom]` with `other = 1`, `[custom.deep]` and `[[plugins]]`
+- WHEN the file is loaded
+- THEN no problem is reported
+
+#### Scenario: Every known key [auto]
+- GIVEN a file that sets every key lazarobox reads, the root `mouse` and `[ai.servers.llamacpp] managed = true` with `model = "/m/q.gguf"` included
+- WHEN it is loaded
+- THEN no problem is reported and the managed model is `/m/q.gguf`
+
+#### Scenario: A key that needs quotes [auto]
+- GIVEN `[ai]` with `"a.b" = 1` and a key holding an escape character
+- WHEN the file is loaded
+- THEN the problems are `unknown key: ai."a.b"` and the second key quoted with the escape character written as `\u{1b}`
