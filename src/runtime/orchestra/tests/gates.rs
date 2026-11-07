@@ -354,8 +354,7 @@ async fn a_lift_for_another_run_lifts_nothing_of_the_live_one() {
     );
 }
 
-const LIFTED: &str =
-    "gates off: spawn and finish gates lifted for this run; ask the coordinator to spawn again";
+const LIFTED: &str = "gates off: spawn and finish gates lifted for this run";
 const NOTHING_LIFTED: &str = "gates off: no live run, nothing lifted";
 
 fn notices_of(events: &[OrchestraEvent]) -> Vec<String> {

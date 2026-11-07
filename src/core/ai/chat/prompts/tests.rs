@@ -112,7 +112,7 @@ fn the_orchestrate_prompts_hold_one_playbook_per_odd_step_in_order() {
 // Spec (agent-orchestrator, Gates on step state are visible and bounded
 // [W3]): both profiles tell the coordinator that a refused gate names the step
 // to hand off first, that only the user lifts it, and not to retry the call
-// until the step is handed off or the user lifted the gate.
+// until that step is handed off.
 #[test]
 fn the_orchestrate_prompts_explain_the_step_gates() {
     for profile in Profile::ALL {
@@ -121,7 +121,7 @@ fn the_orchestrate_prompts_explain_the_step_gates() {
             "A refused spawn or finish names the step to hand off first",
             "only the user can lift a gate",
             "In a worker prompt, give the key, the task id and the S# text",
-            "retry once that step is handed off or the gate lifted",
+            "retry only once that step is handed off",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }

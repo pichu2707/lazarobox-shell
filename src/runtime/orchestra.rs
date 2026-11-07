@@ -1121,7 +1121,7 @@ impl RunManager {
             .map(|live| live.run.lift_gates())
             .is_some();
         let text = if lifted {
-            "gates off: spawn and finish gates lifted for this run; ask the coordinator to spawn again"
+            "gates off: spawn and finish gates lifted for this run"
         } else {
             "gates off: no live run, nothing lifted"
         };
