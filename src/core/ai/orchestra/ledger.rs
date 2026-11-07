@@ -3,6 +3,8 @@
 //! D17). Pure: the run fills the metadata, the orchestrator only writes the
 //! judgement.
 
+use super::changes::ChangeLedger;
+use super::claims::Audit;
 use super::steps::Step;
 use super::worker::WorkerStatus;
 use super::{RunId, WorkerId};
@@ -27,6 +29,9 @@ pub const LEDGER_BYTES: usize = 8 * 1024;
 
 /// The longest summary of a failed worker's row.
 const FAILED_BYTES: usize = 200;
+
+/// The longest flag line under a row.
+const FLAG_BYTES: usize = 200;
 
 /// What a summary is shortened to when the ledger is over its bound.
 const SHORT_BYTES: usize = 24;
@@ -120,12 +125,29 @@ pub struct Handoff {
     pub done: String,
     pub left: String,
     pub decisions: String,
+    /// The check of the claimed files against the worker's ledger (W4); only
+    /// a worker's handoff holds one.
+    pub audit: Option<Audit>,
 }
 
 impl Handoff {
     /// The handoff `facts` describes. `blocked` forces the verdict.
     pub(super) fn of(facts: Facts, judgement: Judgement, blocked: bool) -> Self {
         let judgement = judgement.normalised();
+        let verdict = if blocked {
+            Verdict::Blocked
+        } else {
+            judgement.verdict
+        };
+        // Only a worker's handoff names files its ledger can answer for.
+        let audit = matches!(facts.unit, Unit::Worker(_)).then(|| {
+            Audit::new(
+                facts.prior.as_ref(),
+                &judgement.done,
+                facts.ledger.as_ref(),
+                verdict,
+            )
+        });
         Self {
             run: facts.run,
             unit: facts.unit,
@@ -133,15 +155,12 @@ impl Handoff {
             engine: facts.engine,
             model: facts.model,
             status: facts.status,
-            verdict: if blocked {
-                Verdict::Blocked
-            } else {
-                judgement.verdict
-            },
+            verdict,
             reason: judgement.reason,
             done: judgement.done,
             left: judgement.left,
             decisions: judgement.decisions,
+            audit,
         }
     }
 
@@ -172,6 +191,10 @@ pub(super) struct Facts {
     pub engine: String,
     pub model: Option<String>,
     pub status: WorkerStatus,
+    /// The ledger of a worker that can write, for the claim check (W4).
+    pub ledger: Option<ChangeLedger>,
+    /// The check of the worker's earlier handoff, whose claims stay.
+    pub prior: Option<Audit>,
 }
 
 /// Why a handoff was not stored.
@@ -206,6 +229,8 @@ pub struct Row {
     summary: String,
     /// The worker ended and no handoff was written for it.
     pending: bool,
+    /// What the claim check of its handoff raises (W4), one line each.
+    flags: Vec<String>,
 }
 
 impl Row {
@@ -227,7 +252,14 @@ impl Row {
             status,
             summary,
             pending: terminal && handoff.is_none(),
+            flags: Vec::new(),
         }
+    }
+
+    /// The row with the flags its handoff's check raised.
+    pub(super) fn flagged(mut self, flags: Vec<String>) -> Self {
+        self.flags = flags;
+        self
     }
 
     /// A failure: the row is never hidden, its summary is capped.
@@ -395,6 +427,16 @@ impl Ledger {
         for ((row, max), _) in shown.filter(|(_, hidden)| !**hidden) {
             out.push('\n');
             out.push_str(&row.line(*max));
+            // A shortened row drops its flag lines; the count below stays.
+            if *max > SHORT_BYTES {
+                for flag in &row.flags {
+                    out.push_str(&format!("\n  {}", cut(flag, FLAG_BYTES)));
+                }
+            }
+        }
+        let flagged = self.rows.iter().filter(|row| !row.flags.is_empty()).count();
+        if flagged > 0 {
+            out.push_str(&format!("\nFlags: {flagged}"));
         }
         let pending = self.pending();
         if !pending.is_empty() {

@@ -129,6 +129,7 @@ pub(super) fn handed_off(verdict: Verdict) -> OrchestraEvent {
             done: "none".into(),
             left: "none".into(),
             decisions: "none".into(),
+            audit: None,
         }),
     }
 }

@@ -3256,7 +3256,10 @@ async fn a_handoff_is_stored_acked_and_sent_to_the_app() {
     handle.call(spawn(Task::Review, "check")).await;
     handle.call(wait(1)).await;
     let ack = handle.call(handoff(1, Verdict::OffCourse)).await;
-    assert_eq!(ack, fine("handoff 1: off_course"));
+    assert_eq!(
+        ack,
+        fine("handoff 1: off_course; not checked: no change ledger")
+    );
     let sent = handoffs(&lab.sent());
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].run, run);
@@ -3453,7 +3456,10 @@ async fn a_handoff_while_a_failure_waits_is_blocked_and_says_why() {
     handle.call(spawn(Task::Review, "check")).await;
     handle.call(wait(1)).await;
     let ack = handle.call(handoff(1, Verdict::OnCourse)).await;
-    assert_eq!(ack, fine("handoff 1: blocked (forced: worker 1 failed)"));
+    assert_eq!(
+        ack,
+        fine("handoff 1: blocked (forced: worker 1 failed); not checked: no change ledger")
+    );
     assert_eq!(handoffs(&lab.sent())[0].verdict, Verdict::Blocked);
 }
 
@@ -6137,5 +6143,6 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
+mod claims;
 mod gates;
 mod parallel;

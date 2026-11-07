@@ -1326,7 +1326,7 @@ impl RunManager {
             let forced = live.run.forced_by();
             match live.run.handoff(id, note) {
                 Ok(handoff) => {
-                    let text = match forced {
+                    let mut text = match forced {
                         Some(failed) => format!(
                             "handoff {}: {} (forced: worker {} failed)",
                             id.0,
@@ -1335,6 +1335,11 @@ impl RunManager {
                         ),
                         None => format!("handoff {}: {}", id.0, handoff.verdict.label()),
                     };
+                    // The app's check of the claimed files, next to the verdict
+                    // and never in its place (W4).
+                    if let Some(audit) = &handoff.audit {
+                        text.push_str(&format!("; {}", audit.lines().join("; ")));
+                    }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
                 }

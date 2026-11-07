@@ -73,7 +73,7 @@ impl Item {
                 format!("receipt: worker {} review {n}", worker.0),
             ),
         };
-        let content = format!(
+        let mut content = format!(
             "run: {}\n{subject}\nkind: {}\nengine: {}\nstatus: {}\nverdict: {}\nreason: {}\n\
              done: {}\nleft: {}\ndecisions: {}",
             handoff.run.0,
@@ -86,6 +86,10 @@ impl Item {
             handoff.left,
             handoff.decisions,
         );
+        // The app's check of the claimed files (W4).
+        if let Some(audit) = &handoff.audit {
+            content.push_str(&format!("\ncheck: {}", audit.lines().join("; ")));
+        }
         Self {
             key,
             note: Note {

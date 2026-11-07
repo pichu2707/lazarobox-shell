@@ -3,6 +3,7 @@
 //! of `scope`; time comes in as explicit `Instant`s.
 
 pub mod changes;
+pub mod claims;
 pub mod errors;
 pub mod event;
 pub mod feature;
@@ -122,6 +123,8 @@ impl Toolset {
 
 #[cfg(test)]
 mod ceiling_tests;
+#[cfg(test)]
+mod claims_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]
